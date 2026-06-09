@@ -2,8 +2,10 @@ import { useEffect } from 'react';
 import { useStore } from '../store';
 import { ShortcutBinding, ShortcutAction } from '../store/settings-slice';
 import { splitNode, removeLeaf, getAllPaneIds, findLeaf } from '../store/split-utils';
+import { applyPsmuxStartupToTerminalSurfaces, buildDefaultPsmuxSplitTree } from '../store/psmux-layout';
 import { PaneId, SplitNode } from '../../shared/types';
 import { v4 as uuid } from 'uuid';
+import { killPsmuxSurface, killPsmuxTree, killPsmuxTreeSync } from '../utils/psmux-cleanup';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -173,7 +175,11 @@ export function useKeyboardShortcuts(
 
       switch (action) {
         case 'newWorkspace': {
-          createWorkspace();
+          const wsCount = useStore.getState().workspaces.length;
+          createWorkspace({
+            title: `psmux ${wsCount + 1}`,
+            splitTree: buildDefaultPsmuxSplitTree(),
+          });
           break;
         }
 
@@ -183,11 +189,18 @@ export function useKeyboardShortcuts(
         }
 
         case 'closeWorkspace': {
-          if (activeWorkspaceId) closeWorkspace(activeWorkspaceId);
+          if (activeWorkspaceId) {
+            const ws = state.workspaces.find((workspace) => workspace.id === activeWorkspaceId);
+            if (ws) killPsmuxTree(ws.splitTree);
+            closeWorkspace(activeWorkspaceId);
+          }
           break;
         }
 
         case 'closeWindow': {
+          for (const workspace of state.workspaces) {
+            killPsmuxTreeSync(workspace.splitTree);
+          }
           window.close();
           break;
         }
@@ -233,7 +246,9 @@ export function useKeyboardShortcuts(
           const ws = state.workspaces.find((w) => w.id === activeWorkspaceId);
           if (!ws) break;
           const newPaneId: PaneId = `pane-${uuid()}` as PaneId;
-          const newTree = splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'horizontal');
+          const newTree = applyPsmuxStartupToTerminalSurfaces(
+            splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'horizontal'),
+          );
           updateSplitTree(activeWorkspaceId, newTree);
           break;
         }
@@ -243,7 +258,9 @@ export function useKeyboardShortcuts(
           const ws = state.workspaces.find((w) => w.id === activeWorkspaceId);
           if (!ws) break;
           const newPaneId: PaneId = `pane-${uuid()}` as PaneId;
-          const newTree = splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'vertical');
+          const newTree = applyPsmuxStartupToTerminalSurfaces(
+            splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'vertical'),
+          );
           updateSplitTree(activeWorkspaceId, newTree);
           break;
         }
@@ -300,6 +317,7 @@ export function useKeyboardShortcuts(
             // Close the active surface; if it's the last, closeSurface removes the pane
             const activeSurface = leaf.surfaces[leaf.activeSurfaceIndex];
             if (activeSurface) {
+              killPsmuxSurface(activeSurface);
               closeSurface(activeWorkspaceId, focusedPaneId, activeSurface.id);
               break;
             }

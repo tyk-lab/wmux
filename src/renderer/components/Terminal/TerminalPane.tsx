@@ -10,6 +10,8 @@ interface TerminalPaneProps {
   cwd?: string;
   /** Per-surface color scheme override (issue #4). */
   colorScheme?: string;
+  startupCommand?: string;
+  psmuxSessionName?: string;
   focused?: boolean;
   visible?: boolean;
   showFindBar?: boolean;
@@ -22,13 +24,24 @@ export default function TerminalPane({
   shell,
   cwd,
   colorScheme,
+  startupCommand,
+  psmuxSessionName,
   focused = true,
   visible = true,
   showFindBar = false,
   onFindBarClose,
   copyModeActive = false,
 }: TerminalPaneProps) {
-  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme });
+  const { terminalRef, searchAddonRef } = useTerminal({
+    surfaceId,
+    shell,
+    cwd,
+    visible,
+    focused,
+    colorScheme,
+    startupCommand,
+    psmuxSessionName,
+  });
 
   const [_lastQuery, setLastQuery] = useState('');
 

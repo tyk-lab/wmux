@@ -16,6 +16,7 @@ interface WorkspaceContextMenuProps {
   onMoveToTop: (id: WorkspaceId) => void;
   onCloseWorkspace: (id: WorkspaceId) => void;
   onCloseOthers: (id: WorkspaceId) => void;
+  onCloseAll: () => void;
   onMarkRead: (id: WorkspaceId) => void;
   onMarkUnread: (id: WorkspaceId) => void;
 }
@@ -53,6 +54,7 @@ export default function WorkspaceContextMenu({
   onMoveToTop,
   onCloseWorkspace,
   onCloseOthers,
+  onCloseAll,
   onMarkRead,
   onMarkUnread,
 }: WorkspaceContextMenuProps) {
@@ -131,7 +133,7 @@ export default function WorkspaceContextMenu({
       role="menu"
     >
       {/* Pin / Unpin */}
-      {item(workspace.pinned ? 'Unpin Workspace' : 'Pin Workspace', () => onPin(workspaceId))}
+      {item(workspace.pinned ? 'Unpin psmux' : 'Pin psmux', () => onPin(workspaceId))}
 
       {/* Rename */}
       {renaming ? (
@@ -151,7 +153,7 @@ export default function WorkspaceContextMenu({
           onClick={() => { setRenaming(true); setRenameValue(workspace.title); }}
           role="menuitem"
         >
-          Rename Workspace…
+          Rename psmux…
         </div>
       )}
 
@@ -165,7 +167,7 @@ export default function WorkspaceContextMenu({
         role="menuitem"
         aria-haspopup="true"
       >
-        Workspace Color ▶
+        psmux Color ▶
         {showColorSubmenu && (
           <div className="ctx-menu__submenu">
             <div
@@ -201,8 +203,9 @@ export default function WorkspaceContextMenu({
       <div className="ctx-menu__separator" />
 
       {/* Close */}
-      {item('Close Workspace', () => onCloseWorkspace(workspaceId), true)}
-      {item('Close Other Workspaces', () => onCloseOthers(workspaceId), true)}
+      {item('Delete psmux', () => onCloseWorkspace(workspaceId), true)}
+      {item('Delete Other psmux', () => onCloseOthers(workspaceId), true)}
+      {item('Delete All psmux', onCloseAll, true)}
 
       <div className="ctx-menu__separator" />
 

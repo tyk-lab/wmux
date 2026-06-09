@@ -56,7 +56,7 @@ export default function WorkspaceRow({
   onDrop,
   onDragEnd,
   isDragOver = false,
-  agentCount = 0,
+  agentCount: _agentCount = 0,
   hookActivity,
   claudeActivity,
 }: WorkspaceRowProps) {
@@ -114,7 +114,7 @@ export default function WorkspaceRow({
     if (hookActivity && now - hookActivity.lastSeen < ACTIVITY_TTL) return true;
     if (wsActivity && now - wsActivity.lastUpdate < ACTIVITY_TTL) return true;
     return false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [hookActivity, wsActivity, tick]);
 
   // ── Current tool label (from observer or hooks) ──
@@ -129,7 +129,7 @@ export default function WorkspaceRow({
       return getToolLabel(hookActivity.lastTool);
     }
     return null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [wsActivity, hookActivity, tick]);
 
   // ── Detect "Claude was active but stopped" (shell still says running) ──
@@ -143,7 +143,7 @@ export default function WorkspaceRow({
       return now - hookActivity.lastSeen >= ACTIVITY_TTL;
     }
     return false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [workspace.shellState, wsActivity, hookActivity, tick]);
 
   // ── Status text: tool activity > shell state > default ──
@@ -280,7 +280,7 @@ export default function WorkspaceRow({
             e.stopPropagation();
             onClose();
           }}
-          title="Close workspace"
+          title="Delete psmux"
         >
           &#x2715;
         </button>

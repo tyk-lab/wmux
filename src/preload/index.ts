@@ -3,7 +3,7 @@ import { IPC_CHANNELS } from '../shared/types';
 
 contextBridge.exposeInMainWorld('wmux', {
   pty: {
-    create: (options: { shell: string; cwd: string; env: Record<string, string>; surfaceId?: string }) =>
+    create: (options: { shell: string; cwd: string; env: Record<string, string>; surfaceId?: string; psmuxSessionName?: string }) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_CREATE, options) as Promise<{ id: string; shell: string }>,
     write: (id: string, data: string) =>
       ipcRenderer.send(IPC_CHANNELS.PTY_WRITE, id, data),
@@ -27,6 +27,14 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.on(IPC_CHANNELS.PTY_EXIT, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.PTY_EXIT, handler);
     },
+  },
+  psmux: {
+    killSession: (sessionName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSION, sessionName),
+    killSessions: (sessionNames: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSIONS, sessionNames),
+    killSessionsSync: (sessionNames: string[]) =>
+      ipcRenderer.sendSync(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, sessionNames),
   },
   system: {
     platform: 'win32' as const,

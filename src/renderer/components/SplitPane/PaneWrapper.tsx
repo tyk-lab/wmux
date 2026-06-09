@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { PaneId, SplitNode, SurfaceId, WorkspaceId } from '../../../shared/types';
 import { removeLeaf, splitNode } from '../../store/split-utils';
+import { applyPsmuxStartupToTerminalSurfaces } from '../../store/psmux-layout';
+import { killPsmuxSurface, killPsmuxSurfaces } from '../../utils/psmux-cleanup';
 import TerminalPane from '../Terminal/TerminalPane';
 import BrowserPane from '../Browser/BrowserPane';
 import MarkdownPane from '../Markdown/MarkdownPane';
@@ -20,7 +22,6 @@ interface PaneWrapperProps {
 
 export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrapperProps) {
   const { surfaces, activeSurfaceIndex, paneId } = leaf;
-  const activeSurface = surfaces[activeSurfaceIndex];
 
   const notifications = useStore((s) => s.notifications);
   const markRead = useStore((s) => s.markRead);
@@ -78,7 +79,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
         markRead(surfaceId as SurfaceId);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [isFocused]);
 
   // Keyboard shortcut listeners for find (Ctrl+F) and copy mode (Ctrl+Alt+[)
@@ -184,6 +185,8 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
               shell={workspace?.shell}
               cwd={workspace?.cwd}
               colorScheme={surface.colorScheme}
+              startupCommand={surface.startupCommand}
+              psmuxSessionName={surface.psmuxSessionName}
               focused={isFocused && isActive}
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}
@@ -226,7 +229,8 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
     if (activeWorkspaceId) {
       // Kill PTY BEFORE removing from store — so re-mount after tree collapse
       // doesn't find a dead PTY. Only explicit close kills the PTY.
-      window.wmux?.pty?.kill(surfaceId);
+      const surface = surfaces.find((item) => item.id === surfaceId);
+      if (surface) killPsmuxSurface(surface);
       closeSurface(activeWorkspaceId, paneId, surfaceId);
     }
   };
@@ -237,7 +241,9 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
     const ws = workspaces.find(w => w.id === activeWorkspaceId);
     if (ws) {
       const newPaneId = `pane-${crypto.randomUUID()}` as PaneId;
-      const newTree = splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'horizontal');
+      const newTree = applyPsmuxStartupToTerminalSurfaces(
+        splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'horizontal'),
+      );
       updateSplitTree(activeWorkspaceId, newTree);
     }
   };
@@ -248,19 +254,16 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
     const ws = workspaces.find(w => w.id === activeWorkspaceId);
     if (ws) {
       const newPaneId = `pane-${crypto.randomUUID()}` as PaneId;
-      const newTree = splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'vertical');
+      const newTree = applyPsmuxStartupToTerminalSurfaces(
+        splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'vertical'),
+      );
       updateSplitTree(activeWorkspaceId, newTree);
     }
   };
 
   const handleClosePane = () => {
     if (!activeWorkspaceId) return;
-    // Kill all PTYs in this pane first
-    for (const surface of surfaces) {
-      if (surface.type === 'terminal') {
-        window.wmux?.pty?.kill(surface.id);
-      }
-    }
+    killPsmuxSurfaces(surfaces);
     // Remove the pane atomically (not surface-by-surface, which corrupts state)
     const { workspaces, updateSplitTree } = useStore.getState();
     const ws = workspaces.find(w => w.id === activeWorkspaceId);
@@ -279,7 +282,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
     try {
       const { sourcePaneId, surfaceId } = JSON.parse(data);
       splitAndMoveSurface(activeWorkspaceId, paneId, sourcePaneId as PaneId, surfaceId as SurfaceId, direction);
-    } catch {}
+    } catch { /* drag cleanup is best-effort */ }
   };
 
   const handleCenterDrop = (e: React.DragEvent) => {
@@ -293,7 +296,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
       if (sourcePaneId !== paneId) {
         moveSurface(activeWorkspaceId, sourcePaneId as PaneId, surfaceId as SurfaceId, paneId);
       }
-    } catch {}
+    } catch { /* drag cleanup is best-effort */ }
   };
 
   const preventDragDefault = (e: React.DragEvent) => {

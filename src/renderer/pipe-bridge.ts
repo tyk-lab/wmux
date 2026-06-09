@@ -4,6 +4,8 @@
  */
 import { useStore } from './store';
 import { splitNode, removeLeaf, getAllPaneIds, findLeaf, buildGridLayout } from './store/split-utils';
+import { applyPsmuxStartupToTerminalSurfaces, buildDefaultPsmuxSplitTree } from './store/psmux-layout';
+import { killPsmuxSurface, killPsmuxSurfaces, killPsmuxTree } from './utils/psmux-cleanup';
 import { PaneId, SurfaceId, WorkspaceId, SurfaceType } from '../shared/types';
 import { v4 as uuid } from 'uuid';
 
@@ -15,15 +17,20 @@ export function initPipeBridge(): void {
   w.__wmux_createWorkspace = (params?: { title?: string; shell?: string; cwd?: string }) => {
     const store = useStore.getState();
     const id = store.createWorkspace({
-      title: params?.title,
+      title: params?.title ?? `psmux ${store.workspaces.length + 1}`,
       shell: params?.shell,
       cwd: params?.cwd,
+      splitTree: buildDefaultPsmuxSplitTree(),
     });
     return { workspaceId: id };
   };
 
   w.__wmux_closeWorkspace = (id: string) => {
-    useStore.getState().closeWorkspace(id as WorkspaceId);
+    const store = useStore.getState();
+    const wsId = id as WorkspaceId;
+    const ws = store.workspaces.find(w => w.id === wsId);
+    if (ws) killPsmuxTree(ws.splitTree);
+    store.closeWorkspace(wsId);
   };
 
   w.__wmux_selectWorkspace = (id: string) => {
@@ -63,7 +70,9 @@ export function initPipeBridge(): void {
     const direction = params?.direction === 'down' || params?.direction === 'vertical'
       ? 'vertical' : 'horizontal';
 
-    const newTree = splitNode(ws.splitTree, targetPaneId, newPaneId, surfaceType, direction);
+    const newTree = applyPsmuxStartupToTerminalSurfaces(
+      splitNode(ws.splitTree, targetPaneId, newPaneId, surfaceType, direction),
+    );
     store.updateSplitTree(wsId, newTree);
 
     const newLeaf = findLeaf(newTree, newPaneId);
@@ -85,6 +94,8 @@ export function initPipeBridge(): void {
     const ws = store.workspaces.find(w => w.id === wsId);
     if (!ws) return;
 
+    const leaf = findLeaf(ws.splitTree, paneId as PaneId);
+    if (leaf) killPsmuxSurfaces(leaf.surfaces);
     const newTree = removeLeaf(ws.splitTree, paneId as PaneId);
     if (newTree) {
       store.updateSplitTree(wsId, newTree);
@@ -120,7 +131,8 @@ export function initPipeBridge(): void {
     if (!anchorPaneId) return null;
 
     const surfaceType = (params.type || 'terminal') as SurfaceType;
-    const { tree: newTree, newPaneIds } = buildGridLayout(ws.splitTree, anchorPaneId, count, surfaceType);
+    const { tree, newPaneIds } = buildGridLayout(ws.splitTree, anchorPaneId, count, surfaceType);
+    const newTree = applyPsmuxStartupToTerminalSurfaces(tree);
     store.updateSplitTree(wsId, newTree);
 
     // Resolve surface IDs for the newly-created panes so callers can target them directly.
@@ -204,7 +216,9 @@ export function initPipeBridge(): void {
     const paneIds = getAllPaneIds(ws.splitTree);
     for (const pid of paneIds) {
       const leaf = findLeaf(ws.splitTree, pid);
-      if (leaf?.surfaces?.some(s => s.id === surfaceId)) {
+      const surface = leaf?.surfaces?.find(s => s.id === surfaceId);
+      if (surface) {
+        killPsmuxSurface(surface);
         store.closeSurface(wsId, pid, surfaceId as SurfaceId);
         return;
       }

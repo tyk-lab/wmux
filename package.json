@@ -1,7 +1,7 @@
 {
-  "name": "wmux",
+  "name": "psmux",
   "version": "0.8.3",
-  "description": "Windows terminal multiplexer for AI agents",
+  "description": "Windows psmux terminal manager",
   "license": "MIT",
   "main": "dist/main/index.js",
   "bin": {

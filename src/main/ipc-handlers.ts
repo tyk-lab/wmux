@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow, clipboard, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFile, execFileSync } from 'child_process';
 import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId } from '../shared/types';
 import { observePtyData } from './claude-observer';
 import { PtyManager } from './pty-manager';
@@ -22,6 +23,75 @@ const ptyManager = new PtyManager();
 const notificationManager = new NotificationManager();
 const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
+const PSMUX_SESSION_NAME_RE = /^psmux-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ownedPsmuxSessions = new Set<string>();
+
+function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    execFile('psmux.exe', args, { windowsHide: true, timeout: 5000 }, (error, _stdout, stderr) => {
+      if (error) {
+        resolve({ ok: false, error: stderr?.trim() || error.message });
+        return;
+      }
+      resolve({ ok: true });
+    });
+  });
+}
+
+async function killPsmuxSession(sessionName: string): Promise<{ ok: boolean; error?: string }> {
+  if (!PSMUX_SESSION_NAME_RE.test(sessionName)) {
+    return { ok: false, error: `Refusing to kill unmanaged psmux session: ${sessionName}` };
+  }
+  if (!ownedPsmuxSessions.has(sessionName)) {
+    return { ok: false, error: `Refusing to kill unowned psmux session: ${sessionName}` };
+  }
+  const result = await runPsmux(['kill-session', '-t', sessionName]);
+  if (result.ok) ownedPsmuxSessions.delete(sessionName);
+  return result;
+}
+
+function killPsmuxSessionSync(sessionName: string): { ok: boolean; error?: string } {
+  if (!PSMUX_SESSION_NAME_RE.test(sessionName)) {
+    return { ok: false, error: `Refusing to kill unmanaged psmux session: ${sessionName}` };
+  }
+  if (!ownedPsmuxSessions.has(sessionName)) {
+    return { ok: false, error: `Refusing to kill unowned psmux session: ${sessionName}` };
+  }
+  try {
+    execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+    ownedPsmuxSessions.delete(sessionName);
+    return { ok: true };
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function killPsmuxSessionsSync(sessionNames: string[]): Array<{ sessionName: string; ok: boolean; error?: string }> {
+  const uniqueNames = Array.from(new Set(sessionNames.filter(Boolean)));
+  return uniqueNames.map((sessionName) => ({
+    sessionName,
+    ...killPsmuxSessionSync(sessionName),
+  }));
+}
+
+export function killOwnedPsmuxSessionsSync(): void {
+  for (const sessionName of Array.from(ownedPsmuxSessions)) {
+    try {
+      execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+        windowsHide: true,
+        timeout: 5000,
+        stdio: 'ignore',
+      });
+    } catch {
+      // Session may already have exited or psmux may be unavailable during shutdown.
+    }
+  }
+  ownedPsmuxSessions.clear();
+}
 
 export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstance?: CDPProxy): void {
   // Toggle DevTools for the renderer window
@@ -43,6 +113,9 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         cwd: options.cwd || process.env.USERPROFILE || 'C:\\',
       };
       const created = ptyManager.create(resolvedOptions);
+      if (typeof options.psmuxSessionName === 'string' && PSMUX_SESSION_NAME_RE.test(options.psmuxSessionName)) {
+        ownedPsmuxSessions.add(options.psmuxSessionName);
+      }
       const id = created.id;
       const window = BrowserWindow.fromWebContents(_event.sender);
       const unsubData = ptyManager.onData(id, (data) => {
@@ -50,7 +123,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
           window.webContents.send(IPC_CHANNELS.PTY_DATA, id, data);
         }
         // Feed Claude Code observer for sidebar activity display
-        try { observePtyData(id, data); } catch {}
+        try { observePtyData(id, data); } catch { /* observer failure must not break PTY output */ }
       });
       const unsubExit = ptyManager.onExit(id, (code) => {
         if (window && !window.isDestroyed()) {
@@ -81,6 +154,23 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
 
   ipcMain.handle(IPC_CHANNELS.PTY_HAS, (_event, id: SurfaceId) => {
     return ptyManager.has(id);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSION, async (_event, sessionName: string) => {
+    return killPsmuxSession(sessionName);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSIONS, async (_event, sessionNames: string[]) => {
+    const uniqueNames = Array.from(new Set(sessionNames.filter(Boolean)));
+    const results = [];
+    for (const sessionName of uniqueNames) {
+      results.push({ sessionName, ...(await killPsmuxSession(sessionName)) });
+    }
+    return results;
+  });
+
+  ipcMain.on(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, (event, sessionNames: string[]) => {
+    event.returnValue = killPsmuxSessionsSync(sessionNames);
   });
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_SHELLS, async () => {

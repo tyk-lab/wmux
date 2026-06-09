@@ -1,6 +1,6 @@
 {
   "appId": "com.wmux.app",
-  "productName": "wmux",
+  "productName": "psmux",
   "directories": {
     "output": "release"
   },
@@ -33,10 +33,10 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "wmux"
+    "shortcutName": "psmux"
   },
   "portable": {
-    "artifactName": "wmux-${version}-portable.exe"
+    "artifactName": "psmux-${version}-portable.exe"
   },
   "extraResources": [
     { "from": "resources/icon.png", "to": "icon.png" },

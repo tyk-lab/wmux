@@ -35,12 +35,10 @@ export default function Titlebar({
       <div className="titlebar__left">
         <img
           src={logoSrc}
-          alt="wmux"
+          alt="psmux"
           className="titlebar__logo"
           draggable={false}
-          style={{ cursor: 'pointer' }}
-          onClick={() => window.wmux?.system?.openExternal?.('https://wmux.org') }
-          title="wmux.org"
+          title="psmux"
         />
         <button className="titlebar__btn" onClick={onHelpClick} title="Help / Tutorial">?</button>
         <button className="titlebar__btn" onClick={onDevToolsClick} title="Toggle Developer Tools">&lt;/&gt;</button>

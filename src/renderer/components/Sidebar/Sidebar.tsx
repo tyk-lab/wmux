@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { WorkspaceInfo, WorkspaceId } from '../../../shared/types';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { PaneId, SplitNode, SurfaceId, SurfaceRef, WorkspaceInfo, WorkspaceId } from '../../../shared/types';
 import WorkspaceRow from './WorkspaceRow';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import WorkspaceContextMenu from './WorkspaceContextMenu';
@@ -14,6 +14,38 @@ interface ContextMenuState {
   workspaceId: WorkspaceId;
 }
 
+interface PsmuxTerminalListItem {
+  paneId: PaneId;
+  surface: SurfaceRef;
+  surfaceIndex: number;
+  title: string;
+  sessionShort: string;
+}
+
+function collectPsmuxTerminals(tree: SplitNode, items: PsmuxTerminalListItem[] = []): PsmuxTerminalListItem[] {
+  if (tree.type === 'leaf') {
+    tree.surfaces.forEach((surface, surfaceIndex) => {
+      if (surface.type !== 'terminal') return;
+      const defaultTitle = `psmux ${items.length + 1}`;
+      const customTitle = surface.customTitle && surface.customTitle !== 'psmux'
+        ? surface.customTitle
+        : defaultTitle;
+      items.push({
+        paneId: tree.paneId,
+        surface,
+        surfaceIndex,
+        title: customTitle,
+        sessionShort: surface.psmuxSessionName?.replace(/^psmux-/, '').slice(0, 8) ?? '',
+      });
+    });
+    return items;
+  }
+
+  collectPsmuxTerminals(tree.children[0], items);
+  collectPsmuxTerminals(tree.children[1], items);
+  return items;
+}
+
 interface SidebarProps {
   workspaces: WorkspaceInfo[];
   activeWorkspaceId: WorkspaceId | null;
@@ -21,6 +53,7 @@ interface SidebarProps {
   onWidthChange: (newWidth: number) => void;
   onSelect: (id: WorkspaceId) => void;
   onClose: (id: WorkspaceId) => void;
+  onCloseAll: () => void;
   onCreate: () => void;
   onRename: (id: WorkspaceId, title: string) => void;
   onReorder: (ids: WorkspaceId[]) => void;
@@ -39,6 +72,7 @@ export default function Sidebar({
   onWidthChange,
   onSelect,
   onClose,
+  onCloseAll,
   onCreate,
   onRename,
   onReorder,
@@ -56,6 +90,19 @@ export default function Sidebar({
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [saveInputOpen, setSaveInputOpen] = useState(false);
   const [saveInputValue, setSaveInputValue] = useState('');
+  const [renamingTerminalId, setRenamingTerminalId] = useState<SurfaceId | null>(null);
+  const [terminalRenameValue, setTerminalRenameValue] = useState('');
+  const selectSurface = useStore((state) => state.selectSurface);
+  const renameSurface = useStore((state) => state.renameSurface);
+
+  const activeWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
+    [workspaces, activeWorkspaceId],
+  );
+  const activeWorkspaceTerminals = useMemo(
+    () => activeWorkspace ? collectPsmuxTerminals(activeWorkspace.splitTree) : [],
+    [activeWorkspace],
+  );
 
   useEffect(() => {
     let polling = false;
@@ -71,7 +118,7 @@ export default function Sidebar({
           }
         }
         setAgentCounts(counts);
-      } catch {}
+      } catch { /* session list is optional when the preload bridge is unavailable */ }
       polling = false;
     }, 3000);
     return () => clearInterval(interval);
@@ -243,10 +290,49 @@ export default function Sidebar({
     [workspaces, onClose],
   );
 
+  const handleSelectTerminal = useCallback((item: PsmuxTerminalListItem) => {
+    if (!activeWorkspaceId) return;
+    onSelect(activeWorkspaceId);
+    selectSurface(activeWorkspaceId, item.paneId, item.surfaceIndex);
+  }, [activeWorkspaceId, onSelect, selectSurface]);
+
+  const startRenameTerminal = useCallback((item: PsmuxTerminalListItem) => {
+    setRenamingTerminalId(item.surface.id);
+    setTerminalRenameValue(item.surface.customTitle && item.surface.customTitle !== 'psmux' ? item.surface.customTitle : item.title);
+  }, []);
+
+  const commitTerminalRename = useCallback((item: PsmuxTerminalListItem) => {
+    if (!activeWorkspaceId) return;
+    renameSurface(activeWorkspaceId, item.paneId, item.surface.id, terminalRenameValue.trim());
+    setRenamingTerminalId(null);
+    setTerminalRenameValue('');
+  }, [activeWorkspaceId, renameSurface, terminalRenameValue]);
+
   return (
     <div className="sidebar" style={{ width: sidebarWidth }}>
-      {/* Spacer for titlebar area + collapse button */}
       <div className="sidebar__header">
+        <div className="sidebar__title-group">
+          <span className="sidebar__title">psmux</span>
+          <span className="sidebar__count">{workspaces.length}</span>
+        </div>
+        <div className="sidebar__header-actions">
+          <button
+            className="sidebar__icon-btn"
+            onClick={onCreate}
+            title="New psmux"
+            aria-label="New psmux"
+          >
+            +
+          </button>
+          <button
+            className="sidebar__icon-btn sidebar__icon-btn--danger"
+            onClick={onCloseAll}
+            title="Delete all psmux"
+            aria-label="Delete all psmux"
+          >
+            ××
+          </button>
+        </div>
         {onCollapse && (
           <button
             className="sidebar__collapse-btn"
@@ -285,11 +371,78 @@ export default function Sidebar({
         ))}
       </div>
 
+      {activeWorkspace && (
+        <div className="sidebar__terminal-list">
+          <div className="sidebar__section-title">
+            <span>Terminals</span>
+            <span>{activeWorkspaceTerminals.length}</span>
+          </div>
+          {activeWorkspaceTerminals.map((item) => {
+            const isRenaming = renamingTerminalId === item.surface.id;
+            return (
+              <div
+                key={item.surface.id}
+                className="sidebar__terminal-item"
+                onClick={() => handleSelectTerminal(item)}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  startRenameTerminal(item);
+                }}
+                title={item.surface.psmuxSessionName}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    handleSelectTerminal(item);
+                  }
+                }}
+              >
+                <span className="sidebar__terminal-icon">&gt;</span>
+                {isRenaming ? (
+                  <input
+                    className="sidebar__terminal-rename"
+                    value={terminalRenameValue}
+                    onChange={(event) => setTerminalRenameValue(event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') commitTerminalRename(item);
+                      if (event.key === 'Escape') {
+                        setRenamingTerminalId(null);
+                        setTerminalRenameValue('');
+                      }
+                      event.stopPropagation();
+                    }}
+                    onBlur={() => commitTerminalRename(item)}
+                    autoFocus
+                  />
+                ) : (
+                  <>
+                    <span className="sidebar__terminal-name">{item.title}</span>
+                    {item.sessionShort && <span className="sidebar__terminal-session">{item.sessionShort}</span>}
+                    <span
+                      className="sidebar__terminal-rename-btn"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startRenameTerminal(item);
+                      }}
+                      title="Rename terminal"
+                    >
+                      &#x270e;
+                    </span>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="sidebar__footer">
         {saveInputOpen ? (
           <input
             className="sidebar__save-input"
-            placeholder="Session name..."
+            placeholder="psmux name..."
             value={saveInputValue}
             onChange={(e) => setSaveInputValue(e.target.value)}
             onKeyDown={(e) => {
@@ -305,14 +458,11 @@ export default function Sidebar({
           />
         ) : (
           <>
-            <button className="sidebar__footer-btn" onClick={() => setSaveInputOpen(true)} title="Save session">
+            <button className="sidebar__footer-btn" onClick={() => setSaveInputOpen(true)} title="Save psmux session">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.414A1 1 0 0 0 14.707 4L12 1.293A1 1 0 0 0 11.586 1H2zm0 1h1v3.5a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5V2h.586L14 4.414V14H2V2zm3 0v3h5V2H5zm3 7a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
             </button>
-            <button className="sidebar__footer-btn" onClick={() => setSessionMenuOpen(!sessionMenuOpen)} title="Load session">
+            <button className="sidebar__footer-btn" onClick={() => setSessionMenuOpen(!sessionMenuOpen)} title="Load psmux session">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h2.764c.958 0 1.76.56 2.311 1.184C7.985 3.648 8.48 4 9 4h4.5A1.5 1.5 0 0 1 15 5.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9zM2.5 3a.5.5 0 0 0-.5.5V6h12v-.5a.5.5 0 0 0-.5-.5H9c-.964 0-1.71-.572-2.331-1.184C6.268 3.394 5.762 3 5.264 3H2.5zM14 7H2v5.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V7z"/></svg>
-            </button>
-            <button className="sidebar__new-btn" onClick={onCreate} title="New workspace">
-              +
             </button>
           </>
         )}
@@ -341,6 +491,7 @@ export default function Sidebar({
           onMoveToTop={handleMoveToTop}
           onCloseWorkspace={(id) => { onClose(id); closeContextMenu(); }}
           onCloseOthers={(id) => { handleCloseOthers(id); closeContextMenu(); }}
+          onCloseAll={() => { onCloseAll(); closeContextMenu(); }}
           onMarkRead={handleMarkRead}
           onMarkUnread={handleMarkUnread}
         />

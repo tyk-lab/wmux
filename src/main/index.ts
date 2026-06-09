@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
-import { registerIpcHandlers, cdpBridge, agentManager, ptyManager, setupAgentPtyForwarding } from './ipc-handlers';
+import { registerIpcHandlers, cdpBridge, agentManager, ptyManager, setupAgentPtyForwarding, killOwnedPsmuxSessionsSync } from './ipc-handlers';
 import { distributeAgents } from './agent-manager';
 import { PipeServer } from './pipe-server';
 import { PortScanner } from './port-scanner';
@@ -992,6 +992,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  killOwnedPsmuxSessionsSync();
   pipeServer.stop();
   cdpProxy.stop();
   portScanner.stop();

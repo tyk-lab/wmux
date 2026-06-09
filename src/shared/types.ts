@@ -16,6 +16,8 @@ export interface SurfaceRef {
   type: SurfaceType;
   customTitle?: string;
   shell?: string;
+  startupCommand?: string;
+  psmuxSessionName?: string;
   /** Per-surface color scheme override (bundled theme name or user-defined scheme name). */
   colorScheme?: string;
 }
@@ -195,6 +197,10 @@ export const IPC_CHANNELS = {
   PTY_HAS: 'pty:has',
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
+  // psmux
+  PSMUX_KILL_SESSION: 'psmux:kill-session',
+  PSMUX_KILL_SESSIONS: 'psmux:kill-sessions',
+  PSMUX_KILL_SESSIONS_SYNC: 'psmux:kill-sessions-sync',
   // Workspace
   WORKSPACE_CREATE: 'workspace:create',
   WORKSPACE_CLOSE: 'workspace:close',

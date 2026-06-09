@@ -33,6 +33,9 @@ interface UseTerminalOptions {
   focused?: boolean;
   /** Per-surface color scheme override — takes priority over terminalPrefs.theme. */
   colorScheme?: string;
+  /** Command sent once after a newly-created PTY is attached. Existing PTYs are only reattached. */
+  startupCommand?: string;
+  psmuxSessionName?: string;
 }
 
 interface UseTerminalResult {
@@ -123,7 +126,16 @@ async function fetchTheme(name: string): Promise<ThemeConfig> {
   }
 }
 
-export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = true, colorScheme }: UseTerminalOptions = {}): UseTerminalResult {
+export function useTerminal({
+  surfaceId,
+  shell,
+  cwd,
+  visible = true,
+  focused = true,
+  colorScheme,
+  startupCommand,
+  psmuxSessionName,
+}: UseTerminalOptions = {}): UseTerminalResult {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -312,7 +324,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       try {
         const text = atob(b64);
         if (text) window.wmux?.clipboard?.writeText?.(text);
-      } catch {}
+      } catch { /* fallback themes are handled below */ }
       return true;
     });
 
@@ -375,7 +387,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
               // pty.write strips the \x1b[200~/\x1b[201~ wrappers, so apps like
               // Claude Code see each \n as Enter and only the first line lands.
               if (text) terminal.paste(text);
-            } catch {}
+            } catch { /* URL detection is best-effort for terminal output */ }
           }
         })();
         return false; // Prevent default — we handle paste ourselves
@@ -383,11 +395,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       return true;
     });
 
-    // Connect to PTY — either attach to existing (agent-spawned) or create new
-    let ptyId: string | null = null;
-
     const attachToPty = (id: string) => {
-      ptyId = id;
       ptyIdRef.current = id;
 
       // Wire PTY data → xterm
@@ -410,6 +418,12 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }
     };
 
+    const runStartupCommand = (id: string) => {
+      const command = startupCommand?.trim();
+      if (!command) return;
+      window.wmux.pty.write(id, `${command}\r`);
+    };
+
     // Resolve effective shell: explicit (workspace) > user default preference > main-process fallback.
     // Read prefs at spawn time so changing the default later doesn't re-spawn live PTYs.
     const effectiveShell = shell || useStore.getState().workspacePrefs.defaultShell || '';
@@ -421,20 +435,22 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           attachToPty(surfaceId!);
         } else {
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
-          window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, surfaceId })
+          window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, surfaceId, psmuxSessionName })
             .then((created: { id: string; shell: string }) => {
               setResolvedShellForSurface(surfaceId, created.shell);
               attachToPty(created.id);
+              runStartupCommand(created.id);
             })
             .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
         }
       });
     } else {
       // No surfaceId hint — always create new PTY
-      window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {} })
+      window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, psmuxSessionName })
         .then((created: { id: string; shell: string }) => {
           setResolvedShellForSurface(surfaceId, created.shell);
           attachToPty(created.id);
+          runStartupCommand(created.id);
         })
         .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
     }
@@ -483,7 +499,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       xtermRef.current = null;
       ptyIdRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   // Apply theme + font whenever the resolved scheme or prefs change.

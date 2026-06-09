@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
 import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf } from './store/split-utils';
+import { buildDefaultPsmuxSplitTree, normalizePsmuxWorkspaceConfigs } from './store/psmux-layout';
+import { killPsmuxTree, killPsmuxTreeSync } from './utils/psmux-cleanup';
 import Sidebar from './components/Sidebar/Sidebar';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -31,42 +32,6 @@ function findBottomPane(node: SplitNode): PaneId | null {
   if (node.type === 'leaf') return node.paneId;
   if (node.direction === 'vertical') return findBottomPane(node.children[1]);
   return findBottomPane(node.children[0]);
-}
-
-/** Build the default 3-terminal split layout for new workspaces */
-function buildDefaultSplitTree(): SplitNode {
-  return {
-    type: 'branch',
-    direction: 'vertical',
-    ratio: 0.5,
-    children: [
-      {
-        type: 'branch',
-        direction: 'horizontal',
-        ratio: 0.5,
-        children: [
-          {
-            type: 'leaf',
-            paneId: `pane-${uuid()}` as PaneId,
-            surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }],
-            activeSurfaceIndex: 0,
-          },
-          {
-            type: 'leaf',
-            paneId: `pane-${uuid()}` as PaneId,
-            surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }],
-            activeSurfaceIndex: 0,
-          },
-        ],
-      },
-      {
-        type: 'leaf',
-        paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }],
-        activeSurfaceIndex: 0,
-      },
-    ],
-  };
 }
 
 export default function App() {
@@ -160,32 +125,32 @@ export default function App() {
         const autoSaved = await window.wmux?.session?.loadAuto?.();
         if (autoSaved && Array.isArray(autoSaved.workspaces) && autoSaved.workspaces.length > 0) {
           const { replaceAllWorkspaces } = useStore.getState();
-          replaceAllWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
+          replaceAllWorkspaces(normalizePsmuxWorkspaceConfigs(autoSaved.workspaces), autoSaved.activeIndex);
           if (autoSaved.sidebarWidth) setSidebarWidth(autoSaved.sidebarWidth);
           return;
         }
-      } catch {}
+      } catch { /* restore failure falls back to a fresh psmux workspace */ }
       try {
         const sessions = await window.wmux?.session?.list();
         if (sessions && sessions.length > 0) {
           const session = await window.wmux?.session?.load(sessions[0].name);
           if (session) {
             const { replaceAllWorkspaces } = useStore.getState();
-            replaceAllWorkspaces(session.workspaces);
+            replaceAllWorkspaces(normalizePsmuxWorkspaceConfigs(session.workspaces));
             if (session.sidebarWidth) setSidebarWidth(session.sidebarWidth);
             return;
           }
         }
-      } catch {}
+      } catch { /* notification subscription is optional in non-Electron contexts */ }
       // No saved session — create default workspace
       if (useStore.getState().workspaces.length === 0) {
         createWorkspace({
-          title: 'Session 1',
-          splitTree: buildDefaultSplitTree(),
+          title: 'psmux 1',
+          splitTree: buildDefaultPsmuxSplitTree(),
         });
       }
     })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Expose helpers for main process queries + pipe bridge
   useEffect(() => {
@@ -205,6 +170,17 @@ export default function App() {
       delete (window as any).__wmux_getActiveWorkspaceId;
       delete (window as any).__wmux_getPaneLoads;
     };
+  }, []);
+
+  useEffect(() => {
+    const cleanupWindowPsmux = () => {
+      const state = useStore.getState();
+      for (const workspace of state.workspaces) {
+        killPsmuxTreeSync(workspace.splitTree);
+      }
+    };
+    window.addEventListener('beforeunload', cleanupWindowPsmux);
+    return () => window.removeEventListener('beforeunload', cleanupWindowPsmux);
   }, []);
 
   // Load ~/.wmux/config.toml on startup and listen for `wmux reload-config`.
@@ -297,7 +273,7 @@ export default function App() {
           for (const ws of useStore.getState().workspaces) {
             updateWorkspaceMetadata(ws.id, { ports: devPorts.length > 0 ? devPorts : undefined });
           }
-        } catch {}
+        } catch { /* metadata parsing is best-effort */ }
         return;
       }
 
@@ -374,7 +350,7 @@ export default function App() {
       }
     });
     return unsub;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Listen for Claude Code hook events — tie to active workspace
   // Also auto-create diff surface when Edit/Write tools fire
@@ -415,7 +391,7 @@ export default function App() {
       }
     });
     return unsub;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // NOTE: hookActivity entries are intentionally kept forever (not cleaned up).
   // WorkspaceRow uses the lastSeen timestamp + TTL to decide what to display.
@@ -473,7 +449,7 @@ export default function App() {
     if (paneIds.length > 0 && (focusedPaneId === null || !paneIds.includes(focusedPaneId))) {
       setFocusedPaneId(paneIds[0]);
     }
-  }, [activeWorkspace?.id, activeWorkspace?.splitTree]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.id, activeWorkspace?.splitTree]);
 
   const handleRatioChange = useCallback(
     (leftPaneId: PaneId, rightPaneId: PaneId, ratio: number) => {
@@ -495,11 +471,48 @@ export default function App() {
   const handleCreateWorkspace = useCallback(() => {
     const wsCount = useStore.getState().workspaces.length;
     const newId = createWorkspace({
-      title: `Session ${wsCount + 1}`,
-      splitTree: buildDefaultSplitTree(),
+      title: `psmux ${wsCount + 1}`,
+      splitTree: buildDefaultPsmuxSplitTree(),
     });
     selectWorkspace(newId);
   }, [createWorkspace, selectWorkspace]);
+
+  const killWorkspaceTerminals = useCallback((workspace: WorkspaceInfo) => {
+    killPsmuxTree(workspace.splitTree);
+  }, []);
+
+  const createFallbackPsmux = useCallback(() => {
+    const { replaceAllWorkspaces } = useStore.getState();
+    replaceAllWorkspaces([
+      {
+        title: 'psmux 1',
+        splitTree: buildDefaultPsmuxSplitTree(),
+      },
+    ]);
+  }, []);
+
+  const handleCloseWorkspace = useCallback((id: WorkspaceId) => {
+    const state = useStore.getState();
+    const workspace = state.workspaces.find((w) => w.id === id);
+    if (!workspace) return;
+
+    killWorkspaceTerminals(workspace);
+
+    if (state.workspaces.length <= 1) {
+      createFallbackPsmux();
+      return;
+    }
+
+    closeWorkspace(id);
+  }, [closeWorkspace, createFallbackPsmux, killWorkspaceTerminals]);
+
+  const handleCloseAllWorkspaces = useCallback(() => {
+    const state = useStore.getState();
+    for (const workspace of state.workspaces) {
+      killWorkspaceTerminals(workspace);
+    }
+    createFallbackPsmux();
+  }, [createFallbackPsmux, killWorkspaceTerminals]);
 
   const handleSaveSession = useCallback(async (name: string) => {
     const state = useStore.getState();
@@ -519,14 +532,14 @@ export default function App() {
       terminalPrefs: { ...state.terminalPrefs },
     };
     await window.wmux?.session?.save(session);
-    window.wmux?.notification?.fire({ surfaceId: '', text: `Session "${name}" saved`, title: 'wmux' });
+    window.wmux?.notification?.fire({ surfaceId: '', text: `psmux "${name}" saved`, title: 'psmux' });
   }, [sidebarWidth]);
 
   const handleLoadSession = useCallback(async (name: string) => {
     const session = await window.wmux?.session?.load(name);
     if (!session) return;
     const { replaceAllWorkspaces, setTerminalPrefs } = useStore.getState();
-    replaceAllWorkspaces(session.workspaces);
+    replaceAllWorkspaces(normalizePsmuxWorkspaceConfigs(session.workspaces));
     if (session.sidebarWidth) setSidebarWidth(session.sidebarWidth);
     if (session.terminalPrefs) setTerminalPrefs(session.terminalPrefs);
   }, []);
@@ -623,7 +636,8 @@ export default function App() {
             sidebarWidth={sidebarWidth}
             onWidthChange={handleSidebarWidthChange}
             onSelect={selectWorkspace}
-            onClose={closeWorkspace}
+            onClose={handleCloseWorkspace}
+            onCloseAll={handleCloseAllWorkspaces}
             onCreate={handleCreateWorkspace}
             onRename={renameWorkspace}
             onReorder={reorderWorkspaces}
