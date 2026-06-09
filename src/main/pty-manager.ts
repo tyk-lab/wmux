@@ -94,6 +94,14 @@ interface PtyEntry {
   writeChain: Promise<void>;
   pendingChunks: number;
   alive: boolean;
+  // Coalesce high-frequency PTY output. node-pty fires onData hundreds–thousands
+  // of times/sec under heavy output; forwarding each chunk individually floods
+  // webContents.send and every keep-alive terminal's renderer-side listener.
+  // We buffer per surface and flush on a short timer so a burst collapses into a
+  // single combined emit, with interactive echo latency staying imperceptible.
+  outBuffer: string[];
+  outBufferLen: number;
+  flushTimer: NodeJS.Timeout | null;
 }
 
 export interface CreateOptions {
@@ -116,6 +124,13 @@ export class PtyManager {
   // perceptible latency.
   private static readonly CHUNK_THRESHOLD = 1024;
   private static readonly CHUNK_SIZE = 1024;
+
+  // Output coalescing window. 8 ms batches bursts down to ~125 emits/sec/surface
+  // (from thousands) while staying well under the ~50 ms human-perceptible echo
+  // threshold. A burst exceeding MAX_BUFFER_BYTES flushes immediately to bound
+  // memory and latency when a process dumps a large payload within one window.
+  private static readonly FLUSH_INTERVAL_MS = 8;
+  private static readonly MAX_BUFFER_BYTES = 256 * 1024;
 
   create(options: CreateOptions): { id: SurfaceId; shell: string } {
     const id: SurfaceId = options.surfaceId ?? `surf-${uuidv4()}` as SurfaceId;
@@ -173,16 +188,20 @@ export class PtyManager {
       writeChain: Promise.resolve(),
       pendingChunks: 0,
       alive: true,
+      outBuffer: [],
+      outBufferLen: 0,
+      flushTimer: null,
     };
 
     ptyProcess.onData((data) => {
-      for (const listener of entry.dataListeners) {
-        listener(data);
-      }
+      entry.outBuffer.push(data);
+      entry.outBufferLen += data.length;
+      this.scheduleFlush(entry);
     });
 
     ptyProcess.onExit(({ exitCode }) => {
       entry.alive = false; // stops any in-flight chunked write
+      this.flush(entry); // emit any buffered output before signaling exit
       for (const listener of entry.exitListeners) {
         listener(exitCode);
       }
@@ -191,6 +210,33 @@ export class PtyManager {
 
     this.ptys.set(id, entry);
     return { id, shell };
+  }
+
+  // Schedule (or immediately trigger) a flush of the per-surface output buffer.
+  private scheduleFlush(entry: PtyEntry): void {
+    if (entry.outBufferLen >= PtyManager.MAX_BUFFER_BYTES) {
+      this.flush(entry);
+      return;
+    }
+    if (entry.flushTimer === null) {
+      entry.flushTimer = setTimeout(() => this.flush(entry), PtyManager.FLUSH_INTERVAL_MS);
+    }
+  }
+
+  // Concatenate buffered chunks and emit once to all data listeners. Ordering is
+  // preserved per surface because chunks are appended and drained in order.
+  private flush(entry: PtyEntry): void {
+    if (entry.flushTimer !== null) {
+      clearTimeout(entry.flushTimer);
+      entry.flushTimer = null;
+    }
+    if (entry.outBuffer.length === 0) return;
+    const data = entry.outBuffer.join('');
+    entry.outBuffer = [];
+    entry.outBufferLen = 0;
+    for (const listener of entry.dataListeners) {
+      listener(data);
+    }
   }
 
   write(id: SurfaceId, data: string): void {
@@ -252,6 +298,10 @@ export class PtyManager {
     const entry = this.ptys.get(id);
     if (entry) {
       entry.alive = false; // signals any in-flight chunked write to stop
+      if (entry.flushTimer !== null) {
+        clearTimeout(entry.flushTimer);
+        entry.flushTimer = null;
+      }
       try {
         entry.pty.kill();
       } catch {

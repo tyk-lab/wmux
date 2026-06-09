@@ -1,6 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/types';
 
+// Single shared dispatcher for PTY_DATA / PTY_EXIT. Previously every terminal
+// registered its own ipcRenderer.on(PTY_DATA) listener and filtered by id, so
+// each incoming chunk woke ALL N keep-alive terminals' handlers (O(N) per
+// chunk, plus Electron's >10-listener warning). A module-level id→callbacks map
+// gives O(1) dispatch regardless of how many terminals are open.
+const ptyDataCallbacks = new Map<string, Set<(data: string) => void>>();
+const ptyExitCallbacks = new Map<string, Set<(code: number) => void>>();
+
+ipcRenderer.on(IPC_CHANNELS.PTY_DATA, (_event, ptyId: string, data: string) => {
+  const set = ptyDataCallbacks.get(ptyId);
+  if (set) for (const cb of set) cb(data);
+});
+ipcRenderer.on(IPC_CHANNELS.PTY_EXIT, (_event, ptyId: string, code: number) => {
+  const set = ptyExitCallbacks.get(ptyId);
+  if (set) for (const cb of set) cb(code);
+});
+
 contextBridge.exposeInMainWorld('wmux', {
   pty: {
     create: (options: { shell: string; cwd: string; env: Record<string, string>; surfaceId?: string; psmuxSessionName?: string; psmuxAttachExisting?: boolean }) =>
@@ -14,18 +31,22 @@ contextBridge.exposeInMainWorld('wmux', {
     has: (id: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_HAS, id),
     onData: (id: string, callback: (data: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ptyId: string, data: string) => {
-        if (ptyId === id) callback(data);
+      let set = ptyDataCallbacks.get(id);
+      if (!set) { set = new Set(); ptyDataCallbacks.set(id, set); }
+      set.add(callback);
+      return () => {
+        const s = ptyDataCallbacks.get(id);
+        if (s) { s.delete(callback); if (s.size === 0) ptyDataCallbacks.delete(id); }
       };
-      ipcRenderer.on(IPC_CHANNELS.PTY_DATA, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.PTY_DATA, handler);
     },
     onExit: (id: string, callback: (code: number) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ptyId: string, code: number) => {
-        if (ptyId === id) callback(code);
+      let set = ptyExitCallbacks.get(id);
+      if (!set) { set = new Set(); ptyExitCallbacks.set(id, set); }
+      set.add(callback);
+      return () => {
+        const s = ptyExitCallbacks.get(id);
+        if (s) { s.delete(callback); if (s.size === 0) ptyExitCallbacks.delete(id); }
       };
-      ipcRenderer.on(IPC_CHANNELS.PTY_EXIT, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.PTY_EXIT, handler);
     },
   },
   psmux: {
