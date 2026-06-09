@@ -1,7 +1,7 @@
 {
-  "name": "psmux",
+  "name": "wmux",
   "version": "0.8.3",
-  "description": "Windows psmux terminal manager",
+  "description": "Windows wmux terminal manager",
   "license": "MIT",
   "main": "dist/main/index.js",
   "bin": {

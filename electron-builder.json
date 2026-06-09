@@ -1,6 +1,6 @@
 {
   "appId": "com.wmux.app",
-  "productName": "psmux",
+  "productName": "wmux",
   "directories": {
     "output": "release"
   },
@@ -33,10 +33,10 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "psmux"
+    "shortcutName": "wmux"
   },
   "portable": {
-    "artifactName": "psmux-${version}-portable.exe"
+    "artifactName": "wmux-${version}-portable.exe"
   },
   "extraResources": [
     { "from": "resources/icon.png", "to": "icon.png" },
@@ -45,6 +45,7 @@
     { "from": "resources/claude-instructions.md", "to": "claude-instructions/claude-instructions.md" },
     { "from": "src/shell-integration", "to": "shell-integration" },
     { "from": "dist/cli/wmux.js", "to": "cli/wmux.js" },
-    { "from": "resources/wmux-orchestrator", "to": "wmux-orchestrator" }
+    { "from": "resources/wmux-orchestrator", "to": "wmux-orchestrator" },
+    { "from": "resources/opencode-plugin", "to": "opencode-plugin" }
   ]
 }

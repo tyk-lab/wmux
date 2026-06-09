@@ -1,5 +1,7 @@
 import { autoUpdater } from 'electron-updater';
 import { BrowserWindow, dialog } from 'electron';
+import fs from 'fs';
+import path from 'path';
 import { fetchLatestRelease } from './update-checker';
 
 // ── Auto-update hardening (issue #29) ────────────────────────────────────────
@@ -44,7 +46,16 @@ async function releaseAgeMs(version: string): Promise<number | null> {
 
 let installPrompted = false;
 
+function hasUpdateConfig(): boolean {
+  return fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'));
+}
+
 export function initAutoUpdater(): void {
+  if (!hasUpdateConfig()) {
+    console.log('[updater] update config not found; auto-updater disabled.');
+    return;
+  }
+
   // Gate both download and install — nothing happens without passing the
   // quarantine window and an explicit user click.
   autoUpdater.autoDownload = false;

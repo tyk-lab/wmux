@@ -69,6 +69,7 @@ export class CDPProxy {
 
     // WebSocket server using ws library (handles handshake properly)
     this.wss = new WebSocketServer({ server: this.server });
+    this.wss.on('error', () => {});
 
     this.wss.on('connection', (ws) => {
       if (!this.webContentsId) {
@@ -93,7 +94,9 @@ export class CDPProxy {
       wc.debugger.on('message', onDebuggerMessage);
 
       const cleanup = () => {
-        try { wc?.debugger.removeListener('message', onDebuggerMessage); } catch {}
+        try { wc?.debugger.removeListener('message', onDebuggerMessage); } catch {
+          // Debugger detach races should not keep a closed WebSocket alive.
+        }
         this.activeWs = null;
       };
 
@@ -129,12 +132,23 @@ export class CDPProxy {
     for (let p = DEFAULT_PORT; p <= MAX_PORT; p++) {
       try {
         await new Promise<void>((resolve, reject) => {
-          this.server!.once('error', reject);
-          this.server!.listen(p, '127.0.0.1', () => {
-            this.server!.removeAllListeners('error');
+          const cleanup = () => {
+            this.server!.off('error', onError);
+            this.server!.off('listening', onListening);
+          };
+          const onError = (error: Error) => {
+            cleanup();
+            reject(error);
+          };
+          const onListening = () => {
+            cleanup();
             this.port = p;
             resolve();
-          });
+          };
+
+          this.server!.once('error', onError);
+          this.server!.once('listening', onListening);
+          this.server!.listen(p, '127.0.0.1');
         });
         console.log(`[wmux] CDP proxy listening on localhost:${p}`);
         return;

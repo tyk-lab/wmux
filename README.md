@@ -1,8 +1,8 @@
 <h1 align="center">wmux</h1>
-<p align="center">A visibility layer for Claude Code on Windows — see what your AI agent does in real-time</p>
+<p align="center">Windows 下的 Claude Code 可视化层——实时查看 AI Agent 的行为</p>
 
 <p align="center">
-  Built on Electron + xterm.js. Forked from <a href="https://github.com/manaflow-ai/cmux">cmux</a>.
+  基于 Electron + xterm.js 构建，来源于 <a href="https://github.com/manaflow-ai/cmux">cmux</a> 的分支实现。
 </p>
 
 <p align="center">
@@ -12,305 +12,308 @@
 </p>
 
 <p align="center">
-  <img src="https://wmux.org/assets/wmux-full.png" alt="wmux — terminal multiplexer with live browser panel" width="900" />
+  <img src="https://wmux.org/assets/wmux-full.png" alt="wmux — 带浏览器面板的终端复用器" width="900" />
 </p>
 
-## Features
+## 特性
 
 <table>
 <tr>
 <td width="40%" valign="middle">
-<h3>Passive Claude Code integration</h3>
-wmux observes Claude Code without changing how it works. Auto-configured hooks in <code>~/.claude/settings.json</code> report agent and tool activity to the sidebar. A CDP proxy on <code>localhost:9222</code> lets Claude Code's native <code>chrome-devtools-mcp</code> plugin control the wmux browser panel directly. Zero setup — everything is auto-injected on startup.
+<h3>被动式 Claude Code 集成</h3>
+wmux 在不改变 Claude Code 工作方式的前提下观察其运行状态。会自动在 <code>~/.claude/settings.json</code> 中注入钩子，将 Agent 与工具活动上报到侧边栏。<code>localhost:9222</code> 上的 CDP 代理使 Claude Code 的原生 <code>chrome-devtools-mcp</code> 插件可直接控制 wmux 的浏览器面板。启动后会自动完成配置，几乎无需手工设置。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-sidebar.png" alt="Sidebar showing active Claude Code sessions" width="100%" />
+<img src="./docs/assets/wmux-sidebar.png" alt="显示活动 Claude Code 会话的侧边栏" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Live browser visibility</h3>
-When Claude Code browses the web, every action appears in the wmux browser panel in real-time. Navigate, click, type, take screenshots — Claude Code uses its own tools, wmux just shows what's happening. CDP proxy on <code>localhost:9222</code> bridges the connection transparently. Terminal and markdown links open in the panel too.
+<h3>实时浏览器可视化</h3>
+Claude Code 的网页操作会实时同步到 wmux 浏览器面板。页面跳转、点击、输入、截图都可见；Claude Code 仍按自身工具工作，wmux 只负责展示。面板同样会在终端与 Markdown 中打开链接。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-browser.png" alt="Built-in browser panel showing live web activity" width="100%" />
+<img src="./docs/assets/wmux-browser.png" alt="浏览器面板实时展示网页操作" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Activity indicators</h3>
-Sidebar dots show what each Claude Code session is doing at a glance. <b>Orange pulsing</b> = working. <b>Green</b> = done. <b>Red</b> = interrupted (Ctrl+C). Git branch, dirty state, working directory, open ports, and PR status update in real-time from shell integration hooks.
+<h3>活动指示器</h3>
+侧边栏的状态点会直观反映各会话状态：<b>橙色脉冲</b> 表示运行中，<b>绿色</b> 表示完成，<b>红色</b> 表示中断（Ctrl+C）。还会实时展示 Git 分支、脏文件状态、工作目录与 PR 状态。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-sidebar.png" alt="Sidebar with live activity indicators" width="100%" />
+<img src="./docs/assets/wmux-sidebar.png" alt="带实时活动指示器的侧边栏" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Notification center</h3>
-Panes get a blue ring and tabs light up when agents finish or need attention. Supports OSC 9/99/777, <code>wmux notify</code> CLI, and idle detection. Click the bell icon to see all pending notifications — jump to any with one click. Windows toast notifications and taskbar flash on alerts.
+<h3>通知中心</h3>
+Agent 完成或需要关注时会触发面板蓝色环及标签高亮，并支持 OSC 9 / 99 / 777、<code>wmux notify</code> 命令以及空闲检测。点击铃铛图标可查看待处理通知并一键跳转，支持 Windows Toast 与任务栏闪烁提醒。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-notification.png" alt="Notification panel listing agent completions" width="100%" />
+<img src="./docs/assets/wmux-notification.png" alt="显示未处理通知的面板" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Shell tab labels</h3>
-Terminal tabs display a shell-specific label — <b>PowerShell</b>, <b>bash</b>, <b>zsh</b>, or <b>cmd</b> — detected automatically from the spawned process. No configuration needed. Makes it easy to identify each pane at a glance when running multiple agents in different shells.
+<h3>Shell 标签</h3>
+终端标签会自动识别并显示当前 Shell（PowerShell、bash、zsh、cmd），无需额外配置。多 Agent 并行时可快速区分各面板。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-shell-labels.png" alt="Tab strip with shell-specific labels" width="100%" />
+<img src="./docs/assets/wmux-shell-labels.png" alt="带 Shell 标签的标签栏" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Custom themes &amp; per-pane colors</h3>
-450+ bundled Ghostty themes plus 17 curated wmux themes. Set a default color scheme in <code>~/.wmux/config.toml</code>, override per pane with <code>wmux split --color-scheme NAME</code>, or define custom named schemes directly in settings. Drag-imported from Windows Terminal or Ghostty configs.
+<h3>主题与配色</h3>
+内置 450+ Ghostty 主题与 17 套 wmux 主题。可在 <code>~/.wmux/config.toml</code> 配置全局默认配色，或在拆分时通过 <code>wmux split --color-scheme NAME</code> 覆盖；还可在设置中定义自定义命名方案，并可从 Windows Terminal / Ghostty 导入。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-themes.png" alt="Settings panel showing color scheme selection" width="100%" />
+<img src="./docs/assets/wmux-themes.png" alt="设置面板中的主题列表" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>wmux-orchestrator plugin</h3>
-Bundled Claude Code plugin that decomposes complex tasks into parallel agents coordinated through dependency-aware waves. Each agent runs in its own visible terminal pane with automated review and auto-fix. Activated via <code>/wmux:orchestrate</code> — no daemon, no config, no API keys.
+<h3>wmux-orchestrator 插件</h3>
+内置的 Claude Code 插件可将复杂任务拆解为并行执行的子 Agent，按依赖关系分阶段调度，每个 Agent 在独立 wmux 终端窗格中运行，并支持复核与自动修复。通过 <code>/wmux:orchestrate</code> 激活，无需守护进程和额外密钥。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-terminals.png" alt="Multiple agents running in split terminal panes" width="100%" />
+<img src="./docs/assets/wmux-terminals.png" alt="多个并行 Agent 运行在分屏终端中" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Vertical + horizontal splits</h3>
-Split any pane right or down. Resize dividers by dragging. Zoom a pane to full screen with <code>Ctrl+Shift+Enter</code>. Each pane supports multiple tabs — all rendered simultaneously with <code>visibility: hidden</code> so PTY sessions stay alive when switching. Workspace state is persisted across restarts.
+<h3>纵向 / 横向分屏</h3>
+可向右或向下拆分任意窗格，拖动分隔条调整比例。使用 <code>Ctrl+Shift+Enter</code> 可放大当前窗格。每个窗格支持多标签，全部标签通过 <code>visibility: hidden</code> 保持 PTY 存活，切换不会断连。工作区布局会持久化。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-terminals.png" alt="Horizontal and vertical pane splits" width="100%" />
+<img src="./docs/assets/wmux-terminals.png" alt="纵向与横向分屏布局" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Saved sessions</h3>
-Save your entire workspace layout (splits, working directories, browser URL, shell type) and restore it with one click. Click the save icon in the sidebar footer to name a session, the folder icon to load. On startup, wmux auto-loads your last session — no more manual <code>cd</code> and re-splitting every time.
+<h3>会话恢复</h3>
+一键保存并恢复整个工作区布局（分屏、工作目录、浏览器 URL、Shell 类型）。重启后会自动恢复上次会话，避免重复手工 <code>cd</code> 与分屏。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-sidebar.png" alt="Sidebar with session save and load controls" width="100%" />
+<img src="./docs/assets/wmux-sidebar.png" alt="侧边栏中的会话保存与加载" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>Clipboard image paste</h3>
-Copy a screenshot (Win+Shift+S, Print Screen, Snipping Tool) and press <code>Ctrl+V</code> in a wmux terminal. The image is saved to a temp file and the path is injected into the terminal — Claude Code reads it directly, like pasting on claude.ai but from any screenshot tool.
+<h3>剪贴板图片粘贴</h3>
+复制截图后在 wmux 终端中按 <code>Ctrl+V</code> 即可，图片会写入临时文件并注入路径，Claude Code 可直接读取，与网页端粘贴体验一致。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-full.png" alt="Image paste workflow via clipboard" width="100%" />
+<img src="./docs/assets/wmux-full.png" alt="截图粘贴流程" width="100%" />
 </td>
 </tr>
 <tr>
 <td width="40%" valign="middle">
-<h3>First-launch tutorial</h3>
-Interactive 7-step onboarding walks you through workspaces, splits, tabs, the browser panel, and notifications. Designed to get a new user productive in under 2 minutes. Reopen anytime from the <code>?</code> button in the title bar.
+<h3>首次启动教程</h3>
+7 步交互式引导覆盖工作区、分屏、标签、浏览器面板与通知，帮助新用户两分钟内上手。可随时通过标题栏 <code>?</code> 按钮重新打开。
 </td>
 <td width="60%">
-<img src="./docs/assets/wmux-tutorial.png" alt="First-launch tutorial overlay" width="100%" />
+<img src="./docs/assets/wmux-tutorial.png" alt="首次引导教学界面" width="100%" />
 </td>
 </tr>
 </table>
 
-- **Release update badge** — A badge in the title bar notifies you when a new GitHub release is available. Click to open the releases page. No auto-update, no background downloads.
-- **Clickable links** — URLs in terminal output and markdown panes open directly in the wmux browser panel. Ctrl+click or just click (configurable).
-- **Scriptable** — Named pipe server (`\\.\pipe\wmux`) with a JSON-RPC API. Create workspaces, split panes, send keystrokes, read terminal content, control the browser via CDP, and spawn sub-agent terminals programmatically.
-- **Windows native** — ConPTY for proper terminal emulation, Windows toast notifications, taskbar flash on alerts, native title bar overlay.
-- **Windows Terminal + Ghostty compatible** — Import your themes, fonts, and colors from Windows Terminal `settings.json` or `~/.config/ghostty/config`. Ships with 450+ bundled Ghostty themes.
-- **GPU-accelerated** — xterm.js with WebGL rendering for smooth terminal output at any speed.
+- **更新提示徽标**：标题栏徽标会提示新版本发布，点击可打开 Release 页面；未内置自动更新与后台下载。
+- **链接可点击**：终端和 Markdown 中的 URL 可直接在 wmux 浏览器面板打开，支持 Ctrl+点击或直接点击（可配置）。
+- **可编排**：基于命名管道（<code>\\.\pipe\wmux</code>）的 JSON-RPC API，可编程创建工作区、拆分窗格、发送按键、读取终端内容、控制浏览器与启动子 Agent。
+- **原生体验**：采用 ConPTY，支持 Windows 通知与任务栏闪烁，含原生标题栏覆盖层。
+- **兼容 Windows Terminal / Ghostty**：可导入主题、字体与配色；内置 450+ Ghostty 主题。
+- **GPU 加速**：xterm.js WebGL 渲染，终端大量输出也能保持流畅。
 
-## Install
+## 安装
 
-### Download (recommended)
+### 下载（推荐）
 
-Download [wmux-0.7.10-win-x64.zip](https://github.com/amirlehmam/wmux/releases/latest) from GitHub Releases, extract anywhere, and run `wmux.exe`. No installer, no code signing, no admin required.
+从 GitHub Releases 下载最新的 `wmux-*-win-x64.zip`，解压后直接运行 `wmux.exe`。无安装器、无代码签名、无需管理员权限。
 
-> **Note:** After extracting, right-click the zip before extracting and select **Unblock** if Windows SmartScreen warns about the executable.
+> **说明：** 若解压后出现 SmartScreen 提示，可先对 zip 右键选择 **Unblock**，再解压并运行。
 
-### From source
+### 从源码安装
 
 ```bash
 git clone https://github.com/amirlehmam/wmux.git
 cd wmux
 npm install
-npm run build:main
 npm run dev
 ```
 
-## Why wmux?
+如需生成本地打包产物：
 
-I run a lot of Claude Code sessions in parallel. On macOS there is [cmux](https://github.com/manaflow-ai/cmux), and it is exactly what I needed — vertical tabs with live metadata, notification rings when agents need attention, a scriptable browser, and a socket API for automation. But I work on Windows, and nothing like it existed.
+```bash
+npm run build
+```
 
-Windows Terminal has tabs but no notification system. You have to manually check each tab to see if an agent finished or is waiting for input. tmux works in WSL but loses all Windows integration. Electron terminals exist but none focus on the AI agent workflow.
+构建结果位于 `release/win-unpacked/wmux.exe`。注意：Electron 应用可执行文件名必须是 `wmux.exe`；`psmux.exe` 是系统全局可用的 psmux 会话工具，wmux 会在终端会话管理时调用它。
 
-So I built wmux — a visibility layer for AI coding agents. It doesn't replace Claude Code or change how it works. It passively observes and shows you what's happening. A CDP proxy on `localhost:9222` lets Claude Code's native browser tools control the wmux browser panel — you watch every page load, click, and form fill in real-time. Auto-configured hooks in `settings.json` report tool usage and agent activity to the sidebar. When a command finishes or is interrupted, the sidebar dot changes color and you get a notification.
+## 为什么是 wmux？
 
-The sidebar shows exactly what each agent is doing — the git branch it is on, the PR it opened, the ports it is listening on, and whether it needs your attention. Shell integration scripts inject themselves into PowerShell, CMD, and Bash sessions and report CWD changes, git branch switches, shell state, and PR status back to the sidebar via a named pipe in real time.
+我会同时运行很多 Claude Code 会话。macOS 上有 [cmux](https://github.com/manaflow-ai/cmux) 提供了我需要的纵向标签、实时元数据、通知提醒和脚本化浏览器能力；但在 Windows 上并没有对应方案。
 
-On first launch, wmux auto-configures itself: it injects a minimal informational block into `~/.claude/CLAUDE.md`, adds a `PostToolUse` hook to `~/.claude/settings.json`, installs the wmux-orchestrator Claude Code plugin, and starts a CDP proxy on `localhost:9222`. No API keys needed — everything runs through the user's existing Claude Code session.
+Windows Terminal 有标签页却没有完备通知机制，只能逐个检查；tmux 在 WSL 可用，但丢失原生 Windows 集成；现有 Electron 终端也缺乏 AI 协作场景的完整工作流。
 
-Everything is automatable through the `wmux` CLI or the named pipe directly. The protocol matches cmux, so tools built for one work with the other.
+因此我做了 wmux：它不替代 Claude Code，也不改变 Claude Code 的行为，只做可视化增强。`localhost:9222` 上的 CDP 代理让 Claude Code 浏览器工具直接驱动 wmux 浏览器面板，你可以实时看到每次页面加载、点击与表单输入。`settings.json` 中的自动注入 hooks 负责上报工具调用、分支、终端状态等到侧边栏。
+
+首次启动时，wmux 会自动配置 `~/.claude/CLAUDE.md` 与 `~/.claude/settings.json`，安装 wmux-orchestrator 插件，并启动 CDP 代理。无需额外 API Key，只要现有 Claude Code 会话即可。
+
+所有能力均可通过 `wmux` CLI 或命名管道自动化，CLI 协议与 cmux 兼容。
 
 ## wmux-orchestrator
 
-wmux ships with a bundled Claude Code plugin that enables parallel multi-agent orchestration. Activate it with `/wmux:orchestrate` in any Claude Code session.
+wmux 内置一个 Claude Code 插件，可并行协调多个可见终端中的 Agent。任意 Claude Code 会话输入 `/wmux:orchestrate` 即可激活。
 
-**What it does:**
-1. Analyzes your codebase and decomposes the task into independent work units
-2. Assigns each unit to a Claude Code agent in its own wmux terminal pane
-3. Runs agents in dependency-aware waves — later waves wait for earlier ones to finish
-4. A reviewer agent inspects the combined output and triggers auto-fixes if needed
+**功能：**
+1. 分析当前代码库并将任务拆解为独立工作单元
+2. 将每个单元分配给独立终端窗格中的 Claude Code Agent
+3. 按依赖关系分阶段执行，前置步骤完成后再推进下一波
+4. Reviewer Agent 审核汇总结果并触发自动修复
 
-**Plugin commands:**
+**插件命令：**
 ```
-/wmux:orchestrate   Decompose and run a complex task across parallel agents
+/wmux:orchestrate   将复杂任务自动分解并并行执行
 ```
 
-The plugin is auto-installed into `~/.claude/plugins/cache/` on wmux startup. It also works without wmux — agents fall back to native Claude Code subagents.
+插件会自动安装到 `~/.claude/plugins/cache/`（wmux 启动时）。也可单独使用： [plugin.wmux.org](https://plugin.wmux.org) · [github.com/amirlehmam/wmux-orchestrator](https://github.com/amirlehmam/wmux-orchestrator)
 
-Also published standalone: [plugin.wmux.org](https://plugin.wmux.org) · [github.com/amirlehmam/wmux-orchestrator](https://github.com/amirlehmam/wmux-orchestrator)
+## Shell 集成
 
-## Shell Integration
+wmux 会自动注入到以下 shell：
 
-wmux automatically injects integration scripts into your shells:
+- **PowerShell**：覆盖 `prompt`，上报 CWD、git 分支、脏文件状态与 shell 状态；借助 PSReadLine 的 preexec 在命令开始时触发；支持 45 秒轮询 `gh pr view`。
+- **CMD**：通过 `PROMPT` 中注入 OSC 9 上报 CWD。
+- **Bash/Zsh (WSL)**：使用 `PROMPT_COMMAND` / `precmd` + `preexec`，通过退出码 130 识别中断；通过临时文件桥接上报。
 
-- **PowerShell** — Overrides the `prompt` function. Reports CWD, git branch, dirty state, and shell state (working/done/interrupted) via `NamedPipeClientStream`. Preexec hook via PSReadLine detects when commands start. Background job polls `gh pr view` every 45 seconds.
-- **CMD** — Embeds OSC 9 escape sequences in the `PROMPT` variable for CWD reporting.
-- **Bash/Zsh (WSL)** — `PROMPT_COMMAND` / `precmd` + `preexec` hooks. Detects interrupts via exit code 130. Communicates via temp file bridge.
+共用环境变量：
 
-Environment variables available in all shells:
-
-| Variable | Description |
+| 变量 | 说明 |
 |----------|-------------|
-| `WMUX` | Always `1` inside wmux |
-| `WMUX_CLI` | Path to the wmux CLI script |
-| `WMUX_SURFACE_ID` | Current surface (tab) ID |
-| `WMUX_PIPE` | Named pipe path (`\\.\pipe\wmux`) |
+| `WMUX` | 终端内恒为 `1` |
+| `WMUX_CLI` | wmux CLI 脚本路径 |
+| `WMUX_SURFACE_ID` | 当前面板（surface）ID |
+| `WMUX_PIPE` | 命名管道路径（`\\.\pipe\wmux`） |
 
-## Keyboard Shortcuts
+## 快捷键
 
-All shortcuts are rebindable via Settings (`Ctrl+,`).
+所有快捷键可在设置中修改（`Ctrl+,`）。
 
-### Workspaces
+### 工作区
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+N | New workspace |
-| Ctrl+1–8 | Jump to workspace 1–8 |
-| Ctrl+9 | Jump to last workspace |
-| Ctrl+PageDown | Next workspace |
-| Ctrl+PageUp | Previous workspace |
-| Ctrl+Shift+W | Close workspace |
-| Ctrl+Shift+R | Rename workspace |
-| Ctrl+B | Toggle sidebar |
+| Ctrl+N | 新建工作区 |
+| Ctrl+1–8 | 跳转到 1–8 号工作区 |
+| Ctrl+9 | 跳转到最后一个工作区 |
+| Ctrl+PageDown | 下一个工作区 |
+| Ctrl+PageUp | 上一个工作区 |
+| Ctrl+Shift+W | 关闭当前工作区 |
+| Ctrl+Shift+R | 重命名工作区 |
+| Ctrl+B | 切换侧边栏 |
 
-### Surfaces (tabs)
+### 窗格（Surfaces，标签页）
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+T | New surface |
-| Ctrl+Shift+] | Next surface |
-| Ctrl+Shift+[ | Previous surface |
-| Alt+1–8 | Jump to surface 1–8 |
-| Ctrl+W | Close surface |
+| Ctrl+T | 新建 surface |
+| Ctrl+Shift+] | 下一个 surface |
+| Ctrl+Shift+[ | 上一个 surface |
+| Alt+1–8 | 跳转到 1–8 号 surface |
+| Ctrl+W | 关闭当前 surface |
 
-### Split Panes
+### 分屏窗格
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+D | Split right |
-| Ctrl+Shift+D | Split down |
-| Ctrl+Alt+Arrow | Focus pane directionally |
-| Ctrl+Shift+Enter | Toggle pane zoom |
-| Ctrl+Shift+H | Flash focused panel |
+| Ctrl+D | 向右拆分 |
+| Ctrl+Shift+D | 向下拆分 |
+| Ctrl+Alt+方向键 | 方向聚焦窗格 |
+| Ctrl+Shift+Enter | 切换当前窗格放大 |
+| Ctrl+Shift+H | 闪烁当前面板 |
 
-### Browser
+### 浏览器
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+Shift+I | Toggle browser panel |
-| Ctrl+Alt+I | Toggle Developer Tools |
-| Ctrl+Alt+C | Show JavaScript Console |
+| Ctrl+Shift+I | 开关浏览器面板 |
+| Ctrl+Alt+I | 开关开发者工具 |
+| Ctrl+Alt+C | 显示 JS 控制台 |
 
-### Notifications
+### 通知
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+Alt+N | Toggle notification panel |
-| Ctrl+Shift+U | Jump to latest unread |
+| Ctrl+Alt+N | 开关通知面板 |
+| Ctrl+Shift+U | 跳转到最新未读 |
 
-### Find
+### 查找
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+F | Find |
-| Enter / Shift+Enter | Find next / previous |
-| Escape | Close find bar |
+| Ctrl+F | 打开查找 |
+| Enter / Shift+Enter | 下一个 / 上一个 |
+| Escape | 关闭查找 |
 
-### Terminal
+### 终端
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+Shift+C | Copy |
-| Ctrl+Shift+V | Paste |
-| Ctrl+V | Paste (text or screenshot image path) |
-| Ctrl+C | Copy (with selection) / interrupt (without) |
-| Ctrl+= / Ctrl+- | Increase / decrease font size |
-| Ctrl+0 | Reset font size |
+| Ctrl+Shift+C | 复制 |
+| Ctrl+Shift+V | 粘贴 |
+| Ctrl+V | 粘贴（文本或截图路径） |
+| Ctrl+C | 有选中内容时复制 / 无选中时中断 |
+| Ctrl+= / Ctrl+- | 放大 / 缩小字体 |
+| Ctrl+0 | 重置字体大小 |
 
-### Window
+### 窗口
 
-| Shortcut | Action |
+| 快捷键 | 操作 |
 |----------|--------|
-| Ctrl+Shift+N | New window |
-| Ctrl+, | Settings |
-| Ctrl+Shift+P | Command palette |
+| Ctrl+Shift+N | 新建窗口 |
+| Ctrl+, | 设置 |
+| Ctrl+Shift+P | 命令面板 |
 
 ## CLI
 
-The `wmux` CLI communicates with the running app over the named pipe.
+`wmux` CLI 与运行中的应用通过命名管道通信：
 
 ```bash
-wmux ping                          # Check if wmux is running
-wmux notify "Build complete"       # Send a notification
-wmux new-workspace --title "API"   # Create a workspace
-wmux list-workspaces               # List all workspaces
-wmux split --right                 # Split focused pane
-wmux send "npm test"               # Send text to terminal
-wmux send-key Enter --ctrl         # Send keystroke
-wmux read-screen --lines 50        # Read terminal content
+wmux ping                          # 检查 wmux 是否在运行
+wmux notify "Build complete"       # 发送通知
+wmux new-workspace --title "API"   # 新建工作区
+wmux list-workspaces               # 列出所有工作区
+wmux split --right                 # 向右拆分当前窗格
+wmux send "npm test"               # 向终端发送文本
+wmux send-key Enter --ctrl         # 发送按键
+wmux read-screen --lines 50         # 读取终端内容
 
-# Browser (CDP-powered)
+# 浏览器（CDP）
 wmux browser open http://localhost:3000
-wmux browser snapshot              # Accessibility tree with @eN refs
-wmux browser click @e5             # Click element by ref
-wmux browser type @e3 "hello"      # Type into input by ref
-wmux browser fill @e3 "value"      # Set input value directly
-wmux browser screenshot            # Base64 PNG screenshot
-wmux browser eval "document.title" # Run JavaScript
+wmux browser snapshot              # 可访问树（含 @eN 引用）
+wmux browser click @e5             # 按引用点击元素
+wmux browser type @e3 "hello"      # 按引用输入文本
+wmux browser fill @e3 "value"      # 按引用设置输入值
+wmux browser screenshot            # 截图，返回 Base64 PNG
+wmux browser eval "document.title"  # 执行 JavaScript
 
-# Agents
+# Agent
 wmux agent spawn --cmd "claude --resume abc" --label "Research"
 wmux agent spawn-batch --json '[{"cmd":"claude","label":"Agent 1"},{"cmd":"claude","label":"Agent 2"}]'
-wmux agent list                    # List all agents
-wmux agent status <agent-id>       # Check agent status
-wmux agent kill <agent-id>         # Kill an agent
+wmux agent list                    # 列出所有 Agent
+wmux agent status <agent-id>       # 查看 Agent 状态
+wmux agent kill <agent-id>         # 结束 Agent
 
-wmux tree                          # Workspace / pane / surface hierarchy
+wmux tree                          # 工作区 / 窗格 / surface 层级
 ```
 
 ## Socket API
 
-Connect to `\\.\pipe\wmux` for programmatic control. Two protocols supported:
+连接 `\\.\pipe\wmux` 进行编程控制，支持两种协议：
 
-**V1** (text, used by shell integration):
+**V1**（文本，供 Shell 集成使用）：
 ```
 report_pwd <surface_id> <path>
 report_git_branch <surface_id> <branch> [dirty]
@@ -319,21 +322,21 @@ notify <surface_id> <text>
 ping
 ```
 
-**V2** (JSON-RPC, used by CLI and automation):
+**V2**（JSON-RPC，供 CLI 与自动化使用）：
 ```json
 {"method": "workspace.create", "params": {"title": "Agent 1"}}
 {"method": "workspace.list", "params": {}}
 {"method": "surface.send_text", "params": {"id": "surf-...", "text": "npm test\n"}}
 {"method": "surface.read_text", "params": {"id": "surf-...", "lines": 50}}
 
-// Browser control (CDP-powered)
+// 浏览器控制（CDP）
 {"method": "browser.navigate", "params": {"url": "http://localhost:3000"}}
 {"method": "browser.snapshot", "params": {}}
 {"method": "browser.click", "params": {"ref": "@e5"}}
 {"method": "browser.screenshot", "params": {"fullPage": true}}
 {"method": "browser.eval", "params": {"js": "document.title"}}
 
-// Agent spawning
+// Agent 管理
 {"method": "agent.spawn", "params": {"cmd": "claude --resume abc", "label": "Research"}}
 {"method": "agent.spawn_batch", "params": {"agents": [...], "strategy": "distribute"}}
 {"method": "agent.list", "params": {}}
@@ -342,77 +345,77 @@ ping
 {"method": "system.tree", "params": {}}
 ```
 
-## Session Restore
+## 会话恢复
 
-On relaunch, wmux restores:
+重启后 wmux 会恢复：
 
-- Window position and size
-- Workspace layout (titles, colors, pin state)
-- Split pane structure (directions and ratios)
-- Working directory per terminal
-- Default shell per terminal
-- Browser panel URLs
-- Active workspace and pane selection
+- 窗口位置与大小
+- 工作区布局（标题、配色、置顶状态）
+- 分屏结构（方向和比例）
+- 各终端工作目录
+- 每个终端默认 shell
+- 浏览器面板 URL
+- 当前活动工作区与窗格
 
-wmux does **not** restore live process state. Active Claude Code, tmux, or vim sessions are not resumed after restart. Shells are respawned fresh in the saved working directories.
+wmux 不会恢复正在运行的进程状态。重启后不会继续保留 Claude Code、tmux、vim 等会话，终端会在对应目录下重新拉起 shell。
 
-## Config
+## 配置
 
-### Terminal themes
+### 终端主题
 
-Set a global default color scheme in `~/.wmux/config.toml`:
+在 `~/.wmux/config.toml` 配置全局默认主题：
 
 ```toml
 [terminal]
 color_scheme = "Dracula"
 ```
 
-Override per pane at split time or on the fly:
+在拆分时或运行时覆盖面板主题：
 
 ```bash
 wmux split --color-scheme "Tokyo Night"
 wmux set-color-scheme "Solarized Dark"
 ```
 
-Define custom named schemes in Settings > Terminal > Custom Schemes.
+在设置面板中也可定义自定义命名主题（Terminal > Custom Schemes）。
 
-### Import from existing terminal configs
+### 从现有终端配置导入
 
-wmux reads configuration from:
+wmux 支持从以下配置导入：
 
-1. **Windows Terminal** — `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_...\LocalState\settings.json`
+1. **Windows Terminal** — `%LOCALAPPDATA%\\Packages\\Microsoft.WindowsTerminal_...\\LocalState\\settings.json`
 2. **Ghostty** — `~/.config/ghostty/config`
 
-Import either via Settings > Terminal > Import. Extracts font family, font size, color scheme, and palette. Default theme is Dracula. 450+ Ghostty themes bundled.
+在设置页（Settings → Terminal → Import）导入，可提取字体、字号、配色方案与调色板。默认主题为 Dracula，内置 450+ Ghostty 主题。
 
-## Architecture
+## 架构
 
-Two-process Electron model. Main process manages PTY spawning (node-pty/ConPTY), named pipe server, CDP browser bridge, port scanning, git/PR polling, notifications, Claude Code context injection, session persistence, and multi-window lifecycle. Renderer process runs React/Zustand with xterm.js (WebGL), recursive split pane layout, and the sidebar.
+采用 Electron 双进程模型。主进程负责 PTY 启动（node-pty/ConPTY）、命名管道、CDP 桥接、端口扫描、git/PR 轮询、通知、Claude Code 上下文注入、会话持久化与窗口生命周期。渲染进程负责 React/Zustand 与 xterm.js（WebGL）界面，以及递归式分屏、侧边栏等核心 UI。
 
 ```
 src/
-  main/               # Electron main process
-  renderer/           # React app (sidebar, splits, terminals, browser)
-  preload/            # contextBridge API
-  cli/                # wmux CLI tool
-  shared/             # Types shared between main and renderer
-  shell-integration/  # PowerShell, CMD, WSL scripts
+  main/               # Electron 主进程
+  renderer/           # React 界面（侧边栏、分屏、终端、浏览器）
+  preload/            # contextBridge API（window.wmux）
+  cli/                # wmux CLI
+  shared/             # 主进程与渲染进程共享类型
+  shell-integration/  # PowerShell、CMD、bash/zsh 集成脚本
 
 resources/
-  wmux-orchestrator/  # Bundled Claude Code plugin (auto-installed on startup)
-  themes/             # Ghostty + wmux theme files
-  sounds/             # Notification sounds
+  wmux-orchestrator/  # 内置 Claude Code 插件（启动时自动安装）
+  themes/             # Ghostty 与 wmux 主题
+  sounds/             # 通知音效
 ```
 
-## Based on cmux
+## 基于 cmux
 
-wmux is a Windows reimplementation of [cmux](https://github.com/manaflow-ai/cmux), the macOS terminal for multitasking. Same design, same socket protocol, same philosophy. Tools built for cmux's API work with wmux.
+wmux 是 cmux 在 Windows 的重实现。设计理念、socket 协议与使用方式基本一致，许多面向 cmux 的工具也可直接用于 wmux。
 
-## Contributing
+## 贡献
 
-- [GitHub Issues](https://github.com/amirlehmam/wmux/issues) — bug reports and feature requests
-- [GitHub Discussions](https://github.com/amirlehmam/wmux/discussions) — questions and ideas
+- [GitHub Issues](https://github.com/amirlehmam/wmux/issues) — 报告缺陷与建议新功能
+- [GitHub Discussions](https://github.com/amirlehmam/wmux/discussions) — 提问与讨论
 
-## License
+## 许可证
 
-wmux is open source under [AGPL-3.0-or-later](LICENSE).
+wmux 使用 [AGPL-3.0-or-later](LICENSE) 开源许可。
