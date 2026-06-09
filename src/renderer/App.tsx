@@ -31,13 +31,6 @@ function findLeafFromTree(node: SplitNode, paneId: PaneId): (SplitNode & { type:
   return findLeafFromTree(node.children[0], paneId) || findLeafFromTree(node.children[1], paneId);
 }
 
-/** Find the bottom-most pane in the split tree (follows last child of vertical splits) */
-function findBottomPane(node: SplitNode): PaneId | null {
-  if (node.type === 'leaf') return node.paneId;
-  if (node.direction === 'vertical') return findBottomPane(node.children[1]);
-  return findBottomPane(node.children[0]);
-}
-
 export default function App() {
   const {
     workspaces,
@@ -357,8 +350,7 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Listen for Claude Code hook events — tie to active workspace
-  // Also auto-create diff surface when Edit/Write tools fire
+  // Listen for Claude Code hook events — tie to active workspace.
   useEffect(() => {
     if (!window.wmux?.hook?.onEvent) return;
     const unsub = window.wmux.hook.onEvent((event: any) => {
@@ -379,21 +371,6 @@ export default function App() {
           },
         };
       });
-
-      // Auto-open diff tab in the BOTTOM pane when Claude edits/writes files
-      if (event.tool === 'Edit' || event.tool === 'Write') {
-        const ws = state.workspaces.find(w => w.id === wsId);
-        if (ws) {
-          const bottomPaneId = findBottomPane(ws.splitTree);
-          if (bottomPaneId) {
-            const bottomLeaf = findLeafFromTree(ws.splitTree, bottomPaneId);
-            // Only add diff tab if bottom pane doesn't already have one
-            if (bottomLeaf && !bottomLeaf.surfaces.some(s => s.type === 'diff')) {
-              state.addSurface(wsId, bottomPaneId, 'diff');
-            }
-          }
-        }
-      }
     });
     return unsub;
   }, []);
