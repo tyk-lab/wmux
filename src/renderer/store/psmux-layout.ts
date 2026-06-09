@@ -1,27 +1,49 @@
-import { v4 as uuid } from 'uuid';
 import { PaneId, SplitNode, SurfaceId, SurfaceRef, WorkspaceInfo } from '../../shared/types';
+import { v4 as uuid } from 'uuid';
 
 export const DEFAULT_PSMUX_COMMAND = 'psmux.exe';
 export const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
+export const PSMUX_SESSION_NAME_PREFIX = 'psmux-';
 
 export function isValidPsmuxSessionName(sessionName: string | undefined): sessionName is string {
   return !!sessionName && PSMUX_SESSION_NAME_RE.test(sessionName);
 }
 
-export function createPsmuxSessionName(): string {
-  return `psmux-${uuid()}`;
+export function createPsmuxSessionName(usedSessionNames: Iterable<string> = []): string {
+  const usedNames = new Set(usedSessionNames);
+  for (let index = 1; index < Number.MAX_SAFE_INTEGER; index += 1) {
+    const candidate = `${PSMUX_SESSION_NAME_PREFIX}${index}`;
+    if (!usedNames.has(candidate)) return candidate;
+  }
+  return `${PSMUX_SESSION_NAME_PREFIX}${uuid()}`;
 }
 
 export function createPsmuxStartupCommand(sessionName: string): string {
   return `${DEFAULT_PSMUX_COMMAND} new -s ${sessionName}`;
 }
 
-export function withPsmuxTerminalDefaults(surface: SurfaceRef): SurfaceRef {
+function reservePsmuxSessionName(surface: SurfaceRef, usedSessionNames: Set<string>): string {
+  const existingName = surface.psmuxSessionName;
+  if (isValidPsmuxSessionName(existingName) && !usedSessionNames.has(existingName)) {
+    usedSessionNames.add(existingName);
+    return existingName;
+  }
+
+  const sessionName = createPsmuxSessionName(usedSessionNames);
+  usedSessionNames.add(sessionName);
+  return sessionName;
+}
+
+export function withPsmuxTerminalDefaults(
+  surface: SurfaceRef,
+  usedSessionNames: Iterable<string> | Set<string> = [],
+): SurfaceRef {
   if (surface.type !== 'terminal') return surface;
 
-  const psmuxSessionName = isValidPsmuxSessionName(surface.psmuxSessionName)
-    ? surface.psmuxSessionName
-    : createPsmuxSessionName();
+  const usedNames = usedSessionNames instanceof Set
+    ? usedSessionNames
+    : new Set(usedSessionNames);
+  const psmuxSessionName = reservePsmuxSessionName(surface, usedNames);
   return {
     ...surface,
     customTitle: surface.customTitle ?? 'psmux',
@@ -30,15 +52,16 @@ export function withPsmuxTerminalDefaults(surface: SurfaceRef): SurfaceRef {
   };
 }
 
-export function createPsmuxTerminalSurface(): SurfaceRef {
+export function createPsmuxTerminalSurface(usedSessionNames: Iterable<string> | Set<string> = []): SurfaceRef {
   const id = `surf-${uuid()}` as SurfaceId;
   return withPsmuxTerminalDefaults({
     id,
     type: 'terminal',
-  });
+  }, usedSessionNames);
 }
 
-export function buildDefaultPsmuxSplitTree(): SplitNode {
+export function buildDefaultPsmuxSplitTree(usedSessionNames: Iterable<string> = []): SplitNode {
+  const usedNames = new Set(usedSessionNames);
   return {
     type: 'branch',
     direction: 'horizontal',
@@ -47,13 +70,13 @@ export function buildDefaultPsmuxSplitTree(): SplitNode {
       {
         type: 'leaf',
         paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [createPsmuxTerminalSurface()],
+        surfaces: [createPsmuxTerminalSurface(usedNames)],
         activeSurfaceIndex: 0,
       },
       {
         type: 'leaf',
         paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [createPsmuxTerminalSurface()],
+        surfaces: [createPsmuxTerminalSurface(usedNames)],
         activeSurfaceIndex: 0,
       },
     ],
@@ -86,9 +109,20 @@ export function getPsmuxSessionNames(tree: SplitNode): string[] {
   ];
 }
 
+export function getPsmuxSessionNamesFromWorkspaces(
+  workspaces: Array<Pick<WorkspaceInfo, 'id' | 'splitTree'>>,
+  excludeWorkspaceId?: string,
+): string[] {
+  return workspaces
+    .filter((workspace) => workspace.id !== excludeWorkspaceId)
+    .flatMap((workspace) => getPsmuxSessionNames(workspace.splitTree))
+    .filter(isValidPsmuxSessionName);
+}
+
 export function normalizePsmuxWorkspaceConfigs(
   workspaces: Array<Partial<WorkspaceInfo>>,
 ): Array<Partial<WorkspaceInfo>> {
+  const usedNames = new Set<string>();
   return workspaces.map((workspace, index) => {
     const title = workspace.title?.trim();
     const isLegacyDefaultTitle = !title || /^(Session|Workspace)\s+\d+$/i.test(title);
@@ -96,18 +130,25 @@ export function normalizePsmuxWorkspaceConfigs(
       ...workspace,
       title: isLegacyDefaultTitle ? `psmux ${index + 1}` : workspace.title,
       splitTree: workspace.splitTree
-        ? applyPsmuxStartupToTerminalSurfaces(workspace.splitTree)
+        ? applyPsmuxStartupToTerminalSurfaces(workspace.splitTree, usedNames)
         : workspace.splitTree,
     };
   });
 }
 
-export function applyPsmuxStartupToTerminalSurfaces(tree: SplitNode): SplitNode {
+export function applyPsmuxStartupToTerminalSurfaces(
+  tree: SplitNode,
+  usedSessionNames: Iterable<string> | Set<string> = [],
+): SplitNode {
+  const usedNames = usedSessionNames instanceof Set
+    ? usedSessionNames
+    : new Set(usedSessionNames);
+
   if (tree.type === 'leaf') {
     return {
       ...tree,
       surfaces: tree.surfaces.map((surface) => {
-        return withPsmuxTerminalDefaults(surface);
+        return withPsmuxTerminalDefaults(surface, usedNames);
       }),
     };
   }
@@ -115,8 +156,8 @@ export function applyPsmuxStartupToTerminalSurfaces(tree: SplitNode): SplitNode 
   return {
     ...tree,
     children: [
-      applyPsmuxStartupToTerminalSurfaces(tree.children[0]),
-      applyPsmuxStartupToTerminalSurfaces(tree.children[1]),
+      applyPsmuxStartupToTerminalSurfaces(tree.children[0], usedNames),
+      applyPsmuxStartupToTerminalSurfaces(tree.children[1], usedNames),
     ],
   };
 }

@@ -2,7 +2,11 @@ import { useEffect } from 'react';
 import { useStore } from '../store';
 import { ShortcutBinding, ShortcutAction } from '../store/settings-slice';
 import { splitNode, removeLeaf, getAllPaneIds, findLeaf } from '../store/split-utils';
-import { applyPsmuxStartupToTerminalSurfaces, buildDefaultPsmuxSplitTree } from '../store/psmux-layout';
+import {
+  applyPsmuxStartupToTerminalSurfaces,
+  buildDefaultPsmuxSplitTree,
+  getPsmuxSessionNamesFromWorkspaces,
+} from '../store/psmux-layout';
 import { PaneId, SplitNode } from '../../shared/types';
 import { v4 as uuid } from 'uuid';
 import { killPsmuxSurface, killPsmuxTree, killPsmuxTreeSync } from '../utils/psmux-cleanup';
@@ -175,10 +179,11 @@ export function useKeyboardShortcuts(
 
       switch (action) {
         case 'newWorkspace': {
-          const wsCount = useStore.getState().workspaces.length;
+          const currentState = useStore.getState();
+          const wsCount = currentState.workspaces.length;
           createWorkspace({
             title: `psmux ${wsCount + 1}`,
-            splitTree: buildDefaultPsmuxSplitTree(),
+            splitTree: buildDefaultPsmuxSplitTree(getPsmuxSessionNamesFromWorkspaces(currentState.workspaces)),
           });
           break;
         }
@@ -248,6 +253,7 @@ export function useKeyboardShortcuts(
           const newPaneId: PaneId = `pane-${uuid()}` as PaneId;
           const newTree = applyPsmuxStartupToTerminalSurfaces(
             splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'horizontal'),
+            getPsmuxSessionNamesFromWorkspaces(state.workspaces, activeWorkspaceId),
           );
           updateSplitTree(activeWorkspaceId, newTree);
           break;
@@ -260,6 +266,7 @@ export function useKeyboardShortcuts(
           const newPaneId: PaneId = `pane-${uuid()}` as PaneId;
           const newTree = applyPsmuxStartupToTerminalSurfaces(
             splitNode(ws.splitTree, focusedPaneId, newPaneId, 'terminal', 'vertical'),
+            getPsmuxSessionNamesFromWorkspaces(state.workspaces, activeWorkspaceId),
           );
           updateSplitTree(activeWorkspaceId, newTree);
           break;

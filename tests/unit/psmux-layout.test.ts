@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SplitNode } from '../../src/shared/types';
 import {
   buildDefaultPsmuxSplitTree,
+  createPsmuxSessionName,
   createPsmuxStartupCommand,
   getPsmuxSessionNames,
   getTerminalSurfaceIds,
@@ -28,17 +29,24 @@ describe('psmux layout', () => {
     expect(tree.children[0].surfaces[0]).toMatchObject({
       customTitle: 'psmux',
     });
-    expect(tree.children[0].surfaces[0].psmuxSessionName).toMatch(/^psmux-/);
+    expect(tree.children[0].surfaces[0].psmuxSessionName).toBe('psmux-1');
     expect(tree.children[0].surfaces[0].startupCommand).toBe(
       createPsmuxStartupCommand(tree.children[0].surfaces[0].psmuxSessionName as string),
     );
     expect(tree.children[1].surfaces[0]).toMatchObject({
       customTitle: 'psmux',
     });
-    expect(tree.children[1].surfaces[0].psmuxSessionName).toMatch(/^psmux-/);
+    expect(tree.children[1].surfaces[0].psmuxSessionName).toBe('psmux-2');
     expect(tree.children[1].surfaces[0].startupCommand).toBe(
       createPsmuxStartupCommand(tree.children[1].surfaces[0].psmuxSessionName as string),
     );
+  });
+
+  it('uses the next short psmux session name after existing names', () => {
+    expect(createPsmuxSessionName(['psmux-1', 'psmux-2'])).toBe('psmux-3');
+
+    const tree = buildDefaultPsmuxSplitTree(['psmux-1']);
+    expect(getPsmuxSessionNames(tree)).toEqual(['psmux-2', 'psmux-3']);
   });
 
   it('collects only terminal surfaces for psmux deletion cleanup', () => {
@@ -112,7 +120,7 @@ describe('psmux layout', () => {
     expect(firstTree.surfaces[0]).toMatchObject({
       customTitle: 'psmux',
     });
-    expect(firstTree.surfaces[0].psmuxSessionName).toMatch(/^psmux-[0-9a-f-]{36}$/);
+    expect(firstTree.surfaces[0].psmuxSessionName).toBe('psmux-1');
     expect(firstTree.surfaces[0].startupCommand).toBe(
       createPsmuxStartupCommand(firstTree.surfaces[0].psmuxSessionName as string),
     );
@@ -156,7 +164,7 @@ describe('psmux layout', () => {
     const tree = normalized[0].splitTree;
     expect(tree?.type).toBe('leaf');
     if (tree?.type !== 'leaf') return;
-    expect(tree.surfaces[0].psmuxSessionName).toMatch(/^psmux-[0-9a-f-]{36}$/);
+    expect(tree.surfaces[0].psmuxSessionName).toBe('psmux-1');
     expect(tree.surfaces[0].startupCommand).not.toContain('work;calc');
   });
 });

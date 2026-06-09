@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow, clipboard, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { execFile, execFileSync } from 'child_process';
 import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId } from '../shared/types';
 import { observePtyData } from './claude-observer';
@@ -24,6 +25,7 @@ const notificationManager = new NotificationManager();
 const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
 const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
+const PSMUX_SHORT_SESSION_NAME_RE = /^psmux-(\d+)$/u;
 const ownedPsmuxSessions = new Map<string, { webContentsId: number; surfaceId?: SurfaceId }>();
 type PsmuxKillTarget = string | { sessionName: string; surfaceId?: SurfaceId };
 
@@ -43,6 +45,49 @@ function isPsmuxSessionOwner(sessionName: string, webContentsId: number, surface
   const owner = ownedPsmuxSessions.get(sessionName);
   if (!owner || owner.webContentsId !== webContentsId) return false;
   return !surfaceId || owner.surfaceId === surfaceId;
+}
+
+function listPsmuxSessionNamesSync(): { ok: boolean; names: Set<string> } {
+  try {
+    const stdout = execFileSync('psmux.exe', ['ls'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return {
+      ok: true,
+      names: new Set(
+        stdout
+          .split(/\r?\n/u)
+          .map((line) => line.match(/^([^:\s]+):/u)?.[1])
+          .filter((name): name is string => !!name && PSMUX_SESSION_NAME_RE.test(name)),
+      ),
+    };
+  } catch {
+    return { ok: false, names: new Set() };
+  }
+}
+
+function allocatePsmuxSessionName(requestedName: string | undefined): string | undefined {
+  if (!requestedName || !PSMUX_SESSION_NAME_RE.test(requestedName)) return undefined;
+
+  const listedSessions = listPsmuxSessionNamesSync();
+  if (!listedSessions.ok) return `psmux-${crypto.randomUUID()}`;
+
+  const usedNames = listedSessions.names;
+  for (const ownedName of ownedPsmuxSessions.keys()) {
+    usedNames.add(ownedName);
+  }
+  if (!usedNames.has(requestedName)) return requestedName;
+
+  const match = requestedName.match(PSMUX_SHORT_SESSION_NAME_RE);
+  const startIndex = match ? Number(match[1]) + 1 : 1;
+  for (let index = startIndex; index < Number.MAX_SAFE_INTEGER; index += 1) {
+    const candidate = `psmux-${index}`;
+    if (!usedNames.has(candidate)) return candidate;
+  }
+  return requestedName;
 }
 
 async function killPsmuxSession(
@@ -172,13 +217,15 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
 
   ipcMain.handle(IPC_CHANNELS.PTY_CREATE, async (_event, options) => {
     try {
+      const psmuxSessionName = allocatePsmuxSessionName(options.psmuxSessionName);
       const resolvedOptions = {
         ...options,
         cwd: options.cwd || process.env.USERPROFILE || 'C:\\',
+        ...(psmuxSessionName ? { psmuxSessionName } : {}),
       };
       const created = ptyManager.create(resolvedOptions);
-      if (typeof options.psmuxSessionName === 'string' && PSMUX_SESSION_NAME_RE.test(options.psmuxSessionName)) {
-        ownedPsmuxSessions.set(options.psmuxSessionName, {
+      if (psmuxSessionName) {
+        ownedPsmuxSessions.set(psmuxSessionName, {
           webContentsId: _event.sender.id,
           surfaceId: options.surfaceId,
         });
@@ -200,7 +247,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         unsubData();
         unsubExit();
       });
-      return created;
+      return psmuxSessionName ? { ...created, psmuxSessionName } : created;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to create terminal: ${msg}`);

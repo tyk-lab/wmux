@@ -5,6 +5,6 @@ interface CopyModeProps {
 export default function CopyMode({ active }: CopyModeProps) {
   if (!active) return null;
   return (
-    <div className="copy-mode-indicator">COPY MODE — Arrow keys to move, Shift+arrows to select, Enter to copy, Esc to exit</div>
+    <div className="copy-mode-indicator">psmux copy mode - mouse wheel / arrows to scroll, Esc to exit</div>
   );
 }

@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { WorkspaceId, PaneId, SurfaceId, SurfaceRef, SurfaceType } from '../../shared/types';
 import { findLeaf, removeLeaf, splitNode } from './split-utils';
 import { WorkspaceSlice } from './workspace-slice';
-import { withPsmuxTerminalDefaults } from './psmux-layout';
+import { getPsmuxSessionNamesFromWorkspaces, withPsmuxTerminalDefaults } from './psmux-layout';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.customTitle ? { customTitle: options.customTitle } : {}),
     };
     const newSurface = type === 'terminal'
-      ? withPsmuxTerminalDefaults(newSurfaceBase)
+      ? withPsmuxTerminalDefaults(newSurfaceBase, getPsmuxSessionNamesFromWorkspaces(workspaces))
       : newSurfaceBase;
     const newSurfaces = [...leaf.surfaces, newSurface];
     const newActiveSurfaceIndex = newSurfaces.length - 1;

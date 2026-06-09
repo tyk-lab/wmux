@@ -3,7 +3,11 @@ import { useStore } from './store';
 import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf } from './store/split-utils';
-import { buildDefaultPsmuxSplitTree, normalizePsmuxWorkspaceConfigs } from './store/psmux-layout';
+import {
+  buildDefaultPsmuxSplitTree,
+  getPsmuxSessionNamesFromWorkspaces,
+  normalizePsmuxWorkspaceConfigs,
+} from './store/psmux-layout';
 import { killPsmuxTree, killPsmuxTreeSync } from './utils/psmux-cleanup';
 import Sidebar from './components/Sidebar/Sidebar';
 import Titlebar from './components/Titlebar/Titlebar';
@@ -144,9 +148,10 @@ export default function App() {
       } catch { /* notification subscription is optional in non-Electron contexts */ }
       // No saved session — create default workspace
       if (useStore.getState().workspaces.length === 0) {
+        const state = useStore.getState();
         createWorkspace({
           title: 'psmux 1',
-          splitTree: buildDefaultPsmuxSplitTree(),
+          splitTree: buildDefaultPsmuxSplitTree(getPsmuxSessionNamesFromWorkspaces(state.workspaces)),
         });
       }
     })();
@@ -469,10 +474,11 @@ export default function App() {
   }, []);
 
   const handleCreateWorkspace = useCallback(() => {
-    const wsCount = useStore.getState().workspaces.length;
+    const state = useStore.getState();
+    const wsCount = state.workspaces.length;
     const newId = createWorkspace({
       title: `psmux ${wsCount + 1}`,
-      splitTree: buildDefaultPsmuxSplitTree(),
+      splitTree: buildDefaultPsmuxSplitTree(getPsmuxSessionNamesFromWorkspaces(state.workspaces)),
     });
     selectWorkspace(newId);
   }, [createWorkspace, selectWorkspace]);

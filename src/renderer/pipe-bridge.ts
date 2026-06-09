@@ -4,7 +4,11 @@
  */
 import { useStore } from './store';
 import { splitNode, removeLeaf, getAllPaneIds, findLeaf, buildGridLayout } from './store/split-utils';
-import { applyPsmuxStartupToTerminalSurfaces, buildDefaultPsmuxSplitTree } from './store/psmux-layout';
+import {
+  applyPsmuxStartupToTerminalSurfaces,
+  buildDefaultPsmuxSplitTree,
+  getPsmuxSessionNamesFromWorkspaces,
+} from './store/psmux-layout';
 import { killPsmuxSurface, killPsmuxSurfaces, killPsmuxTree } from './utils/psmux-cleanup';
 import { PaneId, SurfaceId, WorkspaceId, SurfaceType } from '../shared/types';
 import { v4 as uuid } from 'uuid';
@@ -20,7 +24,7 @@ export function initPipeBridge(): void {
       title: params?.title ?? `psmux ${store.workspaces.length + 1}`,
       shell: params?.shell,
       cwd: params?.cwd,
-      splitTree: buildDefaultPsmuxSplitTree(),
+      splitTree: buildDefaultPsmuxSplitTree(getPsmuxSessionNamesFromWorkspaces(store.workspaces)),
     });
     return { workspaceId: id };
   };
@@ -72,6 +76,7 @@ export function initPipeBridge(): void {
 
     const newTree = applyPsmuxStartupToTerminalSurfaces(
       splitNode(ws.splitTree, targetPaneId, newPaneId, surfaceType, direction),
+      getPsmuxSessionNamesFromWorkspaces(store.workspaces, wsId),
     );
     store.updateSplitTree(wsId, newTree);
 
@@ -132,7 +137,10 @@ export function initPipeBridge(): void {
 
     const surfaceType = (params.type || 'terminal') as SurfaceType;
     const { tree, newPaneIds } = buildGridLayout(ws.splitTree, anchorPaneId, count, surfaceType);
-    const newTree = applyPsmuxStartupToTerminalSurfaces(tree);
+    const newTree = applyPsmuxStartupToTerminalSurfaces(
+      tree,
+      getPsmuxSessionNamesFromWorkspaces(store.workspaces, wsId),
+    );
     store.updateSplitTree(wsId, newTree);
 
     // Resolve surface IDs for the newly-created panes so callers can target them directly.

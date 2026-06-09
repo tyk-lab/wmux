@@ -17,6 +17,7 @@ interface TerminalPaneProps {
   showFindBar?: boolean;
   onFindBarClose?: () => void;
   copyModeActive?: boolean;
+  onCopyModeActiveChange?: (active: boolean) => void;
 }
 
 export default function TerminalPane({
@@ -31,6 +32,7 @@ export default function TerminalPane({
   showFindBar = false,
   onFindBarClose,
   copyModeActive = false,
+  onCopyModeActiveChange,
 }: TerminalPaneProps) {
   const { terminalRef, searchAddonRef } = useTerminal({
     surfaceId,
@@ -41,6 +43,8 @@ export default function TerminalPane({
     colorScheme,
     startupCommand,
     psmuxSessionName,
+    copyModeActive,
+    onCopyModeActiveChange,
   });
 
   const [_lastQuery, setLastQuery] = useState('');

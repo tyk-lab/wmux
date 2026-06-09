@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { PaneId, SplitNode, SurfaceId, WorkspaceId } from '../../../shared/types';
 import { removeLeaf, splitNode } from '../../store/split-utils';
-import { applyPsmuxStartupToTerminalSurfaces } from '../../store/psmux-layout';
+import { applyPsmuxStartupToTerminalSurfaces, getPsmuxSessionNamesFromWorkspaces } from '../../store/psmux-layout';
 import { killPsmuxSurface, killPsmuxSurfaces } from '../../utils/psmux-cleanup';
 import TerminalPane from '../Terminal/TerminalPane';
 import BrowserPane from '../Browser/BrowserPane';
@@ -46,7 +46,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
   const [findBarVisible, setFindBarVisible] = useState(false);
 
   // ─── Copy mode state ──────────────────────────────────────────────────────
-  const [copyModeActive, setCopyModeActive] = useState(false);
+  const [copyModeSurfaceId, setCopyModeSurfaceId] = useState<SurfaceId | null>(null);
 
   // ─── Drag active state ────────────────────────────────────────────────────
   const [dragActive, setDragActive] = useState(false);
@@ -82,6 +82,14 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
 
   }, [isFocused]);
 
+  useEffect(() => {
+    if (!copyModeSurfaceId) return;
+    const activeSurface = surfaces[activeSurfaceIndex];
+    if (!isFocused || activeSurface?.id !== copyModeSurfaceId) {
+      setCopyModeSurfaceId(null);
+    }
+  }, [isFocused, activeSurfaceIndex, surfaces, copyModeSurfaceId]);
+
   // Keyboard shortcut listeners for find (Ctrl+F) and copy mode (Ctrl+Alt+[)
   useEffect(() => {
     if (!isFocused) return;
@@ -112,20 +120,23 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
 
       if (matchesCopyMode) {
         e.preventDefault();
-        setCopyModeActive((v) => !v);
+        const activeSurface = surfaces[activeSurfaceIndex];
+        if (activeSurface?.type === 'terminal') {
+          setCopyModeSurfaceId((current) => current === activeSurface.id ? null : activeSurface.id);
+        }
         return;
       }
 
       // Escape exits copy mode
-      if (e.key === 'Escape' && copyModeActive) {
-        setCopyModeActive(false);
+      if (e.key === 'Escape' && copyModeSurfaceId) {
+        setCopyModeSurfaceId(null);
         return;
       }
     }
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isFocused, shortcuts, copyModeActive]);
+  }, [isFocused, shortcuts, copyModeSurfaceId, surfaces, activeSurfaceIndex]);
 
   // ─── Global drag tracking ─────────────────────────────────────────────────
   useEffect(() => {
@@ -191,7 +202,14 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}
               onFindBarClose={handleFindBarClose}
-              copyModeActive={copyModeActive && isFocused && isActive}
+              copyModeActive={copyModeSurfaceId === surface.id && isFocused && isActive}
+              onCopyModeActiveChange={(active) => {
+                if (active) {
+                  setCopyModeSurfaceId(surface.id);
+                  return;
+                }
+                setCopyModeSurfaceId((current) => current === surface.id ? null : current);
+              }}
             />
           )}
           {surface.type === 'browser' && <BrowserPane surfaceId={surface.id} />}
@@ -243,6 +261,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
       const newPaneId = `pane-${crypto.randomUUID()}` as PaneId;
       const newTree = applyPsmuxStartupToTerminalSurfaces(
         splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'horizontal'),
+        getPsmuxSessionNamesFromWorkspaces(workspaces, activeWorkspaceId),
       );
       updateSplitTree(activeWorkspaceId, newTree);
     }
@@ -256,6 +275,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
       const newPaneId = `pane-${crypto.randomUUID()}` as PaneId;
       const newTree = applyPsmuxStartupToTerminalSurfaces(
         splitNode(ws.splitTree, paneId, newPaneId, 'terminal', 'vertical'),
+        getPsmuxSessionNamesFromWorkspaces(workspaces, activeWorkspaceId),
       );
       updateSplitTree(activeWorkspaceId, newTree);
     }

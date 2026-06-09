@@ -11,6 +11,7 @@ import { SplitNode, ThemeConfig } from '../../shared/types';
 import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { forceSyncCursorRendering } from '../utils/force-sync-cursor';
+import { createPsmuxStartupCommand } from '../store/psmux-layout';
 import '@xterm/xterm/css/xterm.css';
 
 declare global {
@@ -36,6 +37,8 @@ interface UseTerminalOptions {
   /** Command sent once after a newly-created PTY is attached. Existing PTYs are only reattached. */
   startupCommand?: string;
   psmuxSessionName?: string;
+  copyModeActive?: boolean;
+  onCopyModeActiveChange?: (active: boolean) => void;
 }
 
 interface UseTerminalResult {
@@ -67,6 +70,20 @@ function setResolvedShellForSurface(surfaceId: string | undefined, resolvedShell
   const location = findSurfaceLocation(workspace.splitTree, surfaceId);
   if (!location) return;
   state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, { shell: resolvedShell });
+}
+
+function setResolvedPsmuxSessionForSurface(surfaceId: string | undefined, sessionName: string | undefined): void {
+  if (!surfaceId || !sessionName) return;
+  const state = useStore.getState();
+  const workspace = state.workspaces.find((ws) => treeHasSurface(ws.splitTree, surfaceId));
+  if (!workspace) return;
+  const location = findSurfaceLocation(workspace.splitTree, surfaceId);
+  if (!location) return;
+  state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, {
+    customTitle: sessionName,
+    psmuxSessionName: sessionName,
+    startupCommand: createPsmuxStartupCommand(sessionName),
+  });
 }
 
 /**
@@ -135,6 +152,8 @@ export function useTerminal({
   colorScheme,
   startupCommand,
   psmuxSessionName,
+  copyModeActive = false,
+  onCopyModeActiveChange,
 }: UseTerminalOptions = {}): UseTerminalResult {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -142,11 +161,37 @@ export function useTerminal({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const ptyIdRef = useRef<string | null>(null);
   const cleanupFnsRef = useRef<Array<() => void>>([]);
+  const psmuxSessionNameRef = useRef<string | undefined>(psmuxSessionName);
+  const psmuxCopyModeActiveRef = useRef(false);
+  const onCopyModeActiveChangeRef = useRef<((active: boolean) => void) | undefined>(onCopyModeActiveChange);
 
   // Subscribe to relevant settings so changes apply live.
   const prefs = useStore((s) => s.terminalPrefs);
   const schemeName = resolveSchemeName(colorScheme, prefs.theme);
   const userScheme = prefs.userColorSchemes?.[schemeName];
+
+  useEffect(() => {
+    psmuxSessionNameRef.current = psmuxSessionName;
+  }, [psmuxSessionName]);
+
+  useEffect(() => {
+    onCopyModeActiveChangeRef.current = onCopyModeActiveChange;
+  }, [onCopyModeActiveChange]);
+
+  useEffect(() => {
+    if (!psmuxSessionNameRef.current || !ptyIdRef.current) return;
+
+    if (copyModeActive && !psmuxCopyModeActiveRef.current) {
+      window.wmux.pty.write(ptyIdRef.current, '\x02[');
+      psmuxCopyModeActiveRef.current = true;
+      return;
+    }
+
+    if (!copyModeActive && psmuxCopyModeActiveRef.current) {
+      window.wmux.pty.write(ptyIdRef.current, '\x1b');
+      psmuxCopyModeActiveRef.current = false;
+    }
+  }, [copyModeActive]);
 
   const fit = () => {
     if (fitAddonRef.current) {
@@ -202,6 +247,45 @@ export function useTerminal({
     terminal.loadAddon(imageAddon);
     terminal.unicode.activeVersion = '11';
 
+    const writeToPty = (data: string): boolean => {
+      if (!ptyIdRef.current) return false;
+      window.wmux.pty.write(ptyIdRef.current, data);
+      return true;
+    };
+
+    const setPsmuxCopyModeActive = (active: boolean): void => {
+      if (psmuxCopyModeActiveRef.current === active) return;
+      psmuxCopyModeActiveRef.current = active;
+      onCopyModeActiveChangeRef.current?.(active);
+    };
+
+    const enterPsmuxCopyMode = (): boolean => {
+      if (!psmuxSessionNameRef.current) return false;
+      if (!psmuxCopyModeActiveRef.current) {
+        if (!writeToPty('\x02[')) return false;
+        setPsmuxCopyModeActive(true);
+      }
+      return true;
+    };
+
+    const wheelDeltaToLines = (ev: WheelEvent): number => {
+      if (ev.deltaMode === 1 /* DOM_DELTA_LINE */) return ev.deltaY;
+      if (ev.deltaMode === 2 /* DOM_DELTA_PAGE */) return ev.deltaY * (terminal.rows || 24);
+      return ev.deltaY / 17;
+    };
+
+    const scrollPsmuxCopyMode = (ev: WheelEvent): boolean => {
+      const amount = wheelDeltaToLines(ev);
+      const lines = Math.sign(amount) * Math.max(1, Math.round(Math.abs(amount)));
+      if (lines === 0) return false;
+      if (lines > 0 && !psmuxCopyModeActiveRef.current) return false;
+      if (!enterPsmuxCopyMode()) return false;
+
+      const sequence = lines < 0 ? '\x1b[A' : '\x1b[B';
+      writeToPty(sequence.repeat(Math.min(12, Math.abs(lines))));
+      return true;
+    };
+
     // Open terminal in the DOM
     terminal.open(terminalRef.current);
 
@@ -222,19 +306,19 @@ export function useTerminal({
       // a no-op. If we still preventDefault/stopPropagation we also suppress
       // xterm's native behavior of forwarding the wheel to the app (mouse-wheel
       // reports when mouse tracking is on, otherwise arrow-key sequences), which
-      // is the ONLY way those apps scroll their own content. So on the alt
-      // buffer we fall through and let xterm handle it.
-      if (terminal.buffer.active.type !== 'normal') return;
+      // is the ONLY way those apps scroll their own content. psmux itself also
+      // uses the alt buffer, so upward wheel input has to enter psmux copy-mode
+      // before it can reveal pane history.
+      if (terminal.buffer.active.type !== 'normal') {
+        if (scrollPsmuxCopyMode(ev)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
-      let amount: number;
-      if (ev.deltaMode === 1 /* DOM_DELTA_LINE */) {
-        amount = ev.deltaY;
-      } else if (ev.deltaMode === 2 /* DOM_DELTA_PAGE */) {
-        amount = ev.deltaY * (terminal.rows || 24);
-      } else {
-        amount = ev.deltaY / 17;
-      }
+      const amount = wheelDeltaToLines(ev);
       const lines = Math.sign(amount) * Math.max(1, Math.round(Math.abs(amount)));
       if (lines !== 0) terminal.scrollLines(lines);
     };
@@ -352,6 +436,13 @@ export function useTerminal({
 
     // Attach custom key handler for Ctrl+C and Ctrl+V (image paste)
     terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.type === 'keydown' && psmuxCopyModeActiveRef.current) {
+        const key = event.key.toLowerCase();
+        if (event.key === 'Escape' || event.key === 'Enter' || key === 'q' || (event.ctrlKey && key === 'c')) {
+          setPsmuxCopyModeActive(false);
+        }
+      }
+
       if (event.type === 'keydown' && event.ctrlKey && event.key === 'c') {
         const selection = terminal.getSelection();
         if (selection) {
@@ -418,8 +509,10 @@ export function useTerminal({
       }
     };
 
-    const runStartupCommand = (id: string) => {
-      const command = startupCommand?.trim();
+    const runStartupCommand = (id: string, resolvedPsmuxSessionName?: string) => {
+      const command = (resolvedPsmuxSessionName
+        ? createPsmuxStartupCommand(resolvedPsmuxSessionName)
+        : startupCommand)?.trim();
       if (!command) return;
       window.wmux.pty.write(id, `${command}\r`);
     };
@@ -436,10 +529,13 @@ export function useTerminal({
         } else {
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
           window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, surfaceId, psmuxSessionName })
-            .then((created: { id: string; shell: string }) => {
+            .then((created: { id: string; shell: string; psmuxSessionName?: string }) => {
               setResolvedShellForSurface(surfaceId, created.shell);
+              const resolvedPsmuxSessionName = created.psmuxSessionName ?? psmuxSessionName;
+              psmuxSessionNameRef.current = resolvedPsmuxSessionName;
+              setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName);
               attachToPty(created.id);
-              runStartupCommand(created.id);
+              runStartupCommand(created.id, resolvedPsmuxSessionName);
             })
             .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
         }
@@ -447,10 +543,13 @@ export function useTerminal({
     } else {
       // No surfaceId hint — always create new PTY
       window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, psmuxSessionName })
-        .then((created: { id: string; shell: string }) => {
+        .then((created: { id: string; shell: string; psmuxSessionName?: string }) => {
           setResolvedShellForSurface(surfaceId, created.shell);
+          const resolvedPsmuxSessionName = created.psmuxSessionName ?? psmuxSessionName;
+          psmuxSessionNameRef.current = resolvedPsmuxSessionName;
+          setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName);
           attachToPty(created.id);
-          runStartupCommand(created.id);
+          runStartupCommand(created.id, resolvedPsmuxSessionName);
         })
         .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
     }
@@ -493,6 +592,11 @@ export function useTerminal({
       // Do NOT kill the PTY here — only explicit close (handleCloseSurface)
       // kills PTYs. This allows tree restructuring (closing an adjacent pane)
       // to re-mount this component without losing the terminal session.
+      if (psmuxCopyModeActiveRef.current && ptyIdRef.current) {
+        window.wmux.pty.write(ptyIdRef.current, '\x1b');
+        psmuxCopyModeActiveRef.current = false;
+        onCopyModeActiveChangeRef.current?.(false);
+      }
 
       // Dispose terminal
       terminal.dispose();
