@@ -1,0 +1,22 @@
+# Claude — wmux 内置，呼应 Claude Code 暖色调（赤陶橙 + 暖灰褐）
+background = #262320
+foreground = #e8e2da
+cursor-color = #d97757
+selection-background = #4a443c
+selection-foreground = #f5efe7
+palette = 0=#3a352f
+palette = 1=#e07a5f
+palette = 2=#a3b18a
+palette = 3=#e6b450
+palette = 4=#7f9bb3
+palette = 5=#c08eaf
+palette = 6=#88b0a6
+palette = 7=#d8cfc4
+palette = 8=#6b6258
+palette = 9=#f0967a
+palette = 10=#b9c79e
+palette = 11=#f0c674
+palette = 12=#9bb4cc
+palette = 13=#d4a5c4
+palette = 14=#9fc7bc
+palette = 15=#f5efe7

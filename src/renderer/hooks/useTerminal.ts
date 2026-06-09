@@ -232,12 +232,14 @@ export function useTerminal({
     // Create terminal instance. Theme/font are applied from settings on creation
     // AND kept in sync via a later effect, so live edits repaint without recreation.
     const terminal = new Terminal({
+      // 首帧占位主题（随后由 buildXtermTheme 按实际方案覆盖）；
+      // 取 Codex 冷底，避免加载默认方案前闪现不一致背景。
       theme: {
-        background: '#272822',
-        foreground: '#fdfff1',
-        cursor: '#c0c1b5',
-        selectionBackground: '#57584f',
-        selectionForeground: '#fdfff1',
+        background: '#0d1117',
+        foreground: '#c9d1d9',
+        cursor: '#10a37f',
+        selectionBackground: '#2d333b',
+        selectionForeground: '#e6edf3',
       },
       fontFamily: prefs.fontFamily || "'Cascadia Mono', 'Consolas', monospace",
       fontSize: prefs.fontSize || 13,

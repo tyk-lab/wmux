@@ -1,0 +1,22 @@
+# Codex — wmux 内置，呼应 OpenAI Codex CLI 冷调中性深色（近黑蓝灰底 + 青绿点缀）
+background = #0d1117
+foreground = #c9d1d9
+cursor-color = #10a37f
+selection-background = #2d333b
+selection-foreground = #e6edf3
+palette = 0=#1b1f24
+palette = 1=#f47067
+palette = 2=#10a37f
+palette = 3=#d6b36a
+palette = 4=#6cb6ff
+palette = 5=#b083f0
+palette = 6=#39c5cf
+palette = 7=#b1bac4
+palette = 8=#545d68
+palette = 9=#ff8b82
+palette = 10=#3fdd9a
+palette = 11=#e3c08d
+palette = 12=#96cdff
+palette = 13=#c8a6ff
+palette = 14=#56d4dd
+palette = 15=#e6edf3
