@@ -247,7 +247,10 @@ async function killPsmuxSession(
     return { ok: false, error: `Refusing to kill psmux session from another surface: ${sessionName}` };
   }
   const result = await runPsmux(['kill-session', '-t', sessionName]);
-  if (result.ok) ownedPsmuxSessions.delete(sessionName);
+  if (result.ok) {
+    ownedPsmuxSessions.delete(sessionName);
+    if (surfaceId) ptyManager.detach(surfaceId);
+  }
   return result;
 }
 
@@ -303,6 +306,7 @@ function killPsmuxSessionSync(
       stdio: 'ignore',
     });
     ownedPsmuxSessions.delete(sessionName);
+    if (surfaceId) ptyManager.detach(surfaceId);
     return { ok: true };
   } catch (err: unknown) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -343,13 +347,14 @@ function killPsmuxSessionsSync(
 }
 
 export function killOwnedPsmuxSessionsSync(): void {
-  for (const sessionName of Array.from(ownedPsmuxSessions.keys())) {
+  for (const [sessionName, owner] of Array.from(ownedPsmuxSessions.entries())) {
     try {
       execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
         windowsHide: true,
         timeout: 5000,
         stdio: 'ignore',
       });
+      if (owner.surfaceId) ptyManager.detach(owner.surfaceId);
     } catch {
       // Session may already have exited or psmux may be unavailable during shutdown.
     }
@@ -439,7 +444,10 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   ipcMain.on(IPC_CHANNELS.PTY_KILL, (_event, id: SurfaceId) => {
     const sessionName = findOwnedPsmuxSessionBySurface(_event.sender.id, id);
     if (sessionName) {
-      void killPsmuxSession(sessionName, _event.sender.id, id);
+      void killPsmuxSession(sessionName, _event.sender.id, id).then((result) => {
+        if (!result.ok) ptyManager.kill(id);
+      });
+      return;
     }
     ptyManager.kill(id);
   });

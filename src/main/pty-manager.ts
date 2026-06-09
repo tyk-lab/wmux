@@ -297,24 +297,37 @@ export class PtyManager {
   kill(id: SurfaceId): void {
     const entry = this.ptys.get(id);
     if (entry) {
-      entry.alive = false; // signals any in-flight chunked write to stop
-      if (entry.flushTimer !== null) {
-        clearTimeout(entry.flushTimer);
-        entry.flushTimer = null;
-      }
+      this.release(id, entry);
       try {
         entry.pty.kill();
       } catch {
         // Process may already be dead
       }
-      this.ptys.delete(id);
     }
   }
 
   killAll(): void {
-    for (const id of this.ptys.keys()) {
+    for (const id of Array.from(this.ptys.keys())) {
       this.kill(id);
     }
+  }
+
+  detach(id: SurfaceId): void {
+    const entry = this.ptys.get(id);
+    if (entry) {
+      this.release(id, entry);
+    }
+  }
+
+  private release(id: SurfaceId, entry: PtyEntry): void {
+    entry.alive = false; // signals any in-flight chunked write to stop
+    if (entry.flushTimer !== null) {
+      clearTimeout(entry.flushTimer);
+      entry.flushTimer = null;
+    }
+    entry.dataListeners.clear();
+    entry.exitListeners.clear();
+    this.ptys.delete(id);
   }
 
   has(id: SurfaceId): boolean {

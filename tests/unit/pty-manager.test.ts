@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { PtyManager } from '../../src/main/pty-manager';
+import { SurfaceId } from '../../src/shared/types';
 
 const TEST_SHELL = 'cmd.exe';
 const TEST_ENV = Object.fromEntries(
@@ -24,7 +25,7 @@ describe('PtyManager', () => {
 
   it('create returns a surf- prefixed SurfaceId', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -34,7 +35,7 @@ describe('PtyManager', () => {
 
   it('has() returns true after create and false after kill', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -46,7 +47,7 @@ describe('PtyManager', () => {
 
   it('write does not throw', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -56,7 +57,7 @@ describe('PtyManager', () => {
 
   it('write of a large payload (>1KB) does not throw and is processed via the chunked queue', async () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -71,7 +72,7 @@ describe('PtyManager', () => {
 
   it('resize does not throw', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -81,7 +82,7 @@ describe('PtyManager', () => {
 
   it('receives data from PTY after writing', async () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -103,7 +104,7 @@ describe('PtyManager', () => {
 
   it('kill removes the PTY from the manager', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -115,7 +116,7 @@ describe('PtyManager', () => {
 
   it('getPid returns a numeric PID', () => {
     const manager = makeManager();
-    const id = manager.create({
+    const { id } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -127,12 +128,12 @@ describe('PtyManager', () => {
 
   it('killAll removes all PTYs', () => {
     const manager = makeManager();
-    const id1 = manager.create({
+    const { id: id1 } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
     });
-    const id2 = manager.create({
+    const { id: id2 } = manager.create({
       shell: TEST_SHELL,
       cwd: process.env.USERPROFILE || 'C:\\',
       env: TEST_ENV,
@@ -140,5 +141,61 @@ describe('PtyManager', () => {
     manager.killAll();
     expect(manager.has(id1)).toBe(false);
     expect(manager.has(id2)).toBe(false);
+  });
+
+  it('detach releases a PTY without calling native kill', () => {
+    const manager = makeManager();
+    const id = 'surf-test' as SurfaceId;
+    const nativeKill = vi.fn();
+    const timer = setTimeout(() => {}, 1000);
+    const entry = {
+      pty: { kill: nativeKill },
+      shell: TEST_SHELL,
+      dataListeners: new Set([vi.fn()]),
+      exitListeners: new Set([vi.fn()]),
+      writeChain: Promise.resolve(),
+      pendingChunks: 0,
+      alive: true,
+      outBuffer: [],
+      outBufferLen: 0,
+      flushTimer: timer,
+    };
+    const internals = manager as unknown as { ptys: Map<SurfaceId, typeof entry> };
+    internals.ptys.set(id, entry);
+
+    manager.detach(id);
+
+    expect(nativeKill).not.toHaveBeenCalled();
+    expect(manager.has(id)).toBe(false);
+    expect(entry.alive).toBe(false);
+    expect(entry.dataListeners.size).toBe(0);
+    expect(entry.exitListeners.size).toBe(0);
+    expect(entry.flushTimer).toBeNull();
+  });
+
+  it('kill releases a PTY and calls native kill once', () => {
+    const manager = makeManager();
+    const id = 'surf-test' as SurfaceId;
+    const nativeKill = vi.fn();
+    const entry = {
+      pty: { kill: nativeKill },
+      shell: TEST_SHELL,
+      dataListeners: new Set<() => void>(),
+      exitListeners: new Set<() => void>(),
+      writeChain: Promise.resolve(),
+      pendingChunks: 0,
+      alive: true,
+      outBuffer: [],
+      outBufferLen: 0,
+      flushTimer: null,
+    };
+    const internals = manager as unknown as { ptys: Map<SurfaceId, typeof entry> };
+    internals.ptys.set(id, entry);
+
+    manager.kill(id);
+
+    expect(nativeKill).toHaveBeenCalledTimes(1);
+    expect(manager.has(id)).toBe(false);
+    expect(entry.alive).toBe(false);
   });
 });

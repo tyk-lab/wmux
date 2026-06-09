@@ -993,6 +993,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   killOwnedPsmuxSessionsSync();
+  ptyManager.killAll();
   pipeServer.stop();
   cdpProxy.stop();
   portScanner.stop();
