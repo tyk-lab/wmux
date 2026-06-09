@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SplitNode } from '../../src/shared/types';
 import {
   buildDefaultPsmuxSplitTree,
+  createPsmuxDisplayName,
   createPsmuxSessionName,
   createPsmuxStartupCommand,
   getPsmuxSessionNames,
@@ -10,7 +11,9 @@ import {
 } from '../../src/renderer/store/psmux-layout';
 
 describe('psmux layout', () => {
-  it('builds the default two-terminal horizontal split', () => {
+  const shortNameRe = /^wmx-[a-f0-9]{6}$/u;
+
+  it('builds the default two-terminal horizontal psmux tree', () => {
     const tree = buildDefaultPsmuxSplitTree();
 
     expect(tree.type).toBe('branch');
@@ -26,27 +29,35 @@ describe('psmux layout', () => {
     expect(new Set(surfaceIds).size).toBe(2);
 
     if (tree.children[0].type !== 'leaf' || tree.children[1].type !== 'leaf') return;
+    const leftName = tree.children[0].surfaces[0].psmuxSessionName as string;
+    const rightName = tree.children[1].surfaces[0].psmuxSessionName as string;
+    expect(leftName).toMatch(shortNameRe);
+    expect(rightName).toMatch(shortNameRe);
+    expect(leftName).not.toBe(rightName);
     expect(tree.children[0].surfaces[0]).toMatchObject({
-      customTitle: 'psmux',
+      customTitle: createPsmuxDisplayName(leftName),
     });
-    expect(tree.children[0].surfaces[0].psmuxSessionName).toBe('psmux-1');
     expect(tree.children[0].surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(tree.children[0].surfaces[0].psmuxSessionName as string),
+      createPsmuxStartupCommand(leftName),
     );
     expect(tree.children[1].surfaces[0]).toMatchObject({
-      customTitle: 'psmux',
+      customTitle: createPsmuxDisplayName(rightName),
     });
-    expect(tree.children[1].surfaces[0].psmuxSessionName).toBe('psmux-2');
     expect(tree.children[1].surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(tree.children[1].surfaces[0].psmuxSessionName as string),
+      createPsmuxStartupCommand(rightName),
     );
   });
 
-  it('uses the next short psmux session name after existing names', () => {
-    expect(createPsmuxSessionName(['psmux-1', 'psmux-2'])).toBe('psmux-3');
+  it('uses a short unique psmux session name after existing names', () => {
+    const sessionName = createPsmuxSessionName(['wmx-aaaaaa']);
+    expect(sessionName).toMatch(shortNameRe);
+    expect(sessionName).not.toBe('wmx-aaaaaa');
 
-    const tree = buildDefaultPsmuxSplitTree(['psmux-1']);
-    expect(getPsmuxSessionNames(tree)).toEqual(['psmux-2', 'psmux-3']);
+    const tree = buildDefaultPsmuxSplitTree(['wmx-aaaaaa']);
+    const sessionNames = getPsmuxSessionNames(tree);
+    expect(sessionNames).toHaveLength(2);
+    expect(sessionNames.every((name) => shortNameRe.test(name))).toBe(true);
+    expect(new Set([...sessionNames, 'wmx-aaaaaa']).size).toBe(3);
   });
 
   it('collects only terminal surfaces for psmux deletion cleanup', () => {
@@ -117,13 +128,15 @@ describe('psmux layout', () => {
     const firstTree = normalized[0].splitTree;
     expect(firstTree?.type).toBe('leaf');
     if (firstTree?.type !== 'leaf') return;
+    const sessionName = firstTree.surfaces[0].psmuxSessionName as string;
+    expect(sessionName).toMatch(shortNameRe);
     expect(firstTree.surfaces[0]).toMatchObject({
-      customTitle: 'psmux',
+      customTitle: createPsmuxDisplayName(sessionName),
     });
-    expect(firstTree.surfaces[0].psmuxSessionName).toBe('psmux-1');
     expect(firstTree.surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(firstTree.surfaces[0].psmuxSessionName as string),
+      createPsmuxStartupCommand(sessionName, 'attach'),
     );
+    expect(firstTree.surfaces[0].psmuxAttachExisting).toBe(true);
   });
 
   it('preserves safe custom psmux session names during normalization', () => {
@@ -144,7 +157,8 @@ describe('psmux layout', () => {
     if (tree?.type !== 'leaf') return;
     expect(tree.surfaces[0]).toMatchObject({
       psmuxSessionName: 'work-api',
-      startupCommand: 'psmux.exe new -s work-api',
+      psmuxAttachExisting: true,
+      startupCommand: 'psmux.exe attach -t work-api',
     });
   });
 
@@ -164,7 +178,8 @@ describe('psmux layout', () => {
     const tree = normalized[0].splitTree;
     expect(tree?.type).toBe('leaf');
     if (tree?.type !== 'leaf') return;
-    expect(tree.surfaces[0].psmuxSessionName).toBe('psmux-1');
+    expect(tree.surfaces[0].psmuxSessionName).toMatch(shortNameRe);
+    expect(tree.surfaces[0].psmuxAttachExisting).toBe(true);
     expect(tree.surfaces[0].startupCommand).not.toContain('work;calc');
   });
 });

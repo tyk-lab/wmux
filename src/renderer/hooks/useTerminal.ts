@@ -7,11 +7,11 @@ import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { ImageAddon } from '@xterm/addon-image';
 import { useStore } from '../store';
-import { SplitNode, ThemeConfig } from '../../shared/types';
+import { SplitNode, SurfaceRef, ThemeConfig } from '../../shared/types';
 import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { forceSyncCursorRendering } from '../utils/force-sync-cursor';
-import { createPsmuxStartupCommand } from '../store/psmux-layout';
+import { createPsmuxDisplayName, createPsmuxStartupCommand, PsmuxStartupMode } from '../store/psmux-layout';
 import '@xterm/xterm/css/xterm.css';
 
 declare global {
@@ -37,6 +37,7 @@ interface UseTerminalOptions {
   /** Command sent once after a newly-created PTY is attached. Existing PTYs are only reattached. */
   startupCommand?: string;
   psmuxSessionName?: string;
+  psmuxAttachExisting?: boolean;
   copyModeActive?: boolean;
   onCopyModeActiveChange?: (active: boolean) => void;
 }
@@ -46,6 +47,14 @@ interface UseTerminalResult {
   fit: () => void;
   xtermRef: React.RefObject<Terminal | null>;
   searchAddonRef: React.RefObject<SearchAddon | null>;
+}
+
+interface CreatedPty {
+  id: string;
+  shell: string;
+  ptyReused?: boolean;
+  psmuxSessionName?: string;
+  psmuxStartupMode?: PsmuxStartupMode;
 }
 
 function treeHasSurface(node: SplitNode, surfaceId: string): boolean {
@@ -72,18 +81,31 @@ function setResolvedShellForSurface(surfaceId: string | undefined, resolvedShell
   state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, { shell: resolvedShell });
 }
 
-function setResolvedPsmuxSessionForSurface(surfaceId: string | undefined, sessionName: string | undefined): void {
+function setResolvedPsmuxSessionForSurface(
+  surfaceId: string | undefined,
+  sessionName: string | undefined,
+  startupMode: PsmuxStartupMode = 'new',
+): void {
   if (!surfaceId || !sessionName) return;
   const state = useStore.getState();
   const workspace = state.workspaces.find((ws) => treeHasSurface(ws.splitTree, surfaceId));
   if (!workspace) return;
   const location = findSurfaceLocation(workspace.splitTree, surfaceId);
   if (!location) return;
+  const surface = findSurface(workspace.splitTree, surfaceId);
   state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, {
-    customTitle: sessionName,
+    customTitle: surface?.customTitle ?? createPsmuxDisplayName(sessionName),
     psmuxSessionName: sessionName,
-    startupCommand: createPsmuxStartupCommand(sessionName),
+    psmuxAttachExisting: startupMode === 'attach',
+    startupCommand: createPsmuxStartupCommand(sessionName, startupMode),
   });
+}
+
+function findSurface(node: SplitNode, surfaceId: string): SurfaceRef | undefined {
+  if (node.type === 'leaf') {
+    return node.surfaces.find((surface) => surface.id === surfaceId);
+  }
+  return findSurface(node.children[0], surfaceId) || findSurface(node.children[1], surfaceId);
 }
 
 /**
@@ -152,6 +174,7 @@ export function useTerminal({
   colorScheme,
   startupCommand,
   psmuxSessionName,
+  psmuxAttachExisting,
   copyModeActive = false,
   onCopyModeActiveChange,
 }: UseTerminalOptions = {}): UseTerminalResult {
@@ -509,9 +532,13 @@ export function useTerminal({
       }
     };
 
-    const runStartupCommand = (id: string, resolvedPsmuxSessionName?: string) => {
+    const runStartupCommand = (
+      id: string,
+      resolvedPsmuxSessionName?: string,
+      startupMode: PsmuxStartupMode = 'new',
+    ) => {
       const command = (resolvedPsmuxSessionName
-        ? createPsmuxStartupCommand(resolvedPsmuxSessionName)
+        ? createPsmuxStartupCommand(resolvedPsmuxSessionName, startupMode)
         : startupCommand)?.trim();
       if (!command) return;
       window.wmux.pty.write(id, `${command}\r`);
@@ -528,28 +555,43 @@ export function useTerminal({
           attachToPty(surfaceId!);
         } else {
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
-          window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, surfaceId, psmuxSessionName })
-            .then((created: { id: string; shell: string; psmuxSessionName?: string }) => {
+          window.wmux.pty.create({
+            shell: effectiveShell,
+            cwd: cwd ?? '',
+            env: {},
+            surfaceId,
+            psmuxSessionName,
+            psmuxAttachExisting,
+          })
+            .then((created: CreatedPty) => {
               setResolvedShellForSurface(surfaceId, created.shell);
               const resolvedPsmuxSessionName = created.psmuxSessionName ?? psmuxSessionName;
+              const startupMode = created.psmuxStartupMode ?? (psmuxAttachExisting ? 'attach' : 'new');
               psmuxSessionNameRef.current = resolvedPsmuxSessionName;
-              setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName);
+              setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName, startupMode);
               attachToPty(created.id);
-              runStartupCommand(created.id, resolvedPsmuxSessionName);
+              if (!created.ptyReused) runStartupCommand(created.id, resolvedPsmuxSessionName, startupMode);
             })
             .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
         }
       });
     } else {
       // No surfaceId hint — always create new PTY
-      window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, psmuxSessionName })
-        .then((created: { id: string; shell: string; psmuxSessionName?: string }) => {
+      window.wmux.pty.create({
+        shell: effectiveShell,
+        cwd: cwd ?? '',
+        env: {},
+        psmuxSessionName,
+        psmuxAttachExisting,
+      })
+        .then((created: CreatedPty) => {
           setResolvedShellForSurface(surfaceId, created.shell);
           const resolvedPsmuxSessionName = created.psmuxSessionName ?? psmuxSessionName;
+          const startupMode = created.psmuxStartupMode ?? (psmuxAttachExisting ? 'attach' : 'new');
           psmuxSessionNameRef.current = resolvedPsmuxSessionName;
-          setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName);
+          setResolvedPsmuxSessionForSurface(surfaceId, resolvedPsmuxSessionName, startupMode);
           attachToPty(created.id);
-          runStartupCommand(created.id, resolvedPsmuxSessionName);
+          if (!created.ptyReused) runStartupCommand(created.id, resolvedPsmuxSessionName, startupMode);
         })
         .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
     }

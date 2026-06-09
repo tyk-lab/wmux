@@ -30,7 +30,7 @@ function collectPsmuxTerminals(tree: SplitNode, items: PsmuxTerminalListItem[] =
         paneId: tree.paneId,
         surface,
         surfaceIndex,
-        title: surface.psmuxSessionName ?? `psmux ${items.length + 1}`,
+        title: surface.psmuxSessionName ?? surface.customTitle ?? `psmux ${items.length + 1}`,
       });
     });
     return items;

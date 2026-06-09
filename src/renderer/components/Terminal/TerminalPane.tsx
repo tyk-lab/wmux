@@ -12,6 +12,7 @@ interface TerminalPaneProps {
   colorScheme?: string;
   startupCommand?: string;
   psmuxSessionName?: string;
+  psmuxAttachExisting?: boolean;
   focused?: boolean;
   visible?: boolean;
   showFindBar?: boolean;
@@ -27,6 +28,7 @@ export default function TerminalPane({
   colorScheme,
   startupCommand,
   psmuxSessionName,
+  psmuxAttachExisting,
   focused = true,
   visible = true,
   showFindBar = false,
@@ -43,6 +45,7 @@ export default function TerminalPane({
     colorScheme,
     startupCommand,
     psmuxSessionName,
+    psmuxAttachExisting,
     copyModeActive,
     onCopyModeActiveChange,
   });

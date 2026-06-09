@@ -46,9 +46,7 @@ function getShellLabel(shell?: string): string | null {
 }
 
 function surfaceLabel(surface: SurfaceRef, agentLabel?: string, workspaceShell?: string): string {
-  if (surface.type === 'terminal' && surface.psmuxSessionName) {
-    return surface.psmuxSessionName;
-  }
+  if (surface.type === 'terminal' && surface.psmuxSessionName) return surface.psmuxSessionName;
   if (surface.customTitle) return surface.customTitle;
   if (agentLabel) return agentLabel;
   switch (surface.type) {
@@ -213,6 +211,7 @@ export default function SurfaceTabBar({
                 setRenamingId(surface.id);
                 setRenameValue(surface.psmuxSessionName || surface.customTitle || '');
               }}
+              title={surface.psmuxSessionName ? `${surfaceLabel(surface, agentMeta?.label, workspaceShell)} (${surface.psmuxSessionName})` : surfaceLabel(surface, agentMeta?.label, workspaceShell)}
               draggable={!isRenaming}
               onDragStart={(e) => {
                 e.dataTransfer.setData(

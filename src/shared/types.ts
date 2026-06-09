@@ -18,6 +18,7 @@ export interface SurfaceRef {
   shell?: string;
   startupCommand?: string;
   psmuxSessionName?: string;
+  psmuxAttachExisting?: boolean;
   /** Per-surface color scheme override (bundled theme name or user-defined scheme name). */
   colorScheme?: string;
 }

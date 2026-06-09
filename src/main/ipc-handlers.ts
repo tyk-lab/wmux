@@ -26,8 +26,11 @@ const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
 const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
 const PSMUX_SHORT_SESSION_NAME_RE = /^psmux-(\d+)$/u;
+const PSMUX_MANAGED_SESSION_NAME_PREFIX = 'wmx-';
 const ownedPsmuxSessions = new Map<string, { webContentsId: number; surfaceId?: SurfaceId }>();
 type PsmuxKillTarget = string | { sessionName: string; surfaceId?: SurfaceId };
+type PsmuxStartupMode = 'new' | 'attach';
+type PreparedPsmuxSession = { sessionName?: string; mode?: PsmuxStartupMode; created?: boolean };
 
 function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
@@ -69,25 +72,116 @@ function listPsmuxSessionNamesSync(): { ok: boolean; names: Set<string> } {
   }
 }
 
-function allocatePsmuxSessionName(requestedName: string | undefined): string | undefined {
-  if (!requestedName || !PSMUX_SESSION_NAME_RE.test(requestedName)) return undefined;
-
-  const listedSessions = listPsmuxSessionNamesSync();
-  if (!listedSessions.ok) return `psmux-${crypto.randomUUID()}`;
-
-  const usedNames = listedSessions.names;
+function addOwnedPsmuxSessionNames(usedNames: Set<string>): Set<string> {
   for (const ownedName of ownedPsmuxSessions.keys()) {
     usedNames.add(ownedName);
   }
+  return usedNames;
+}
+
+function createShortPsmuxSessionName(usedNames: Set<string> = new Set()): string {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = `${PSMUX_MANAGED_SESSION_NAME_PREFIX}${crypto.randomBytes(3).toString('hex')}`;
+    if (!usedNames.has(candidate)) return candidate;
+  }
+  return `${PSMUX_MANAGED_SESSION_NAME_PREFIX}${crypto.randomUUID()}`;
+}
+
+function getNextPsmuxSessionName(requestedName: string, skippedNames: Set<string> = new Set()): string {
+  const listedSessions = listPsmuxSessionNamesSync();
+  const usedNames = addOwnedPsmuxSessionNames(new Set(listedSessions.names));
+  for (const skippedName of skippedNames) {
+    usedNames.add(skippedName);
+  }
+
   if (!usedNames.has(requestedName)) return requestedName;
 
+  if (requestedName.startsWith(PSMUX_MANAGED_SESSION_NAME_PREFIX)) {
+    return createShortPsmuxSessionName(usedNames);
+  }
+
   const match = requestedName.match(PSMUX_SHORT_SESSION_NAME_RE);
-  const startIndex = match ? Number(match[1]) + 1 : 1;
+  if (!match) return createShortPsmuxSessionName(usedNames);
+
+  const startIndex = Number(match[1]) + 1;
   for (let index = startIndex; index < Number.MAX_SAFE_INTEGER; index += 1) {
     const candidate = `psmux-${index}`;
     if (!usedNames.has(candidate)) return candidate;
   }
-  return requestedName;
+  return createShortPsmuxSessionName(usedNames);
+}
+
+function allocatePsmuxSession(
+  requestedName: string | undefined,
+  attachExisting?: boolean,
+): { sessionName?: string; mode?: PsmuxStartupMode } {
+  if (!requestedName || !PSMUX_SESSION_NAME_RE.test(requestedName)) return {};
+
+  const listedSessions = listPsmuxSessionNamesSync();
+  if (!listedSessions.ok) return { sessionName: createShortPsmuxSessionName(), mode: 'new' };
+
+  const usedNames = addOwnedPsmuxSessionNames(listedSessions.names);
+  if (!usedNames.has(requestedName)) return { sessionName: requestedName, mode: 'new' };
+  if (attachExisting) return { sessionName: requestedName, mode: 'attach' };
+
+  return { sessionName: getNextPsmuxSessionName(requestedName), mode: 'new' };
+}
+
+function createDetachedPsmuxSessionSync(sessionName: string): { ok: boolean; duplicate?: boolean; error?: string } {
+  try {
+    execFileSync('psmux.exe', ['new', '-d', '-s', sessionName], {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    const execError = err as { message?: string; stderr?: Buffer | string };
+    const stderr = Buffer.isBuffer(execError.stderr)
+      ? execError.stderr.toString('utf8')
+      : execError.stderr;
+    const message = [stderr, execError.message || String(err)].filter(Boolean).join('\n');
+    return {
+      ok: false,
+      duplicate: message.includes('duplicate session'),
+      error: message,
+    };
+  }
+}
+
+function preparePsmuxSession(
+  requestedName: string | undefined,
+  attachExisting?: boolean,
+): PreparedPsmuxSession {
+  const allocated = allocatePsmuxSession(requestedName, attachExisting);
+  if (!allocated.sessionName || allocated.mode !== 'new') return allocated;
+
+  let sessionName = allocated.sessionName;
+  let lastError = '';
+  const skippedNames = new Set<string>();
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = createDetachedPsmuxSessionSync(sessionName);
+    if (result.ok) return { sessionName, mode: 'attach', created: true };
+
+    lastError = result.error ?? '';
+    if (!result.duplicate) break;
+
+    skippedNames.add(sessionName);
+    sessionName = getNextPsmuxSessionName(sessionName, skippedNames);
+  }
+
+  throw new Error(`Failed to create psmux session ${sessionName}: ${lastError || 'unknown error'}`);
+}
+
+function findOwnedPsmuxSessionBySurface(
+  webContentsId: number,
+  surfaceId: SurfaceId,
+): string | undefined {
+  for (const [sessionName, owner] of ownedPsmuxSessions.entries()) {
+    if (owner.webContentsId === webContentsId && owner.surfaceId === surfaceId) return sessionName;
+  }
+  return undefined;
 }
 
 async function killPsmuxSession(
@@ -167,6 +261,19 @@ function killPsmuxSessionSync(
   }
 }
 
+function killCreatedPsmuxSessionSync(sessionName: string): void {
+  if (!PSMUX_SESSION_NAME_RE.test(sessionName)) return;
+  try {
+    execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+  } catch {
+    // Best-effort cleanup when PTY creation fails after the detached session was created.
+  }
+}
+
 function normalizePsmuxKillTarget(target: PsmuxKillTarget): { sessionName: string; surfaceId?: SurfaceId } {
   return typeof target === 'string' ? { sessionName: target } : target;
 }
@@ -216,8 +323,22 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   });
 
   ipcMain.handle(IPC_CHANNELS.PTY_CREATE, async (_event, options) => {
+    let psmuxSession: PreparedPsmuxSession | undefined;
     try {
-      const psmuxSessionName = allocatePsmuxSessionName(options.psmuxSessionName);
+      if (options.surfaceId && ptyManager.has(options.surfaceId)) {
+        const existingPsmuxSessionName = findOwnedPsmuxSessionBySurface(_event.sender.id, options.surfaceId);
+        return {
+          id: options.surfaceId,
+          shell: ptyManager.getShell(options.surfaceId) ?? options.shell ?? '',
+          ptyReused: true,
+          ...(existingPsmuxSessionName
+            ? { psmuxSessionName: existingPsmuxSessionName, psmuxStartupMode: 'attach' as const }
+            : {}),
+        };
+      }
+
+      psmuxSession = preparePsmuxSession(options.psmuxSessionName, options.psmuxAttachExisting);
+      const psmuxSessionName = psmuxSession.sessionName;
       const resolvedOptions = {
         ...options,
         cwd: options.cwd || process.env.USERPROFILE || 'C:\\',
@@ -247,8 +368,13 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         unsubData();
         unsubExit();
       });
-      return psmuxSessionName ? { ...created, psmuxSessionName } : created;
+      return psmuxSessionName
+        ? { ...created, psmuxSessionName, psmuxStartupMode: psmuxSession.mode ?? 'new' }
+        : created;
     } catch (err: unknown) {
+      if (psmuxSession?.created && psmuxSession.sessionName) {
+        killCreatedPsmuxSessionSync(psmuxSession.sessionName);
+      }
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to create terminal: ${msg}`);
     }
@@ -263,6 +389,10 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   });
 
   ipcMain.on(IPC_CHANNELS.PTY_KILL, (_event, id: SurfaceId) => {
+    const sessionName = findOwnedPsmuxSessionBySurface(_event.sender.id, id);
+    if (sessionName) {
+      void killPsmuxSession(sessionName, _event.sender.id, id);
+    }
     ptyManager.kill(id);
   });
 

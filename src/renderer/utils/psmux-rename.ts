@@ -45,7 +45,8 @@ export async function renamePsmuxSurfaceSession(
   state.updateSurface(workspaceId, currentPaneId, surface.id, {
     customTitle: newName,
     psmuxSessionName: newName,
-    startupCommand: createPsmuxStartupCommand(newName),
+    psmuxAttachExisting: true,
+    startupCommand: createPsmuxStartupCommand(newName, 'attach'),
   });
   return { ok: true };
 }

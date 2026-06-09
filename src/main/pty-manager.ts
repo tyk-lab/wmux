@@ -54,7 +54,6 @@ function resolveShell(shell: string | undefined): string {
 
 function getShellIntegrationPath(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron');
     if (app.isPackaged) {
       return path.join(process.resourcesPath, 'shell-integration');
@@ -67,7 +66,6 @@ function getShellIntegrationPath(): string {
 
 function getCliPath(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron');
     if (app.isPackaged) {
       return path.join(process.resourcesPath, 'cli', 'wmux.js');
@@ -88,6 +86,7 @@ function getShellType(shell: string): 'powershell' | 'cmd' | 'wsl' | 'unknown' {
 
 interface PtyEntry {
   pty: pty.IPty;
+  shell: string;
   dataListeners: Set<(data: string) => void>;
   exitListeners: Set<(code: number) => void>;
   // Serial queue: long writes are split into ConPTY-friendly chunks and
@@ -120,6 +119,8 @@ export class PtyManager {
 
   create(options: CreateOptions): { id: SurfaceId; shell: string } {
     const id: SurfaceId = options.surfaceId ?? `surf-${uuidv4()}` as SurfaceId;
+    const existing = this.ptys.get(id);
+    if (existing?.alive) return { id, shell: existing.shell };
 
     const shell = resolveShell(options.shell);
     const shellType = getShellType(shell);
@@ -166,6 +167,7 @@ export class PtyManager {
 
     const entry: PtyEntry = {
       pty: ptyProcess,
+      shell,
       dataListeners: new Set(),
       exitListeners: new Set(),
       writeChain: Promise.resolve(),
@@ -267,6 +269,10 @@ export class PtyManager {
 
   has(id: SurfaceId): boolean {
     return this.ptys.has(id);
+  }
+
+  getShell(id: SurfaceId): string | undefined {
+    return this.ptys.get(id)?.shell;
   }
 
   onData(id: SurfaceId, callback: (data: string) => void): () => void {

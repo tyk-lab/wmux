@@ -3,7 +3,8 @@ import { v4 as uuid } from 'uuid';
 
 export const DEFAULT_PSMUX_COMMAND = 'psmux.exe';
 export const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
-export const PSMUX_SESSION_NAME_PREFIX = 'psmux-';
+export const PSMUX_SESSION_NAME_PREFIX = 'wmx-';
+export type PsmuxStartupMode = 'new' | 'attach';
 
 export function isValidPsmuxSessionName(sessionName: string | undefined): sessionName is string {
   return !!sessionName && PSMUX_SESSION_NAME_RE.test(sessionName);
@@ -11,15 +12,21 @@ export function isValidPsmuxSessionName(sessionName: string | undefined): sessio
 
 export function createPsmuxSessionName(usedSessionNames: Iterable<string> = []): string {
   const usedNames = new Set(usedSessionNames);
-  for (let index = 1; index < Number.MAX_SAFE_INTEGER; index += 1) {
-    const candidate = `${PSMUX_SESSION_NAME_PREFIX}${index}`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = `${PSMUX_SESSION_NAME_PREFIX}${uuid().replace(/-/g, '').slice(0, 6)}`;
     if (!usedNames.has(candidate)) return candidate;
   }
   return `${PSMUX_SESSION_NAME_PREFIX}${uuid()}`;
 }
 
-export function createPsmuxStartupCommand(sessionName: string): string {
-  return `${DEFAULT_PSMUX_COMMAND} new -s ${sessionName}`;
+export function createPsmuxDisplayName(sessionName: string): string {
+  return sessionName;
+}
+
+export function createPsmuxStartupCommand(sessionName: string, mode: PsmuxStartupMode = 'new'): string {
+  return mode === 'attach'
+    ? `${DEFAULT_PSMUX_COMMAND} attach -t ${sessionName}`
+    : `${DEFAULT_PSMUX_COMMAND} new -s ${sessionName}`;
 }
 
 function reservePsmuxSessionName(surface: SurfaceRef, usedSessionNames: Set<string>): string {
@@ -37,6 +44,7 @@ function reservePsmuxSessionName(surface: SurfaceRef, usedSessionNames: Set<stri
 export function withPsmuxTerminalDefaults(
   surface: SurfaceRef,
   usedSessionNames: Iterable<string> | Set<string> = [],
+  options: { attachExisting?: boolean } = {},
 ): SurfaceRef {
   if (surface.type !== 'terminal') return surface;
 
@@ -46,9 +54,13 @@ export function withPsmuxTerminalDefaults(
   const psmuxSessionName = reservePsmuxSessionName(surface, usedNames);
   return {
     ...surface,
-    customTitle: surface.customTitle ?? 'psmux',
+    customTitle: surface.customTitle ?? createPsmuxDisplayName(psmuxSessionName),
     psmuxSessionName,
-    startupCommand: createPsmuxStartupCommand(psmuxSessionName),
+    psmuxAttachExisting: options.attachExisting ?? surface.psmuxAttachExisting,
+    startupCommand: createPsmuxStartupCommand(
+      psmuxSessionName,
+      options.attachExisting || surface.psmuxAttachExisting ? 'attach' : 'new',
+    ),
   };
 }
 
@@ -130,7 +142,7 @@ export function normalizePsmuxWorkspaceConfigs(
       ...workspace,
       title: isLegacyDefaultTitle ? `psmux ${index + 1}` : workspace.title,
       splitTree: workspace.splitTree
-        ? applyPsmuxStartupToTerminalSurfaces(workspace.splitTree, usedNames)
+        ? applyPsmuxStartupToTerminalSurfaces(workspace.splitTree, usedNames, { attachExisting: true })
         : workspace.splitTree,
     };
   });
@@ -139,6 +151,7 @@ export function normalizePsmuxWorkspaceConfigs(
 export function applyPsmuxStartupToTerminalSurfaces(
   tree: SplitNode,
   usedSessionNames: Iterable<string> | Set<string> = [],
+  options: { attachExisting?: boolean } = {},
 ): SplitNode {
   const usedNames = usedSessionNames instanceof Set
     ? usedSessionNames
@@ -148,7 +161,7 @@ export function applyPsmuxStartupToTerminalSurfaces(
     return {
       ...tree,
       surfaces: tree.surfaces.map((surface) => {
-        return withPsmuxTerminalDefaults(surface, usedNames);
+        return withPsmuxTerminalDefaults(surface, usedNames, options);
       }),
     };
   }
@@ -156,8 +169,8 @@ export function applyPsmuxStartupToTerminalSurfaces(
   return {
     ...tree,
     children: [
-      applyPsmuxStartupToTerminalSurfaces(tree.children[0], usedNames),
-      applyPsmuxStartupToTerminalSurfaces(tree.children[1], usedNames),
+      applyPsmuxStartupToTerminalSurfaces(tree.children[0], usedNames, options),
+      applyPsmuxStartupToTerminalSurfaces(tree.children[1], usedNames, options),
     ],
   };
 }

@@ -198,6 +198,7 @@ export default function PaneWrapper({ leaf, workspaceId, isFocused }: PaneWrappe
               colorScheme={surface.colorScheme}
               startupCommand={surface.startupCommand}
               psmuxSessionName={surface.psmuxSessionName}
+              psmuxAttachExisting={surface.psmuxAttachExisting}
               focused={isFocused && isActive}
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}
