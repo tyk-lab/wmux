@@ -1,3 +1,36 @@
+/* UI chrome 主题：侧栏/标题栏/标签/菜单等的配色由这组变量驱动，
+   可在设置里通过 data-ui-theme 切换（与可配置的 xterm 终端主题相互独立）。
+   仅深色经过校准；终端内容仍走各自的 xterm 主题方案。
+
+   变量语义：
+     --wmux-accent / --accent-rgb  强调色（hover、激活、聚焦边框等）
+     --wmux-bg-chrome              侧栏 / 标题栏底色（最深一层）
+     --wmux-bg-base                主背景 / 标签栏
+     --wmux-bg-elevated            浮层 / 菜单 / 激活标签
+     --wmux-bg-2 / --wmux-bg-3     依次更亮的层级（边框、输入框等） */
+:root,
+:root[data-ui-theme="codex"] {
+  --wmux-accent: #10a37f;
+  --accent-rgb: 16, 163, 127;
+  --wmux-bg-chrome: #0d1117;
+  --wmux-bg-base: #161b22;
+  --wmux-bg-elevated: #1b222c;
+  --wmux-bg-2: #232b36;
+  --wmux-bg-3: #2d333b;
+  --wmux-text: #c9d1d9;
+}
+
+:root[data-ui-theme="claude"] {
+  --wmux-accent: #d97757;
+  --accent-rgb: 217, 119, 87;
+  --wmux-bg-chrome: #1f1d1b;
+  --wmux-bg-base: #262320;
+  --wmux-bg-elevated: #302c28;
+  --wmux-bg-2: #3a352f;
+  --wmux-bg-3: #4a443c;
+  --wmux-text: #e8e2da;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -8,8 +41,8 @@ html, body, #root {
   height: 100%;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  background: #1a1a1a;
-  color: #e0e0e0;
+  background: var(--wmux-bg-base);
+  color: var(--wmux-text);
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }

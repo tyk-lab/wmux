@@ -17,8 +17,8 @@
 .tutorial-card {
   width: 100%;
   max-width: 560px;
-  background: #1e1e1e;
-  border: 1px solid #333;
+  background: var(--wmux-bg-base);
+  border: 1px solid var(--wmux-bg-2);
   border-radius: 12px;
   padding: 32px;
   position: relative;
@@ -56,7 +56,7 @@
 }
 
 .tutorial-dot--active {
-  background: #0091FF;
+  background: var(--wmux-accent);
   width: 24px;
   border-radius: 4px;
 }
@@ -129,7 +129,7 @@
 }
 
 .tutorial-btn--primary {
-  background: #0091FF;
+  background: var(--wmux-accent);
   color: white;
 }
 

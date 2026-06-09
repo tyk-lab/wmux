@@ -47,22 +47,22 @@
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #2a2a2a;
-  border: 1px solid #444;
+  background: var(--wmux-bg-elevated);
+  border: 1px solid var(--wmux-bg-3);
   border-radius: 0 0 0 6px;
   z-index: 30;
 }
 .find-bar__input {
   width: 200px;
   padding: 4px 8px;
-  background: #1a1a1a;
-  border: 1px solid #555;
+  background: var(--wmux-bg-base);
+  border: 1px solid var(--wmux-bg-3);
   border-radius: 4px;
   color: white;
   font-size: 12px;
   outline: none;
 }
-.find-bar__input:focus { border-color: #0091FF; }
+.find-bar__input:focus { border-color: var(--wmux-accent); }
 .find-bar__count { font-size: 11px; color: rgba(255,255,255,0.5); margin: 0 4px; }
 .find-bar__btn {
   width: 22px; height: 22px;
@@ -83,7 +83,7 @@
   bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 145, 255, 0.9);
+  background: rgba(var(--accent-rgb), 0.9);
   color: white;
   padding: 4px 12px;
   border-radius: 4px;

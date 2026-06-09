@@ -17,7 +17,7 @@
   width: 740px;
   max-width: calc(100vw - 48px);
   height: min(640px, calc(100vh - 80px));
-  background: #1e1e1e;
+  background: var(--wmux-bg-base);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
@@ -107,13 +107,13 @@
 }
 
 .settings-tab--active {
-  background: rgba(0, 145, 255, 0.18);
-  color: #0091FF;
+  background: rgba(var(--accent-rgb), 0.18);
+  color: var(--wmux-accent);
 }
 
 .settings-tab--active:hover {
-  background: rgba(0, 145, 255, 0.24);
-  color: #0091FF;
+  background: rgba(var(--accent-rgb), 0.24);
+  color: var(--wmux-accent);
 }
 
 /* ─── Content area ────────────────────────────────────────────────────────── */
@@ -189,12 +189,12 @@
   width: 36px;
   height: 20px;
   cursor: pointer;
-  accent-color: #0091FF;
+  accent-color: var(--wmux-accent);
   flex-shrink: 0;
 }
 
 .settings-select {
-  background: #2a2a2a;
+  background: var(--wmux-bg-elevated);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   color: #fdfff1;
@@ -207,11 +207,11 @@
 }
 
 .settings-select:focus {
-  border-color: #0091FF;
+  border-color: var(--wmux-accent);
 }
 
 .settings-input {
-  background: #2a2a2a;
+  background: var(--wmux-bg-elevated);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   color: #fdfff1;
@@ -228,13 +228,13 @@
 }
 
 .settings-input:focus {
-  border-color: #0091FF;
+  border-color: var(--wmux-accent);
 }
 
 .settings-slider {
   width: 100%;
   margin-top: 8px;
-  accent-color: #0091FF;
+  accent-color: var(--wmux-accent);
   cursor: pointer;
 }
 
@@ -321,7 +321,7 @@
   padding: 3px 10px;
   min-width: 130px;
   text-align: center;
-  background: #2a2a2a;
+  background: var(--wmux-bg-elevated);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 5px;
   color: rgba(255, 255, 255, 0.75);
@@ -332,14 +332,14 @@
 }
 
 .shortcut-recorder__btn:hover {
-  border-color: rgba(0, 145, 255, 0.5);
-  background: #333;
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: var(--wmux-bg-2);
 }
 
 .shortcut-recorder__btn--recording {
-  border-color: #0091FF;
-  background: rgba(0, 145, 255, 0.1);
-  color: #0091FF;
+  border-color: var(--wmux-accent);
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--wmux-accent);
   animation: shortcut-pulse 1s ease-in-out infinite;
 }
 

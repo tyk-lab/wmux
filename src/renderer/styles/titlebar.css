@@ -3,7 +3,7 @@
   display: flex;
   align-items: center;
   -webkit-app-region: drag;
-  background: #111111;
+  background: var(--wmux-bg-chrome);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   flex-shrink: 0;
   position: relative;

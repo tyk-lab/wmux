@@ -11,7 +11,7 @@
 .split-divider--horizontal { width: 6px; cursor: col-resize; }
 .split-divider--vertical { height: 6px; cursor: row-resize; }
 .split-divider__line { position: absolute; background: rgba(255, 255, 255, 0.06); transition: background 0.15s ease, transform 0.15s ease; will-change: transform, background; }
-.split-divider:hover .split-divider__line { background: rgba(0, 145, 255, 0.4); }
+.split-divider:hover .split-divider__line { background: rgba(var(--accent-rgb), 0.4); }
 .split-divider--horizontal .split-divider__line { width: 2px; height: 100%; left: 50%; transform: translateX(-50%) scaleX(0.5); }
 .split-divider--vertical .split-divider__line { height: 2px; width: 100%; top: 50%; transform: translateY(-50%) scaleY(0.5); }
 .split-divider:hover .split-divider--horizontal .split-divider__line { transform: translateX(-50%) scaleX(1); }
@@ -26,7 +26,7 @@
   transition: border-color 0.15s ease;
 }
 .pane-wrapper--focused {
-  border-color: rgba(0, 145, 255, 0.3);
+  border-color: rgba(var(--accent-rgb), 0.3);
 }
 .pane-wrapper__content {
   flex: 1;
@@ -48,7 +48,7 @@
   align-items: center;
   height: 28px;
   min-height: 28px;
-  background: #1e1e1e;
+  background: var(--wmux-bg-base);
   overflow: hidden;
   flex-shrink: 0;
   z-index: 6;
@@ -71,19 +71,19 @@
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  background: #2a2a2a;
+  background: var(--wmux-bg-elevated);
   color: #888;
   font-size: 12px;
   border-right: 1px solid #111;
   user-select: none;
   transition: background 0.1s ease, color 0.1s ease;
 }
-.surface-tab:hover { background: #333; color: #bbb; }
-.surface-tab--active { background: #3a3a3a; color: #fff; }
+.surface-tab:hover { background: var(--wmux-bg-2); color: #bbb; }
+.surface-tab--active { background: var(--wmux-bg-2); color: #fff; }
 .surface-tab__label { pointer-events: none; }
 .surface-tab__rename-input {
   background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(0, 145, 255, 0.5);
+  border: 1px solid rgba(var(--accent-rgb), 0.5);
   color: #fff;
   font-size: 11px;
   font-family: inherit;
@@ -153,7 +153,7 @@
   z-index: 50;
   min-width: 150px;
   padding: 4px;
-  background: #1c1c1c;
+  background: var(--wmux-bg-chrome);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 6px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.5);
@@ -190,7 +190,7 @@
   cursor: pointer;
   transition: color 0.1s ease, background 0.1s ease;
 }
-.surface-tab-bar__split-btn:hover { color: #0091ff; background: rgba(0,145,255,0.1); }
+.surface-tab-bar__split-btn:hover { color: var(--wmux-accent); background: rgba(0,145,255,0.1); }
 .surface-tab-bar__close-pane-btn {
   display: flex;
   align-items: center;
@@ -208,10 +208,10 @@
 .surface-tab-bar__close-pane-btn:hover { color: #ff6b6b; background: rgba(255,100,100,0.12); }
 
 .surface-tab--agent .surface-tab__icon {
-  color: #0091FF;
+  color: var(--wmux-accent);
 }
 .surface-tab--agent .surface-tab__label {
-  color: rgba(0, 145, 255, 0.8);
+  color: rgba(var(--accent-rgb), 0.8);
 }
 
 /* ─── Drag and drop ──────────────────────────────────────────────────────── */
@@ -228,7 +228,7 @@
   top: 4px;
   bottom: 4px;
   width: 2px;
-  background: #89b4fa;
+  background: var(--wmux-accent);
   border-radius: 1px;
   z-index: 10;
 }
@@ -240,7 +240,7 @@
   top: 4px;
   bottom: 4px;
   width: 2px;
-  background: #89b4fa;
+  background: var(--wmux-accent);
   border-radius: 1px;
   z-index: 10;
 }
@@ -283,10 +283,10 @@
 .pane-drop-zone--bottom:hover {
   background: rgba(137, 180, 250, 0.15);
 }
-.pane-drop-zone--left:hover   { border-right-color: #89b4fa; }
-.pane-drop-zone--right:hover  { border-left-color: #89b4fa; }
-.pane-drop-zone--top:hover    { border-bottom-color: #89b4fa; }
-.pane-drop-zone--bottom:hover { border-top-color: #89b4fa; }
+.pane-drop-zone--left:hover   { border-right-color: var(--wmux-accent); }
+.pane-drop-zone--right:hover  { border-left-color: var(--wmux-accent); }
+.pane-drop-zone--top:hover    { border-bottom-color: var(--wmux-accent); }
+.pane-drop-zone--bottom:hover { border-top-color: var(--wmux-accent); }
 
 .pane-drop-zone--center:hover {
   background: rgba(166, 227, 161, 0.12);

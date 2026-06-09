@@ -51,7 +51,13 @@ export default function App() {
     setAgentMeta,
     addNotification,
     toggleSidebar,
+    sidebarPrefs,
   } = useStore();
+
+  // 将界面主题写到根元素，驱动 global.css 中 data-ui-theme 变量组。
+  useEffect(() => {
+    document.documentElement.dataset.uiTheme = sidebarPrefs.uiTheme;
+  }, [sidebarPrefs.uiTheme]);
 
   const [focusedPaneId, setFocusedPaneId] = useState<PaneId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);

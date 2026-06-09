@@ -75,7 +75,7 @@ export default function WorkspaceRow({
     return () => document.removeEventListener('wmux:rename-workspace', handler);
   }, [isActive, workspace.title]);
 
-  const activeBackground = workspace.customColor ?? '#0091FF';
+  const activeBackground = workspace.customColor ?? 'var(--wmux-accent)';
   const customColorTint = workspace.customColor
     ? `${workspace.customColor}0D`
     : undefined;

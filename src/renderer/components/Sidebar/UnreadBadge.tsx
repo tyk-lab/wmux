@@ -10,7 +10,7 @@ export default function UnreadBadge({ count, isSelected }: UnreadBadgeProps) {
     <span
       className="unread-badge"
       style={{
-        backgroundColor: isSelected ? 'rgba(255,255,255,0.25)' : '#0091FF',
+        backgroundColor: isSelected ? 'rgba(255,255,255,0.25)' : 'var(--wmux-accent)',
       }}
     >
       {count}

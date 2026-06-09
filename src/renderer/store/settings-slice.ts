@@ -172,6 +172,8 @@ export interface SidebarPrefs {
   hideAllDetails: boolean;
   activeTabIndicator: 'leftRail' | 'solidFill';
   backgroundOpacity: number; // 0–100
+  /** UI chrome 配色方案（侧栏/标题栏/标签等），独立于终端 xterm 主题。 */
+  uiTheme: 'codex' | 'claude';
 }
 
 export const DEFAULT_SIDEBAR_PREFS: SidebarPrefs = {
@@ -183,6 +185,7 @@ export const DEFAULT_SIDEBAR_PREFS: SidebarPrefs = {
   hideAllDetails: false,
   activeTabIndicator: 'leftRail',
   backgroundOpacity: 100,
+  uiTheme: 'codex',
 };
 
 // ─── Workspace settings ───────────────────────────────────────────────────────
@@ -199,7 +202,7 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   newWorkspacePlacement: 'afterCurrent',
   autoReorderOnNotification: false,
   defaultShell: '',
-  showWelcomeScreen: true,
+  showWelcomeScreen: false,
 };
 
 // ─── Terminal settings ────────────────────────────────────────────────────────
@@ -234,7 +237,7 @@ export interface TerminalPrefs {
 export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
   fontFamily: 'Consolas, Menlo, Monaco, monospace',
   fontSize: 13,
-  theme: 'Monokai',
+  theme: 'Codex',
   cursorStyle: 'block',
   cursorBlink: true,
   scrollbackLines: 5000,
@@ -271,7 +274,7 @@ export interface BrowserPrefs {
 export const DEFAULT_BROWSER_PREFS: BrowserPrefs = {
   searchEngine: 'google',
   devToolsIcon: 'default',
-  openOnStartup: true,
+  openOnStartup: false,
 };
 
 // ─── Slice interface ──────────────────────────────────────────────────────────

@@ -71,6 +71,20 @@ export default function SidebarSettings() {
       <h3 className="settings-section-title">Appearance</h3>
 
       <div className="settings-row">
+        <label className="settings-label">Interface theme</label>
+        <select
+          className="settings-select"
+          value={sidebarPrefs.uiTheme}
+          onChange={(e) =>
+            setSidebarPrefs({ uiTheme: e.target.value as 'codex' | 'claude' })
+          }
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+      </div>
+
+      <div className="settings-row">
         <label className="settings-label">Active tab indicator</label>
         <select
           className="settings-select"
