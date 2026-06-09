@@ -23,8 +23,9 @@ const ptyManager = new PtyManager();
 const notificationManager = new NotificationManager();
 const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
-const PSMUX_SESSION_NAME_RE = /^psmux-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ownedPsmuxSessions = new Set<string>();
+const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
+const ownedPsmuxSessions = new Map<string, { webContentsId: number; surfaceId?: SurfaceId }>();
+type PsmuxKillTarget = string | { sessionName: string; surfaceId?: SurfaceId };
 
 function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
@@ -38,24 +39,75 @@ function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
   });
 }
 
-async function killPsmuxSession(sessionName: string): Promise<{ ok: boolean; error?: string }> {
+function isPsmuxSessionOwner(sessionName: string, webContentsId: number, surfaceId?: SurfaceId): boolean {
+  const owner = ownedPsmuxSessions.get(sessionName);
+  if (!owner || owner.webContentsId !== webContentsId) return false;
+  return !surfaceId || owner.surfaceId === surfaceId;
+}
+
+async function killPsmuxSession(
+  sessionName: string,
+  webContentsId?: number,
+  surfaceId?: SurfaceId,
+): Promise<{ ok: boolean; error?: string }> {
   if (!PSMUX_SESSION_NAME_RE.test(sessionName)) {
     return { ok: false, error: `Refusing to kill unmanaged psmux session: ${sessionName}` };
   }
   if (!ownedPsmuxSessions.has(sessionName)) {
     return { ok: false, error: `Refusing to kill unowned psmux session: ${sessionName}` };
+  }
+  if (webContentsId !== undefined && !isPsmuxSessionOwner(sessionName, webContentsId, surfaceId)) {
+    return { ok: false, error: `Refusing to kill psmux session from another surface: ${sessionName}` };
   }
   const result = await runPsmux(['kill-session', '-t', sessionName]);
   if (result.ok) ownedPsmuxSessions.delete(sessionName);
   return result;
 }
 
-function killPsmuxSessionSync(sessionName: string): { ok: boolean; error?: string } {
+async function renamePsmuxSession(
+  oldName: string,
+  newName: string,
+  webContentsId: number,
+  surfaceId: SurfaceId,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!PSMUX_SESSION_NAME_RE.test(oldName)) {
+    return { ok: false, error: `Refusing to rename unmanaged psmux session: ${oldName}` };
+  }
+  if (!PSMUX_SESSION_NAME_RE.test(newName)) {
+    return { ok: false, error: `Invalid psmux session name: ${newName}` };
+  }
+  if (!ownedPsmuxSessions.has(oldName)) {
+    return { ok: false, error: `Refusing to rename unowned psmux session: ${oldName}` };
+  }
+  if (!isPsmuxSessionOwner(oldName, webContentsId, surfaceId)) {
+    return { ok: false, error: `Refusing to rename psmux session from another surface: ${oldName}` };
+  }
+  if (ownedPsmuxSessions.has(newName)) {
+    return { ok: false, error: `psmux session already managed: ${newName}` };
+  }
+
+  const owner = ownedPsmuxSessions.get(oldName);
+  const result = await runPsmux(['rename-session', '-t', oldName, newName]);
+  if (result.ok) {
+    ownedPsmuxSessions.delete(oldName);
+    ownedPsmuxSessions.set(newName, owner ?? { webContentsId, surfaceId });
+  }
+  return result;
+}
+
+function killPsmuxSessionSync(
+  sessionName: string,
+  webContentsId?: number,
+  surfaceId?: SurfaceId,
+): { ok: boolean; error?: string } {
   if (!PSMUX_SESSION_NAME_RE.test(sessionName)) {
     return { ok: false, error: `Refusing to kill unmanaged psmux session: ${sessionName}` };
   }
   if (!ownedPsmuxSessions.has(sessionName)) {
     return { ok: false, error: `Refusing to kill unowned psmux session: ${sessionName}` };
+  }
+  if (webContentsId !== undefined && !isPsmuxSessionOwner(sessionName, webContentsId, surfaceId)) {
+    return { ok: false, error: `Refusing to kill psmux session from another surface: ${sessionName}` };
   }
   try {
     execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
@@ -70,16 +122,28 @@ function killPsmuxSessionSync(sessionName: string): { ok: boolean; error?: strin
   }
 }
 
-function killPsmuxSessionsSync(sessionNames: string[]): Array<{ sessionName: string; ok: boolean; error?: string }> {
-  const uniqueNames = Array.from(new Set(sessionNames.filter(Boolean)));
-  return uniqueNames.map((sessionName) => ({
+function normalizePsmuxKillTarget(target: PsmuxKillTarget): { sessionName: string; surfaceId?: SurfaceId } {
+  return typeof target === 'string' ? { sessionName: target } : target;
+}
+
+function killPsmuxSessionsSync(
+  targets: PsmuxKillTarget[],
+  webContentsId?: number,
+): Array<{ sessionName: string; ok: boolean; error?: string }> {
+  const uniqueTargets = Array.from(
+    new Map(targets.filter(Boolean).map((target) => {
+      const normalized = normalizePsmuxKillTarget(target);
+      return [normalized.sessionName, normalized];
+    })).values(),
+  );
+  return uniqueTargets.map(({ sessionName, surfaceId }) => ({
     sessionName,
-    ...killPsmuxSessionSync(sessionName),
+    ...killPsmuxSessionSync(sessionName, webContentsId, surfaceId),
   }));
 }
 
 export function killOwnedPsmuxSessionsSync(): void {
-  for (const sessionName of Array.from(ownedPsmuxSessions)) {
+  for (const sessionName of Array.from(ownedPsmuxSessions.keys())) {
     try {
       execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
         windowsHide: true,
@@ -114,7 +178,10 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       };
       const created = ptyManager.create(resolvedOptions);
       if (typeof options.psmuxSessionName === 'string' && PSMUX_SESSION_NAME_RE.test(options.psmuxSessionName)) {
-        ownedPsmuxSessions.add(options.psmuxSessionName);
+        ownedPsmuxSessions.set(options.psmuxSessionName, {
+          webContentsId: _event.sender.id,
+          surfaceId: options.surfaceId,
+        });
       }
       const id = created.id;
       const window = BrowserWindow.fromWebContents(_event.sender);
@@ -156,21 +223,35 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     return ptyManager.has(id);
   });
 
-  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSION, async (_event, sessionName: string) => {
-    return killPsmuxSession(sessionName);
+  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSION, async (_event, sessionName: string, surfaceId?: SurfaceId) => {
+    return killPsmuxSession(sessionName, _event.sender.id, surfaceId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSIONS, async (_event, sessionNames: string[]) => {
-    const uniqueNames = Array.from(new Set(sessionNames.filter(Boolean)));
+  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SESSIONS, async (_event, targets: PsmuxKillTarget[]) => {
+    const uniqueTargets = Array.from(
+      new Map(targets.filter(Boolean).map((target) => {
+        const normalized = normalizePsmuxKillTarget(target);
+        return [normalized.sessionName, normalized];
+      })).values(),
+    );
     const results = [];
-    for (const sessionName of uniqueNames) {
-      results.push({ sessionName, ...(await killPsmuxSession(sessionName)) });
+    for (const { sessionName, surfaceId } of uniqueTargets) {
+      results.push({ sessionName, ...(await killPsmuxSession(sessionName, _event.sender.id, surfaceId)) });
     }
     return results;
   });
 
-  ipcMain.on(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, (event, sessionNames: string[]) => {
-    event.returnValue = killPsmuxSessionsSync(sessionNames);
+  ipcMain.on(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, (event, targets: PsmuxKillTarget[]) => {
+    event.returnValue = killPsmuxSessionsSync(targets, event.sender.id);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PSMUX_RENAME_SESSION, async (
+    _event,
+    oldName: string,
+    newName: string,
+    surfaceId: SurfaceId,
+  ) => {
+    return renamePsmuxSession(oldName, newName, _event.sender.id, surfaceId);
   });
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_SHELLS, async () => {

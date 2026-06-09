@@ -117,4 +117,46 @@ describe('psmux layout', () => {
       createPsmuxStartupCommand(firstTree.surfaces[0].psmuxSessionName as string),
     );
   });
+
+  it('preserves safe custom psmux session names during normalization', () => {
+    const normalized = normalizePsmuxWorkspaceConfigs([
+      {
+        title: 'psmux 1',
+        splitTree: {
+          type: 'leaf',
+          paneId: 'pane-1',
+          surfaces: [{ id: 'surf-1', type: 'terminal', psmuxSessionName: 'work-api' }],
+          activeSurfaceIndex: 0,
+        },
+      },
+    ]);
+
+    const tree = normalized[0].splitTree;
+    expect(tree?.type).toBe('leaf');
+    if (tree?.type !== 'leaf') return;
+    expect(tree.surfaces[0]).toMatchObject({
+      psmuxSessionName: 'work-api',
+      startupCommand: 'psmux.exe new -s work-api',
+    });
+  });
+
+  it('replaces unsafe restored psmux session names before building startup commands', () => {
+    const normalized = normalizePsmuxWorkspaceConfigs([
+      {
+        title: 'psmux 1',
+        splitTree: {
+          type: 'leaf',
+          paneId: 'pane-1',
+          surfaces: [{ id: 'surf-1', type: 'terminal', psmuxSessionName: 'work;calc' }],
+          activeSurfaceIndex: 0,
+        },
+      },
+    ]);
+
+    const tree = normalized[0].splitTree;
+    expect(tree?.type).toBe('leaf');
+    if (tree?.type !== 'leaf') return;
+    expect(tree.surfaces[0].psmuxSessionName).toMatch(/^psmux-[0-9a-f-]{36}$/);
+    expect(tree.surfaces[0].startupCommand).not.toContain('work;calc');
+  });
 });

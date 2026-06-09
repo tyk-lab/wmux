@@ -2,10 +2,10 @@ import { v4 as uuid } from 'uuid';
 import { PaneId, SplitNode, SurfaceId, SurfaceRef, WorkspaceInfo } from '../../shared/types';
 
 export const DEFAULT_PSMUX_COMMAND = 'psmux.exe';
-export const MANAGED_PSMUX_SESSION_NAME_RE = /^psmux-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
 
-export function isManagedPsmuxSessionName(sessionName: string | undefined): sessionName is string {
-  return !!sessionName && MANAGED_PSMUX_SESSION_NAME_RE.test(sessionName);
+export function isValidPsmuxSessionName(sessionName: string | undefined): sessionName is string {
+  return !!sessionName && PSMUX_SESSION_NAME_RE.test(sessionName);
 }
 
 export function createPsmuxSessionName(): string {
@@ -19,7 +19,7 @@ export function createPsmuxStartupCommand(sessionName: string): string {
 export function withPsmuxTerminalDefaults(surface: SurfaceRef): SurfaceRef {
   if (surface.type !== 'terminal') return surface;
 
-  const psmuxSessionName = isManagedPsmuxSessionName(surface.psmuxSessionName)
+  const psmuxSessionName = isValidPsmuxSessionName(surface.psmuxSessionName)
     ? surface.psmuxSessionName
     : createPsmuxSessionName();
   return {

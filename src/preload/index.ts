@@ -29,12 +29,14 @@ contextBridge.exposeInMainWorld('wmux', {
     },
   },
   psmux: {
-    killSession: (sessionName: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSION, sessionName),
-    killSessions: (sessionNames: string[]) =>
-      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSIONS, sessionNames),
-    killSessionsSync: (sessionNames: string[]) =>
-      ipcRenderer.sendSync(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, sessionNames),
+    killSession: (sessionName: string, surfaceId?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSION, sessionName, surfaceId),
+    killSessions: (targets: Array<{ sessionName: string; surfaceId?: string }>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SESSIONS, targets),
+    killSessionsSync: (targets: Array<{ sessionName: string; surfaceId?: string }>) =>
+      ipcRenderer.sendSync(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, targets),
+    renameSession: (oldName: string, newName: string, surfaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_RENAME_SESSION, oldName, newName, surfaceId),
   },
   system: {
     platform: 'win32' as const,

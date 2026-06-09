@@ -6,6 +6,7 @@ import WorkspaceContextMenu from './WorkspaceContextMenu';
 import SessionMenu from './SessionMenu';
 import OrchestrationPanel from './OrchestrationPanel';
 import { useStore } from '../../store';
+import { notifyPsmuxRenameError, renamePsmuxSurfaceSession } from '../../utils/psmux-rename';
 import '../../styles/sidebar.css';
 
 interface ContextMenuState {
@@ -19,23 +20,17 @@ interface PsmuxTerminalListItem {
   surface: SurfaceRef;
   surfaceIndex: number;
   title: string;
-  sessionShort: string;
 }
 
 function collectPsmuxTerminals(tree: SplitNode, items: PsmuxTerminalListItem[] = []): PsmuxTerminalListItem[] {
   if (tree.type === 'leaf') {
     tree.surfaces.forEach((surface, surfaceIndex) => {
       if (surface.type !== 'terminal') return;
-      const defaultTitle = `psmux ${items.length + 1}`;
-      const customTitle = surface.customTitle && surface.customTitle !== 'psmux'
-        ? surface.customTitle
-        : defaultTitle;
       items.push({
         paneId: tree.paneId,
         surface,
         surfaceIndex,
-        title: customTitle,
-        sessionShort: surface.psmuxSessionName?.replace(/^psmux-/, '').slice(0, 8) ?? '',
+        title: surface.psmuxSessionName ?? `psmux ${items.length + 1}`,
       });
     });
     return items;
@@ -93,7 +88,6 @@ export default function Sidebar({
   const [renamingTerminalId, setRenamingTerminalId] = useState<SurfaceId | null>(null);
   const [terminalRenameValue, setTerminalRenameValue] = useState('');
   const selectSurface = useStore((state) => state.selectSurface);
-  const renameSurface = useStore((state) => state.renameSurface);
 
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
@@ -298,15 +292,20 @@ export default function Sidebar({
 
   const startRenameTerminal = useCallback((item: PsmuxTerminalListItem) => {
     setRenamingTerminalId(item.surface.id);
-    setTerminalRenameValue(item.surface.customTitle && item.surface.customTitle !== 'psmux' ? item.surface.customTitle : item.title);
+    setTerminalRenameValue(item.surface.psmuxSessionName ?? item.title);
   }, []);
 
   const commitTerminalRename = useCallback((item: PsmuxTerminalListItem) => {
     if (!activeWorkspaceId) return;
-    renameSurface(activeWorkspaceId, item.paneId, item.surface.id, terminalRenameValue.trim());
-    setRenamingTerminalId(null);
-    setTerminalRenameValue('');
-  }, [activeWorkspaceId, renameSurface, terminalRenameValue]);
+    void renamePsmuxSurfaceSession(activeWorkspaceId, item.paneId, item.surface, terminalRenameValue)
+      .then((result) => {
+        if (!result.ok) notifyPsmuxRenameError(item.surface.id, result.error);
+      })
+      .finally(() => {
+        setRenamingTerminalId(null);
+        setTerminalRenameValue('');
+      });
+  }, [activeWorkspaceId, terminalRenameValue]);
 
   return (
     <div className="sidebar" style={{ width: sidebarWidth }}>
@@ -419,7 +418,6 @@ export default function Sidebar({
                 ) : (
                   <>
                     <span className="sidebar__terminal-name">{item.title}</span>
-                    {item.sessionShort && <span className="sidebar__terminal-session">{item.sessionShort}</span>}
                     <span
                       className="sidebar__terminal-rename-btn"
                       onClick={(event) => {

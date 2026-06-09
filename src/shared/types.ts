@@ -201,6 +201,7 @@ export const IPC_CHANNELS = {
   PSMUX_KILL_SESSION: 'psmux:kill-session',
   PSMUX_KILL_SESSIONS: 'psmux:kill-sessions',
   PSMUX_KILL_SESSIONS_SYNC: 'psmux:kill-sessions-sync',
+  PSMUX_RENAME_SESSION: 'psmux:rename-session',
   // Workspace
   WORKSPACE_CREATE: 'workspace:create',
   WORKSPACE_CLOSE: 'workspace:close',

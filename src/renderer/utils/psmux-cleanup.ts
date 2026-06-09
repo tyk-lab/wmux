@@ -1,20 +1,28 @@
 import { SplitNode, SurfaceRef } from '../../shared/types';
 
+interface PsmuxSessionTarget {
+  sessionName: string;
+  surfaceId: string;
+}
+
 export function killPsmuxSurface(surface: SurfaceRef): void {
   if (surface.type !== 'terminal') return;
   if (surface.psmuxSessionName) {
-    void window.wmux?.psmux?.killSession?.(surface.psmuxSessionName);
+    void window.wmux?.psmux?.killSession?.(surface.psmuxSessionName, surface.id);
   }
   window.wmux?.pty?.kill(surface.id);
 }
 
 export function killPsmuxSurfaces(surfaces: SurfaceRef[]): void {
-  const sessionNames = surfaces
+  const targets = surfaces
     .filter((surface) => surface.type === 'terminal' && surface.psmuxSessionName)
-    .map((surface) => surface.psmuxSessionName as string);
+    .map((surface) => ({
+      sessionName: surface.psmuxSessionName as string,
+      surfaceId: surface.id,
+    }));
 
-  if (sessionNames.length > 0) {
-    void window.wmux?.psmux?.killSessions?.(sessionNames);
+  if (targets.length > 0) {
+    void window.wmux?.psmux?.killSessions?.(targets);
   }
 
   for (const surface of surfaces) {
@@ -34,22 +42,25 @@ export function killPsmuxTree(tree: SplitNode): void {
   killPsmuxTree(tree.children[1]);
 }
 
-export function getPsmuxSessionNamesFromTree(tree: SplitNode): string[] {
+export function getPsmuxSessionTargetsFromTree(tree: SplitNode): PsmuxSessionTarget[] {
   if (tree.type === 'leaf') {
     return tree.surfaces
       .filter((surface) => surface.type === 'terminal' && surface.psmuxSessionName)
-      .map((surface) => surface.psmuxSessionName as string);
+      .map((surface) => ({
+        sessionName: surface.psmuxSessionName as string,
+        surfaceId: surface.id,
+      }));
   }
 
   return [
-    ...getPsmuxSessionNamesFromTree(tree.children[0]),
-    ...getPsmuxSessionNamesFromTree(tree.children[1]),
+    ...getPsmuxSessionTargetsFromTree(tree.children[0]),
+    ...getPsmuxSessionTargetsFromTree(tree.children[1]),
   ];
 }
 
 export function killPsmuxTreeSync(tree: SplitNode): void {
-  const sessionNames = getPsmuxSessionNamesFromTree(tree);
-  if (sessionNames.length > 0) {
-    window.wmux?.psmux?.killSessionsSync?.(sessionNames);
+  const targets = getPsmuxSessionTargetsFromTree(tree);
+  if (targets.length > 0) {
+    window.wmux?.psmux?.killSessionsSync?.(targets);
   }
 }

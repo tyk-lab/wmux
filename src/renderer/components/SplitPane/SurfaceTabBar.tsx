@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SurfaceRef, SurfaceId, PaneId, WorkspaceId } from '../../../shared/types';
+import { SurfaceRef, SurfaceId, PaneId } from '../../../shared/types';
 import { useStore } from '../../store';
+import { notifyPsmuxRenameError, renamePsmuxSurfaceSession } from '../../utils/psmux-rename';
 
 interface SurfaceTabBarProps {
   paneId: PaneId;
@@ -45,6 +46,9 @@ function getShellLabel(shell?: string): string | null {
 }
 
 function surfaceLabel(surface: SurfaceRef, agentLabel?: string, workspaceShell?: string): string {
+  if (surface.type === 'terminal' && surface.psmuxSessionName) {
+    return surface.psmuxSessionName;
+  }
   if (surface.customTitle) return surface.customTitle;
   if (agentLabel) return agentLabel;
   switch (surface.type) {
@@ -70,7 +74,7 @@ export default function SurfaceTabBar({
   onSplitDown,
   onDropSurface,
   onReorderSurface,
-  isDragActive,
+  isDragActive: _isDragActive,
   isFocused,
 }: SurfaceTabBarProps) {
   const [draggingSurfaceId, setDraggingSurfaceId] = useState<SurfaceId | null>(null);
@@ -90,17 +94,25 @@ export default function SurfaceTabBar({
     const activeSurface = surfaces[activeSurfaceIndex];
     if (!activeSurface) return;
     setRenamingId(activeSurface.id);
-    setRenameValue(activeSurface.customTitle || '');
+    setRenameValue(activeSurface.psmuxSessionName || activeSurface.customTitle || '');
   }, [surfaces, activeSurfaceIndex]);
 
   // Commit rename
   const commitRename = useCallback(() => {
     if (renamingId && activeWorkspaceId) {
-      renameSurface(activeWorkspaceId, paneId, renamingId, renameValue.trim());
+      const surface = surfaces.find((item) => item.id === renamingId);
+      if (surface?.type === 'terminal') {
+        void renamePsmuxSurfaceSession(activeWorkspaceId, paneId, surface, renameValue)
+          .then((result) => {
+            if (!result.ok) notifyPsmuxRenameError(surface.id, result.error);
+          });
+      } else {
+        renameSurface(activeWorkspaceId, paneId, renamingId, renameValue.trim());
+      }
     }
     setRenamingId(null);
     setRenameValue('');
-  }, [renamingId, activeWorkspaceId, paneId, renameValue, renameSurface]);
+  }, [renamingId, activeWorkspaceId, paneId, renameValue, renameSurface, surfaces]);
 
   // Cancel rename
   const cancelRename = useCallback(() => {
@@ -173,7 +185,7 @@ export default function SurfaceTabBar({
           } else if (sourcePaneId !== paneId && onDropSurface) {
             onDropSurface(sourcePaneId as PaneId, surfaceId as SurfaceId, paneId);
           }
-        } catch {}
+        } catch { /* Ignore malformed drag payloads from outside the app. */ }
       }}
       onDragLeave={() => setInsertIndex(null)}
     >
@@ -199,7 +211,7 @@ export default function SurfaceTabBar({
               onClick={() => onSelect(index)}
               onDoubleClick={() => {
                 setRenamingId(surface.id);
-                setRenameValue(surface.customTitle || '');
+                setRenameValue(surface.psmuxSessionName || surface.customTitle || '');
               }}
               draggable={!isRenaming}
               onDragStart={(e) => {
