@@ -22,6 +22,15 @@ interface PsmuxTerminalListItem {
   title: string;
 }
 
+interface PsmuxListSession {
+  name: string;
+  windows?: number;
+  created?: string;
+  attached: boolean;
+  managed: boolean;
+  raw: string;
+}
+
 function collectPsmuxTerminals(tree: SplitNode, items: PsmuxTerminalListItem[] = []): PsmuxTerminalListItem[] {
   if (tree.type === 'leaf') {
     tree.surfaces.forEach((surface, surfaceIndex) => {
@@ -87,6 +96,9 @@ export default function Sidebar({
   const [saveInputValue, setSaveInputValue] = useState('');
   const [renamingTerminalId, setRenamingTerminalId] = useState<SurfaceId | null>(null);
   const [terminalRenameValue, setTerminalRenameValue] = useState('');
+  const [psmuxSessions, setPsmuxSessions] = useState<PsmuxListSession[]>([]);
+  const [psmuxListError, setPsmuxListError] = useState<string | null>(null);
+  const [psmuxBusy, setPsmuxBusy] = useState(false);
   const selectSurface = useStore((state) => state.selectSurface);
 
   const activeWorkspace = useMemo(
@@ -97,6 +109,28 @@ export default function Sidebar({
     () => activeWorkspace ? collectPsmuxTerminals(activeWorkspace.splitTree) : [],
     [activeWorkspace],
   );
+
+  const refreshPsmuxSessions = useCallback(async () => {
+    try {
+      const result = await window.wmux?.psmux?.listSessions?.();
+      if (!result?.ok) {
+        setPsmuxListError(result?.error ?? 'Failed to run psmux ls');
+        return;
+      }
+      setPsmuxListError(null);
+      setPsmuxSessions(result.sessions ?? []);
+    } catch (err: unknown) {
+      setPsmuxListError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPsmuxSessions();
+    const interval = setInterval(() => {
+      void refreshPsmuxSessions();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [refreshPsmuxSessions]);
 
   useEffect(() => {
     let polling = false;
@@ -300,12 +334,31 @@ export default function Sidebar({
     void renamePsmuxSurfaceSession(activeWorkspaceId, item.paneId, item.surface, terminalRenameValue)
       .then((result) => {
         if (!result.ok) notifyPsmuxRenameError(item.surface.id, result.error);
+        if (result.ok) void refreshPsmuxSessions();
       })
       .finally(() => {
         setRenamingTerminalId(null);
         setTerminalRenameValue('');
       });
-  }, [activeWorkspaceId, terminalRenameValue]);
+  }, [activeWorkspaceId, refreshPsmuxSessions, terminalRenameValue]);
+
+  const handleKillPsmuxServer = useCallback(async () => {
+    setPsmuxBusy(true);
+    try {
+      const result = await window.wmux?.psmux?.killServer?.();
+      if (!result?.ok) {
+        setPsmuxListError(result?.error ?? 'Failed to run psmux kill-server');
+        return;
+      }
+      setPsmuxListError(null);
+      setPsmuxSessions([]);
+      void refreshPsmuxSessions();
+    } catch (err: unknown) {
+      setPsmuxListError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPsmuxBusy(false);
+    }
+  }, [refreshPsmuxSessions]);
 
   return (
     <div className="sidebar" style={{ width: sidebarWidth }}>
@@ -435,6 +488,48 @@ export default function Sidebar({
           })}
         </div>
       )}
+
+      <div className="sidebar__psmux-list">
+        <div className="sidebar__section-title">
+          <span>psmux ls</span>
+          <div className="sidebar__section-actions">
+            <button
+              className="sidebar__mini-btn"
+              onClick={() => void refreshPsmuxSessions()}
+              title="Refresh psmux ls"
+              disabled={psmuxBusy}
+            >
+              ↻
+            </button>
+            <button
+              className="sidebar__mini-btn sidebar__mini-btn--danger"
+              onClick={() => void handleKillPsmuxServer()}
+              title="psmux kill-server"
+              disabled={psmuxBusy}
+            >
+              kill
+            </button>
+          </div>
+        </div>
+        {psmuxListError ? (
+          <div className="sidebar__psmux-empty">{psmuxListError}</div>
+        ) : psmuxSessions.length === 0 ? (
+          <div className="sidebar__psmux-empty">No psmux sessions</div>
+        ) : (
+          psmuxSessions.map((session) => (
+            <div
+              key={session.name}
+              className="sidebar__psmux-item"
+              title={session.raw}
+            >
+              <span className="sidebar__psmux-name">{session.name}</span>
+              <span className="sidebar__psmux-meta">
+                {session.windows ?? '?'}w{session.attached ? ' · attached' : ''}{session.managed ? ' · wmux' : ''}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
 
       <div className="sidebar__footer">
         {saveInputOpen ? (

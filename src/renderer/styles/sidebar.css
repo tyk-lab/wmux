@@ -121,6 +121,45 @@
   letter-spacing: 0.08em;
 }
 
+.sidebar__section-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sidebar__mini-btn {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sidebar__mini-btn:hover:not(:disabled) {
+  background: rgba(0, 145, 255, 0.14);
+  border-color: rgba(0, 145, 255, 0.35);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sidebar__mini-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.sidebar__mini-btn--danger:hover:not(:disabled) {
+  background: rgba(229, 57, 53, 0.14);
+  border-color: rgba(229, 57, 53, 0.38);
+  color: #ffb3b3;
+}
+
 .sidebar__terminal-item {
   width: 100%;
   min-height: 26px;
@@ -193,6 +232,54 @@
   padding: 2px 5px;
   outline: none;
   font-family: inherit;
+}
+
+.sidebar__psmux-list {
+  flex-shrink: 0;
+  max-height: 28%;
+  overflow-y: auto;
+  padding: 7px 6px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar__psmux-item {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.sidebar__psmux-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sidebar__psmux-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Cascadia Mono', 'Consolas', monospace;
+  font-size: 11px;
+}
+
+.sidebar__psmux-meta {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.sidebar__psmux-empty {
+  padding: 8px 6px;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 11px;
 }
 
 .sidebar__footer {

@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.sendSync(IPC_CHANNELS.PSMUX_KILL_SESSIONS_SYNC, targets),
     renameSession: (oldName: string, newName: string, surfaceId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.PSMUX_RENAME_SESSION, oldName, newName, surfaceId),
+    listSessions: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_LIST_SESSIONS),
+    killServer: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.PSMUX_KILL_SERVER),
   },
   system: {
     platform: 'win32' as const,

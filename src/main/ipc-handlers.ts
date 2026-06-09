@@ -31,6 +31,14 @@ const ownedPsmuxSessions = new Map<string, { webContentsId: number; surfaceId?: 
 type PsmuxKillTarget = string | { sessionName: string; surfaceId?: SurfaceId };
 type PsmuxStartupMode = 'new' | 'attach';
 type PreparedPsmuxSession = { sessionName?: string; mode?: PsmuxStartupMode; created?: boolean };
+interface PsmuxSessionInfo {
+  name: string;
+  windows?: number;
+  created?: string;
+  attached: boolean;
+  managed: boolean;
+  raw: string;
+}
 
 function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
@@ -42,6 +50,46 @@ function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
       resolve({ ok: true });
     });
   });
+}
+
+function parsePsmuxList(stdout: string): PsmuxSessionInfo[] {
+  return stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^([^:\s]+):\s+(\d+)\s+windows?\s+\(created\s+(.+?)\)(?:\s+\(attached\))?$/u);
+      const name = match?.[1] ?? line.match(/^([^:\s]+):/u)?.[1] ?? line;
+      return {
+        name,
+        windows: match ? Number(match[2]) : undefined,
+        created: match?.[3],
+        attached: /\(attached\)\s*$/u.test(line),
+        managed: ownedPsmuxSessions.has(name),
+        raw: line,
+      };
+    })
+    .filter((session) => PSMUX_SESSION_NAME_RE.test(session.name));
+}
+
+function listPsmuxSessions(): Promise<{ ok: boolean; sessions: PsmuxSessionInfo[]; error?: string }> {
+  return new Promise((resolve) => {
+    execFile('psmux.exe', ['ls'], { windowsHide: true, timeout: 5000 }, (error, stdout, stderr) => {
+      if (error) {
+        const message = stderr?.trim() || error.message;
+        const noServer = /no server|failed to connect|server not found/i.test(message);
+        resolve({ ok: noServer, sessions: [], error: noServer ? undefined : message });
+        return;
+      }
+      resolve({ ok: true, sessions: parsePsmuxList(stdout) });
+    });
+  });
+}
+
+async function killPsmuxServer(): Promise<{ ok: boolean; error?: string }> {
+  const result = await runPsmux(['kill-server']);
+  if (result.ok) ownedPsmuxSessions.clear();
+  return result;
 }
 
 function isPsmuxSessionOwner(sessionName: string, webContentsId: number, surfaceId?: SurfaceId): boolean {
@@ -429,6 +477,14 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     surfaceId: SurfaceId,
   ) => {
     return renamePsmuxSession(oldName, newName, _event.sender.id, surfaceId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PSMUX_LIST_SESSIONS, async () => {
+    return listPsmuxSessions();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PSMUX_KILL_SERVER, async () => {
+    return killPsmuxServer();
   });
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_SHELLS, async () => {
