@@ -115,8 +115,9 @@ contextBridge.exposeInMainWorld('wmux', {
     },
   },
   clipboard: {
-    pasteImage: () => ipcRenderer.invoke('clipboard:paste-image'),
-    writeText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
+    readText: () => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),
+    writeText: (text: string) => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_WRITE_TEXT, text),
+    pasteImage: () => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_PASTE_IMAGE),
   },
   settings: {
     // Synchronous read so the renderer store can hydrate at module-load time.

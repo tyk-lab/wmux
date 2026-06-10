@@ -265,6 +265,10 @@ export const IPC_CHANNELS = {
   AGENT_LIST: 'agent:list',
   AGENT_KILL: 'agent:kill',
   AGENT_UPDATE: 'agent:update',
+  // Clipboard
+  CLIPBOARD_READ_TEXT: 'clipboard:read-text',
+  CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
+  CLIPBOARD_PASTE_IMAGE: 'clipboard:paste-image',
   // CDP (browser.* pipe methods map to these internal IPC channels)
   CDP_ATTACH: 'cdp:attach',
   CDP_DETACH: 'cdp:detach',

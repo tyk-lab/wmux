@@ -157,6 +157,7 @@ export function useKeyboardShortcuts(
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent): void {
+      if (e.defaultPrevented) return;
       if (!isSafeToIntercept(e)) return;
 
       const shortcutEntries = Object.entries(shortcuts) as [ShortcutAction, ShortcutBinding][];
@@ -417,13 +418,14 @@ export function useKeyboardShortcuts(
         case 'copy': {
           const selection = window.getSelection()?.toString();
           if (selection) {
-            navigator.clipboard.writeText(selection);
+            window.wmux?.clipboard?.writeText?.(selection) ?? navigator.clipboard.writeText(selection);
           }
           break;
         }
 
         case 'paste': {
-          navigator.clipboard.readText().then((text) => {
+          const readText = window.wmux?.clipboard?.readText?.() ?? navigator.clipboard.readText();
+          readText.then((text: string) => {
             if (!text || !focusedPaneId || !activeWorkspaceId) return;
             const ws = useStore.getState().workspaces.find((w) => w.id === activeWorkspaceId);
             if (!ws) return;
@@ -431,7 +433,11 @@ export function useKeyboardShortcuts(
             if (!leaf) return;
             const activeSurf = leaf.surfaces[leaf.activeSurfaceIndex];
             if (activeSurf?.type === 'terminal') {
-              window.wmux?.pty?.write(activeSurf.id, text);
+              document.dispatchEvent(
+                new CustomEvent('wmux:terminal-paste', {
+                  detail: { surfaceId: activeSurf.id, text },
+                }),
+              );
             }
           });
           break;

@@ -57,6 +57,8 @@ interface CreatedPty {
   psmuxStartupMode?: PsmuxStartupMode;
 }
 
+interface TerminalPasteEvent extends CustomEvent<{ surfaceId: string; text: string }> {}
+
 function treeHasSurface(node: SplitNode, surfaceId: string): boolean {
   if (node.type === 'leaf') return node.surfaces.some((surface) => surface.id === surfaceId);
   return treeHasSurface(node.children[0], surfaceId) || treeHasSurface(node.children[1], surfaceId);
@@ -163,6 +165,34 @@ async function fetchTheme(name: string): Promise<ThemeConfig> {
       fontFamily: 'Cascadia Mono', fontSize: 13, backgroundOpacity: 1.0,
     } as ThemeConfig);
   }
+}
+
+function decodeBase64Utf8(value: string): string {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+async function readClipboardText(): Promise<string> {
+  if (window.wmux?.clipboard?.readText) {
+    return window.wmux.clipboard.readText();
+  }
+  return navigator.clipboard.readText();
+}
+
+function writeClipboardText(text: string): void {
+  const write = window.wmux?.clipboard?.writeText
+    ? window.wmux.clipboard.writeText(text)
+    : navigator.clipboard.writeText(text);
+  Promise.resolve(write).catch(() => {});
+}
+
+async function pasteClipboardText(terminal: Terminal): Promise<void> {
+  const text = await readClipboardText();
+  if (text) terminal.paste(text);
 }
 
 export function useTerminal({
@@ -279,9 +309,15 @@ export function useTerminal({
     };
 
     const setPsmuxCopyModeActive = (active: boolean): void => {
-      if (psmuxCopyModeActiveRef.current === active) return;
-      psmuxCopyModeActiveRef.current = active;
+      const changed = psmuxCopyModeActiveRef.current !== active;
+      if (changed) psmuxCopyModeActiveRef.current = active;
       onCopyModeActiveChangeRef.current?.(active);
+    };
+
+    const focusTerminalSoon = (): void => {
+      requestAnimationFrame(() => {
+        try { terminal.focus(); } catch { /* no-op */ }
+      });
     };
 
     const enterPsmuxCopyMode = (): boolean => {
@@ -290,6 +326,14 @@ export function useTerminal({
         if (!writeToPty('\x02[')) return false;
         setPsmuxCopyModeActive(true);
       }
+      return true;
+    };
+
+    const exitPsmuxCopyMode = (): boolean => {
+      const wasActive = psmuxCopyModeActiveRef.current;
+      if (wasActive && !writeToPty('\x1b')) return false;
+      setPsmuxCopyModeActive(false);
+      focusTerminalSoon();
       return true;
     };
 
@@ -350,6 +394,61 @@ export function useTerminal({
     wheelHost.addEventListener('wheel', onWheelCapture, { capture: true, passive: false });
     cleanupFnsRef.current.push(() => {
       wheelHost.removeEventListener('wheel', onWheelCapture, { capture: true } as any);
+    });
+
+    const onEscapeCapture = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape' || !psmuxCopyModeActiveRef.current) return;
+      if (exitPsmuxCopyMode()) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    };
+    document.addEventListener('keydown', onEscapeCapture, { capture: true });
+    cleanupFnsRef.current.push(() => {
+      document.removeEventListener('keydown', onEscapeCapture, { capture: true } as any);
+    });
+
+    const onTerminalPaste = (event: Event) => {
+      const pasteEvent = event as TerminalPasteEvent;
+      if (pasteEvent.detail.surfaceId !== surfaceId || !pasteEvent.detail.text) return;
+      terminal.paste(pasteEvent.detail.text);
+    };
+    document.addEventListener('wmux:terminal-paste', onTerminalPaste);
+    cleanupFnsRef.current.push(() => {
+      document.removeEventListener('wmux:terminal-paste', onTerminalPaste);
+    });
+
+    const stopNativeRightClick = (ev: MouseEvent) => {
+      if (ev.button !== 2) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    const onContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      const selection = terminal.getSelection();
+      if (selection) {
+        writeClipboardText(selection);
+        terminal.clearSelection();
+        return;
+      }
+
+      if (ptyIdRef.current) {
+        pasteClipboardText(terminal).catch(() => {});
+      }
+    };
+
+    wheelHost.addEventListener('mousedown', stopNativeRightClick, { capture: true });
+    wheelHost.addEventListener('mouseup', stopNativeRightClick, { capture: true });
+    wheelHost.addEventListener('auxclick', stopNativeRightClick, { capture: true });
+    wheelHost.addEventListener('contextmenu', onContextMenu, { capture: true });
+    cleanupFnsRef.current.push(() => {
+      wheelHost.removeEventListener('mousedown', stopNativeRightClick, { capture: true } as any);
+      wheelHost.removeEventListener('mouseup', stopNativeRightClick, { capture: true } as any);
+      wheelHost.removeEventListener('auxclick', stopNativeRightClick, { capture: true } as any);
+      wheelHost.removeEventListener('contextmenu', onContextMenu, { capture: true } as any);
     });
 
     // Korean/CJK IME reliability fix.
@@ -431,7 +530,7 @@ export function useTerminal({
       const b64 = semi >= 0 ? data.slice(semi + 1) : data;
       if (!b64 || b64 === '?') return true; // ignore read requests
       try {
-        const text = atob(b64);
+        const text = decodeBase64Utf8(b64);
         if (text) window.wmux?.clipboard?.writeText?.(text);
       } catch { /* fallback themes are handled below */ }
       return true;
@@ -461,23 +560,32 @@ export function useTerminal({
 
     // Attach custom key handler for Ctrl+C and Ctrl+V (image paste)
     terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+
       if (event.type === 'keydown' && psmuxCopyModeActiveRef.current) {
-        const key = event.key.toLowerCase();
-        if (event.key === 'Escape' || event.key === 'Enter' || key === 'q' || (event.ctrlKey && key === 'c')) {
+        if (event.key === 'Escape') {
+          if (exitPsmuxCopyMode()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return false;
+          }
+        }
+
+        if (event.key === 'Enter' || key === 'q' || (event.ctrlKey && key === 'c')) {
           setPsmuxCopyModeActive(false);
         }
       }
 
-      if (event.type === 'keydown' && event.ctrlKey && event.key === 'c') {
+      if (event.type === 'keydown' && event.ctrlKey && key === 'c') {
         const selection = terminal.getSelection();
         if (selection) {
-          navigator.clipboard.writeText(selection).catch(() => {});
+          writeClipboardText(selection);
           terminal.clearSelection();
           return false;
         }
       }
       // Ctrl+V: paste text from clipboard (or image path if clipboard has image)
-      if (event.type === 'keydown' && event.ctrlKey && event.key === 'v') {
+      if (event.type === 'keydown' && event.ctrlKey && key === 'v') {
         // Prevent the browser 'paste' event — without this, xterm's built-in
         // paste handler ALSO writes the clipboard content through onData,
         // causing the text to appear twice in the terminal.
@@ -497,12 +605,11 @@ export function useTerminal({
           // If no image, paste text
           if (!handled && ptyIdRef.current) {
             try {
-              const text = await navigator.clipboard.readText();
               // Use terminal.paste() — it honors bracketed-paste mode and emits
               // the data through onData (already wired to PTY). Writing raw to
               // pty.write strips the \x1b[200~/\x1b[201~ wrappers, so apps like
               // Claude Code see each \n as Enter and only the first line lands.
-              if (text) terminal.paste(text);
+              await pasteClipboardText(terminal);
             } catch { /* URL detection is best-effort for terminal output */ }
           }
         })();
