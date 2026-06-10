@@ -31,6 +31,17 @@
   --wmux-text: #e8e2da;
 }
 
+:root[data-ui-theme="vscode-studio-dark"] {
+  --wmux-accent: #007acc;
+  --accent-rgb: 0, 122, 204;
+  --wmux-bg-chrome: #181818;
+  --wmux-bg-base: #1e1e1e;
+  --wmux-bg-elevated: #252526;
+  --wmux-bg-2: #2d2d30;
+  --wmux-bg-3: #3c3c3c;
+  --wmux-text: #cccccc;
+}
+
 * {
   margin: 0;
   padding: 0;

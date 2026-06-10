@@ -1,4 +1,5 @@
 import { useStore } from '../../store';
+import type { UiTheme } from '../../store/settings-slice';
 
 export default function SidebarSettings() {
   const { sidebarPrefs, setSidebarPrefs } = useStore();
@@ -76,11 +77,12 @@ export default function SidebarSettings() {
           className="settings-select"
           value={sidebarPrefs.uiTheme}
           onChange={(e) =>
-            setSidebarPrefs({ uiTheme: e.target.value as 'codex' | 'claude' })
+            setSidebarPrefs({ uiTheme: e.target.value as UiTheme })
           }
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
+          <option value="vscode-studio-dark">VS Code Studio Dark</option>
         </select>
       </div>
 

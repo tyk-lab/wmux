@@ -163,6 +163,8 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, ShortcutBinding> = {
 
 // ─── Sidebar settings ─────────────────────────────────────────────────────────
 
+export type UiTheme = 'codex' | 'claude' | 'vscode-studio-dark';
+
 export interface SidebarPrefs {
   showGitBranch: boolean;
   showWorkingDir: boolean;
@@ -173,7 +175,7 @@ export interface SidebarPrefs {
   activeTabIndicator: 'leftRail' | 'solidFill';
   backgroundOpacity: number; // 0–100
   /** UI chrome 配色方案（侧栏/标题栏/标签等），独立于终端 xterm 主题。 */
-  uiTheme: 'codex' | 'claude';
+  uiTheme: UiTheme;
 }
 
 export const DEFAULT_SIDEBAR_PREFS: SidebarPrefs = {
