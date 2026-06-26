@@ -159,7 +159,7 @@ Windows Terminal 有标签页却没有完备通知机制，只能逐个检查；
 
 因此我做了 wmux：它不替代 Claude Code，也不改变 Claude Code 的行为，只做可视化增强。`localhost:9222` 上的 CDP 代理让 Claude Code 浏览器工具直接驱动 wmux 浏览器面板，你可以实时看到每次页面加载、点击与表单输入。`settings.json` 中的自动注入 hooks 负责上报工具调用、分支、终端状态等到侧边栏。
 
-首次启动时，wmux 会自动配置 `~/.claude/CLAUDE.md` 与 `~/.claude/settings.json`，安装 wmux-orchestrator 插件，并启动 CDP 代理。无需额外 API Key，只要现有 Claude Code 会话即可。
+首次启动时，wmux 会自动配置 `~/.claude/settings.json` 中的 hooks，安装 wmux-orchestrator 插件，并启动 CDP 代理；不会自动改写 Claude Code 或 Codex/OpenCode 的全局提示词文件。无需额外 API Key，只要现有 Claude Code 会话即可。
 
 所有能力均可通过 `wmux` CLI 或命名管道自动化，CLI 协议与 cmux 兼容。
 

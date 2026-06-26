@@ -12,8 +12,8 @@ import { loadSession, saveSession, handleVersionChange, SessionData } from './se
 import { WindowManager } from './window-manager';
 import { initAutoUpdater } from './updater';
 import { initUpdateChecker, getLatestUpdate } from './update-checker';
-import { ensureClaudeContext, ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
-import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
+import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
+import { ensureOpencodePlugin } from './opencode-context';
 import { applyExternalActivity } from './claude-observer';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import fs from 'fs';
@@ -167,12 +167,9 @@ app.setAppUserModelId('com.wmux.app');
 stripMotw();
 
 app.whenReady().then(() => {
-  // Inject wmux instructions into ~/.claude/CLAUDE.md for Claude Code awareness
-  ensureClaudeContext();
   ensureClaudeHooks();
   ensureChromeDevtoolsConfig();
   ensureOrchestratorPlugin();
-  ensureOpencodeContext();
   ensureOpencodePlugin();
 
   // IPC: renderer pushes session state (auto-save response or explicit save)
