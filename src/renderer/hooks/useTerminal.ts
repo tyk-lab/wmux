@@ -99,7 +99,7 @@ function setResolvedPsmuxSessionForSurface(
     customTitle: surface?.customTitle ?? createPsmuxDisplayName(sessionName),
     psmuxSessionName: sessionName,
     psmuxAttachExisting: startupMode === 'attach',
-    startupCommand: createPsmuxStartupCommand(sessionName, startupMode),
+    startupCommand: createPsmuxStartupCommand(sessionName, startupMode, surfaceId),
   });
 }
 
@@ -647,7 +647,7 @@ export function useTerminal({
       startupMode: PsmuxStartupMode = 'new',
     ) => {
       const command = (resolvedPsmuxSessionName
-        ? createPsmuxStartupCommand(resolvedPsmuxSessionName, startupMode)
+        ? createPsmuxStartupCommand(resolvedPsmuxSessionName, startupMode, surfaceId)
         : startupCommand)?.trim();
       if (!command) return;
       window.wmux.pty.write(id, `${command}\r`);

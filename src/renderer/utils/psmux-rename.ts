@@ -46,7 +46,7 @@ export async function renamePsmuxSurfaceSession(
     customTitle: newName,
     psmuxSessionName: newName,
     psmuxAttachExisting: true,
-    startupCommand: createPsmuxStartupCommand(newName, 'attach'),
+    startupCommand: createPsmuxStartupCommand(newName, 'attach', surface.id),
   });
   return { ok: true };
 }

@@ -19,6 +19,8 @@ import { AgentManager } from './agent-manager';
 import { saveNamedSession, loadNamedSession, listNamedSessions, deleteNamedSession, loadSession } from './session-persistence';
 import { loadSettings, saveSetting } from './settings-store';
 import { getChangedFiles, getFileDiff } from './diff-provider';
+import { waitForPsmuxSessionReady } from './psmux-session-coordinator';
+import { getPsmuxNamespace, withPsmuxNamespace } from '../shared/psmux';
 
 const ptyManager = new PtyManager();
 const notificationManager = new NotificationManager();
@@ -27,7 +29,9 @@ const agentManager = new AgentManager(ptyManager);
 const PSMUX_SESSION_NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/u;
 const PSMUX_SHORT_SESSION_NAME_RE = /^psmux-(\d+)$/u;
 const PSMUX_MANAGED_SESSION_NAME_PREFIX = 'wmx-';
-const ownedPsmuxSessions = new Map<string, { webContentsId: number; surfaceId?: SurfaceId }>();
+const PSMUX_SESSION_READY_TIMEOUT_MS = 5000;
+type PsmuxSessionOwner = { webContentsId: number; surfaceId?: SurfaceId; namespace?: string };
+const ownedPsmuxSessions = new Map<string, PsmuxSessionOwner>();
 type PsmuxKillTarget = string | { sessionName: string; surfaceId?: SurfaceId };
 type PsmuxStartupMode = 'new' | 'attach';
 type PreparedPsmuxSession = { sessionName?: string; mode?: PsmuxStartupMode; created?: boolean };
@@ -40,9 +44,13 @@ interface PsmuxSessionInfo {
   raw: string;
 }
 
-function runPsmux(args: string[]): Promise<{ ok: boolean; error?: string }> {
+function runPsmux(
+  args: string[],
+  timeout = 5000,
+  namespace?: string,
+): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
-    execFile('psmux.exe', args, { windowsHide: true, timeout: 5000 }, (error, _stdout, stderr) => {
+    execFile('psmux.exe', withPsmuxNamespace(namespace, args), { windowsHide: true, timeout }, (error, _stdout, stderr) => {
       if (error) {
         resolve({ ok: false, error: stderr?.trim() || error.message });
         return;
@@ -72,9 +80,9 @@ function parsePsmuxList(stdout: string): PsmuxSessionInfo[] {
     .filter((session) => PSMUX_SESSION_NAME_RE.test(session.name));
 }
 
-function listPsmuxSessions(): Promise<{ ok: boolean; sessions: PsmuxSessionInfo[]; error?: string }> {
+function listPsmuxSessionsInNamespace(namespace?: string): Promise<{ ok: boolean; sessions: PsmuxSessionInfo[]; error?: string }> {
   return new Promise((resolve) => {
-    execFile('psmux.exe', ['ls'], { windowsHide: true, timeout: 5000 }, (error, stdout, stderr) => {
+    execFile('psmux.exe', withPsmuxNamespace(namespace, ['ls']), { windowsHide: true, timeout: 5000 }, (error, stdout, stderr) => {
       if (error) {
         const message = stderr?.trim() || error.message;
         const noServer = /no server|failed to connect|server not found/i.test(message);
@@ -86,10 +94,36 @@ function listPsmuxSessions(): Promise<{ ok: boolean; sessions: PsmuxSessionInfo[
   });
 }
 
+async function listPsmuxSessions(): Promise<{ ok: boolean; sessions: PsmuxSessionInfo[]; error?: string }> {
+  const namespaces = Array.from(new Set(
+    Array.from(ownedPsmuxSessions.values())
+      .map((owner) => owner.namespace)
+      .filter((namespace): namespace is string => !!namespace),
+  ));
+  const results = await Promise.all([
+    listPsmuxSessionsInNamespace(),
+    ...namespaces.map((namespace) => listPsmuxSessionsInNamespace(namespace)),
+  ]);
+  const sessions = Array.from(new Map(
+    results.flatMap((result) => result.sessions).map((session) => [session.name, session]),
+  ).values());
+  const error = results.find((result) => !result.ok)?.error;
+  return { ok: !error, sessions, ...(error ? { error } : {}) };
+}
+
 async function killPsmuxServer(): Promise<{ ok: boolean; error?: string }> {
-  const result = await runPsmux(['kill-server']);
-  if (result.ok) ownedPsmuxSessions.clear();
-  return result;
+  const namespaces = Array.from(new Set(
+    Array.from(ownedPsmuxSessions.values())
+      .map((owner) => owner.namespace)
+      .filter((namespace): namespace is string => !!namespace),
+  ));
+  const results = await Promise.all([
+    runPsmux(['kill-server']),
+    ...namespaces.map((namespace) => runPsmux(['kill-server'], 5000, namespace)),
+  ]);
+  const failure = results.find((result) => !result.ok && !/no server|failed to connect|server not found/i.test(result.error ?? ''));
+  if (!failure) ownedPsmuxSessions.clear();
+  return failure ?? { ok: true };
 }
 
 function isPsmuxSessionOwner(sessionName: string, webContentsId: number, surfaceId?: SurfaceId): boolean {
@@ -98,9 +132,9 @@ function isPsmuxSessionOwner(sessionName: string, webContentsId: number, surface
   return !surfaceId || owner.surfaceId === surfaceId;
 }
 
-function listPsmuxSessionNamesSync(): { ok: boolean; names: Set<string> } {
+function listPsmuxSessionNamesSync(namespace?: string): { ok: boolean; names: Set<string> } {
   try {
-    const stdout = execFileSync('psmux.exe', ['ls'], {
+    const stdout = execFileSync('psmux.exe', withPsmuxNamespace(namespace, ['ls']), {
       encoding: 'utf8',
       windowsHide: true,
       timeout: 3000,
@@ -135,8 +169,12 @@ function createShortPsmuxSessionName(usedNames: Set<string> = new Set()): string
   return `${PSMUX_MANAGED_SESSION_NAME_PREFIX}${crypto.randomUUID()}`;
 }
 
-function getNextPsmuxSessionName(requestedName: string, skippedNames: Set<string> = new Set()): string {
-  const listedSessions = listPsmuxSessionNamesSync();
+function getNextPsmuxSessionName(
+  requestedName: string,
+  skippedNames: Set<string> = new Set(),
+  namespace?: string,
+): string {
+  const listedSessions = listPsmuxSessionNamesSync(namespace);
   const usedNames = addOwnedPsmuxSessionNames(new Set(listedSessions.names));
   for (const skippedName of skippedNames) {
     usedNames.add(skippedName);
@@ -162,22 +200,26 @@ function getNextPsmuxSessionName(requestedName: string, skippedNames: Set<string
 function allocatePsmuxSession(
   requestedName: string | undefined,
   attachExisting?: boolean,
+  namespace?: string,
 ): { sessionName?: string; mode?: PsmuxStartupMode } {
   if (!requestedName || !PSMUX_SESSION_NAME_RE.test(requestedName)) return {};
 
-  const listedSessions = listPsmuxSessionNamesSync();
-  if (!listedSessions.ok) return { sessionName: createShortPsmuxSessionName(), mode: 'new' };
+  const listedSessions = listPsmuxSessionNamesSync(namespace);
+  if (!listedSessions.ok) return { sessionName: requestedName, mode: 'new' };
 
   const usedNames = addOwnedPsmuxSessionNames(listedSessions.names);
   if (!usedNames.has(requestedName)) return { sessionName: requestedName, mode: 'new' };
   if (attachExisting) return { sessionName: requestedName, mode: 'attach' };
 
-  return { sessionName: getNextPsmuxSessionName(requestedName), mode: 'new' };
+  return { sessionName: getNextPsmuxSessionName(requestedName, new Set(), namespace), mode: 'new' };
 }
 
-function createDetachedPsmuxSessionSync(sessionName: string): { ok: boolean; duplicate?: boolean; error?: string } {
+function createDetachedPsmuxSessionSync(
+  sessionName: string,
+  namespace?: string,
+): { ok: boolean; duplicate?: boolean; error?: string } {
   try {
-    execFileSync('psmux.exe', ['new', '-d', '-s', sessionName], {
+    execFileSync('psmux.exe', withPsmuxNamespace(namespace, ['new', '-d', '-s', sessionName]), {
       windowsHide: true,
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -197,26 +239,54 @@ function createDetachedPsmuxSessionSync(sessionName: string): { ok: boolean; dup
   }
 }
 
-function preparePsmuxSession(
+async function isPsmuxSessionReady(sessionName: string, namespace?: string): Promise<boolean> {
+  return (await runPsmux(['has-session', '-t', sessionName], 1000, namespace)).ok;
+}
+
+async function waitForNamedPsmuxSession(sessionName: string, namespace?: string): Promise<boolean> {
+  return waitForPsmuxSessionReady(sessionName, {
+    isReady: (name) => isPsmuxSessionReady(name, namespace),
+    timeoutMs: PSMUX_SESSION_READY_TIMEOUT_MS,
+  });
+}
+
+async function preparePsmuxSession(
   requestedName: string | undefined,
   attachExisting?: boolean,
-): PreparedPsmuxSession {
-  const allocated = allocatePsmuxSession(requestedName, attachExisting);
-  if (!allocated.sessionName || allocated.mode !== 'new') return allocated;
+  namespace?: string,
+): Promise<PreparedPsmuxSession> {
+  const allocated = allocatePsmuxSession(requestedName, attachExisting, namespace);
+  if (!allocated.sessionName) return allocated;
 
-  let sessionName = allocated.sessionName;
+  if (allocated.mode === 'attach' && await waitForNamedPsmuxSession(allocated.sessionName, namespace)) {
+    return allocated;
+  }
+
+  // A listed but unaddressable session is a stale/incomplete server claim.
+  // Allocate a fresh name instead of letting psmux fall back to the last session.
+  let sessionName = allocated.mode === 'attach'
+    ? getNextPsmuxSessionName(allocated.sessionName, new Set(), namespace)
+    : allocated.sessionName;
   let lastError = '';
   const skippedNames = new Set<string>();
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = createDetachedPsmuxSessionSync(sessionName);
-    if (result.ok) return { sessionName, mode: 'attach', created: true };
+    const result = createDetachedPsmuxSessionSync(sessionName, namespace);
+    if (result.ok) {
+      if (await waitForNamedPsmuxSession(sessionName, namespace)) {
+        return { sessionName, mode: 'attach', created: true };
+      }
+
+      killCreatedPsmuxSessionSync(sessionName, namespace);
+      lastError = `session was not addressable within ${PSMUX_SESSION_READY_TIMEOUT_MS}ms`;
+      break;
+    }
 
     lastError = result.error ?? '';
     if (!result.duplicate) break;
 
     skippedNames.add(sessionName);
-    sessionName = getNextPsmuxSessionName(sessionName, skippedNames);
+    sessionName = getNextPsmuxSessionName(sessionName, skippedNames, namespace);
   }
 
   throw new Error(`Failed to create psmux session ${sessionName}: ${lastError || 'unknown error'}`);
@@ -246,7 +316,8 @@ async function killPsmuxSession(
   if (webContentsId !== undefined && !isPsmuxSessionOwner(sessionName, webContentsId, surfaceId)) {
     return { ok: false, error: `Refusing to kill psmux session from another surface: ${sessionName}` };
   }
-  const result = await runPsmux(['kill-session', '-t', sessionName]);
+  const owner = ownedPsmuxSessions.get(sessionName);
+  const result = await runPsmux(['kill-session', '-t', sessionName], 5000, owner?.namespace);
   if (result.ok) {
     ownedPsmuxSessions.delete(sessionName);
     if (surfaceId) ptyManager.detach(surfaceId);
@@ -277,7 +348,7 @@ async function renamePsmuxSession(
   }
 
   const owner = ownedPsmuxSessions.get(oldName);
-  const result = await runPsmux(['rename-session', '-t', oldName, newName]);
+  const result = await runPsmux(['rename-session', '-t', oldName, newName], 5000, owner?.namespace);
   if (result.ok) {
     ownedPsmuxSessions.delete(oldName);
     ownedPsmuxSessions.set(newName, owner ?? { webContentsId, surfaceId });
@@ -299,8 +370,9 @@ function killPsmuxSessionSync(
   if (webContentsId !== undefined && !isPsmuxSessionOwner(sessionName, webContentsId, surfaceId)) {
     return { ok: false, error: `Refusing to kill psmux session from another surface: ${sessionName}` };
   }
+  const owner = ownedPsmuxSessions.get(sessionName);
   try {
-    execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+    execFileSync('psmux.exe', withPsmuxNamespace(owner?.namespace, ['kill-session', '-t', sessionName]), {
       windowsHide: true,
       timeout: 5000,
       stdio: 'ignore',
@@ -313,10 +385,10 @@ function killPsmuxSessionSync(
   }
 }
 
-function killCreatedPsmuxSessionSync(sessionName: string): void {
+function killCreatedPsmuxSessionSync(sessionName: string, namespace?: string): void {
   if (!PSMUX_SESSION_NAME_RE.test(sessionName)) return;
   try {
-    execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+    execFileSync('psmux.exe', withPsmuxNamespace(namespace, ['kill-session', '-t', sessionName]), {
       windowsHide: true,
       timeout: 5000,
       stdio: 'ignore',
@@ -349,7 +421,7 @@ function killPsmuxSessionsSync(
 export function killOwnedPsmuxSessionsSync(): void {
   for (const [sessionName, owner] of Array.from(ownedPsmuxSessions.entries())) {
     try {
-      execFileSync('psmux.exe', ['kill-session', '-t', sessionName], {
+      execFileSync('psmux.exe', withPsmuxNamespace(owner.namespace, ['kill-session', '-t', sessionName]), {
         windowsHide: true,
         timeout: 5000,
         stdio: 'ignore',
@@ -377,6 +449,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
 
   ipcMain.handle(IPC_CHANNELS.PTY_CREATE, async (_event, options) => {
     let psmuxSession: PreparedPsmuxSession | undefined;
+    const namespace = getPsmuxNamespace(options.surfaceId);
     try {
       if (options.surfaceId && ptyManager.has(options.surfaceId)) {
         const existingPsmuxSessionName = findOwnedPsmuxSessionBySurface(_event.sender.id, options.surfaceId);
@@ -390,7 +463,11 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         };
       }
 
-      psmuxSession = preparePsmuxSession(options.psmuxSessionName, options.psmuxAttachExisting);
+      psmuxSession = await preparePsmuxSession(
+        options.psmuxSessionName,
+        options.psmuxAttachExisting,
+        namespace,
+      );
       const psmuxSessionName = psmuxSession.sessionName;
       const resolvedOptions = {
         ...options,
@@ -402,6 +479,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         ownedPsmuxSessions.set(psmuxSessionName, {
           webContentsId: _event.sender.id,
           surfaceId: options.surfaceId,
+          namespace,
         });
       }
       const id = created.id;
@@ -426,7 +504,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         : created;
     } catch (err: unknown) {
       if (psmuxSession?.created && psmuxSession.sessionName) {
-        killCreatedPsmuxSessionSync(psmuxSession.sessionName);
+        killCreatedPsmuxSessionSync(psmuxSession.sessionName, namespace);
       }
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Failed to create terminal: ${msg}`);

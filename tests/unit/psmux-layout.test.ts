@@ -38,13 +38,16 @@ describe('psmux layout', () => {
       customTitle: createPsmuxDisplayName(leftName),
     });
     expect(tree.children[0].surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(leftName),
+      createPsmuxStartupCommand(leftName, 'new', tree.children[0].surfaces[0].id),
+    );
+    expect(tree.children[0].surfaces[0].startupCommand).not.toBe(
+      tree.children[1].surfaces[0].startupCommand,
     );
     expect(tree.children[1].surfaces[0]).toMatchObject({
       customTitle: createPsmuxDisplayName(rightName),
     });
     expect(tree.children[1].surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(rightName),
+      createPsmuxStartupCommand(rightName, 'new', tree.children[1].surfaces[0].id),
     );
   });
 
@@ -134,7 +137,7 @@ describe('psmux layout', () => {
       customTitle: createPsmuxDisplayName(sessionName),
     });
     expect(firstTree.surfaces[0].startupCommand).toBe(
-      createPsmuxStartupCommand(sessionName, 'attach'),
+      createPsmuxStartupCommand(sessionName, 'attach', firstTree.surfaces[0].id),
     );
     expect(firstTree.surfaces[0].psmuxAttachExisting).toBe(true);
   });
@@ -158,7 +161,7 @@ describe('psmux layout', () => {
     expect(tree.surfaces[0]).toMatchObject({
       psmuxSessionName: 'work-api',
       psmuxAttachExisting: true,
-      startupCommand: 'psmux.exe attach -t work-api',
+      startupCommand: 'psmux.exe -L surf-1 attach -t work-api',
     });
   });
 

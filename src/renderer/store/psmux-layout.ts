@@ -1,4 +1,5 @@
 import { PaneId, SplitNode, SurfaceId, SurfaceRef, WorkspaceInfo } from '../../shared/types';
+import { getPsmuxNamespace } from '../../shared/psmux';
 import { v4 as uuid } from 'uuid';
 
 export const DEFAULT_PSMUX_COMMAND = 'psmux.exe';
@@ -23,10 +24,17 @@ export function createPsmuxDisplayName(sessionName: string): string {
   return sessionName;
 }
 
-export function createPsmuxStartupCommand(sessionName: string, mode: PsmuxStartupMode = 'new'): string {
-  return mode === 'attach'
-    ? `${DEFAULT_PSMUX_COMMAND} attach -t ${sessionName}`
-    : `${DEFAULT_PSMUX_COMMAND} new -s ${sessionName}`;
+export function createPsmuxStartupCommand(
+  sessionName: string,
+  mode: PsmuxStartupMode = 'new',
+  surfaceId?: string,
+): string {
+  const namespace = getPsmuxNamespace(surfaceId);
+  const command = mode === 'attach'
+    ? `attach -t ${sessionName}`
+    : `new -s ${sessionName}`;
+  const namespaceArg = namespace ? ` -L ${namespace}` : '';
+  return `${DEFAULT_PSMUX_COMMAND}${namespaceArg} ${command}`;
 }
 
 function reservePsmuxSessionName(surface: SurfaceRef, usedSessionNames: Set<string>): string {
@@ -60,6 +68,7 @@ export function withPsmuxTerminalDefaults(
     startupCommand: createPsmuxStartupCommand(
       psmuxSessionName,
       options.attachExisting || surface.psmuxAttachExisting ? 'attach' : 'new',
+      surface.id,
     ),
   };
 }
