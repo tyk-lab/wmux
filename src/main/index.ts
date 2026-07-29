@@ -13,7 +13,7 @@ import { sessionWindows, MAX_RESTORED_WINDOWS } from './session-windows';
 import { WindowManager } from './window-manager';
 import { initAutoUpdater, requestUpdateNow, getUpdateState } from './updater';
 import { initUpdateChecker, getLatestUpdate } from './update-checker';
-import { ensureClaudeContext, ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
+import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { startOrchestrationWatcher } from './orchestration-watcher';
@@ -382,8 +382,6 @@ app.whenReady().then(() => {
   // A losing second instance is already quitting; don't run startup side effects.
   if (!gotInstanceLock) return;
   hardenWebContents();
-  // Inject wmux instructions into ~/.claude/CLAUDE.md for Claude Code awareness
-  ensureClaudeContext();
   ensureClaudeHooks();
   ensureChromeDevtoolsConfig();
   ensureOrchestratorPlugin();

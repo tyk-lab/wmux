@@ -60,7 +60,7 @@ docs/             Planning docs
 | `agent-manager.ts` | Agent PTY spawning, round-robin distribution across panes |
 | `window-manager.ts` | Electron BrowserWindow creation/management |
 | `ipc-handlers.ts` | All IPC channel handlers |
-| `claude-context.ts` | Auto-injects wmux instructions into `~/.claude/CLAUDE.md`, configures hooks, installs wmux-orchestrator plugin |
+| `claude-context.ts` | Configures Claude Code hooks and installs the wmux-orchestrator plugin |
 | `claude-observer.ts` | Monitors Claude Code activity for sidebar display |
 | `session-persistence.ts` | Auto-save/restore window state |
 | `port-scanner.ts` | Active port detection for running dev servers |
