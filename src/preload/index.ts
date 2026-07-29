@@ -77,7 +77,7 @@ contextBridge.exposeInMainWorld('wmux', {
     },
   },
   notification: {
-    fire: (data: { surfaceId: string; text: string; title?: string }) =>
+    fire: (data: { surfaceId: string; text: string; title?: string; flash?: boolean }) =>
       ipcRenderer.send(IPC_CHANNELS.NOTIFICATION_FIRE, data),
     onFocusSurface: (callback: (surfaceId: string) => void) => {
       const handler = (_event: any, surfaceId: string) => callback(surfaceId);
@@ -249,5 +249,14 @@ contextBridge.exposeInMainWorld('wmux', {
     // Windows taskbar progress (OSC 9;4 aggregate). value 0-1, or -1 to remove.
     setProgress: (value: number, mode?: string) =>
       ipcRenderer.send(IPC_CHANNELS.WINDOW_SET_PROGRESS, value, mode),
+    /** Flash (true) or stop flashing (false) the taskbar icon. */
+    flash: (enable: boolean) =>
+      ipcRenderer.send(IPC_CHANNELS.WINDOW_FLASH, enable),
+    /** Fired when this BrowserWindow gains OS focus (used to cancel attention). */
+    onFocus: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('window:focused', handler);
+      return () => ipcRenderer.removeListener('window:focused', handler);
+    },
   },
 });

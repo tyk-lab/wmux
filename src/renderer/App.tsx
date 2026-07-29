@@ -107,11 +107,17 @@ function fireNotification(
   workspaceId: WorkspaceId | null,
   text: string,
   addNotification: StoreAction,
+  opts?: { flash?: boolean },
 ): void {
   if (workspaceId) {
     addNotification({ surfaceId: (surfaceId || '') as SurfaceId, workspaceId, text });
   }
-  window.wmux?.notification?.fire({ surfaceId: surfaceId || '', text, title: 'wmux' });
+  window.wmux?.notification?.fire({
+    surfaceId: surfaceId || '',
+    text,
+    title: 'wmux',
+    ...(opts?.flash === false ? { flash: false } : {}),
+  });
 }
 
 /** Resolve the workspace that owns a surface, or undefined. */
@@ -193,21 +199,39 @@ function handleNotifyCommand(cmd: any, addNotification: StoreAction): void {
   fireNotification(cmd.surfaceId, wsId, text, addNotification);
 }
 
-/** report_shell_state: notify when a foreground command ran ≥ 5s. */
+/**
+ * Per-terminal shell state → workspace aggregate.
+ *
+ * Session is busy if ANY terminal is running; fully idle only when every
+ * terminal is idle. On busy→idle: sidebar attention blink + taskbar flash
+ * (if unfocused). Focusing the session/window clears attention until the
+ * next busy→idle edge.
+ */
 function applyShellState(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): void {
   const newState = cmd.args?.[0] as 'idle' | 'running' | 'interrupted';
-  const prevState = ws.shellState;
-  deps.updateWorkspaceMetadata(ws.id, { shellState: newState });
+  if (newState !== 'idle' && newState !== 'running' && newState !== 'interrupted') return;
+  if (!cmd.surfaceId) return;
+
+  const store = useStore.getState();
+  const result = store.setSurfaceShellState(cmd.surfaceId, newState);
 
   if (newState === 'running') {
-    deps.runningStartTimes.current[ws.id] = Date.now();
+    // Start the workspace busy clock only when the session first becomes busy.
+    if (result.prevAgg !== 'running') {
+      deps.runningStartTimes.current[ws.id] = Date.now();
+    }
     return;
   }
-  if (prevState !== 'running' || (newState !== 'idle' && newState !== 'interrupted')) return;
+
+  // Finished one terminal — only act when the whole session is now idle.
+  if (!result.becameIdle) return;
+
+  requestSessionIdleAttention(ws.id);
 
   const startTime = deps.runningStartTimes.current[ws.id];
   const elapsed = startTime ? (Date.now() - startTime) / 1000 : 0;
   delete deps.runningStartTimes.current[ws.id];
+  // Toast only for long commands; icon flash already fired above.
   if (elapsed < 5) return;
 
   // Round to whole seconds BEFORE splitting into minutes — rounding the
@@ -216,10 +240,37 @@ function applyShellState(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): void {
   const duration = totalSeconds >= 60
     ? `${Math.floor(totalSeconds / 60)}m${totalSeconds % 60}s`
     : `${totalSeconds}s`;
-  const msg = newState === 'interrupted'
+  const msg = result.nextAgg === 'interrupted'
     ? `Interrupted in ${ws.title} (${duration})`
     : `Finished in ${ws.title} (${duration})`;
-  fireNotification(cmd.surfaceId, ws.id, msg, deps.addNotification);
+  // Prefer the dedicated flash path (already requested); avoid double-flash.
+  fireNotification(cmd.surfaceId, ws.id, msg, deps.addNotification, { flash: false });
+}
+
+/**
+ * Mark a workspace as needing attention after all its terminals go idle.
+ * Taskbar flash only when the OS window is unfocused and the pref allows it.
+ * If the user is already looking at this session, skip attention entirely.
+ */
+function requestSessionIdleAttention(workspaceId: WorkspaceId): void {
+  const store = useStore.getState();
+  const watching =
+    store.activeWorkspaceId === workspaceId &&
+    (typeof document === 'undefined' ? true : document.hasFocus());
+  if (watching) return;
+
+  store.markWorkspaceAttention(workspaceId);
+
+  if (typeof document !== 'undefined' && !document.hasFocus() && store.notificationPrefs.taskbarFlash) {
+    window.wmux?.window?.flash?.(true);
+  }
+}
+
+function clearSessionAttention(workspaceId?: WorkspaceId | null): void {
+  const store = useStore.getState();
+  if (workspaceId) store.clearWorkspaceAttention(workspaceId);
+  else store.clearAllAttention();
+  window.wmux?.window?.flash?.(false);
 }
 
 /** Dispatch a surface-scoped metadata command to the owning workspace. */
@@ -725,14 +776,28 @@ export default function App() {
     setSidebarWidth(newWidth);
   }, []);
 
+  /** Selecting a session acknowledges idle attention and stops taskbar flash. */
+  const handleSelectWorkspace = useCallback((id: WorkspaceId) => {
+    selectWorkspace(id);
+    clearSessionAttention(id);
+  }, [selectWorkspace]);
+
+  // OS window focus → cancel flash and clear attention on the active session.
+  useEffect(() => {
+    const unsub = window.wmux?.window?.onFocus?.(() => {
+      clearSessionAttention(useStore.getState().activeWorkspaceId);
+    });
+    return () => { unsub?.(); };
+  }, []);
+
   const handleCreateWorkspace = useCallback(() => {
     const wsCount = useStore.getState().workspaces.length;
     const newId = createWorkspace({
       title: `Session ${wsCount + 1}`,
       splitTree: buildDefaultSplitTree(),
     });
-    selectWorkspace(newId);
-  }, [createWorkspace, selectWorkspace]);
+    handleSelectWorkspace(newId);
+  }, [createWorkspace, handleSelectWorkspace]);
 
   const handleSaveSession = useCallback(async (name: string) => {
     const state = useStore.getState();
@@ -788,7 +853,7 @@ export default function App() {
 
   const handleNotificationJump = useCallback(
     (workspaceId: WorkspaceId, surfaceId: SurfaceId, _paneId?: PaneId) => {
-      selectWorkspace(workspaceId);
+      handleSelectWorkspace(workspaceId);
       const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
       if (!ws) return;
       function findPaneForSurface(node: SplitNode): { paneId: PaneId; index: number } | null {
@@ -806,7 +871,7 @@ export default function App() {
       }
       markRead(surfaceId);
     },
-    [selectWorkspace, markRead, selectSurface],
+    [handleSelectWorkspace, markRead, selectSurface],
   );
 
   const handleToggleNotifPanel = useCallback(() => {
@@ -958,7 +1023,7 @@ export default function App() {
             activeWorkspaceId={activeWorkspaceId}
             sidebarWidth={sidebarWidth}
             onWidthChange={handleSidebarWidthChange}
-            onSelect={selectWorkspace}
+            onSelect={handleSelectWorkspace}
             onClose={requestCloseWorkspace}
             onCreate={handleCreateWorkspace}
             onRename={renameWorkspace}
@@ -970,7 +1035,7 @@ export default function App() {
             onLoadSession={handleLoadSession}
             onCollapse={toggleSidebar}
             onFocusAgentPane={(wsId, paneId) => {
-              selectWorkspace(wsId);
+              handleSelectWorkspace(wsId);
               setFocusedPaneId(paneId);
             }}
           />

@@ -62,19 +62,13 @@ function findSurfaceLocation(node: SplitNode, surfaceId: string): { paneId: stri
   return findSurfaceLocation(node.children[0], surfaceId) || findSurfaceLocation(node.children[1], surfaceId);
 }
 
-// Auto-heal a stuck "Running" badge. shellState is a single last-writer-wins
-// workspace field, written only by the in-pane shell integration
-// (report_shell_state). A shell that emits "running" but is killed before
-// returning to its prompt (e.g. an orchestration agent TUI reaped at teardown)
-// never emits the matching "idle", stranding the sidebar on "Running". A PTY
-// that has exited cannot be the running command, so clear it here.
+// Auto-heal a stuck "Running" badge. Shell state is tracked per terminal and
+// aggregated to the workspace. A shell that emits "running" but is killed
+// before returning to its prompt never emits the matching "idle", which can
+// leave the session busy. A PTY that has exited cannot be the running command.
 function clearStuckRunningState(surfaceId: string): void {
   try {
-    const store = useStore.getState();
-    const ws = store.workspaces.find((w) => treeHasSurface(w.splitTree, surfaceId));
-    if (ws && ws.shellState === 'running') {
-      store.updateWorkspaceMetadata(ws.id, { shellState: 'idle' });
-    }
+    useStore.getState().setSurfaceShellState(surfaceId, null);
   } catch { /* best-effort: badge reset is non-critical */ }
 }
 

@@ -327,6 +327,9 @@ export default function WorkspaceRow({
     return false;
   }, [workspace.shellState, sessions, workingSessions, wsActivity, legacyHook, tick]);
 
+  // Busy if any terminal is running (aggregated shellState) or Claude/agents work.
+  const needsAttention = useStore((s) => !!s.workspaceAttention[workspace.id]);
+
   // ── Status text: manual override > tool activity > shell state > default ──
   const statusText = useMemo(() => resolveStatusText({
     statusOverride: workspace.statusOverride,
@@ -345,20 +348,25 @@ export default function WorkspaceRow({
     if (workspace.statusOverride) {
       return workspace.statusOverride === 'running'
         ? 'workspace-row__status--running'
-        : 'workspace-row__status--idle';
+        : 'workspace-row__status--idle-clear';
     }
     if (runningAgentCount > 0) return 'workspace-row__status--working';
     if (sessions.length >= 2) {
-      return workingSessions > 0 ? 'workspace-row__status--working' : 'workspace-row__status--idle';
+      return workingSessions > 0 ? 'workspace-row__status--working' : 'workspace-row__status--idle-clear';
     }
     if (currentToolLabel) return 'workspace-row__status--working';
-    if (claudeIsIdle) return 'workspace-row__status--idle';
+    if (claudeIsIdle) return 'workspace-row__status--idle-clear';
     const state = workspace.shellState;
     if (state === 'running') return 'workspace-row__status--running';
     if (state === 'interrupted') return 'workspace-row__status--interrupted';
-    if (state === 'idle') return 'workspace-row__status--done';
+    // Fully idle session: green "Idle" (clearer than the muted default).
+    if (state === 'idle') {
+      return workspace.notificationText
+        ? 'workspace-row__status--done'
+        : 'workspace-row__status--idle-clear';
+    }
     return 'workspace-row__status--idle';
-  }, [workspace.statusOverride, runningAgentCount, currentToolLabel, claudeIsIdle, workspace.shellState]);
+  }, [workspace.statusOverride, runningAgentCount, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText, sessions.length, workingSessions]);
 
   // ── Context line: "branch* · ~/path/to/dir" ──
   const contextLine = useMemo(() => {
@@ -376,7 +384,7 @@ export default function WorkspaceRow({
     return parts.length > 0 ? parts.join(' · ') : null;
   }, [workspace.gitBranch, workspace.gitDirty, workspace.cwd]);
 
-  // ── State dot class — pulsing when Claude is active ──
+  // ── State dot class — pulsing when busy; attention blink after idle ──
   const stateDotClass = useMemo(() => {
     if (workspace.statusOverride) {
       return workspace.statusOverride === 'running'
@@ -403,6 +411,8 @@ export default function WorkspaceRow({
         isActive && activeTabIndicator === 'solidFill' ? 'workspace-row--fill' : '',
         workspace.customColor ? 'workspace-row--custom' : '',
         dropEdge ? `workspace-row--drop-${dropEdge}` : '',
+        // Busy→idle attention: blink until this session is focused again.
+        needsAttention ? 'workspace-row--attention' : '',
       ].filter(Boolean).join(' ')}
       style={rowStyle}
       // TRACE drives everything from attributes so the CSS owns the rendering

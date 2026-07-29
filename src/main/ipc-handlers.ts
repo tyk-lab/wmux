@@ -176,7 +176,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   // Exposed so diagnostics (and the CLI) can report which path was read.
   ipcMain.handle('config:getUserConfigPath', async () => getConfigPath());
 
-  ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string }) => {
+  ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string; flash?: boolean }) => {
     const window = BrowserWindow.fromWebContents(_event.sender);
     // Show toast
     notificationManager.showToast(data.title || 'wmux', data.text, () => {
@@ -185,8 +185,9 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         window.webContents.send('notification:focus-surface', data.surfaceId);
       }
     });
-    // Flash taskbar
-    if (window && !window.isDestroyed()) {
+    // Flash taskbar unless the caller opted out (idle-attention uses WINDOW_FLASH
+    // instead so it can respect notificationPrefs.taskbarFlash in the renderer).
+    if (data.flash !== false && window && !window.isDestroyed()) {
       notificationManager.flashTaskbar(window);
     }
     // Ask the renderer to play the notification sound. The main process can't
@@ -212,6 +213,15 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   ipcMain.handle(IPC_CHANNELS.WINDOW_IS_MAXIMIZED, (e) =>
     BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   );
+  // Taskbar icon flash for "session went idle while you were away".
+  // enable=true only flashes when the window is unfocused; enable=false always stops.
+  ipcMain.on(IPC_CHANNELS.WINDOW_FLASH, (e, enable: boolean) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win || win.isDestroyed()) return;
+    if (enable) notificationManager.flashTaskbar(win);
+    else notificationManager.stopFlash(win);
+  });
+
   // Taskbar progress: renderer sends its OSC 9;4 aggregate for this window.
   ipcMain.on(IPC_CHANNELS.WINDOW_SET_PROGRESS, (e, value: number, mode?: string) => {
     const win = BrowserWindow.fromWebContents(e.sender);

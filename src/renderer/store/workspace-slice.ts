@@ -4,6 +4,11 @@ import { WorkspaceId, WorkspaceInfo, SplitNode } from '../../shared/types';
 import { createLeaf } from './split-utils';
 import { killTreeTerminalPtys } from './pty-teardown';
 
+function collectSurfaceIds(tree: SplitNode): string[] {
+  if (tree.type === 'leaf') return tree.surfaces.map((s) => s.id);
+  return [...collectSurfaceIds(tree.children[0]), ...collectSurfaceIds(tree.children[1])];
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface WorkspaceSlice {
@@ -103,7 +108,36 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
         }
       }
 
-      return { workspaces: next, activeWorkspaceId: nextActiveId };
+      // Drop per-terminal shell states + attention for the closed session so
+      // maps don't retain ids forever (best-effort; shell-activity slice owns
+      // the fields when the composed store is used).
+      const shellState = state as typeof state & {
+        surfaceShellStates?: Record<string, string>;
+        workspaceAttention?: Record<string, boolean>;
+      };
+      let surfaceShellStates = shellState.surfaceShellStates;
+      let workspaceAttention = shellState.workspaceAttention;
+      if (closing && surfaceShellStates) {
+        const drop = new Set(collectSurfaceIds(closing.splitTree));
+        if (drop.size > 0) {
+          const filtered: Record<string, string> = {};
+          for (const [sid, st] of Object.entries(surfaceShellStates)) {
+            if (!drop.has(sid)) filtered[sid] = st;
+          }
+          surfaceShellStates = filtered;
+        }
+      }
+      if (workspaceAttention && workspaceAttention[id]) {
+        workspaceAttention = { ...workspaceAttention };
+        delete workspaceAttention[id];
+      }
+
+      return {
+        workspaces: next,
+        activeWorkspaceId: nextActiveId,
+        ...(surfaceShellStates ? { surfaceShellStates } : {}),
+        ...(workspaceAttention ? { workspaceAttention } : {}),
+      };
     });
   },
 

@@ -299,6 +299,8 @@ export const IPC_CHANNELS = {
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_IS_MAXIMIZED: 'window:isMaximized',
   WINDOW_SET_PROGRESS: 'window:setProgress',
+  /** Flash or stop flashing the Windows taskbar icon (attention when idle). */
+  WINDOW_FLASH: 'window:flash',
   // Config
   CONFIG_GET_THEME: 'config:getTheme',
   CONFIG_GET_THEME_LIST: 'config:getThemeList',

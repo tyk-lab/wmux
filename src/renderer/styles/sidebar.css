@@ -244,6 +244,12 @@
   color: rgba(var(--ui-overlay-rgb), 0.35);
 }
 
+/* Session fully idle (all terminals idle) — high-contrast green label. */
+.workspace-row__status--idle-clear {
+  color: #4caf50;
+  font-weight: 600;
+}
+
 .workspace-row__status--running {
   color: #ff9800;
 }
@@ -258,6 +264,13 @@
 
 .workspace-row__status--interrupted {
   color: #e53935;
+}
+
+/* After busy→idle: pulse the status until the user re-focuses the session. */
+.workspace-row--attention .workspace-row__status {
+  color: #4caf50;
+  font-weight: 700;
+  animation: attention-status-pulse 1s ease-in-out infinite;
 }
 
 /* THIS was the "it flattens all of it" bug. Selecting a row replaced the
@@ -606,9 +619,35 @@
   background: #e53935;
 }
 
+/* Icon blink while the session needs attention (all terminals idle). */
+.workspace-row--attention .workspace-row__state-dot {
+  background: #4caf50;
+  animation: attention-dot-blink 0.7s ease-in-out infinite;
+  will-change: opacity, transform;
+  box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.55);
+}
+
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+@keyframes attention-dot-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.55);
+  }
+  50% {
+    opacity: 0.25;
+    transform: scale(1.35);
+    box-shadow: 0 0 0 4px rgba(76, 175, 80, 0);
+  }
+}
+
+@keyframes attention-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .workspace-row__hook-activity {

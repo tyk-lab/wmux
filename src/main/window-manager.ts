@@ -112,6 +112,16 @@ export class WindowManager {
       this.onWindowClosed?.(id, webContentsId);
     });
 
+    // Focusing the window cancels taskbar flash and lets the renderer clear
+    // session "attention" (busy→idle blink) until the next idle edge.
+    win.on('focus', () => {
+      if (win.isDestroyed()) return;
+      win.flashFrame(false);
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send('window:focused');
+      }
+    });
+
     this.windows.set(id, { id, window: win });
     return id;
   }
