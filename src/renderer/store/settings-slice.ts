@@ -274,18 +274,15 @@ export interface WorkspacePrefs {
   /** Show the welcome/tutorial screen on first launch (issue #22). */
   showWelcomeScreen: boolean;
   /**
-   * Auto-open a diff tab in the bottom pane when an in-pane agent (Claude Code)
-   * edits/writes files (issue #63). Some users find the tab popping up — and
-   * stealing tab focus — disruptive and want it off entirely (issue #66), so this
-   * is an opt-out. Defaults on to preserve the shipped behaviour.
+   * Auto-open a diff tab in the bottom pane when an in-pane agent
+   * edits/writes files (issue #63/#66). Defaults off — multi-pane agent
+   * workflows dislike focus steals; turn on in Settings if wanted.
    */
   autoOpenDiffTab: boolean;
   /**
-   * Ask before closing a session (issue #90): an accidental × click or
-   * Ctrl+Shift+W kills every PTY in the workspace, including agents that
-   * haven't persisted their state yet. Opt-in — off by default so the
-   * one-click flow stays untouched for users who never asked for a guard.
-   * Programmatic closes (CLI/agents via the pipe) never prompt.
+   * Ask before closing a session (issue #90): an accidental × or
+   * Ctrl+Shift+W kills every PTY in the workspace. Defaults on; CLI/agent
+   * programmatic closes never prompt.
    */
   confirmWorkspaceClose: boolean;
 }
@@ -294,9 +291,11 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   newWorkspacePlacement: 'afterCurrent',
   autoReorderOnNotification: false,
   defaultShell: '',
-  showWelcomeScreen: true,
-  autoOpenDiffTab: true,
-  confirmWorkspaceClose: false,
+  showWelcomeScreen: false,
+  // Agent edits popping a diff tab steal focus in multi-pane workflows — opt in.
+  autoOpenDiffTab: false,
+  // Accidental × / Ctrl+Shift+W kills every PTY in the session; ask first for agents.
+  confirmWorkspaceClose: true,
 };
 
 // ─── Terminal settings ────────────────────────────────────────────────────────
@@ -357,7 +356,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   taskbarFlash: true,
   paneRing: true,
   paneFlashAnimation: true,
-  sound: 'default',
+  sound: 'none',
   agentInputNotify: true,
   agentStopNotify: true,
 };
@@ -374,7 +373,8 @@ export interface BrowserPrefs {
 export const DEFAULT_BROWSER_PREFS: BrowserPrefs = {
   searchEngine: 'google',
   devToolsIcon: 'default',
-  openOnStartup: true,
+  // Terminal/agent sessions are the common case; open the browser pane on demand.
+  openOnStartup: false,
 };
 
 // ─── Appearance settings (issue #67) ──────────────────────────────────────────
