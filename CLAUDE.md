@@ -61,10 +61,16 @@ docs/             Planning docs
 | `window-manager.ts` | Electron BrowserWindow creation/management |
 | `ipc-handlers.ts` | All IPC channel handlers |
 | `claude-context.ts` | Configures Claude Code hooks and installs the wmux-orchestrator plugin |
+| `kimi-context.ts` | Writes Kimi `[[hooks]]` into `~/.kimi-code/config.toml` (turn-level) |
+| `codex-context.ts` | Merges wmux entries into `~/.codex/hooks.json` (turn-level) |
+| `grok-context.ts` | Installs `~/.grok/hooks/wmux.json` (turn-level) |
+| `opencode-context.ts` | OpenCode AGENTS.md inject + plugin install |
+| `claude-style-hooks.ts` | Shared Claude/Codex/Grok hooks.json merge helpers |
+| `wmux-hook-path.ts` | Absolute path to `resources/cli/wmux-hook.js` for outside-asar hook commands |
 | `claude-observer.ts` | Monitors Claude Code activity for sidebar display |
 | `agent-state.ts` | Declared agent run state — blocked/working/idle, run refcount, `seq` dedupe, metadata TTL (issue #128) |
 | `agent-state-rpc.ts` | `pane.report_agent` & friends, routed off the main V2 switch |
-| `agent-hook-bridge.ts` | Claude Code hooks → declared state, so it works with no plugin to install |
+| `agent-hook-bridge.ts` | Lifecycle hooks → declared state (Claude/Kimi/Codex/Grok shared event names) |
 | `session-persistence.ts` | Auto-save/restore window state |
 | `port-scanner.ts` | Active port detection for running dev servers |
 | `shell-context-menu.ts` | "Open in wmux" Explorer verb — HKCU shell keys for Directory/Directory\Background/Drive, plus `directoryFromArgv` for the launch path. Win11 places it under "Show more options"; the modern menu needs a signed MSIX, which unsigned wmux cannot ship |
@@ -400,9 +406,15 @@ wmux report-agent --run-depth N [--seq N]        # absolute depth; --seq drops r
 wmux report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]
 wmux report-session <id> | release-agent
 wmux agent-state [--surface <id>]                # no --surface → all panes + blocked list
-# Process-level busy/idle for agents without native hooks (kimi / codex / …):
-wmux wrap [--label L] [--] kimi                  # working for whole process; idle+release on exit
-wmux wrap codex --full-auto "fix tests"
+# Process-level busy/idle for agents without native hooks:
+wmux wrap [--label L] [--] some-agent
+
+# Auto-installed turn hooks (on wmux startup) → same pane.report_agent path:
+#   Claude  → ~/.claude/settings.json
+#   Kimi    → ~/.kimi-code/config.toml  (# wmux-hooks markers)
+#   Codex   → ~/.codex/hooks.json       (may need /hooks trust once)
+#   Grok    → ~/.grok/hooks/wmux.json
+#   OpenCode→ ~/.config/opencode/plugin/wmux.js
 
 # Agents
 wmux agent spawn [--cmd C] [--label L] [--cwd D] [--pane P] [--replace-tab]

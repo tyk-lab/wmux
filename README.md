@@ -53,52 +53,47 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 
 数据来自 **声明式协议**（`pane.report_agent`），不是猜终端输出。窗格内已注入 `WMUX_SURFACE_ID` / `WMUX_PIPE` 等环境变量，CLI 默认识别当前 surface。
 
-### Claude Code（零配置 · turn 级）
+### 支持矩阵（turn 级 · 启动时自动注入）
 
-启动 wmux 时会向 `~/.claude/settings.json` 写入 Hook（保留你的其它条目）：
+| Agent | 配置落点 | 用法 | 备注 |
+|-------|----------|------|------|
+| **Claude Code** | `~/.claude/settings.json` | 窗格内 `claude` | 保留用户已有 hooks |
+| **Kimi Code** | `~/.kimi-code/config.toml`（`# wmux-hooks` 标记块） | 窗格内 `kimi` | 创建目录/文件（若不存在） |
+| **Codex CLI** | `~/.codex/hooks.json` | 窗格内 `codex` | 首次可能需在 Codex 里 `/hooks` **信任** wmux 命令 |
+| **Grok Build** | `~/.grok/hooks/wmux.json` | 窗格内 `grok` | 全局 hooks，始终可信 |
+| **OpenCode** | `~/.config/opencode/plugin/wmux.js` | 窗格内 `opencode` | 官方 plugin API |
 
-| Hook | 侧栏 |
-|------|------|
-| `UserPromptSubmit` | **Working**（发消息即开始，纯文本回合也算） |
-| `PostToolUse` | **Working** |
-| `Notification` | **Needs you** |
-| `Stop` / `SubagentStop` | 回合结束 / 子代理结束 → **Idle**（或深度减一） |
+**生命周期 → 侧栏（各 agent 共用）：**
 
-在 wmux 窗格里直接跑 `claude` 即可。
-
-### Kimi Code（零配置 · turn 级）
-
-启动 wmux 时写入 `~/.kimi-code/config.toml`（`$KIMI_CODE_HOME` 优先）中带 `# wmux-hooks:start/end` 标记的 `[[hooks]]` 段：
-
-| Hook | 侧栏 |
-|------|------|
-| `UserPromptSubmit` | **Working**（你在 Kimi 里发送任务） |
+| Hook / 事件 | 侧栏 |
+|-------------|------|
+| `UserPromptSubmit` | **Working**（发任务即开始，纯文本回合也算） |
 | `PostToolUse` | **Working** |
 | `Notification` / `PermissionRequest` | **Needs you** |
-| `PermissionResult` | 取消 blocked（任务可能仍 Working） |
-| `Stop` / `StopFailure` | **Idle**（本轮完成或失败） |
-| `SubagentStop` | 子代理结束 |
+| `Stop` / `StopFailure` | **Idle**（本轮结束） |
+| `SubagentStop` | 子代理结束（refcount） |
 
-在 wmux 窗格里**直接** `kimi` 即可（不必 `wmux wrap`）。改 hooks 后若 Kimi 已在跑，重启一次 Kimi 会话以加载配置。
+改 hooks 后请**重启对应 agent 会话**（不必重启整个 OS）。wmux 需使用含 agent-state 的构建并至少启动过一次以写入配置。
+
+**Codex 信任提示：** 若侧栏无反应，在 Codex 中运行 `/hooks`，审查并 trust 含 `wmux-hook` 的条目；或临时 `codex --dangerously-bypass-hook-trust`（仅自动化场景）。
 
 ### 没有 Hook 的 Agent：用 `wmux wrap`
 
-Codex 等若暂无自动注入，用包装启动（**仅进程级** busy/idle；看不出「一条任务做完」）：
+未知 / 无扩展点的 CLI 用包装启动（**仅进程级** busy/idle）：
 
 ```powershell
-# 必须在 wmux 窗格内执行（依赖 WMUX_SURFACE_ID）
-wmux wrap codex --full-auto "fix tests"
 wmux wrap --label other -- some-agent
 ```
 
-成功时终端会提示 `wrap: tracking … → working`；进程退出后清除声明态。
+成功时提示 `wrap: tracking … → working`；进程退出后清除声明态。
 
 | 现象 | 处理 |
 |------|------|
-| `wrap: no surface id` | 不在 wmux 窗格内，或 shell 未注入环境变量 |
-| `could not report agent state` | 当前运行的不是含 agent-state 的构建，重启/重装后再试 |
-| 侧栏仍显示 Running | 确认已重启新构建；Working 与 shell Running 不同 |
-| Kimi 发任务侧栏不变 | 确认已启动本版本 wmux（写入了 `~/.kimi-code/config.toml`），并**重启 kimi** |
+| `wrap: no surface id` | 不在 wmux 窗格内 |
+| `could not report agent state` | 重建并重启 wmux |
+| 侧栏仍显示 Running | 确认新构建；Working ≠ shell Running |
+| Codex 有 hooks 但仍无 Working | `/hooks` 信任 wmux 命令并重启 codex |
+| Grok 无变化 | 确认 `~/.grok/hooks/wmux.json` 存在，`/hooks` 可见后重启 grok |
 
 ### 任意 Agent 手动上报
 
