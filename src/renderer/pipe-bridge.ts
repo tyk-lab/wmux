@@ -7,6 +7,8 @@ import { splitNode, getAllPaneIds, findLeaf, buildGridLayout } from './store/spl
 import { surfaceTerminalRegistry } from './hooks/useTerminal';
 import { PaneId, SurfaceId, WorkspaceId, SurfaceType } from '../shared/types';
 import { v4 as uuid } from 'uuid';
+import { sendToSurface } from './supervisor/supervisor-engine';
+import { appendSupervisorRecord } from './supervisor/recording';
 
 export function initPipeBridge(): void {
   const w = window as any;
@@ -336,6 +338,44 @@ export function initPipeBridge(): void {
     }
     while (out.length && out[out.length - 1] === '') out.pop();
     return { text: out.join('\n'), lines: out.length, surfaceId: id };
+  };
+
+  // The dedicated supervisor terminal records its judgment through a silent CLI
+  // call. Routing by surfaceId, not display label, keeps duplicate tab names
+  // distinct inside the same workspace/session.
+  w.__wmux_supervisorDecide = (params: any) => {
+    const store = useStore.getState();
+    const session = store.supervisor;
+    const surfaceId = String(params?.surfaceId || '');
+    const outcome = String(params?.outcome || '');
+    const reason = String(params?.reason || '').trim().slice(0, 1200);
+    const next = String(params?.next || '').trim().slice(0, 4000);
+    const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
+    const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
+    if (!session.active || !lane || !valid.has(outcome)) return null;
+
+    appendSupervisorRecord(session, lane, 'supervisor.decision', { outcome, reason, next });
+    store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
+
+    if (outcome === 'complete') {
+      store.confirmStopCondition(lane.id);
+      return { ok: true, outcome };
+    }
+
+    if (outcome === 'needs-human') {
+      store.updateLane(lane.id, { awaitingReview: true });
+      const text = reason || `${lane.label} 需要人工决策`;
+      const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+      if (workspaceId) {
+        store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });
+      }
+      window.wmux?.notification?.fire({ surfaceId: lane.surfaceId, title: 'AI 监督', text });
+      return { ok: true, outcome };
+    }
+
+    store.updateLane(lane.id, { awaitingReview: false });
+    if (next) sendToSurface(lane.surfaceId, next, session.submitEnter);
+    return { ok: true, outcome };
   };
 
   // ─── Markdown ───────────────────────────────────────────────────────────────

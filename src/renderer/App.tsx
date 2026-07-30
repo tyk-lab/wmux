@@ -32,6 +32,7 @@ import {
   formatAgentLifecycleText,
   inferAgentName,
   lifecycleDedupeKey,
+  shouldNotifyAgentLifecycle,
   shouldDedupeLifecycleNotify,
   type LifecycleNotifyKind,
 } from './agent-lifecycle-notify';
@@ -43,6 +44,7 @@ import {
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
 import { buildUserNotifyText } from './supervisor/protocol';
+import { appendSupervisorRecord } from './supervisor/recording';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 
@@ -379,6 +381,8 @@ function handleAgentLifecycleEvent(
   agentStates?: Record<string, any>,
 ): void {
   const state = useStore.getState();
+  if (!shouldNotifyAgentLifecycle(state.supervisor.active)) return;
+
   const prefs = state.notificationPrefs;
   const ev = event?.event as string;
 
@@ -444,6 +448,49 @@ function handleAgentLifecycleEvent(
   fireNotification(sid, wsId, text, addNotification, {
     title: agent || 'wmux',
   });
+}
+
+/** Route compact Hook facts to the supervising terminal without echoing them to workers. */
+function handleSupervisorHookEvent(event: any): void {
+  const store = useStore.getState();
+  const session = store.supervisor;
+  const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
+  if (!session.active || !session.supervisorSurfaceId || !surfaceId || surfaceId === session.supervisorSurfaceId) return;
+
+  const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
+  if (!lane) return;
+  const lifecycle = String(event.event || '');
+  if (lifecycle === 'UserPromptSubmit') {
+    store.updateLane(lane.id, { awaitingReview: false });
+    appendSupervisorRecord(session, lane, 'worker.task', {
+      task: event.task || '',
+      cwd: event.cwd || '',
+    });
+    if (event.task) {
+      sendToSurface(
+        session.supervisorSurfaceId,
+        `[通道 ${lane.label} | ${surfaceId}] 收到任务：${event.task}\n`,
+        false,
+      );
+    }
+    return;
+  }
+
+  if (lifecycle !== 'Stop' && lifecycle !== 'StopFailure' && lifecycle !== 'Notification') return;
+  appendSupervisorRecord(session, lane, 'worker.lifecycle', {
+    event: lifecycle,
+    message: event.message || '',
+  });
+
+  if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
+    store.updateLane(lane.id, { awaitingReview: true });
+    sendToSurface(
+      session.supervisorSurfaceId,
+      `[通道 ${lane.label} | ${surfaceId}] 本轮已结束。请用 wmux read-screen --surface ${surfaceId} --lines 80 查看证据，` +
+        `再静默执行 wmux supervisor decide --surface ${surfaceId} --outcome <continue|rework|complete|needs-human> --reason "结论"。\n`,
+      false,
+    );
+  }
 }
 
 /**
@@ -792,6 +839,7 @@ export default function App() {
   useEffect(() => {
     if (!window.wmux?.hook?.onEvent) return;
     const unsub = window.wmux.hook.onEvent((event: any) => {
+      handleSupervisorHookEvent(event);
       // Agent lifecycle (issue #53): needs-input / turn-finished. No `tool`.
       // Kimi also emits PermissionRequest / StopFailure — same user-facing path.
       const lifecycle = event?.event as string | undefined;
@@ -870,6 +918,18 @@ export default function App() {
   const supervisorActive = useStore((s) => s.supervisor.active);
   const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
+  useEffect(() => {
+    if (!supervisorActive) return;
+    const session = useStore.getState().supervisor;
+    for (const lane of session.lanes) {
+      appendSupervisorRecord(session, lane, 'session.started', {
+        mode: session.mode,
+        stopWhen: session.mode === 'direct' ? session.stopWhen : session.doneWhen,
+        terminalName: lane.label,
+      });
+    }
+  }, [supervisorActive]);
+
   useEffect(() => {
     if (!supervisorActive) return;
 

@@ -122,6 +122,9 @@ export function tickLane(opts: {
   if (!lane.enabled || rt.humanNotified || lane.stopConfirmed) {
     return { actions, runtime: rt };
   }
+  // A worker finished a turn. Its supervisor must inspect that turn before the
+  // scheduler injects another instruction or treats an idle state as success.
+  if (lane.awaitingReview) return { actions, runtime: rt };
 
   const st = String(surfaceState.state || 'unknown');
   const mode = session.mode || 'direct';

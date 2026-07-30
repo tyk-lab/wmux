@@ -104,6 +104,10 @@ const SPECS: Record<string, BridgeSpec> = {
     shape: (r) => ({ notifications: r || [] }),
     emptyOnNoWindow: { notifications: [] },
   },
+  'supervisor.decide': {
+    js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
+    requireResult: 'No active supervisor lane for this terminal',
+  },
 };
 
 function runBridge(spec: BridgeSpec, params: any, respond: Respond, respondError: RespondError): void {

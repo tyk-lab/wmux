@@ -44,6 +44,13 @@ const agent = agentFlag || process.env.WMUX_AGENT || '';
 let stdinData = '';
 let sent = false;
 const MAX_STDIN = 64 * 1024; // 64KB cap
+const MAX_TASK = 800;
+
+function compact(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  return text.length > MAX_TASK ? `${text.slice(0, MAX_TASK - 1)}…` : text;
+}
 
 function sendHook(): void {
   if (sent) return;
@@ -51,6 +58,7 @@ function sendHook(): void {
 
   let file = '';
   let message = '';
+  let task = '';
   try {
     if (stdinData.trim()) {
       const data = JSON.parse(stdinData);
@@ -59,6 +67,7 @@ function sendHook(): void {
         || data.input?.file_path
         || '';
       message = data.message || data.tool_input?.description || '';
+      task = compact(data.prompt || data.user_prompt || data.input?.prompt);
     }
   } catch {
     // stdin wasn't valid JSON — that's fine.
@@ -69,6 +78,9 @@ function sendHook(): void {
   if (tool) params.tool = tool;
   if (file) params.file = file;
   if (message) params.message = message;
+  if (task) params.task = task;
+  const cwd = process.cwd();
+  if (cwd) params.cwd = cwd;
   if (surfaceId) params.surfaceId = surfaceId;
   if (agent) params.agent = agent;
 

@@ -21,6 +21,7 @@ import { ensureGrokHooks } from './grok-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
 import { applyHookToAgentState } from './agent-hook-bridge';
+import { appendSupervisorRecord } from './supervisor-records';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
@@ -443,6 +444,8 @@ app.whenReady().then(() => {
   ensureKimiHooks();
   ensureCodexHooks();
   ensureGrokHooks();
+
+  ipcMain.handle('supervisor:append-record', (_event, record) => appendSupervisorRecord(record));
 
   // IPC: renderer pushes session state (auto-save response or explicit save).
   // Every window answers the same broadcast, each with a one-entry `windows`

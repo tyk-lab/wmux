@@ -101,6 +101,9 @@ contextBridge.exposeInMainWorld('wmux', {
       return () => ipcRenderer.removeListener('notification:play-sound', handler);
     },
   },
+  supervisor: {
+    appendRecord: (record: any) => ipcRenderer.invoke('supervisor:append-record', record),
+  },
   browser: {
     navigate: (surfaceId: string, url: string) => {
       // Dispatch a custom event that BrowserPane listens for

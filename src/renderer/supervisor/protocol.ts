@@ -129,7 +129,8 @@ export function buildSupervisorBriefing(
       '2. 达到 → 明确写出「结论: 达到」，并请人类在侧栏点「已达停止条件」停止注入。',
       '3. 未达到 → 「结论: 未达到」+ 差什么 + 可选补充指令建议。',
       '4. 阻塞/要权限 → 通知人类，不要绕过。',
-      '5. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
+      '5. 每轮结束先 read-screen，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。',
+      '6. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
       '',
     ].join('\n');
   }
@@ -157,6 +158,7 @@ export function buildSupervisorBriefing(
     '结论: 达到 | 未达到 | 不确定',
     '依据: （终端证据 1～3 条）',
     '建议: （未达到则下一步决策要点；达到则请人类侧栏点「已达停止条件」）',
+    '每轮结束先 read-screen，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。',
     '',
     '## 规则',
     '1. 只管理列出的 surface。',

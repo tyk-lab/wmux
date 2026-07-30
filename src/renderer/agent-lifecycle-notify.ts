@@ -9,6 +9,11 @@
 
 export type LifecycleNotifyKind = 'needs_input' | 'turn_finished';
 
+/** Supervision owns user-facing status while it is actively scheduling lanes. */
+export function shouldNotifyAgentLifecycle(supervisorActive: boolean): boolean {
+  return !supervisorActive;
+}
+
 export interface LifecycleNotifyInput {
   kind: LifecycleNotifyKind;
   /** Product name: Claude / Kimi / Codex / Grok / OpenCode. */

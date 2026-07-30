@@ -4,6 +4,7 @@ import {
   inferAgentName,
   joinAgentIdentity,
   lifecycleDedupeKey,
+  shouldNotifyAgentLifecycle,
   shouldDedupeLifecycleNotify,
   LIFECYCLE_DEDUP_MS,
 } from '../../src/renderer/agent-lifecycle-notify';
@@ -70,5 +71,12 @@ describe('lifecycle dedupe', () => {
     const last = { key, at: 1000 };
     expect(shouldDedupeLifecycleNotify(last, key, 1000 + LIFECYCLE_DEDUP_MS - 1)).toBe(true);
     expect(shouldDedupeLifecycleNotify(last, key, 1000 + LIFECYCLE_DEDUP_MS + 1)).toBe(false);
+  });
+});
+
+describe('supervisor notification ownership', () => {
+  it('suppresses ordinary agent lifecycle notifications while supervision is active', () => {
+    expect(shouldNotifyAgentLifecycle(true)).toBe(false);
+    expect(shouldNotifyAgentLifecycle(false)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { StateCreator } from 'zustand';
-import { SurfaceId } from '../../shared/types';
+import { PaneId, SurfaceId, WorkspaceId } from '../../shared/types';
 
 /**
  * Two product modes (UI primary split):
@@ -30,7 +30,11 @@ export interface SupervisorLane {
   id: string;
   label: string;
   surfaceId: SurfaceId;
+  paneId?: PaneId;
+  workspaceId?: WorkspaceId;
   workspaceTitle?: string;
+  /** Terminal cwd when supervision begins; audit records live below this project. */
+  projectDir?: string;
   enabled: boolean;
   steps: SupervisorStep[];
   /** goal-chase: max autonomous decision injects for this lane. */
@@ -43,6 +47,8 @@ export interface SupervisorLane {
   awaitingStopCheck: boolean;
   /** direct mode: stop condition confirmed — no more injects for this lane. */
   stopConfirmed: boolean;
+  /** A finished turn must be reviewed before the scheduler advances this terminal. */
+  awaitingReview?: boolean;
 }
 
 export type ApprovalSource = 'plan' | 'manual' | 'idle-hint' | 'goal-chase';
@@ -65,6 +71,7 @@ export interface SupervisorLogEntry {
 }
 
 export interface SupervisorSession {
+  sessionId: string;
   active: boolean;
   mode: SupervisorMode;
 
@@ -126,6 +133,7 @@ const MAX_LOG = 200;
 
 export function createDefaultSupervisorSession(): SupervisorSession {
   return {
+    sessionId: '',
     active: false,
     mode: 'direct',
     directInstructions: '',
@@ -168,6 +176,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => ({
       supervisor: {
         ...s.supervisor,
+        sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         active: true,
         setupOpen: false,
         log: [

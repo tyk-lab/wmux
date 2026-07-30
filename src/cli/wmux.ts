@@ -150,6 +150,25 @@ async function cmdBrowser(args: string[]): Promise<void> {
   print(await handler(args));
 }
 
+async function cmdSupervisor(args: string[]): Promise<void> {
+  if (args[1] !== 'decide') {
+    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>]');
+  }
+  const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
+  const outcome = getFlag(args, '--outcome') || '';
+  if (!surfaceId || !outcome) throw new Error('--surface and --outcome are required');
+
+  const result = await sendV2('supervisor.decide', {
+    surfaceId,
+    outcome,
+    reason: getFlag(args, '--reason') || '',
+    next: getFlag(args, '--next') || '',
+  });
+  // The supervision protocol runs in AI terminals. Remain silent on success so
+  // a checkpoint does not pollute the terminal transcript or distract the agent.
+  if (args.includes('--verbose')) print(result);
+}
+
 function agentSpawn(args: string[]): Promise<any> {
   const params: any = {};
   // Valueless flags must be stripped before the pairwise --flag value loop.
@@ -740,6 +759,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   },
   hook: cmdHook,
   'agent-activity': cmdAgentActivity,
+  supervisor: cmdSupervisor,
   // Install/refresh Claude · Kimi · Codex · Grok · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
@@ -818,6 +838,9 @@ Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
+Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
+                          [--reason <text>] [--next <text>] [--verbose]
+            (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

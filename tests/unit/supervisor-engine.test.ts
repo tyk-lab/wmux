@@ -85,6 +85,18 @@ describe('supervisor-engine', () => {
     expect(d && d.type === 'dispatch' && d.text).toBe('Do types only');
   });
 
+  it('waits for the supervisor decision after a worker turn ends', () => {
+    const { actions } = tickLane({
+      session: session({ mode: 'direct' }),
+      lane: lane({ awaitingReview: true }),
+      surfaceState: { state: 'idle' },
+      runtime: blankRuntime(),
+      now: 10_000,
+      hasPendingApproval: false,
+    });
+    expect(actions).toEqual([]);
+  });
+
   it('blocked notifies user and does not dispatch', () => {
     const { actions, runtime } = tickLane({
       session: session({ mode: 'direct' }),

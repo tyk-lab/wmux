@@ -23,13 +23,14 @@ interface TerminalCandidate {
   workspaceId: WorkspaceId;
   paneId: PaneId;
   workspaceTitle: string;
+  projectDir?: string;
   label: string;
   state: string;
 }
 
 function collectTerminals(
   tree: SplitNode,
-  out: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string }>,
+  out: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }>,
 ): void {
   if (tree.type === 'leaf') {
     for (const s of tree.surfaces) {
@@ -38,6 +39,7 @@ function collectTerminals(
           surfaceId: s.id,
           paneId: tree.paneId,
           title: s.customTitle?.trim() || s.shell || 'terminal',
+          projectDir: s.currentCwd || s.cwd,
         });
       }
     }
@@ -89,7 +91,7 @@ export default function SupervisorSetupDialog() {
     const list: TerminalCandidate[] = [];
     const skipId = supervisor.supervisorSurfaceId;
     for (const ws of workspaces) {
-      const surfaces: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string }> = [];
+      const surfaces: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
       collectTerminals(ws.splitTree, surfaces);
       for (const s of surfaces) {
         if (skipId && s.surfaceId === skipId) continue;
@@ -102,6 +104,7 @@ export default function SupervisorSetupDialog() {
           workspaceId: ws.id,
           paneId: s.paneId,
           workspaceTitle: ws.title,
+          projectDir: ws.cwd || s.projectDir,
           label: meta?.label || s.title,
           state: String(st),
         });
@@ -169,13 +172,17 @@ export default function SupervisorSetupDialog() {
         id: prev?.id || `lane-${i}`,
         label: c.label,
         surfaceId: c.surfaceId,
+        paneId: c.paneId,
+        workspaceId: c.workspaceId,
         workspaceTitle: c.workspaceTitle,
+        projectDir: c.projectDir,
         enabled: true,
         steps,
         maxAutoSteps: maxAuto,
         autoStepsUsed: 0,
         awaitingStopCheck: false,
         stopConfirmed: false,
+        awaitingReview: false,
       });
     }
     return lanes;
