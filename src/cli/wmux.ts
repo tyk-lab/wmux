@@ -6,6 +6,10 @@ import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
+import {
+  formatInstallAgentHooksReport,
+  installAllAgentHooks,
+} from '../main/install-agent-hooks';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -736,6 +740,16 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   },
   hook: cmdHook,
   'agent-activity': cmdAgentActivity,
+  // Install/refresh Claude · Kimi · Codex · Grok · OpenCode lifecycle hooks.
+  'install-hooks': async (args) => {
+    const noOpencode = args.includes('--no-opencode');
+    const results = installAllAgentHooks({
+      createClaudeSettings: true,
+      opencode: !noOpencode,
+    });
+    console.log(formatInstallAgentHooksReport(results));
+    if (results.some((r) => !r.ok)) process.exit(1);
+  },
   ...AGENT_STATE_COMMANDS,
 };
 
@@ -802,12 +816,14 @@ Diff:       diff [--file <path>]
 Notify:     notify <text>, list-notifications, clear-notifications
 Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
+            install-hooks [--no-opencode]
+            (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]
             report-session <id> | release-agent | agent-state [--surface <id>]
             wrap [--label L] [--surface id] [--] <cmd> [args…]
-            (process-level busy/idle for agents without hooks — kimi/codex/…)
+            (process-level busy/idle for agents without hooks)
             (surface defaults to $WMUX_SURFACE_ID — an agent in a pane needs no id)
 Config:     config show|reload|path   (edits ~/.wmux/config.toml — see docs)
             reload-config             (shorthand for 'config reload')
