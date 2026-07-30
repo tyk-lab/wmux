@@ -24,7 +24,12 @@ import { applyHookToAgentState } from './agent-hook-bridge';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
-import { directoryFromArgv } from './shell-context-menu';
+import {
+  directoryFromArgv,
+  setPendingLaunchDirectory,
+  isContextMenuInstalled,
+  installContextMenu,
+} from './shell-context-menu';
 import fs from 'fs';
 import path from 'path';
 
@@ -296,20 +301,31 @@ const gotInstanceLock = app.requestSingleInstanceLock();
  * `new-workspace --cwd` uses, so Explorer, the CLI and the UI all land on one
  * store action rather than a fourth way to make a workspace.
  */
-async function openDirectoryAsWorkspace(dirPath: string): Promise<void> {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (!win || win.isDestroyed()) return;
-  try {
-    await win.webContents.executeJavaScript(
-      `window.__wmux_createWorkspace?.(${JSON.stringify({ title: path.basename(dirPath) || dirPath, cwd: dirPath })})`,
-    );
-  } catch {
-    // Renderer not ready or bridge missing — the window is still up, which is
-    // better than failing the launch outright.
-  }
+/**
+ * Ask the renderer to open a folder as a workspace.
+ * Prefer IPC (not executeJavaScript): with contextIsolation, page globals are
+ * unreliable from main, and executeJavaScript often no-ops → path stays $HOME.
+ */
+function openDirectoryAsWorkspace(dirPath: string): void {
+  const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  const win = BrowserWindow.getFocusedWindow()
+    || wins[0];
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.focus();
+  win.webContents.send(IPC_CHANNELS.SYSTEM_OPEN_DIRECTORY, dirPath);
 }
 
-const isDirectory = (p: string): boolean => fs.statSync(p).isDirectory();
+const isDirectory = (p: string): boolean => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// Stash Explorer cold-start folder before any window loads (consumed by renderer).
+setPendingLaunchDirectory(directoryFromArgv(process.argv, isDirectory));
 
 if (!gotInstanceLock) {
   app.quit();
@@ -325,7 +341,7 @@ if (!gotInstanceLock) {
       win.focus();
     }
     const dir = directoryFromArgv(argv, isDirectory);
-    if (dir) void openDirectoryAsWorkspace(dir);
+    if (dir) openDirectoryAsWorkspace(dir);
   });
 }
 
@@ -482,19 +498,18 @@ app.whenReady().then(() => {
     }
   }
 
-  // Cold launch from the Explorer verb: no instance was running, so there is no
-  // second-instance event — the folder is in our own argv. Wait for the renderer
-  // to finish loading, otherwise the __wmux_* bridge is not defined yet and the
-  // folder is silently dropped.
-  const launchDir = directoryFromArgv(process.argv, isDirectory);
-  if (launchDir) {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      win.webContents.once('did-finish-load', () => {
-        void openDirectoryAsWorkspace(launchDir);
-      });
+  // Cold-start Explorer folder is consumed by the renderer
+  // (system:consumeLaunchDirectory) so it cannot race auto-session restore.
+
+  // Refresh Explorer verb command if already installed — fixes stale
+  // `electron.exe "%V"` (missing app path) from older builds.
+  try {
+    if (isContextMenuInstalled()) {
+      const exe = app.getPath('exe');
+      const appPath = app.isPackaged ? null : app.getAppPath();
+      installContextMenu(exe, 'Open in wmux', appPath);
     }
-  }
+  } catch { /* registry optional */ }
 
   // Initialize auto-updater only when packaged (avoids errors in dev)
   if (app.isPackaged) {

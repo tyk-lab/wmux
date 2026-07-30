@@ -5,6 +5,8 @@ import {
   commandFor,
   iconFor,
   directoryFromArgv,
+  setPendingLaunchDirectory,
+  consumePendingLaunchDirectory,
 } from '../../src/main/shell-context-menu';
 
 // The registry writes themselves are execFileSync('reg.exe') and are not worth
@@ -28,13 +30,19 @@ describe('registry shape', () => {
 
 describe('command string', () => {
   const EXE = 'C:\\Users\\a\\OneDrive - Pulsa\\Bureau\\wmux\\wmux.exe';
+  const ELECTRON = 'C:\\proj\\node_modules\\electron\\dist\\electron.exe';
+  const APP = 'C:\\proj\\wmux';
 
-  it('quotes an exe path containing spaces', () => {
+  it('quotes an exe path containing spaces (packaged)', () => {
     expect(commandFor(EXE)).toBe(`"${EXE}" "%V"`);
   });
 
-  // %1 is EMPTY for Directory\Background — the right-click-empty-space gesture,
-  // which is the whole point of the feature. %V resolves for all three roots.
+  // Dev must pass the app path; otherwise Electron treats %V as the app.
+  it('includes the app path in dev form', () => {
+    expect(commandFor(ELECTRON, APP)).toBe(`"${ELECTRON}" "${APP}" "%V"`);
+  });
+
+  // %1 is EMPTY for Directory\Background — the right-click-empty-space gesture.
   it('passes %V, not %1', () => {
     expect(commandFor(EXE)).toContain('"%V"');
     expect(commandFor(EXE)).not.toContain('%1');
@@ -46,10 +54,23 @@ describe('command string', () => {
 });
 
 describe('directoryFromArgv', () => {
-  const isDir = (p: string) => p === 'C:\\work\\proj' || p === 'C:\\Program Files\\x';
+  const isDir = (p: string) =>
+    p === 'C:\\work\\proj'
+    || p === 'C:\\Program Files\\x'
+    || p === 'C:\\src\\wmux';
 
-  it('finds the folder Explorer passed', () => {
+  it('finds the folder Explorer passed (packaged)', () => {
     expect(directoryFromArgv(['wmux.exe', 'C:\\work\\proj'], isDir)).toBe('C:\\work\\proj');
+  });
+
+  // Dev: electron.exe <appRoot> <folder> — last directory is the Explorer target.
+  it('prefers the last directory when app path and folder both appear', () => {
+    expect(
+      directoryFromArgv(
+        ['electron.exe', 'C:\\src\\wmux', 'C:\\work\\proj'],
+        isDir,
+      ),
+    ).toBe('C:\\work\\proj');
   });
 
   it('handles a path with spaces', () => {
@@ -72,8 +93,6 @@ describe('directoryFromArgv', () => {
   });
 
   it('never returns the exe itself', () => {
-    // argv[0] is skipped outright — otherwise launching from a directory-like
-    // path would open a workspace on the install dir on every plain launch.
     expect(directoryFromArgv(['C:\\work\\proj'], isDir)).toBeNull();
   });
 
@@ -84,5 +103,13 @@ describe('directoryFromArgv', () => {
   it('survives a throwing stat', () => {
     expect(directoryFromArgv(['wmux.exe', 'C:\\denied'], () => { throw new Error('EACCES'); }))
       .toBeNull();
+  });
+});
+
+describe('pending launch directory', () => {
+  it('is one-shot: second consume returns null', () => {
+    setPendingLaunchDirectory('C:\\work\\proj');
+    expect(consumePendingLaunchDirectory()).toBe('C:\\work\\proj');
+    expect(consumePendingLaunchDirectory()).toBeNull();
   });
 });

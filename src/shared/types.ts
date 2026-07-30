@@ -319,6 +319,10 @@ export const IPC_CHANNELS = {
   SYSTEM_SET_CONTEXT_MENU: 'system:setContextMenu',
   SYSTEM_GET_SHOULD_USE_DARK_COLORS: 'system:getShouldUseDarkColors',
   SYSTEM_NATIVE_THEME_UPDATED: 'system:nativeThemeUpdated',
+  /** Cold-start folder from Explorer "Open in wmux" — one-shot consume. */
+  SYSTEM_CONSUME_LAUNCH_DIRECTORY: 'system:consumeLaunchDirectory',
+  /** Running instance: open this folder as a new workspace (second-instance / Explorer). */
+  SYSTEM_OPEN_DIRECTORY: 'system:openDirectory',
   // Metadata events (main → renderer)
   METADATA_UPDATE: 'metadata:update',
   // Agent

@@ -784,6 +784,27 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     // Read prefs at spawn time so changing the default later doesn't re-spawn live PTYs.
     const effectiveShell = shell || useStore.getState().workspacePrefs.defaultShell || '';
 
+    // Spawn cwd: prefer prop (surface.cwd stamped at createWorkspace), else look
+    // up workspace.cwd by surfaceId so Explorer "Open in wmux" never falls back
+    // to $HOME when React prop timing is stale.
+    let spawnCwd = (cwd && cwd.trim()) || '';
+    if (!spawnCwd && surfaceId) {
+      const st = useStore.getState();
+      for (const ws of st.workspaces) {
+        const ids = (() => {
+          const walk = (n: typeof ws.splitTree): string[] =>
+            n.type === 'leaf'
+              ? n.surfaces.map((s) => s.id)
+              : [...walk(n.children[0]), ...walk(n.children[1])];
+          return walk(ws.splitTree);
+        })();
+        if (ids.includes(surfaceId)) {
+          spawnCwd = ws.cwd || '';
+          break;
+        }
+      }
+    }
+
     // Spawn the PTY at the already-measured terminal size. Otherwise it starts at
     // the 80x24 default and our follow-up resize triggers a window-size-change in
     // the shell, which makes PSReadLine/oh-my-posh redraw the prompt — the doubled
@@ -808,7 +829,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           attachToPty(surfaceId!);
         } else {
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
-          window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, surfaceId, startupCommands: startupCommandsRef.current, cols: initialCols, rows: initialRows })
+          window.wmux.pty.create({ shell: effectiveShell, cwd: spawnCwd, env: {}, surfaceId, startupCommands: startupCommandsRef.current, cols: initialCols, rows: initialRows })
             .then((created: { id: string; shell: string; startupCommandsConsumed?: boolean }) => {
               // PTY persists (keep-alive); a remount re-attaches via pty.has.
               if (disposed) return;
@@ -821,7 +842,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       });
     } else {
       // No surfaceId hint — always create new PTY
-      window.wmux.pty.create({ shell: effectiveShell, cwd: cwd ?? '', env: {}, startupCommands: startupCommandsRef.current, cols: initialCols, rows: initialRows })
+      window.wmux.pty.create({ shell: effectiveShell, cwd: spawnCwd, env: {}, startupCommands: startupCommandsRef.current, cols: initialCols, rows: initialRows })
         .then((created: { id: string; shell: string; startupCommandsConsumed?: boolean }) => {
           if (disposed) return;
           setResolvedShellForSurface(surfaceId, created.shell);

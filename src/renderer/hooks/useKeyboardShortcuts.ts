@@ -275,6 +275,7 @@ export function useKeyboardShortcuts(
         const res = await window.wmux?.system?.pickFolder?.();
         if (!res || res.canceled || !res.path) return;
         const segments = String(res.path).split(/[\\/]/).filter(Boolean);
+        // createWorkspace always activates the new session (Explorer / CLI parity).
         createWorkspace({ cwd: res.path, title: segments[segments.length - 1] || res.path });
       })();
     };

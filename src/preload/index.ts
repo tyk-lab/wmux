@@ -41,6 +41,17 @@ contextBridge.exposeInMainWorld('wmux', {
     getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_VERSION),
     toggleDevTools: () => ipcRenderer.send('toggle-devtools'),
     pickFolder: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_PICK_FOLDER),
+    /** Cold-start folder from Explorer "Open in wmux" (one-shot; null after). */
+    consumeLaunchDirectory: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_CONSUME_LAUNCH_DIRECTORY) as Promise<string | null>,
+    /** Running instance: Explorer / second-instance opens this folder as a workspace. */
+    onOpenDirectory: (callback: (dirPath: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, dirPath: string) => {
+        if (typeof dirPath === 'string' && dirPath) callback(dirPath);
+      };
+      ipcRenderer.on(IPC_CHANNELS.SYSTEM_OPEN_DIRECTORY, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_OPEN_DIRECTORY, handler);
+    },
     getContextMenu: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_CONTEXT_MENU) as Promise<boolean>,
     setContextMenu: (enabled: boolean, label?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_SET_CONTEXT_MENU, enabled, label) as Promise<{

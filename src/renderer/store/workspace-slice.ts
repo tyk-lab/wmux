@@ -1,7 +1,7 @@
 import { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { WorkspaceId, WorkspaceInfo, SplitNode } from '../../shared/types';
-import { createLeaf } from './split-utils';
+import { createLeaf, stampCwdOnTree } from './split-utils';
 import { killTreeTerminalPtys } from './pty-teardown';
 
 function collectSurfaceIds(tree: SplitNode): string[] {
@@ -52,7 +52,12 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
 
   createWorkspace(options = {}): WorkspaceId {
     const id: WorkspaceId = `ws-${uuid()}`;
-    const splitTree = options.splitTree ?? createLeaf();
+    // Stamp cwd onto every terminal surface so PTY spawn sees it even if the
+    // workspace lookup races (Explorer "Open in wmux" must not start in $HOME).
+    let splitTree = options.splitTree ?? createLeaf();
+    if (options.cwd) {
+      splitTree = stampCwdOnTree(splitTree, options.cwd);
+    }
     const workspace: WorkspaceInfo = {
       id,
       title: options.title ?? `Workspace ${get().workspaces.length + 1}`,
@@ -72,13 +77,12 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       shellState: options.shellState,
     };
 
-    set((state) => {
-      const isFirst = state.workspaces.length === 0;
-      return {
-        workspaces: [...state.workspaces, workspace],
-        activeWorkspaceId: isFirst ? id : state.activeWorkspaceId,
-      };
-    });
+    // Always activate the new session — Explorer "Open in wmux", CLI
+    // new-workspace, and the + button all expect the created workspace in front.
+    set((state) => ({
+      workspaces: [...state.workspaces, workspace],
+      activeWorkspaceId: id,
+    }));
 
     return id;
   },

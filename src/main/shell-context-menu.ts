@@ -45,10 +45,15 @@ export function verbKeyFor(root: string): string {
  * Directory\Background, which is precisely the right-click-empty-space gesture
  * this feature exists to serve.
  *
- * Quoted because a Windows path routinely contains spaces; this project lives
- * in "OneDrive - Pulsa\Bureau\wmux".
+ * Packaged:  `"C:\...\wmux.exe" "%V"`
+ * Dev:       `"...\electron.exe" "C:\...\wmux" "%V"`
+ *            (without the app path, Electron treats %V as the app and never
+ *            boots wmux — the registry used to only store electron.exe "%V".)
  */
-export function commandFor(exePath: string): string {
+export function commandFor(exePath: string, appPath?: string | null): string {
+  if (appPath) {
+    return `"${exePath}" "${appPath}" "%V"`;
+  }
   return `"${exePath}" "%V"`;
 }
 
@@ -80,16 +85,22 @@ export function isContextMenuInstalled(): boolean {
 /**
  * Register the verb for all three roots.
  *
- * @param exePath absolute path to wmux.exe
+ * @param exePath absolute path to wmux.exe (or electron.exe in dev)
  * @param label   menu text, localized by the caller
+ * @param appPath in dev: absolute path to the wmux project (app.getAppPath());
+ *                packaged: omit / null so the command is just exe + "%V"
  */
-export function installContextMenu(exePath: string, label = 'Open in wmux'): void {
+export function installContextMenu(
+  exePath: string,
+  label = 'Open in wmux',
+  appPath?: string | null,
+): void {
   if (process.platform !== 'win32') return;
   for (const root of REG_ROOTS) {
     const key = verbKeyFor(root);
     reg(['add', key, '/ve', '/t', 'REG_SZ', '/d', label, '/f']);
     reg(['add', key, '/v', 'Icon', '/t', 'REG_SZ', '/d', iconFor(exePath), '/f']);
-    reg(['add', `${key}\\command`, '/ve', '/t', 'REG_SZ', '/d', commandFor(exePath), '/f']);
+    reg(['add', `${key}\\command`, '/ve', '/t', 'REG_SZ', '/d', commandFor(exePath, appPath), '/f']);
   }
 }
 
@@ -108,26 +119,48 @@ export function uninstallContextMenu(): void {
 /**
  * Pull a directory to open out of a process argv.
  *
- * Explorer invokes us as `wmux.exe "C:\some\folder"`, but argv also carries the
- * exe itself, Electron/Chromium switches, and in dev the script path. Anything
- * that is not an existing directory is ignored rather than guessed at, so a
- * stray `--flag` can never be mistaken for a workspace path.
+ * Explorer:  `wmux.exe "C:\folder"`           → last dir is the folder
+ * Dev:       `electron.exe "C:\wmux" "C:\folder"` → last dir is the folder
+ *                                        (first dir is the app root — skip by last-wins)
+ *
+ * Anything that is not an existing directory is ignored rather than guessed at.
  */
 export function directoryFromArgv(
   argv: string[],
   isDirectory: (p: string) => boolean,
 ): string | null {
+  let found: string | null = null;
   for (const raw of argv.slice(1)) {
     if (!raw || raw.startsWith('-')) continue;
     // Skip the packed app entry and dev script path.
-    if (/\.(js|asar)$/i.test(raw) || raw === '.') continue;
-    const candidate = raw.replace(/^"|"$/g, '');
+    if (/\.(js|asar|exe)$/i.test(raw) || raw === '.') continue;
+    const candidate = path.normalize(raw.replace(/^"|"$/g, ''));
     if (!path.isAbsolute(candidate)) continue;
     try {
-      if (isDirectory(candidate)) return candidate;
+      if (isDirectory(candidate)) {
+        // Last directory wins: Explorer's folder is last; Electron app path first.
+        found = candidate;
+      }
     } catch {
       // Unreadable path — not a workspace target.
     }
   }
-  return null;
+  return found;
+}
+
+/**
+ * Cold-start folder from Explorer (`wmux.exe "%V"`). Stashed at process start
+ * and consumed once by the renderer so session restore cannot race it away.
+ */
+let pendingLaunchDirectory: string | null = null;
+
+export function setPendingLaunchDirectory(dir: string | null): void {
+  pendingLaunchDirectory = dir;
+}
+
+/** One-shot: returns and clears the cold-start directory. */
+export function consumePendingLaunchDirectory(): string | null {
+  const dir = pendingLaunchDirectory;
+  pendingLaunchDirectory = null;
+  return dir;
 }

@@ -9,7 +9,12 @@ import { PtyManager } from './pty-manager';
 import { NotificationManager } from './notification-manager';
 import { detectShells } from './shell-detector';
 import { listSystemFonts } from './font-detector';
-import { isContextMenuInstalled, installContextMenu, uninstallContextMenu } from './shell-context-menu';
+import {
+  isContextMenuInstalled,
+  installContextMenu,
+  uninstallContextMenu,
+  consumePendingLaunchDirectory,
+} from './shell-context-menu';
 import { getDefaultTheme, getThemeByName, loadBundledThemes } from './theme-loader';
 import { parseWindowsTerminalConfig, parseGhosttyConfig, loadProjectProfiles, importWindowsTerminalProfiles } from './config-loader';
 import { loadUserConfig, getConfigPath } from './user-config';
@@ -462,9 +467,12 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   ipcMain.handle(IPC_CHANNELS.SYSTEM_SET_CONTEXT_MENU, (_event, enabled: boolean, label?: string) => {
     try {
       if (enabled) {
-        // app.getPath('exe') is Electron's own binary in dev, which is correct:
-        // the verb then launches the dev build, and the user gets what they see.
-        installContextMenu(app.getPath('exe'), label || 'Open in wmux');
+        // Packaged: wmux.exe "%V"
+        // Dev: electron.exe "<project>" "%V" — without the project path Electron
+        // treats %V as the app and never boots wmux (registry used to be broken).
+        const exe = app.getPath('exe');
+        const appPath = app.isPackaged ? null : app.getAppPath();
+        installContextMenu(exe, label || 'Open in wmux', appPath);
       } else {
         uninstallContextMenu();
       }
@@ -487,6 +495,9 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     }
     return { path: result.filePaths[0] };
   });
+
+  // Explorer cold-start: one-shot folder path for the renderer's session init.
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_CONSUME_LAUNCH_DIRECTORY, () => consumePendingLaunchDirectory());
 }
 
 export function setupAgentPtyForwarding(surfaceId: string, window: BrowserWindow): void {

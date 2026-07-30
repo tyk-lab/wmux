@@ -600,13 +600,38 @@ export default function App() {
     setTutorialOpen(false);
   }, []);
 
-  // Initialize workspaces: prefer the rolling auto-saved session (the file
-  // main writes every 30s + on quit), fall back to the most recent named
-  // session, then to a fresh default. The auto-save is the user's actual last
-  // state — earlier versions only restored named sessions, so on every
-  // restart users with no manually-saved snapshot lost their workspaces.
+  // Open a folder as a new session (Explorer second-instance / IPC).
+  const openFolderWorkspace = useCallback((dirPath: string) => {
+    const dir = dirPath.trim();
+    if (!dir) return;
+    const base = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || dir;
+    createWorkspace({
+      title: base,
+      cwd: dir,
+      splitTree: buildDefaultSplitTree(),
+    });
+  }, [createWorkspace]);
+
+  // Running instance: main process sends SYSTEM_OPEN_DIRECTORY (not executeJavaScript).
+  useEffect(() => {
+    const unsub = window.wmux?.system?.onOpenDirectory?.(openFolderWorkspace);
+    return () => { try { unsub?.(); } catch { /* no-op */ } };
+  }, [openFolderWorkspace]);
+
+  // Initialize workspaces: Explorer cold-start folder wins over auto-save
+  // (otherwise restore races the open-folder workspace back to home cwd).
+  // Else prefer the rolling auto-saved session, then the most recent named
+  // session, then a fresh default.
   useEffect(() => {
     (async () => {
+      try {
+        const launchDir = await window.wmux?.system?.consumeLaunchDirectory?.();
+        if (typeof launchDir === 'string' && launchDir.trim()) {
+          openFolderWorkspace(launchDir);
+          return;
+        }
+      } catch { /* no-op */ }
+
       try {
         const autoSaved = await window.wmux?.session?.loadAuto?.();
         if (autoSaved && Array.isArray(autoSaved.workspaces) && autoSaved.workspaces.length > 0) {
@@ -636,7 +661,7 @@ export default function App() {
         });
       }
     })();
-  }, []);
+  }, [createWorkspace, openFolderWorkspace]);
 
   // Expose helpers for main process queries + pipe bridge
   useEffect(() => {

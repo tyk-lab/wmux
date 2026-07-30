@@ -6,14 +6,38 @@ import { SplitNode, PaneId, SurfaceId, SurfaceType } from '../../shared/types';
 export function createLeaf(
   paneId?: PaneId,
   surfaceType: SurfaceType = 'terminal',
+  cwd?: string,
 ): SplitNode & { type: 'leaf' } {
   const resolvedPaneId: PaneId = paneId ?? (`pane-${uuid()}` as PaneId);
   const surfaceId: SurfaceId = `surf-${uuid()}` as SurfaceId;
+  const surface =
+    surfaceType === 'terminal' && cwd
+      ? { id: surfaceId, type: surfaceType, cwd }
+      : { id: surfaceId, type: surfaceType };
   return {
     type: 'leaf',
     paneId: resolvedPaneId,
-    surfaces: [{ id: surfaceId, type: surfaceType }],
+    surfaces: [surface],
     activeSurfaceIndex: 0,
+  };
+}
+
+/** Stamp `cwd` onto every terminal surface so PTY spawn does not rely on workspace lookup timing. */
+export function stampCwdOnTree(tree: SplitNode, cwd: string): SplitNode {
+  if (tree.type === 'leaf') {
+    return {
+      ...tree,
+      surfaces: tree.surfaces.map((s) =>
+        s.type === 'terminal' ? { ...s, cwd } : s,
+      ),
+    };
+  }
+  return {
+    ...tree,
+    children: [
+      stampCwdOnTree(tree.children[0], cwd),
+      stampCwdOnTree(tree.children[1], cwd),
+    ],
   };
 }
 
