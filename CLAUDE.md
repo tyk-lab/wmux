@@ -400,6 +400,9 @@ wmux report-agent --run-depth N [--seq N]        # absolute depth; --seq drops r
 wmux report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]
 wmux report-session <id> | release-agent
 wmux agent-state [--surface <id>]                # no --surface → all panes + blocked list
+# Process-level busy/idle for agents without native hooks (kimi / codex / …):
+wmux wrap [--label L] [--] kimi                  # working for whole process; idle+release on exit
+wmux wrap codex --full-auto "fix tests"
 
 # Agents
 wmux agent spawn [--cmd C] [--label L] [--cwd D] [--pane P] [--replace-tab]

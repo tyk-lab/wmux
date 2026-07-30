@@ -4,6 +4,8 @@ import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawn } from 'child_process';
+import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -489,7 +491,114 @@ const AGENT_STATE_COMMANDS: Record<string, (args: string[]) => Promise<void>> = 
     const surfaceId = getFlag(args, '--surface');
     print(await sendV2('pane.agent_state', surfaceId ? { surfaceId } : {}));
   },
+  // Process-level lifecycle for agents without native hooks (kimi/codex/…).
+  wrap: cmdWrap,
 };
+
+/**
+ * Lifecycle reports for wrap: never abort the child, but on the *start*
+ * report surface a one-line hint when the pipe is dead / method missing so
+ * "sidebar didn't change" is diagnosable (silent swallow was the default bug).
+ */
+async function reportAgentForWrap(
+  surfaceId: string,
+  extra: Record<string, unknown>,
+  opts: { warnOnError: boolean },
+): Promise<boolean> {
+  try {
+    await sendV2('pane.report_agent', { surfaceId, ...extra });
+    return true;
+  } catch (err: any) {
+    if (opts.warnOnError) {
+      console.error(
+        `wrap: could not report agent state (${err?.message || err}). `
+        + 'Is wmux running a build with agent-state (#128), and is WMUX_SURFACE_ID set?',
+      );
+    }
+    return false;
+  }
+}
+
+async function quietReleaseAgent(surfaceId: string): Promise<void> {
+  try {
+    await sendV2('pane.release_agent', { surfaceId });
+  } catch { /* ignore */ }
+}
+
+/**
+ * `wmux wrap [--label L] [--surface id] [--] <cmd> [args…]`
+ *
+ * Inside a wmux pane: marks the surface working for the whole child process,
+ * then idle+release when it exits. Outside wmux (no surface): plain exec.
+ */
+async function cmdWrap(args: string[]): Promise<void> {
+  const parsed = parseWrapArgs(args, process.env.WMUX_SURFACE_ID);
+  if (!parsed.ok) {
+    console.error(parsed.error);
+    process.exit(1);
+  }
+  const { plan } = parsed;
+  const track = shouldTrackAgent(plan);
+
+  if (!track) {
+    console.error(
+      'wrap: no surface id (not inside a wmux pane?). '
+      + 'Sidebar will not update. Pass --surface <id> or run inside wmux.',
+    );
+  }
+
+  if (track && plan.surfaceId) {
+    // Absolute depth 1 (not +delta): wrap is one process, re-entry-safe if the
+    // user nests wrap by mistake without inflating the refcount forever.
+    const ok = await reportAgentForWrap(
+      plan.surfaceId,
+      { runDepth: 1, awaitingHuman: false },
+      { warnOnError: true },
+    );
+    if (ok) {
+      // Brief ack so the user can tell tracking is live (sidebar should say Working).
+      console.error(`wrap: tracking ${plan.label || plan.cmd} → working`);
+    }
+    if (plan.label) {
+      try {
+        await sendV2('pane.report_metadata', {
+          surfaceId: plan.surfaceId,
+          model: plan.label,
+          ttlMs: 24 * 60 * 60 * 1000,
+        });
+      } catch { /* ignore */ }
+    }
+  }
+
+  const exitCode = await new Promise<number>((resolve) => {
+    const child = spawn(plan.cmd, plan.cmdArgs, {
+      stdio: 'inherit',
+      env: process.env,
+      // Windows needs a shell to resolve .cmd/.bat shims on PATH.
+      shell: process.platform === 'win32',
+      windowsHide: false,
+    });
+    child.on('error', (err) => {
+      console.error(`wrap: failed to start ${plan.cmd}: ${err.message}`);
+      resolve(1);
+    });
+    child.on('exit', (code, signal) => {
+      if (signal) resolve(1);
+      else resolve(code ?? 1);
+    });
+  });
+
+  if (track && plan.surfaceId) {
+    await reportAgentForWrap(
+      plan.surfaceId,
+      { runDepth: 0, awaitingHuman: false },
+      { warnOnError: false },
+    );
+    await quietReleaseAgent(plan.surfaceId);
+  }
+
+  process.exit(exitCode);
+}
 
 // Command dispatch table. Each handler receives the raw argv (args[0] is the
 // command name). Replaces a single giant switch so each command stays small and
@@ -697,6 +806,8 @@ Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]
             report-session <id> | release-agent | agent-state [--surface <id>]
+            wrap [--label L] [--surface id] [--] <cmd> [args…]
+            (process-level busy/idle for agents without hooks — kimi/codex/…)
             (surface defaults to $WMUX_SURFACE_ID — an agent in a pane needs no id)
 Config:     config show|reload|path   (edits ~/.wmux/config.toml — see docs)
             reload-config             (shorthand for 'config reload')
