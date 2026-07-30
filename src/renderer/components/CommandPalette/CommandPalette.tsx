@@ -129,6 +129,16 @@ export default function CommandPalette({ onClose, onAction }: CommandPaletteProp
       },
     });
 
+    items.push({
+      id: 'command:open-ai-supervisor',
+      label: 'AI 监督…',
+      category: t('palette.category.commands'),
+      action: () => {
+        useStore.getState().openSupervisorSetup();
+        onClose();
+      },
+    });
+
     // Category: Workspaces — switch to each workspace by name
     for (const ws of workspaces) {
       const isCurrent = ws.id === activeWorkspaceId;

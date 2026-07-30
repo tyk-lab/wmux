@@ -14,6 +14,7 @@ import CommandPalette from './components/CommandPalette/CommandPalette';
 import ShortcutCheatSheet from './components/CheatSheet/ShortcutCheatSheet';
 import ConfirmCloseDialog from './components/ConfirmCloseDialog';
 import ConfirmCloseSurfaceDialog from './components/ConfirmCloseSurfaceDialog';
+import SupervisorSetupDialog from './components/Supervisor/SupervisorSetupDialog';
 import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
@@ -34,6 +35,14 @@ import {
   shouldDedupeLifecycleNotify,
   type LifecycleNotifyKind,
 } from './agent-lifecycle-notify';
+import {
+  blankRuntime,
+  makeGoalChaseStep,
+  sendToSurface,
+  tickLane,
+  type LaneRuntime,
+} from './supervisor/supervisor-engine';
+import { buildUserNotifyText } from './supervisor/protocol';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 
@@ -555,6 +564,13 @@ export default function App() {
   // Hook listener is mounted once; read latest agentStates via ref.
   const agentStatesRef = useRef(agentStates);
   agentStatesRef.current = agentStates;
+  // Supervisor setup dialog / engine read live declared states without prop drilling.
+  useEffect(() => {
+    (window as any).__wmux_getAgentStates = () => agentStatesRef.current;
+    return () => {
+      delete (window as any).__wmux_getAgentStates;
+    };
+  }, []);
   // Track when each workspace entered "running" state (for notification threshold)
   const runningStartTimes = useRef<Record<string, number>>({});
   // Browser URL tracking is now per-workspace via WorkspaceInfo.browserUrl
@@ -849,6 +865,128 @@ export default function App() {
     });
     return unsub;
   }, []);
+
+  // ── AI Supervisor scheduler (opt-in; never auto-starts) ─────────────────
+  const supervisorActive = useStore((s) => s.supervisor.active);
+  const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
+  const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
+  useEffect(() => {
+    if (!supervisorActive) return;
+
+    const runTick = () => {
+      const store = useStore.getState();
+      const session = store.supervisor;
+      if (!session.active) return;
+      const now = Date.now();
+      const states = agentStatesRef.current;
+
+      for (const lane of session.lanes) {
+        if (!lane.enabled) continue;
+        if (!supervisorRuntimeRef.current[lane.id]) {
+          supervisorRuntimeRef.current[lane.id] = blankRuntime();
+        }
+        const runtime = supervisorRuntimeRef.current[lane.id];
+        const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
+        const hasPending = session.pendingApprovals.some((a) => a.laneId === lane.id);
+        const { actions, runtime: nextRt } = tickLane({
+          session,
+          lane,
+          surfaceState: {
+            state: surfaceState.state || 'unknown',
+            blockedReason: surfaceState.blockedReason,
+          },
+          runtime,
+          now,
+          hasPendingApproval: hasPending,
+        });
+        supervisorRuntimeRef.current[lane.id] = nextRt;
+
+        for (const action of actions) {
+          if (action.type === 'log') {
+            store.appendSupervisorLog(action.laneId, action.action, action.detail);
+          } else if (action.type === 'complete_step') {
+            store.updateStep(action.laneId, action.stepId, {
+              status: 'completed',
+              completedAt: now,
+            });
+          } else if (action.type === 'ensure_goal_step') {
+            const ln = store.supervisor.lanes.find((l) => l.id === action.laneId);
+            if (ln && ln.autoStepsUsed < ln.maxAutoSteps) {
+              const step = makeGoalChaseStep(ln.autoStepsUsed);
+              store.updateLane(action.laneId, {
+                steps: [...ln.steps, step],
+              });
+            }
+          } else if (action.type === 'request_stop_check') {
+            store.updateLane(action.laneId, { awaitingStopCheck: true, stopConfirmed: false });
+          } else if (action.type === 'dispatch') {
+            // Resume inject path clears stop-check wait when new work is sent.
+            store.updateLane(action.laneId, { awaitingStopCheck: false });
+            try {
+              sendToSurface(action.surfaceId, action.text, session.submitEnter);
+              store.updateStep(action.laneId, action.stepId, {
+                status: 'in_progress',
+                dispatchedAt: now,
+              });
+              if (action.countAuto) {
+                const ln = store.supervisor.lanes.find((l) => l.id === action.laneId);
+                if (ln) {
+                  store.updateLane(action.laneId, { autoStepsUsed: ln.autoStepsUsed + 1 });
+                }
+              }
+            } catch (err: any) {
+              store.appendSupervisorLog(
+                action.laneId,
+                '发送失败',
+                String(err?.message || err),
+              );
+            }
+          } else if (action.type === 'notify_supervisor') {
+            const sid = store.supervisor.supervisorSurfaceId;
+            if (sid) {
+              try {
+                sendToSurface(sid, action.text, false);
+              } catch {
+                /* ignore */
+              }
+            }
+          } else if (action.type === 'notify_user') {
+            const lane = store.supervisor.lanes.find((l) => l.id === action.laneId);
+            const text = buildUserNotifyText({
+              mode: session.mode,
+              reason: action.reason,
+              laneLabel: lane?.label,
+              stopWhen: session.stopWhen,
+              doneWhen: session.doneWhen,
+              detail: action.detail,
+            });
+            store.appendSupervisorLog(action.laneId, '通知你', action.reason);
+            store.addNotification({
+              surfaceId: (lane?.surfaceId || '') as SurfaceId,
+              workspaceId: (store.activeWorkspaceId || '') as WorkspaceId,
+              text: text.replace(/\n/g, ' · '),
+            });
+            const disableLane = action.disableLane !== false;
+            if (disableLane) {
+              store.updateLane(action.laneId, { enabled: false });
+              const remaining = useStore
+                .getState()
+                .supervisor.lanes.filter((l) => l.enabled);
+              if (action.stopAll || remaining.length === 0) {
+                store.stopSupervisor(action.reason);
+              }
+            } else if (action.stopAll) {
+              store.stopSupervisor(action.reason);
+            }
+          }
+        }
+      }
+    };
+
+    runTick();
+    const id = window.setInterval(runTick, Math.max(1500, supervisorPollMs || 4000));
+    return () => clearInterval(id);
+  }, [supervisorActive, supervisorPollMs]);
 
   // ── Windows taskbar progress (OSC 9;4) ──────────────────────────────────
   // Fold every surface's progress into one value for this window's taskbar
@@ -1370,6 +1508,7 @@ export default function App() {
 
       <ConfirmCloseDialog />
       <ConfirmCloseSurfaceDialog />
+      <SupervisorSetupDialog />
 
       {broadcastInputActive && (
         <div className="broadcast-input-banner" title="Typed input is sent to every terminal pane in this workspace">

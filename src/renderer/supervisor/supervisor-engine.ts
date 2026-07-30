@@ -1,0 +1,440 @@
+/**
+ * Plan/goal supervisor tick — pure planning; side effects in App.
+ */
+
+import type {
+  SupervisorLane,
+  SupervisorSession,
+  SupervisorStep,
+} from '../store/supervisor-slice';
+import { buildInjectedPrompt, buildIdleHint, buildStopCheckHint } from './protocol';
+
+export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
+
+export interface SurfaceStateView {
+  state: DeclaredState | string;
+  blockedReason?: string | null;
+}
+
+export interface LaneRuntime {
+  lastState: string;
+  inProgressSince: number | null;
+  sawWorking: boolean;
+  lastDispatchAt: number | null;
+  lastProposeAt: number | null;
+  lastBlockedLogAt: number | null;
+  lastIdleHintAt: number | null;
+  /** After notifying user for this lane, skip further auto work until restart. */
+  humanNotified: boolean;
+}
+
+export function blankRuntime(): LaneRuntime {
+  return {
+    lastState: 'unknown',
+    inProgressSince: null,
+    sawWorking: false,
+    lastDispatchAt: null,
+    lastProposeAt: null,
+    lastBlockedLogAt: null,
+    lastIdleHintAt: null,
+    humanNotified: false,
+  };
+}
+
+export function getNextOpenStep(lane: SupervisorLane): { index: number; step: SupervisorStep } | null {
+  for (let i = 0; i < lane.steps.length; i++) {
+    const st = lane.steps[i];
+    if (st.status === 'pending' || st.status === 'in_progress') {
+      return { index: i, step: st };
+    }
+  }
+  return null;
+}
+
+export function mayDispatch(state: string, allowUnknown: boolean): boolean {
+  if (state === 'blocked' || state === 'working') return false;
+  if (state === 'idle') return true;
+  if (state === 'unknown' && allowUnknown) return true;
+  return false;
+}
+
+export type TickAction =
+  | { type: 'log'; laneId: string; action: string; detail: string }
+  | { type: 'complete_step'; laneId: string; stepId: string }
+  | {
+      type: 'dispatch';
+      laneId: string;
+      surfaceId: string;
+      stepId: string;
+      text: string;
+      countAuto: boolean;
+    }
+  | {
+      type: 'notify_supervisor';
+      text: string;
+    }
+  | {
+      type: 'notify_user';
+      laneId: string;
+      reason: string;
+      detail: string;
+      /** If true, stop entire scheduler after notify. */
+      stopAll: boolean;
+      /** If false, keep lane enabled (e.g. awaiting stop-condition confirm). Default true. */
+      disableLane?: boolean;
+    }
+  | {
+      type: 'ensure_goal_step';
+      laneId: string;
+    }
+  | {
+      /** direct: queue empty → pause injects and ask supervisor/human to judge stopWhen */
+      type: 'request_stop_check';
+      laneId: string;
+    };
+
+export interface TickResult {
+  actions: TickAction[];
+  runtime: LaneRuntime;
+}
+
+function goalChaseStepPrompt(session: SupervisorSession): string {
+  return (
+    '根据当前终端上下文与下列目标，自行决策并执行最小下一步；' +
+    '若缺信息、需权限或无法判断，说明卡点并停止等待人工。'
+  );
+}
+
+/**
+ * Advance one lane for one poll.
+ */
+export function tickLane(opts: {
+  session: SupervisorSession;
+  lane: SupervisorLane;
+  surfaceState: SurfaceStateView;
+  runtime: LaneRuntime;
+  now: number;
+  hasPendingApproval: boolean;
+}): TickResult {
+  const { session, lane, surfaceState, now } = opts;
+  const rt: LaneRuntime = { ...opts.runtime };
+  const actions: TickAction[] = [];
+  if (!lane.enabled || rt.humanNotified || lane.stopConfirmed) {
+    return { actions, runtime: rt };
+  }
+
+  const st = String(surfaceState.state || 'unknown');
+  const mode = session.mode || 'direct';
+
+  // ── blocked → pause injects and notify human (not the same as stop condition) ─
+  if (st === 'blocked') {
+    const reason = surfaceState.blockedReason || '等待人类（权限/输入）';
+    if (!rt.lastBlockedLogAt || now - rt.lastBlockedLogAt > 15_000) {
+      actions.push({
+        type: 'log',
+        laneId: lane.id,
+        action: '阻塞',
+        detail: `${lane.label}: ${reason}`,
+      });
+      actions.push({
+        type: 'notify_user',
+        laneId: lane.id,
+        reason: 'Agent 阻塞，需要你处理（注入已暂停）',
+        detail: reason,
+        stopAll: false,
+      });
+      rt.lastBlockedLogAt = now;
+      // Blocked ≠ stop condition met; keep lane enabled but mark notified so we
+      // don't spam. Human unblocks agent and can reject-stop / re-enable via config.
+      rt.humanNotified = true;
+    }
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  let open = getNextOpenStep(lane);
+
+  // Awaiting stop/done judgment: only resume when new open steps appear (direct inject)
+  // or human clicks「未达到」(clears awaitingStopCheck).
+  if (lane.awaitingStopCheck && !open) {
+    // Handled in !open branch below for re-prompt; skip dispatch.
+  } else if (lane.awaitingStopCheck && open) {
+    // New work queued — resume.
+  }
+
+  if (!open) {
+    if (mode === 'direct') {
+      // Queue empty ≠ done. Enter stop-condition check; only confirmStop stops injects.
+      if (!lane.awaitingStopCheck) {
+        actions.push({ type: 'request_stop_check', laneId: lane.id });
+        actions.push({
+          type: 'log',
+          laneId: lane.id,
+          action: '核对停止条件',
+          detail: session.stopWhen.trim() || '（未填写停止条件）',
+        });
+        actions.push({
+          type: 'notify_supervisor',
+          text: buildStopCheckHint({
+            lane,
+            stopWhen: session.stopWhen,
+            stopWhenKind: session.stopWhenKind || 'concrete',
+            state: st,
+            mode: 'direct',
+          }),
+        });
+        const kindLabel =
+          (session.stopWhenKind || 'concrete') === 'direction' ? '方向' : '具体条件';
+        actions.push({
+          type: 'notify_user',
+          laneId: lane.id,
+          reason: '指令已执行完，请监督 AI / 你判断停止条件是否满足',
+          detail: session.stopWhen.trim()
+            ? `停止条件（${kindLabel}）: ${session.stopWhen.trim()} — 侧栏可确认「已达」或「未达到」`
+            : '请填写停止条件',
+          stopAll: false,
+          disableLane: false,
+        });
+      } else if (
+        session.supervisorSurfaceId &&
+        (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > Math.max(session.idleStableMs * 3, 20_000))
+      ) {
+        actions.push({
+          type: 'notify_supervisor',
+          text: buildStopCheckHint({
+            lane,
+            stopWhen: session.stopWhen,
+            stopWhenKind: session.stopWhenKind || 'concrete',
+            state: st,
+            mode: 'direct',
+          }),
+        });
+        rt.lastIdleHintAt = now;
+      }
+      rt.lastState = st;
+      return { actions, runtime: rt };
+    }
+
+    // goal-chase: after a round of decisions, judge doneWhen before next auto step
+    if (mode === 'goal-chase') {
+      if (lane.awaitingStopCheck) {
+        if (
+          session.supervisorSurfaceId &&
+          (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > Math.max(session.idleStableMs * 3, 20_000))
+        ) {
+          actions.push({
+            type: 'notify_supervisor',
+            text: buildStopCheckHint({
+              lane,
+              stopWhen: session.doneWhen,
+              stopWhenKind: session.stopWhenKind || 'concrete',
+              state: st,
+              mode: 'goal-chase',
+            }),
+          });
+          rt.lastIdleHintAt = now;
+        }
+        rt.lastState = st;
+        return { actions, runtime: rt };
+      }
+
+      const allDone =
+        lane.steps.length > 0 &&
+        lane.steps.every((s) => s.status === 'completed' || s.status === 'skipped');
+      if (allDone && lane.autoStepsUsed > 0) {
+        actions.push({ type: 'request_stop_check', laneId: lane.id });
+        actions.push({
+          type: 'log',
+          laneId: lane.id,
+          action: '核对完成条件',
+          detail: session.doneWhen.trim() || '（未填写）',
+        });
+        actions.push({
+          type: 'notify_supervisor',
+          text: buildStopCheckHint({
+            lane,
+            stopWhen: session.doneWhen,
+            stopWhenKind: session.stopWhenKind || 'concrete',
+            state: st,
+            mode: 'goal-chase',
+          }),
+        });
+        const kindLabel =
+          (session.stopWhenKind || 'concrete') === 'direction' ? '方向' : '具体条件';
+        actions.push({
+          type: 'notify_user',
+          laneId: lane.id,
+          reason: '请监督 AI / 你判断完成条件是否满足',
+          detail: session.doneWhen.trim()
+            ? `完成条件（${kindLabel}）: ${session.doneWhen.trim()}`
+            : '请填写完成条件',
+          stopAll: false,
+          disableLane: false,
+        });
+        rt.lastState = st;
+        return { actions, runtime: rt };
+      }
+
+      if (lane.autoStepsUsed < lane.maxAutoSteps) {
+        actions.push({ type: 'ensure_goal_step', laneId: lane.id });
+        rt.lastState = st;
+        return { actions, runtime: rt };
+      }
+
+      actions.push({
+        type: 'notify_user',
+        laneId: lane.id,
+        reason: '决策步数用尽，请你接管并核对完成条件',
+        detail: session.doneWhen.trim()
+          ? `完成条件参考: ${session.doneWhen.trim()}`
+          : '已达自动决策上限',
+        stopAll: false,
+      });
+      rt.humanNotified = true;
+      rt.lastState = st;
+      return { actions, runtime: rt };
+    }
+
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  const { step, index } = open;
+  const stepCount = Math.max(lane.steps.length, 1);
+  const stepHuman = index + 1;
+
+  // ── complete in_progress ───────────────────────────────────────────────
+  if (step.status === 'in_progress') {
+    if (st === 'working') rt.sawWorking = true;
+
+    const elapsed = rt.inProgressSince != null ? now - rt.inProgressSince : 0;
+    const stable = elapsed >= session.idleStableMs;
+    const canComplete =
+      st === 'idle' &&
+      stable &&
+      (rt.sawWorking || elapsed >= session.idleStableMs * 2);
+
+    if (canComplete) {
+      actions.push({ type: 'complete_step', laneId: lane.id, stepId: step.id });
+      actions.push({
+        type: 'log',
+        laneId: lane.id,
+        action: '步骤完成',
+        detail: `${step.id} (${stepHuman}/${stepCount})`,
+      });
+      rt.sawWorking = false;
+      rt.inProgressSince = null;
+      rt.lastState = st;
+      return { actions, runtime: rt };
+    }
+
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  // ── pending dispatch ───────────────────────────────────────────────────
+  if (step.status !== 'pending') {
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  if (!mayDispatch(st, session.allowUnknown)) {
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  if (rt.lastDispatchAt && now - rt.lastDispatchAt < session.idleStableMs) {
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  // goal-chase: ping supervisor AI with doneWhen judgment + next decision
+  if (mode === 'goal-chase' && session.supervisorSurfaceId) {
+    if (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > session.idleStableMs * 2) {
+      actions.push({
+        type: 'notify_supervisor',
+        text:
+          buildIdleHint({
+            lane,
+            state: st,
+            goal: session.goal,
+            doneWhen: session.doneWhen,
+            stopWhenKind: session.stopWhenKind || 'concrete',
+          }) + '\n',
+      });
+      rt.lastIdleHintAt = now;
+    }
+  }
+
+  const text = buildInjectedPrompt({
+    session,
+    lane,
+    step:
+      mode === 'goal-chase' && !step.prompt.trim()
+        ? { ...step, prompt: goalChaseStepPrompt(session) }
+        : step,
+    stepIndex: stepHuman,
+    stepCount,
+  });
+
+  if (!text.trim()) {
+    actions.push({
+      type: 'log',
+      laneId: lane.id,
+      action: '跳过',
+      detail: '空指令，未注入',
+    });
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
+  actions.push({
+    type: 'dispatch',
+    laneId: lane.id,
+    surfaceId: lane.surfaceId,
+    stepId: step.id,
+    text,
+    countAuto: mode === 'goal-chase',
+  });
+  actions.push({
+    type: 'log',
+    laneId: lane.id,
+    action: '派发',
+    detail:
+      mode === 'direct'
+        ? `原样注入 → ${lane.label} (${stepHuman}/${stepCount})`
+        : `目标决策 → ${lane.label} (${lane.autoStepsUsed + 1}/${lane.maxAutoSteps})`,
+  });
+  rt.lastDispatchAt = now;
+  rt.inProgressSince = now;
+  rt.sawWorking = false;
+  rt.lastState = st;
+  return { actions, runtime: rt };
+}
+
+export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+  const pty = (window as any).wmux?.pty;
+  if (!pty?.write) {
+    throw new Error('wmux.pty.write unavailable');
+  }
+  pty.write(surfaceId, text);
+  if (submitEnter) {
+    window.setTimeout(() => {
+      try {
+        pty.write(surfaceId, '\r');
+      } catch {
+        /* ignore */
+      }
+    }, 80);
+  }
+}
+
+/** Build a pending goal-chase decision step (id unique enough for UI). */
+export function makeGoalChaseStep(used: number): SupervisorStep {
+  return {
+    id: `g${used + 1}`,
+    title: `决策 ${used + 1}`,
+    prompt: '',
+    status: 'pending',
+  };
+}

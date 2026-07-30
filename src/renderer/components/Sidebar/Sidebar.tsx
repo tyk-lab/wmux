@@ -5,6 +5,7 @@ import SidebarResizeHandle from './SidebarResizeHandle';
 import WorkspaceContextMenu from './WorkspaceContextMenu';
 import SessionMenu from './SessionMenu';
 import OrchestrationPanel from './OrchestrationPanel';
+import SupervisorPanel from './SupervisorPanel';
 import { DropEdge, edgeForPointer, reorderByDrop } from './reorder';
 import ErrorBoundary from '../ErrorBoundary';
 import { useStore } from '../../store';
@@ -61,6 +62,7 @@ export default function Sidebar({
   const [dropTarget, setDropTarget] = useState<{ id: WorkspaceId; edge: DropEdge } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [sessionMenuMode, setSessionMenuMode] = useState<'load' | 'save' | null>(null);
+  const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
 
   // ── Orchestration IPC subscription ──────────────────────────────────────
   // Main process pushes wmux-orchestrator state.json updates; we mirror them
@@ -266,6 +268,10 @@ export default function Sidebar({
         <OrchestrationPanel />
       </ErrorBoundary>
 
+      <ErrorBoundary label="supervisor" silent>
+        <SupervisorPanel />
+      </ErrorBoundary>
+
       <div className="sidebar__list" onDragLeave={handleListDragLeave}>
         {workspaces.map((ws) => (
           <WorkspaceRow
@@ -291,6 +297,15 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar__footer">
+        <button
+          className="sidebar__footer-btn"
+          onClick={() => openSupervisorSetup()}
+          title="AI 监督 — 监控 agent 终端"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 1a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V4a3 3 0 0 0-3-3zm2 4V4a2 2 0 1 0-4 0v1h4zM5.5 9a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5zm5 0a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"/>
+          </svg>
+        </button>
         <button
           className="sidebar__footer-btn"
           onClick={() => setSessionMenuMode(sessionMenuMode === 'save' ? null : 'save')}

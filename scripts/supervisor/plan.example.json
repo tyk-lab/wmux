@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "example-multi-lane",
+  "pollSeconds": 12,
+  "idleStableSeconds": 8,
+  "submitEnter": true,
+  "promptPrefix": true,
+  "notes": "Fill each lane.surfaceId from `wmux list-surfaces` (or agent-state). Only these steps will ever be sent — the supervisor never invents work.",
+  "lanes": [
+    {
+      "id": "lane-a",
+      "label": "Auth 终端",
+      "surfaceId": "surf-REPLACE-ME-A",
+      "enabled": true,
+      "steps": [
+        {
+          "id": "a1",
+          "title": "JWT types only",
+          "prompt": "Implement JWT types only under src/auth/types.ts. Do not touch UI or routes. Stop when types compile. Do not start the next task.",
+          "status": "pending"
+        },
+        {
+          "id": "a2",
+          "title": "Token helper",
+          "prompt": "Add a token encode/decode helper using the types from the previous step. No HTTP wiring yet. Stop when tests for the helper pass (or explain blockers).",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "lane-b",
+      "label": "UI 终端",
+      "surfaceId": "surf-REPLACE-ME-B",
+      "enabled": true,
+      "steps": [
+        {
+          "id": "b1",
+          "title": "Login form shell",
+          "prompt": "Scaffold a login form component only (no real API). Keep scope to the form UI. Stop when the component renders in isolation.",
+          "status": "pending"
+        }
+      ]
+    }
+  ]
+}
