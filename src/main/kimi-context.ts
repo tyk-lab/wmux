@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
 export const WMUX_KIMI_START = '# wmux-hooks:start';
 export const WMUX_KIMI_END = '# wmux-hooks:end';
@@ -46,10 +47,11 @@ export function tomlQuote(value: string): string {
 /**
  * Portable hook command: always quote the script path (Windows user dirs
  * often contain spaces). No bash redirects — Kimi uses shell:true → cmd.exe.
+ * `--agent Kimi` so notifications do not guess from the cwd folder name.
  */
 export function makeKimiHookCommand(hookScript: string, event: string): string {
   const script = hookScript.split(path.sep).join('/');
-  return `node "${script}" --event ${event}`;
+  return `node "${script}" --event ${event} --agent Kimi`;
 }
 
 /** Build the managed `[[hooks]]` block (pure, unit-tested). */
@@ -93,17 +95,6 @@ export function applyWmuxKimiHooksToml(existing: string, hookScript: string): st
   return `${base}\n\n${block}\n`;
 }
 
-function resolveHookScriptPath(): string {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { app } = require('electron') as typeof import('electron');
-    if (app.isPackaged) {
-      return path.join(process.resourcesPath, 'cli', 'wmux-hook.js');
-    }
-  } catch { /* tests / non-Electron */ }
-  return path.resolve(path.join(__dirname, '../../resources/cli/wmux-hook.js'));
-}
-
 /**
  * Ensure `~/.kimi-code/config.toml` has wmux turn-level hooks.
  * Creates the home dir + file when missing so first Kimi launch picks them up.
@@ -115,7 +106,7 @@ export function ensureKimiHooks(): void {
     if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true });
 
     const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
-    const hookScript = resolveHookScriptPath().split(path.sep).join('/');
+    const hookScript = resolveWmuxHookScriptPosix();
     const next = applyWmuxKimiHooksToml(existing, hookScript);
     if (next !== existing) {
       fs.writeFileSync(configPath, next, 'utf-8');

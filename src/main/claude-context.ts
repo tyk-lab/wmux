@@ -21,10 +21,13 @@ export function applyWmuxHooks(settings: any, hookScript: string): any {
   const next = { ...(settings || {}) };
   next.hooks = { ...(next.hooks || {}) };
 
-  // PostToolUse passes the tool name as a positional arg; Notification/Stop
-  // pass an --event flag so the helper reports an event type instead.
-  const makeToolCmd = (tool: string) => `node "${hookScript}" ${tool} 2>/dev/null || true`;
-  const makeEventCmd = (event: string) => `node "${hookScript}" --event ${event} 2>/dev/null || true`;
+  // PostToolUse passes the tool name as a positional arg; lifecycle events use
+  // --event. --agent Claude tags notifications (not inferred from cwd).
+  // Keep `2>/dev/null || true` for Claude's Git-Bash-on-Windows hook runner.
+  const makeToolCmd = (tool: string) =>
+    `node "${hookScript}" ${tool} --agent Claude 2>/dev/null || true`;
+  const makeEventCmd = (event: string) =>
+    `node "${hookScript}" --event ${event} --agent Claude 2>/dev/null || true`;
 
   // Drop any prior wmux entry from a hook array, preserving user hooks.
   const stripWmux = (entries: any): any[] =>

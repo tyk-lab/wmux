@@ -32,7 +32,7 @@ export function applyWmuxCodexHooks(existing: any, hookScriptPosix: string): any
     ...base,
     hooks: { ...(base.hooks || {}) },
   };
-  return applyWmuxLifecycleHooks(withDesc, hookScriptPosix);
+  return applyWmuxLifecycleHooks(withDesc, hookScriptPosix, undefined, 'Codex');
 }
 
 /**

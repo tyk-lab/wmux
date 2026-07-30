@@ -34,11 +34,11 @@ export function stripWmuxHookGroups(entries: unknown): any[] {
   });
 }
 
-function makeEventGroup(hookScriptPosix: string, event: string): any {
+function makeEventGroup(hookScriptPosix: string, event: string, agent?: string): any {
   return {
     hooks: [{
       type: 'command',
-      command: makeWmuxHookEventCommand(hookScriptPosix, event),
+      command: makeWmuxHookEventCommand(hookScriptPosix, event, agent),
       timeout: 10,
     }],
   };
@@ -48,11 +48,13 @@ function makeEventGroup(hookScriptPosix: string, event: string): any {
  * Merge wmux lifecycle handlers into a Claude-style hooks root object.
  * `root` may be the whole settings file (`{ hooks: {...} }`) or just the
  * inner `hooks` map — both are accepted.
+ * `agent` is stamped into every command so the sidebar/notifications know the harness.
  */
 export function applyWmuxLifecycleHooks(
   root: any,
   hookScriptPosix: string,
   events: readonly string[] = WMUX_LIFECYCLE_EVENTS,
+  agent?: string,
 ): any {
   const isFullSettings = root && typeof root === 'object' && root.hooks !== undefined
     && !WMUX_LIFECYCLE_EVENTS.some((e) => Array.isArray(root[e]));
@@ -64,7 +66,7 @@ export function applyWmuxLifecycleHooks(
   for (const event of events) {
     hooksMap[event] = [
       ...stripWmuxHookGroups(hooksMap[event]),
-      makeEventGroup(hookScriptPosix, event),
+      makeEventGroup(hookScriptPosix, event, agent),
     ];
   }
 
@@ -76,10 +78,11 @@ export function buildWmuxHooksJsonFile(
   hookScriptPosix: string,
   description: string,
   events: readonly string[] = WMUX_LIFECYCLE_EVENTS,
+  agent?: string,
 ): any {
   const hooks: Record<string, any[]> = {};
   for (const event of events) {
-    hooks[event] = [makeEventGroup(hookScriptPosix, event)];
+    hooks[event] = [makeEventGroup(hookScriptPosix, event, agent)];
   }
   return {
     description,

@@ -12,9 +12,9 @@ import {
 const SCRIPT = 'C:/wmux/resources/cli/wmux-hook.js';
 
 describe('makeKimiHookCommand', () => {
-  it('quotes the script path and passes --event', () => {
+  it('quotes the script path and passes --event plus --agent Kimi', () => {
     expect(makeKimiHookCommand(SCRIPT, 'Stop')).toBe(
-      `node "${SCRIPT}" --event Stop`,
+      `node "${SCRIPT}" --event Stop --agent Kimi`,
     );
   });
 });

@@ -12,15 +12,15 @@ describe('applyWmuxHooks (issue #53)', () => {
 
     // PostToolUse: one entry per tracked tool.
     const postCmds = wmuxCmds(out.hooks.PostToolUse);
-    expect(postCmds.some((c) => c.includes('wmux-hook.js') && c.includes('Bash'))).toBe(true);
+    expect(postCmds.some((c) => c.includes('wmux-hook.js') && c.includes('Bash') && c.includes('--agent Claude'))).toBe(true);
     expect(postCmds.some((c) => c.includes('Edit'))).toBe(true);
 
-    // Notification + Stop: pass an --event flag.
+    // Notification + Stop: --event plus --agent so notifications know the harness.
     expect(wmuxCmds(out.hooks.Notification)).toEqual([
-      `node "${HOOK}" --event Notification 2>/dev/null || true`,
+      `node "${HOOK}" --event Notification --agent Claude 2>/dev/null || true`,
     ]);
     expect(wmuxCmds(out.hooks.Stop)).toEqual([
-      `node "${HOOK}" --event Stop 2>/dev/null || true`,
+      `node "${HOOK}" --event Stop --agent Claude 2>/dev/null || true`,
     ]);
   });
 

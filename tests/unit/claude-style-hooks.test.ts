@@ -37,11 +37,12 @@ describe('applyWmuxLifecycleHooks', () => {
       },
       other: true,
     };
-    const next = applyWmuxLifecycleHooks(settings, SCRIPT);
+    const next = applyWmuxLifecycleHooks(settings, SCRIPT, undefined, 'Codex');
     expect(next.other).toBe(true);
     expect(next.hooks.Stop).toHaveLength(2);
     expect(next.hooks.Stop[0].hooks[0].command).toBe('echo mine');
     expect(next.hooks.Stop[1].hooks[0].command).toContain('--event Stop');
+    expect(next.hooks.Stop[1].hooks[0].command).toContain('--agent Codex');
     for (const event of WMUX_LIFECYCLE_EVENTS) {
       expect(next.hooks[event]?.length).toBeGreaterThan(0);
     }

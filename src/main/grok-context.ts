@@ -30,6 +30,8 @@ export function buildGrokWmuxHooksFile(hookScriptPosix: string): any {
   return buildWmuxHooksJsonFile(
     hookScriptPosix,
     'wmux agent lifecycle (managed — edit via wmux, not by hand)',
+    undefined,
+    'Grok',
   );
 }
 
