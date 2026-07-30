@@ -42,73 +42,147 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 
 ## 侧栏 Agent 状态
 
-左侧工作区行会显示本会话代理状态（优先级从高到低）：
+左侧工作区行显示本会话代理状态（优先级从高到低）：
 
 | 状态 | 含义 |
 |------|------|
 | **Needs you** | 等你确认权限 / 回答问题（blocked） |
-| **Working** | 本轮任务或进程在跑（含 `wmux wrap`） |
+| **Working** | 本轮任务在跑（Hook / `report-agent` / `wrap`） |
 | **Running** | 仅 shell 有前台命令（非 agent 声明） |
 | **Idle** | 空闲 |
 
-数据来自 **声明式协议**（`pane.report_agent`），不是猜终端输出。窗格内已注入 `WMUX_SURFACE_ID` / `WMUX_PIPE` 等环境变量，CLI 默认识别当前 surface。
+**设计原则（少猜、多声明）：** 生命周期真相由各 agent 的 **Hook 固定上报**，wmux 只收信改状态；不解析 TUI、不用模型判断「忙不忙」。窗格内已注入 `WMUX_SURFACE_ID` / `WMUX_PIPE` / `WMUX_PIPE_TOKEN`，CLI 默认识别当前 surface。
 
-### 支持矩阵（turn 级 · 启动时自动注入）
+### 安装 / 刷新 Agent Hooks（脚本）
 
-| Agent | 配置落点 | 用法 | 备注 |
-|-------|----------|------|------|
-| **Claude Code** | `~/.claude/settings.json` | 窗格内 `claude` | 保留用户已有 hooks |
-| **Kimi Code** | `~/.kimi-code/config.toml`（`# wmux-hooks` 标记块） | 窗格内 `kimi` | 创建目录/文件（若不存在） |
-| **Codex CLI** | `~/.codex/hooks.json` | 窗格内 `codex` | 首次可能需在 Codex 里 `/hooks` **信任** wmux 命令 |
-| **Grok Build** | `~/.grok/hooks/wmux.json` | 窗格内 `grok` | 全局 hooks，始终可信 |
-| **OpenCode** | `~/.config/opencode/plugin/wmux.js` | 窗格内 `opencode` | 官方 plugin API |
+#### 何时需要跑脚本
 
-**生命周期 → 侧栏（各 agent 共用）：**
+| 场景 | 是否需要 |
+|------|----------|
+| 首次从源码开发 / 刚拉代码 | **需要** `npm run install:hooks` |
+| 日常启动 wmux（已装过 hooks） | 启动时会再 ensure 一遍；也可手动刷新 |
+| 改过 hook 注入逻辑 / 升级 wmux | **再跑一次** install-hooks，并**重启各 agent** |
+| 只改了渲染层 UI | 不必重装 hooks |
 
-| Hook / 事件 | 侧栏 |
-|-------------|------|
-| `UserPromptSubmit` | **Working**（发任务即开始，纯文本回合也算） |
+#### 怎么跑
+
+在**仓库根目录**：
+
+```powershell
+# 推荐：缺 dist 时会先 npm run build:main，再写入各家配置
+npm run install:hooks
+
+# 等价
+node scripts/install-agent-hooks.mjs
+pwsh -File scripts/install-agent-hooks.ps1
+
+# 已编译过 CLI 时
+node dist/cli/wmux.js install-hooks
+wmux install-hooks          # PATH 已指向本仓库 dist/cli 时
+```
+
+| 参数 | 适用 | 含义 |
+|------|------|------|
+| `--no-opencode` | mjs / ps1 / `wmux install-hooks` | 不安装 OpenCode 插件 |
+| `--skip-build` | 仅 mjs / ps1 | 不自动 `build:main`（要求已有 `dist/cli/wmux.js`） |
+
+#### 脚本会写什么
+
+幂等：可重复执行；**不会删除**你自己的非 wmux hooks（仅替换带 `wmux-hook` 的条目 / 标记块）。
+
+| 目标 | 路径 | 备注 |
+|------|------|------|
+| Claude Code | `~/.claude/settings.json` | 无文件时会创建空 `{}` 再写入 |
+| Kimi Code | `~/.kimi-code/config.toml` | `# wmux-hooks:start/end` 标记块 |
+| Codex CLI | `~/.codex/hooks.json` | 可能需在 Codex 里 `/hooks` **信任** |
+| Grok Build | `~/.grok/hooks/wmux.json` | 全局 hooks，始终可信 |
+| OpenCode | `~/.config/opencode/plugin/wmux.js` | 可用 `--no-opencode` 跳过 |
+
+每条 hook 命令形如：
+
+```text
+node "<仓库>/dist/cli/wmux-hook.js" --event Stop --agent Kimi
+```
+
+- `--event`：生命周期（Working / Idle / Needs you）  
+- `--agent`：通知与侧栏展示用的产品名（**写死在安装配置里**，不靠目录名猜测）  
+- `WMUX_SURFACE_ID`：由 wmux 注入，绑定窗格  
+
+成功时终端打印 `[OK] Claude Code` / `Kimi` / … 与路径；有 `[FAIL]` 则退出码非 0。
+
+#### 安装后必做
+
+1. **重启 wmux**（若刚编过 main/renderer）  
+2. **重启每个 agent 会话**（claude / kimi / codex / grok），否则仍用旧 hooks  
+3. Codex：打开 `/hooks`，信任含 `wmux-hook` 的命令（首次）  
+
+### 支持矩阵（turn 级）
+
+| Agent | 配置落点 | 窗格内用法 | 备注 |
+|-------|----------|------------|------|
+| **Claude Code** | `~/.claude/settings.json` | `claude` | 保留用户 hooks |
+| **Kimi Code** | `~/.kimi-code/config.toml` | `kimi` | 标记块管理 |
+| **Codex CLI** | `~/.codex/hooks.json` | `codex` | 需 trust hooks |
+| **Grok Build** | `~/.grok/hooks/wmux.json` | `grok` | 全局可信 |
+| **OpenCode** | plugin `wmux.js` | `opencode` | 插件 API |
+
+**事件 → 侧栏（固定映射，无 AI 判断）：**
+
+| Hook | 侧栏 |
+|------|------|
+| `UserPromptSubmit` | **Working** |
 | `PostToolUse` | **Working** |
 | `Notification` / `PermissionRequest` | **Needs you** |
-| `Stop` / `StopFailure` | **Idle**（本轮结束） |
+| `Stop` / `StopFailure` | **Idle** |
 | `SubagentStop` | 子代理结束（refcount） |
 
-改 hooks 后请**重启对应 agent 会话**（不必重启整个 OS）。wmux 需使用含 agent-state 的构建并至少启动过一次以写入配置。
+### 通知
 
-**Codex 信任提示：** 若侧栏无反应，在 Codex 中运行 `/hooks`，审查并 trust 含 `wmux-hook` 的条目；或临时 `codex --dangerously-bypass-hook-trust`（仅自动化场景）。
+铃铛面板每条三行：
 
-### 没有 Hook 的 Agent：用 `wmux wrap`
+```text
+Session 2                         ← 工作区 / 会话名
+Turn complete · Kimi · tyk          ← 状态 · agent(hook) · 终端名
+just now                          ← 时间
+```
 
-未知 / 无扩展点的 CLI 用包装启动（**仅进程级** busy/idle）：
+- **agent**：来自 hook 的 `--agent`（如 Kimi），不是猜的  
+- **终端名**：窗格/标签名（如你改成的 `tyk`），用于多 pane 区分  
+- 标题栏 **Clear all**：清空全部通知并重置未读角标；**Mark read** 仅标已读  
+
+正在注视该工作区时，「回合结束」类通知会跳过（侧栏已能看到 Idle）；「需要输入」仍会通知。
+
+### 没有 Hook 的 Agent：`wmux wrap`
+
+无扩展点时用进程级包装（只能知道进程在/不在，不是 turn 级）：
 
 ```powershell
 wmux wrap --label other -- some-agent
 ```
 
-成功时提示 `wrap: tracking … → working`；进程退出后清除声明态。
-
-| 现象 | 处理 |
-|------|------|
-| `wrap: no surface id` | 不在 wmux 窗格内 |
-| `could not report agent state` | 重建并重启 wmux |
-| 侧栏仍显示 Running | 确认新构建；Working ≠ shell Running |
-| Codex 有 hooks 但仍无 Working | `/hooks` 信任 wmux 命令并重启 codex |
-| Grok 无变化 | 确认 `~/.grok/hooks/wmux.json` 存在，`/hooks` 可见后重启 grok |
-
-### 任意 Agent 手动上报
-
-Harness 或自写脚本可直接调用（surface 默认当前窗格）：
+### 手动上报（自建 harness）
 
 ```powershell
 wmux report-agent --run-start          # 或 --run-depth 1
 wmux report-agent --blocked "permission: Bash"
 wmux report-agent --unblocked
-wmux report-agent --run-depth 0        # 回合结束
-wmux release-agent                     # 取消跟踪
-wmux agent-state                       # 查询全部 pane + blocked 列表
+wmux report-agent --run-depth 0
+wmux release-agent
+wmux agent-state
 ```
 
-OpenCode 可通过已安装的插件推送活动；与 Claude 一样最终汇入同一侧栏状态机。更完整的 CLI 说明见仓库内 `CLAUDE.md`。
+### 排障
+
+| 现象 | 处理 |
+|------|------|
+| 侧栏/通知无 agent 名 | 再跑 `npm run install:hooks`，确认命令含 `--agent`，**重启 agent** |
+| 侧栏一直 Running | 那是 shell 态；turn 级应显示 Working/Idle（需 hooks 生效） |
+| Codex 无 Working | `/hooks` 信任 `wmux-hook` 后重启 codex |
+| `wrap: no surface id` | 必须在 **wmux 窗格内** 执行 |
+| `could not report agent state` | 使用含 agent-state 的构建并重启 wmux |
+| install-hooks 指向错误路径 | 在本仓库根目录执行；成功后 hook 路径应为当前仓库的 `dist/cli/wmux-hook.js` |
+
+更完整的模块与 CLI 说明见 `CLAUDE.md`。
 
 ## 编译 Windows 可执行文件
 

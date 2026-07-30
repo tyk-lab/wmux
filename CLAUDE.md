@@ -409,12 +409,13 @@ wmux agent-state [--surface <id>]                # no --surface → all panes + 
 # Process-level busy/idle for agents without native hooks:
 wmux wrap [--label L] [--] some-agent
 
-# Auto-installed turn hooks (on wmux startup) → same pane.report_agent path:
+# Auto-installed turn hooks (on wmux startup OR `wmux install-hooks`) → report_agent:
 #   Claude  → ~/.claude/settings.json
 #   Kimi    → ~/.kimi-code/config.toml  (# wmux-hooks markers)
 #   Codex   → ~/.codex/hooks.json       (may need /hooks trust once)
 #   Grok    → ~/.grok/hooks/wmux.json
 #   OpenCode→ ~/.config/opencode/plugin/wmux.js
+# Scripts:  npm run install:hooks  |  scripts/install-agent-hooks.ps1|.mjs
 
 # Agents
 wmux agent spawn [--cmd C] [--label L] [--cwd D] [--pane P] [--replace-tab]
