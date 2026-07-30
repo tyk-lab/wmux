@@ -53,34 +53,52 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 
 数据来自 **声明式协议**（`pane.report_agent`），不是猜终端输出。窗格内已注入 `WMUX_SURFACE_ID` / `WMUX_PIPE` 等环境变量，CLI 默认识别当前 surface。
 
-### Claude Code（零配置）
+### Claude Code（零配置 · turn 级）
 
 启动 wmux 时会向 `~/.claude/settings.json` 写入 Hook（保留你的其它条目）：
 
-- `PostToolUse` → Working  
-- `Notification` → Needs you  
-- `Stop` / `SubagentStop` → 回合结束 / 子代理结束  
+| Hook | 侧栏 |
+|------|------|
+| `UserPromptSubmit` | **Working**（发消息即开始，纯文本回合也算） |
+| `PostToolUse` | **Working** |
+| `Notification` | **Needs you** |
+| `Stop` / `SubagentStop` | 回合结束 / 子代理结束 → **Idle**（或深度减一） |
 
-在 wmux 窗格里直接跑 `claude` 即可，侧栏会随工具调用与等人提示更新。
+在 wmux 窗格里直接跑 `claude` 即可。
+
+### Kimi Code（零配置 · turn 级）
+
+启动 wmux 时写入 `~/.kimi-code/config.toml`（`$KIMI_CODE_HOME` 优先）中带 `# wmux-hooks:start/end` 标记的 `[[hooks]]` 段：
+
+| Hook | 侧栏 |
+|------|------|
+| `UserPromptSubmit` | **Working**（你在 Kimi 里发送任务） |
+| `PostToolUse` | **Working** |
+| `Notification` / `PermissionRequest` | **Needs you** |
+| `PermissionResult` | 取消 blocked（任务可能仍 Working） |
+| `Stop` / `StopFailure` | **Idle**（本轮完成或失败） |
+| `SubagentStop` | 子代理结束 |
+
+在 wmux 窗格里**直接** `kimi` 即可（不必 `wmux wrap`）。改 hooks 后若 Kimi 已在跑，重启一次 Kimi 会话以加载配置。
 
 ### 没有 Hook 的 Agent：用 `wmux wrap`
 
-Kimi、Codex 等若暂无自动注入，用包装启动即可（**进程级** busy/idle；无法感知 permission 对话框）：
+Codex 等若暂无自动注入，用包装启动（**仅进程级** busy/idle；看不出「一条任务做完」）：
 
 ```powershell
 # 必须在 wmux 窗格内执行（依赖 WMUX_SURFACE_ID）
-wmux wrap kimi
 wmux wrap codex --full-auto "fix tests"
-wmux wrap --label opencode -- opencode
+wmux wrap --label other -- some-agent
 ```
 
-成功时终端会提示 `wrap: tracking … → working`，侧栏应变为 **Working**；进程退出后清除声明态。
+成功时终端会提示 `wrap: tracking … → working`；进程退出后清除声明态。
 
 | 现象 | 处理 |
 |------|------|
 | `wrap: no surface id` | 不在 wmux 窗格内，或 shell 未注入环境变量 |
 | `could not report agent state` | 当前运行的不是含 agent-state 的构建，重启/重装后再试 |
-| 侧栏仍显示 Running | 确认已重启新构建；Working 与 shell Running 不同，应用最新侧栏逻辑 |
+| 侧栏仍显示 Running | 确认已重启新构建；Working 与 shell Running 不同 |
+| Kimi 发任务侧栏不变 | 确认已启动本版本 wmux（写入了 `~/.kimi-code/config.toml`），并**重启 kimi** |
 
 ### 任意 Agent 手动上报
 

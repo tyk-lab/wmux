@@ -15,6 +15,7 @@ import { initAutoUpdater, requestUpdateNow, getUpdateState } from './updater';
 import { initUpdateChecker, getLatestUpdate } from './update-checker';
 import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
+import { ensureKimiHooks } from './kimi-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
 import { applyHookToAgentState } from './agent-hook-bridge';
@@ -421,6 +422,7 @@ app.whenReady().then(() => {
   ensureOrchestratorPlugin();
   ensureOpencodeContext();
   ensureOpencodePlugin();
+  ensureKimiHooks();
 
   // IPC: renderer pushes session state (auto-save response or explicit save).
   // Every window answers the same broadcast, each with a one-entry `windows`

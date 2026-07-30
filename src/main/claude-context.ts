@@ -42,6 +42,12 @@ export function applyWmuxHooks(settings: any, hookScript: string): any {
     })),
   ];
 
+  // UserPromptSubmit — turn start (working even when the turn uses no tools).
+  next.hooks.UserPromptSubmit = [
+    ...stripWmux(next.hooks.UserPromptSubmit),
+    { hooks: [{ type: 'command', command: makeEventCmd('UserPromptSubmit') }] },
+  ];
+
   // Notification — Claude Code is asking for input/permission (waiting on you).
   next.hooks.Notification = [
     ...stripWmux(next.hooks.Notification),

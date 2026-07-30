@@ -23,26 +23,60 @@
 import { SurfaceId } from '../shared/types';
 import { reportAgent, ReportAgentParams } from './agent-state';
 
-/** The hook events wmux registers. */
-export type ClaudeHookEvent = 'PostToolUse' | 'Notification' | 'Stop' | 'SubagentStop';
+/**
+ * Hook event names we translate into declared agent state.
+ * Shared by Claude Code, Kimi Code, and any harness that emits the same names
+ * via `wmux-hook.js --event <Name>` / `wmux hook --event <Name>`.
+ */
+export type AgentHookEvent =
+  | 'UserPromptSubmit'
+  | 'PostToolUse'
+  | 'Notification'
+  | 'PermissionRequest'
+  | 'PermissionResult'
+  | 'Stop'
+  | 'StopFailure'
+  | 'Interrupt'
+  | 'SubagentStop';
+
+/** @deprecated Use AgentHookEvent — kept for existing imports/tests. */
+export type ClaudeHookEvent = AgentHookEvent;
+
+const KNOWN_EVENTS: readonly AgentHookEvent[] = [
+  'UserPromptSubmit',
+  'PostToolUse',
+  'Notification',
+  'PermissionRequest',
+  'PermissionResult',
+  'Stop',
+  'StopFailure',
+  'Interrupt',
+  'SubagentStop',
+];
 
 /**
- * Map one Claude Code hook event to a report_agent payload, or null to ignore it.
+ * Map one lifecycle hook event to a report_agent payload, or null to ignore it.
  */
 export function hookToAgentReport(
-  event: ClaudeHookEvent,
+  event: AgentHookEvent,
   message: string | null,
 ): ReportAgentParams | null {
   switch (event) {
-    // Claude Code wants the user. This fires both for permission/question
-    // prompts and for the ~60s "still waiting on you" idle nudge, and we park
-    // the pane for both: in either case the agent genuinely is waiting on a
-    // human, which is exactly what `blocked` claims. Sniffing the message text
-    // to tell the two apart was considered and rejected — it would silently
-    // stop working the day Claude Code rewords a prompt, and the failure would
-    // be the dangerous direction (a real prompt read as "not blocked").
+    // Turn start (Claude / Kimi / Codex-style). Marks working even when the
+    // turn never touches a tool (pure text replies).
+    case 'UserPromptSubmit':
+      return { awaitingHuman: false, runDepth: 1 };
+
+    // Claude Code / Kimi wants the user. This fires both for permission/question
+    // prompts and for idle nudges; we park the pane for both — sniffing message
+    // text to tell them apart fails the dangerous direction when copy changes.
     case 'Notification':
+    case 'PermissionRequest':
       return { awaitingHuman: true, reason: message };
+
+    // Human answered a permission prompt; turn may still be in flight.
+    case 'PermissionResult':
+      return { awaitingHuman: false };
 
     // A tool finished, so a turn is in flight — and nobody is parked on a
     // prompt, because a pending permission dialog would have stopped the tool
@@ -62,12 +96,11 @@ export function hookToAgentReport(
     case 'SubagentStop':
       return { runDelta: -1 };
 
-    // The turn is over: nothing can still be running and nothing can still be
-    // waiting on the user. Decisive on purpose — this is the backstop that
-    // guarantees no ghost state survives a turn even if an earlier event was
-    // dropped, the same role Stop already plays for the sidebar's agent lines
-    // (issue #81 class).
+    // The turn is over (or failed / interrupted): decisive idle so no ghost
+    // "working" survives a dropped earlier event.
     case 'Stop':
+    case 'StopFailure':
+    case 'Interrupt':
       return { awaitingHuman: false, runDepth: 0 };
 
     default:
@@ -76,7 +109,7 @@ export function hookToAgentReport(
 }
 
 /**
- * Apply a Claude Code hook event to the declared agent state for `surfaceId`.
+ * Apply a lifecycle hook event to the declared agent state for `surfaceId`.
  * Called from the hook.event pipe handler in index.ts.
  */
 export function applyHookToAgentState(
@@ -84,10 +117,9 @@ export function applyHookToAgentState(
   event: string,
   message: string | null,
 ): void {
-  const known: ClaudeHookEvent[] = ['PostToolUse', 'Notification', 'Stop', 'SubagentStop'];
-  if (!known.includes(event as ClaudeHookEvent)) return;
+  if (!KNOWN_EVENTS.includes(event as AgentHookEvent)) return;
 
-  const params = hookToAgentReport(event as ClaudeHookEvent, message);
+  const params = hookToAgentReport(event as AgentHookEvent, message);
   if (!params) return;
   reportAgent(surfaceId, params);
 }

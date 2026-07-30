@@ -36,6 +36,26 @@ describe('hookToAgentReport', () => {
   it('Stop is decisive: nothing running, nothing waiting', () => {
     expect(hookToAgentReport('Stop', null)).toEqual({ awaitingHuman: false, runDepth: 0 });
   });
+
+  it('UserPromptSubmit marks the turn working (even with no tools)', () => {
+    expect(hookToAgentReport('UserPromptSubmit', null)).toEqual({
+      awaitingHuman: false,
+      runDepth: 1,
+    });
+  });
+
+  it('PermissionRequest blocks; PermissionResult unblocks without ending the turn', () => {
+    expect(hookToAgentReport('PermissionRequest', 'Shell')).toEqual({
+      awaitingHuman: true,
+      reason: 'Shell',
+    });
+    expect(hookToAgentReport('PermissionResult', null)).toEqual({ awaitingHuman: false });
+  });
+
+  it('StopFailure and Interrupt end the turn like Stop', () => {
+    expect(hookToAgentReport('StopFailure', null)).toEqual({ awaitingHuman: false, runDepth: 0 });
+    expect(hookToAgentReport('Interrupt', null)).toEqual({ awaitingHuman: false, runDepth: 0 });
+  });
 });
 
 describe('applyHookToAgentState', () => {
@@ -44,7 +64,10 @@ describe('applyHookToAgentState', () => {
     expect(getAgentState(surf)).toBeUndefined();
   });
 
-  it('drives a full turn: tool use → permission prompt → answered → done', () => {
+  it('drives a full turn: prompt → tool → permission → answered → done', () => {
+    applyHookToAgentState(surf, 'UserPromptSubmit', null);
+    expect(getAgentState(surf)?.state).toBe('working');
+
     applyHookToAgentState(surf, 'PostToolUse', null);
     expect(getAgentState(surf)?.state).toBe('working');
 
