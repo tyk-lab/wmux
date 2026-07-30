@@ -68,14 +68,14 @@ rm -rf ../wmux-release-staging/resources/opencode-plugin && cp -r resources/open
 # Always destructure: `const { rcedit } = require('rcedit')`.
 node -e "
   const { rcedit } = require('rcedit');
-  rcedit('../wmux-release-staging/wmux.exe', {
+  rcedit('../wmux-release-staging/pswmux.exe', {
     icon: 'resources/icons/icon.ico',
     'version-string': {
-      ProductName: 'wmux',
-      FileDescription: 'wmux',
+      ProductName: 'pswmux',
+      FileDescription: 'pswmux',
       CompanyName: 'wmux',
-      InternalName: 'wmux',
-      OriginalFilename: 'wmux.exe',
+      InternalName: 'pswmux',
+      OriginalFilename: 'pswmux.exe',
       LegalCopyright: 'Copyright (c) 2026 wmux'
     },
     'file-version': '0.7.20',
@@ -83,16 +83,16 @@ node -e "
   }).then(() => console.log('rcedit done'), e => { console.error(e); process.exit(1); });
 "
 # NOTE: rcedit CANNOT modify a running exe. The staging copy is fine; never
-# point rcedit at the wmux.exe living in the project root if it's running.
+# point rcedit at the pswmux.exe living in the project root if it's running.
 
 # 9. Create zip
-powershell -NoProfile -Command "Compress-Archive -Path '..\wmux-release-staging\*' -DestinationPath '..\wmux-<VERSION>-win-x64.zip' -CompressionLevel Optimal"
+powershell -NoProfile -Command "Compress-Archive -Path '..\wmux-release-staging\*' -DestinationPath '..\pswmux-<VERSION>-win-x64.zip' -CompressionLevel Optimal"
 
 # 10. Tag, push, publish
 git add package.json package-lock.json && git commit -m "chore(release): bump to <VERSION>"
 git push origin master
 git tag -a v<VERSION> -m "wmux <VERSION>" && git push origin v<VERSION>
-gh release create v<VERSION> ../wmux-<VERSION>-win-x64.zip --repo amirlehmam/wmux --title "v<VERSION>" --notes "..."
+gh release create v<VERSION> ../pswmux-<VERSION>-win-x64.zip --repo amirlehmam/wmux --title "v<VERSION>" --notes "..."
 
 # 11. (Optional) Hot-swap into the locally running wmux for immediate testing
 cp build-out/app.asar resources/app.asar
@@ -126,6 +126,6 @@ rm -rf .asar-staging build-out /tmp/asar-verify ../wmux-release-staging
 - **Bash cwd drift can recursively pollute staging**: if you `cd .asar-staging` and forget to come back, the next `mkdir build-out && asar pack` creates `.asar-staging/build-out/app.asar`, and a re-pack will swallow its own output into the new asar (188M). Always use subshells `( cd dir && cmd )` or absolute paths.
 - **Don't pack ASAR directly to `resources/app.asar`** if wmux may be running — pack to `build-out/` and copy at step 7.
 - **MOTW (Mark of the Web)**: Downloaded zips get `Zone.Identifier` NTFS stream. Fix: `powershell "Get-ChildItem -Recurse | Unblock-File"`
-- **Windows taskbar pinning** uses PE `FileDescription` for the shortcut name — ensure rcedit sets it to "wmux"
+- **Windows taskbar pinning** uses PE `FileDescription` for the shortcut name — ensure rcedit sets it to "pswmux"
 - **AppUserModelId** is set to `com.wmux.app` in `src/main/index.ts` for proper taskbar grouping
-- **Application exe name is `wmux.exe`**. Do not package the Electron app as `psmux.exe`; `psmux.exe` is the external terminal/session tool that wmux calls via PATH.
+- **Application exe name is `pswmux.exe`**. The CLI and internal runtime identifiers remain `wmux`.
