@@ -7,6 +7,7 @@ import { claudeSessionsForWorkspace, HookActivityEntry } from '../../store/claud
 import UnreadBadge from './UnreadBadge';
 import PrStatusIcon from './PrStatusIcon';
 import { traceState, toolChannel } from './trace-signals';
+import { resolveStatusText, resolveStatusClass } from './status-text';
 
 /** Stable empty view — avoids allocating a fresh object every collapsed tick. */
 const EMPTY_AGENTS_VIEW: WorkspaceAgentsView = { lines: [], total: 0, running: 0 };
@@ -41,75 +42,6 @@ function sessionDetailText(session: { working: boolean; blocked: boolean; blocke
   if (session.blocked) return session.blockedReason || 'Needs you';
   if (!session.working) return 'Idle';
   return session.tool ? getToolLabel(session.tool) : 'Running…';
-}
-
-interface StatusTextInputs {
-  statusOverride?: 'running' | 'idle';
-  runningAgentCount: number;
-  agentTotal: number;
-  sessionCount: number;
-  workingSessions: number;
-  blockedSessions: number;
-  currentToolLabel: string | null;
-  claudeIsIdle: boolean;
-  shellState?: string;
-  notificationText?: string;
-}
-
-/** Priorities 0–2: Claude-derived signals. Null → fall through to shell state. */
-function claudeStatusText(s: StatusTextInputs): string | null {
-  // Priority 0: user pinned the status by hand (issue #81) — detection
-  // heuristics can misread tools that keep the shell "running" while idle.
-  if (s.statusOverride) {
-    return s.statusOverride === 'running' ? 'Running' : 'Idle';
-  }
-
-  // Priority 0.25: a session is parked on the user. Ranked above the running
-  // summaries on purpose — everything else describes work that proceeds on its
-  // own, this describes work that has stopped until the user acts (issue #128).
-  if (s.blockedSessions > 0) {
-    return s.blockedSessions > 1 ? `Needs you · ${s.blockedSessions}` : 'Needs you';
-  }
-
-  // Priority 0.5: agents are running — show the orchestration summary
-  if (s.runningAgentCount > 0) {
-    return `Orchestrating · ${s.agentTotal} agent${s.agentTotal > 1 ? 's' : ''}`;
-  }
-
-  // Priority 0.75: several Claude sessions in this workspace — summarize;
-  // the per-session sub-lines below the status carry the detail.
-  if (s.sessionCount >= 2) {
-    return s.workingSessions > 0
-      ? `Claude · ${s.workingSessions}/${s.sessionCount} running`
-      : 'Idle';
-  }
-
-  // Priority 1: Claude is actively using a tool
-  if (s.currentToolLabel) return s.currentToolLabel;
-
-  // Priority 2: Claude was working but stopped → idle, not "Running"
-  if (s.claudeIsIdle) return 'Idle';
-
-  return null;
-}
-
-/** Status line priority chain: override > agents > sessions > tool > idle > shell > notification. */
-function resolveStatusText(s: StatusTextInputs): string {
-  const claude = claudeStatusText(s);
-  if (claude) return claude;
-
-  // Priority 3: Shell state from shell integration
-  if (s.shellState === 'running') return 'Running';
-  if (s.shellState === 'interrupted') return 'Interrupted';
-  if (s.shellState === 'idle') {
-    return s.notificationText ? `Done: ${s.notificationText}` : 'Idle';
-  }
-
-  // Priority 4: Notification text without shell state
-  if (s.notificationText) return s.notificationText;
-
-  // Priority 5: Default — always show something
-  return 'Idle';
 }
 
 interface WorkspaceRowProps {
@@ -369,30 +301,17 @@ export default function WorkspaceRow({
   }), [workspace.statusOverride, runningAgentCount, wsAgents, sessions, workingSessions, blockedSessions, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText]);
 
   // ── Status color class ──
-  const statusClass = useMemo(() => {
-    if (workspace.statusOverride) {
-      return workspace.statusOverride === 'running'
-        ? 'workspace-row__status--running'
-        : 'workspace-row__status--idle-clear';
-    }
-    if (blockedSessions > 0) return 'workspace-row__status--blocked';
-    if (runningAgentCount > 0) return 'workspace-row__status--working';
-    if (sessions.length >= 2) {
-      return workingSessions > 0 ? 'workspace-row__status--working' : 'workspace-row__status--idle-clear';
-    }
-    if (currentToolLabel) return 'workspace-row__status--working';
-    if (claudeIsIdle) return 'workspace-row__status--idle-clear';
-    const state = workspace.shellState;
-    if (state === 'running') return 'workspace-row__status--running';
-    if (state === 'interrupted') return 'workspace-row__status--interrupted';
-    // Fully idle session: green "Idle" (clearer than the muted default).
-    if (state === 'idle') {
-      return workspace.notificationText
-        ? 'workspace-row__status--done'
-        : 'workspace-row__status--idle-clear';
-    }
-    return 'workspace-row__status--idle';
-  }, [workspace.statusOverride, blockedSessions, runningAgentCount, sessions.length, workingSessions, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText]);
+  const statusClass = useMemo(() => resolveStatusClass({
+    statusOverride: workspace.statusOverride,
+    blockedSessions,
+    runningAgentCount,
+    workingSessions,
+    sessionCount: sessions.length,
+    currentToolLabel,
+    claudeIsIdle,
+    shellState: workspace.shellState,
+    notificationText: workspace.notificationText,
+  }), [workspace.statusOverride, blockedSessions, runningAgentCount, workingSessions, sessions.length, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText]);
 
   // ── Context line: "branch* · ~/path/to/dir" ──
   const contextLine = useMemo(() => {
