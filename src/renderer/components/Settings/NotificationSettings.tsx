@@ -52,7 +52,7 @@ export default function NotificationSettings() {
       <h3 className="settings-section-title">AI agents</h3>
 
       <div className="settings-row">
-        <label className="settings-label">Notify when agent needs input</label>
+        <label className="settings-label">Notify when agent needs your input</label>
         <input
           type="checkbox"
           className="settings-toggle"
@@ -62,7 +62,7 @@ export default function NotificationSettings() {
       </div>
 
       <div className="settings-row">
-        <label className="settings-label">Notify when agent finishes its turn</label>
+        <label className="settings-label">Notify when a turn finishes (skipped if you are watching that workspace)</label>
         <input
           type="checkbox"
           className="settings-toggle"

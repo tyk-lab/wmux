@@ -46,4 +46,9 @@
   font-size: 12px; color: rgba(var(--ui-overlay-rgb), 0.7);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.notif-panel__time { font-size: 10px; color: rgba(var(--ui-overlay-rgb), 0.3); }
+/* Keep time on its own line with clear gap from the body (avoid "…2just now"). */
+.notif-panel__time {
+  font-size: 10px;
+  color: rgba(var(--ui-overlay-rgb), 0.3);
+  margin-top: 2px;
+}

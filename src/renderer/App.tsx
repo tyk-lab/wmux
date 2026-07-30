@@ -27,8 +27,17 @@ import type {
   SurfaceDragPreviewTarget,
 } from './components/SplitPane/drag-preview-types';
 import { buildSurfaceDragPreview } from './components/SplitPane/surface-drag-preview';
+import {
+  formatAgentLifecycleText,
+  lifecycleDedupeKey,
+  shouldDedupeLifecycleNotify,
+  type LifecycleNotifyKind,
+} from './agent-lifecycle-notify';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
+
+/** Per-key last lifecycle notify time — drops twin Stop floods without merging panes. */
+const lastLifecycleNotifyAt = new Map<string, number>();
 
 /** Get all surface IDs from a split tree */
 function getAllSurfaces(tree: SplitNode): string[] {
@@ -316,24 +325,81 @@ function handleSurfaceMetadata(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): voi
   }
 }
 
-/** Claude Code Notification (needs input) / Stop (turn finished) hook events. */
+/** Label a surface for multi-pane workspaces (tab title / cwd / agent label). */
+function surfaceNotifyWhere(surfaceId: string, ws: WorkspaceInfo | undefined): string | null {
+  if (!surfaceId || !ws) return null;
+  const meta = useStore.getState().agentMeta.get(surfaceId as SurfaceId);
+  if (meta?.label) return meta.label;
+
+  for (const paneId of getAllPaneIds(ws.splitTree)) {
+    const leaf = findLeaf(ws.splitTree, paneId);
+    const surf = leaf?.surfaces.find((s) => s.id === surfaceId);
+    if (!surf) continue;
+    if (surf.customTitle?.trim()) return surf.customTitle.trim();
+    const cwd = (surf as { currentCwd?: string }).currentCwd;
+    if (cwd) {
+      const base = cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+      if (base) return base;
+    }
+    break;
+  }
+  // Short id tail so two bare panes still read as different lines.
+  const tail = surfaceId.replace(/^surf-/, '').slice(0, 6);
+  return tail || null;
+}
+
+/**
+ * Agent lifecycle toasts: needs input / turn finished.
+ * Agent-agnostic copy (Claude, Kimi, …); workspace name is the panel source line.
+ */
 function handleAgentLifecycleEvent(event: any, addNotification: StoreAction): void {
   const state = useStore.getState();
   const prefs = state.notificationPrefs;
-  if (event.event === 'Notification' && prefs.agentInputNotify === false) return;
-  if (event.event === 'Stop' && prefs.agentStopNotify === false) return;
+  const ev = event?.event as string;
+
+  const isNeedsInput = ev === 'Notification' || ev === 'PermissionRequest';
+  const isTurnFinished = ev === 'Stop' || ev === 'StopFailure';
+  if (!isNeedsInput && !isTurnFinished) return;
+
+  if (isNeedsInput && prefs.agentInputNotify === false) return;
+  if (isTurnFinished && prefs.agentStopNotify === false) return;
 
   const sid = (event.surfaceId as string) || '';
   const ws = workspaceForSurface(sid);
   const wsId = ws?.id || state.activeWorkspaceId;
-  const wsTitle = ws?.title || state.workspaces.find(w => w.id === wsId)?.title || '';
+  if (!wsId) return;
 
-  let text: string;
-  if (event.event === 'Notification') {
-    text = event.message || 'Claude Code needs your input';
-  } else {
-    text = wsTitle ? `Claude Code finished in ${wsTitle}` : 'Claude Code finished';
+  const kind: LifecycleNotifyKind = isNeedsInput ? 'needs_input' : 'turn_finished';
+  const dedupeKey = lifecycleDedupeKey(kind, sid || null, wsId);
+  const now = Date.now();
+  const lastAt = lastLifecycleNotifyAt.get(dedupeKey);
+  if (shouldDedupeLifecycleNotify(
+    lastAt !== undefined ? { key: dedupeKey, at: lastAt } : null,
+    dedupeKey,
+    now,
+  )) return;
+  lastLifecycleNotifyAt.set(dedupeKey, now);
+  // Bound map size so a long session of many surfaces cannot grow forever.
+  if (lastLifecycleNotifyAt.size > 128) {
+    const oldest = lastLifecycleNotifyAt.keys().next().value;
+    if (oldest !== undefined) lastLifecycleNotifyAt.delete(oldest);
   }
+
+  // While the user is looking at this workspace, turn-finished is visible in
+  // the sidebar (Working → Idle) — skip the bell spam. Needs-input still fires.
+  if (isTurnFinished
+    && state.activeWorkspaceId === wsId
+    && typeof document !== 'undefined'
+    && document.hasFocus()) {
+    return;
+  }
+
+  const where = surfaceNotifyWhere(sid, ws);
+  const text = formatAgentLifecycleText({
+    kind,
+    where,
+    message: isNeedsInput ? (event.message || null) : null,
+  });
   fireNotification(sid, wsId, text, addNotification);
 }
 
@@ -647,11 +713,19 @@ export default function App() {
   useEffect(() => {
     if (!window.wmux?.hook?.onEvent) return;
     const unsub = window.wmux.hook.onEvent((event: any) => {
-      // Agent lifecycle (issue #53): Notification = agent needs input/permission,
-      // Stop = agent finished its turn. These have no `tool`, so handle first.
-      if (event?.event === 'Notification' || event?.event === 'Stop') {
+      // Agent lifecycle (issue #53): needs-input / turn-finished. No `tool`.
+      // Kimi also emits PermissionRequest / StopFailure — same user-facing path.
+      const lifecycle = event?.event as string | undefined;
+      if (
+        lifecycle === 'Notification'
+        || lifecycle === 'PermissionRequest'
+        || lifecycle === 'Stop'
+        || lifecycle === 'StopFailure'
+      ) {
         handleAgentLifecycleEvent(event, addNotification);
-        if (event.event === 'Stop') markSessionIdleOnStop(event.surfaceId, setHookActivity);
+        if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
+          markSessionIdleOnStop(event.surfaceId, setHookActivity);
+        }
         return;
       }
       if (!event?.tool) return;
