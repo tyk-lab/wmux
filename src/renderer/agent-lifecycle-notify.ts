@@ -1,21 +1,34 @@
 /**
  * Copy + dedupe for agent lifecycle notifications (Stop / needs-input).
  *
- * The panel already shows the workspace name as the source line, so the body
- * must not repeat it. Branding stays agent-agnostic (Claude / Kimi / Codex / …).
+ * Notification panel layout (three lines):
+ *   1. Session name  — workspace title (panel source, not this module)
+ *   2. Status        — e.g. "Turn complete · Kimi · tyk-kimi"
+ *   3. Time          — "just now" (panel clock, not this module)
  */
 
 export type LifecycleNotifyKind = 'needs_input' | 'turn_finished';
 
 export interface LifecycleNotifyInput {
   kind: LifecycleNotifyKind;
-  /** Tab title, cwd folder, or agent label — distinguishes panes in one workspace. */
+  /** Product name: Claude / Kimi / Codex / Grok / OpenCode. */
+  agent?: string | null;
+  /** Pane label: tab title, cwd folder, wrap --label, … */
   where?: string | null;
   /** Permission / prompt message from the agent, when present. */
   message?: string | null;
 }
 
-const MAX_MESSAGE = 80;
+const MAX_MESSAGE = 72;
+
+/** Known harness names inferred from labels / cwd / metadata. */
+const AGENT_PATTERNS: Array<{ re: RegExp; name: string }> = [
+  { re: /\bkimi\b/i, name: 'Kimi' },
+  { re: /\bclaude\b/i, name: 'Claude' },
+  { re: /\bcodex\b/i, name: 'Codex' },
+  { re: /\bgrok\b/i, name: 'Grok' },
+  { re: /\bopencode\b/i, name: 'OpenCode' },
+];
 
 function truncate(text: string, max = MAX_MESSAGE): string {
   const t = text.trim();
@@ -24,23 +37,53 @@ function truncate(text: string, max = MAX_MESSAGE): string {
 }
 
 /**
- * Body text for the notification list / OS toast.
- * Workspace title is omitted — `NotificationPanel` already renders it as source.
+ * Infer a display agent name from free-text candidates (label, cwd, model, …).
+ * First match wins.
+ */
+export function inferAgentName(
+  ...candidates: Array<string | null | undefined>
+): string | null {
+  for (const raw of candidates) {
+    if (!raw || !raw.trim()) continue;
+    for (const { re, name } of AGENT_PATTERNS) {
+      if (re.test(raw)) return name;
+    }
+  }
+  return null;
+}
+
+/** Join agent + where without dumb duplicates ("Kimi · Kimi"). */
+export function joinAgentIdentity(
+  agent?: string | null,
+  where?: string | null,
+): string {
+  const a = agent?.trim() || '';
+  const w = where?.trim() || '';
+  if (a && w) {
+    if (a.toLowerCase() === w.toLowerCase()) return a;
+    return `${a} · ${w}`;
+  }
+  return a || w || '';
+}
+
+/**
+ * Line 2 body for the notification list / OS toast.
+ * Does not include the workspace title (line 1) or the time (line 3).
  */
 export function formatAgentLifecycleText(input: LifecycleNotifyInput): string {
-  const where = input.where?.trim() || '';
+  const identity = joinAgentIdentity(input.agent, input.where);
 
   if (input.kind === 'needs_input') {
     const msg = input.message?.trim();
     if (msg) {
       const body = truncate(msg);
-      return where ? `${body} · ${where}` : body;
+      return identity ? `${body} · ${identity}` : body;
     }
-    return where ? `Needs your input · ${where}` : 'Needs your input';
+    return identity ? `Needs your input · ${identity}` : 'Needs your input';
   }
 
-  // turn_finished
-  return where ? `Turn finished · ${where}` : 'Turn finished';
+  // turn_finished — user-facing "Turn complete"
+  return identity ? `Turn complete · ${identity}` : 'Turn complete';
 }
 
 /** Dedupe window for identical lifecycle keys (double Stop, twin hooks, …). */
@@ -53,7 +96,7 @@ export interface LifecycleDedupeStamp {
 
 /**
  * Build a stable dedupe key. Prefer surfaceId so two panes in one workspace
- * each get their own "Turn finished"; fall back to workspace + kind.
+ * each get their own notify; fall back to workspace + kind.
  */
 export function lifecycleDedupeKey(
   kind: LifecycleNotifyKind,

@@ -7,6 +7,8 @@ interface NotificationPanelProps {
   workspaceNames: Map<string, string>;
   onJump: (workspaceId: WorkspaceId, surfaceId: SurfaceId, paneId?: PaneId) => void;
   onMarkAllRead: () => void;
+  /** Remove every notification from the list (not just mark read). */
+  onClearAll: () => void;
   onClose: () => void;
 }
 
@@ -27,18 +29,38 @@ export default function NotificationPanel({
   workspaceNames,
   onJump,
   onMarkAllRead,
+  onClearAll,
   onClose,
 }: NotificationPanelProps) {
   const sorted = [...notifications].sort((a, b) => b.timestamp - a.timestamp);
+  const hasAny = notifications.length > 0;
+  const hasUnread = notifications.some((n) => !n.read);
 
   return (
     <div className="notif-panel" onClick={(e) => e.stopPropagation()}>
       <div className="notif-panel__header">
         <span className="notif-panel__title">Notifications</span>
-        {notifications.some((n) => !n.read) && (
-          <button className="notif-panel__mark-all" onClick={onMarkAllRead}>
-            Mark all read
-          </button>
+        {hasAny && (
+          <div className="notif-panel__actions">
+            {hasUnread && (
+              <button
+                type="button"
+                className="notif-panel__action"
+                onClick={onMarkAllRead}
+                title="Mark all as read"
+              >
+                Mark read
+              </button>
+            )}
+            <button
+              type="button"
+              className="notif-panel__action notif-panel__action--danger"
+              onClick={onClearAll}
+              title="Clear all notifications"
+            >
+              Clear all
+            </button>
+          </div>
         )}
       </div>
       <div className="notif-panel__list">
@@ -55,9 +77,12 @@ export default function NotificationPanel({
               }}
             >
               {!n.read && <span className="notif-panel__dot" />}
+              {/* Three lines: session name → status (+ agent) → time */}
               <div className="notif-panel__content">
-                <span className="notif-panel__source">{workspaceNames.get(n.workspaceId) || 'Unknown'}</span>
-                <span className="notif-panel__text">{n.text}</span>
+                <span className="notif-panel__source">
+                  {workspaceNames.get(n.workspaceId) || 'Unknown'}
+                </span>
+                <span className="notif-panel__text" title={n.text}>{n.text}</span>
                 <span className="notif-panel__time">{timeAgo(n.timestamp)}</span>
               </div>
             </div>

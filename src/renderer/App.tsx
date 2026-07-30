@@ -29,6 +29,7 @@ import type {
 import { buildSurfaceDragPreview } from './components/SplitPane/surface-drag-preview';
 import {
   formatAgentLifecycleText,
+  inferAgentName,
   lifecycleDedupeKey,
   shouldDedupeLifecycleNotify,
   type LifecycleNotifyKind,
@@ -116,7 +117,7 @@ function fireNotification(
   workspaceId: WorkspaceId | null,
   text: string,
   addNotification: StoreAction,
-  opts?: { flash?: boolean },
+  opts?: { flash?: boolean; title?: string },
 ): void {
   if (workspaceId) {
     addNotification({ surfaceId: (surfaceId || '') as SurfaceId, workspaceId, text });
@@ -124,7 +125,7 @@ function fireNotification(
   window.wmux?.notification?.fire({
     surfaceId: surfaceId || '',
     text,
-    title: 'wmux',
+    title: opts?.title || 'wmux',
     ...(opts?.flash === false ? { flash: false } : {}),
   });
 }
@@ -325,34 +326,49 @@ function handleSurfaceMetadata(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): voi
   }
 }
 
-/** Label a surface for multi-pane workspaces (tab title / cwd / agent label). */
-function surfaceNotifyWhere(surfaceId: string, ws: WorkspaceInfo | undefined): string | null {
-  if (!surfaceId || !ws) return null;
-  const meta = useStore.getState().agentMeta.get(surfaceId as SurfaceId);
-  if (meta?.label) return meta.label;
+/** Collect pane label candidates for a surface (tab title, cwd folder, agent meta). */
+function surfaceNotifyHints(
+  surfaceId: string,
+  ws: WorkspaceInfo | undefined,
+): { where: string | null; labelHints: string[] } {
+  if (!surfaceId || !ws) return { where: null, labelHints: [] };
 
+  const meta = useStore.getState().agentMeta.get(surfaceId as SurfaceId);
+  let customTitle: string | undefined;
+  let cwdBase: string | undefined;
   for (const paneId of getAllPaneIds(ws.splitTree)) {
     const leaf = findLeaf(ws.splitTree, paneId);
     const surf = leaf?.surfaces.find((s) => s.id === surfaceId);
     if (!surf) continue;
-    if (surf.customTitle?.trim()) return surf.customTitle.trim();
+    if (surf.customTitle?.trim()) customTitle = surf.customTitle.trim();
     const cwd = (surf as { currentCwd?: string }).currentCwd;
     if (cwd) {
-      const base = cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
-      if (base) return base;
+      cwdBase = cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || undefined;
     }
     break;
   }
-  // Short id tail so two bare panes still read as different lines.
-  const tail = surfaceId.replace(/^surf-/, '').slice(0, 6);
-  return tail || null;
+
+  const where = meta?.label?.trim()
+    || customTitle
+    || cwdBase
+    || surfaceId.replace(/^surf-/, '').slice(0, 6)
+    || null;
+
+  const labelHints = [meta?.label, customTitle, cwdBase, where].filter(
+    (s): s is string => !!s && !!s.trim(),
+  );
+  return { where, labelHints };
 }
 
 /**
- * Agent lifecycle toasts: needs input / turn finished.
- * Agent-agnostic copy (Claude, Kimi, …); workspace name is the panel source line.
+ * Agent lifecycle toasts.
+ * Panel lines: (1) workspace title  (2) status + agent  (3) time.
  */
-function handleAgentLifecycleEvent(event: any, addNotification: StoreAction): void {
+function handleAgentLifecycleEvent(
+  event: any,
+  addNotification: StoreAction,
+  agentStates?: Record<string, any>,
+): void {
   const state = useStore.getState();
   const prefs = state.notificationPrefs;
   const ev = event?.event as string;
@@ -394,13 +410,31 @@ function handleAgentLifecycleEvent(event: any, addNotification: StoreAction): vo
     return;
   }
 
-  const where = surfaceNotifyWhere(sid, ws);
+  const hints = surfaceNotifyHints(sid, ws);
+  // Prefer explicit --agent from the harness hook install, then metadata / heuristics.
+  const declaredModel = agentStates?.[sid]?.metadata?.model as string | undefined;
+  const agent = (typeof event.agent === 'string' && event.agent.trim())
+    ? event.agent.trim()
+    : inferAgentName(declaredModel, ...hints.labelHints);
+
+  // `where` is the terminal/tab label (custom title, wrap label, cwd folder, …).
+  // Keep it alongside the agent product name so multi-pane sessions stay distinct:
+  //   "Turn complete · Kimi · tyk"
+  // Only drop when it is a pure duplicate of the agent name ("Kimi · Kimi").
+  let where = hints.where;
+  if (where && agent && where.toLowerCase() === agent.toLowerCase()) {
+    where = null;
+  }
+
   const text = formatAgentLifecycleText({
     kind,
+    agent,
     where,
     message: isNeedsInput ? (event.message || null) : null,
   });
-  fireNotification(sid, wsId, text, addNotification);
+  fireNotification(sid, wsId, text, addNotification, {
+    title: agent || 'wmux',
+  });
 }
 
 /**
@@ -480,6 +514,7 @@ export default function App() {
     notifications,
     markRead,
     markAllRead,
+    clearAll,
     selectSurface,
     setAgentMeta,
     addNotification,
@@ -517,6 +552,9 @@ export default function App() {
   const [claudeActivity, setClaudeActivity] = useState<Record<string, any>>({});
   // surfaceId → declared agent state (blocked / working / idle), issue #128.
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
+  // Hook listener is mounted once; read latest agentStates via ref.
+  const agentStatesRef = useRef(agentStates);
+  agentStatesRef.current = agentStates;
   // Track when each workspace entered "running" state (for notification threshold)
   const runningStartTimes = useRef<Record<string, number>>({});
   // Browser URL tracking is now per-workspace via WorkspaceInfo.browserUrl
@@ -722,7 +760,7 @@ export default function App() {
         || lifecycle === 'Stop'
         || lifecycle === 'StopFailure'
       ) {
-        handleAgentLifecycleEvent(event, addNotification);
+        handleAgentLifecycleEvent(event, addNotification, agentStatesRef.current);
         if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
           markSessionIdleOnStop(event.surfaceId, setHookActivity);
         }
@@ -1102,6 +1140,7 @@ export default function App() {
         onToggleNotificationPanel={handleToggleNotifPanel}
         onNotificationJump={handleNotificationJump}
         onMarkAllNotificationsRead={() => markAllRead()}
+        onClearAllNotifications={() => clearAll()}
       />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>

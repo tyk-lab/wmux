@@ -7,6 +7,7 @@ interface NotificationBellProps {
   workspaceNames: Map<string, string>;
   onJump: (workspaceId: WorkspaceId, surfaceId: SurfaceId, paneId?: PaneId) => void;
   onMarkAllRead: () => void;
+  onClearAll: () => void;
   isOpen: boolean;
   onToggle: () => void;
 }
@@ -16,6 +17,7 @@ export default function NotificationBell({
   workspaceNames,
   onJump,
   onMarkAllRead,
+  onClearAll,
   isOpen,
   onToggle,
 }: NotificationBellProps) {
@@ -62,6 +64,7 @@ export default function NotificationBell({
           workspaceNames={workspaceNames}
           onJump={onJump}
           onMarkAllRead={onMarkAllRead}
+          onClearAll={onClearAll}
           onClose={onToggle}
         />
       )}

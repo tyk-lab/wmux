@@ -17,6 +17,7 @@ interface TitlebarProps {
   onToggleNotificationPanel: () => void;
   onNotificationJump: (workspaceId: WorkspaceId, surfaceId: SurfaceId, paneId?: PaneId) => void;
   onMarkAllNotificationsRead: () => void;
+  onClearAllNotifications: () => void;
 }
 
 export default function Titlebar({
@@ -30,6 +31,7 @@ export default function Titlebar({
   onToggleNotificationPanel,
   onNotificationJump,
   onMarkAllNotificationsRead,
+  onClearAllNotifications,
 }: TitlebarProps) {
   const t = useT();
   return (
@@ -53,6 +55,7 @@ export default function Titlebar({
           onToggle={onToggleNotificationPanel}
           onJump={onNotificationJump}
           onMarkAllRead={onMarkAllNotificationsRead}
+          onClearAll={onClearAllNotifications}
         />
         <UpdateBadge />
         <button

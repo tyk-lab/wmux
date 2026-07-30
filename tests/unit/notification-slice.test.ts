@@ -75,10 +75,12 @@ describe('notification-slice', () => {
     expect(useStore.getState().notifications).toEqual([]);
   });
 
-  it('clearAll empties notifications', () => {
+  it('clearAll empties notifications and resets unread badges', () => {
     useStore.getState().addNotification({ surfaceId, workspaceId, text: 'x' });
+    expect(useStore.getState().workspaces.find((w) => w.id === workspaceId)?.unreadCount).toBe(1);
     useStore.getState().clearAll();
     expect(useStore.getState().notifications).toEqual([]);
+    expect(useStore.getState().workspaces.find((w) => w.id === workspaceId)?.unreadCount).toBe(0);
   });
 
   it('jumpToUnread returns the last unread notification', () => {

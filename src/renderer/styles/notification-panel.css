@@ -23,11 +23,18 @@
   padding: 10px 12px; border-bottom: 1px solid rgba(var(--ui-overlay-rgb), 0.06); flex-shrink: 0;
 }
 .notif-panel__title { font-size: 12px; font-weight: 600; color: rgba(var(--ui-overlay-rgb), 0.7); }
-.notif-panel__mark-all {
+.notif-panel__actions { display: flex; align-items: center; gap: 4px; }
+.notif-panel__action {
   background: none; border: none; color: var(--ui-accent);
   font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+  line-height: 1.2;
 }
-.notif-panel__mark-all:hover { background: rgba(var(--ui-accent-rgb), 0.1); }
+.notif-panel__action:hover { background: rgba(var(--ui-accent-rgb), 0.1); }
+.notif-panel__action--danger { color: rgba(var(--ui-overlay-rgb), 0.55); }
+.notif-panel__action--danger:hover {
+  color: #e57373;
+  background: rgba(229, 115, 115, 0.1);
+}
 .notif-panel__list { overflow-y: auto; flex: 1; }
 .notif-panel__empty { padding: 32px 12px; text-align: center; color: rgba(var(--ui-overlay-rgb), 0.25); font-size: 12px; }
 .notif-panel__item {
@@ -40,15 +47,30 @@
   width: 6px; height: 6px; min-width: 6px;
   border-radius: 50%; background: var(--ui-accent); margin-top: 5px;
 }
-.notif-panel__content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.notif-panel__source { font-size: 10px; font-weight: 600; color: rgba(var(--ui-overlay-rgb), 0.4); }
-.notif-panel__text {
-  font-size: 12px; color: rgba(var(--ui-overlay-rgb), 0.7);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* Line stack: (1) session  (2) status · agent  (3) time */
+.notif-panel__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
-/* Keep time on its own line with clear gap from the body (avoid "…2just now"). */
+.notif-panel__source {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(var(--ui-overlay-rgb), 0.4);
+  line-height: 1.3;
+}
+.notif-panel__text {
+  font-size: 12px;
+  color: rgba(var(--ui-overlay-rgb), 0.85);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .notif-panel__time {
   font-size: 10px;
   color: rgba(var(--ui-overlay-rgb), 0.3);
-  margin-top: 2px;
+  line-height: 1.3;
 }

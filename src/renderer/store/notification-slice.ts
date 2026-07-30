@@ -129,6 +129,13 @@ export const createNotificationSlice: StateCreator<
 
   clearAll(): void {
     set({ notifications: [] });
+    // Drop workspace unread badges so the bell and sidebar stay in sync.
+    const current = get();
+    for (const workspace of current.workspaces) {
+      if (workspace.unreadCount > 0) {
+        current.updateWorkspaceMetadata(workspace.id, { unreadCount: 0 });
+      }
+    }
   },
 
   jumpToUnread(): NotificationInfo | null {
