@@ -4,6 +4,8 @@ import {
   isSupervisorDecisionAuthorised,
   isSupervisorNextAllowed,
   isSupervisorProposalAllowed,
+  normalizedMaxAutoDecisions,
+  reachesAutoDecisionLimit,
 } from '../../src/renderer/pipe-bridge';
 import {
   createDefaultSupervisorSession,
@@ -71,6 +73,13 @@ describe('supervisor isolation', () => {
     expect(isSupervisorNextAllowed('direct', 'continue', '继续')).toBe(true);
   });
 
+  it('requires human review after the configured automatic decision limit', () => {
+    expect(normalizedMaxAutoDecisions(undefined)).toBe(3);
+    expect(normalizedMaxAutoDecisions(0)).toBe(1);
+    expect(reachesAutoDecisionLimit(lane({ autoDecisionsUsed: 2 }), 3)).toBe(true);
+    expect(reachesAutoDecisionLimit(lane({ autoDecisionsUsed: 1 }), 3)).toBe(false);
+  });
+
   it('clears lanes and in-memory decision history when restarting from scratch', () => {
     const store = makeStore();
     store.getState().setSupervisorLanes([
@@ -106,6 +115,7 @@ describe('supervisor isolation', () => {
     const session = createDefaultSupervisorSession();
     expect(session.mode).toBe('unified');
     expect(session.taskDescription).toBe('');
+    expect(session.maxAutoDecisions).toBe(3);
   });
 
   it('does not restore audit history unless the user enables it', () => {
@@ -151,10 +161,15 @@ describe('supervisor isolation', () => {
     });
 
     expect(briefing).toContain('计划文件（任务背景参考）');
-    expect(briefing).toContain('只允许改动 src/auth');
+    expect(briefing).toContain('路径: D:\\plans\\auth.md');
+    expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
+    expect(briefing).not.toContain('只允许改动 src/auth');
     expect(briefing).toContain('不是停止条件或硬约束');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');
+    expect(briefing).toContain('用户已确认、在本次监督会话内有效');
+    expect(briefing).toContain('不要仅因历史审计、任务日志');
+    expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
     expect(workerPrompt).not.toContain('只允许改动 src/auth');
     expect(workerPrompt).not.toContain('设备已上电');
   });
@@ -200,6 +215,7 @@ describe('supervisor isolation', () => {
           { ts: 3, type: 'supervisor.decision', payload: { outcome: 'complete', reason: '测试通过' } },
           { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
           { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
+          { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
         ],
       }],
     });
@@ -208,6 +224,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('裁决：complete');
     expect(text).toContain('已废除旧上下文');
     expect(text).toContain('人工裁决：已批准（路线变更）');
+    expect(text).toContain('人工已审阅');
     expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });
 });

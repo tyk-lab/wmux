@@ -121,13 +121,12 @@ export function buildSupervisorBriefing(
 ): string {
   const { lane, state } = laneState;
   const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
-  const planBlock = session.planFileContent.trim()
+  const planBlock = session.planFilePath.trim()
     ? [
         '## 计划文件（任务背景参考）',
-        `文件: ${session.planFilePath || '（未命名计划）'}`,
-        session.planFileContent.trim(),
+        `路径: ${session.planFilePath.trim()}`,
         '',
-        '此文件用于理解任务大致方向，不是停止条件或硬约束。以当前任务说明、终端证据和人工明确指令为准；不要因文件内容自动扩展任务范围。',
+        '此路径用于提示任务背景。需要时可自行读取该文件；启动 briefing 不会附带或粘贴文件正文。它不是停止条件或硬约束。以当前任务说明、终端证据和人工明确指令为准；不要因文件内容自动扩展任务范围。',
         '',
       ]
     : [];
@@ -136,7 +135,8 @@ export function buildSupervisorBriefing(
         '## 已确认的前置条件 / 环境信息',
         session.preconditions.trim(),
         '',
-        '这些信息仅用于理解当前环境与安全前提，不是任务或停止条件；若当前终端证据与其冲突，说明疑点并交给人类确认。',
+        '这些信息是用户已确认、在本次监督会话内有效的环境与安全前提；不要仅因历史审计、任务日志出现“下次确认”“再次确认”等泛化提醒而重复要求人工确认。',
+        '仅当当前终端证据明确表明条件已变化、缺失、失效，或任务进入未被这些前置条件覆盖的新危险操作时，说明具体冲突并交给人类确认。它们不是任务或停止条件。',
         '',
       ]
     : [];
@@ -166,6 +166,9 @@ export function buildSupervisorBriefing(
       ...restoredHistoryBlock,
       '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, session.stopWhen),
+      '',
+      '## 自动判断上限',
+      `本终端每 ${session.maxAutoDecisions || 3} 次 AI 裁决后必须等待人工审阅；达到上限时不要再调用裁决命令，等待用户确认后再继续。`,
       '',
       '## 监控终端',
       worker,

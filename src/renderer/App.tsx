@@ -471,7 +471,7 @@ function handleSupervisorHookEvent(event: any): void {
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
     store.updateLane(lane.id, {
-      awaitingReview: false,
+      awaitingReview: !!lane.autoDecisionLimitReached,
       ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
     });
@@ -479,7 +479,7 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    if (event.task) {
+    if (event.task && !lane.autoDecisionLimitReached) {
       sendToSurface(
         lane.supervisorSurfaceId,
         `[任务] ${lane.label}: ${event.task}\n`,
@@ -498,6 +498,7 @@ function handleSupervisorHookEvent(event: any): void {
 
   if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
     store.updateLane(lane.id, { awaitingReview: true });
+    if (lane.autoDecisionLimitReached) return;
     sendToSurface(
       lane.supervisorSurfaceId,
       `[任务结束] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,

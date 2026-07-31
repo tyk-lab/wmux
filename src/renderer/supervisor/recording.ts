@@ -101,6 +101,9 @@ function eventMarkdown(event: AuditEvent): string | null {
     const text = payloadText(payload, 'text');
     return `### ${at} · 人工裁决：${resolution}（${kind}）${text ? `\n\n${markdownText(text)}` : ''}`;
   }
+  if (event.type === 'supervisor.auto-decision-limit.resolved') {
+    return `### ${at} · 人工已审阅\n\n已重置该终端的自动判断计数。`;
+  }
   if (event.type === 'session.started') {
     return `### ${at} · 监督会话启动`;
   }

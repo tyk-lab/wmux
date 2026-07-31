@@ -131,7 +131,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       if (text.trim()) sendToSurface(item.surfaceId, text, supervisor.submitEnter);
       approvePending(id);
       if (isHumanProposal && lane) {
-        updateLane(lane.id, { awaitingReview: false, currentTask: text.trim() || lane.currentTask });
+        updateLane(lane.id, {
+          awaitingReview: false,
+          currentTask: text.trim() || lane.currentTask,
+          autoDecisionLimitReached: false,
+          autoDecisionsUsed: 0,
+        });
         appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
           resolution: 'approved',
           proposalKind: item.proposalKind || 'important',
@@ -155,13 +160,33 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     if (!item || (item.source !== 'supervisor-route' && item.source !== 'supervisor-important')) return;
     const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
     if (!lane) return;
-    updateLane(lane.id, { awaitingReview: false });
+    updateLane(lane.id, {
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+    });
     appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
       resolution: 'rejected',
       proposalKind: item.proposalKind || 'important',
     });
     if (lane.supervisorSurfaceId) {
       sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请以当前任务说明和终端证据继续监督，计划文件仅作背景参考。\n', true);
+    }
+  };
+
+  const resumeAfterHumanReview = (lane: SupervisorLane) => {
+    updateLane(lane.id, {
+      awaitingReview: false,
+      awaitingStopCheck: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+    });
+    appendSupervisorRecord(supervisor, lane, 'supervisor.auto-decision-limit.resolved', {
+      resolution: 'human-reviewed',
+    });
+    appendSupervisorLog(lane.id, '人工已审阅', '自动判断计数已重置，可继续监督');
+    if (lane.supervisorSurfaceId) {
+      sendToSurface(lane.supervisorSurfaceId, '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n', true);
     }
   };
 
@@ -261,6 +286,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__freedom">
             工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。
           </div>
+          <div className="sup-panel__goal">
+            最大自动判断: {supervisor.maxAutoDecisions || 3} 次 / 终端
+          </div>
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
               任务说明: {supervisor.taskDescription}
@@ -299,7 +327,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-head">
                     <span className="sup-panel__lane-label">{lane.label}</span>
                     <span className="sup-panel__lane-progress">
-                      {(lane.decisions || []).length} 次裁决
+                      {(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || 3}
                     </span>
                   </div>
                   <div className="sup-panel__lane-detail">
@@ -348,6 +376,18 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         onClick={() => confirmStopCondition(lane.id)}
                       >
                         已达停止条件
+                      </button>
+                    </div>
+                  )}
+                  {lane.autoDecisionLimitReached && (
+                    <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
+                      <span>已达自动判断上限，请先人工审阅。</span>
+                      <button
+                        type="button"
+                        className="sup-panel__btn-primary"
+                        onClick={() => resumeAfterHumanReview(lane)}
+                      >
+                        我已人工审阅，继续监督
                       </button>
                     </div>
                   )}

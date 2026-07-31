@@ -29,6 +29,18 @@ export function isSupervisorNextAllowed(mode: string, outcome: string, next: str
   return mode !== 'unified' || !next || outcome === 'needs-human';
 }
 
+export function normalizedMaxAutoDecisions(value: unknown): number {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(20, parsed)) : 3;
+}
+
+export function reachesAutoDecisionLimit(
+  lane: Pick<SupervisorLane, 'autoDecisionsUsed'>,
+  maxAutoDecisions: unknown,
+): boolean {
+  return (lane.autoDecisionsUsed ?? 0) + 1 >= normalizedMaxAutoDecisions(maxAutoDecisions);
+}
+
 export function initPipeBridge(): void {
   const w = window as any;
 
@@ -377,6 +389,9 @@ export function initPipeBridge(): void {
     const proposalKinds = new Set(['route-change', 'important']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
+    if (lane.autoDecisionLimitReached) {
+      return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
+    }
     // A supervisor must not smuggle a declared route/important proposal through
     // an auto-continue decision. Such proposals always stop for user consent.
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
@@ -395,7 +410,10 @@ export function initPipeBridge(): void {
       alternatives,
     });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
+    const autoDecisionsUsed = (lane.autoDecisionsUsed ?? 0) + 1;
+    const limitReached = reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     store.updateLane(lane.id, {
+      autoDecisionsUsed,
       decisions: [
         {
           ts: Date.now(),
@@ -408,13 +426,26 @@ export function initPipeBridge(): void {
       ].slice(0, 100),
     });
 
+    if (limitReached && outcome !== 'needs-human') {
+      store.updateLane(lane.id, {
+        autoDecisionLimitReached: true,
+        awaitingReview: true,
+        ...(outcome === 'complete' ? { awaitingStopCheck: true } : {}),
+      });
+      const text = `已达到 ${normalizedMaxAutoDecisions(session.maxAutoDecisions)} 次自动判断上限；请人工审阅 ${lane.label} 后再继续。`;
+      const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+      if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });
+      window.wmux?.notification?.fire({ surfaceId: lane.surfaceId, title: 'AI 监督', text });
+      return { ok: true, outcome, requiresHuman: true };
+    }
+
     if (outcome === 'complete') {
       store.confirmStopCondition(lane.id);
       return { ok: true, outcome };
     }
 
     if (outcome === 'needs-human') {
-      store.updateLane(lane.id, { awaitingReview: true });
+      store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
       const kind = proposalKinds.has(proposalKind) ? proposalKind as 'route-change' | 'important' : 'important';
       store.enqueueApproval({
         laneId: lane.id,

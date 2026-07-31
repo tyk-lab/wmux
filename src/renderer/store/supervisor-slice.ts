@@ -62,6 +62,10 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Automatic AI decisions reached the configured limit; human review must resume supervision. */
+  autoDecisionLimitReached?: boolean;
+  /** Number of AI decisions since this terminal was last acknowledged by a human. */
+  autoDecisionsUsed?: number;
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
@@ -137,8 +141,10 @@ export interface SupervisorSession {
   planFileContent: string;
   /** Restore the latest unambiguous audit summary into a new dedicated supervisor. */
   restoreAuditHistory: boolean;
-  /** Default max autonomous decisions per lane in goal-chase. */
+  /** Legacy goal-chase setting kept for saved sessions. */
   maxAutoSteps: number;
+  /** Per-terminal AI decision limit before a human must review and resume. */
+  maxAutoDecisions: number;
 
   lanes: SupervisorLane[];
   /** Pinned workspace that provides the full-width supervisor session view. */
@@ -199,6 +205,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     planFileContent: '',
     restoreAuditHistory: false,
     maxAutoSteps: 3,
+    maxAutoDecisions: 3,
     lanes: [],
     supervisorLaunchCmd: 'codex',
     supervisorModel: '',

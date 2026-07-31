@@ -24,7 +24,6 @@ import { sendToSurface } from '../../supervisor/supervisor-engine';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
-const MAX_PLAN_CHARS = 30_000;
 const CODEX_MODEL_OPTIONS = [
   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
   { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
@@ -143,7 +142,6 @@ export default function SupervisorSetupDialog() {
     supervisor.stopWhenKind || 'concrete',
   );
   const [planFilePath, setPlanFilePath] = useState(supervisor.planFilePath);
-  const [planFileContent, setPlanFileContent] = useState(supervisor.planFileContent);
   const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
@@ -158,6 +156,7 @@ export default function SupervisorSetupDialog() {
       : '__default__',
   );
   const [reasoningEffort, setReasoningEffort] = useState(supervisor.supervisorReasoningEffort || '');
+  const [maxAutoDecisions, setMaxAutoDecisions] = useState(supervisor.maxAutoDecisions || 3);
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -166,7 +165,6 @@ export default function SupervisorSetupDialog() {
     setStopWhen(supervisor.stopWhen || '');
     setStopWhenKind(supervisor.stopWhenKind || 'concrete');
     setPlanFilePath(supervisor.planFilePath || '');
-    setPlanFileContent(supervisor.planFileContent || '');
     setRestoreAuditHistory(supervisor.restoreAuditHistory === true);
     setRestoreSources(Object.fromEntries(
       supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
@@ -178,6 +176,7 @@ export default function SupervisorSetupDialog() {
       ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
       : '__default__');
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
+    setMaxAutoDecisions(supervisor.maxAutoDecisions || 3);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
 
@@ -212,16 +211,11 @@ export default function SupervisorSetupDialog() {
     try {
       const result = await (window as any).wmux?.markdown?.openFile?.();
       if (!result || result.canceled) return;
-      if (result.error || typeof result.content !== 'string' || !result.filePath) {
+      if (result.error || !result.filePath) {
         window.alert(result.error || '无法读取计划文件。');
         return;
       }
-      if (result.content.length > MAX_PLAN_CHARS) {
-        window.alert(`计划文件超过 ${MAX_PLAN_CHARS.toLocaleString()} 字符，无法安全注入监督 AI 上下文。`);
-        return;
-      }
       setPlanFilePath(result.filePath);
-      setPlanFileContent(result.content);
     } catch (err: any) {
       window.alert(`选择计划文件失败：${String(err?.message || err)}`);
     }
@@ -256,6 +250,8 @@ export default function SupervisorSetupDialog() {
         awaitingStopCheck: false,
         stopConfirmed: false,
         awaitingReview: false,
+        autoDecisionLimitReached: false,
+        autoDecisionsUsed: 0,
         currentTask: keepsRestoredContext ? prev?.currentTask || '' : '',
         decisions: keepsRestoredContext ? prev?.decisions || [] : [],
         ...(selectedSource ? {
@@ -280,12 +276,13 @@ export default function SupervisorSetupDialog() {
       stopWhen,
       stopWhenKind,
       planFilePath,
-      planFileContent,
+      planFileContent: '',
       restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
       supervisorModel,
       supervisorReasoningEffort: reasoningEffort,
       maxAutoSteps: 0,
+      maxAutoDecisions: Math.max(1, Math.min(20, Math.floor(Number(maxAutoDecisions) || 3))),
     });
   };
 
@@ -458,7 +455,7 @@ export default function SupervisorSetupDialog() {
               className="supervisor-dialog__input"
               value={planFilePath}
               readOnly
-              placeholder="未选择；选择后帮助监督 AI 理解任务大致方向"
+              placeholder="未选择；选择后仅把路径提供给监督 AI"
             />
             <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
               选择文件
@@ -469,7 +466,6 @@ export default function SupervisorSetupDialog() {
                 className="confirm-dialog__btn"
                 onClick={() => {
                   setPlanFilePath('');
-                  setPlanFileContent('');
                 }}
               >
                 清除
@@ -477,7 +473,7 @@ export default function SupervisorSetupDialog() {
             )}
           </div>
           <div className="supervisor-dialog__hint">
-            仅供专属监督 AI 读取，用于了解任务大致方向；不是停止条件或硬约束，不会注入工作终端，也不会覆盖任务说明、终端证据或人工决定。
+            仅把文件路径提供给专属监督 AI；它需要时可自行读取，文件正文不会粘贴进启动输入。不是停止条件或硬约束，不会注入工作终端，也不会覆盖任务说明、终端证据或人工决定。
           </div>
         </section>
 
@@ -551,7 +547,7 @@ export default function SupervisorSetupDialog() {
             onChange={(e) => setPreconditions(e.target.value)}
             placeholder={'例如：设备已上电；急停和防护措施已确认；测试台处于安全状态'}
           />
-          <div className="supervisor-dialog__hint">仅供监督 AI 了解当前环境与安全前提，不是任务或停止条件；若终端证据与其冲突，应交给你确认。</div>
+          <div className="supervisor-dialog__hint">本次监督内视为你已确认的环境与安全前提，不会因历史“下次确认”提示而重复打扰；仅在终端证据显示条件变化、缺失或出现新的危险操作时才会交给你确认。不是任务或停止条件。</div>
         </section>
         <section className="supervisor-dialog__section">
           <div className="supervisor-dialog__label">停止条件类型（监督 AI 裁决参考）</div>
@@ -649,6 +645,19 @@ export default function SupervisorSetupDialog() {
             ))}
           </select>
           <div className="supervisor-dialog__hint">仅对 Codex 生效；选择后以 `--config model_reasoning_effort=…` 传入，推理越高响应越慢、消耗越多。</div>
+        </section>
+        <section className="supervisor-dialog__section">
+          <div className="supervisor-dialog__label">最大自动判断次数</div>
+          <input
+            className="supervisor-dialog__input"
+            type="number"
+            min={1}
+            max={20}
+            step={1}
+            value={maxAutoDecisions}
+            onChange={(e) => setMaxAutoDecisions(Number(e.target.value))}
+          />
+          <div className="supervisor-dialog__hint">每个监控终端独立计数，默认 3 次。达到次数后暂停 AI 自动裁决，必须由你人工审阅并确认后才会继续。</div>
         </section>
 
         <div className="supervisor-dialog__actions">
