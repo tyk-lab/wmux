@@ -195,15 +195,46 @@ npm ci            # 1. 安装依赖
 npm run build     # 2. 编译 + 打包，产出 exe
 ```
 
-`npm run build` 内部依次执行三步（对应 `package.json` 中的 scripts）：
+`npm run build` 实际调用 `node scripts/build-package.mjs`，顺序为：
 
 ```bash
-tsc -p tsconfig.node.json   # ① 编译主进程 / preload / CLI 的 TypeScript → dist/
-vite build                  # ② 打包渲染进程（React 界面）→ dist/renderer/
-electron-builder            # ③ 调用 electron-builder 打包为 Windows 安装包
+# ① 清理旧打包句柄 / win-unpacked 残留（scripts/clear-package-locks.mjs）
+# ② tsc -p tsconfig.node.json          → dist/（主进程 / preload / CLI）
+# ③ vite build                         → dist/renderer/
+# ④ 再次清锁（长编译期间同步软件可能重新占住文件）
+# ⑤ electron-builder（经 scripts/electron-builder-safe.mjs）
 ```
 
-如需分步调试，也可单独执行 `npm run build:main`（仅步骤①）或 `npm run build:renderer`（仅步骤②）。
+如需分步调试，也可单独执行 `npm run build:main`（仅步骤②）或 `npm run build:renderer`（仅步骤③）。
+
+### 编译打包相关脚本
+
+| 命令 | 作用 |
+|------|------|
+| `npm run build` | 清锁 → 完整编译 → 打 NSIS 安装包 |
+| `npm run package:exe` | 只清锁 + 打包（不重新编译 `dist/`） |
+| `npm run build:clear` | 仅清理旧句柄与 `win-unpacked*` 残留 |
+
+对应实现：
+
+| 脚本 | 说明 |
+|------|------|
+| `scripts/build-package.mjs` | 编译打包入口；支持 `--package-only` 跳过 tsc/vite |
+| `scripts/clear-package-locks.mjs` | 结束占用 `release\` 的打包进程，重试删除/挪开 `win-unpacked*` |
+| `scripts/electron-builder-safe.mjs` | 包装 electron-builder，规避同步盘上的 `EBUSY` |
+
+**为何需要清锁：** Windows 上 VerySync / OneDrive、杀毒或上次从 `release\win-unpacked` 启动的 wmux 可能占住 `.asar`，导致 electron-builder 报 `EBUSY: resource busy or locked`。清锁脚本会结束**仅位于打包输出目录内**的 `wmux` / `elevate` 等进程，并尽量删掉或 rename 残留目录。
+
+**本地 Windows 打包输出路径：** 中间产物写到 `%LOCALAPPDATA%\wmux-build\release\`（避开项目所在同步盘），成功后把 `wmux-*-setup.exe` 等安装产物**复制回**项目 `release/`。CI 仍直接输出到项目 `release/`。
+
+可用环境变量覆盖打包目录：
+
+```powershell
+$env:WMUX_BUILD_OUT = "D:\temp\wmux-release"
+npm run build
+```
+
+若日志仍提示 `still locked`，可：暂停对该仓库的同步、关闭从 `release\win-unpacked` 启动的 wmux，或把 `release/` 加入同步忽略列表后再执行 `npm run build:clear`。
 
 ### 只更新 `release/` 下的安装包 exe
 
@@ -213,7 +244,7 @@ electron-builder            # ③ 调用 electron-builder 打包为 Windows 安�
 npm run package:exe
 ```
 
-该命令只调用 `electron-builder --win nsis`，**不会**重新编译主进程、preload、CLI 或 React 渲染进程。若刚修改过源码，先按改动范围更新 `dist/`，再执行打包：
+该命令走 `build-package.mjs --package-only --win nsis`：**会清锁并打包**，但**不会**重新编译主进程、preload、CLI 或 React 渲染进程。若刚修改过源码，先按改动范围更新 `dist/`，再执行打包：
 
 ```powershell
 # 改了 src/main/、src/preload/ 或 src/cli/
@@ -234,16 +265,16 @@ npm run package:exe
 
 ### 更多打包命令
 
-已编译过 `dist/` 后，可直接调用 electron-builder 生成其他格式，无需重新完整构建：
+已编译过 `dist/` 后，可用安全包装脚本或 electron-builder 生成其他格式：
 
 ```bash
-npm run package:exe                   # NSIS 安装包（与 npm run build 的最终产物相同）
-npx electron-builder --win portable   # 便携版单文件 exe，输出 release/wmux-<版本号>-portable.exe
-npx electron-builder --win zip        # zip 压缩包，解压即用
-npx electron-builder --dir            # 只生成未打包的目录（release/win-unpacked/），用于快速验证
+npm run package:exe                                      # NSIS 安装包（与 npm run build 的最终产物相同）
+node scripts/electron-builder-safe.mjs --win portable    # 便携版（本地同样避开同步盘 EBUSY）
+npx electron-builder --win zip                           # zip 压缩包（直接写项目 release/，同步盘上可能 EBUSY）
+npx electron-builder --dir                               # 未打包目录（同上，同步盘需谨慎）
 ```
 
-> 注意：单独执行 `npx electron-builder ...` 前需先跑过 `npm run build:main` 和 `npm run build:renderer`（或一次完整的 `npm run build`），否则 `dist/` 不存在会打包失败。
+> 注意：单独执行 `npx electron-builder ...` 前需先跑过 `npm run build:main` 和 `npm run build:renderer`（或一次完整的 `npm run build`），否则 `dist/` 不存在会打包失败。在同步盘上的仓库优先用 `npm run build` / `package:exe` / `electron-builder-safe.mjs`。
 
 打包配置（目标格式、图标、随包资源等）见 `electron-builder.json`。
 
