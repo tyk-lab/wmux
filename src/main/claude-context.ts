@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
 function getSettingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json');
@@ -90,21 +91,9 @@ export function ensureClaudeHooks(): void {
     let settings: any;
     try { settings = JSON.parse(raw); } catch { return; }
 
-    // Use absolute path to the hook helper script OUTSIDE the ASAR.
-    // __dirname is inside app.asar when packaged — Node.js outside Electron
-    // can't read ASAR files, so we use the standalone copy in resources/cli/.
-    let hookScript: string;
-    try {
-      const { app } = require('electron') as typeof import('electron');
-      if (app.isPackaged) {
-        hookScript = path.join(process.resourcesPath, 'cli', 'wmux-hook.js');
-      } else {
-        hookScript = path.resolve(path.join(__dirname, '../../resources/cli/wmux-hook.js'));
-      }
-    } catch {
-      hookScript = path.resolve(path.join(__dirname, '../../resources/cli/wmux-hook.js'));
-    }
-    hookScript = hookScript.split(path.sep).join('/');
+    // Keep Claude aligned with every other agent when the standalone installer
+    // targets a specific unpacked wmux build.
+    const hookScript = resolveWmuxHookScriptPosix();
 
     const updated = applyWmuxHooks(settings, hookScript);
     fs.writeFileSync(settingsPath, JSON.stringify(updated, null, 2), 'utf-8');

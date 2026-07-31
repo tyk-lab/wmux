@@ -6,6 +6,7 @@
  *   node scripts/install-agent-hooks.mjs
  *   node scripts/install-agent-hooks.mjs --no-opencode
  *   node scripts/install-agent-hooks.mjs --skip-build
+ *   node scripts/install-agent-hooks.mjs --wmux-exe <path-to-wmux.exe>
  *
  * Builds dist/ when needed, then runs: node dist/cli/wmux.js install-hooks
  */
@@ -22,10 +23,38 @@ const hook = path.join(root, 'resources', 'cli', 'wmux-hook.js');
 const args = process.argv.slice(2);
 const skipBuild = args.includes('--skip-build');
 const noOpencode = args.includes('--no-opencode');
+const wmuxExeArg = args.indexOf('--wmux-exe');
 
 function die(msg, code = 1) {
   console.error(msg);
   process.exit(code);
+}
+
+function optionValue(index, name) {
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith('--')) die(`${name} requires a path to wmux.exe`);
+  return value;
+}
+
+function resolveInstalledWmuxHook() {
+  const requestedExe = optionValue(wmuxExeArg, '--wmux-exe') || process.env.WMUX_EXE;
+  const isExplicit = Boolean(requestedExe);
+  const standardExe = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'wmux-build', 'release', 'win-unpacked', 'wmux.exe')
+    : undefined;
+  const exe = requestedExe || (standardExe && fs.existsSync(standardExe) ? standardExe : undefined);
+  if (!exe) return undefined;
+
+  const resolvedExe = path.resolve(exe);
+  if (!fs.existsSync(resolvedExe)) {
+    if (isExplicit) die(`wmux.exe not found: ${resolvedExe}`);
+    return undefined;
+  }
+
+  const installedHook = path.join(path.dirname(resolvedExe), 'resources', 'cli', 'wmux-hook.js');
+  if (!fs.existsSync(installedHook)) die(`wmux-hook.js not found beside wmux.exe: ${installedHook}`);
+  return installedHook;
 }
 
 if (!fs.existsSync(hook)) {
@@ -71,6 +100,11 @@ if (!fs.existsSync(cli)) {
 
 const argv = [cli, 'install-hooks'];
 if (noOpencode) argv.push('--no-opencode');
+const installedHook = resolveInstalledWmuxHook();
+const env = installedHook ? { ...process.env, WMUX_HOOK_SCRIPT: installedHook } : process.env;
+console.log(installedHook
+  ? `→ Use installed wmux Hook: ${installedHook}`
+  : `→ Use repository Hook: ${path.join(root, 'dist', 'cli', 'wmux-hook.js')}`);
 console.log(`→ node ${argv.join(' ')}`);
-const r = spawnSync(process.execPath, argv, { cwd: root, stdio: 'inherit' });
+const r = spawnSync(process.execPath, argv, { cwd: root, stdio: 'inherit', env });
 process.exit(r.status ?? 1);

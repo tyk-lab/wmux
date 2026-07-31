@@ -18,10 +18,16 @@
 
 .PARAMETER SkipBuild
   Do not run `npm run build:main`; uses the existing dist/ output instead.
+
+.PARAMETER WmuxExe
+  Optional path to the wmux.exe currently in use. Its sibling
+  resources/cli/wmux-hook.js is written to agent hook settings. When omitted,
+  the script checks $env:WMUX_EXE, then the standard local unpacked build.
 #>
 param(
   [switch]$NoOpencode,
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [string]$WmuxExe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,6 +37,32 @@ Set-Location -LiteralPath $Root
 $cli = Join-Path $Root 'dist\cli\wmux.js'
 $builtHook = Join-Path $Root 'dist\cli\wmux-hook.js'
 $resourceHook = Join-Path $Root 'resources\cli\wmux-hook.js'
+
+function Resolve-InstalledWmuxHook {
+  param([string]$RequestedExe)
+
+  $exe = $RequestedExe
+  if (-not $exe) { $exe = $env:WMUX_EXE }
+  $isExplicit = [bool]$exe
+
+  if (-not $exe -and $env:LOCALAPPDATA) {
+    $candidate = Join-Path $env:LOCALAPPDATA 'wmux-build\release\win-unpacked\wmux.exe'
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $exe = $candidate }
+  }
+
+  if (-not $exe) { return $null }
+  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    if ($isExplicit) { throw "wmux.exe not found: $exe" }
+    return $null
+  }
+
+  $resolvedExe = (Resolve-Path -LiteralPath $exe).Path
+  $hook = Join-Path (Split-Path -Parent $resolvedExe) 'resources\cli\wmux-hook.js'
+  if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) {
+    throw "wmux-hook.js not found beside wmux.exe: $hook"
+  }
+  return (Resolve-Path -LiteralPath $hook).Path
+}
 
 if (-not (Test-Path -LiteralPath $resourceHook)) {
   Write-Error "Missing resources/cli/wmux-hook.js under $Root"
@@ -56,6 +88,15 @@ $resourceHash = (Get-FileHash -LiteralPath $resourceHook -Algorithm SHA256).Hash
 if ($builtHash -ne $resourceHash) {
   Write-Host '→ Sync resources/cli/wmux-hook.js'
   Copy-Item -LiteralPath $builtHook -Destination $resourceHook -Force
+}
+
+$installedHook = Resolve-InstalledWmuxHook -RequestedExe $WmuxExe
+if ($installedHook) {
+  $env:WMUX_HOOK_SCRIPT = $installedHook
+  Write-Host "→ Use installed wmux Hook: $installedHook"
+} else {
+  Remove-Item Env:WMUX_HOOK_SCRIPT -ErrorAction SilentlyContinue
+  Write-Host "→ Use repository Hook: $builtHook"
 }
 
 $argv = @($cli, 'install-hooks')

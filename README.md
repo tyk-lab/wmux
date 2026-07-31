@@ -81,10 +81,22 @@ node dist/cli/wmux.js install-hooks
 wmux install-hooks          # PATH 已指向本仓库 dist/cli 时
 ```
 
+若当前运行的是本地解压版 wmux，安装脚本会自动优先识别
+`%LOCALAPPDATA%\wmux-build\release\win-unpacked\wmux.exe`，并将各 Agent 的 Hook
+指向同目录的 `resources\cli\wmux-hook.js`。也可显式指定其他 wmux：
+
+```powershell
+pwsh -File scripts/install-agent-hooks.ps1 -WmuxExe "$env:LOCALAPPDATA\wmux-build\release\win-unpacked\wmux.exe"
+node scripts/install-agent-hooks.mjs --wmux-exe "$env:LOCALAPPDATA\wmux-build\release\win-unpacked\wmux.exe"
+```
+
+未找到解压版且未指定路径时，脚本回退为仓库的 `dist\cli\wmux-hook.js`。
+
 | 参数 | 适用 | 含义 |
 |------|------|------|
 | `--no-opencode` | mjs / ps1 / `wmux install-hooks` | 不安装 OpenCode 插件 |
 | `--skip-build` | 仅 mjs / ps1 | 不自动 `build:main`（要求已有 `dist/cli/wmux.js`） |
+| `--wmux-exe <路径>` / `-WmuxExe <路径>` | mjs / ps1 | 指定当前使用的 `wmux.exe`，Hook 写入其 `resources\cli` |
 
 #### 脚本会写什么
 

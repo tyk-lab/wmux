@@ -7,6 +7,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export function resolveWmuxHookScriptPath(): string {
+  // The standalone installer can target a currently used unpacked wmux build.
+  // Honor its one-process override so every agent config points at that build's
+  // helper instead of the repository currently running the installer.
+  const overridden = process.env.WMUX_HOOK_SCRIPT?.trim();
+  if (overridden) {
+    const resolved = path.resolve(overridden);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron');
