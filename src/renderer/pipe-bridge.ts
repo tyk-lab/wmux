@@ -9,6 +9,14 @@ import { PaneId, SurfaceId, WorkspaceId, SurfaceType } from '../shared/types';
 import { v4 as uuid } from 'uuid';
 import { sendToSurface } from './supervisor/supervisor-engine';
 import { appendSupervisorRecord } from './supervisor/recording';
+import type { SupervisorDecision, SupervisorLane } from './store/supervisor-slice';
+
+export function isSupervisorDecisionAuthorised(
+  lane: Pick<SupervisorLane, 'supervisorSurfaceId'>,
+  supervisorSurfaceId: string,
+): boolean {
+  return !!supervisorSurfaceId && lane.supervisorSurfaceId === supervisorSurfaceId;
+}
 
 export function initPipeBridge(): void {
   const w = window as any;
@@ -347,15 +355,28 @@ export function initPipeBridge(): void {
     const store = useStore.getState();
     const session = store.supervisor;
     const surfaceId = String(params?.surfaceId || '');
-    const outcome = String(params?.outcome || '');
+    const supervisorSurfaceId = String(params?.supervisorSurfaceId || '');
+    const outcome = String(params?.outcome || '') as SupervisorDecision['outcome'];
     const reason = String(params?.reason || '').trim().slice(0, 1200);
     const next = String(params?.next || '').trim().slice(0, 4000);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
-    if (!session.active || !lane || !valid.has(outcome)) return null;
+    if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
 
     appendSupervisorRecord(session, lane, 'supervisor.decision', { outcome, reason, next });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
+    store.updateLane(lane.id, {
+      decisions: [
+        {
+          ts: Date.now(),
+          task: lane.currentTask || '（任务未上报）',
+          outcome,
+          reason,
+          next,
+        },
+        ...(lane.decisions || []),
+      ].slice(0, 100),
+    });
 
     if (outcome === 'complete') {
       store.confirmStopCondition(lane.id);

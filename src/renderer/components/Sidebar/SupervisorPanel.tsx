@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { modeLabel, stopWhenKindLabel } from '../../supervisor/protocol';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
+import { appendSupervisorRecord } from '../../supervisor/recording';
+import { findLeaf, getAllPaneIds } from '../../store/split-utils';
+import type { PaneId, WorkspaceId } from '../../../shared/types';
 import '../../styles/supervisor.css';
 
 export default function SupervisorPanel() {
@@ -15,6 +18,10 @@ export default function SupervisorPanel() {
   const appendSupervisorLog = useStore((s) => s.appendSupervisorLog);
   const confirmStopCondition = useStore((s) => s.confirmStopCondition);
   const rejectStopCondition = useStore((s) => s.rejectStopCondition);
+  const resetSupervisorSession = useStore((s) => s.resetSupervisorSession);
+  const closeSurface = useStore((s) => s.closeSurface);
+  const addSurface = useStore((s) => s.addSurface);
+  const workspaces = useStore((s) => s.workspaces);
   const [collapsed, setCollapsed] = useState(false);
 
   if (supervisor.lanes.length === 0 && !supervisor.active) return null;
@@ -22,6 +29,16 @@ export default function SupervisorPanel() {
   const enabled = supervisor.lanes.filter((l) => l.enabled);
   const pendingCount = supervisor.pendingApprovals.length;
   const mode = supervisor.mode || 'direct';
+  const liveSurfaceIds = new Set<string>();
+  for (const workspace of workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      const pane = findLeaf(workspace.splitTree, paneId);
+      for (const surface of pane?.surfaces || []) liveSurfaceIds.add(surface.id);
+    }
+  }
+  const missingDedicatedSupervisor = supervisor.lanes.some(
+    (lane) => !lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId),
+  );
 
   const onApprove = (id: string) => {
     const item = approvePending(id);
@@ -37,6 +54,41 @@ export default function SupervisorPanel() {
     } catch (err: any) {
       appendSupervisorLog(item.laneId, '发送失败', String(err?.message || err));
     }
+  };
+
+  const restartFromScratch = () => {
+    if (!window.confirm('将关闭所有专属监督 AI，并清空本次任务与裁决记录；历史审计文件会保留。是否继续？')) {
+      return;
+    }
+
+    for (const lane of supervisor.lanes) {
+      appendSupervisorRecord(supervisor, lane, 'session.abandoned', {
+        reason: '用户选择重头再来',
+      });
+      if (lane.supervisorSurfaceId) {
+        let location: { workspaceId: WorkspaceId; paneId: PaneId; surfaceCount: number } | null = null;
+        for (const workspace of workspaces) {
+          for (const paneId of getAllPaneIds(workspace.splitTree)) {
+            const pane = findLeaf(workspace.splitTree, paneId);
+            if (pane?.surfaces.some((surface) => surface.id === lane.supervisorSurfaceId)) {
+              location = { workspaceId: workspace.id, paneId, surfaceCount: pane.surfaces.length };
+              break;
+            }
+          }
+          if (location) break;
+        }
+        if (!location) continue;
+        if (location.surfaceCount === 1) {
+          const replacement = addSurface(location.workspaceId, location.paneId, 'terminal', {
+            cwd: lane.projectDir,
+          });
+          if (!replacement) continue;
+        }
+        closeSurface(location.workspaceId, location.paneId, lane.supervisorSurfaceId);
+      }
+    }
+    resetSupervisorSession();
+    openSupervisorSetup();
   };
 
   return (
@@ -116,6 +168,31 @@ export default function SupervisorPanel() {
                           ? ` · ${open.status === 'in_progress' ? '执行中' : '待执行'}`
                           : ' · 监控中'}
                   </div>
+                  <div className="sup-panel__lane-task" title={lane.currentTask || '等待任务上报'}>
+                    任务: {lane.currentTask || '等待任务上报'}
+                  </div>
+                  <div className="sup-panel__lane-supervisor">
+                    专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
+                  </div>
+                  {(lane.decisions || []).length > 0 && (
+                    <details className="sup-panel__decisions">
+                      <summary>裁决记录（{lane.decisions?.length}）</summary>
+                      {lane.decisions?.slice(0, 6).map((decision, index) => (
+                        <div key={`${decision.ts}-${index}`} className="sup-panel__decision">
+                          <div className="sup-panel__decision-meta">
+                            <span>{new Date(decision.ts).toLocaleTimeString()}</span>
+                            <strong>{decision.outcome}</strong>
+                          </div>
+                          <div className="sup-panel__decision-task" title={decision.task}>
+                            任务: {decision.task}
+                          </div>
+                          <div className="sup-panel__decision-detail" title={decision.reason || decision.next}>
+                            {decision.reason || decision.next || '未附说明'}
+                          </div>
+                        </div>
+                      ))}
+                    </details>
+                  )}
                   {lane.awaitingStopCheck && !lane.stopConfirmed && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
                       <button type="button" onClick={() => rejectStopCondition(lane.id)}>
@@ -187,10 +264,17 @@ export default function SupervisorPanel() {
                 停止
               </button>
             ) : (
-              <button type="button" className="sup-panel__btn-primary" onClick={startSupervisor}>
-                启动
+              <button
+                type="button"
+                className="sup-panel__btn-primary"
+                onClick={missingDedicatedSupervisor ? openSupervisorSetup : startSupervisor}
+              >
+                {missingDedicatedSupervisor ? '创建专属监督 AI' : '启动'}
               </button>
             )}
+            <button type="button" onClick={restartFromScratch}>
+              重头再来
+            </button>
           </div>
         </>
       )}

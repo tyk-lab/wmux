@@ -14,6 +14,7 @@ import {
   stopWhenKindHint,
   stopWhenKindLabel,
   SUPERVISOR_TAB_TITLE,
+  supervisorTabTitle,
 } from '../../supervisor/protocol';
 import '../../styles/supervisor.css';
 
@@ -72,9 +73,7 @@ export default function SupervisorSetupDialog() {
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
   const startSupervisor = useStore((s) => s.startSupervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
-  const setSupervisorSurface = useStore((s) => s.setSupervisorSurface);
   const addSurface = useStore((s) => s.addSurface);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -89,13 +88,15 @@ export default function SupervisorSetupDialog() {
 
   const candidates = useMemo((): TerminalCandidate[] => {
     const list: TerminalCandidate[] = [];
-    const skipId = supervisor.supervisorSurfaceId;
+    const supervisorSurfaceIds = new Set(
+      supervisor.lanes.map((lane) => lane.supervisorSurfaceId).filter(Boolean),
+    );
     for (const ws of workspaces) {
       const surfaces: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
       collectTerminals(ws.splitTree, surfaces);
       for (const s of surfaces) {
-        if (skipId && s.surfaceId === skipId) continue;
-        if (s.title === SUPERVISOR_TAB_TITLE || s.title === 'AI Supervisor') continue;
+        if (supervisorSurfaceIds.has(s.surfaceId)) continue;
+        if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
         const meta = agentMeta.get(s.surfaceId);
         const st = agentStates[s.surfaceId]?.state || 'unknown';
         list.push({
@@ -111,7 +112,7 @@ export default function SupervisorSetupDialog() {
       }
     }
     return list;
-  }, [workspaces, agentMeta, agentStates, supervisor.supervisorSurfaceId]);
+  }, [workspaces, agentMeta, agentStates, supervisor.lanes]);
 
   const [mode, setMode] = useState<SupervisorMode>(supervisor.mode || 'direct');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -140,7 +141,7 @@ export default function SupervisorSetupDialog() {
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setMaxAuto(supervisor.maxAutoSteps || 8);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
-  }, [setupOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setupOpen]);
 
   if (!setupOpen) return null;
 
@@ -172,6 +173,7 @@ export default function SupervisorSetupDialog() {
         id: prev?.id || `lane-${i}`,
         label: c.label,
         surfaceId: c.surfaceId,
+        supervisorSurfaceId: prev?.supervisorSurfaceId || null,
         paneId: c.paneId,
         workspaceId: c.workspaceId,
         workspaceTitle: c.workspaceTitle,
@@ -183,6 +185,8 @@ export default function SupervisorSetupDialog() {
         awaitingStopCheck: false,
         stopConfirmed: false,
         awaitingReview: false,
+        currentTask: prev?.currentTask || '',
+        decisions: prev?.decisions || [],
       });
     }
     return lanes;
@@ -201,6 +205,51 @@ export default function SupervisorSetupDialog() {
       supervisorLaunchCmd: launchCmd,
       maxAutoSteps: maxAuto,
     });
+  };
+
+  const ensureDedicatedSupervisors = (lanes: SupervisorLane[]): SupervisorLane[] => {
+    const startupCommands = launchCmd.trim() ? [launchCmd.trim()] : undefined;
+    const existingTerminalIds = new Set<SurfaceId>();
+    for (const workspace of workspaces) {
+      const terminals: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
+      collectTerminals(workspace.splitTree, terminals);
+      for (const terminal of terminals) existingTerminalIds.add(terminal.surfaceId);
+    }
+
+    return lanes.map((lane) => {
+      if (
+        (lane.supervisorSurfaceId && existingTerminalIds.has(lane.supervisorSurfaceId))
+        || !lane.workspaceId
+        || !lane.paneId
+      ) {
+        return lane;
+      }
+      const supervisorSurfaceId = addSurface(lane.workspaceId, lane.paneId, 'terminal', {
+        customTitle: supervisorTabTitle(lane.label),
+        cwd: lane.projectDir,
+        startupCommands,
+      });
+      return { ...lane, supervisorSurfaceId };
+    });
+  };
+
+  const sendDedicatedBriefings = () => {
+    window.setTimeout(() => {
+      try {
+        const session = useStore.getState().supervisor;
+        const states = (window as any).__wmux_getAgentStates?.() || {};
+        for (const lane of session.lanes) {
+          if (!lane.supervisorSurfaceId) continue;
+          const text = buildSupervisorBriefing(session, {
+            lane,
+            state: String(states[lane.surfaceId]?.state || 'unknown'),
+          });
+          (window as any).wmux?.pty?.write?.(lane.supervisorSurfaceId, text + '\n');
+        }
+      } catch (err) {
+        console.warn('[supervisor] briefing inject failed', err);
+      }
+    }, 1200);
   };
 
   const applyConfig = (andStart: boolean) => {
@@ -234,8 +283,16 @@ export default function SupervisorSetupDialog() {
     }
 
     persistFields();
-    setSupervisorLanes(lanes);
-    if (andStart) startSupervisor();
+    const configuredLanes = andStart ? ensureDedicatedSupervisors(lanes) : lanes;
+    setSupervisorLanes(configuredLanes);
+    if (andStart && configuredLanes.some((lane) => !lane.supervisorSurfaceId)) {
+      window.alert('无法为所有选中终端创建专属监督 AI；调度尚未启动，请重试。');
+      return;
+    }
+    if (andStart) {
+      startSupervisor();
+      sendDedicatedBriefings();
+    }
     else closeSupervisorSetup();
   };
 
@@ -265,50 +322,14 @@ export default function SupervisorSetupDialog() {
       }
     }
     persistFields();
-    setSupervisorLanes(lanes);
-
-    const wsId = activeWorkspaceId || workspaces[0]?.id;
-    if (!wsId) return;
-    const ws = workspaces.find((w) => w.id === wsId);
-    if (!ws) return;
-
-    const panes: PaneId[] = [];
-    const walk = (n: SplitNode) => {
-      if (n.type === 'leaf') panes.push(n.paneId);
-      else {
-        walk(n.children[0]);
-        walk(n.children[1]);
-      }
-    };
-    walk(ws.splitTree);
-    const paneId = panes[0];
-    if (!paneId) return;
-
-    const startupCommands = launchCmd.trim() ? [launchCmd.trim()] : undefined;
-    const surfaceId = addSurface(wsId, paneId, 'terminal', {
-      customTitle: SUPERVISOR_TAB_TITLE,
-      startupCommands,
-    });
-    if (!surfaceId) return;
-    setSupervisorSurface(surfaceId);
+    const isolatedLanes = ensureDedicatedSupervisors(lanes);
+    setSupervisorLanes(isolatedLanes);
+    if (isolatedLanes.some((lane) => !lane.supervisorSurfaceId)) {
+      window.alert('无法为所有选中终端创建专属监督 AI，请重试。');
+      return;
+    }
     closeSupervisorSetup();
-
-    window.setTimeout(() => {
-      try {
-        const session = useStore.getState().supervisor;
-        const states = (window as any).__wmux_getAgentStates?.() || {};
-        const text = buildSupervisorBriefing(
-          session,
-          session.lanes.map((l) => ({
-            lane: l,
-            state: String(states[l.surfaceId]?.state || 'unknown'),
-          })),
-        );
-        (window as any).wmux?.pty?.write?.(surfaceId, text + '\n');
-      } catch (err) {
-        console.warn('[supervisor] briefing inject failed', err);
-      }
-    }, 1200);
+    sendDedicatedBriefings();
   };
 
   return (
@@ -322,7 +343,7 @@ export default function SupervisorSetupDialog() {
       >
         <div className="supervisor-dialog__title">AI 监督</div>
         <div className="supervisor-dialog__sub">
-          两种模式二选一。调度默认关闭，确认后再启动。
+          两种模式二选一；每个选中的终端会创建独立、可见的监督 AI 上下文。
         </div>
 
         <div className="supervisor-dialog__mode-tabs">
@@ -420,7 +441,7 @@ export default function SupervisorSetupDialog() {
               </div>
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">监督 AI 启动命令（可选，用于观察终端是否达标）</div>
+              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，可选）</div>
               <input
                 className="supervisor-dialog__input"
                 value={launchCmd}
@@ -519,7 +540,7 @@ export default function SupervisorSetupDialog() {
               </label>
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">监督 AI 启动命令（可选）</div>
+              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，可选）</div>
               <input
                 className="supervisor-dialog__input"
                 value={launchCmd}
@@ -547,7 +568,7 @@ export default function SupervisorSetupDialog() {
             className="confirm-dialog__btn supervisor-dialog__btn-ai"
             onClick={openAiSession}
           >
-            打开 AI 监督会话
+            创建专属监督 AI
           </button>
           <button
             type="button"

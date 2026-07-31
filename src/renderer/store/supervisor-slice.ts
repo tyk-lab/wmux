@@ -26,10 +26,20 @@ export interface SupervisorStep {
   completedAt?: number;
 }
 
+export interface SupervisorDecision {
+  ts: number;
+  task: string;
+  outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
+  reason: string;
+  next: string;
+}
+
 export interface SupervisorLane {
   id: string;
   label: string;
   surfaceId: SurfaceId;
+  /** Dedicated visible AI terminal; it receives facts for this lane only. */
+  supervisorSurfaceId?: SurfaceId | null;
   paneId?: PaneId;
   workspaceId?: WorkspaceId;
   workspaceTitle?: string;
@@ -49,6 +59,10 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Latest task reported by the worker hook, shown with its decision history. */
+  currentTask?: string;
+  /** In-memory timeline for this lane; durable copies are written to its audit stream. */
+  decisions?: SupervisorDecision[];
 }
 
 export type ApprovalSource = 'plan' | 'manual' | 'idle-hint' | 'goal-chase';
@@ -97,7 +111,6 @@ export interface SupervisorSession {
   maxAutoSteps: number;
 
   lanes: SupervisorLane[];
-  supervisorSurfaceId: SurfaceId | null;
   supervisorLaunchCmd: string;
   pendingApprovals: PendingApproval[];
   log: SupervisorLogEntry[];
@@ -122,7 +135,8 @@ export interface SupervisorSlice {
   rejectPending: (id: string) => void;
   updateLane: (laneId: string, patch: Partial<SupervisorLane>) => void;
   updateStep: (laneId: string, stepId: string, patch: Partial<SupervisorStep>) => void;
-  setSupervisorSurface: (surfaceId: SurfaceId | null) => void;
+  /** Drop the current in-memory session so the next run starts with clean context. */
+  resetSupervisorSession: () => void;
   /** direct: human/AI confirms end condition — stop injects for this lane. */
   confirmStopCondition: (laneId: string) => void;
   /** direct: end condition not met — keep watching; allow further injects if steps added. */
@@ -145,7 +159,6 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     doneWhen: '',
     maxAutoSteps: 8,
     lanes: [],
-    supervisorSurfaceId: null,
     supervisorLaunchCmd: '',
     pendingApprovals: [],
     log: [],
@@ -287,8 +300,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       },
     }));
   },
-  setSupervisorSurface(surfaceId) {
-    set((s) => ({ supervisor: { ...s.supervisor, supervisorSurfaceId: surfaceId } }));
+  resetSupervisorSession() {
+    set({ supervisor: createDefaultSupervisorSession() });
   },
   confirmStopCondition(laneId) {
     set((s) => ({

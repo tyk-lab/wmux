@@ -71,6 +71,7 @@ export type TickAction =
     }
   | {
       type: 'notify_supervisor';
+      laneId: string;
       text: string;
     }
   | {
@@ -98,7 +99,7 @@ export interface TickResult {
   runtime: LaneRuntime;
 }
 
-function goalChaseStepPrompt(session: SupervisorSession): string {
+function goalChaseStepPrompt(): string {
   return (
     '根据当前终端上下文与下列目标，自行决策并执行最小下一步；' +
     '若缺信息、需权限或无法判断，说明卡点并停止等待人工。'
@@ -178,6 +179,7 @@ export function tickLane(opts: {
         });
         actions.push({
           type: 'notify_supervisor',
+          laneId: lane.id,
           text: buildStopCheckHint({
             lane,
             stopWhen: session.stopWhen,
@@ -199,11 +201,12 @@ export function tickLane(opts: {
           disableLane: false,
         });
       } else if (
-        session.supervisorSurfaceId &&
+        lane.supervisorSurfaceId &&
         (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > Math.max(session.idleStableMs * 3, 20_000))
       ) {
         actions.push({
           type: 'notify_supervisor',
+          laneId: lane.id,
           text: buildStopCheckHint({
             lane,
             stopWhen: session.stopWhen,
@@ -222,11 +225,12 @@ export function tickLane(opts: {
     if (mode === 'goal-chase') {
       if (lane.awaitingStopCheck) {
         if (
-          session.supervisorSurfaceId &&
+          lane.supervisorSurfaceId &&
           (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > Math.max(session.idleStableMs * 3, 20_000))
         ) {
           actions.push({
             type: 'notify_supervisor',
+            laneId: lane.id,
             text: buildStopCheckHint({
               lane,
               stopWhen: session.doneWhen,
@@ -254,6 +258,7 @@ export function tickLane(opts: {
         });
         actions.push({
           type: 'notify_supervisor',
+          laneId: lane.id,
           text: buildStopCheckHint({
             lane,
             stopWhen: session.doneWhen,
@@ -352,10 +357,11 @@ export function tickLane(opts: {
   }
 
   // goal-chase: ping supervisor AI with doneWhen judgment + next decision
-  if (mode === 'goal-chase' && session.supervisorSurfaceId) {
+  if (mode === 'goal-chase' && lane.supervisorSurfaceId) {
     if (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > session.idleStableMs * 2) {
       actions.push({
         type: 'notify_supervisor',
+        laneId: lane.id,
         text:
           buildIdleHint({
             lane,
@@ -374,7 +380,7 @@ export function tickLane(opts: {
     lane,
     step:
       mode === 'goal-chase' && !step.prompt.trim()
-        ? { ...step, prompt: goalChaseStepPrompt(session) }
+        ? { ...step, prompt: goalChaseStepPrompt() }
         : step,
     stepIndex: stepHuman,
     stepCount,

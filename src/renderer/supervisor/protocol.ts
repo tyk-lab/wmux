@@ -57,6 +57,10 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
 /** Tab title for the dedicated supervisor terminal. */
 export const SUPERVISOR_TAB_TITLE = 'AI 监督';
 
+export function supervisorTabTitle(laneLabel: string): string {
+  return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
+}
+
 /**
  * Build text injected into a worker terminal.
  * direct → verbatim step.prompt only.
@@ -95,13 +99,10 @@ export function buildInjectedPrompt(opts: {
 /** Briefing for the AI supervisor terminal (both modes). */
 export function buildSupervisorBriefing(
   session: SupervisorSession,
-  laneStates: Array<{ lane: SupervisorLane; state: string }>,
+  laneState: { lane: SupervisorLane; state: string },
 ): string {
-  const lanesBlock = laneStates
-    .map(({ lane, state }) => {
-      return `- ${lane.label} | ${lane.surfaceId} | 状态=${state}`;
-    })
-    .join('\n');
+  const { lane, state } = laneState;
+  const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
 
   if (session.mode === 'direct') {
     const kind = session.stopWhenKind || 'concrete';
@@ -117,7 +118,7 @@ export function buildSupervisorBriefing(
       session.directInstructions.trim() || '（见各通道步骤）',
       '',
       '## 监控终端',
-      lanesBlock || '（无）',
+      worker,
       '',
       '## 判定输出格式（每次核对请按此简短回答）',
       '结论: 达到 | 未达到 | 不确定',
@@ -129,7 +130,7 @@ export function buildSupervisorBriefing(
       '2. 达到 → 明确写出「结论: 达到」，并请人类在侧栏点「已达停止条件」停止注入。',
       '3. 未达到 → 「结论: 未达到」+ 差什么 + 可选补充指令建议。',
       '4. 阻塞/要权限 → 通知人类，不要绕过。',
-      '5. 每轮结束先 read-screen，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。',
+      `5. 你只监督此终端。每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。`,
       '6. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
       '',
     ].join('\n');
@@ -139,7 +140,7 @@ export function buildSupervisorBriefing(
   return [
     '# AI 监督 · 目标追逐',
     '',
-    '你负责管理下列工作终端：在目标范围内自行决策推进；并判断「完成/停止条件」是否满足。',
+    '你只负责管理下列一个工作终端：在目标范围内自行决策推进；并判断「完成/停止条件」是否满足。',
     '',
     '## 目标',
     session.goal.trim() || '（未设置）',
@@ -152,7 +153,7 @@ export function buildSupervisorBriefing(
     `禁止: ${session.denyNotes.trim() || '（无）'}`,
     '',
     '## 监控终端',
-    lanesBlock || '（无）',
+    worker,
     '',
     '## 判定输出格式（核对完成条件时）',
     '结论: 达到 | 未达到 | 不确定',
@@ -161,7 +162,7 @@ export function buildSupervisorBriefing(
     '每轮结束先 read-screen，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。',
     '',
     '## 规则',
-    '1. 只管理列出的 surface。',
+    `1. 只管理 ${lane.surfaceId}，不要读取、总结或裁决其他终端。`,
     '2. 决策不了 / 要权限 / 信息不足 → 说明卡点并停，不要瞎猜。',
     '3. 完成条件满足 → 「结论: 达到」，请人类点「已达停止条件」。',
     '4. 可用: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',

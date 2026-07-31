@@ -455,20 +455,24 @@ function handleSupervisorHookEvent(event: any): void {
   const store = useStore.getState();
   const session = store.supervisor;
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
-  if (!session.active || !session.supervisorSurfaceId || !surfaceId || surfaceId === session.supervisorSurfaceId) return;
+  if (!session.active || !surfaceId) return;
 
   const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
-  if (!lane) return;
+  if (!lane?.supervisorSurfaceId) return;
   const lifecycle = String(event.event || '');
   if (lifecycle === 'UserPromptSubmit') {
-    store.updateLane(lane.id, { awaitingReview: false });
+    const task = String(event.task || '').trim().slice(0, 800);
+    store.updateLane(lane.id, {
+      awaitingReview: false,
+      ...(task ? { currentTask: task } : {}),
+    });
     appendSupervisorRecord(session, lane, 'worker.task', {
       task: event.task || '',
       cwd: event.cwd || '',
     });
     if (event.task) {
       sendToSurface(
-        session.supervisorSurfaceId,
+        lane.supervisorSurfaceId,
         `[通道 ${lane.label} | ${surfaceId}] 收到任务：${event.task}\n`,
         false,
       );
@@ -485,7 +489,7 @@ function handleSupervisorHookEvent(event: any): void {
   if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
     store.updateLane(lane.id, { awaitingReview: true });
     sendToSurface(
-      session.supervisorSurfaceId,
+      lane.supervisorSurfaceId,
       `[通道 ${lane.label} | ${surfaceId}] 本轮已结束。请用 wmux read-screen --surface ${surfaceId} --lines 80 查看证据，` +
         `再静默执行 wmux supervisor decide --surface ${surfaceId} --outcome <continue|rework|complete|needs-human> --reason "结论"。\n`,
       false,
@@ -920,6 +924,7 @@ export default function App() {
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
   useEffect(() => {
     if (!supervisorActive) return;
+    supervisorRuntimeRef.current = {};
     const session = useStore.getState().supervisor;
     for (const lane of session.lanes) {
       appendSupervisorRecord(session, lane, 'session.started', {
@@ -988,6 +993,9 @@ export default function App() {
                 status: 'in_progress',
                 dispatchedAt: now,
               });
+              store.updateLane(action.laneId, {
+                currentTask: action.text.trim().slice(0, 800),
+              });
               if (action.countAuto) {
                 const ln = store.supervisor.lanes.find((l) => l.id === action.laneId);
                 if (ln) {
@@ -1002,7 +1010,8 @@ export default function App() {
               );
             }
           } else if (action.type === 'notify_supervisor') {
-            const sid = store.supervisor.supervisorSurfaceId;
+            const lane = store.supervisor.lanes.find((item) => item.id === action.laneId);
+            const sid = lane?.supervisorSurfaceId;
             if (sid) {
               try {
                 sendToSurface(sid, action.text, false);

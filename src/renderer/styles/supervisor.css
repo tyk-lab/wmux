@@ -298,6 +298,53 @@
   white-space: nowrap;
 }
 
+.sup-panel__lane-task,
+.sup-panel__lane-supervisor {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__decisions {
+  margin-top: 5px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.sup-panel__decisions summary {
+  cursor: pointer;
+}
+
+.sup-panel__decision {
+  margin-top: 4px;
+}
+
+.sup-panel__decision-meta {
+  display: flex;
+  gap: 5px;
+}
+
+.sup-panel__decision-task,
+.sup-panel__decision-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__decision-task {
+  margin-top: 3px;
+  opacity: 0.8;
+}
+
+.sup-panel__decision-detail {
+  margin-top: 2px;
+  opacity: 0.7;
+}
+
 .sup-panel__approvals {
   padding: 0 8px 8px;
 }

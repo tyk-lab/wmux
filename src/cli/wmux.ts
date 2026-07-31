@@ -160,6 +160,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
 
   const result = await sendV2('supervisor.decide', {
     surfaceId,
+    supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
     outcome,
     reason: getFlag(args, '--reason') || '',
     next: getFlag(args, '--next') || '',
