@@ -174,6 +174,28 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }
   };
 
+  const onCancel = (id: string) => {
+    const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
+    rejectPending(id);
+    setProposalEdits((current) => {
+      const { [id]: _discarded, ...rest } = current;
+      return rest;
+    });
+    if (!item || (item.source !== 'supervisor-route' && item.source !== 'supervisor-important')) return;
+    const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
+    if (!lane) return;
+    updateLane(lane.id, {
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+    });
+    appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+      resolution: 'handled-manually',
+      proposalKind: item.proposalKind || 'important',
+    });
+    appendSupervisorLog(lane.id, '已取消建议', '由用户在工作终端自行处理');
+  };
+
   const resumeAfterHumanReview = (lane: SupervisorLane) => {
     updateLane(lane.id, {
       awaitingReview: false,
@@ -341,6 +363,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                           ? ` · ${open.status === 'in_progress' ? '执行中' : '待执行'}`
                           : ' · 监控中'}
                   </div>
+                  {!!lane.pendingSupervisorDeliveries?.length && (
+                    <div className="sup-panel__lane-supervisor">
+                      监督通知待投递: {lane.pendingSupervisorDeliveries.length}
+                    </div>
+                  )}
                   <div className="sup-panel__lane-task" title={lane.currentTask || '等待任务上报'}>
                     任务: {lane.currentTask || '等待任务上报'}
                   </div>
@@ -407,16 +434,41 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   </div>
                   {a.proposalKind ? (
                     <div className="sup-panel__proposal">
-                      <div><b>当前任务：</b>{a.task || '（任务未上报）'}</div>
-                      <div><b>建议：</b>{a.reason || '未附说明'}</div>
-                      {a.impact && <div><b>影响：</b>{a.impact}</div>}
-                      {a.alternatives && <div><b>备选：</b>{a.alternatives}</div>}
-                      <textarea
-                        className="sup-panel__proposal-input"
-                        value={proposalEdits[a.id] ?? a.text}
-                        onChange={(event) => setProposalEdits((current) => ({ ...current, [a.id]: event.target.value }))}
-                        placeholder="批准后发送给工作终端的指令（可修改）"
-                      />
+                      <div className="sup-panel__proposal-summary">
+                        <div className="sup-panel__proposal-row">
+                          <span>当前任务</span>
+                          <div>{a.task || '（任务未上报）'}</div>
+                        </div>
+                        <div className="sup-panel__proposal-row">
+                          <span>问题 / 判断依据</span>
+                          <div>{a.reason || '未附说明'}</div>
+                        </div>
+                        <div className="sup-panel__proposal-row sup-panel__proposal-row--next">
+                          <span>AI 建议的下一步</span>
+                          <div>{a.text || '未提供具体下一步'}</div>
+                        </div>
+                        {a.impact && (
+                          <div className="sup-panel__proposal-row">
+                            <span>影响 / 风险</span>
+                            <div>{a.impact}</div>
+                          </div>
+                        )}
+                        {a.alternatives && (
+                          <div className="sup-panel__proposal-row">
+                            <span>备选方案</span>
+                            <div>{a.alternatives}</div>
+                          </div>
+                        )}
+                      </div>
+                      <label className="sup-panel__proposal-edit">
+                        <span>你要发送给任务终端的指令（可修改）</span>
+                        <textarea
+                          className="sup-panel__proposal-input"
+                          value={proposalEdits[a.id] ?? a.text}
+                          onChange={(event) => setProposalEdits((current) => ({ ...current, [a.id]: event.target.value }))}
+                          placeholder="例如：按上述建议继续，但先补充测试"
+                        />
+                      </label>
                     </div>
                   ) : (
                     <pre className="sup-panel__approval-text">
@@ -425,6 +477,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     </pre>
                   )}
                   <div className="sup-panel__approval-actions">
+                    {a.proposalKind && (
+                      <button type="button" onClick={() => onCancel(a.id)} title="不发送建议；由你在工作终端自行处理">
+                        取消
+                      </button>
+                    )}
                     <button type="button" onClick={() => onReject(a.id)}>
                       拒绝
                     </button>

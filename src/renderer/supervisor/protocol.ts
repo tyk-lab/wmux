@@ -45,7 +45,8 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
       '- 结合终端输出、当前代码/任务进展，判断是否已朝该方向落到可交付的一小步闭环。',
       '- 若仍明显偏题、半成品、关键验收点未动到 → 判定未达到，说明差什么。',
       '- 若核心方向已落地、剩余仅是琐碎收尾且人类未要求继续 → 可判定达到。',
-      '- 拿不准 → 说明证据与疑点，让人类最终点确认。',
+      '- 证据不足但可在原路线内通过低风险检查、补测或查看日志核对 → 使用 continue 或 rework，并说明缺口。',
+      '- 仅当没有明确、低风险的补证路径，或下一步需要用户授权、取舍或承担风险 → 使用 needs-human。',
     ].join('\n');
   }
   return [
@@ -55,8 +56,8 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
     '判断方法:',
     '- 在终端输出/状态中寻找可核对证据（测试结果、构建日志、明确成功标记等）。',
     '- 有明确证据满足条件 → 判定达到。',
-    '- 证据不足、失败、未跑到相关步骤 → 判定未达到，指出缺哪条证据。',
-    '- 条件本身模糊无法核对 → 向人类说明，不要假装已满足。',
+    '- 证据不足、失败、未跑到相关步骤 → 判定未达到；若可补测、查看日志或作同路线低风险验证，使用 continue 或 rework 并指出缺口。',
+    '- 条件本身模糊且没有低风险的补证路径 → 向人类说明，不要假装已满足。',
   ].join('\n');
 }
 
@@ -73,8 +74,9 @@ export function supervisorTabTitle(laneLabel: string): string {
 export function humanDecisionBoundary(): string[] {
   return [
     '监督建议边界：只可评价当前任务说明和既有技术路线内的工作结果；计划文件仅作背景参考，不能自动向工作终端推进任务。',
-    '不得把改任务方向、扩范围、换技术方案/依赖、关键数据操作、对外提交或证据不足包装成 continue / rework。',
-    '遇到上述情况必须提交 needs-human，并附 --proposal-kind route-change 或 important、--reason、--impact、--alternatives 和建议的 --next。',
+    '只有改任务方向/扩范围/换方案或依赖、不可逆或高影响操作（安全、权限、关键数据、生产或对外提交）、需求冲突，或缺少用户独有信息/授权时，才使用 needs-human。',
+    '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
+    '使用 needs-human 时附 --proposal-kind route-change 或 important；--reason 写清问题与判断依据，--next 写建议的下一步，并附 --impact、--alternatives。',
     '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',
   ];
 }
@@ -170,7 +172,7 @@ export function buildSupervisorBriefing(
       '## 自动判断上限',
       session.maxAutoDecisions
         ? `本终端每 ${session.maxAutoDecisions} 次 AI 裁决后必须等待人工审阅；达到上限时不要再调用裁决命令，等待用户确认后再继续。`
-        : '本终端未设置自动判断次数上限；仍须在出现路线变更、重要建议或证据不足时提交 needs-human。',
+        : '本终端未设置自动判断次数上限；仅在路线变更、高影响风险、需求取舍或确无低风险补证路径时提交 needs-human。',
       '',
       '## 监控终端',
       worker,
@@ -183,7 +185,7 @@ export function buildSupervisorBriefing(
       '## 规则',
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
       '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
-      '3. 证据足以收尾可提交 complete；证据不足时提交 continue、rework 或 needs-human 并说明理由。',
+      '3. 证据足以收尾可提交 complete；证据不足时优先用 continue / rework 补证或返工，只有无低风险路径时才 needs-human。',
       ...humanDecisionBoundary().map((line, index) => `${index + 4}. ${line}`),
       `8. 每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录裁决；该命令成功时静默。`,
       '9. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
@@ -253,8 +255,8 @@ export function buildSupervisorBriefing(
     '',
     '## 规则',
     `1. 只管理 ${lane.surfaceId}，不要读取、总结或裁决其他终端。`,
-    '2. 决策不了 / 要权限 / 信息不足 → 说明卡点并停，不要瞎猜。',
-    '3. 证据足以收尾 → 提交 complete；证据不足则按当前信息提交 continue、rework 或 needs-human。',
+    '2. 要权限、需用户独有信息或存在需求取舍/高影响风险 → 说明卡点并 needs-human；不要瞎猜。',
+    '3. 证据足以收尾 → 提交 complete；证据不足时优先在原路线内 continue / rework 补证，只有无低风险路径才 needs-human。',
     ...humanDecisionBoundary().map((line, index) => `${index + 4}. ${line}`),
     '8. 可用: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
     '',

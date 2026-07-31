@@ -45,6 +45,8 @@ import {
 } from './supervisor/supervisor-engine';
 import { buildUserNotifyText } from './supervisor/protocol';
 import { appendSupervisorRecord } from './supervisor/recording';
+import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
+import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 
@@ -457,6 +459,21 @@ function resolveSupervisorProjectDir(lane: { projectDir?: string }, cwd: unknown
   return lane.projectDir;
 }
 
+function queueSupervisorDelivery(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  kind: 'task-start' | 'task-end' | 'task-interrupted',
+  task: string,
+  text: string,
+): void {
+  const delivery = { id: uuid(), kind, task, text, createdAt: Date.now() };
+  const pending = enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery);
+  if (pending === lane.pendingSupervisorDeliveries) return;
+  const store = useStore.getState();
+  store.updateLane(lane.id, { pendingSupervisorDeliveries: pending });
+  appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
+}
+
 function handleSupervisorHookEvent(event: any): void {
   const store = useStore.getState();
   const session = store.supervisor;
@@ -479,30 +496,36 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    if (event.task && !lane.autoDecisionLimitReached) {
-      sendToSurface(
-        lane.supervisorSurfaceId,
-        `[任务] ${lane.label}: ${event.task}\n`,
-        true,
+    if (!lane.autoDecisionLimitReached) {
+      const deliveryTask = task || lane.currentTask || '（任务已开始，Hook 未提供任务说明）';
+      queueSupervisorDelivery(
+        session,
+        auditLane,
+        'task-start',
+        deliveryTask,
+        `[任务开始] ${lane.label}: ${deliveryTask}\n`,
       );
     }
     return;
   }
 
-  if (lifecycle !== 'Stop' && lifecycle !== 'StopFailure' && lifecycle !== 'Notification') return;
+  if (lifecycle !== 'Stop' && lifecycle !== 'StopFailure' && lifecycle !== 'Interrupt' && lifecycle !== 'Notification') return;
   if (projectDir && projectDir !== lane.projectDir) store.updateLane(lane.id, { projectDir });
   appendSupervisorRecord(session, auditLane, 'worker.lifecycle', {
     event: lifecycle,
     message: event.message || '',
   });
 
-  if (lifecycle === 'Stop' || lifecycle === 'StopFailure') {
+  if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Interrupt') {
     store.updateLane(lane.id, { awaitingReview: true });
     if (lane.autoDecisionLimitReached) return;
-    sendToSurface(
-      lane.supervisorSurfaceId,
-      `[任务结束] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
-      true,
+    const interrupted = lifecycle === 'Interrupt';
+    queueSupervisorDelivery(
+      session,
+      auditLane,
+      interrupted ? 'task-interrupted' : 'task-end',
+      lane.currentTask || '（任务未上报）',
+      `[${interrupted ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
     );
   }
 }
@@ -919,6 +942,7 @@ export default function App() {
   const supervisorActive = useStore((s) => s.supervisor.active);
   const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
+  const supervisorDeliveryInFlightRef = useRef(false);
   useEffect(() => {
     if (!supervisorActive) return;
     supervisorRuntimeRef.current = {};
@@ -934,6 +958,54 @@ export default function App() {
         terminalName: lane.label,
       });
     }
+  }, [supervisorActive]);
+
+  useEffect(() => {
+    if (!supervisorActive) return;
+    let cancelled = false;
+
+    const flushDeliveries = async () => {
+      if (cancelled || supervisorDeliveryInFlightRef.current) return;
+      supervisorDeliveryInFlightRef.current = true;
+      try {
+        const pty = window.wmux?.pty;
+        if (!pty?.has || !pty.writeChecked) return;
+        const session = useStore.getState().supervisor;
+        for (const lane of session.lanes) {
+          const delivery = lane.pendingSupervisorDeliveries?.[0];
+          const supervisorSurfaceId = lane.supervisorSurfaceId;
+          if (!lane.enabled || !delivery || !supervisorSurfaceId) continue;
+          const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
+          if (!canDeliverToSupervisor(supervisorState)) continue;
+          const exists = await pty.has(supervisorSurfaceId);
+          if (!exists) continue;
+          const accepted = await pty.writeChecked(supervisorSurfaceId, `${delivery.text}\r`);
+          if (!accepted) continue;
+          const store = useStore.getState();
+          const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+          if (!current) continue;
+          store.updateLane(lane.id, {
+            pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).filter((item) => item.id !== delivery.id),
+          });
+          appendSupervisorRecord(store.supervisor, current, 'supervisor.delivery.delivered', {
+            kind: delivery.kind,
+            task: delivery.task,
+          });
+          store.appendSupervisorLog(lane.id, '监督通知已送达', delivery.kind === 'task-start' ? '任务开始' : delivery.kind === 'task-end' ? '任务结束' : '任务中断');
+        }
+      } catch {
+        // Keep the head event queued. A later poll retries transient renderer/IPC failures.
+      } finally {
+        supervisorDeliveryInFlightRef.current = false;
+      }
+    };
+
+    void flushDeliveries();
+    const id = window.setInterval(() => void flushDeliveries(), 1200);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [supervisorActive]);
 
   useEffect(() => {

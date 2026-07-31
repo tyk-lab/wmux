@@ -96,13 +96,22 @@ function eventMarkdown(event: AuditEvent): string | null {
     return `### ${at} · 已废除旧上下文\n\n${markdownText(reason)}`;
   }
   if (event.type === 'supervisor.proposal.resolved') {
-    const resolution = payloadText(payload, 'resolution') === 'approved' ? '已批准' : '已拒绝';
+    const resolutionValue = payloadText(payload, 'resolution');
+    const resolution = resolutionValue === 'approved'
+      ? '已批准'
+      : resolutionValue === 'handled-manually' ? '已由用户自行处理' : '已拒绝';
     const kind = payloadText(payload, 'proposalKind') === 'route-change' ? '路线变更' : '重要建议';
     const text = payloadText(payload, 'text');
     return `### ${at} · 人工裁决：${resolution}（${kind}）${text ? `\n\n${markdownText(text)}` : ''}`;
   }
   if (event.type === 'supervisor.auto-decision-limit.resolved') {
     return `### ${at} · 人工已审阅\n\n已重置该终端的自动判断计数。`;
+  }
+  if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
+    const kind = payloadText(payload, 'kind');
+    const label = kind === 'task-start' ? '任务开始' : kind === 'task-end' ? '任务结束' : '任务中断';
+    const status = event.type === 'supervisor.delivery.queued' ? '待投递' : '已送达';
+    return `### ${at} · 监督通知${status}\n\n${label}`;
   }
   if (event.type === 'session.started') {
     return `### ${at} · 监督会话启动`;

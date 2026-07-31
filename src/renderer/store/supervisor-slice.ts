@@ -30,6 +30,15 @@ export interface SupervisorDecision {
   next: string;
 }
 
+/** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */
+export interface SupervisorDelivery {
+  id: string;
+  kind: 'task-start' | 'task-end' | 'task-interrupted';
+  text: string;
+  task: string;
+  createdAt: number;
+}
+
 /** Explicitly chosen historical terminal whose audit context may be restored. */
 export interface SupervisorRestoreSource {
   surfaceId: string;
@@ -68,6 +77,8 @@ export interface SupervisorLane {
   autoDecisionsUsed?: number;
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
+  /** Hook lifecycle facts retained until the dedicated supervisor terminal accepts them. */
+  pendingSupervisorDeliveries?: SupervisorDelivery[];
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
   decisions?: SupervisorDecision[];
   /** Bounded audit summary restored for this terminal only after a restart. */

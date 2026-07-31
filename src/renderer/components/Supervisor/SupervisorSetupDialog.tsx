@@ -316,6 +316,7 @@ export default function SupervisorSetupDialog() {
         awaitingReview: false,
         autoDecisionLimitReached: false,
         autoDecisionsUsed: 0,
+        pendingSupervisorDeliveries: prev?.pendingSupervisorDeliveries || [],
         currentTask: keepsRestoredContext ? prev?.currentTask || '' : '',
         decisions: keepsRestoredContext ? prev?.decisions || [] : [],
         ...(selectedSource ? {

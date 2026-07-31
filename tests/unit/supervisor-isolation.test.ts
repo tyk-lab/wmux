@@ -16,6 +16,7 @@ import {
 import {
   buildInjectedPrompt,
   buildSupervisorBriefing,
+  humanDecisionBoundary,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
 import { formatSupervisorAuditTrail, summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
@@ -64,6 +65,14 @@ describe('supervisor isolation', () => {
     expect(isSupervisorProposalAllowed('needs-human', 'route-change')).toBe(true);
     expect(isSupervisorProposalAllowed('needs-human', 'important')).toBe(true);
     expect(isSupervisorProposalAllowed('continue', '')).toBe(true);
+  });
+
+  it('keeps ordinary evidence gathering and rework out of the human-decision boundary', () => {
+    const boundary = humanDecisionBoundary().join('\n');
+
+    expect(boundary).toContain('证据不足、测试失败或普通返工本身不是人工升级理由');
+    expect(boundary).toContain('低风险检查、补测或查看日志');
+    expect(boundary).toContain('不可逆或高影响操作');
   });
 
   it('does not allow unified supervision to inject a normal next task', () => {

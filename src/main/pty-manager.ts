@@ -435,6 +435,20 @@ export class PtyManager {
       });
   }
 
+  /** Write a short control message and report whether the live PTY accepted it. */
+  writeChecked(id: SurfaceId, data: string): boolean {
+    const entry = this.ptys.get(id);
+    // A checked supervisor notification must not cut through a chunked paste
+    // (for example the initial briefing); retry after that ordered write drains.
+    if (!entry || !entry.alive || entry.pendingChunks > 0 || data.length === 0) return false;
+    try {
+      entry.pty.write(data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private writeChunked(entry: PtyEntry, data: string): Promise<void> {
     return new Promise<void>((resolve) => {
       let offset = 0;

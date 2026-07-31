@@ -256,6 +256,64 @@
   margin: 0 auto;
 }
 
+/* The dedicated supervisor workspace is for reading evidence and making decisions,
+   so it deliberately uses a larger type scale than the compact sidebar entry. */
+.supervisor-session-pane .sup-panel__header {
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.supervisor-session-pane .sup-panel__meta-right {
+  font-size: 12px;
+}
+
+.supervisor-session-pane .sup-panel__freedom,
+.supervisor-session-pane .sup-panel__goal {
+  padding: 0 14px 9px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.supervisor-session-pane .sup-panel__lanes,
+.supervisor-session-pane .sup-panel__approvals {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.supervisor-session-pane .sup-panel__lane {
+  padding: 10px 12px;
+}
+
+.supervisor-session-pane .sup-panel__lane-head,
+.supervisor-session-pane .sup-panel__approval-head {
+  font-size: 14px;
+}
+
+.supervisor-session-pane .sup-panel__lane-detail,
+.supervisor-session-pane .sup-panel__lane-task,
+.supervisor-session-pane .sup-panel__lane-supervisor,
+.supervisor-session-pane .sup-panel__lane-decision,
+.supervisor-session-pane .sup-panel__decisions,
+.supervisor-session-pane .sup-panel__log-line,
+.supervisor-session-pane .sup-panel__approval-text {
+  font-size: 13px;
+}
+
+.supervisor-session-pane .sup-panel__approvals-title {
+  font-size: 12px;
+}
+
+.supervisor-session-pane .sup-panel__approval {
+  padding: 10px 12px;
+}
+
+.supervisor-session-pane .sup-panel__approval-actions button,
+.supervisor-session-pane .sup-panel__actions button,
+.supervisor-session-pane .sup-panel__lane-actions button {
+  font-size: 13px;
+  padding: 5px 10px;
+}
+
 .sup-panel {
   margin: 4px 6px 6px;
   border-radius: 8px;
@@ -482,10 +540,41 @@
 .sup-panel__proposal {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   font-size: 11px;
   line-height: 1.4;
   opacity: 0.9;
+}
+
+.sup-panel__proposal-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.sup-panel__proposal-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.3fr) 1fr;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.sup-panel__proposal-row > span,
+.sup-panel__proposal-edit > span {
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.sup-panel__proposal-row--next {
+  border: 1px solid rgba(80, 160, 255, 0.28);
+  background: rgba(80, 160, 255, 0.1);
+}
+
+.sup-panel__proposal-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .sup-panel__proposal-input {
@@ -499,6 +588,21 @@
   background: rgba(0, 0, 0, 0.22);
   color: inherit;
   font: inherit;
+}
+
+.supervisor-session-pane .sup-panel__proposal {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.supervisor-session-pane .sup-panel__proposal-row {
+  grid-template-columns: minmax(132px, 0.3fr) 1fr;
+  padding: 8px 10px;
+}
+
+.supervisor-session-pane .sup-panel__proposal-input {
+  min-height: 76px;
+  padding: 8px 10px;
 }
 
 .sup-panel__approval-text {
