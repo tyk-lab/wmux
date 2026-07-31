@@ -113,6 +113,16 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
+  const restoredHistoryBlock = lane.restoredHistory?.trim()
+    ? [
+        '## 已恢复的本终端审计摘要',
+        `来源会话: ${lane.restoredFromSessionId || '最近会话'}`,
+        lane.restoredHistory.trim(),
+        '',
+        '这只是历史背景。先读取当前终端屏幕确认现状；不要把它当作当前状态，也不要据此读取或裁决其他终端。',
+        '',
+      ]
+    : [];
 
   if (session.mode === 'direct') {
     const kind = session.stopWhenKind || 'concrete';
@@ -125,6 +135,7 @@ export function buildSupervisorBriefing(
       stopWhenJudgmentGuide(kind, session.stopWhen),
       '',
       ...planBlock,
+      ...restoredHistoryBlock,
       '## 用户指令队列（已/将注入，勿改写内容）',
       session.directInstructions.trim() || '（见各通道步骤）',
       '',
@@ -157,6 +168,7 @@ export function buildSupervisorBriefing(
     session.goal.trim() || '（未设置）',
     '',
     ...planBlock,
+    ...restoredHistoryBlock,
     '## 完成/停止条件（由你判断；满足后应停止对该通道的自动决策）',
     stopWhenJudgmentGuide(kind, session.doneWhen),
     '',

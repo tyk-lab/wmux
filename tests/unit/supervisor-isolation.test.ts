@@ -12,6 +12,7 @@ import {
   buildSupervisorBriefing,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
+import { summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
 
 function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   return {
@@ -94,5 +95,36 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('计划文件（最高任务方向与约束）');
     expect(briefing).toContain('只允许改动 src/auth');
     expect(workerPrompt).not.toContain('只允许改动 src/auth');
+  });
+
+  it('injects recovered audit context only into its dedicated supervisor briefing', () => {
+    const session = { ...createDefaultSupervisorSession(), mode: 'goal-chase' as const };
+    const laneA = lane({
+      restoredFromSessionId: 'sup-old',
+      restoredHistory: '[2026/7/31 10:00:00] 收到任务：修复登录',
+    });
+    const laneB = lane({ id: 'lane-b', label: 'B', surfaceId: 'worker-b' as any });
+
+    const briefingA = buildSupervisorBriefing(session, { lane: laneA, state: 'idle' });
+    const briefingB = buildSupervisorBriefing(session, { lane: laneB, state: 'idle' });
+    expect(briefingA).toContain('已恢复的本终端审计摘要');
+    expect(briefingA).toContain('修复登录');
+    expect(briefingB).not.toContain('修复登录');
+  });
+
+  it('restores the latest task and decisions into the matching lane timeline', () => {
+    const restored = summarizeRestoredHistory({
+      sessionId: 'sup-old',
+      events: [
+        { ts: 1, type: 'worker.task', payload: { task: '修复登录' } },
+        { ts: 2, type: 'supervisor.decision', payload: { outcome: 'rework', reason: '缺少测试', next: '补单测' } },
+      ],
+    });
+
+    expect(restored).toMatchObject({
+      currentTask: '修复登录',
+      restoredFromSessionId: 'sup-old',
+      decisions: [{ task: '修复登录', outcome: 'rework', reason: '缺少测试', next: '补单测' }],
+    });
   });
 });

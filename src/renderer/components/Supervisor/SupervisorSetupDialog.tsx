@@ -16,6 +16,7 @@ import {
   SUPERVISOR_TAB_TITLE,
   supervisorTabTitle,
 } from '../../supervisor/protocol';
+import { restoreLatestLaneHistory } from '../../supervisor/recording';
 import '../../styles/supervisor.css';
 
 const MAX_PLAN_CHARS = 30_000;
@@ -129,6 +130,7 @@ export default function SupervisorSetupDialog() {
   const [doneWhen, setDoneWhen] = useState(supervisor.doneWhen);
   const [planFilePath, setPlanFilePath] = useState(supervisor.planFilePath);
   const [planFileContent, setPlanFileContent] = useState(supervisor.planFileContent);
+  const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
   const [maxAuto, setMaxAuto] = useState(supervisor.maxAutoSteps || 8);
 
@@ -144,6 +146,7 @@ export default function SupervisorSetupDialog() {
     setDoneWhen(supervisor.doneWhen || '');
     setPlanFilePath(supervisor.planFilePath || '');
     setPlanFileContent(supervisor.planFileContent || '');
+    setRestoreAuditHistory(supervisor.restoreAuditHistory !== false);
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setMaxAuto(supervisor.maxAutoSteps || 8);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
@@ -212,6 +215,8 @@ export default function SupervisorSetupDialog() {
         awaitingReview: false,
         currentTask: prev?.currentTask || '',
         decisions: prev?.decisions || [],
+        restoredHistory: prev?.restoredHistory,
+        restoredFromSessionId: prev?.restoredFromSessionId,
       });
     }
     return lanes;
@@ -229,6 +234,7 @@ export default function SupervisorSetupDialog() {
       doneWhen,
       planFilePath,
       planFileContent,
+      restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
       maxAutoSteps: maxAuto,
     });
@@ -261,9 +267,17 @@ export default function SupervisorSetupDialog() {
   };
 
   const sendDedicatedBriefings = () => {
-    window.setTimeout(() => {
+    window.setTimeout(() => void (async () => {
       try {
-        const session = useStore.getState().supervisor;
+        let session = useStore.getState().supervisor;
+        if (session.restoreAuditHistory) {
+          for (const lane of session.lanes) {
+            if (lane.restoredFromSessionId || (lane.decisions?.length ?? 0) > 0) continue;
+            const restored = await restoreLatestLaneHistory(lane);
+            if (restored) useStore.getState().updateLane(lane.id, restored);
+          }
+          session = useStore.getState().supervisor;
+        }
         const states = (window as any).__wmux_getAgentStates?.() || {};
         for (const lane of session.lanes) {
           if (!lane.supervisorSurfaceId) continue;
@@ -276,7 +290,7 @@ export default function SupervisorSetupDialog() {
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
       }
-    }, 1200);
+    })(), 1200);
   };
 
   const applyConfig = (andStart: boolean) => {
@@ -439,6 +453,25 @@ export default function SupervisorSetupDialog() {
           </div>
           <div className="supervisor-dialog__hint">
             仅供专属监督 AI 读取；与表单目标/约束冲突时，以计划文件为准，不会注入工作终端。
+          </div>
+        </section>
+
+        <section className="supervisor-dialog__section">
+          <label className="supervisor-dialog__row">
+            <input
+              type="checkbox"
+              checked={restoreAuditHistory}
+              onChange={(event) => setRestoreAuditHistory(event.target.checked)}
+            />
+            <span className="supervisor-dialog__row-main">
+              <span className="supervisor-dialog__row-label">恢复最近审计上下文</span>
+              <span className="supervisor-dialog__row-meta">
+                默认开启：只恢复同项目的同一终端；若终端 ID 已改变，仅在终端标签没有歧义时恢复。
+              </span>
+            </span>
+          </label>
+          <div className="supervisor-dialog__hint">
+            恢复内容仅含任务、终端事件和监督裁决摘要；“重头再来”会阻止旧上下文再次恢复，计划文件需重新选择。
           </div>
         </section>
 

@@ -1,7 +1,7 @@
 # Plan supervisor（按计划续任务）
 
 > **UI 入口（推荐）**：侧栏底部「AI 监督」按钮，或命令面板 `AI 监督…`。
-> UI 监督会为每个被监控终端创建独立、可见的监督 AI；可选择计划文件作为监督方向与约束，任务、裁决与上下文不共享，详见 [`docs/ai-supervisor-design.md`](../../docs/ai-supervisor-design.md)。
+> UI 监督会为每个被监控终端创建独立、可见的监督 AI；可选择计划文件作为监督方向与约束，任务、裁决与上下文不共享。替代监督 AI 默认恢复该终端最近的审计摘要；同名终端存在歧义或用户选择“重头再来”时不会恢复。详见 [`docs/ai-supervisor-design.md`](../../docs/ai-supervisor-design.md)。
 > 本目录脚本仍可用于无 UI / CI / 远程调度；它是独立的计划调度器，不会创建上述监督 AI 终端。
 
 用**你写好的计划**给多个 wmux agent 终端排队下发下一步。  

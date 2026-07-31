@@ -180,6 +180,11 @@ export default function SupervisorPanel() {
                   <div className="sup-panel__lane-supervisor">
                     专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
                   </div>
+                  {lane.restoredFromSessionId && (
+                    <div className="sup-panel__lane-supervisor">
+                      已恢复审计: {lane.restoredFromSessionId}
+                    </div>
+                  )}
                   {(lane.decisions || []).length > 0 && (
                     <details className="sup-panel__decisions">
                       <summary>裁决记录（{lane.decisions?.length}）</summary>

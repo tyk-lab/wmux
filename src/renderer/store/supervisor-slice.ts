@@ -63,6 +63,9 @@ export interface SupervisorLane {
   currentTask?: string;
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
   decisions?: SupervisorDecision[];
+  /** Bounded audit summary restored for this terminal only after a restart. */
+  restoredHistory?: string;
+  restoredFromSessionId?: string;
 }
 
 export type ApprovalSource = 'plan' | 'manual' | 'idle-hint' | 'goal-chase';
@@ -110,6 +113,8 @@ export interface SupervisorSession {
   /** User-selected plan, supplied to dedicated supervisors but never worker terminals. */
   planFilePath: string;
   planFileContent: string;
+  /** Restore the latest unambiguous audit summary into a new dedicated supervisor. */
+  restoreAuditHistory: boolean;
   /** Default max autonomous decisions per lane in goal-chase. */
   maxAutoSteps: number;
 
@@ -162,6 +167,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     doneWhen: '',
     planFilePath: '',
     planFileContent: '',
+    restoreAuditHistory: true,
     maxAutoSteps: 8,
     lanes: [],
     supervisorLaunchCmd: 'codex',

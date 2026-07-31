@@ -103,6 +103,7 @@ contextBridge.exposeInMainWorld('wmux', {
   },
   supervisor: {
     appendRecord: (record: any) => ipcRenderer.invoke('supervisor:append-record', record),
+    readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
   },
   browser: {
     navigate: (surfaceId: string, url: string) => {
