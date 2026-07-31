@@ -18,6 +18,8 @@ import {
 } from '../../supervisor/protocol';
 import '../../styles/supervisor.css';
 
+const MAX_PLAN_CHARS = 30_000;
+
 interface TerminalCandidate {
   key: string;
   surfaceId: SurfaceId;
@@ -125,6 +127,8 @@ export default function SupervisorSetupDialog() {
   const [allowPaths, setAllowPaths] = useState(supervisor.allowPaths);
   const [denyNotes, setDenyNotes] = useState(supervisor.denyNotes);
   const [doneWhen, setDoneWhen] = useState(supervisor.doneWhen);
+  const [planFilePath, setPlanFilePath] = useState(supervisor.planFilePath);
+  const [planFileContent, setPlanFileContent] = useState(supervisor.planFileContent);
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
   const [maxAuto, setMaxAuto] = useState(supervisor.maxAutoSteps || 8);
 
@@ -138,6 +142,8 @@ export default function SupervisorSetupDialog() {
     setAllowPaths(supervisor.allowPaths || '');
     setDenyNotes(supervisor.denyNotes || '');
     setDoneWhen(supervisor.doneWhen || '');
+    setPlanFilePath(supervisor.planFilePath || '');
+    setPlanFileContent(supervisor.planFileContent || '');
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setMaxAuto(supervisor.maxAutoSteps || 8);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
@@ -152,6 +158,25 @@ export default function SupervisorSetupDialog() {
       else next.add(surfaceId);
       return next;
     });
+  };
+
+  const choosePlanFile = async () => {
+    try {
+      const result = await (window as any).wmux?.markdown?.openFile?.();
+      if (!result || result.canceled) return;
+      if (result.error || typeof result.content !== 'string' || !result.filePath) {
+        window.alert(result.error || '无法读取计划文件。');
+        return;
+      }
+      if (result.content.length > MAX_PLAN_CHARS) {
+        window.alert(`计划文件超过 ${MAX_PLAN_CHARS.toLocaleString()} 字符，无法安全注入监督 AI 上下文。`);
+        return;
+      }
+      setPlanFilePath(result.filePath);
+      setPlanFileContent(result.content);
+    } catch (err: any) {
+      window.alert(`选择计划文件失败：${String(err?.message || err)}`);
+    }
   };
 
   const buildLanes = (): SupervisorLane[] => {
@@ -202,6 +227,8 @@ export default function SupervisorSetupDialog() {
       allowPaths,
       denyNotes,
       doneWhen,
+      planFilePath,
+      planFileContent,
       supervisorLaunchCmd: launchCmd,
       maxAutoSteps: maxAuto,
     });
@@ -385,6 +412,36 @@ export default function SupervisorSetupDialog() {
           </div>
         </section>
 
+        <section className="supervisor-dialog__section">
+          <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
+          <div className="supervisor-dialog__plan-actions">
+            <input
+              className="supervisor-dialog__input"
+              value={planFilePath}
+              readOnly
+              placeholder="未选择；选择后作为监督 AI 的方向与约束"
+            />
+            <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
+              选择文件
+            </button>
+            {planFilePath && (
+              <button
+                type="button"
+                className="confirm-dialog__btn"
+                onClick={() => {
+                  setPlanFilePath('');
+                  setPlanFileContent('');
+                }}
+              >
+                清除
+              </button>
+            )}
+          </div>
+          <div className="supervisor-dialog__hint">
+            仅供专属监督 AI 读取；与表单目标/约束冲突时，以计划文件为准，不会注入工作终端。
+          </div>
+        </section>
+
         {mode === 'direct' ? (
           <>
             <section className="supervisor-dialog__section">
@@ -441,12 +498,12 @@ export default function SupervisorSetupDialog() {
               </div>
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，可选）</div>
+              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，默认 codex）</div>
               <input
                 className="supervisor-dialog__input"
                 value={launchCmd}
                 onChange={(e) => setLaunchCmd(e.target.value)}
-                placeholder="claude  或  codex  或留空"
+                placeholder="codex（可改为 claude 或留空）"
               />
             </section>
           </>
@@ -540,12 +597,12 @@ export default function SupervisorSetupDialog() {
               </label>
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，可选）</div>
+              <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，默认 codex）</div>
               <input
                 className="supervisor-dialog__input"
                 value={launchCmd}
                 onChange={(e) => setLaunchCmd(e.target.value)}
-                placeholder="claude  或  codex  或留空"
+                placeholder="codex（可改为 claude 或留空）"
               />
             </section>
           </>

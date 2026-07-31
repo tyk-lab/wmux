@@ -103,6 +103,16 @@ export function buildSupervisorBriefing(
 ): string {
   const { lane, state } = laneState;
   const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
+  const planBlock = session.planFileContent.trim()
+    ? [
+        '## 计划文件（最高任务方向与约束）',
+        `文件: ${session.planFilePath || '（未命名计划）'}`,
+        session.planFileContent.trim(),
+        '',
+        '计划文件与表单中的目标、允许范围或禁止项冲突时，以计划文件为准；但不得绕过安全边界或人类明确指令。',
+        '',
+      ]
+    : [];
 
   if (session.mode === 'direct') {
     const kind = session.stopWhenKind || 'concrete';
@@ -114,6 +124,7 @@ export function buildSupervisorBriefing(
       '## 停止条件（由你判断；只有满足才应停止注入）',
       stopWhenJudgmentGuide(kind, session.stopWhen),
       '',
+      ...planBlock,
       '## 用户指令队列（已/将注入，勿改写内容）',
       session.directInstructions.trim() || '（见各通道步骤）',
       '',
@@ -145,6 +156,7 @@ export function buildSupervisorBriefing(
     '## 目标',
     session.goal.trim() || '（未设置）',
     '',
+    ...planBlock,
     '## 完成/停止条件（由你判断；满足后应停止对该通道的自动决策）',
     stopWhenJudgmentGuide(kind, session.doneWhen),
     '',

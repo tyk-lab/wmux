@@ -132,6 +132,19 @@
   resize: vertical;
 }
 
+.supervisor-dialog__plan-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.supervisor-dialog__plan-actions .supervisor-dialog__input {
+  min-width: 0;
+}
+
+.supervisor-dialog__plan-actions .confirm-dialog__btn {
+  flex-shrink: 0;
+}
+
 .supervisor-dialog__grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -107,6 +107,9 @@ export interface SupervisorSession {
   allowPaths: string;
   denyNotes: string;
   doneWhen: string;
+  /** User-selected plan, supplied to dedicated supervisors but never worker terminals. */
+  planFilePath: string;
+  planFileContent: string;
   /** Default max autonomous decisions per lane in goal-chase. */
   maxAutoSteps: number;
 
@@ -157,9 +160,11 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     allowPaths: '',
     denyNotes: '',
     doneWhen: '',
+    planFilePath: '',
+    planFileContent: '',
     maxAutoSteps: 8,
     lanes: [],
-    supervisorLaunchCmd: '',
+    supervisorLaunchCmd: 'codex',
     pendingApprovals: [],
     log: [],
     pollMs: 4000,

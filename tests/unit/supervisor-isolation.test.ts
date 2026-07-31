@@ -7,7 +7,11 @@ import {
   type SupervisorLane,
   type SupervisorSlice,
 } from '../../src/renderer/store/supervisor-slice';
-import { buildSupervisorBriefing, supervisorTabTitle } from '../../src/renderer/supervisor/protocol';
+import {
+  buildInjectedPrompt,
+  buildSupervisorBriefing,
+  supervisorTabTitle,
+} from '../../src/renderer/supervisor/protocol';
 
 function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   return {
@@ -66,5 +70,29 @@ describe('supervisor isolation', () => {
 
   it('names each visible supervisor tab after its worker lane', () => {
     expect(supervisorTabTitle('Auth worker')).toBe('AI 监督 · Auth worker');
+  });
+
+  it('uses codex as the default dedicated supervisor launch command', () => {
+    expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('codex');
+  });
+
+  it('gives the selected plan to the dedicated supervisor but not the worker', () => {
+    const session = {
+      ...createDefaultSupervisorSession(),
+      planFilePath: 'D:\\plans\\auth.md',
+      planFileContent: '只允许改动 src/auth，必须保留现有 API。',
+    };
+    const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
+    const workerPrompt = buildInjectedPrompt({
+      session,
+      lane: lane(),
+      step: { id: 's1', prompt: '修复登录错误处理', status: 'pending' },
+      stepIndex: 1,
+      stepCount: 1,
+    });
+
+    expect(briefing).toContain('计划文件（最高任务方向与约束）');
+    expect(briefing).toContain('只允许改动 src/auth');
+    expect(workerPrompt).not.toContain('只允许改动 src/auth');
   });
 });

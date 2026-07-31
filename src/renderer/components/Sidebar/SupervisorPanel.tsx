@@ -29,6 +29,7 @@ export default function SupervisorPanel() {
   const enabled = supervisor.lanes.filter((l) => l.enabled);
   const pendingCount = supervisor.pendingApprovals.length;
   const mode = supervisor.mode || 'direct';
+  const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
   const liveSurfaceIds = new Set<string>();
   for (const workspace of workspaces) {
     for (const paneId of getAllPaneIds(workspace.splitTree)) {
@@ -138,6 +139,11 @@ export default function SupervisorPanel() {
                 </div>
               )}
             </>
+          )}
+          {planFileName && (
+            <div className="sup-panel__goal" title={supervisor.planFilePath}>
+              计划: {planFileName}
+            </div>
           )}
 
           <div className="sup-panel__lanes">
