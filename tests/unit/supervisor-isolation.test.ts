@@ -96,6 +96,12 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('codex');
   });
 
+  it('leaves the Codex model and reasoning effort to their defaults by default', () => {
+    const session = createDefaultSupervisorSession();
+    expect(session.supervisorModel).toBe('');
+    expect(session.supervisorReasoningEffort).toBe('');
+  });
+
   it('creates unified supervision by default', () => {
     const session = createDefaultSupervisorSession();
     expect(session.mode).toBe('unified');

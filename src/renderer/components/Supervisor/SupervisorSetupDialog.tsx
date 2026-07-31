@@ -19,11 +19,36 @@ import {
   restoreSelectedLaneHistory,
   type SupervisorRestoreCandidate,
 } from '../../supervisor/recording';
+import { buildSupervisorLaunchCommand } from '../../supervisor/launch-command';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
 const MAX_PLAN_CHARS = 30_000;
+const CODEX_MODEL_OPTIONS = [
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+];
+const SUPERVISOR_LAUNCH_OPTIONS = [
+  { value: 'codex', label: 'Codex（推荐）' },
+  { value: 'claude', label: 'Claude Code' },
+  { value: 'kimi', label: 'Kimi Code' },
+  { value: 'grok', label: 'Grok Build' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: '', label: '不自动启动' },
+];
+const REASONING_EFFORT_OPTIONS = [
+  { value: 'low', label: '低（更快）' },
+  { value: 'medium', label: '中（均衡）' },
+  { value: 'high', label: '高（更深入）' },
+  { value: 'xhigh', label: '超高（最深入）' },
+];
+const CUSTOM_OPTION = '__custom__';
+
+function knownOptionValue(value: string, options: Array<{ value: string }>, fallback = CUSTOM_OPTION): string {
+  return options.some((option) => option.value === value.trim()) ? value.trim() : fallback;
+}
 
 interface TerminalCandidate {
   key: string;
@@ -122,6 +147,16 @@ export default function SupervisorSetupDialog() {
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
+  const [supervisorModel, setSupervisorModel] = useState(supervisor.supervisorModel || '');
+  const [launchChoice, setLaunchChoice] = useState(
+    knownOptionValue(supervisor.supervisorLaunchCmd, SUPERVISOR_LAUNCH_OPTIONS),
+  );
+  const [modelChoice, setModelChoice] = useState(
+    supervisor.supervisorModel
+      ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
+      : '__default__',
+  );
+  const [reasoningEffort, setReasoningEffort] = useState(supervisor.supervisorReasoningEffort || '');
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -135,6 +170,12 @@ export default function SupervisorSetupDialog() {
       supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
     ));
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
+    setSupervisorModel(supervisor.supervisorModel || '');
+    setLaunchChoice(knownOptionValue(supervisor.supervisorLaunchCmd, SUPERVISOR_LAUNCH_OPTIONS));
+    setModelChoice(supervisor.supervisorModel
+      ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
+      : '__default__');
+    setReasoningEffort(supervisor.supervisorReasoningEffort || '');
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
 
@@ -239,12 +280,15 @@ export default function SupervisorSetupDialog() {
       planFileContent,
       restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
+      supervisorModel,
+      supervisorReasoningEffort: reasoningEffort,
       maxAutoSteps: 0,
     });
   };
 
   const ensureDedicatedSupervisors = (lanes: SupervisorLane[]): SupervisorLane[] => {
-    const startupCommands = launchCmd.trim() ? [launchCmd.trim()] : undefined;
+    const launchCommand = buildSupervisorLaunchCommand(launchCmd, supervisorModel, reasoningEffort);
+    const startupCommands = launchCommand ? [launchCommand] : undefined;
     const existingTerminalIds = new Set<SurfaceId>();
     for (const workspace of workspaces) {
       const terminals: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
@@ -525,13 +569,72 @@ export default function SupervisorSetupDialog() {
           <div className="supervisor-dialog__hint">工作终端结束本轮后，监督 AI 先查看证据，再据此提出继续、返工、完成或交给人工的裁决。</div>
         </section>
         <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，默认 codex）</div>
-          <input
+          <div className="supervisor-dialog__label">监督 AI 启动器</div>
+          <select
             className="supervisor-dialog__input"
-            value={launchCmd}
-            onChange={(e) => setLaunchCmd(e.target.value)}
-            placeholder="codex（可改为 claude 或留空）"
-          />
+            value={launchChoice}
+            onChange={(e) => {
+              const choice = e.target.value;
+              setLaunchChoice(choice);
+              if (choice !== CUSTOM_OPTION) setLaunchCmd(choice);
+            }}
+          >
+            {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+            <option value={CUSTOM_OPTION}>自定义命令</option>
+          </select>
+          {launchChoice === CUSTOM_OPTION && (
+            <input
+              className="supervisor-dialog__input"
+              value={launchCmd}
+              onChange={(e) => setLaunchCmd(e.target.value)}
+              placeholder="例如：&quot;C:\\Tools\\codex.exe&quot;"
+            />
+          )}
+          <div className="supervisor-dialog__hint">每个终端独立启动。自定义命令可用于已安装的兼容 AI 启动器。</div>
+        </section>
+        <section className="supervisor-dialog__section">
+          <div className="supervisor-dialog__label">Codex 监督模型</div>
+          <select
+            className="supervisor-dialog__input"
+            value={modelChoice}
+            onChange={(e) => {
+              const choice = e.target.value;
+              setModelChoice(choice);
+              if (choice === '__default__') setSupervisorModel('');
+              else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
+            }}
+          >
+            <option value="__default__">使用 Codex 默认模型</option>
+            {CODEX_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+            <option value={CUSTOM_OPTION}>自定义模型 ID</option>
+          </select>
+          {modelChoice === CUSTOM_OPTION && (
+            <input
+              className="supervisor-dialog__input"
+              value={supervisorModel}
+              onChange={(e) => setSupervisorModel(e.target.value)}
+              placeholder="输入账户可用的模型 ID"
+            />
+          )}
+          <div className="supervisor-dialog__hint">仅对 Codex 生效；选择后以 `--model` 传入。其他启动器请在自定义命令中指定模型。</div>
+        </section>
+        <section className="supervisor-dialog__section">
+          <div className="supervisor-dialog__label">Codex 推理程度</div>
+          <select
+            className="supervisor-dialog__input"
+            value={reasoningEffort}
+            onChange={(e) => setReasoningEffort(e.target.value)}
+          >
+            <option value="">使用 Codex 默认推理程度</option>
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <div className="supervisor-dialog__hint">仅对 Codex 生效；选择后以 `--config model_reasoning_effort=…` 传入，推理越高响应越慢、消耗越多。</div>
         </section>
 
         <div className="supervisor-dialog__actions">

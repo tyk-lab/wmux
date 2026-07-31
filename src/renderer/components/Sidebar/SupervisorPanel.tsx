@@ -276,6 +276,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               计划: {planFileName}
             </div>
           )}
+          <div className="sup-panel__goal" title={supervisor.supervisorModel || 'Codex 默认模型'}>
+            监督模型: {supervisor.supervisorModel || 'Codex 默认模型'}
+          </div>
+          <div className="sup-panel__goal" title={supervisor.supervisorReasoningEffort || 'Codex 默认推理程度'}>
+            推理程度: {supervisor.supervisorReasoningEffort || '默认'}
+          </div>
 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {

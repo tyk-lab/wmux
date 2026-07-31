@@ -142,6 +142,10 @@ export interface SupervisorSession {
   /** Pinned workspace that provides the full-width supervisor session view. */
   supervisorWorkspaceId?: WorkspaceId | null;
   supervisorLaunchCmd: string;
+  /** Optional Codex model ID used when the dedicated launcher is Codex. */
+  supervisorModel: string;
+  /** Optional Codex reasoning effort used when the dedicated launcher is Codex. */
+  supervisorReasoningEffort: string;
   pendingApprovals: PendingApproval[];
   log: SupervisorLogEntry[];
   pollMs: number;
@@ -194,6 +198,8 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     maxAutoSteps: 3,
     lanes: [],
     supervisorLaunchCmd: 'codex',
+    supervisorModel: '',
+    supervisorReasoningEffort: '',
     pendingApprovals: [],
     log: [],
     pollMs: 4000,

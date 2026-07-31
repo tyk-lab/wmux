@@ -940,6 +940,8 @@ export default function App() {
         mode: session.mode,
         taskDescription: session.taskDescription,
         stopWhen: session.stopWhen,
+        supervisorModel: session.supervisorModel || 'Codex 默认模型',
+        supervisorReasoningEffort: session.supervisorReasoningEffort || 'Codex 默认推理程度',
         terminalName: lane.label,
       });
     }
