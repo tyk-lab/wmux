@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding } from './ipc-handlers';
 import { handleBrowserV2 } from './v2-browser';
 import { handleBridgeV2 } from './v2-bridge';
@@ -27,6 +27,10 @@ import {
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
 } from './supervisor-records';
+import {
+  parseSupervisorConfig,
+  serializeSupervisorConfig,
+} from './supervisor-config-file';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
@@ -466,6 +470,44 @@ app.whenReady().then(() => {
   ipcMain.handle('supervisor:list-restore-candidates', (_event, projectDir) =>
     listSupervisorRestoreCandidates(String(projectDir || '')),
   );
+  ipcMain.handle('supervisor:load-config', async (event, defaultPath) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: '加载 AI 监督配置',
+      ...(typeof defaultPath === 'string' && defaultPath.trim() ? { defaultPath } : {}),
+      properties: ['openFile'],
+      filters: [
+        { name: 'wmux AI 监督配置', extensions: ['wmux-supervisor.json'] },
+        { name: 'JSON', extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    try {
+      const filePath = result.filePaths[0];
+      if (fs.statSync(filePath).size > 512 * 1024) return { error: '配置文件超过 512 KiB' };
+      const config = parseSupervisorConfig(fs.readFileSync(filePath, 'utf8'));
+      return 'error' in config ? config : { config, filePath };
+    } catch (err: any) {
+      return { error: err?.message || '无法读取配置文件' };
+    }
+  });
+  ipcMain.handle('supervisor:save-config', async (event, config, defaultPath) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showSaveDialog(win as BrowserWindow, {
+      title: '保存 AI 监督配置',
+      defaultPath: typeof defaultPath === 'string' && defaultPath.trim()
+        ? defaultPath
+        : 'ai-supervisor.wmux-supervisor.json',
+      filters: [{ name: 'wmux AI 监督配置', extensions: ['wmux-supervisor.json'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    try {
+      fs.writeFileSync(result.filePath, serializeSupervisorConfig(config), 'utf8');
+      return { ok: true, filePath: result.filePath };
+    } catch (err: any) {
+      return { error: err?.message || '无法保存配置文件' };
+    }
+  });
 
   // IPC: renderer pushes session state (auto-save response or explicit save).
   // Every window answers the same broadcast, each with a one-entry `windows`

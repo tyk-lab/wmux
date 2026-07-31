@@ -74,8 +74,9 @@ describe('supervisor isolation', () => {
   });
 
   it('requires human review after the configured automatic decision limit', () => {
-    expect(normalizedMaxAutoDecisions(undefined)).toBe(3);
-    expect(normalizedMaxAutoDecisions(0)).toBe(1);
+    expect(normalizedMaxAutoDecisions(undefined)).toBeNull();
+    expect(normalizedMaxAutoDecisions(0)).toBeNull();
+    expect(reachesAutoDecisionLimit(lane({ autoDecisionsUsed: 99 }), null)).toBe(false);
     expect(reachesAutoDecisionLimit(lane({ autoDecisionsUsed: 2 }), 3)).toBe(true);
     expect(reachesAutoDecisionLimit(lane({ autoDecisionsUsed: 1 }), 3)).toBe(false);
   });
@@ -115,7 +116,7 @@ describe('supervisor isolation', () => {
     const session = createDefaultSupervisorSession();
     expect(session.mode).toBe('unified');
     expect(session.taskDescription).toBe('');
-    expect(session.maxAutoDecisions).toBe(3);
+    expect(session.maxAutoDecisions).toBeNull();
   });
 
   it('does not restore audit history unless the user enables it', () => {
@@ -150,6 +151,7 @@ describe('supervisor isolation', () => {
       planFilePath: 'D:\\plans\\auth.md',
       planFileContent: '只允许改动 src/auth，必须保留现有 API。',
       preconditions: '设备已上电，安全措施已确认。',
+      maxAutoDecisions: 3,
     };
     const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
     const workerPrompt = buildInjectedPrompt({

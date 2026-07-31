@@ -49,6 +49,12 @@ function knownOptionValue(value: string, options: Array<{ value: string }>, fall
   return options.some((option) => option.value === value.trim()) ? value.trim() : fallback;
 }
 
+function normalizeMaxAutoDecisions(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(20, parsed) : null;
+}
+
 interface TerminalCandidate {
   key: string;
   surfaceId: SurfaceId;
@@ -156,7 +162,9 @@ export default function SupervisorSetupDialog() {
       : '__default__',
   );
   const [reasoningEffort, setReasoningEffort] = useState(supervisor.supervisorReasoningEffort || '');
-  const [maxAutoDecisions, setMaxAutoDecisions] = useState(supervisor.maxAutoDecisions || 3);
+  const [maxAutoDecisions, setMaxAutoDecisions] = useState(
+    supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '',
+  );
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -176,7 +184,7 @@ export default function SupervisorSetupDialog() {
       ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
       : '__default__');
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
-    setMaxAutoDecisions(supervisor.maxAutoDecisions || 3);
+    setMaxAutoDecisions(supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '');
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
 
@@ -219,6 +227,62 @@ export default function SupervisorSetupDialog() {
     } catch (err: any) {
       window.alert(`选择计划文件失败：${String(err?.message || err)}`);
     }
+  };
+
+  const configFileData = () => ({
+    taskDescription,
+    preconditions,
+    stopWhen,
+    stopWhenKind,
+    planFilePath,
+    supervisorLaunchCmd: launchCmd,
+    supervisorModel,
+    supervisorReasoningEffort: reasoningEffort,
+    maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
+  });
+
+  const configFileDefaultPath = () => {
+    const selectedTerminal = candidates.find((candidate) => selected.has(candidate.surfaceId) && candidate.projectDir)
+      || supervisor.lanes.find((lane) => lane.enabled && lane.projectDir);
+    if (!selectedTerminal?.projectDir) return undefined;
+    const projectDir = selectedTerminal.projectDir.replace(/[\\/]+$/, '');
+    return `${projectDir}\\.wmux\\ai-supervisor.wmux-supervisor.json`;
+  };
+
+  const saveConfigFile = async () => {
+    const result = await (window as any).wmux?.supervisor?.saveConfig?.(
+      configFileData(),
+      configFileDefaultPath(),
+    );
+    if (!result || result.canceled) return;
+    if (result.error) {
+      window.alert(`保存监督配置失败：${result.error}`);
+      return;
+    }
+    window.alert(`已保存监督配置：${result.filePath}`);
+  };
+
+  const loadConfigFile = async () => {
+    const result = await (window as any).wmux?.supervisor?.loadConfig?.(configFileDefaultPath());
+    if (!result || result.canceled) return;
+    if (result.error || !result.config) {
+      window.alert(`加载监督配置失败：${result.error || '文件内容无效'}`);
+      return;
+    }
+    const config = result.config;
+    setTaskDescription(config.taskDescription || '');
+    setPreconditions(config.preconditions || '');
+    setStopWhen(config.stopWhen || '');
+    setStopWhenKind(config.stopWhenKind === 'direction' ? 'direction' : 'concrete');
+    setPlanFilePath(config.planFilePath || '');
+    setLaunchCmd(config.supervisorLaunchCmd || 'codex');
+    setLaunchChoice(knownOptionValue(config.supervisorLaunchCmd || 'codex', SUPERVISOR_LAUNCH_OPTIONS));
+    setSupervisorModel(config.supervisorModel || '');
+    setModelChoice(config.supervisorModel
+      ? knownOptionValue(config.supervisorModel, CODEX_MODEL_OPTIONS)
+      : '__default__');
+    setReasoningEffort(config.supervisorReasoningEffort || '');
+    setMaxAutoDecisions(config.maxAutoDecisions ? String(config.maxAutoDecisions) : '');
   };
 
   const buildLanes = (): SupervisorLane[] => {
@@ -282,7 +346,7 @@ export default function SupervisorSetupDialog() {
       supervisorModel,
       supervisorReasoningEffort: reasoningEffort,
       maxAutoSteps: 0,
-      maxAutoDecisions: Math.max(1, Math.min(20, Math.floor(Number(maxAutoDecisions) || 3))),
+      maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
     });
   };
 
@@ -654,13 +718,20 @@ export default function SupervisorSetupDialog() {
             min={1}
             max={20}
             step={1}
+            placeholder="不限制"
             value={maxAutoDecisions}
-            onChange={(e) => setMaxAutoDecisions(Number(e.target.value))}
+            onChange={(e) => setMaxAutoDecisions(e.target.value)}
           />
-          <div className="supervisor-dialog__hint">每个监控终端独立计数，默认 3 次。达到次数后暂停 AI 自动裁决，必须由你人工审阅并确认后才会继续。</div>
+          <div className="supervisor-dialog__hint">每个监控终端独立计数。留空表示不限制；填写 1–20 后，达到次数会暂停 AI 自动裁决，须经你人工审阅才会继续。</div>
         </section>
 
         <div className="supervisor-dialog__actions">
+          <button type="button" className="confirm-dialog__btn" onClick={() => void loadConfigFile()}>
+            加载配置
+          </button>
+          <button type="button" className="confirm-dialog__btn" onClick={() => void saveConfigFile()}>
+            保存配置
+          </button>
           <button type="button" className="confirm-dialog__btn" onClick={closeSupervisorSetup}>
             取消
           </button>

@@ -168,7 +168,9 @@ export function buildSupervisorBriefing(
       stopWhenJudgmentGuide(kind, session.stopWhen),
       '',
       '## 自动判断上限',
-      `本终端每 ${session.maxAutoDecisions || 3} 次 AI 裁决后必须等待人工审阅；达到上限时不要再调用裁决命令，等待用户确认后再继续。`,
+      session.maxAutoDecisions
+        ? `本终端每 ${session.maxAutoDecisions} 次 AI 裁决后必须等待人工审阅；达到上限时不要再调用裁决命令，等待用户确认后再继续。`
+        : '本终端未设置自动判断次数上限；仍须在出现路线变更、重要建议或证据不足时提交 needs-human。',
       '',
       '## 监控终端',
       worker,

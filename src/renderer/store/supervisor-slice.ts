@@ -143,8 +143,8 @@ export interface SupervisorSession {
   restoreAuditHistory: boolean;
   /** Legacy goal-chase setting kept for saved sessions. */
   maxAutoSteps: number;
-  /** Per-terminal AI decision limit before a human must review and resume. */
-  maxAutoDecisions: number;
+  /** Per-terminal AI decision limit before a human must review and resume; null means unlimited. */
+  maxAutoDecisions: number | null;
 
   lanes: SupervisorLane[];
   /** Pinned workspace that provides the full-width supervisor session view. */
@@ -205,7 +205,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     planFileContent: '',
     restoreAuditHistory: false,
     maxAutoSteps: 3,
-    maxAutoDecisions: 3,
+    maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'codex',
     supervisorModel: '',

@@ -29,16 +29,18 @@ export function isSupervisorNextAllowed(mode: string, outcome: string, next: str
   return mode !== 'unified' || !next || outcome === 'needs-human';
 }
 
-export function normalizedMaxAutoDecisions(value: unknown): number {
+export function normalizedMaxAutoDecisions(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(20, parsed)) : 3;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(20, parsed) : null;
 }
 
 export function reachesAutoDecisionLimit(
   lane: Pick<SupervisorLane, 'autoDecisionsUsed'>,
   maxAutoDecisions: unknown,
 ): boolean {
-  return (lane.autoDecisionsUsed ?? 0) + 1 >= normalizedMaxAutoDecisions(maxAutoDecisions);
+  const limit = normalizedMaxAutoDecisions(maxAutoDecisions);
+  return limit !== null && (lane.autoDecisionsUsed ?? 0) + 1 >= limit;
 }
 
 export function initPipeBridge(): void {

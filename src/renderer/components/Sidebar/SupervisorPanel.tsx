@@ -287,7 +287,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。
           </div>
           <div className="sup-panel__goal">
-            最大自动判断: {supervisor.maxAutoDecisions || 3} 次 / 终端
+            最大自动判断: {supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
           </div>
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
@@ -327,7 +327,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-head">
                     <span className="sup-panel__lane-label">{lane.label}</span>
                     <span className="sup-panel__lane-progress">
-                      {(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || 3}
+                      {(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
                     </span>
                   </div>
                   <div className="sup-panel__lane-detail">

@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('wmux', {
     readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
     listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),
+    loadConfig: (defaultPath?: string) => ipcRenderer.invoke('supervisor:load-config', defaultPath),
+    saveConfig: (config: any, defaultPath?: string) => ipcRenderer.invoke('supervisor:save-config', config, defaultPath),
   },
   browser: {
     navigate: (surfaceId: string, url: string) => {
