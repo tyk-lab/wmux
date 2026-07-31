@@ -105,6 +105,7 @@ contextBridge.exposeInMainWorld('wmux', {
     appendRecord: (record: any) => ipcRenderer.invoke('supervisor:append-record', record),
     readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
+    listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),
   },
   browser: {
     navigate: (surfaceId: string, url: string) => {

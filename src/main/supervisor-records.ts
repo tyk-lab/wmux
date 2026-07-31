@@ -39,6 +39,15 @@ export interface SupervisorAuditTrail {
   sessions: SupervisorAuditSession[];
 }
 
+export interface SupervisorRestoreCandidate {
+  surfaceId: string;
+  label: string;
+  sessionId: string;
+  lastEventAt: number;
+  currentTask: string;
+  lastDecision: string;
+}
+
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 const IGNORE_ENTRY = '.wmux/supervisor/';
 const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024;
@@ -205,6 +214,45 @@ export function readSupervisorAuditTrail(
       events: events.slice(-MAX_HISTORY_EVENTS),
     })),
   };
+}
+
+/**
+ * List explicitly selectable restore sources in one project. The caller chooses
+ * the source terminal, so no current-terminal surfaceId matching is involved.
+ * A reset tombstone removes that terminal from the list to keep “start over” a
+ * hard recovery boundary.
+ */
+export function listSupervisorRestoreCandidates(projectDir: string): SupervisorRestoreCandidate[] {
+  const sessions = readAuditSessions(projectDir);
+  const grouped = new Map<string, SupervisorAuditEvent[]>();
+  for (const session of sessions.slice().reverse()) {
+    for (const event of session.events) {
+      const events = grouped.get(event.terminal.surfaceId) || [];
+      events.push(event);
+      grouped.set(event.terminal.surfaceId, events);
+    }
+  }
+  return [...grouped.entries()].flatMap(([surfaceId, events]) => {
+    const last = events[events.length - 1];
+    if (!last || events.some((event) => event.type === 'session.abandoned')) return [];
+    let currentTask = '';
+    let lastDecision = '';
+    for (const event of events) {
+      if (event.type === 'worker.task' && typeof event.payload.task === 'string') currentTask = event.payload.task;
+      if (event.type === 'supervisor.decision' && typeof event.payload.outcome === 'string') {
+        lastDecision = event.payload.outcome;
+      }
+    }
+    const session = sessions.find((item) => item.events.some((event) => event === last));
+    return [{
+      surfaceId,
+      label: last.terminal.label,
+      sessionId: session?.sessionId || '',
+      lastEventAt: last.ts,
+      currentTask,
+      lastDecision,
+    }];
+  }).sort((a, b) => b.lastEventAt - a.lastEventAt);
 }
 
 /**

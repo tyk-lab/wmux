@@ -7,10 +7,14 @@ import type {
 } from '../store/supervisor-slice';
 
 export function modeLabel(mode: SupervisorMode): string {
-  return mode === 'direct' ? '直接注入' : '目标追逐';
+  if (mode === 'unified') return '统一监督';
+  return mode === 'direct' ? '直接注入（旧会话）' : '目标追逐（旧会话）';
 }
 
 export function modeDescription(mode: SupervisorMode): string {
+  if (mode === 'unified') {
+    return '工作终端由用户自行接收任务；监督 AI 只读取证据并裁决，不会自动注入下一步。';
+  }
   if (mode === 'direct') {
     return '指令原样注入。每轮任务结束后，监督 AI 读取终端证据，并把「停止条件」作为参考作出后续裁决。';
   }
@@ -65,6 +69,16 @@ export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
 }
 
+/** Rules that make user approval the hard boundary for changing a task's route. */
+export function humanDecisionBoundary(): string[] {
+  return [
+    '监督建议边界：只可评价当前任务说明、计划文件和既有技术路线内的工作结果，不能自动向工作终端推进任务。',
+    '不得把改任务方向、扩范围、换技术方案/依赖、关键数据操作、对外提交或证据不足包装成 continue / rework。',
+    '遇到上述情况必须提交 needs-human，并附 --proposal-kind route-change 或 important、--reason、--impact、--alternatives 和建议的 --next。',
+    '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',
+  ];
+}
+
 /**
  * Build text injected into a worker terminal.
  * direct → verbatim step.prompt only.
@@ -113,7 +127,7 @@ export function buildSupervisorBriefing(
         `文件: ${session.planFilePath || '（未命名计划）'}`,
         session.planFileContent.trim(),
         '',
-        '计划文件与表单中的目标、允许范围或禁止项冲突时，以计划文件为准；但不得绕过安全边界或人类明确指令。',
+        '计划文件与任务说明冲突时，以计划文件为准；但不得绕过安全边界或人类明确指令。',
         '',
       ]
     : [];
@@ -127,6 +141,40 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
+
+  if (session.mode === 'unified') {
+    const kind = session.stopWhenKind || 'concrete';
+    return [
+      '# AI 监督 · 统一监督',
+      '',
+      '工作终端由用户自行接收任务。你只观察和裁决，绝不向工作终端自动注入任务或使用 --next 推进。',
+      '',
+      '## 任务说明',
+      session.taskDescription.trim() || '（未填写）',
+      '',
+      ...planBlock,
+      ...restoredHistoryBlock,
+      '## 停止条件参考（用于裁决，不是机械开关）',
+      stopWhenJudgmentGuide(kind, session.stopWhen),
+      '',
+      '## 监控终端',
+      worker,
+      '',
+      '## 本轮裁决流程',
+      `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
+      '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+      '3. continue / rework 仅记录裁决，不得携带 --next；由用户决定是否另行向工作终端发送任务。',
+      '',
+      '## 规则',
+      `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
+      '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
+      '3. 证据足以收尾可提交 complete；证据不足时提交 continue、rework 或 needs-human 并说明理由。',
+      ...humanDecisionBoundary().map((line, index) => `${index + 4}. ${line}`),
+      `8. 每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录裁决；该命令成功时静默。`,
+      '9. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
+      '',
+    ].join('\n');
+  }
 
   if (session.mode === 'direct') {
     const kind = session.stopWhenKind || 'concrete';
@@ -154,10 +202,10 @@ export function buildSupervisorBriefing(
       '## 规则',
       '1. 指令跑完 ≠ 停止条件满足。',
       '2. 终端任务结束后先 read-screen，再根据证据和参考条件提交 continue / rework / complete / needs-human。',
-      '3. 仍需推进 → 用 continue 或 rework；若队列已空且要继续，附上 --next 指令。',
-      '4. 阻塞/要权限 → 通知人类，不要绕过。',
-      `5. 你只监督此终端。每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。`,
-      '6. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
+      '3. 仍需推进时，continue / rework 的 --next 只能是同路线的低风险下一步。',
+      ...humanDecisionBoundary().map((line, index) => `${index + 4}. ${line}`),
+      `8. 你只监督此终端。每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。`,
+      '9. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
       '',
     ].join('\n');
   }
@@ -192,7 +240,8 @@ export function buildSupervisorBriefing(
     `1. 只管理 ${lane.surfaceId}，不要读取、总结或裁决其他终端。`,
     '2. 决策不了 / 要权限 / 信息不足 → 说明卡点并停，不要瞎猜。',
     '3. 证据足以收尾 → 提交 complete；证据不足则按当前信息提交 continue、rework 或 needs-human。',
-    '4. 可用: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
+    ...humanDecisionBoundary().map((line, index) => `${index + 4}. ${line}`),
+    '8. 可用: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
     '',
   ].join('\n');
 }
@@ -208,7 +257,7 @@ export function buildIdleHint(opts: {
   return [
     `[空闲裁决] ${opts.lane.label} (${opts.lane.surfaceId}) state=${opts.state}`,
     `完成参考: ${opts.doneWhen.trim() || '（未设置）'}`,
-    '请 read-screen 后提交 continue / rework / complete / needs-human。',
+    '请 read-screen 后提交 continue / rework / complete / needs-human；路线变更或重要建议必须 needs-human，等待用户批准。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -226,13 +275,17 @@ export function buildStopCheckHint(opts: {
   /** direct | goal-chase wording */
   mode?: SupervisorMode;
 }): string {
-  const mode = opts.mode || 'direct';
+  const mode = opts.mode || 'unified';
   const title =
-    mode === 'goal-chase' ? '[请结合完成参考作出裁决 · 目标追逐]' : '[请结合停止参考作出裁决 · 直接注入]';
-  const reference = mode === 'goal-chase' ? opts.stopWhen : opts.stopWhen;
-  const action = mode === 'goal-chase'
-    ? '可收尾用 complete；仍需推进用 continue / rework；无法判断用 needs-human。'
-    : '可收尾用 complete；队列已空但仍需推进时用 continue / rework 加 --next；无法判断用 needs-human。';
+    mode === 'unified'
+      ? '[请结合停止参考作出裁决 · 统一监督]'
+      : mode === 'goal-chase' ? '[请结合完成参考作出裁决 · 目标追逐]' : '[请结合停止参考作出裁决 · 直接注入]';
+  const reference = opts.stopWhen;
+  const action = mode === 'unified'
+    ? '可收尾用 complete；continue / rework 只记录裁决，不得携带 --next；路线变更或重要建议用 needs-human。'
+    : mode === 'goal-chase'
+    ? '可收尾用 complete；同路线低风险推进才用 continue / rework；路线变更或重要建议用 needs-human。'
+    : '可收尾用 complete；队列已空但仍需推进时，只有同路线低风险步骤可用 continue / rework 加 --next；其他建议用 needs-human。';
 
   return [
     `${title} 通道=${opts.lane.label} (${opts.lane.surfaceId}) agentState=${opts.state}`,
@@ -259,6 +312,9 @@ export function buildUserNotifyText(opts: {
   ];
   if (opts.mode === 'direct' && opts.stopWhen?.trim()) {
     parts.push(`请确认停止条件是否满足: ${opts.stopWhen.trim()}`);
+  }
+  if (opts.mode === 'unified' && opts.stopWhen?.trim()) {
+    parts.push(`停止条件参考: ${opts.stopWhen.trim()}`);
   }
   if (opts.mode === 'goal-chase' && opts.doneWhen?.trim()) {
     parts.push(`完成条件参考: ${opts.doneWhen.trim()}`);

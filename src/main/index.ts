@@ -21,7 +21,12 @@ import { ensureGrokHooks } from './grok-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
 import { applyHookToAgentState } from './agent-hook-bridge';
-import { appendSupervisorRecord, readLatestSupervisorHistory, readSupervisorAuditTrail } from './supervisor-records';
+import {
+  appendSupervisorRecord,
+  listSupervisorRestoreCandidates,
+  readLatestSupervisorHistory,
+  readSupervisorAuditTrail,
+} from './supervisor-records';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
@@ -457,6 +462,9 @@ app.whenReady().then(() => {
       surfaceId: String(options?.surfaceId || ''),
       label: String(options?.terminalLabel || ''),
     }),
+  );
+  ipcMain.handle('supervisor:list-restore-candidates', (_event, projectDir) =>
+    listSupervisorRestoreCandidates(String(projectDir || '')),
   );
 
   // IPC: renderer pushes session state (auto-save response or explicit save).

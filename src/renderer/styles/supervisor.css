@@ -68,6 +68,17 @@
   margin-bottom: 6px;
 }
 
+.supervisor-dialog__label--required {
+  color: #ef5350;
+  opacity: 1;
+}
+
+.supervisor-dialog__required {
+  color: #ef5350;
+  font-weight: 700;
+  opacity: 1;
+}
+
 .supervisor-dialog__hint {
   margin-top: 6px;
   font-size: 11px;
@@ -81,6 +92,20 @@
   border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
   border-radius: 6px;
   padding: 4px;
+}
+
+.supervisor-dialog__restore-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.supervisor-dialog__restore-row select {
+  height: 32px;
 }
 
 .supervisor-dialog__empty {
@@ -452,6 +477,28 @@
   justify-content: space-between;
   font-size: 11px;
   margin-bottom: 4px;
+}
+
+.sup-panel__proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+.sup-panel__proposal-input {
+  width: 100%;
+  min-height: 58px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.14);
+  border-radius: 4px;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  color: inherit;
+  font: inherit;
 }
 
 .sup-panel__approval-text {

@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendSupervisorRecord,
+  listSupervisorRestoreCandidates,
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
 } from '../../src/main/supervisor-records';
@@ -123,5 +124,34 @@ describe('supervisor records', () => {
       .toEqual(['worker.task', 'session.abandoned']);
     expect(readSupervisorAuditTrail(project, { surfaceId: 'surf-new', label: 'Codex' }))
       .toEqual({ sessions: [{ sessionId: 'sup-reset', createdAt: 100, events: trail.sessions[0].events }] });
+  });
+
+  it('lists explicit restore sources without comparing them to a newly selected terminal id', () => {
+    const project = projectDir();
+    appendSupervisorRecord({
+      sessionId: 'sup-auth', projectDir: project, type: 'worker.task', ts: 100,
+      terminal: { surfaceId: 'surf-auth-old', label: '认证任务' }, payload: { task: '修复登录' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-auth', projectDir: project, type: 'supervisor.decision', ts: 110,
+      terminal: { surfaceId: 'surf-auth-old', label: '认证任务' }, payload: { outcome: 'rework' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reset', projectDir: project, type: 'worker.task', ts: 120,
+      terminal: { surfaceId: 'surf-discarded', label: '废除任务' }, payload: { task: '旧内容' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reset', projectDir: project, type: 'session.abandoned', ts: 130,
+      terminal: { surfaceId: 'surf-discarded', label: '废除任务' }, payload: {},
+    });
+
+    expect(listSupervisorRestoreCandidates(project)).toEqual([{
+      surfaceId: 'surf-auth-old',
+      label: '认证任务',
+      sessionId: 'sup-auth',
+      lastEventAt: 110,
+      currentTask: '修复登录',
+      lastDecision: 'rework',
+    }]);
   });
 });

@@ -1,12 +1,8 @@
 import { StateCreator } from 'zustand';
 import { PaneId, SurfaceId, WorkspaceId } from '../../shared/types';
 
-/**
- * Two product modes (UI primary split):
- * - direct: inject user instructions verbatim; watch stopWhen; stop + notify human
- * - goal-chase: AI manages worker terminals toward goal; can't decide → stop + notify
- */
-export type SupervisorMode = 'direct' | 'goal-chase';
+/** Legacy values remain readable for saved sessions; new sessions are unified. */
+export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -32,6 +28,13 @@ export interface SupervisorDecision {
   outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
   reason: string;
   next: string;
+}
+
+/** Explicitly chosen historical terminal whose audit context may be restored. */
+export interface SupervisorRestoreSource {
+  surfaceId: string;
+  label: string;
+  sessionId: string;
 }
 
 export interface SupervisorLane {
@@ -66,9 +69,17 @@ export interface SupervisorLane {
   /** Bounded audit summary restored for this terminal only after a restart. */
   restoredHistory?: string;
   restoredFromSessionId?: string;
+  /** User-selected historical terminal; intentionally independent of this lane's surfaceId. */
+  restoreSource?: SupervisorRestoreSource;
 }
 
-export type ApprovalSource = 'plan' | 'manual' | 'idle-hint' | 'goal-chase';
+export type ApprovalSource =
+  | 'plan'
+  | 'manual'
+  | 'idle-hint'
+  | 'goal-chase'
+  | 'supervisor-route'
+  | 'supervisor-important';
 
 export interface PendingApproval {
   id: string;
@@ -77,6 +88,12 @@ export interface PendingApproval {
   laneLabel: string;
   text: string;
   source: ApprovalSource;
+  /** A supervisor proposal that must be decided by the user before injection. */
+  proposalKind?: 'route-change' | 'important';
+  reason?: string;
+  impact?: string;
+  alternatives?: string;
+  task?: string;
   createdAt: number;
 }
 
@@ -91,6 +108,9 @@ export interface SupervisorSession {
   sessionId: string;
   active: boolean;
   mode: SupervisorMode;
+
+  /** Human-readable scope for the supervisor only; never injected into workers. */
+  taskDescription: string;
 
   /**
    * direct: raw multi-line instructions (also mirrored into lane.steps on start).
@@ -159,7 +179,8 @@ export function createDefaultSupervisorSession(): SupervisorSession {
   return {
     sessionId: '',
     active: false,
-    mode: 'direct',
+    mode: 'unified',
+    taskDescription: '',
     directInstructions: '',
     stopWhen: '',
     stopWhenKind: 'concrete',
@@ -210,7 +231,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
             ts: Date.now(),
             laneId: '-',
             action: '启动',
-            detail: `模式=${s.supervisor.mode === 'direct' ? '直接注入' : '目标追逐'} 通道=${s.supervisor.lanes.filter((l) => l.enabled).length}`,
+            detail: `统一监督 通道=${s.supervisor.lanes.filter((l) => l.enabled).length}`,
           },
           ...s.supervisor.log,
         ].slice(0, MAX_LOG),

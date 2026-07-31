@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { describe, expect, it } from 'vitest';
-import { isSupervisorDecisionAuthorised } from '../../src/renderer/pipe-bridge';
+import {
+  isSupervisorDecisionAuthorised,
+  isSupervisorNextAllowed,
+  isSupervisorProposalAllowed,
+} from '../../src/renderer/pipe-bridge';
 import {
   createDefaultSupervisorSession,
   createSupervisorSlice,
@@ -52,6 +56,21 @@ describe('supervisor isolation', () => {
     expect(isSupervisorDecisionAuthorised(monitored, '')).toBe(false);
   });
 
+  it('requires human decision for route changes and important suggestions', () => {
+    expect(isSupervisorProposalAllowed('continue', 'route-change')).toBe(false);
+    expect(isSupervisorProposalAllowed('rework', 'important')).toBe(false);
+    expect(isSupervisorProposalAllowed('needs-human', 'route-change')).toBe(true);
+    expect(isSupervisorProposalAllowed('needs-human', 'important')).toBe(true);
+    expect(isSupervisorProposalAllowed('continue', '')).toBe(true);
+  });
+
+  it('does not allow unified supervision to inject a normal next task', () => {
+    expect(isSupervisorNextAllowed('unified', 'continue', '继续修复')).toBe(false);
+    expect(isSupervisorNextAllowed('unified', 'rework', '补测试')).toBe(false);
+    expect(isSupervisorNextAllowed('unified', 'needs-human', '建议改为另一方案')).toBe(true);
+    expect(isSupervisorNextAllowed('direct', 'continue', '继续')).toBe(true);
+  });
+
   it('clears lanes and in-memory decision history when restarting from scratch', () => {
     const store = makeStore();
     store.getState().setSupervisorLanes([
@@ -77,12 +96,36 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('codex');
   });
 
-  it('limits goal-chase to three autonomous decisions by default', () => {
-    expect(createDefaultSupervisorSession().maxAutoSteps).toBe(3);
+  it('creates unified supervision by default', () => {
+    const session = createDefaultSupervisorSession();
+    expect(session.mode).toBe('unified');
+    expect(session.taskDescription).toBe('');
   });
 
   it('does not restore audit history unless the user enables it', () => {
     expect(createDefaultSupervisorSession().restoreAuditHistory).toBe(false);
+  });
+
+  it('retains the route-change proposal details until the user resolves them', () => {
+    const store = makeStore();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a',
+      surfaceId: 'worker-a' as any,
+      laneLabel: 'Auth worker',
+      text: '改用新的认证依赖',
+      source: 'supervisor-route',
+      proposalKind: 'route-change',
+      reason: '现有方案无法满足需求',
+      impact: '需要新增依赖并修改登录流程',
+      alternatives: '保留现有方案并补适配层',
+    });
+
+    const proposal = store.getState().supervisor.pendingApprovals[0];
+    expect(proposal).toMatchObject({
+      proposalKind: 'route-change',
+      impact: '需要新增依赖并修改登录流程',
+      alternatives: '保留现有方案并补适配层',
+    });
   });
 
   it('gives the selected plan to the dedicated supervisor but not the worker', () => {
@@ -145,6 +188,7 @@ describe('supervisor isolation', () => {
           { ts: 2, type: 'worker.task', payload: { task: '修复登录' } },
           { ts: 3, type: 'supervisor.decision', payload: { outcome: 'complete', reason: '测试通过' } },
           { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
+          { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
         ],
       }],
     });
@@ -152,6 +196,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('监督记录 · Auth worker');
     expect(text).toContain('裁决：complete');
     expect(text).toContain('已废除旧上下文');
+    expect(text).toContain('人工裁决：已批准（路线变更）');
     expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });
 });

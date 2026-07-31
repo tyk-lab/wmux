@@ -152,7 +152,7 @@ async function cmdBrowser(args: string[]): Promise<void> {
 
 async function cmdSupervisor(args: string[]): Promise<void> {
   if (args[1] !== 'decide') {
-    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>]');
+    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>] [--impact <text>] [--alternatives <text>]');
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -164,6 +164,9 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     outcome,
     reason: getFlag(args, '--reason') || '',
     next: getFlag(args, '--next') || '',
+    proposalKind: getFlag(args, '--proposal-kind') || '',
+    impact: getFlag(args, '--impact') || '',
+    alternatives: getFlag(args, '--alternatives') || '',
   });
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript or distract the agent.
@@ -840,7 +843,8 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
-                          [--reason <text>] [--next <text>] [--verbose]
+                          [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>]
+                          [--impact <text>] [--alternatives <text>] [--verbose]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]

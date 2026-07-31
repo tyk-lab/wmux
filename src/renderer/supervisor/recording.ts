@@ -1,4 +1,9 @@
-import type { SupervisorDecision, SupervisorLane, SupervisorSession } from '../store/supervisor-slice';
+import type {
+  SupervisorDecision,
+  SupervisorLane,
+  SupervisorRestoreSource,
+  SupervisorSession,
+} from '../store/supervisor-slice';
 
 const MAX_VALUE = 1_200;
 const MAX_RESTORED_HISTORY_CHARS = 12_000;
@@ -22,6 +27,12 @@ export interface SupervisorAuditTrailSession {
 
 export interface SupervisorAuditTrail {
   sessions: SupervisorAuditTrailSession[];
+}
+
+export interface SupervisorRestoreCandidate extends SupervisorRestoreSource {
+  lastEventAt: number;
+  currentTask: string;
+  lastDecision: string;
 }
 
 export interface RestoredLaneHistory {
@@ -64,17 +75,31 @@ function eventMarkdown(event: AuditEvent): string | null {
   }
   if (event.type === 'supervisor.decision') {
     const outcome = payloadText(payload, 'outcome') || '未知';
+    const proposalKind = payloadText(payload, 'proposalKind');
     const reason = payloadText(payload, 'reason');
     const next = payloadText(payload, 'next');
+    const impact = payloadText(payload, 'impact');
+    const alternatives = payloadText(payload, 'alternatives');
+    const proposalLabel = proposalKind === 'route-change'
+      ? ' · 路线变更'
+      : proposalKind === 'important' ? ' · 重要建议' : '';
     return [
-      `### ${at} · 裁决：${markdownText(outcome)}`,
+      `### ${at} · 裁决：${markdownText(outcome)}${proposalLabel}`,
       reason ? `- 原因：${markdownText(reason)}` : '- 原因：未附说明',
+      impact ? `- 影响：${markdownText(impact)}` : '',
+      alternatives ? `- 备选：${markdownText(alternatives)}` : '',
       next ? `- 下一步：${markdownText(next)}` : '',
     ].filter(Boolean).join('\n');
   }
   if (event.type === 'session.abandoned') {
     const reason = payloadText(payload, 'reason') || '用户选择重头再来';
     return `### ${at} · 已废除旧上下文\n\n${markdownText(reason)}`;
+  }
+  if (event.type === 'supervisor.proposal.resolved') {
+    const resolution = payloadText(payload, 'resolution') === 'approved' ? '已批准' : '已拒绝';
+    const kind = payloadText(payload, 'proposalKind') === 'route-change' ? '路线变更' : '重要建议';
+    const text = payloadText(payload, 'text');
+    return `### ${at} · 人工裁决：${resolution}（${kind}）${text ? `\n\n${markdownText(text)}` : ''}`;
   }
   if (event.type === 'session.started') {
     return `### ${at} · 监督会话启动`;
@@ -178,6 +203,41 @@ export async function restoreLatestLaneHistory(lane: SupervisorLane): Promise<Re
   } catch (err) {
     console.warn('[supervisor] audit restore failed', err);
     return null;
+  }
+}
+
+/** Restore from the historical terminal explicitly selected by the user. */
+export async function restoreSelectedLaneHistory(
+  lane: SupervisorLane,
+  source: SupervisorRestoreSource,
+): Promise<RestoredLaneHistory | null> {
+  if (!lane.projectDir) return null;
+  const api = (window as any).wmux?.supervisor;
+  if (!api?.readLatestHistory) return null;
+  try {
+    const history = await api.readLatestHistory({
+      projectDir: lane.projectDir,
+      surfaceId: source.surfaceId,
+      terminalLabel: source.label,
+    }) as HistoryResult;
+    return summarizeRestoredHistory(history);
+  } catch (err) {
+    console.warn('[supervisor] selected audit restore failed', err);
+    return null;
+  }
+}
+
+/** List user-selectable historical terminals for a project; no current-ID matching occurs. */
+export async function listSupervisorRestoreCandidates(projectDir: string): Promise<SupervisorRestoreCandidate[]> {
+  if (!projectDir) return [];
+  const api = (window as any).wmux?.supervisor;
+  if (!api?.listRestoreCandidates) return [];
+  try {
+    const candidates = await api.listRestoreCandidates(projectDir);
+    return Array.isArray(candidates) ? candidates : [];
+  } catch (err) {
+    console.warn('[supervisor] restore candidate list failed', err);
+    return [];
   }
 }
 

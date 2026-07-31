@@ -18,6 +18,17 @@ export function isSupervisorDecisionAuthorised(
   return !!supervisorSurfaceId && lane.supervisorSurfaceId === supervisorSurfaceId;
 }
 
+/** Important proposals are never eligible for automatic continuation. */
+export function isSupervisorProposalAllowed(outcome: string, proposalKind: string): boolean {
+  if (!proposalKind) return true;
+  return (proposalKind === 'route-change' || proposalKind === 'important') && outcome === 'needs-human';
+}
+
+/** Unified supervision can only send a proposal after explicit human approval. */
+export function isSupervisorNextAllowed(mode: string, outcome: string, next: string): boolean {
+  return mode !== 'unified' || !next || outcome === 'needs-human';
+}
+
 export function initPipeBridge(): void {
   const w = window as any;
 
@@ -359,11 +370,30 @@ export function initPipeBridge(): void {
     const outcome = String(params?.outcome || '') as SupervisorDecision['outcome'];
     const reason = String(params?.reason || '').trim().slice(0, 1200);
     const next = String(params?.next || '').trim().slice(0, 4000);
+    const proposalKind = String(params?.proposalKind || '').trim();
+    const impact = String(params?.impact || '').trim().slice(0, 1200);
+    const alternatives = String(params?.alternatives || '').trim().slice(0, 1200);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
+    const proposalKinds = new Set(['route-change', 'important']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
+    // A supervisor must not smuggle a declared route/important proposal through
+    // an auto-continue decision. Such proposals always stop for user consent.
+    if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
+      return { ok: false, error: '重要建议或路线变更必须使用 needs-human' };
+    }
+    if (!isSupervisorNextAllowed(session.mode, outcome, next)) {
+      return { ok: false, error: '统一监督不会自动注入工作终端；请移除 --next，或通过 needs-human 提交给用户审批' };
+    }
 
-    appendSupervisorRecord(session, lane, 'supervisor.decision', { outcome, reason, next });
+    appendSupervisorRecord(session, lane, 'supervisor.decision', {
+      outcome,
+      reason,
+      next,
+      proposalKind,
+      impact,
+      alternatives,
+    });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
     store.updateLane(lane.id, {
       decisions: [
@@ -385,7 +415,20 @@ export function initPipeBridge(): void {
 
     if (outcome === 'needs-human') {
       store.updateLane(lane.id, { awaitingReview: true });
-      const text = reason || `${lane.label} 需要人工决策`;
+      const kind = proposalKinds.has(proposalKind) ? proposalKind as 'route-change' | 'important' : 'important';
+      store.enqueueApproval({
+        laneId: lane.id,
+        surfaceId: lane.surfaceId,
+        laneLabel: lane.label,
+        text: next,
+        source: kind === 'route-change' ? 'supervisor-route' : 'supervisor-important',
+        proposalKind: kind,
+        reason: reason || `${lane.label} 需要人工决策`,
+        impact,
+        alternatives,
+        task: lane.currentTask || '（任务未上报）',
+      });
+      const text = `${kind === 'route-change' ? '路线变更' : '重要建议'}待你决定：${reason || lane.label}`;
       const workspaceId = lane.workspaceId || store.activeWorkspaceId;
       if (workspaceId) {
         store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });

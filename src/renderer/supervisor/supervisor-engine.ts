@@ -156,6 +156,14 @@ export function tickLane(opts: {
     return { actions, runtime: rt };
   }
 
+  // Unified supervision never schedules or injects worker work. The supervisor
+  // terminal receives task-end notifications and records its own evidence-based
+  // decision through the CLI.
+  if (mode === 'unified') {
+    rt.lastState = st;
+    return { actions, runtime: rt };
+  }
+
   let open = getNextOpenStep(lane);
 
   // Awaiting stop/done judgment: only resume when new open steps appear (direct inject)

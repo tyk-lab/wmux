@@ -938,7 +938,8 @@ export default function App() {
     for (const lane of session.lanes) {
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
-        stopWhen: session.mode === 'direct' ? session.stopWhen : session.doneWhen,
+        taskDescription: session.taskDescription,
+        stopWhen: session.stopWhen,
         terminalName: lane.label,
       });
     }

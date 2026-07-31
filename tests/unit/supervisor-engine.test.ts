@@ -85,6 +85,18 @@ describe('supervisor-engine', () => {
     expect(d && d.type === 'dispatch' && d.text).toBe('Do types only');
   });
 
+  it('unified mode never dispatches or generates a worker step', () => {
+    const { actions } = tickLane({
+      session: session({ mode: 'unified', taskDescription: '审查认证修复' }),
+      lane: lane(),
+      surfaceState: { state: 'idle' },
+      runtime: blankRuntime(),
+      now: 10_000,
+      hasPendingApproval: false,
+    });
+    expect(actions).toEqual([]);
+  });
+
   it('waits for the supervisor decision after a worker turn ends', () => {
     const { actions } = tickLane({
       session: session({ mode: 'direct' }),

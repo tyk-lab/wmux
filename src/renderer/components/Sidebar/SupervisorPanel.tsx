@@ -30,6 +30,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const approvePending = useStore((s) => s.approvePending);
   const rejectPending = useStore((s) => s.rejectPending);
   const updateStep = useStore((s) => s.updateStep);
+  const updateLane = useStore((s) => s.updateLane);
   const appendSupervisorLog = useStore((s) => s.appendSupervisorLog);
   const confirmStopCondition = useStore((s) => s.confirmStopCondition);
   const rejectStopCondition = useStore((s) => s.rejectStopCondition);
@@ -42,12 +43,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const workspaces = useStore((s) => s.workspaces);
   const [collapsed, setCollapsed] = useState(false);
   const [loadingRecordLaneId, setLoadingRecordLaneId] = useState<string | null>(null);
+  const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
   const enabled = supervisor.lanes.filter((l) => l.enabled);
   const pendingCount = supervisor.pendingApprovals.length;
-  const mode = supervisor.mode || 'direct';
+  const mode = supervisor.mode || 'unified';
   const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
   const liveSurfaceIds = new Set<string>();
   for (const workspace of workspaces) {
@@ -120,18 +122,46 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const onApprove = (id: string) => {
-    const item = approvePending(id);
+    const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
     try {
-      sendToSurface(item.surfaceId, item.text, supervisor.submitEnter);
+      const text = proposalEdits[id] ?? item.text;
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
-      const step = lane?.steps.find((s) => s.status === 'pending');
-      if (step) {
-        updateStep(item.laneId, step.id, { status: 'in_progress', dispatchedAt: Date.now() });
+      const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
+      if (text.trim()) sendToSurface(item.surfaceId, text, supervisor.submitEnter);
+      approvePending(id);
+      if (isHumanProposal && lane) {
+        updateLane(lane.id, { awaitingReview: false, currentTask: text.trim() || lane.currentTask });
+        appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+          resolution: 'approved',
+          proposalKind: item.proposalKind || 'important',
+          text,
+        });
+      } else {
+        const step = lane?.steps.find((s) => s.status === 'pending');
+        if (step) {
+          updateStep(item.laneId, step.id, { status: 'in_progress', dispatchedAt: Date.now() });
+        }
       }
-      appendSupervisorLog(item.laneId, '已批准发送', `${item.laneLabel} → ${item.surfaceId}`);
+      appendSupervisorLog(item.laneId, isHumanProposal ? '已批准建议' : '已批准发送', `${item.laneLabel} → ${item.surfaceId}`);
     } catch (err: any) {
       appendSupervisorLog(item.laneId, '发送失败', String(err?.message || err));
+    }
+  };
+
+  const onReject = (id: string) => {
+    const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
+    rejectPending(id);
+    if (!item || (item.source !== 'supervisor-route' && item.source !== 'supervisor-important')) return;
+    const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
+    if (!lane) return;
+    updateLane(lane.id, { awaitingReview: false });
+    appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+      resolution: 'rejected',
+      proposalKind: item.proposalKind || 'important',
+    });
+    if (lane.supervisorSurfaceId) {
+      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请保持当前任务说明与计划方向继续监督。\n', true);
     }
   };
 
@@ -229,29 +259,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       {!collapsed && (
         <>
           <div className="sup-panel__freedom">
-            {mode === 'direct'
-              ? `原样注入；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 判断`
-              : `目标追逐；完成条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 判断`}
+            工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。
           </div>
-          {mode === 'direct' && supervisor.stopWhen.trim() && (
+          {supervisor.taskDescription.trim() && (
+            <div className="sup-panel__goal" title={supervisor.taskDescription}>
+              任务说明: {supervisor.taskDescription}
+            </div>
+          )}
+          {supervisor.stopWhen.trim() && (
             <div className="sup-panel__goal" title={supervisor.stopWhen}>
               停止({stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}): {supervisor.stopWhen}
             </div>
-          )}
-          {mode === 'goal-chase' && (
-            <>
-              {supervisor.goal.trim() && (
-                <div className="sup-panel__goal" title={supervisor.goal}>
-                  目标: {supervisor.goal}
-                </div>
-              )}
-              {supervisor.doneWhen.trim() && (
-                <div className="sup-panel__goal" title={supervisor.doneWhen}>
-                  完成({stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}):{' '}
-                  {supervisor.doneWhen}
-                </div>
-              )}
-            </>
           )}
           {planFileName && (
             <div className="sup-panel__goal" title={supervisor.planFilePath}>
@@ -262,7 +280,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {
               if (!lane.enabled && !lane.awaitingStopCheck && !lane.stopConfirmed) return null;
-              const done = lane.steps.filter((s) => s.status === 'completed').length;
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
               );
@@ -271,9 +288,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-head">
                     <span className="sup-panel__lane-label">{lane.label}</span>
                     <span className="sup-panel__lane-progress">
-                      {mode === 'direct'
-                        ? `${done}/${lane.steps.length || 0}`
-                        : `${lane.autoStepsUsed}/${lane.maxAutoSteps}`}
+                      {(lane.decisions || []).length} 次裁决
                     </span>
                   </div>
                   <div className="sup-panel__lane-detail">
@@ -321,7 +336,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         className="sup-panel__btn-primary"
                         onClick={() => confirmStopCondition(lane.id)}
                       >
-                        {mode === 'goal-chase' ? '已达完成条件' : '已达停止条件'}
+                        已达停止条件
                       </button>
                     </div>
                   )}
@@ -336,14 +351,30 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               {supervisor.pendingApprovals.map((a) => (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">
-                    <strong>{a.laneLabel}</strong>
+                    <strong>{a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
+                    {a.proposalKind && <span>{a.laneLabel}</span>}
                   </div>
-                  <pre className="sup-panel__approval-text">
-                    {a.text.slice(0, 400)}
-                    {a.text.length > 400 ? '…' : ''}
-                  </pre>
+                  {a.proposalKind ? (
+                    <div className="sup-panel__proposal">
+                      <div><b>当前任务：</b>{a.task || '（任务未上报）'}</div>
+                      <div><b>建议：</b>{a.reason || '未附说明'}</div>
+                      {a.impact && <div><b>影响：</b>{a.impact}</div>}
+                      {a.alternatives && <div><b>备选：</b>{a.alternatives}</div>}
+                      <textarea
+                        className="sup-panel__proposal-input"
+                        value={proposalEdits[a.id] ?? a.text}
+                        onChange={(event) => setProposalEdits((current) => ({ ...current, [a.id]: event.target.value }))}
+                        placeholder="批准后发送给工作终端的指令（可修改）"
+                      />
+                    </div>
+                  ) : (
+                    <pre className="sup-panel__approval-text">
+                      {a.text.slice(0, 400)}
+                      {a.text.length > 400 ? '…' : ''}
+                    </pre>
+                  )}
                   <div className="sup-panel__approval-actions">
-                    <button type="button" onClick={() => rejectPending(a.id)}>
+                    <button type="button" onClick={() => onReject(a.id)}>
                       拒绝
                     </button>
                     <button
@@ -351,7 +382,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                       className="sup-panel__btn-primary"
                       onClick={() => onApprove(a.id)}
                     >
-                      批准并发送
+                      {a.proposalKind ? '批准并发送' : '批准并发送'}
                     </button>
                   </div>
                 </div>
