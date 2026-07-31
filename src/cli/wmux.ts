@@ -6,10 +6,6 @@ import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
-import {
-  formatInstallAgentHooksReport,
-  installAllAgentHooks,
-} from '../main/install-agent-hooks';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -767,6 +763,13 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   // Install/refresh Claude · Kimi · Codex · Grok · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
+    // Most CLI commands run from resources/cli in packaged wmux. Keep the
+    // installer-only main-process modules lazy so read-screen and supervisor
+    // decisions do not depend on them being available to bare Node.
+    const {
+      formatInstallAgentHooksReport,
+      installAllAgentHooks,
+    } = require('../main/install-agent-hooks') as typeof import('../main/install-agent-hooks');
     const results = installAllAgentHooks({
       createClaudeSettings: true,
       opencode: !noOpencode,

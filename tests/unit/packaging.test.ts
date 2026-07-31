@@ -22,6 +22,16 @@ describe('electron-builder packaging', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli/wmux.js', to: 'cli/wmux.js' });
   });
 
+  it('ships the CLI entry point dependencies outside the asar', () => {
+    expect(extraResources).toContainEqual({ from: 'dist/cli/agent-wrap.js', to: 'cli/agent-wrap.js' });
+  });
+
+  it('keeps installer-only main-process modules out of normal CLI startup', () => {
+    const cliSource = fs.readFileSync(path.join(__dirname, '../../src/cli/wmux.ts'), 'utf8');
+    expect(cliSource).not.toMatch(/^import[\s\S]*?from '\.\.\/main\/install-agent-hooks';/m);
+    expect(cliSource).toContain("require('../main/install-agent-hooks')");
+  });
+
   it('ships the Claude Code hook helper outside the asar', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli/wmux-hook.js', to: 'cli/wmux-hook.js' });
   });
