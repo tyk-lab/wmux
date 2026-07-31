@@ -225,20 +225,60 @@ npm run build     # 2. 编译 + 打包，产出 exe
 
 **为何需要清锁：** Windows 上 VerySync / OneDrive、杀毒或上次从 `release\win-unpacked` 启动的 wmux 可能占住 `.asar`，导致 electron-builder 报 `EBUSY: resource busy or locked`。清锁脚本会结束**仅位于打包输出目录内**的 `wmux` / `elevate` 等进程，并尽量删掉或 rename 残留目录。
 
-**本地 Windows 打包输出路径：** 中间产物写到 `%LOCALAPPDATA%\wmux-build\release\`（避开项目所在同步盘），成功后把 `wmux-*-setup.exe` 等安装产物**复制回**项目 `release/`。CI 仍直接输出到项目 `release/`。
+### 产物位置（本地 Windows 必看）
 
-可用环境变量覆盖打包目录：
+默认配置只打 **NSIS 安装包**（`wmux-<版本>-setup.exe`），**不会**在项目 `release/` 根目录生成裸 `wmux.exe`。
+
+为避开同步盘（VerySync / OneDrive 等）对 `.asar` 的 `EBUSY` 锁定，本地打包分两层目录：
+
+| 用途 | 路径 | 说明 |
+|------|------|------|
+| **分发 / 安装** | 仓库内 `release\wmux-<版本>-setup.exe` | 打包成功后从本地目录**复制回来**的安装包 |
+| **同上（原始产出）** | `%LOCALAPPDATA%\wmux-build\release\wmux-<版本>-setup.exe` | electron-builder **真正写出**的位置（与上面文件相同） |
+| **本机免安装直接跑** | `%LOCALAPPDATA%\wmux-build\release\win-unpacked\wmux.exe` | 解压后的应用主程序；**只在这里**，不拷回仓库 |
+| **完整解压目录** | `%LOCALAPPDATA%\wmux-build\release\win-unpacked\` | 含 `wmux.exe`、resources 等；本地调试可整夹运行 |
+| **勿用（旧残留）** | 仓库内 `release\win-unpacked`、`release\win-unpacked.tmp` | 历史失败/旧构建常被同步软件锁住删不掉，**不是**当前成功构建结果，不要从这里启动 |
+
+PowerShell 快速打开：
+
+```powershell
+# 仓库内安装包
+explorer.exe .\release
+
+# 本地真实打包目录（setup.exe + win-unpacked）
+explorer.exe "$env:LOCALAPPDATA\wmux-build\release"
+
+# 免安装启动
+& "$env:LOCALAPPDATA\wmux-build\release\win-unpacked\wmux.exe"
+```
+
+示例（版本以 `package.json` 为准，例如 `0.39.1`）：
+
+```text
+# 安装包（两处各一份）
+<仓库>\release\wmux-0.39.1-setup.exe
+%LOCALAPPDATA%\wmux-build\release\wmux-0.39.1-setup.exe
+
+# 免安装主程序（仅本地）
+%LOCALAPPDATA%\wmux-build\release\win-unpacked\wmux.exe
+```
+
+**CI**（`GITHUB_ACTIONS` / `CI`）仍直接把全部产物写到仓库 `release/`，不经 `%LOCALAPPDATA%`。
+
+可用环境变量覆盖本地打包根目录（替代默认的 `%LOCALAPPDATA%\wmux-build\release`）：
 
 ```powershell
 $env:WMUX_BUILD_OUT = "D:\temp\wmux-release"
 npm run build
+# 则 setup.exe / win-unpacked 在 D:\temp\wmux-release\
+# 安装包仍会尝试复制到仓库 release\
 ```
 
-若日志仍提示 `still locked`，可：暂停对该仓库的同步、关闭从 `release\win-unpacked` 启动的 wmux，或把 `release/` 加入同步忽略列表后再执行 `npm run build:clear`。
+若日志仍提示 `still locked`，可：暂停对该仓库的同步、关闭从旧 `release\win-unpacked` 启动的 wmux，或把 `release/` 加入同步忽略列表后再执行 `npm run build:clear`。
 
-### 只更新 `release/` 下的安装包 exe
+### 只更新安装包 exe
 
-若 `dist/` 已是当前代码的编译结果，只需重新生成 `release/wmux-<版本号>-setup.exe` 时，运行：
+若 `dist/` 已是当前代码的编译结果，只需重新生成 `wmux-<版本号>-setup.exe` 时，运行：
 
 ```powershell
 npm run package:exe
@@ -253,15 +293,18 @@ npm run build:main
 # 改了 src/renderer/
 npm run build:renderer
 
-# 仅重新生成 release 下的安装包 exe
+# 仅重新打包（位置见上一节「产物位置」）
 npm run package:exe
 ```
 
-产物输出到 `release/` 目录：
+仓库 `release/` 中与安装相关的文件：
 
 | 产物 | 说明 |
 |------|------|
-| `wmux-<版本号>-setup.exe` | NSIS 安装包（创建开始菜单和桌面快捷方式，可自定义安装目录） |
+| `wmux-<版本号>-setup.exe` | NSIS 安装包（开始菜单 / 桌面快捷方式，可改安装目录） |
+| `wmux-<版本号>-setup.exe.blockmap` | 增量更新用块图 |
+| `latest.yml` | electron-updater 元数据 |
+| `win-unpacked*` | 若存在，多半是旧残留，见上表「勿用」 |
 
 ### 更多打包命令
 
