@@ -46,6 +46,7 @@ let stdinData = '';
 let sent = false;
 const MAX_STDIN = 64 * 1024; // 64KB cap
 const MAX_TASK = 800;
+const MAX_PIPE_ATTEMPTS = 3;
 function compact(value) {
     if (typeof value !== 'string')
         return '';
@@ -91,13 +92,32 @@ function sendHook() {
         params.surfaceId = surfaceId;
     if (agent)
         params.agent = agent;
-    const client = net_1.default.connect({ path: pipePath }, () => {
-        const msg = JSON.stringify({ method: 'hook.event', params, id: 1, token });
-        client.write(msg + '\n', () => client.end());
-    });
-    client.on('error', () => {
-        process.exit(0);
-    });
+    const wireMessage = JSON.stringify({ method: 'hook.event', params, id: 1, token }) + '\n';
+    let attempt = 0;
+    const write = () => {
+        attempt++;
+        let accepted = false;
+        let retryScheduled = false;
+        const client = net_1.default.connect({ path: pipePath }, () => {
+            client.write(wireMessage, () => {
+                accepted = true;
+                client.end();
+            });
+        });
+        client.setTimeout(1000);
+        const retry = () => {
+            if (accepted || retryScheduled || attempt >= MAX_PIPE_ATTEMPTS)
+                return;
+            retryScheduled = true;
+            setTimeout(write, attempt * 200);
+        };
+        client.once('error', retry);
+        client.once('timeout', () => {
+            client.destroy();
+            retry();
+        });
+    };
+    write();
 }
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { if (stdinData.length < MAX_STDIN)
