@@ -474,6 +474,24 @@ function queueSupervisorDelivery(
   appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
 }
 
+/** A new task typed by the user supersedes any unapproved suggestion for this worker lane. */
+function cancelPendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane): void {
+  const store = useStore.getState();
+  const pending = store.supervisor.pendingApprovals.filter((item) => item.laneId === lane.id);
+  for (const item of pending) {
+    store.rejectPending(item.id);
+    if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
+      appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
+        resolution: 'handled-manually',
+        proposalKind: item.proposalKind || 'important',
+      });
+    }
+  }
+  if (pending.length > 0) {
+    store.appendSupervisorLog(lane.id, '已取消待批准建议', '检测到用户在工作终端手动发送了新任务');
+  }
+}
+
 function handleSupervisorHookEvent(event: any): void {
   const store = useStore.getState();
   const session = store.supervisor;
@@ -487,6 +505,7 @@ function handleSupervisorHookEvent(event: any): void {
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
+    cancelPendingApprovalsForManualTask(session, auditLane);
     store.updateLane(lane.id, {
       awaitingReview: !!lane.autoDecisionLimitReached,
       ...(projectDir ? { projectDir } : {}),
