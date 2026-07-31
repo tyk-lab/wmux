@@ -121,7 +121,7 @@ describe('supervisor isolation', () => {
       .toContain('## 停止条件补充说明（可选）\n登录成功后保留现有错误提示。');
   });
 
-  it('clears only a restarted supervisor lane context', () => {
+  it('clears supervisor context but retains monitored-terminal facts on restart', () => {
     const monitored = lane({
       currentTask: '修复登录',
       steps: [{ id: 'step-1', prompt: '补测试', status: 'in_progress' }],
@@ -140,7 +140,7 @@ describe('supervisor isolation', () => {
     expect(restarted).toMatchObject({
       surfaceId: 'worker-a',
       supervisorSurfaceId: 'supervisor-new',
-      currentTask: '',
+      currentTask: '修复登录',
       steps: [],
       pendingSupervisorDeliveries: [],
       decisions: [],

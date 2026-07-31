@@ -161,9 +161,9 @@ export interface SupervisorSession {
   /** Pinned workspace that provides the full-width supervisor session view. */
   supervisorWorkspaceId?: WorkspaceId | null;
   supervisorLaunchCmd: string;
-  /** Optional Codex model ID used when the dedicated launcher is Codex. */
+  /** Optional launcher-specific model ID or alias. */
   supervisorModel: string;
-  /** Optional Codex reasoning effort used when the dedicated launcher is Codex. */
+  /** Optional launcher-specific thinking or reasoning setting. */
   supervisorReasoningEffort: string;
   pendingApprovals: PendingApproval[];
   log: SupervisorLogEntry[];
@@ -231,7 +231,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
   };
 }
 
-/** Keep the monitored terminal binding but drop every transient supervisor state. */
+/** Keep monitored-terminal facts while dropping transient supervisor state. */
 export function clearSupervisorLaneContext(
   lane: SupervisorLane,
   supervisorSurfaceId: SurfaceId | null,
@@ -247,7 +247,6 @@ export function clearSupervisorLaneContext(
     awaitingReview: false,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
-    currentTask: '',
     pendingSupervisorDeliveries: [],
     decisions: [],
     restoredHistory: undefined,
