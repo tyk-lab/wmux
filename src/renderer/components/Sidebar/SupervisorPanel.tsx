@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { modeLabel, stopWhenKindLabel } from '../../supervisor/protocol';
+import { buildSupervisorBriefing, modeLabel, stopWhenKindLabel, supervisorTabTitle } from '../../supervisor/protocol';
+import { buildSupervisorLaunchCommand } from '../../supervisor/launch-command';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
 import {
   appendSupervisorRecord,
@@ -9,7 +10,7 @@ import {
 } from '../../supervisor/recording';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
-import type { SupervisorLane } from '../../store/supervisor-slice';
+import { clearSupervisorLaneContext, type SupervisorLane } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
 
 interface SupervisorPanelProps {
@@ -31,6 +32,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const rejectPending = useStore((s) => s.rejectPending);
   const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
+  const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
   const appendSupervisorLog = useStore((s) => s.appendSupervisorLog);
   const confirmStopCondition = useStore((s) => s.confirmStopCondition);
   const rejectStopCondition = useStore((s) => s.rejectStopCondition);
@@ -247,6 +249,88 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     openSupervisorSetup();
   };
 
+  const startFreshSupervisorSession = () => {
+    const supervisorLocations = new Map<string, { workspaceId: WorkspaceId; paneId: PaneId }>();
+    for (const workspace of workspaces) {
+      for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+        const pane = findLeaf(workspace.splitTree, candidatePaneId);
+        for (const surface of pane?.surfaces || []) {
+          supervisorLocations.set(surface.id, { workspaceId: workspace.id, paneId: candidatePaneId });
+        }
+      }
+    }
+
+    const lanesToRestart = supervisor.lanes.map((lane) => ({
+      lane,
+      location: lane.supervisorSurfaceId ? supervisorLocations.get(lane.supervisorSurfaceId) : undefined,
+    }));
+    if (lanesToRestart.some(({ location }) => !location)) {
+      openSupervisorSetup();
+      return;
+    }
+
+    const launchCommand = buildSupervisorLaunchCommand(
+      supervisor.supervisorLaunchCmd,
+      supervisor.supervisorModel,
+      supervisor.supervisorReasoningEffort,
+    );
+    const startupCommands = launchCommand ? [launchCommand] : undefined;
+    const replacements: Array<{
+      lane: SupervisorLane;
+      oldSurfaceId: SurfaceId;
+      newSurfaceId: SurfaceId;
+      workspaceId: WorkspaceId;
+      paneId: PaneId;
+    }> = [];
+
+    for (const { lane, location } of lanesToRestart) {
+      const newSurfaceId = addSurface(location!.workspaceId, location!.paneId, 'terminal', {
+        customTitle: supervisorTabTitle(lane.label),
+        cwd: lane.projectDir,
+        startupCommands,
+      });
+      if (!newSurfaceId || !lane.supervisorSurfaceId) {
+        for (const replacement of replacements) {
+          closeSurface(replacement.workspaceId, replacement.paneId, replacement.newSurfaceId);
+        }
+        appendSupervisorLog('-', '启动失败', '无法创建新的专属监督 AI；已保留原监督会话');
+        openSupervisorSetup();
+        return;
+      }
+      replacements.push({
+        lane,
+        oldSurfaceId: lane.supervisorSurfaceId,
+        newSurfaceId,
+        workspaceId: location!.workspaceId,
+        paneId: location!.paneId,
+      });
+    }
+
+    const replacementByLaneId = new Map(replacements.map((item) => [item.lane.id, item.newSurfaceId]));
+    setSupervisorLanes(supervisor.lanes.map((lane) =>
+      clearSupervisorLaneContext(lane, replacementByLaneId.get(lane.id) || null),
+    ));
+    for (const replacement of replacements) {
+      closeSurface(replacement.workspaceId, replacement.paneId, replacement.oldSurfaceId);
+    }
+
+    startSupervisor();
+    const sessionId = useStore.getState().supervisor.sessionId;
+    window.setTimeout(() => {
+      const session = useStore.getState().supervisor;
+      if (!session.active || session.sessionId !== sessionId) return;
+      const states = (window as any).__wmux_getAgentStates?.() || {};
+      for (const lane of session.lanes) {
+        if (!lane.supervisorSurfaceId) continue;
+        const text = buildSupervisorBriefing(session, {
+          lane,
+          state: String(states[lane.surfaceId]?.state || 'unknown'),
+        });
+        sendToSurface(lane.supervisorSurfaceId, text, true);
+      }
+    }, 1200);
+  };
+
   if (expanded && supervisor.lanes.length === 0 && !supervisor.active) {
     return (
       <div className="sup-panel sup-panel--empty">
@@ -273,8 +357,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           {supervisor.active ? (
             <button type="button" onClick={() => stopSupervisor()}>停止</button>
           ) : (
-            <button type="button" className="sup-panel__btn-primary" onClick={missingDedicatedSupervisor ? openSupervisorSetup : startSupervisor}>
-              {missingDedicatedSupervisor ? '创建 AI' : '启动'}
+            <button type="button" className="sup-panel__btn-primary" onClick={missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}>
+              {missingDedicatedSupervisor ? '创建 AI' : '启动新会话'}
             </button>
           )}
         </div>
@@ -313,7 +397,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           </div>
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
-              任务说明: {supervisor.taskDescription}
+              停止补充: {supervisor.taskDescription}
             </div>
           )}
           {supervisor.preconditions.trim() && (
@@ -524,9 +608,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               <button
                 type="button"
                 className="sup-panel__btn-primary"
-                onClick={missingDedicatedSupervisor ? openSupervisorSetup : startSupervisor}
+                onClick={missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
               >
-                {missingDedicatedSupervisor ? '创建专属监督 AI' : '启动'}
+                {missingDedicatedSupervisor ? '创建专属监督 AI' : '启动新会话'}
               </button>
             )}
             <button type="button" onClick={restartFromScratch}>

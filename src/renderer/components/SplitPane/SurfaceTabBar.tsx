@@ -7,6 +7,7 @@ import { IconAdd, IconSplit, IconSplitDown, IconClose, IconCaret } from './icons
 import type { SurfaceDragPayload, SurfaceDragPreviewTarget } from './drag-preview-types';
 import { parseSurfaceDragData } from './surface-drag-preview';
 import { getSurfaceLabel } from './surface-label';
+import { isSurfaceSupervised } from '../../store/supervisor-slice';
 
 interface SurfaceTabBarProps {
   paneId: PaneId;
@@ -104,6 +105,7 @@ export default function SurfaceTabBar({
   const activeWorkspaceId = useStore((state) => state.activeWorkspaceId);
   const renameSurface = useStore((state) => state.renameSurface);
   const surfaceProgress = useStore((state) => state.surfaceProgress);
+  const supervisor = useStore((state) => state.supervisor);
   const getAgentMeta = (surfaceId: string) => agentMeta.get(surfaceId as any);
 
   // Live binding labels for control tooltips (issue #64): read from the store so
@@ -318,6 +320,7 @@ export default function SurfaceTabBar({
           const isActive = index === activeSurfaceIndex;
           const agentMeta = getAgentMeta(surface.id);
           const isAgent = !!agentMeta;
+          const isSupervised = isSurfaceSupervised(supervisor, surface.id);
           const isRenaming = renamingId === surface.id;
           const progress = surfaceProgress[surface.id];
           return (
@@ -330,6 +333,7 @@ export default function SurfaceTabBar({
                 insertIndex === index ? 'surface-tab--insert-before' : '',
                 insertIndex === index + 1 && index === surfaces.length - 1 ? 'surface-tab--insert-after' : '',
                 isAgent ? 'surface-tab--agent' : '',
+                isSupervised ? 'surface-tab--supervised' : '',
               ].filter(Boolean).join(' ')}
               role="tab"
               aria-selected={isActive}
@@ -388,6 +392,11 @@ export default function SurfaceTabBar({
                 />
               ) : (
                 <span className="surface-tab__label">{getSurfaceLabel(surface, agentMeta?.label, workspaceShell)}</span>
+              )}
+              {isSupervised && (
+                <span className="surface-tab__supervised-badge" title="该任务终端正在由 AI 监督">
+                  已被检测
+                </span>
               )}
               {surfaces.length > 1 && !isRenaming && (
                 <button

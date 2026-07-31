@@ -252,6 +252,17 @@
 .surface-tab--agent .surface-tab__label {
   color: rgba(var(--ui-accent-rgb), 0.8);
 }
+.surface-tab--supervised {
+  box-shadow: inset 0 -2px 0 #5fb85f;
+}
+.surface-tab__supervised-badge {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(95, 184, 95, 0.16);
+  color: #74c574;
+  font-size: 10px;
+  line-height: 14px;
+}
 
 /* ─── Drag and drop ──────────────────────────────────────────────────────── */
 

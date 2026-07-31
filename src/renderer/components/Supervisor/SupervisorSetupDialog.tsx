@@ -424,10 +424,6 @@ export default function SupervisorSetupDialog() {
       window.alert('请至少选择一个要监控的终端。');
       return;
     }
-    if (!taskDescription.trim()) {
-      window.alert('请填写任务说明，供监督 AI 理解要监督的工作。');
-      return;
-    }
     if (!stopWhen.trim()) {
       window.alert('请填写停止条件（方向型或具体条件型），供监督 AI 核对。');
       return;
@@ -453,10 +449,6 @@ export default function SupervisorSetupDialog() {
     const lanes = buildLanes();
     if (lanes.length === 0) {
       window.alert('请先至少选择一个要监控的终端。');
-      return;
-    }
-    if (!taskDescription.trim()) {
-      window.alert('请先填写任务说明。');
       return;
     }
     if (!stopWhen.trim()) {
@@ -514,7 +506,7 @@ export default function SupervisorSetupDialog() {
         </section>
 
         <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">计划文件（可选 · 任务背景参考 · Markdown/文本）</div>
+          <div className="supervisor-dialog__label">计划文件（可选 · 停止裁决参考 · Markdown/文本）</div>
           <div className="supervisor-dialog__plan-actions">
             <input
               className="supervisor-dialog__input"
@@ -538,7 +530,7 @@ export default function SupervisorSetupDialog() {
             )}
           </div>
           <div className="supervisor-dialog__hint">
-            仅把文件路径提供给专属监督 AI；它需要时可自行读取，文件正文不会粘贴进启动输入。不是停止条件或硬约束，不会注入工作终端，也不会覆盖任务说明、终端证据或人工决定。
+            仅把文件路径提供给专属监督 AI；每次停止裁决前会先检查计划是否更新，首次使用或有更新时才重新读取正文。文件正文不会粘贴进启动输入，也不会自动注入工作终端；监督 AI 会结合其中的范围、验收与约束、停止条件补充说明、终端证据和人工决定综合裁决。
           </div>
         </section>
 
@@ -590,18 +582,15 @@ export default function SupervisorSetupDialog() {
         </section>
 
         <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label supervisor-dialog__label--required">
-            任务说明 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
-          </div>
+          <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
           <textarea
             className="supervisor-dialog__textarea"
             rows={3}
             value={taskDescription}
             onChange={(e) => setTaskDescription(e.target.value)}
-            placeholder="例如：监督认证模块修复与验证，保持现有对外行为"
-            required
+            placeholder="例如：认证修复完成后，保持现有对外行为；以登录可用和测试通过作为结束参考"
           />
-          <div className="supervisor-dialog__hint">仅提供给该终端的监督 AI，用于理解正在审查的工作；不会注入工作终端。</div>
+          <div className="supervisor-dialog__hint">用于补充停止条件的范围、背景或验收语境，帮助监督 AI 判断何时适当结束；未填写时仅按停止条件和终端证据裁决。不会注入工作终端。</div>
         </section>
         <section className="supervisor-dialog__section">
           <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>

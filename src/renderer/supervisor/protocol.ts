@@ -73,7 +73,7 @@ export function supervisorTabTitle(laneLabel: string): string {
 /** Rules that make user approval the hard boundary for changing a task's route. */
 export function humanDecisionBoundary(): string[] {
   return [
-    '监督建议边界：只可评价当前任务说明和既有技术路线内的工作结果；计划文件仅作背景参考，不能自动向工作终端推进任务。',
+    '监督建议边界：只可评价当前终端任务、停止条件补充说明、计划文件和既有技术路线内的工作结果；计划文件属于停止裁决参考，但不能自动向工作终端推进任务。',
     '只有改任务方向/扩范围/换方案或依赖、不可逆或高影响操作（安全、权限、关键数据、生产或对外提交）、需求冲突，或缺少用户独有信息/授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
     '使用 needs-human 时附 --proposal-kind route-change 或 important；--reason 写清问题与判断依据，--next 写建议的下一步，并附 --impact、--alternatives。',
@@ -123,12 +123,13 @@ export function buildSupervisorBriefing(
 ): string {
   const { lane, state } = laneState;
   const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
+  const planFilePath = session.planFilePath.trim();
   const planBlock = session.planFilePath.trim()
     ? [
-        '## 计划文件（任务背景参考）',
-        `路径: ${session.planFilePath.trim()}`,
+        '## 计划文件（停止裁决参考 · 可更新）',
+        `路径: ${planFilePath}`,
         '',
-        '此路径用于提示任务背景。需要时可自行读取该文件；启动 briefing 不会附带或粘贴文件正文。它不是停止条件或硬约束。以当前任务说明、终端证据和人工明确指令为准；不要因文件内容自动扩展任务范围。',
+        '此文件是判断停止条件的重要参考。每次裁决前先检查文件是否更新（例如修改时间）；首次使用或发现更新时才重新读取正文，未更新可沿用已读取内容。启动 briefing 不会附带或粘贴文件正文。综合计划中的范围、验收与约束、停止条件补充说明、已确认条件和当前终端证据裁决；人工明确指令优先，且不要因计划文件自动向工作终端推进任务。',
         '',
       ]
     : [];
@@ -152,6 +153,19 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
+  const decisionReadStep = planFilePath
+    ? `1. 先检查计划文件（${planFilePath}）是否更新；首次使用或更新时重新读取，再 read-screen --surface ${lane.surfaceId} 查看当前证据。`
+    : `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`;
+  const decisionEvidence = planFilePath
+    ? '综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。'
+    : '综合停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。';
+  const stopContextBlock = session.taskDescription.trim()
+    ? [
+        '## 停止条件补充说明（可选）',
+        session.taskDescription.trim(),
+        '',
+      ]
+    : [];
 
   if (session.mode === 'unified') {
     const kind = session.stopWhenKind || 'concrete';
@@ -160,9 +174,7 @@ export function buildSupervisorBriefing(
       '',
       '工作终端由用户自行接收任务。你只观察和裁决，绝不向工作终端自动注入任务或使用 --next 推进。',
       '',
-      '## 任务说明',
-      session.taskDescription.trim() || '（未填写）',
-      '',
+      ...stopContextBlock,
       ...preconditionsBlock,
       ...planBlock,
       ...restoredHistoryBlock,
@@ -178,8 +190,8 @@ export function buildSupervisorBriefing(
       worker,
       '',
       '## 本轮裁决流程',
-      `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
-      '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+      decisionReadStep,
+      `2. 条件仅作参考；${decisionEvidence}`,
       '3. continue / rework 仅记录裁决，不得携带 --next；由用户决定是否另行向工作终端发送任务。',
       '',
       '## 规则',
@@ -203,6 +215,8 @@ export function buildSupervisorBriefing(
       '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, session.stopWhen),
       '',
+      ...stopContextBlock,
+      ...preconditionsBlock,
       ...planBlock,
       ...restoredHistoryBlock,
       '## 用户指令队列（已/将注入，勿改写内容）',
@@ -212,8 +226,8 @@ export function buildSupervisorBriefing(
       worker,
       '',
       '## 本轮裁决流程',
-      `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
-      '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+      decisionReadStep,
+      `2. 条件仅作参考；${decisionEvidence}`,
       '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
       '',
       '## 规则',
@@ -236,6 +250,8 @@ export function buildSupervisorBriefing(
     '## 目标',
     session.goal.trim() || '（未设置）',
     '',
+    ...stopContextBlock,
+    ...preconditionsBlock,
     ...planBlock,
     ...restoredHistoryBlock,
     '## 完成/停止条件参考（用于裁决，不是机械开关）',
@@ -249,8 +265,8 @@ export function buildSupervisorBriefing(
     worker,
     '',
     '## 本轮裁决流程',
-    `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
-    '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+    decisionReadStep,
+    `2. 条件仅作参考；${decisionEvidence}`,
     '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
     '',
     '## 规则',

@@ -9,7 +9,9 @@ import {
 } from '../../src/renderer/pipe-bridge';
 import {
   createDefaultSupervisorSession,
+  clearSupervisorLaneContext,
   createSupervisorSlice,
+  isSurfaceSupervised,
   type SupervisorLane,
   type SupervisorSlice,
 } from '../../src/renderer/store/supervisor-slice';
@@ -107,6 +109,62 @@ describe('supervisor isolation', () => {
     });
   });
 
+  it('omits the optional stop-condition context when it is blank', () => {
+    const session = createDefaultSupervisorSession();
+    const text = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
+
+    expect(text).not.toContain('停止条件补充说明（可选）');
+    expect(text).toContain('停止条件参考');
+
+    session.taskDescription = '登录成功后保留现有错误提示。';
+    expect(buildSupervisorBriefing(session, { lane: lane(), state: 'idle' }))
+      .toContain('## 停止条件补充说明（可选）\n登录成功后保留现有错误提示。');
+  });
+
+  it('clears only a restarted supervisor lane context', () => {
+    const monitored = lane({
+      currentTask: '修复登录',
+      steps: [{ id: 'step-1', prompt: '补测试', status: 'in_progress' }],
+      pendingSupervisorDeliveries: [{ id: 'delivery-1', kind: 'task-end', text: '已结束', task: '修复登录', createdAt: 1 }],
+      decisions: [{ ts: 1, task: '修复登录', outcome: 'continue', reason: '继续', next: '' }],
+      restoredHistory: '上一轮记录',
+      restoredFromSessionId: 'sup-old',
+      restoreSource: { surfaceId: 'old-worker', label: '旧终端', sessionId: 'sup-old' },
+      awaitingReview: true,
+      autoDecisionLimitReached: true,
+      autoDecisionsUsed: 2,
+    });
+
+    const restarted = clearSupervisorLaneContext(monitored, 'supervisor-new' as any);
+
+    expect(restarted).toMatchObject({
+      surfaceId: 'worker-a',
+      supervisorSurfaceId: 'supervisor-new',
+      currentTask: '',
+      steps: [],
+      pendingSupervisorDeliveries: [],
+      decisions: [],
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+    });
+    expect(restarted.restoredHistory).toBeUndefined();
+    expect(restarted.restoreSource).toBeUndefined();
+  });
+
+  it('marks a task terminal only while its supervision lane is active', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    session.lanes = [lane()];
+
+    expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(true);
+    session.active = false;
+    expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
+    session.active = true;
+    session.lanes[0].enabled = false;
+    expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
+  });
+
   it('names each visible supervisor tab after its worker lane', () => {
     expect(supervisorTabTitle('Auth worker')).toBe('AI 监督 · Auth worker');
   });
@@ -171,11 +229,14 @@ describe('supervisor isolation', () => {
       stepCount: 1,
     });
 
-    expect(briefing).toContain('计划文件（任务背景参考）');
+    expect(briefing).toContain('计划文件（停止裁决参考 · 可更新）');
     expect(briefing).toContain('路径: D:\\plans\\auth.md');
     expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
     expect(briefing).not.toContain('只允许改动 src/auth');
-    expect(briefing).toContain('不是停止条件或硬约束');
+    expect(briefing).toContain('每次裁决前先检查文件是否更新');
+    expect(briefing).toContain('首次使用或发现更新时才重新读取正文');
+    expect(briefing).toContain('先检查计划文件（D:\\plans\\auth.md）是否更新；首次使用或更新时重新读取');
+    expect(briefing).toContain('综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');
     expect(briefing).toContain('用户已确认、在本次监督会话内有效');

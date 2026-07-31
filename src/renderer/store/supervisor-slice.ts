@@ -124,7 +124,7 @@ export interface SupervisorSession {
   active: boolean;
   mode: SupervisorMode;
 
-  /** Human-readable scope for the supervisor only; never injected into workers. */
+  /** Optional context that clarifies the stopping condition for the supervisor only. */
   taskDescription: string;
   /** Environment facts the user has already confirmed for the supervisor only. */
   preconditions: string;
@@ -229,6 +229,39 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     allowUnknown: false,
     setupOpen: false,
   };
+}
+
+/** Keep the monitored terminal binding but drop every transient supervisor state. */
+export function clearSupervisorLaneContext(
+  lane: SupervisorLane,
+  supervisorSurfaceId: SurfaceId | null,
+): SupervisorLane {
+  return {
+    ...lane,
+    supervisorSurfaceId,
+    enabled: true,
+    steps: [],
+    autoStepsUsed: 0,
+    awaitingStopCheck: false,
+    stopConfirmed: false,
+    awaitingReview: false,
+    autoDecisionLimitReached: false,
+    autoDecisionsUsed: 0,
+    currentTask: '',
+    pendingSupervisorDeliveries: [],
+    decisions: [],
+    restoredHistory: undefined,
+    restoredFromSessionId: undefined,
+    restoreSource: undefined,
+  };
+}
+
+/** A task terminal is marked only while its lane is actively supervised. */
+export function isSurfaceSupervised(
+  session: Pick<SupervisorSession, 'active' | 'lanes'>,
+  surfaceId: SurfaceId,
+): boolean {
+  return session.active && session.lanes.some((lane) => lane.enabled && lane.surfaceId === surfaceId);
 }
 
 export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], SupervisorSlice> = (set, get) => ({
