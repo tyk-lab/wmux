@@ -119,6 +119,8 @@ export interface SupervisorSession {
   maxAutoSteps: number;
 
   lanes: SupervisorLane[];
+  /** Pinned workspace that provides the full-width supervisor session view. */
+  supervisorWorkspaceId?: WorkspaceId | null;
   supervisorLaunchCmd: string;
   pendingApprovals: PendingApproval[];
   log: SupervisorLogEntry[];
@@ -312,7 +314,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     }));
   },
   resetSupervisorSession() {
-    set({ supervisor: createDefaultSupervisorSession() });
+    set((s) => ({
+      supervisor: {
+        ...createDefaultSupervisorSession(),
+        // The pinned session shell is UI chrome, not task context. Keep it so
+        // “start over” opens a clean configuration in the same fixed session.
+        supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
+      },
+    }));
   },
   confirmStopCondition(laneId) {
     set((s) => ({

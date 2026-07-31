@@ -58,6 +58,8 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
 
 /** Tab title for the dedicated supervisor terminal. */
 export const SUPERVISOR_TAB_TITLE = 'AI 监督';
+/** Pinned workspace where the full supervisor session is expanded. */
+export const SUPERVISOR_WORKSPACE_TITLE = 'AI 监督';
 
 export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;

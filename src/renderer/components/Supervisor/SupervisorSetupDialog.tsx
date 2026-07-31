@@ -14,10 +14,12 @@ import {
   stopWhenKindHint,
   stopWhenKindLabel,
   SUPERVISOR_TAB_TITLE,
+  SUPERVISOR_WORKSPACE_TITLE,
   supervisorTabTitle,
 } from '../../supervisor/protocol';
 import { restoreLatestLaneHistory } from '../../supervisor/recording';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
+import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
 const MAX_PLAN_CHARS = 30_000;
@@ -78,6 +80,8 @@ export default function SupervisorSetupDialog() {
   const startSupervisor = useStore((s) => s.startSupervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const addSurface = useStore((s) => s.addSurface);
+  const createWorkspace = useStore((s) => s.createWorkspace);
+  const selectWorkspace = useStore((s) => s.selectWorkspace);
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -250,15 +254,28 @@ export default function SupervisorSetupDialog() {
       for (const terminal of terminals) existingTerminalIds.add(terminal.surfaceId);
     }
 
+    let supervisorWorkspace = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
+    if (!supervisorWorkspace) {
+      const workspaceId = createWorkspace({
+        title: SUPERVISOR_WORKSPACE_TITLE,
+        pinned: true,
+        splitTree: createLeaf(undefined, 'supervisor'),
+      });
+      patchSupervisor({ supervisorWorkspaceId: workspaceId });
+      supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+    }
+    const targetPaneId = supervisorWorkspace
+      ? getAllPaneIds(supervisorWorkspace.splitTree)[0]
+      : undefined;
+    if (!supervisorWorkspace || !targetPaneId) return lanes;
+
     return lanes.map((lane) => {
       if (
         (lane.supervisorSurfaceId && existingTerminalIds.has(lane.supervisorSurfaceId))
-        || !lane.workspaceId
-        || !lane.paneId
       ) {
         return lane;
       }
-      const supervisorSurfaceId = addSurface(lane.workspaceId, lane.paneId, 'terminal', {
+      const supervisorSurfaceId = addSurface(supervisorWorkspace.id, targetPaneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
         cwd: lane.projectDir,
         startupCommands,
@@ -333,6 +350,8 @@ export default function SupervisorSetupDialog() {
     }
     if (andStart) {
       startSupervisor();
+      const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
+      if (workspaceId) selectWorkspace(workspaceId);
       sendDedicatedBriefings();
     }
     else closeSupervisorSetup();
@@ -371,6 +390,8 @@ export default function SupervisorSetupDialog() {
       return;
     }
     closeSupervisorSetup();
+    const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
+    if (workspaceId) selectWorkspace(workspaceId);
     sendDedicatedBriefings();
   };
 

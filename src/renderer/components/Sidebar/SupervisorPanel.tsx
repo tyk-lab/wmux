@@ -2,12 +2,27 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { modeLabel, stopWhenKindLabel } from '../../supervisor/protocol';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
-import { appendSupervisorRecord } from '../../supervisor/recording';
+import {
+  appendSupervisorRecord,
+  formatSupervisorAuditTrail,
+  readSupervisorAuditTrail,
+} from '../../supervisor/recording';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
-import type { PaneId, WorkspaceId } from '../../../shared/types';
+import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
+import type { SupervisorLane } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
 
-export default function SupervisorPanel() {
+interface SupervisorPanelProps {
+  expanded?: boolean;
+  workspaceId?: WorkspaceId;
+  paneId?: PaneId;
+}
+
+function auditTabTitle(lane: SupervisorLane): string {
+  return `监督记录 · ${lane.label} · ${lane.surfaceId.slice(5, 13)}`;
+}
+
+export default function SupervisorPanel({ expanded = false, workspaceId, paneId }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const startSupervisor = useStore((s) => s.startSupervisor);
@@ -21,10 +36,14 @@ export default function SupervisorPanel() {
   const resetSupervisorSession = useStore((s) => s.resetSupervisorSession);
   const closeSurface = useStore((s) => s.closeSurface);
   const addSurface = useStore((s) => s.addSurface);
+  const setMarkdownContent = useStore((s) => s.setMarkdownContent);
+  const selectSurface = useStore((s) => s.selectSurface);
+  const selectWorkspace = useStore((s) => s.selectWorkspace);
   const workspaces = useStore((s) => s.workspaces);
   const [collapsed, setCollapsed] = useState(false);
+  const [loadingRecordLaneId, setLoadingRecordLaneId] = useState<string | null>(null);
 
-  if (supervisor.lanes.length === 0 && !supervisor.active) return null;
+  if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
   const enabled = supervisor.lanes.filter((l) => l.enabled);
   const pendingCount = supervisor.pendingApprovals.length;
@@ -40,6 +59,65 @@ export default function SupervisorPanel() {
   const missingDedicatedSupervisor = supervisor.lanes.some(
     (lane) => !lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId),
   );
+
+  const openSupervisorSession = () => {
+    const target = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
+    if (target) {
+      const hasSessionView = getAllPaneIds(target.splitTree).some((candidatePaneId) =>
+        findLeaf(target.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.type === 'supervisor'),
+      );
+      if (!hasSessionView) {
+        const targetPaneId = getAllPaneIds(target.splitTree)[0];
+        if (targetPaneId) addSurface(target.id, targetPaneId, 'supervisor');
+      }
+      selectWorkspace(target.id);
+      return;
+    }
+    openSupervisorSetup();
+  };
+
+  const openAuditTrail = async (lane: SupervisorLane) => {
+    setLoadingRecordLaneId(lane.id);
+    const trail = await readSupervisorAuditTrail(lane);
+    const title = auditTabTitle(lane);
+    let target: { workspaceId: WorkspaceId; paneId: PaneId; surfaceId: SurfaceId } | null = null;
+    for (const workspace of workspaces) {
+      for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+        const leaf = findLeaf(workspace.splitTree, candidatePaneId);
+        const surface = leaf?.surfaces.find((item) => item.type === 'markdown' && item.customTitle === title);
+        if (surface) {
+          target = { workspaceId: workspace.id, paneId: candidatePaneId, surfaceId: surface.id };
+          break;
+        }
+      }
+      if (target) break;
+    }
+    if (!target) {
+      const targetWorkspaceId = workspaceId || lane.workspaceId;
+      const targetPaneId = paneId || lane.paneId;
+      if (!targetWorkspaceId || !targetPaneId) {
+        appendSupervisorLog(lane.id, '读取记录失败', '找不到可放置记录页的会话窗格');
+        setLoadingRecordLaneId(null);
+        return;
+      }
+      const surfaceId = addSurface(targetWorkspaceId, targetPaneId, 'markdown', { customTitle: title });
+      if (!surfaceId) {
+        appendSupervisorLog(lane.id, '读取记录失败', '无法创建记录页');
+        setLoadingRecordLaneId(null);
+        return;
+      }
+      target = { workspaceId: targetWorkspaceId, paneId: targetPaneId, surfaceId };
+    }
+    setMarkdownContent(target.surfaceId, formatSupervisorAuditTrail(lane, trail), { dirty: false });
+    selectWorkspace(target.workspaceId);
+    const targetWorkspace = useStore.getState().workspaces.find(
+      (workspace) => workspace.id === target!.workspaceId,
+    );
+    const leaf = targetWorkspace ? findLeaf(targetWorkspace.splitTree, target.paneId) : undefined;
+    const index = leaf?.surfaces.findIndex((surface) => surface.id === target!.surfaceId) ?? -1;
+    if (index >= 0) selectSurface(target.workspaceId, target.paneId, index);
+    setLoadingRecordLaneId(null);
+  };
 
   const onApprove = (id: string) => {
     const item = approvePending(id);
@@ -92,6 +170,41 @@ export default function SupervisorPanel() {
     openSupervisorSetup();
   };
 
+  if (expanded && supervisor.lanes.length === 0 && !supervisor.active) {
+    return (
+      <div className="sup-panel sup-panel--empty">
+        <div className="sup-panel__empty-copy">尚未配置监督任务。</div>
+        <div className="sup-panel__actions">
+          <button type="button" className="sup-panel__btn-primary" onClick={openSupervisorSetup}>配置 AI 监督</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!expanded) {
+    return (
+      <div className="sup-panel sup-panel--compact" data-active={supervisor.active ? '1' : '0'}>
+        <button type="button" className="sup-panel__header" onClick={openSupervisorSession}>
+          <span className="sup-panel__dot" />
+          <span className="sup-panel__title">AI 监督</span>
+          <span className="sup-panel__status">{supervisor.active ? '运行中' : '已停止'}</span>
+          <span className="sup-panel__meta-right">{enabled.length} 通道 · 展开会话</span>
+        </button>
+        <div className="sup-panel__compact-actions">
+          <button type="button" onClick={openSupervisorSession}>打开</button>
+          <button type="button" onClick={openSupervisorSetup}>配置</button>
+          {supervisor.active ? (
+            <button type="button" onClick={() => stopSupervisor()}>停止</button>
+          ) : (
+            <button type="button" className="sup-panel__btn-primary" onClick={missingDedicatedSupervisor ? openSupervisorSetup : startSupervisor}>
+              {missingDedicatedSupervisor ? '创建 AI' : '启动'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="sup-panel"
@@ -102,7 +215,7 @@ export default function SupervisorPanel() {
         type="button"
         className="sup-panel__header"
         onClick={() => setCollapsed((c) => !c)}
-        title={collapsed ? '展开监督面板' : '折叠监督面板'}
+        title={collapsed ? '展开监督会话' : '折叠监督会话'}
       >
         <span className="sup-panel__dot" />
         <span className="sup-panel__title">AI 监督</span>
@@ -185,25 +298,19 @@ export default function SupervisorPanel() {
                       已恢复审计: {lane.restoredFromSessionId}
                     </div>
                   )}
-                  {(lane.decisions || []).length > 0 && (
-                    <details className="sup-panel__decisions">
-                      <summary>裁决记录（{lane.decisions?.length}）</summary>
-                      {lane.decisions?.slice(0, 6).map((decision, index) => (
-                        <div key={`${decision.ts}-${index}`} className="sup-panel__decision">
-                          <div className="sup-panel__decision-meta">
-                            <span>{new Date(decision.ts).toLocaleTimeString()}</span>
-                            <strong>{decision.outcome}</strong>
-                          </div>
-                          <div className="sup-panel__decision-task" title={decision.task}>
-                            任务: {decision.task}
-                          </div>
-                          <div className="sup-panel__decision-detail" title={decision.reason || decision.next}>
-                            {decision.reason || decision.next || '未附说明'}
-                          </div>
-                        </div>
-                      ))}
-                    </details>
-                  )}
+                  {(lane.decisions || []).length > 0 && (() => {
+                    const decision = lane.decisions![0];
+                    return (
+                      <div className="sup-panel__lane-decision" title={decision.reason || decision.next}>
+                        最新裁决：{decision.outcome} · {decision.reason || decision.next || '未附说明'}
+                      </div>
+                    );
+                  })()}
+                  <div className="sup-panel__lane-actions">
+                    <button type="button" onClick={() => void openAuditTrail(lane)} disabled={loadingRecordLaneId === lane.id}>
+                      {loadingRecordLaneId === lane.id ? '读取记录…' : '查看/刷新记录'}
+                    </button>
+                  </div>
                   {lane.awaitingStopCheck && !lane.stopConfirmed && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
                       <button type="button" onClick={() => rejectStopCondition(lane.id)}>

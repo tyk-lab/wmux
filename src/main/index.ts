@@ -21,7 +21,7 @@ import { ensureGrokHooks } from './grok-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
 import { applyHookToAgentState } from './agent-hook-bridge';
-import { appendSupervisorRecord, readLatestSupervisorHistory } from './supervisor-records';
+import { appendSupervisorRecord, readLatestSupervisorHistory, readSupervisorAuditTrail } from './supervisor-records';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
@@ -448,6 +448,12 @@ app.whenReady().then(() => {
   ipcMain.handle('supervisor:append-record', (_event, record) => appendSupervisorRecord(record));
   ipcMain.handle('supervisor:read-latest-history', (_event, options) =>
     readLatestSupervisorHistory(String(options?.projectDir || ''), {
+      surfaceId: String(options?.surfaceId || ''),
+      label: String(options?.terminalLabel || ''),
+    }),
+  );
+  ipcMain.handle('supervisor:read-audit-trail', (_event, options) =>
+    readSupervisorAuditTrail(String(options?.projectDir || ''), {
       surfaceId: String(options?.surfaceId || ''),
       label: String(options?.terminalLabel || ''),
     }),

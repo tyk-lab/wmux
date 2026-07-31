@@ -29,6 +29,16 @@ export interface SupervisorHistory {
   events: SupervisorAuditEvent[];
 }
 
+export interface SupervisorAuditSession {
+  sessionId: string;
+  createdAt: number;
+  events: SupervisorAuditEvent[];
+}
+
+export interface SupervisorAuditTrail {
+  sessions: SupervisorAuditSession[];
+}
+
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 const IGNORE_ENTRY = '.wmux/supervisor/';
 const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024;
@@ -81,6 +91,10 @@ function emptyHistory(): SupervisorHistory {
   return { sessionId: null, events: [] };
 }
 
+function emptyAuditTrail(): SupervisorAuditTrail {
+  return { sessions: [] };
+}
+
 function readSessionCreatedAt(directory: string): number {
   const sessionPath = path.join(directory, 'session.json');
   try {
@@ -126,6 +140,73 @@ function readEvents(recordPath: string): SupervisorAuditEvent[] {
   }
 }
 
+function readAuditSessions(projectDir: string): Array<SupervisorAuditSession & { directory: string }> {
+  if (!path.isAbsolute(projectDir)) return [];
+  const root = path.join(projectDir, '.wmux', 'supervisor');
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && SESSION_ID.test(entry.name))
+      .map((entry) => {
+        const directory = path.join(root, entry.name);
+        return {
+          sessionId: entry.name,
+          directory,
+          createdAt: readSessionCreatedAt(directory),
+          events: readEvents(path.join(directory, 'events.ndjson')),
+        };
+      })
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, MAX_HISTORY_SESSIONS);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Return all durable audit sessions belonging to exactly one terminal task.
+ * Unlike context recovery, reset tombstones remain visible here so users can
+ * audit why a fresh session started. A label fallback is allowed only when it
+ * maps to one historical surface, preserving terminal-context isolation.
+ */
+export function readSupervisorAuditTrail(
+  projectDir: string,
+  terminal: Pick<SupervisorRecord['terminal'], 'surfaceId' | 'label'>,
+): SupervisorAuditTrail {
+  if (!path.isAbsolute(projectDir) || !terminal.surfaceId || !terminal.label.trim()) return emptyAuditTrail();
+  const sessions = readAuditSessions(projectDir);
+
+  const exactSessions = sessions.map((session) => ({
+    ...session,
+    events: session.events.filter((event) => event.terminal.surfaceId === terminal.surfaceId),
+  })).filter((session) => session.events.length > 0);
+  if (exactSessions.length > 0) {
+    return {
+      sessions: exactSessions.map(({ sessionId, createdAt, events }) => ({
+        sessionId,
+        createdAt,
+        events: events.slice(-MAX_HISTORY_EVENTS),
+      })),
+    };
+  }
+
+  const labelSessions = sessions.map((session) => ({
+    ...session,
+    events: session.events.filter((event) => event.terminal.label === terminal.label),
+  })).filter((session) => session.events.length > 0);
+  const historicalSurfaceIds = new Set(
+    labelSessions.flatMap((session) => session.events.map((event) => event.terminal.surfaceId)),
+  );
+  if (historicalSurfaceIds.size !== 1) return emptyAuditTrail();
+
+  return {
+    sessions: labelSessions.map(({ sessionId, createdAt, events }) => ({
+      sessionId,
+      createdAt,
+      events: events.slice(-MAX_HISTORY_EVENTS),
+    })),
+  };
+}
+
 /**
  * Return the latest usable audit stream for exactly one terminal task.
  * A `session.abandoned` entry is a reset tombstone: it deliberately prevents
@@ -136,26 +217,8 @@ export function readLatestSupervisorHistory(
   terminal: Pick<SupervisorRecord['terminal'], 'surfaceId' | 'label'>,
 ): SupervisorHistory {
   if (!path.isAbsolute(projectDir) || !terminal.surfaceId || !terminal.label.trim()) return emptyHistory();
-  const root = path.join(projectDir, '.wmux', 'supervisor');
-
-  let sessions: Array<{ sessionId: string; directory: string; createdAt: number }>;
-  try {
-    sessions = fs.readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && SESSION_ID.test(entry.name))
-      .map((entry) => {
-        const directory = path.join(root, entry.name);
-        return { sessionId: entry.name, directory, createdAt: readSessionCreatedAt(directory) };
-      })
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, MAX_HISTORY_SESSIONS);
-  } catch {
-    return emptyHistory();
-  }
-
-  const sessionEvents = sessions.map((session) => ({
-    ...session,
-    events: readEvents(path.join(session.directory, 'events.ndjson')),
-  }));
+  const sessionEvents = readAuditSessions(projectDir);
+  if (sessionEvents.length === 0) return emptyHistory();
 
   for (const session of sessionEvents) {
     const matching = session.events.filter((event) => event.terminal.surfaceId === terminal.surfaceId);

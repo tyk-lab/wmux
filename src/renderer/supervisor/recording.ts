@@ -14,6 +14,16 @@ interface HistoryResult {
   events: AuditEvent[];
 }
 
+export interface SupervisorAuditTrailSession {
+  sessionId: string;
+  createdAt: number;
+  events: AuditEvent[];
+}
+
+export interface SupervisorAuditTrail {
+  sessions: SupervisorAuditTrailSession[];
+}
+
 export interface RestoredLaneHistory {
   currentTask?: string;
   decisions: SupervisorDecision[];
@@ -34,6 +44,71 @@ function payloadText(payload: Record<string, unknown>, key: string): string {
 
 function timestamp(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+}
+
+function markdownText(value: string): string {
+  return value.replace(/[\\`]/g, '\\$&').replace(/\r?\n/g, '  \n');
+}
+
+function eventMarkdown(event: AuditEvent): string | null {
+  const payload = event.payload || {};
+  const at = timestamp(event.ts);
+  if (event.type === 'worker.task') {
+    const task = payloadText(payload, 'task');
+    return task ? `### ${at} · 任务\n\n${markdownText(task)}` : null;
+  }
+  if (event.type === 'worker.lifecycle') {
+    const lifecycle = payloadText(payload, 'event') || '未知';
+    const message = payloadText(payload, 'message');
+    return `### ${at} · 终端事件：${markdownText(lifecycle)}${message ? `\n\n${markdownText(message)}` : ''}`;
+  }
+  if (event.type === 'supervisor.decision') {
+    const outcome = payloadText(payload, 'outcome') || '未知';
+    const reason = payloadText(payload, 'reason');
+    const next = payloadText(payload, 'next');
+    return [
+      `### ${at} · 裁决：${markdownText(outcome)}`,
+      reason ? `- 原因：${markdownText(reason)}` : '- 原因：未附说明',
+      next ? `- 下一步：${markdownText(next)}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  if (event.type === 'session.abandoned') {
+    const reason = payloadText(payload, 'reason') || '用户选择重头再来';
+    return `### ${at} · 已废除旧上下文\n\n${markdownText(reason)}`;
+  }
+  if (event.type === 'session.started') {
+    return `### ${at} · 监督会话启动`;
+  }
+  return null;
+}
+
+/** Render durable, terminal-isolated audit history into a pathless Markdown tab. */
+export function formatSupervisorAuditTrail(lane: SupervisorLane, trail: SupervisorAuditTrail): string {
+  const auditPath = lane.projectDir ? `${lane.projectDir}\\.wmux\\supervisor` : '（尚未获得终端工作目录）';
+  const header = [
+    `# 监督记录 · ${markdownText(lane.label)}`,
+    '',
+    `- 工作终端：\`${markdownText(lane.surfaceId)}\``,
+    `- 审计目录：\`${markdownText(auditPath)}\``,
+    `- 刷新时间：${timestamp(Date.now())}`,
+    '',
+    '> 此页只读入审计流；“重头再来”会保留旧记录，但不会恢复其监督上下文。',
+  ];
+  if (!trail.sessions.length) {
+    return [...header, '', '> 尚未找到该终端的已落盘监督记录。'].join('\n');
+  }
+
+  const sessions = trail.sessions.flatMap((session) => {
+    const events = session.events.map(eventMarkdown).filter((entry): entry is string => !!entry);
+    return [
+      '',
+      `## 会话 \`${markdownText(session.sessionId)}\``,
+      '',
+      `开始：${timestamp(session.createdAt)}`,
+      ...(events.length ? ['', ...events] : ['', '暂无可展示的事件。']),
+    ];
+  });
+  return [...header, ...sessions].join('\n');
 }
 
 /** Convert durable audit entries into the compact context a replacement supervisor needs. */
@@ -103,6 +178,24 @@ export async function restoreLatestLaneHistory(lane: SupervisorLane): Promise<Re
   } catch (err) {
     console.warn('[supervisor] audit restore failed', err);
     return null;
+  }
+}
+
+/** Read all durable records for one terminal; ambiguous same-name terminals stay isolated. */
+export async function readSupervisorAuditTrail(lane: SupervisorLane): Promise<SupervisorAuditTrail> {
+  if (!lane.projectDir) return { sessions: [] };
+  const api = (window as any).wmux?.supervisor;
+  if (!api?.readAuditTrail) return { sessions: [] };
+  try {
+    const trail = await api.readAuditTrail({
+      projectDir: lane.projectDir,
+      surfaceId: lane.surfaceId,
+      terminalLabel: lane.label,
+    }) as Partial<SupervisorAuditTrail>;
+    return { sessions: Array.isArray(trail?.sessions) ? trail.sessions : [] };
+  } catch (err) {
+    console.warn('[supervisor] audit trail read failed', err);
+    return { sessions: [] };
   }
 }
 

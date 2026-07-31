@@ -12,7 +12,7 @@ import {
   buildSupervisorBriefing,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
-import { summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
+import { formatSupervisorAuditTrail, summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
 
 function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   return {
@@ -134,5 +134,24 @@ describe('supervisor isolation', () => {
       restoredFromSessionId: 'sup-old',
       decisions: [{ task: '修复登录', outcome: 'rework', reason: '缺少测试', next: '补单测' }],
     });
+  });
+
+  it('formats a terminal-isolated audit trail for a separate record tab', () => {
+    const text = formatSupervisorAuditTrail(lane({ projectDir: 'D:\\repo' }), {
+      sessions: [{
+        sessionId: 'sup-a',
+        createdAt: 1,
+        events: [
+          { ts: 2, type: 'worker.task', payload: { task: '修复登录' } },
+          { ts: 3, type: 'supervisor.decision', payload: { outcome: 'complete', reason: '测试通过' } },
+          { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
+        ],
+      }],
+    });
+
+    expect(text).toContain('监督记录 · Auth worker');
+    expect(text).toContain('裁决：complete');
+    expect(text).toContain('已废除旧上下文');
+    expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });
 });

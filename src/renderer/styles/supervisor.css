@@ -218,6 +218,19 @@
 
 /* ── Sidebar panel ──────────────────────────────────────────────────────── */
 
+.supervisor-session-pane {
+  height: 100%;
+  overflow: auto;
+  padding: 18px;
+  box-sizing: border-box;
+  background: var(--ui-bg-0, #181818);
+}
+
+.supervisor-session-pane .sup-panel {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
 .sup-panel {
   margin: 4px 6px 6px;
   border-radius: 8px;
@@ -230,6 +243,47 @@
 .sup-panel[data-active='1'] {
   border-color: rgba(80, 200, 140, 0.35);
   background: rgba(80, 200, 140, 0.06);
+}
+
+.sup-panel--compact {
+  overflow: visible;
+}
+
+.sup-panel--empty {
+  max-width: 640px;
+}
+
+.sup-panel__empty-copy {
+  padding: 16px 12px 4px;
+  font-size: 13px;
+  opacity: 0.72;
+}
+
+.sup-panel__compact-actions,
+.sup-panel__lane-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.sup-panel__compact-actions button,
+.sup-panel__lane-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  cursor: pointer;
+}
+
+.sup-panel__lane-actions {
+  padding: 5px 0 0;
+}
+
+.sup-panel__lane-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .sup-panel__header {
@@ -323,6 +377,16 @@
   font-size: 10px;
   line-height: 1.35;
   opacity: 0.62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__lane-decision {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.7;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

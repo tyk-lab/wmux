@@ -9,7 +9,7 @@ export type SplitNode =
   | { type: 'leaf'; paneId: PaneId; surfaces: SurfaceRef[]; activeSurfaceIndex: number }
   | { type: 'branch'; direction: 'horizontal' | 'vertical'; ratio: number; children: [SplitNode, SplitNode] };
 
-export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff';
+export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor';
 
 export interface SurfaceRef {
   id: SurfaceId;

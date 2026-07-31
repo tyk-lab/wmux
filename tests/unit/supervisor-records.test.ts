@@ -2,7 +2,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendSupervisorRecord, readLatestSupervisorHistory } from '../../src/main/supervisor-records';
+import {
+  appendSupervisorRecord,
+  readLatestSupervisorHistory,
+  readSupervisorAuditTrail,
+} from '../../src/main/supervisor-records';
 
 const tempDirs: string[] = [];
 
@@ -79,5 +83,45 @@ describe('supervisor records', () => {
 
     expect(readLatestSupervisorHistory(project, { surfaceId: 'surf-new', label: 'Codex' }))
       .toEqual({ sessionId: null, events: [] });
+  });
+
+  it('lists every matching audit session without mixing terminals that share a label', () => {
+    const project = projectDir();
+    appendSupervisorRecord({
+      sessionId: 'sup-first', projectDir: project, type: 'worker.task', ts: 100,
+      terminal: { surfaceId: 'surf-a', label: 'Codex' }, payload: { task: '第一个任务' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-second', projectDir: project, type: 'supervisor.decision', ts: 200,
+      terminal: { surfaceId: 'surf-a', label: 'Codex' }, payload: { outcome: 'complete', reason: '已完成' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-other', projectDir: project, type: 'worker.task', ts: 300,
+      terminal: { surfaceId: 'surf-b', label: 'Codex' }, payload: { task: '不得混入' },
+    });
+
+    const trail = readSupervisorAuditTrail(project, { surfaceId: 'surf-a', label: 'Codex' });
+    expect(trail.sessions.map((session) => session.sessionId)).toEqual(['sup-second', 'sup-first']);
+    expect(trail.sessions.flatMap((session) => session.events.map((event) => event.terminal.surfaceId)))
+      .toEqual(['surf-a', 'surf-a']);
+  });
+
+  it('keeps reset markers visible in the audit trail while blocking ambiguous fallback', () => {
+    const project = projectDir();
+    const terminal = { surfaceId: 'surf-a', label: 'Codex' };
+    appendSupervisorRecord({
+      sessionId: 'sup-reset', projectDir: project, type: 'worker.task', ts: 100,
+      terminal, payload: { task: '旧任务' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reset', projectDir: project, type: 'session.abandoned', ts: 110,
+      terminal, payload: { reason: '用户选择重头再来' },
+    });
+
+    const trail = readSupervisorAuditTrail(project, terminal);
+    expect(trail.sessions[0].events.map((event) => event.type))
+      .toEqual(['worker.task', 'session.abandoned']);
+    expect(readSupervisorAuditTrail(project, { surfaceId: 'surf-new', label: 'Codex' }))
+      .toEqual({ sessions: [{ sessionId: 'sup-reset', createdAt: 100, events: trail.sessions[0].events }] });
   });
 });
