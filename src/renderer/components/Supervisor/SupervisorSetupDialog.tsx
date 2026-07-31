@@ -136,6 +136,7 @@ export default function SupervisorSetupDialog() {
   }, [workspaces, agentMeta, agentStates, supervisor.lanes]);
 
   const [taskDescription, setTaskDescription] = useState(supervisor.taskDescription || '');
+  const [preconditions, setPreconditions] = useState(supervisor.preconditions || '');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [stopWhen, setStopWhen] = useState(supervisor.stopWhen);
   const [stopWhenKind, setStopWhenKind] = useState<StopWhenKind>(
@@ -161,6 +162,7 @@ export default function SupervisorSetupDialog() {
   useEffect(() => {
     if (!setupOpen) return;
     setTaskDescription(supervisor.taskDescription || '');
+    setPreconditions(supervisor.preconditions || '');
     setStopWhen(supervisor.stopWhen || '');
     setStopWhenKind(supervisor.stopWhenKind || 'concrete');
     setPlanFilePath(supervisor.planFilePath || '');
@@ -274,6 +276,7 @@ export default function SupervisorSetupDialog() {
     patchSupervisor({
       mode: 'unified',
       taskDescription,
+      preconditions,
       stopWhen,
       stopWhenKind,
       planFilePath,
@@ -449,13 +452,13 @@ export default function SupervisorSetupDialog() {
         </section>
 
         <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
+          <div className="supervisor-dialog__label">计划文件（可选 · 任务背景参考 · Markdown/文本）</div>
           <div className="supervisor-dialog__plan-actions">
             <input
               className="supervisor-dialog__input"
               value={planFilePath}
               readOnly
-              placeholder="未选择；选择后作为监督 AI 的方向与约束"
+              placeholder="未选择；选择后帮助监督 AI 理解任务大致方向"
             />
             <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
               选择文件
@@ -474,7 +477,7 @@ export default function SupervisorSetupDialog() {
             )}
           </div>
           <div className="supervisor-dialog__hint">
-            仅供专属监督 AI 读取；与任务说明冲突时，以计划文件为准，不会注入工作终端。
+            仅供专属监督 AI 读取，用于了解任务大致方向；不是停止条件或硬约束，不会注入工作终端，也不会覆盖任务说明、终端证据或人工决定。
           </div>
         </section>
 
@@ -538,6 +541,17 @@ export default function SupervisorSetupDialog() {
             required
           />
           <div className="supervisor-dialog__hint">仅提供给该终端的监督 AI，用于理解正在审查的工作；不会注入工作终端。</div>
+        </section>
+        <section className="supervisor-dialog__section">
+          <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
+          <textarea
+            className="supervisor-dialog__textarea"
+            rows={2}
+            value={preconditions}
+            onChange={(e) => setPreconditions(e.target.value)}
+            placeholder={'例如：设备已上电；急停和防护措施已确认；测试台处于安全状态'}
+          />
+          <div className="supervisor-dialog__hint">仅供监督 AI 了解当前环境与安全前提，不是任务或停止条件；若终端证据与其冲突，应交给你确认。</div>
         </section>
         <section className="supervisor-dialog__section">
           <div className="supervisor-dialog__label">停止条件类型（监督 AI 裁决参考）</div>

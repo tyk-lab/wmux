@@ -139,6 +139,7 @@ describe('supervisor isolation', () => {
       ...createDefaultSupervisorSession(),
       planFilePath: 'D:\\plans\\auth.md',
       planFileContent: '只允许改动 src/auth，必须保留现有 API。',
+      preconditions: '设备已上电，安全措施已确认。',
     };
     const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
     const workerPrompt = buildInjectedPrompt({
@@ -149,9 +150,13 @@ describe('supervisor isolation', () => {
       stepCount: 1,
     });
 
-    expect(briefing).toContain('计划文件（最高任务方向与约束）');
+    expect(briefing).toContain('计划文件（任务背景参考）');
     expect(briefing).toContain('只允许改动 src/auth');
+    expect(briefing).toContain('不是停止条件或硬约束');
+    expect(briefing).toContain('已确认的前置条件 / 环境信息');
+    expect(briefing).toContain('设备已上电');
     expect(workerPrompt).not.toContain('只允许改动 src/auth');
+    expect(workerPrompt).not.toContain('设备已上电');
   });
 
   it('injects recovered audit context only into its dedicated supervisor briefing', () => {

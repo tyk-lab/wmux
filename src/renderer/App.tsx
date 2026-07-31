@@ -926,6 +926,7 @@ export default function App() {
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
         taskDescription: session.taskDescription,
+        preconditions: session.preconditions,
         stopWhen: session.stopWhen,
         supervisorModel: session.supervisorModel || 'Codex 默认模型',
         supervisorReasoningEffort: session.supervisorReasoningEffort || 'Codex 默认推理程度',

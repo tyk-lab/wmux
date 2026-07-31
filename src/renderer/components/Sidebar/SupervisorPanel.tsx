@@ -161,7 +161,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       proposalKind: item.proposalKind || 'important',
     });
     if (lane.supervisorSurfaceId) {
-      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请保持当前任务说明与计划方向继续监督。\n', true);
+      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请以当前任务说明和终端证据继续监督，计划文件仅作背景参考。\n', true);
     }
   };
 
@@ -264,6 +264,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
               任务说明: {supervisor.taskDescription}
+            </div>
+          )}
+          {supervisor.preconditions.trim() && (
+            <div className="sup-panel__goal" title={supervisor.preconditions}>
+              前置条件: {supervisor.preconditions}
             </div>
           )}
           {supervisor.stopWhen.trim() && (

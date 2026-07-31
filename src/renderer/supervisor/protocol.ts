@@ -72,7 +72,7 @@ export function supervisorTabTitle(laneLabel: string): string {
 /** Rules that make user approval the hard boundary for changing a task's route. */
 export function humanDecisionBoundary(): string[] {
   return [
-    '监督建议边界：只可评价当前任务说明、计划文件和既有技术路线内的工作结果，不能自动向工作终端推进任务。',
+    '监督建议边界：只可评价当前任务说明和既有技术路线内的工作结果；计划文件仅作背景参考，不能自动向工作终端推进任务。',
     '不得把改任务方向、扩范围、换技术方案/依赖、关键数据操作、对外提交或证据不足包装成 continue / rework。',
     '遇到上述情况必须提交 needs-human，并附 --proposal-kind route-change 或 important、--reason、--impact、--alternatives 和建议的 --next。',
     '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',
@@ -123,11 +123,20 @@ export function buildSupervisorBriefing(
   const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
   const planBlock = session.planFileContent.trim()
     ? [
-        '## 计划文件（最高任务方向与约束）',
+        '## 计划文件（任务背景参考）',
         `文件: ${session.planFilePath || '（未命名计划）'}`,
         session.planFileContent.trim(),
         '',
-        '计划文件与任务说明冲突时，以计划文件为准；但不得绕过安全边界或人类明确指令。',
+        '此文件用于理解任务大致方向，不是停止条件或硬约束。以当前任务说明、终端证据和人工明确指令为准；不要因文件内容自动扩展任务范围。',
+        '',
+      ]
+    : [];
+  const preconditionsBlock = session.preconditions.trim()
+    ? [
+        '## 已确认的前置条件 / 环境信息',
+        session.preconditions.trim(),
+        '',
+        '这些信息仅用于理解当前环境与安全前提，不是任务或停止条件；若当前终端证据与其冲突，说明疑点并交给人类确认。',
         '',
       ]
     : [];
@@ -152,6 +161,7 @@ export function buildSupervisorBriefing(
       '## 任务说明',
       session.taskDescription.trim() || '（未填写）',
       '',
+      ...preconditionsBlock,
       ...planBlock,
       ...restoredHistoryBlock,
       '## 停止条件参考（用于裁决，不是机械开关）',

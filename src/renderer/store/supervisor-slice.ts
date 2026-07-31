@@ -111,6 +111,8 @@ export interface SupervisorSession {
 
   /** Human-readable scope for the supervisor only; never injected into workers. */
   taskDescription: string;
+  /** Environment facts the user has already confirmed for the supervisor only. */
+  preconditions: string;
 
   /**
    * direct: raw multi-line instructions (also mirrored into lane.steps on start).
@@ -185,6 +187,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     active: false,
     mode: 'unified',
     taskDescription: '',
+    preconditions: '',
     directInstructions: '',
     stopWhen: '',
     stopWhenKind: 'concrete',
