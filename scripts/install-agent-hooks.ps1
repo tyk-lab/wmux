@@ -4,7 +4,7 @@
   Install wmux turn-level hooks for Claude / Kimi / Codex / Grok / OpenCode.
 
 .DESCRIPTION
-  Ensures dist/ is built, then runs `wmux install-hooks` which writes:
+  Rebuilds and synchronizes the CLI / Hook helper, then runs `wmux install-hooks` which writes:
     - ~/.claude/settings.json          (Claude Code)
     - ~/.kimi-code/config.toml         (Kimi)
     - ~/.codex/hooks.json              (Codex — may need /hooks trust)
@@ -17,7 +17,7 @@
   Skip OpenCode plugin install.
 
 .PARAMETER SkipBuild
-  Do not run `npm run build:main` even if dist is missing/stale.
+  Do not run `npm run build:main`; uses the existing dist/ output instead.
 #>
 param(
   [switch]$NoOpencode,
@@ -29,36 +29,33 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root
 
 $cli = Join-Path $Root 'dist\cli\wmux.js'
-$hook = Join-Path $Root 'resources\cli\wmux-hook.js'
+$builtHook = Join-Path $Root 'dist\cli\wmux-hook.js'
+$resourceHook = Join-Path $Root 'resources\cli\wmux-hook.js'
 
-if (-not (Test-Path -LiteralPath $hook)) {
+if (-not (Test-Path -LiteralPath $resourceHook)) {
   Write-Error "Missing resources/cli/wmux-hook.js under $Root"
 }
 
 if (-not $SkipBuild) {
-  $needBuild = -not (Test-Path -LiteralPath $cli)
-  if (-not $needBuild) {
-    $cliTime = (Get-Item -LiteralPath $cli).LastWriteTimeUtc
-    $srcDirs = @(
-      (Join-Path $Root 'src\main'),
-      (Join-Path $Root 'src\cli')
-    )
-    foreach ($dir in $srcDirs) {
-      $newer = Get-ChildItem -LiteralPath $dir -Recurse -File -Filter '*.ts' -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTimeUtc -gt $cliTime } |
-        Select-Object -First 1
-      if ($newer) { $needBuild = $true; break }
-    }
-  }
-  if ($needBuild) {
-    Write-Host '→ npm run build:main'
-    npm run build:main
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  }
+  # Always rebuild before synchronizing: a copied worktree can preserve stale
+  # mtimes even while dist/ contains an older Hook helper.
+  Write-Host '→ npm run build:main'
+  npm run build:main
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 if (-not (Test-Path -LiteralPath $cli)) {
   Write-Error "dist/cli/wmux.js not found. Run: npm run build:main"
+}
+if (-not (Test-Path -LiteralPath $builtHook)) {
+  Write-Error "dist/cli/wmux-hook.js not found. Run: npm run build:main"
+}
+
+$builtHash = (Get-FileHash -LiteralPath $builtHook -Algorithm SHA256).Hash
+$resourceHash = (Get-FileHash -LiteralPath $resourceHook -Algorithm SHA256).Hash
+if ($builtHash -ne $resourceHash) {
+  Write-Host '→ Sync resources/cli/wmux-hook.js'
+  Copy-Item -LiteralPath $builtHook -Destination $resourceHook -Force
 }
 
 $argv = @($cli, 'install-hooks')

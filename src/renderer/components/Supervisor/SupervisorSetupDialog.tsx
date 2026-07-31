@@ -17,6 +17,7 @@ import {
   supervisorTabTitle,
 } from '../../supervisor/protocol';
 import { restoreLatestLaneHistory } from '../../supervisor/recording';
+import { sendToSurface } from '../../supervisor/supervisor-engine';
 import '../../styles/supervisor.css';
 
 const MAX_PLAN_CHARS = 30_000;
@@ -132,7 +133,7 @@ export default function SupervisorSetupDialog() {
   const [planFileContent, setPlanFileContent] = useState(supervisor.planFileContent);
   const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
-  const [maxAuto, setMaxAuto] = useState(supervisor.maxAutoSteps || 8);
+  const [maxAuto, setMaxAuto] = useState(supervisor.maxAutoSteps ?? 3);
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -146,9 +147,9 @@ export default function SupervisorSetupDialog() {
     setDoneWhen(supervisor.doneWhen || '');
     setPlanFilePath(supervisor.planFilePath || '');
     setPlanFileContent(supervisor.planFileContent || '');
-    setRestoreAuditHistory(supervisor.restoreAuditHistory !== false);
+    setRestoreAuditHistory(supervisor.restoreAuditHistory === true);
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
-    setMaxAuto(supervisor.maxAutoSteps || 8);
+    setMaxAuto(supervisor.maxAutoSteps ?? 3);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
 
@@ -285,7 +286,7 @@ export default function SupervisorSetupDialog() {
             lane,
             state: String(states[lane.surfaceId]?.state || 'unknown'),
           });
-          (window as any).wmux?.pty?.write?.(lane.supervisorSurfaceId, text + '\n');
+          sendToSurface(lane.supervisorSurfaceId, text, true);
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
@@ -374,13 +375,12 @@ export default function SupervisorSetupDialog() {
   };
 
   return (
-    <div className="confirm-dialog__overlay" onClick={closeSupervisorSetup}>
+    <div className="confirm-dialog__overlay supervisor-dialog__overlay">
       <div
         className="supervisor-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="AI 监督"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="supervisor-dialog__title">AI 监督</div>
         <div className="supervisor-dialog__sub">
@@ -466,7 +466,7 @@ export default function SupervisorSetupDialog() {
             <span className="supervisor-dialog__row-main">
               <span className="supervisor-dialog__row-label">恢复最近审计上下文</span>
               <span className="supervisor-dialog__row-meta">
-                默认开启：只恢复同项目的同一终端；若终端 ID 已改变，仅在终端标签没有歧义时恢复。
+                默认关闭：只恢复同项目的同一终端；若终端 ID 已改变，仅在终端标签没有歧义时恢复。
               </span>
             </span>
           </label>
@@ -488,7 +488,7 @@ export default function SupervisorSetupDialog() {
               />
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">停止条件类型（监督 AI 按此方式判断）</div>
+              <div className="supervisor-dialog__label">停止条件类型（监督 AI 裁决参考）</div>
               <div className="supervisor-dialog__freedom">
                 {(['concrete', 'direction'] as StopWhenKind[]).map((k) => (
                   <label
@@ -513,7 +513,7 @@ export default function SupervisorSetupDialog() {
             </section>
             <section className="supervisor-dialog__section">
               <div className="supervisor-dialog__label">
-                停止条件（必填 · {stopWhenKindLabel(stopWhenKind)}）
+                停止条件参考（必填 · {stopWhenKindLabel(stopWhenKind)}）
               </div>
               <textarea
                 className="supervisor-dialog__textarea"
@@ -527,7 +527,7 @@ export default function SupervisorSetupDialog() {
                 }
               />
               <div className="supervisor-dialog__hint">
-                不注入工作终端。指令跑完后由监督 AI 判断是否达标；你在侧栏最终点「已达停止条件」才停止注入。
+                不注入工作终端。每轮结束后，监督 AI 先查看终端证据，再把它作为参考决定继续、返工、完成或交给人工。
               </div>
             </section>
             <section className="supervisor-dialog__section">
@@ -553,7 +553,7 @@ export default function SupervisorSetupDialog() {
               />
             </section>
             <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">完成/停止条件类型（监督 AI 按此判断）</div>
+              <div className="supervisor-dialog__label">完成/停止条件类型（监督 AI 裁决参考）</div>
               <div className="supervisor-dialog__freedom">
                 {(['concrete', 'direction'] as StopWhenKind[]).map((k) => (
                   <label
@@ -578,7 +578,7 @@ export default function SupervisorSetupDialog() {
             </section>
             <section className="supervisor-dialog__section">
               <div className="supervisor-dialog__label">
-                完成/停止条件（必填 · {stopWhenKindLabel(stopWhenKind)}）
+                完成/停止条件参考（必填 · {stopWhenKindLabel(stopWhenKind)}）
               </div>
               <textarea
                 className="supervisor-dialog__textarea"
@@ -592,7 +592,7 @@ export default function SupervisorSetupDialog() {
                 }
               />
               <div className="supervisor-dialog__hint">
-                与直接注入相同：监督 AI 判断是否达标；侧栏「已达停止条件」后才停自动决策。
+                与直接注入相同：终端任务结束后，监督 AI 结合证据与此参考决定下一步；`complete` 或侧栏确认才停止自动决策。
               </div>
             </section>
             <div className="supervisor-dialog__grid">
@@ -619,7 +619,7 @@ export default function SupervisorSetupDialog() {
             </div>
             <section className="supervisor-dialog__section">
               <label className="supervisor-dialog__inline">
-                每通道最大自动决策步数
+                每通道最大自动决策步数（默认 3）
                 <input
                   type="number"
                   min={1}
@@ -628,6 +628,7 @@ export default function SupervisorSetupDialog() {
                   onChange={(e) => setMaxAuto(Math.max(1, Number(e.target.value) || 1))}
                 />
               </label>
+              <div className="supervisor-dialog__hint">每次自动决策都必须等工作终端本轮结束并完成监督裁决后才会继续。</div>
             </section>
             <section className="supervisor-dialog__section">
               <div className="supervisor-dialog__label">监督 AI 启动命令（每个终端独立启动，默认 codex）</div>

@@ -127,15 +127,15 @@ describe('supervisor-engine', () => {
     expect(actions.some((a) => a.type === 'request_stop_check')).toBe(true);
     expect(actions.some((a) => a.type === 'notify_supervisor')).toBe(true);
     const sup = actions.find((a) => a.type === 'notify_supervisor');
-    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('具体条件型');
-    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('结论: 达到');
+    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('条件参考: 单测通过');
+    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('可收尾用 complete');
     const n = actions.find((a) => a.type === 'notify_user');
     expect(n && n.type === 'notify_user' && n.disableLane).toBe(false);
     expect(n && n.type === 'notify_user' && n.detail).toContain('单测通过');
     expect(actions.some((a) => a.type === 'dispatch')).toBe(false);
   });
 
-  it('direct stop check for direction kind uses direction rubric', () => {
+  it('direct stop check keeps the direction reference compact', () => {
     const { actions } = tickLane({
       session: session({
         mode: 'direct',
@@ -149,7 +149,8 @@ describe('supervisor-engine', () => {
       hasPendingApproval: false,
     });
     const sup = actions.find((a) => a.type === 'notify_supervisor');
-    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('方向型');
+    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('条件参考: 登录可用');
+    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('wmux supervisor decide');
   });
 
   it('direct awaiting stop check does not re-notify spam', () => {
@@ -202,7 +203,7 @@ describe('supervisor-engine', () => {
     });
     expect(actions.some((a) => a.type === 'request_stop_check')).toBe(true);
     const sup = actions.find((a) => a.type === 'notify_supervisor');
-    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('方向型');
+    expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('条件参考: 登录可用');
     expect(sup && sup.type === 'notify_supervisor' && sup.text).toContain('目标追逐');
   });
 

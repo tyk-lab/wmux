@@ -77,6 +77,14 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('codex');
   });
 
+  it('limits goal-chase to three autonomous decisions by default', () => {
+    expect(createDefaultSupervisorSession().maxAutoSteps).toBe(3);
+  });
+
+  it('does not restore audit history unless the user enables it', () => {
+    expect(createDefaultSupervisorSession().restoreAuditHistory).toBe(false);
+  });
+
   it('gives the selected plan to the dedicated supervisor but not the worker', () => {
     const session = {
       ...createDefaultSupervisorSession(),

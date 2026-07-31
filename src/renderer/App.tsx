@@ -451,6 +451,12 @@ function handleAgentLifecycleEvent(
 }
 
 /** Route compact Hook facts to the supervising terminal without echoing them to workers. */
+function resolveSupervisorProjectDir(lane: { projectDir?: string }, cwd: unknown): string | undefined {
+  const reported = typeof cwd === 'string' ? cwd.trim() : '';
+  if (/^[A-Za-z]:[\\/]/.test(reported) || reported.startsWith('/')) return reported;
+  return lane.projectDir;
+}
+
 function handleSupervisorHookEvent(event: any): void {
   const store = useStore.getState();
   const session = store.supervisor;
@@ -460,28 +466,32 @@ function handleSupervisorHookEvent(event: any): void {
   const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
   if (!lane?.supervisorSurfaceId) return;
   const lifecycle = String(event.event || '');
+  const projectDir = resolveSupervisorProjectDir(lane, event.cwd);
+  const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
     store.updateLane(lane.id, {
       awaitingReview: false,
+      ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
     });
-    appendSupervisorRecord(session, lane, 'worker.task', {
+    appendSupervisorRecord(session, auditLane, 'worker.task', {
       task: event.task || '',
       cwd: event.cwd || '',
     });
     if (event.task) {
       sendToSurface(
         lane.supervisorSurfaceId,
-        `[通道 ${lane.label} | ${surfaceId}] 收到任务：${event.task}\n`,
-        false,
+        `[任务] ${lane.label}: ${event.task}\n`,
+        true,
       );
     }
     return;
   }
 
   if (lifecycle !== 'Stop' && lifecycle !== 'StopFailure' && lifecycle !== 'Notification') return;
-  appendSupervisorRecord(session, lane, 'worker.lifecycle', {
+  if (projectDir && projectDir !== lane.projectDir) store.updateLane(lane.id, { projectDir });
+  appendSupervisorRecord(session, auditLane, 'worker.lifecycle', {
     event: lifecycle,
     message: event.message || '',
   });
@@ -490,9 +500,8 @@ function handleSupervisorHookEvent(event: any): void {
     store.updateLane(lane.id, { awaitingReview: true });
     sendToSurface(
       lane.supervisorSurfaceId,
-      `[通道 ${lane.label} | ${surfaceId}] 本轮已结束。请用 wmux read-screen --surface ${surfaceId} --lines 80 查看证据，` +
-        `再静默执行 wmux supervisor decide --surface ${surfaceId} --outcome <continue|rework|complete|needs-human> --reason "结论"。\n`,
-      false,
+      `[任务结束] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
+      true,
     );
   }
 }
@@ -1014,7 +1023,7 @@ export default function App() {
             const sid = lane?.supervisorSurfaceId;
             if (sid) {
               try {
-                sendToSurface(sid, action.text, false);
+                sendToSurface(sid, action.text, true);
               } catch {
                 /* ignore */
               }

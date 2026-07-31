@@ -12,9 +12,9 @@ export function modeLabel(mode: SupervisorMode): string {
 
 export function modeDescription(mode: SupervisorMode): string {
   if (mode === 'direct') {
-    return '指令原样注入。监督 AI 对照「停止条件」判断是否达标（可以是方向，也可以是具体条件）；只有确认达标才停止注入。';
+    return '指令原样注入。每轮任务结束后，监督 AI 读取终端证据，并把「停止条件」作为参考作出后续裁决。';
   }
-  return '按目标自行决策续跑；完成/停止条件同样分「方向型 / 具体条件型」，由监督 AI 判断是否达标后再停。';
+  return '按目标自行决策续跑；每轮任务结束后，监督 AI 结合终端证据和完成/停止条件参考决定后续动作。';
 }
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
@@ -23,9 +23,9 @@ export function stopWhenKindLabel(kind: StopWhenKind): string {
 
 export function stopWhenKindHint(kind: StopWhenKind): string {
   if (kind === 'direction') {
-    return '描述期望终态/方向，例如「用户能登录且错误提示正确」。监督 AI 综合终端进展判断是否已足够接近该方向。';
+    return '描述期望终态/方向，例如「用户能登录且错误提示正确」。它是监督 AI 结合终端证据作出裁决的参考，不是机械开关。';
   }
-  return '描述可核对的事实，例如「npm test 全绿」或「出现 BUILD SUCCESS」。监督 AI 根据终端输出/状态判断是否已满足。';
+  return '描述可核对的事实，例如「npm test 全绿」或「出现 BUILD SUCCESS」。它是监督 AI 结合终端输出/状态作出裁决的参考。';
 }
 
 /** Rubric text for the supervisor AI. */
@@ -35,6 +35,7 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
     return [
       `停止条件类型: 方向型`,
       `方向描述: ${cond}`,
+      '这是裁决参考；工作终端本轮结束后，先查看当前证据，再决定 continue / rework / complete / needs-human。',
       '判断方法:',
       '- 不要只看「指令是否跑完」。',
       '- 结合终端输出、当前代码/任务进展，判断是否已朝该方向落到可交付的一小步闭环。',
@@ -46,6 +47,7 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
   return [
     `停止条件类型: 具体条件型`,
     `具体条件: ${cond}`,
+    '这是裁决参考；工作终端本轮结束后，先查看当前证据，再决定 continue / rework / complete / needs-human。',
     '判断方法:',
     '- 在终端输出/状态中寻找可核对证据（测试结果、构建日志、明确成功标记等）。',
     '- 有明确证据满足条件 → 判定达到。',
@@ -129,9 +131,9 @@ export function buildSupervisorBriefing(
     return [
       '# AI 监督 · 直接注入',
       '',
-      '工作终端由调度器**原样注入**用户指令。你的核心职责：观察终端，**判断停止条件是否满足**。',
+      '工作终端由调度器**原样注入**用户指令。每轮终端任务结束后，你必须先观察证据，再决定继续、返工、完成或交给人工。',
       '',
-      '## 停止条件（由你判断；只有满足才应停止注入）',
+      '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, session.stopWhen),
       '',
       ...planBlock,
@@ -142,15 +144,15 @@ export function buildSupervisorBriefing(
       '## 监控终端',
       worker,
       '',
-      '## 判定输出格式（每次核对请按此简短回答）',
-      '结论: 达到 | 未达到 | 不确定',
-      '依据: （引用终端里的关键证据，1～3 条）',
-      '建议: （若未达到，下一条原样指令建议写什么；若达到，请人类侧栏点「已达停止条件」）',
+      '## 本轮裁决流程',
+      `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
+      '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+      '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
       '',
       '## 规则',
       '1. 指令跑完 ≠ 停止条件满足。',
-      '2. 达到 → 明确写出「结论: 达到」，并请人类在侧栏点「已达停止条件」停止注入。',
-      '3. 未达到 → 「结论: 未达到」+ 差什么 + 可选补充指令建议。',
+      '2. 终端任务结束后先 read-screen，再根据证据和参考条件提交 continue / rework / complete / needs-human。',
+      '3. 仍需推进 → 用 continue 或 rework；若队列已空且要继续，附上 --next 指令。',
       '4. 阻塞/要权限 → 通知人类，不要绕过。',
       `5. 你只监督此终端。每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。`,
       '6. CLI: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
@@ -162,14 +164,14 @@ export function buildSupervisorBriefing(
   return [
     '# AI 监督 · 目标追逐',
     '',
-    '你只负责管理下列一个工作终端：在目标范围内自行决策推进；并判断「完成/停止条件」是否满足。',
+    '你只负责管理下列一个工作终端：每轮终端任务结束后，先读取证据，再结合目标和完成参考决定继续、返工、完成或交给人工。',
     '',
     '## 目标',
     session.goal.trim() || '（未设置）',
     '',
     ...planBlock,
     ...restoredHistoryBlock,
-    '## 完成/停止条件（由你判断；满足后应停止对该通道的自动决策）',
+    '## 完成/停止条件参考（用于裁决，不是机械开关）',
     stopWhenJudgmentGuide(kind, session.doneWhen),
     '',
     '## 约束',
@@ -179,16 +181,15 @@ export function buildSupervisorBriefing(
     '## 监控终端',
     worker,
     '',
-    '## 判定输出格式（核对完成条件时）',
-    '结论: 达到 | 未达到 | 不确定',
-    '依据: （终端证据 1～3 条）',
-    '建议: （未达到则下一步决策要点；达到则请人类侧栏点「已达停止条件」）',
-    '每轮结束先 read-screen，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。',
+    '## 本轮裁决流程',
+    `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`,
+    '2. 条件仅作参考；根据证据提交 continue / rework / complete / needs-human。',
+    '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
     '',
     '## 规则',
     `1. 只管理 ${lane.surfaceId}，不要读取、总结或裁决其他终端。`,
     '2. 决策不了 / 要权限 / 信息不足 → 说明卡点并停，不要瞎猜。',
-    '3. 完成条件满足 → 「结论: 达到」，请人类点「已达停止条件」。',
+    '3. 证据足以收尾 → 提交 complete；证据不足则按当前信息提交 continue、rework 或 needs-human。',
     '4. 可用: wmux agent-state / wmux read-screen / wmux send --surface <id> "..."',
     '',
   ].join('\n');
@@ -202,16 +203,10 @@ export function buildIdleHint(opts: {
   doneWhen: string;
   stopWhenKind?: StopWhenKind;
 }): string {
-  const kind = opts.stopWhenKind || 'concrete';
   return [
-    `[空闲] ${opts.lane.label} (${opts.lane.surfaceId}) state=${opts.state}`,
-    opts.goal.trim() ? `目标: ${opts.goal.trim()}` : '',
-    '',
-    '先判断完成/停止条件是否已满足：',
-    stopWhenJudgmentGuide(kind, opts.doneWhen),
-    '',
-    '若「达到」→ 请人类侧栏点「已达停止条件」，不要再开新决策。',
-    '若「未达到」→ 决策最小下一步并推进；无法决策则说明原因等人工。',
+    `[空闲裁决] ${opts.lane.label} (${opts.lane.surfaceId}) state=${opts.state}`,
+    `完成参考: ${opts.doneWhen.trim() || '（未设置）'}`,
+    '请 read-screen 后提交 continue / rework / complete / needs-human。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -229,37 +224,19 @@ export function buildStopCheckHint(opts: {
   /** direct | goal-chase wording */
   mode?: SupervisorMode;
 }): string {
-  const kind = opts.stopWhenKind || 'concrete';
   const mode = opts.mode || 'direct';
   const title =
-    mode === 'goal-chase' ? '[请判断完成/停止条件 · 目标追逐]' : '[请判断停止条件 · 直接注入]';
-  const trigger =
-    mode === 'goal-chase'
-      ? '本轮决策步已告一段落 — 先判断是否该停，再考虑是否继续决策。'
-      : '指令队列已暂时跑完 — 这只是触发核对，不是自动完成。';
-  const actionMet =
-    mode === 'goal-chase'
-      ? '若结论为「达到」→ 请人类在侧栏点「已达停止条件」以停止自动决策。'
-      : '若结论为「达到」→ 请人类在侧栏点「已达停止条件」以停止注入。';
-  const actionNot =
-    mode === 'goal-chase'
-      ? '若「未达到」→ 侧栏点「未达到」后将继续自动决策；也可说明下一步决策要点。'
-      : '若「未达到」→ 侧栏点「未达到」，并补充下一条原样指令。';
+    mode === 'goal-chase' ? '[请结合完成参考作出裁决 · 目标追逐]' : '[请结合停止参考作出裁决 · 直接注入]';
+  const reference = mode === 'goal-chase' ? opts.stopWhen : opts.stopWhen;
+  const action = mode === 'goal-chase'
+    ? '可收尾用 complete；仍需推进用 continue / rework；无法判断用 needs-human。'
+    : '可收尾用 complete；队列已空但仍需推进时用 continue / rework 加 --next；无法判断用 needs-human。';
 
   return [
     `${title} 通道=${opts.lane.label} (${opts.lane.surfaceId}) agentState=${opts.state}`,
-    trigger,
-    '',
-    stopWhenJudgmentGuide(kind, opts.stopWhen),
-    '',
-    '请观察该工作终端（wmux read-screen / agent-state），然后按格式回复：',
-    '结论: 达到 | 未达到 | 不确定',
-    '依据: …',
-    '建议: …',
-    '',
-    actionMet,
-    actionNot,
-    '',
+    `条件参考: ${reference.trim() || '（未设置）'}`,
+    '请先 read-screen；根据当前证据调用 wmux supervisor decide 提交裁决。',
+    action,
   ].join('\n');
 }
 
