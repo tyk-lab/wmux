@@ -27,6 +27,20 @@ describe('supervisor launch command', () => {
       .toBe('codex --model gpt-5.6-terra');
   });
 
+  it('adds a selected Kimi model and Thinking flag', () => {
+    expect(buildSupervisorLaunchCommand('kimi', 'k3', 'on'))
+      .toBe("kimi --model 'k3' --thinking");
+  });
+
+  it('adds a selected Grok Build model with its supported short flag', () => {
+    expect(buildSupervisorLaunchCommand('grok', 'grok-build'))
+      .toBe("grok -m 'grok-build'");
+  });
+
+  it('does not add Kimi Thinking or Grok Build model options to another launcher', () => {
+    expect(buildSupervisorLaunchCommand('claude', 'k3', 'on')).toBe('claude');
+  });
+
   it('does not add Codex arguments to another launcher', () => {
     expect(buildSupervisorLaunchCommand('claude', 'gpt-5.6-sol')).toBe('claude');
   });

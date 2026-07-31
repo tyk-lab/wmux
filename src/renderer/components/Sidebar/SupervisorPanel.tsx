@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { buildSupervisorBriefing, modeLabel, stopWhenKindLabel, supervisorTabTitle } from '../../supervisor/protocol';
-import { buildSupervisorLaunchCommand } from '../../supervisor/launch-command';
+import {
+  buildSupervisorLaunchCommand,
+  detectSupervisorLauncher,
+  supervisorLauncherDisplayName,
+} from '../../supervisor/launch-command';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
 import {
   appendSupervisorRecord,
@@ -52,6 +56,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const enabled = supervisor.lanes.filter((l) => l.enabled);
   const pendingCount = supervisor.pendingApprovals.length;
   const mode = supervisor.mode || 'unified';
+  const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
+  const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
+  const supervisorThinkingLabel = supervisorLauncher === 'kimi' ? 'Thinking' : '推理程度';
   const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
   const liveSurfaceIds = new Set<string>();
   for (const workspace of workspaces) {
@@ -415,12 +422,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               计划: {planFileName}
             </div>
           )}
-          <div className="sup-panel__goal" title={supervisor.supervisorModel || 'Codex 默认模型'}>
-            监督模型: {supervisor.supervisorModel || 'Codex 默认模型'}
+          <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
+            监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
           </div>
-          <div className="sup-panel__goal" title={supervisor.supervisorReasoningEffort || 'Codex 默认推理程度'}>
-            推理程度: {supervisor.supervisorReasoningEffort || '默认'}
-          </div>
+          {(supervisorLauncher === 'codex' || supervisorLauncher === 'kimi') && (
+            <div className="sup-panel__goal" title={supervisor.supervisorReasoningEffort || `${supervisorLauncherName} 默认${supervisorThinkingLabel}`}>
+              {supervisorThinkingLabel}: {supervisor.supervisorReasoningEffort || '默认'}
+            </div>
+          )}
 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {

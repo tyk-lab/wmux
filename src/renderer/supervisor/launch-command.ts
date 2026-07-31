@@ -1,5 +1,26 @@
-function isCodexLaunchCommand(command: string): boolean {
-  return /^(?:&\s+)?(?:"[^"]*\\codex(?:\.exe)?"|'[^']*\\codex(?:\.exe)?'|(?:\S*\\)?codex(?:\.exe)?)(?:\s|$)/i.test(command);
+export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'other';
+
+function matchesLauncherCommand(command: string, executable: string): boolean {
+  const escaped = executable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^(?:&\\s+)?(?:"[^"]*\\\\${escaped}(?:\\.exe)?"|'[^']*\\\\${escaped}(?:\\.exe)?'|(?:\\S*\\\\)?${escaped}(?:\\.exe)?)(?:\\s|$)`,
+    'i',
+  ).test(command);
+}
+
+export function detectSupervisorLauncher(command: string): SupervisorLauncherKind {
+  const normalized = command.trim();
+  if (matchesLauncherCommand(normalized, 'codex')) return 'codex';
+  if (matchesLauncherCommand(normalized, 'kimi')) return 'kimi';
+  if (matchesLauncherCommand(normalized, 'grok')) return 'grok';
+  return 'other';
+}
+
+export function supervisorLauncherDisplayName(launcher: SupervisorLauncherKind): string {
+  if (launcher === 'codex') return 'Codex';
+  if (launcher === 'kimi') return 'Kimi Code';
+  if (launcher === 'grok') return 'Grok Build';
+  return '当前启动器';
 }
 
 function quotePowerShellArgument(value: string): string {
@@ -7,9 +28,8 @@ function quotePowerShellArgument(value: string): string {
 }
 
 /**
- * Adds a selected Codex model without changing custom, non-Codex launchers.
- * A caller-supplied --model / -m always wins so existing custom commands stay
- * reproducible.
+ * Adds only the selected launcher's supported startup options. A caller-supplied
+ * --model / -m always wins so existing custom commands stay reproducible.
  */
 export function buildSupervisorLaunchCommand(
   launchCommand: string,
@@ -19,10 +39,18 @@ export function buildSupervisorLaunchCommand(
   const command = launchCommand.trim();
   const selectedModel = model.trim();
   const selectedEffort = reasoningEffort.trim();
-  if (!command || !isCodexLaunchCommand(command)) return command;
+  const launcher = detectSupervisorLauncher(command);
+  if (!command || launcher === 'other') return command;
+  const modelFlag = launcher === 'grok' ? '-m' : '--model';
   const modelCommand = selectedModel && !/(?:^|\s)(?:--model|-m)(?:\s|=)/i.test(command)
-    ? `${command} --model ${quotePowerShellArgument(selectedModel)}`
+    ? `${command} ${modelFlag} ${quotePowerShellArgument(selectedModel)}`
     : command;
-  if (!selectedEffort || /\bmodel_reasoning_effort\b/i.test(command)) return modelCommand;
-  return `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
+  if (launcher === 'codex') {
+    if (!selectedEffort || /\bmodel_reasoning_effort\b/i.test(command)) return modelCommand;
+    return `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
+  }
+  if (launcher === 'kimi' && selectedEffort === 'on' && !/(?:^|\s)--thinking(?:\s|$)/i.test(command)) {
+    return `${modelCommand} --thinking`;
+  }
+  return modelCommand;
 }

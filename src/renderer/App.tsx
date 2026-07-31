@@ -44,6 +44,7 @@ import {
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
 import { buildUserNotifyText } from './supervisor/protocol';
+import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
@@ -966,14 +967,17 @@ export default function App() {
     if (!supervisorActive) return;
     supervisorRuntimeRef.current = {};
     const session = useStore.getState().supervisor;
+    const launcher = detectSupervisorLauncher(session.supervisorLaunchCmd);
+    const launcherName = supervisorLauncherDisplayName(launcher);
     for (const lane of session.lanes) {
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
         taskDescription: session.taskDescription,
         preconditions: session.preconditions,
         stopWhen: session.stopWhen,
-        supervisorModel: session.supervisorModel || 'Codex 默认模型',
-        supervisorReasoningEffort: session.supervisorReasoningEffort || 'Codex 默认推理程度',
+        supervisorModel: session.supervisorModel || `${launcherName} 默认模型`,
+        supervisorReasoningEffort: session.supervisorReasoningEffort
+          || (launcher === 'kimi' ? 'Kimi 默认 Thinking' : launcher === 'codex' ? 'Codex 默认推理程度' : '不适用'),
         terminalName: lane.label,
       });
     }

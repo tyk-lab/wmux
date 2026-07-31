@@ -19,7 +19,12 @@ import {
   restoreSelectedLaneHistory,
   type SupervisorRestoreCandidate,
 } from '../../supervisor/recording';
-import { buildSupervisorLaunchCommand } from '../../supervisor/launch-command';
+import {
+  buildSupervisorLaunchCommand,
+  detectSupervisorLauncher,
+  supervisorLauncherDisplayName,
+  type SupervisorLauncherKind,
+} from '../../supervisor/launch-command';
 import { sendToSurface } from '../../supervisor/supervisor-engine';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
@@ -28,6 +33,16 @@ const CODEX_MODEL_OPTIONS = [
   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
   { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
   { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+];
+const KIMI_MODEL_OPTIONS = [
+  { value: 'k3', label: 'Kimi K3（长上下文）' },
+  { value: 'k3-256k', label: 'Kimi K3 · 256k' },
+  { value: 'kimi-for-coding', label: 'Kimi K2.7 Code' },
+  { value: 'kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
+];
+const GROK_MODEL_OPTIONS = [
+  { value: 'grok-build', label: 'Grok Build（推荐）' },
+  { value: 'grok-4.5', label: 'Grok 4.5' },
 ];
 const SUPERVISOR_LAUNCH_OPTIONS = [
   { value: 'codex', label: 'Codex（推荐）' },
@@ -43,10 +58,27 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'high', label: '高（更深入）' },
   { value: 'xhigh', label: '超高（最深入）' },
 ];
+const KIMI_THINKING_OPTIONS = [
+  { value: '', label: '使用 Kimi 默认 Thinking 设置' },
+  { value: 'on', label: '开启 Thinking' },
+];
 const CUSTOM_OPTION = '__custom__';
+const DEFAULT_MODEL_OPTION = '__default__';
 
 function knownOptionValue(value: string, options: Array<{ value: string }>, fallback = CUSTOM_OPTION): string {
   return options.some((option) => option.value === value.trim()) ? value.trim() : fallback;
+}
+
+function modelOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: string; label: string }> {
+  if (launcher === 'codex') return CODEX_MODEL_OPTIONS;
+  if (launcher === 'kimi') return KIMI_MODEL_OPTIONS;
+  if (launcher === 'grok') return GROK_MODEL_OPTIONS;
+  return [];
+}
+
+function modelChoiceFor(launcher: SupervisorLauncherKind, model: string): string {
+  const options = modelOptionsFor(launcher);
+  return model ? knownOptionValue(model, options) : DEFAULT_MODEL_OPTION;
 }
 
 function normalizeMaxAutoDecisions(value: string): number | null {
@@ -157,9 +189,7 @@ export default function SupervisorSetupDialog() {
     knownOptionValue(supervisor.supervisorLaunchCmd, SUPERVISOR_LAUNCH_OPTIONS),
   );
   const [modelChoice, setModelChoice] = useState(
-    supervisor.supervisorModel
-      ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
-      : '__default__',
+    modelChoiceFor(detectSupervisorLauncher(supervisor.supervisorLaunchCmd), supervisor.supervisorModel),
   );
   const [reasoningEffort, setReasoningEffort] = useState(supervisor.supervisorReasoningEffort || '');
   const [maxAutoDecisions, setMaxAutoDecisions] = useState(
@@ -180,13 +210,33 @@ export default function SupervisorSetupDialog() {
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setSupervisorModel(supervisor.supervisorModel || '');
     setLaunchChoice(knownOptionValue(supervisor.supervisorLaunchCmd, SUPERVISOR_LAUNCH_OPTIONS));
-    setModelChoice(supervisor.supervisorModel
-      ? knownOptionValue(supervisor.supervisorModel, CODEX_MODEL_OPTIONS)
-      : '__default__');
+    setModelChoice(modelChoiceFor(
+      detectSupervisorLauncher(supervisor.supervisorLaunchCmd),
+      supervisor.supervisorModel,
+    ));
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
     setMaxAutoDecisions(supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '');
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
+
+  const launcherKind = useMemo(() => detectSupervisorLauncher(
+    launchChoice === CUSTOM_OPTION ? launchCmd : launchChoice,
+  ), [launchChoice, launchCmd]);
+  const launcherModelOptions = modelOptionsFor(launcherKind);
+
+  const changeLauncher = (choice: string) => {
+    setLaunchChoice(choice);
+    if (choice === CUSTOM_OPTION) return;
+    setLaunchCmd(choice);
+    const nextLauncher = detectSupervisorLauncher(choice);
+    setSupervisorModel('');
+    setModelChoice(DEFAULT_MODEL_OPTION);
+    setReasoningEffort(
+      nextLauncher === 'codex' && REASONING_EFFORT_OPTIONS.some((option) => option.value === reasoningEffort)
+        ? reasoningEffort
+        : '',
+    );
+  };
 
   useEffect(() => {
     if (!setupOpen || !restoreAuditHistory) {
@@ -344,8 +394,8 @@ export default function SupervisorSetupDialog() {
       planFileContent: '',
       restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
-      supervisorModel,
-      supervisorReasoningEffort: reasoningEffort,
+      supervisorModel: launcherKind === 'other' ? '' : supervisorModel,
+      supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' ? reasoningEffort : '',
       maxAutoSteps: 0,
       maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
     });
@@ -637,11 +687,7 @@ export default function SupervisorSetupDialog() {
           <select
             className="supervisor-dialog__input"
             value={launchChoice}
-            onChange={(e) => {
-              const choice = e.target.value;
-              setLaunchChoice(choice);
-              if (choice !== CUSTOM_OPTION) setLaunchCmd(choice);
-            }}
+            onChange={(e) => changeLauncher(e.target.value)}
           >
             {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
@@ -658,48 +704,77 @@ export default function SupervisorSetupDialog() {
           )}
           <div className="supervisor-dialog__hint">每个终端独立启动。自定义命令可用于已安装的兼容 AI 启动器。</div>
         </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">Codex 监督模型</div>
-          <select
-            className="supervisor-dialog__input"
-            value={modelChoice}
-            onChange={(e) => {
-              const choice = e.target.value;
-              setModelChoice(choice);
-              if (choice === '__default__') setSupervisorModel('');
-              else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
-            }}
-          >
-            <option value="__default__">使用 Codex 默认模型</option>
-            {CODEX_MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-            <option value={CUSTOM_OPTION}>自定义模型 ID</option>
-          </select>
-          {modelChoice === CUSTOM_OPTION && (
-            <input
+        {launcherModelOptions.length > 0 && (
+          <section className="supervisor-dialog__section">
+            <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
+            <select
               className="supervisor-dialog__input"
-              value={supervisorModel}
-              onChange={(e) => setSupervisorModel(e.target.value)}
-              placeholder="输入账户可用的模型 ID"
-            />
-          )}
-          <div className="supervisor-dialog__hint">仅对 Codex 生效；选择后以 `--model` 传入。其他启动器请在自定义命令中指定模型。</div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">Codex 推理程度</div>
-          <select
-            className="supervisor-dialog__input"
-            value={reasoningEffort}
-            onChange={(e) => setReasoningEffort(e.target.value)}
-          >
-            <option value="">使用 Codex 默认推理程度</option>
-            {REASONING_EFFORT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-          <div className="supervisor-dialog__hint">仅对 Codex 生效；选择后以 `--config model_reasoning_effort=…` 传入，推理越高响应越慢、消耗越多。</div>
-        </section>
+              value={modelChoice}
+              onChange={(e) => {
+                const choice = e.target.value;
+                setModelChoice(choice);
+                if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
+                else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
+              }}
+            >
+              <option value={DEFAULT_MODEL_OPTION}>使用 {supervisorLauncherDisplayName(launcherKind)} 默认模型</option>
+              {launcherModelOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+              <option value={CUSTOM_OPTION}>{launcherKind === 'grok' ? '自定义模型别名' : '自定义模型 ID'}</option>
+            </select>
+            {modelChoice === CUSTOM_OPTION && (
+              <input
+                className="supervisor-dialog__input"
+                value={supervisorModel}
+                onChange={(e) => setSupervisorModel(e.target.value)}
+                placeholder={launcherKind === 'grok' ? '输入 ~/.grok/config.toml 中的模型别名' : '输入账户可用的模型 ID'}
+              />
+            )}
+            <div className="supervisor-dialog__hint">
+              {launcherKind === 'grok'
+                ? '选择后以 `-m` 传入；自定义模型需先在 `~/.grok/config.toml` 中配置。'
+                : '选择后以 `--model` 传入，不会覆盖启动命令中已有的模型参数。'}
+            </div>
+          </section>
+        )}
+        {launcherKind === 'codex' && (
+          <section className="supervisor-dialog__section">
+            <div className="supervisor-dialog__label">Codex 推理程度</div>
+            <select
+              className="supervisor-dialog__input"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+            >
+              <option value="">使用 Codex 默认推理程度</option>
+              {REASONING_EFFORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <div className="supervisor-dialog__hint">以 `--config model_reasoning_effort=…` 传入，推理越高响应越慢、消耗越多。</div>
+          </section>
+        )}
+        {launcherKind === 'kimi' && (
+          <section className="supervisor-dialog__section">
+            <div className="supervisor-dialog__label">Kimi Thinking</div>
+            <select
+              className="supervisor-dialog__input"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+            >
+              {KIMI_THINKING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <div className="supervisor-dialog__hint">开启后以 `--thinking` 传入；具体推理强度由 Kimi 模型与账号配置决定。</div>
+          </section>
+        )}
+        {launcherKind === 'grok' && (
+          <section className="supervisor-dialog__section">
+            <div className="supervisor-dialog__label">Grok Build 推理设置</div>
+            <div className="supervisor-dialog__hint">Grok Build 的推理强度由会话内 `/effort` 设置；这里不会传入 Codex 或其他不兼容参数。</div>
+          </section>
+        )}
         <section className="supervisor-dialog__section">
           <div className="supervisor-dialog__label">最大自动判断次数</div>
           <input
