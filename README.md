@@ -205,6 +205,27 @@ electron-builder            # ③ 调用 electron-builder 打包为 Windows 安�
 
 如需分步调试，也可单独执行 `npm run build:main`（仅步骤①）或 `npm run build:renderer`（仅步骤②）。
 
+### 只更新 `release/` 下的安装包 exe
+
+若 `dist/` 已是当前代码的编译结果，只需重新生成 `release/wmux-<版本号>-setup.exe` 时，运行：
+
+```powershell
+npm run package:exe
+```
+
+该命令只调用 `electron-builder --win nsis`，**不会**重新编译主进程、preload、CLI 或 React 渲染进程。若刚修改过源码，先按改动范围更新 `dist/`，再执行打包：
+
+```powershell
+# 改了 src/main/、src/preload/ 或 src/cli/
+npm run build:main
+
+# 改了 src/renderer/
+npm run build:renderer
+
+# 仅重新生成 release 下的安装包 exe
+npm run package:exe
+```
+
 产物输出到 `release/` 目录：
 
 | 产物 | 说明 |
@@ -216,7 +237,7 @@ electron-builder            # ③ 调用 electron-builder 打包为 Windows 安�
 已编译过 `dist/` 后，可直接调用 electron-builder 生成其他格式，无需重新完整构建：
 
 ```bash
-npx electron-builder --win nsis       # NSIS 安装包（与 npm run build 的最终产物相同）
+npm run package:exe                   # NSIS 安装包（与 npm run build 的最终产物相同）
 npx electron-builder --win portable   # 便携版单文件 exe，输出 release/wmux-<版本号>-portable.exe
 npx electron-builder --win zip        # zip 压缩包，解压即用
 npx electron-builder --dir            # 只生成未打包的目录（release/win-unpacked/），用于快速验证
