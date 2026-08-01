@@ -107,6 +107,16 @@ function eventMarkdown(event: AuditEvent): string | null {
   if (event.type === 'supervisor.auto-decision-limit.resolved') {
     return `### ${at} · 人工已审阅\n\n已重置该终端的自动判断计数。`;
   }
+  if (event.type === 'supervisor.auto-approved') {
+    const reason = payloadText(payload, 'reason') || '监督建议符合自动化安全策略';
+    const next = payloadText(payload, 'next');
+    return `### ${at} · AI 自动批准\n\n- 原因：${markdownText(reason)}${next ? `\n- 已发送：${markdownText(next)}` : ''}`;
+  }
+  if (event.type === 'supervisor.permission-approved') {
+    const command = payloadText(payload, 'command') || '未附命令说明';
+    const response = payloadText(payload, 'response') || 'y';
+    return `### ${at} · AI 自动授权\n\n- 命令：${markdownText(command)}\n- 响应：${markdownText(response)}`;
+  }
   if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
     const kind = payloadText(payload, 'kind');
     const label = kind === 'task-start' ? '任务开始' : kind === 'task-end' ? '任务结束' : '任务中断';

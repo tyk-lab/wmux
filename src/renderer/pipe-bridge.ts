@@ -25,8 +25,35 @@ export function isSupervisorProposalAllowed(outcome: string, proposalKind: strin
 }
 
 /** Unified supervision can only send a proposal after explicit human approval. */
-export function isSupervisorNextAllowed(mode: string, outcome: string, next: string): boolean {
-  return mode !== 'unified' || !next || outcome === 'needs-human';
+export function isSupervisorNextAllowed(
+  mode: string,
+  outcome: string,
+  next: string,
+  autonomous = false,
+): boolean {
+  return autonomous || mode !== 'unified' || !next || outcome === 'needs-human';
+}
+
+const AUTONOMOUS_BLOCKED_ACTIONS: Array<[RegExp, string]> = [
+  [/(?:^|\s)(?:rm|rmdir|del|erase|rd|remove-item)\b/i, '删除或覆盖文件'],
+  [/\bgit\s+(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
+  [/\b(?:npm|pnpm|yarn|bun|cargo|twine)\s+(?:publish|release)\b/i, '发布软件包'],
+  [/\b(?:deploy|release|publish)\b/i, '部署、发布或对外提交'],
+  [/\b(?:kubectl|helm|terraform|pulumi|aws|az|gcloud)\b/i, '云端或生产环境操作'],
+  [/\b(?:production|prod)\b/i, '生产环境操作'],
+  [/\b(?:credential|secret|token|password|api[ _-]?key)\b/i, '凭据或权限变更'],
+];
+
+/** Returns why an AI-proposed action must remain a human decision. */
+export function autonomousActionBlockReason(action: string): string | null {
+  const text = action.trim();
+  if (!text) return null;
+  const matched = AUTONOMOUS_BLOCKED_ACTIONS.find(([pattern]) => pattern.test(text));
+  return matched?.[1] ?? null;
+}
+
+export function isAutonomousPermissionResponseAllowed(response: string): boolean {
+  return /^(?:y|yes|allow|approve)$/i.test(response.trim());
 }
 
 export function normalizedMaxAutoDecisions(value: unknown): number | null {
@@ -387,11 +414,13 @@ export function initPipeBridge(): void {
     const proposalKind = String(params?.proposalKind || '').trim();
     const impact = String(params?.impact || '').trim().slice(0, 1200);
     const alternatives = String(params?.alternatives || '').trim().slice(0, 1200);
+    const permissionCommand = String(params?.permissionCommand || '').trim().slice(0, 2000);
+    const permissionResponse = String(params?.permissionResponse || '').trim().slice(0, 16);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
     const proposalKinds = new Set(['route-change', 'important']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
-    if (lane.autoDecisionLimitReached) {
+    if (lane.autoDecisionLimitReached && !session.autonomous) {
       return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
     }
     // A supervisor must not smuggle a declared route/important proposal through
@@ -399,8 +428,30 @@ export function initPipeBridge(): void {
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
       return { ok: false, error: '重要建议或路线变更必须使用 needs-human' };
     }
-    if (!isSupervisorNextAllowed(session.mode, outcome, next)) {
+    if (!isSupervisorNextAllowed(session.mode, outcome, next, session.autonomous)) {
       return { ok: false, error: '统一监督不会自动注入工作终端；请移除 --next，或通过 needs-human 提交给用户审批' };
+    }
+    const nextBlockReason = autonomousActionBlockReason(next);
+    if (session.autonomous && outcome !== 'needs-human' && nextBlockReason) {
+      return { ok: false, error: `全自动监督禁止${nextBlockReason}；请使用 needs-human 交给人工处理` };
+    }
+    if (permissionCommand || permissionResponse) {
+      const permissionBlockReason = autonomousActionBlockReason(permissionCommand);
+      if (!session.autonomous) {
+        return { ok: false, error: '仅全自动监督会话可处理终端权限确认' };
+      }
+      if (!permissionCommand || !isAutonomousPermissionResponseAllowed(permissionResponse)) {
+        return { ok: false, error: '权限确认必须提供命令说明，并且响应只能是 y、yes、allow 或 approve' };
+      }
+      if (permissionBlockReason) {
+        return { ok: false, error: `全自动监督禁止${permissionBlockReason}；请交给人工确认` };
+      }
+      if (outcome === 'complete' || outcome === 'needs-human') {
+        return { ok: false, error: '终端权限确认只能与 continue 或 rework 裁决一起提交' };
+      }
+      if (next) {
+        return { ok: false, error: '终端权限确认后需等待代理恢复；请不要在同一裁决中追加 --next' };
+      }
     }
 
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
@@ -413,7 +464,7 @@ export function initPipeBridge(): void {
     });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
     const autoDecisionsUsed = (lane.autoDecisionsUsed ?? 0) + 1;
-    const limitReached = reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
+    const limitReached = !session.autonomous && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     store.updateLane(lane.id, {
       autoDecisionsUsed,
       decisions: [
@@ -446,7 +497,29 @@ export function initPipeBridge(): void {
       return { ok: true, outcome };
     }
 
+    if (permissionResponse) {
+      appendSupervisorRecord(session, lane, 'supervisor.permission-approved', {
+        command: permissionCommand,
+        response: permissionResponse,
+      });
+      store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
+      store.updateLane(lane.id, { awaitingReview: false });
+      sendToSurface(lane.surfaceId, permissionResponse, true);
+      return { ok: true, outcome, autoAuthorized: true };
+    }
+
     if (outcome === 'needs-human') {
+      if (session.autonomous && next && !nextBlockReason) {
+        appendSupervisorRecord(session, lane, 'supervisor.auto-approved', {
+          proposalKind: proposalKind || 'important',
+          reason,
+          next,
+        });
+        store.appendSupervisorLog(lane.id, 'AI 自动批准', reason || '按监督建议继续');
+        store.updateLane(lane.id, { awaitingReview: false });
+        sendToSurface(lane.surfaceId, next, session.submitEnter);
+        return { ok: true, outcome, autoApproved: true };
+      }
       store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
       const kind = proposalKinds.has(proposalKind) ? proposalKind as 'route-change' | 'important' : 'important';
       store.enqueueApproval({

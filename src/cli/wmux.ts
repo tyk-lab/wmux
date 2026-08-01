@@ -148,7 +148,7 @@ async function cmdBrowser(args: string[]): Promise<void> {
 
 async function cmdSupervisor(args: string[]): Promise<void> {
   if (args[1] !== 'decide') {
-    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>] [--impact <text>] [--alternatives <text>]');
+    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>]');
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -163,6 +163,8 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     proposalKind: getFlag(args, '--proposal-kind') || '',
     impact: getFlag(args, '--impact') || '',
     alternatives: getFlag(args, '--alternatives') || '',
+    permissionCommand: getFlag(args, '--permission-command') || '',
+    permissionResponse: getFlag(args, '--permission-response') || '',
   });
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript or distract the agent.
@@ -847,7 +849,8 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>]
-                          [--impact <text>] [--alternatives <text>] [--verbose]
+                          [--impact <text>] [--alternatives <text>]
+                          [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]

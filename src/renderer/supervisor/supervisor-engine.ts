@@ -130,7 +130,7 @@ export function tickLane(opts: {
   const st = String(surfaceState.state || 'unknown');
   const mode = session.mode || 'direct';
 
-  // ── blocked → pause injects and notify human (not the same as stop condition) ─
+  // ── blocked → dedicated supervisor may resolve low-risk permissions in an autonomous session ─
   if (st === 'blocked') {
     const reason = surfaceState.blockedReason || '等待人类（权限/输入）';
     if (!rt.lastBlockedLogAt || now - rt.lastBlockedLogAt > 15_000) {
@@ -140,17 +140,30 @@ export function tickLane(opts: {
         action: '阻塞',
         detail: `${lane.label}: ${reason}`,
       });
-      actions.push({
-        type: 'notify_user',
-        laneId: lane.id,
-        reason: 'Agent 阻塞，需要你处理（注入已暂停）',
-        detail: reason,
-        stopAll: false,
-      });
+      if (session.autonomous && lane.supervisorSurfaceId) {
+        actions.push({
+          type: 'notify_supervisor',
+          laneId: lane.id,
+          text: [
+            `[权限/输入阻塞] 通道=${lane.label} (${lane.surfaceId})`,
+            `Hook 原因: ${reason}`,
+            `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当请求是低风险、可逆且命令明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y。`,
+            '删除或覆盖、git push/重写历史、发布/部署、云端/生产环境、凭据/权限变更或无法确认的请求，一律使用 needs-human，不要发送权限确认。',
+          ].join('\n'),
+        });
+      } else {
+        actions.push({
+          type: 'notify_user',
+          laneId: lane.id,
+          reason: 'Agent 阻塞，需要你处理（注入已暂停）',
+          detail: reason,
+          stopAll: false,
+        });
+      }
       rt.lastBlockedLogAt = now;
-      // Blocked ≠ stop condition met; keep lane enabled but mark notified so we
-      // don't spam. Human unblocks agent and can reject-stop / re-enable via config.
-      rt.humanNotified = true;
+      // Human escalation pauses this lane. Autonomous permission checks keep
+      // polling so a successful safe response can resume the worker normally.
+      if (!session.autonomous) rt.humanNotified = true;
     }
     rt.lastState = st;
     return { actions, runtime: rt };

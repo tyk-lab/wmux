@@ -123,6 +123,23 @@ describe('supervisor-engine', () => {
     expect(runtime.humanNotified).toBe(true);
   });
 
+  it('routes an autonomous low-risk permission prompt to its dedicated supervisor', () => {
+    const { actions, runtime } = tickLane({
+      session: session({ mode: 'unified', autonomous: true }),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
+      surfaceState: { state: 'blocked', blockedReason: 'permission: npm test' },
+      runtime: blankRuntime(),
+      now: 10_000,
+      hasPendingApproval: false,
+    });
+    const supervisorNotice = actions.find((action) => action.type === 'notify_supervisor');
+
+    expect(actions.some((action) => action.type === 'notify_user')).toBe(false);
+    expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.text)
+      .toContain('--permission-command');
+    expect(runtime.humanNotified).toBe(false);
+  });
+
   it('direct queue empty requests stop check instead of auto-stop', () => {
     const { actions } = tickLane({
       session: session({

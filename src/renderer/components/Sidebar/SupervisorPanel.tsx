@@ -389,7 +389,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         <span className="sup-panel__title">AI 监督</span>
         <span className="sup-panel__status">{supervisor.active ? '运行中' : '已停止'}</span>
         <span className="sup-panel__meta-right">
-          {modeLabel(mode)} · {enabled.length} 通道
+          {modeLabel(mode)} · {enabled.length} 通道{supervisor.autonomous ? ' · 全自动' : ''}
           {pendingCount > 0 ? ` · ${pendingCount} 待批` : ''}
         </span>
       </button>
@@ -397,10 +397,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       {!collapsed && (
         <>
           <div className="sup-panel__freedom">
-            工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。
+            {supervisor.autonomous
+              ? `全自动监督：AI 可在安全策略范围内推进任务、裁决停止条件并处理明确的低风险权限确认；高风险操作仍会等待人工。`
+              : `工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。`}
           </div>
           <div className="sup-panel__goal">
-            最大自动判断: {supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
+            最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
           </div>
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
@@ -518,7 +520,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
           {supervisor.pendingApprovals.length > 0 && (
             <div className="sup-panel__approvals">
-              <div className="sup-panel__approvals-title">待批准</div>
+            <div className="sup-panel__approvals-title">需人工处理</div>
               {supervisor.pendingApprovals.map((a) => (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">

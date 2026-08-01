@@ -123,6 +123,8 @@ export interface SupervisorSession {
   sessionId: string;
   active: boolean;
   mode: SupervisorMode;
+  /** Current-session-only authority for AI decisions and safe terminal confirmations. */
+  autonomous: boolean;
 
   /** Optional context that clarifies the stopping condition for the supervisor only. */
   taskDescription: string;
@@ -203,6 +205,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     sessionId: '',
     active: false,
     mode: 'unified',
+    autonomous: false,
     taskDescription: '',
     preconditions: '',
     directInstructions: '',
@@ -302,6 +305,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       supervisor: {
         ...s.supervisor,
         active: false,
+        // Autonomous authority is deliberately non-resumable: stopping ends
+        // the consent scope, so a later session must be enabled explicitly.
+        autonomous: false,
         log: [
           {
             ts: Date.now(),

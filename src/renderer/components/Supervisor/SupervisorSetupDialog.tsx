@@ -195,6 +195,7 @@ export default function SupervisorSetupDialog() {
   const [maxAutoDecisions, setMaxAutoDecisions] = useState(
     supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '',
   );
+  const [autonomous, setAutonomous] = useState(supervisor.autonomous === true);
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -216,6 +217,7 @@ export default function SupervisorSetupDialog() {
     ));
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
     setMaxAutoDecisions(supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '');
+    setAutonomous(supervisor.autonomous === true);
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
   }, [setupOpen]);
 
@@ -397,7 +399,8 @@ export default function SupervisorSetupDialog() {
       supervisorModel: launcherKind === 'other' ? '' : supervisorModel,
       supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' ? reasoningEffort : '',
       maxAutoSteps: 0,
-      maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
+      maxAutoDecisions: autonomous ? null : normalizeMaxAutoDecisions(maxAutoDecisions),
+      autonomous,
     });
   };
 
@@ -654,6 +657,24 @@ export default function SupervisorSetupDialog() {
           <div className="supervisor-dialog__hint">本次监督内视为你已确认的环境与安全前提，不会因历史“下次确认”提示而重复打扰；仅在终端证据显示条件变化、缺失或出现新的危险操作时才会交给你确认。不是任务或停止条件。</div>
         </section>
         <section className="supervisor-dialog__section">
+          <label className="supervisor-dialog__row">
+            <input
+              type="checkbox"
+              checked={autonomous}
+              onChange={(event) => setAutonomous(event.target.checked)}
+            />
+            <span className="supervisor-dialog__row-main">
+              <span className="supervisor-dialog__row-label">全自动监督（仅本次会话）</span>
+              <span className="supervisor-dialog__row-meta">
+                让监督 AI 自行推进、裁决完成，并自动通过安全策略允许的终端权限确认。
+              </span>
+            </span>
+          </label>
+          <div className="supervisor-dialog__hint">
+            不保存到配置文件；停止或重头再来后自动失效。删除/覆盖、Git 推送或重写历史、发布/部署、云端或生产环境、凭据和权限变更始终需要人工。
+          </div>
+        </section>
+        <section className="supervisor-dialog__section">
           <div className="supervisor-dialog__label">停止条件类型（监督 AI 裁决参考）</div>
           <div className="supervisor-dialog__freedom">
             {(['concrete', 'direction'] as StopWhenKind[]).map((k) => (
@@ -786,8 +807,13 @@ export default function SupervisorSetupDialog() {
             placeholder="不限制"
             value={maxAutoDecisions}
             onChange={(e) => setMaxAutoDecisions(e.target.value)}
+            disabled={autonomous}
           />
-          <div className="supervisor-dialog__hint">每个监控终端独立计数。留空表示不限制；填写 1–20 后，达到次数会暂停 AI 自动裁决，须经你人工审阅才会继续。</div>
+          <div className="supervisor-dialog__hint">
+            {autonomous
+              ? '全自动监督已启用：本会话不使用自动判断次数上限。'
+              : '每个监控终端独立计数。留空表示不限制；填写 1–20 后，达到次数会暂停 AI 自动裁决，须经你人工审阅才会继续。'}
+          </div>
         </section>
 
         <div className="supervisor-dialog__actions">
