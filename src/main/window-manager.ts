@@ -3,13 +3,16 @@ import { v4 as uuid } from 'uuid';
 import path from 'path';
 import type { WindowId } from '../shared/types';
 
+function getAppIconPath(): string {
+  const { app } = require('electron') as typeof import('electron');
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'icons', 'icon.ico')
+    : path.resolve(path.join(__dirname, '../../resources/icons/icon.ico'));
+}
+
 function getAppIcon(): Electron.NativeImage | undefined {
   try {
-    const { app } = require('electron') as typeof import('electron');
-    const iconPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'icons', 'icon.ico')
-      : path.resolve(path.join(__dirname, '../../resources/icons/icon.ico'));
-    const icon = nativeImage.createFromPath(iconPath);
+    const icon = nativeImage.createFromPath(getAppIconPath());
     return icon.isEmpty() ? undefined : icon;
   } catch {
     return undefined;
