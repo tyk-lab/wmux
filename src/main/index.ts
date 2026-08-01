@@ -285,8 +285,11 @@ function translateKeyName(key: string, shift: boolean): string | null {
   return null;
 }
 
-// Set Windows AppUserModelId so taskbar pinning uses the correct icon & identity
-app.setAppUserModelId('com.wmux.app');
+// Packaged builds must match the installer shortcut identity. Applying that
+// identity during development makes Windows fall back to a blank taskbar icon.
+if (app.isPackaged) {
+  app.setAppUserModelId('com.wmux.app');
+}
 
 // Auto-strip MOTW on startup so users never see security warnings or pinning failures
 stripMotw();

@@ -7,9 +7,10 @@ function getAppIcon(): Electron.NativeImage | undefined {
   try {
     const { app } = require('electron') as typeof import('electron');
     const iconPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'icon.png')
-      : path.resolve(path.join(__dirname, '../../resources/icon.png'));
-    return nativeImage.createFromPath(iconPath);
+      ? path.join(process.resourcesPath, 'icons', 'icon.ico')
+      : path.resolve(path.join(__dirname, '../../resources/icons/icon.ico'));
+    const icon = nativeImage.createFromPath(iconPath);
+    return icon.isEmpty() ? undefined : icon;
   } catch {
     return undefined;
   }
