@@ -302,6 +302,11 @@ export class PtyManager {
       WMUX_CLI: cliPath,
     };
 
+    // Electron can inherit TERM=dumb from a launcher or automation host. That
+    // overrides ConPTY's terminal name and makes interactive agent TUIs refuse
+    // to start, even though wmux provides an xterm-compatible PTY.
+    if (!env.TERM || env.TERM.toLowerCase() === 'dumb') env.TERM = 'xterm-256color';
+
     // Make bare `wmux` resolvable in every spawned shell AND all its children
     // (Claude Code's Bash tool, hook scripts, the orchestrator coordinator) by
     // prepending the cli-bin shim dir to PATH. PATH inherits down the process

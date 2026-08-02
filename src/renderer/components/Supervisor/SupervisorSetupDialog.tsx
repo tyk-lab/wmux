@@ -25,7 +25,7 @@ import {
   supervisorLauncherDisplayName,
   type SupervisorLauncherKind,
 } from '../../supervisor/launch-command';
-import { sendToSurface } from '../../supervisor/supervisor-engine';
+import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
@@ -468,7 +468,7 @@ export default function SupervisorSetupDialog() {
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
       }
-    })(), 1200);
+    })(), SUPERVISOR_TUI_READY_DELAY_MS);
   };
 
   const applyConfig = (andStart: boolean) => {

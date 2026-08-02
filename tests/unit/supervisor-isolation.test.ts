@@ -78,6 +78,8 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('证据不足、测试失败或普通返工本身不是人工升级理由');
     expect(boundary).toContain('低风险检查、补测或查看日志');
     expect(boundary).toContain('不可逆或高影响操作');
+    expect(boundary).toContain('方案 A / 方案 B');
+    expect(boundary).toContain('不要把“等待用户选择”裁决为 continue 或 rework');
   });
 
   it('does not allow unified supervision to inject a normal next task', () => {
@@ -293,6 +295,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('本会话启用全自动监督');
     expect(briefing).toContain('--permission-command');
     expect(briefing).toContain('git push/重写历史');
+    expect(briefing).toContain('不要携带 --next 自动替用户选择');
   });
 
   it('injects recovered audit context only into its dedicated supervisor briefing', () => {

@@ -27,6 +27,7 @@ import {
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
 } from './supervisor-records';
+import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
 import {
   parseSupervisorConfig,
   serializeSupervisorConfig,
@@ -42,6 +43,24 @@ import {
 } from './shell-context-menu';
 import fs from 'fs';
 import path from 'path';
+
+let feishuSupervisor: FeishuSupervisorService | null = null;
+
+async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, actor: { openId: string; source: 'text' | 'card' }): Promise<unknown> {
+  if (command.action === 'start') {
+    if (command.planFile && (!path.isAbsolute(command.planFile) || !fs.existsSync(command.planFile) || !fs.statSync(command.planFile).isFile())) {
+      return { ok: false, error: 'plan_file 必须是当前电脑上存在的绝对路径。' };
+    }
+    if (command.supervisorLaunchCmd && !['', 'codex', 'claude', 'kimi', 'grok', 'opencode'].includes(command.supervisorLaunchCmd.trim())) {
+      return { ok: false, error: 'supervisor_launch_cmd 仅允许 codex、claude、kimi、grok、opencode 或留空。' };
+    }
+  }
+  const target = BrowserWindow.getAllWindows()[0];
+  if (!target || target.isDestroyed()) return { ok: false, error: 'wmux 窗口未就绪。' };
+  const payload = JSON.stringify({ ...command, actor: actor.openId, source: actor.source });
+  const result = await target.webContents.executeJavaScript(`window.__wmux_supervisorRemoteControl?.(${payload})`);
+  return result ?? { ok: false, error: 'wmux 界面尚未初始化监督控制器。' };
+}
 
 // Route the V2 methods that live in their own modules: browser.* (per-caller
 // isolated routing, issue #62) and the uniform renderer-bridge methods. Returns
@@ -451,13 +470,19 @@ app.whenReady().then(() => {
   ensureCodexHooks();
   ensureGrokHooks();
 
-  ipcMain.handle('supervisor:append-record', (_event, record) => appendSupervisorRecord(record));
+  ipcMain.handle('supervisor:append-record', (_event, record) => {
+    const result = appendSupervisorRecord(record);
+    feishuSupervisor?.onRecord(record);
+    return result;
+  });
   ipcMain.handle('supervisor:read-latest-history', (_event, options) =>
     readLatestSupervisorHistory(String(options?.projectDir || ''), {
       surfaceId: String(options?.surfaceId || ''),
       label: String(options?.terminalLabel || ''),
     }),
   );
+  feishuSupervisor = new FeishuSupervisorService(controlSupervisorFromFeishu);
+  feishuSupervisor.start();
   ipcMain.handle('supervisor:read-audit-trail', (_event, options) =>
     readSupervisorAuditTrail(String(options?.projectDir || ''), {
       surfaceId: String(options?.surfaceId || ''),

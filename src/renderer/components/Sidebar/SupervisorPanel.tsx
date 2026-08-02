@@ -6,7 +6,7 @@ import {
   detectSupervisorLauncher,
   supervisorLauncherDisplayName,
 } from '../../supervisor/launch-command';
-import { sendToSurface } from '../../supervisor/supervisor-engine';
+import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import {
   appendSupervisorRecord,
   formatSupervisorAuditTrail,
@@ -147,6 +147,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           autoDecisionsUsed: 0,
         });
         appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+          approvalId: item.id,
           resolution: 'approved',
           proposalKind: item.proposalKind || 'important',
           text,
@@ -175,6 +176,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       autoDecisionsUsed: 0,
     });
     appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+      approvalId: item.id,
       resolution: 'rejected',
       proposalKind: item.proposalKind || 'important',
     });
@@ -199,6 +201,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       autoDecisionsUsed: 0,
     });
     appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+      approvalId: item.id,
       resolution: 'handled-manually',
       proposalKind: item.proposalKind || 'important',
     });
@@ -335,7 +338,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         });
         sendToSurface(lane.supervisorSurfaceId, text, true);
       }
-    }, 1200);
+    }, SUPERVISOR_TUI_READY_DELAY_MS);
   };
 
   if (expanded && supervisor.lanes.length === 0 && !supervisor.active) {

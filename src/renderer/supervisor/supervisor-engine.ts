@@ -442,6 +442,14 @@ export function tickLane(opts: {
   return { actions, runtime: rt };
 }
 
+/** Give interactive AI TUIs time to finish processing a paste before Enter submits it. */
+export function pasteSubmitDelayMs(text: string): number {
+  return Math.min(3_000, Math.max(300, 300 + Math.ceil(text.length * 0.75)));
+}
+
+/** Delay before the first briefing so a freshly launched AI TUI can accept it. */
+export const SUPERVISOR_TUI_READY_DELAY_MS = 2_500;
+
 export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
   const pty = (window as any).wmux?.pty;
   if (!pty?.write) {
@@ -455,7 +463,7 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
       } catch {
         /* ignore */
       }
-    }, 80);
+    }, pasteSubmitDelayMs(text));
   }
 }
 

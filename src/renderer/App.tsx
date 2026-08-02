@@ -39,6 +39,7 @@ import {
 import {
   blankRuntime,
   makeGoalChaseStep,
+  pasteSubmitDelayMs,
   sendToSurface,
   tickLane,
   type LaneRuntime,
@@ -483,6 +484,7 @@ function cancelPendingApprovalsForManualTask(session: SupervisorSession, lane: S
     store.rejectPending(item.id);
     if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
       appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
+        approvalId: item.id,
         resolution: 'handled-manually',
         proposalKind: item.proposalKind || 'important',
       });
@@ -1002,8 +1004,11 @@ export default function App() {
           if (!canDeliverToSupervisor(supervisorState)) continue;
           const exists = await pty.has(supervisorSurfaceId);
           if (!exists) continue;
-          const accepted = await pty.writeChecked(supervisorSurfaceId, `${delivery.text}\r`);
-          if (!accepted) continue;
+          const pasted = await pty.writeChecked(supervisorSurfaceId, delivery.text);
+          if (!pasted) continue;
+          await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(delivery.text)));
+          const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
+          if (!submitted) continue;
           const store = useStore.getState();
           const current = store.supervisor.lanes.find((item) => item.id === lane.id);
           if (!current) continue;

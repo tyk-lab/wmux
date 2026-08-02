@@ -3,6 +3,8 @@ import {
   blankRuntime,
   getNextOpenStep,
   mayDispatch,
+  pasteSubmitDelayMs,
+  SUPERVISOR_TUI_READY_DELAY_MS,
   tickLane,
 } from '../../src/renderer/supervisor/supervisor-engine';
 import {
@@ -121,6 +123,13 @@ describe('supervisor-engine', () => {
     expect(actions.some((a) => a.type === 'dispatch')).toBe(false);
     expect(actions.some((a) => a.type === 'notify_user')).toBe(true);
     expect(runtime.humanNotified).toBe(true);
+  });
+
+  it('waits longer before submitting a large pasted supervisor briefing', () => {
+    expect(pasteSubmitDelayMs('short')).toBe(304);
+    expect(pasteSubmitDelayMs('x'.repeat(1_200))).toBe(1_200);
+    expect(pasteSubmitDelayMs('x'.repeat(10_000))).toBe(3_000);
+    expect(SUPERVISOR_TUI_READY_DELAY_MS).toBe(2_500);
   });
 
   it('routes an autonomous low-risk permission prompt to its dedicated supervisor', () => {

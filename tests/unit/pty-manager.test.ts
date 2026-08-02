@@ -57,6 +57,33 @@ describe('PtyManager', () => {
     expect(id).toMatch(/^surf-/);
   });
 
+  it('replaces TERM=dumb so interactive TUIs can start', async () => {
+    const manager = makeManager();
+    const { id } = manager.create({
+      shell: TEST_SHELL,
+      cwd: process.env.USERPROFILE || 'C:\\',
+      env: { ...TEST_ENV, TERM: 'dumb' },
+    });
+    await firstData(manager, id);
+    const output = await new Promise<string>((resolve) => {
+      let collected = '';
+      let unsub = () => undefined;
+      const timeout = setTimeout(() => {
+        unsub();
+        resolve(collected);
+      }, 5000);
+      unsub = manager.onData(id, (data) => {
+        collected += data;
+        if (!collected.includes('xterm-256color')) return;
+        clearTimeout(timeout);
+        unsub();
+        resolve(collected);
+      });
+      manager.write(id, 'echo %TERM%\r');
+    });
+    expect(output).toContain('xterm-256color');
+  });
+
   it('has() returns true after create and false after kill', () => {
     const manager = makeManager();
     const { id } = manager.create({
