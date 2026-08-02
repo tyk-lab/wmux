@@ -18,17 +18,18 @@ interface FeishuConfig {
   appId: string;
   appSecret: string;
   chatId: string;
+  controlChatId?: string;
   allowedOpenIds: Set<string>;
 }
 
 export function isFeishuSupervisorActorAllowed(
-  config: Pick<FeishuConfig, 'chatId' | 'allowedOpenIds'>,
+  config: Pick<FeishuConfig, 'controlChatId' | 'allowedOpenIds'>,
   chatId: string,
   openId: string,
   chatType: 'group' | 'p2p',
 ): boolean {
   if (!config.allowedOpenIds.has(openId)) return false;
-  return chatType === 'p2p' || chatId === config.chatId;
+  return chatType === 'p2p' || (chatType === 'group' && !!config.controlChatId && chatId === config.controlChatId);
 }
 
 interface ApprovalCard {
@@ -38,7 +39,7 @@ interface ApprovalCard {
 
 const COMMAND_PREFIX = 'WMUX SUPERVISOR ';
 const MAX_COMMAND_VALUE_LENGTH = 4000;
-const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
+const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
 
 type FeishuEnvKey = typeof FEISHU_ENV_KEYS[number];
 
@@ -51,7 +52,7 @@ function applyFeishuEnv(target: NodeJS.ProcessEnv, values: Partial<Record<Feishu
 export function parseFeishuDotEnv(content: string): Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } {
   const values: Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } = {};
   for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE))\s*=\s*(.*?)\s*$/.exec(rawLine);
+    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE))\s*=\s*(.*?)\s*$/.exec(rawLine);
     if (!match) continue;
     const value = match[2].replace(/^(['"])(.*)\1$/, '$2').trim();
     if (value) values[match[1] as keyof typeof values] = value;
@@ -118,9 +119,10 @@ function envConfig(env = process.env): FeishuConfig | null {
   const appId = env.WMUX_FEISHU_APP_ID?.trim();
   const appSecret = env.WMUX_FEISHU_APP_SECRET?.trim();
   const chatId = env.WMUX_FEISHU_CHAT_ID?.trim();
+  const controlChatId = env.WMUX_FEISHU_CONTROL_CHAT_ID?.trim();
   const allowedOpenIds = new Set((env.WMUX_FEISHU_ALLOWED_OPEN_IDS || '').split(',').map((item) => item.trim()).filter(Boolean));
   if (!appId || !appSecret || !chatId || allowedOpenIds.size === 0) return null;
-  return { appId, appSecret, chatId, allowedOpenIds };
+  return { appId, appSecret, chatId, controlChatId, allowedOpenIds };
 }
 
 function fieldMap(lines: string[]): Record<string, string> {
@@ -283,11 +285,6 @@ function eventSummary(record: SupervisorRecord): string | null {
   const titles: Record<string, string> = {
     'session.started': 'AI 监督已启动',
     'session.abandoned': 'AI 监督已重置',
-    'supervisor.auto-approved': 'AI 监督已自动批准',
-    'supervisor.permission-approved': 'AI 监督已自动授权',
-    'supervisor.decision': 'AI 监督裁决',
-    'supervisor.remote-command': '飞书远程命令',
-    'supervisor.remote-decision': '飞书人工决策',
   };
   const title = titles[record.type];
   if (!title) return null;
@@ -295,30 +292,52 @@ function eventSummary(record: SupervisorRecord): string | null {
   return `${title}\n终端：${record.terminal.label}${detail ? `\n摘要：${detail}` : ''}`;
 }
 
-function approvalCard(record: SupervisorRecord): object {
+function decisionOptions(alternatives: string): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const choices = [...new Set(alternatives.match(/方案\s*[A-Za-z0-9一二三四五六七八九十]+/g) || [])]
+    .map((choice) => choice.replace(/\s+/g, ' ').trim())
+    .slice(0, 6);
+  return choices.map((choice) => ({ text: { tag: 'plain_text', content: `选择${choice}` }, value: choice }));
+}
+
+/** A V1 form keeps controls compatible with regular bot cards and desktop clients. */
+export function buildApprovalCard(record: SupervisorRecord): object {
   const payload = record.payload || {};
   const approvalId = String(payload.approvalId || '');
   const reason = String(payload.reason || '需要人工决策').slice(0, 800);
   const impact = String(payload.impact || '未提供').slice(0, 500);
   const alternatives = String(payload.alternatives || '未提供').slice(0, 500);
+  const choices = decisionOptions(alternatives);
   const action = (decision: string, text: string, type: 'primary' | 'default' | 'danger' = 'default') => ({
     tag: 'button', text: { tag: 'plain_text', content: text }, type,
-    action_type: 'form_submit', value: { wmux_action: 'decide', approval_id: approvalId, decision },
+    complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'decide', approval_id: approvalId, decision },
   });
+  const formElements: object[] = [
+    ...(choices.length > 0 ? [{
+      tag: 'select_static', name: 'decision_choice',
+      placeholder: { tag: 'plain_text', content: '选择建议方案（可选）' },
+      options: choices,
+    }] : []),
+    {
+      tag: 'input', name: 'follow_up_task', required: false,
+      label: { tag: 'plain_text', content: '后续任务（批准时必填）' },
+      placeholder: { tag: 'plain_text', content: '填写要转发到被监督终端的后续任务或决策说明' },
+    },
+    {
+      tag: 'column_set', flex_mode: 'none', columns: [
+        { tag: 'column', width: 'auto', elements: [action('approve', '批准并发送任务', 'primary')] },
+        { tag: 'column', width: 'auto', elements: [action('reject', '拒绝')] },
+        { tag: 'column', width: 'auto', elements: [action('stop', '停止监督', 'danger')] },
+      ],
+    },
+  ];
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: 'wmux AI 监督：待人工决策' }, template: 'orange' },
     elements: [
       { tag: 'div', text: { tag: 'lark_md', content: `**终端**：${record.terminal.label}\n**原因**：${reason}\n**影响**：${impact}\n**备选**：${alternatives}` } },
       {
-        tag: 'form', name: 'wmux_supervisor_decision', elements: [
-          {
-            tag: 'input', name: 'follow_up_task', required: false,
-            label: { tag: 'plain_text', content: '后续任务（批准时必填）' },
-            placeholder: { tag: 'plain_text', content: '填写要转发到被监督终端的后续任务或决策说明' },
-          },
-          { tag: 'action', actions: [action('approve', '批准并发送任务', 'primary'), action('reject', '拒绝'), action('stop', '停止监督', 'danger')] },
-        ],
+        tag: 'form', name: 'wmux_supervisor_decision', elements: formElements,
+        fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写后续任务并处理该决策。' } },
       },
     ],
   };
@@ -339,7 +358,9 @@ export class FeishuSupervisorService {
       appSecret: this.config.appSecret,
       transport: 'websocket',
       policy: {
-        groupAllowlist: [this.config.chatId],
+        // The audit group is output-only by default. An optional, separate
+        // control group prevents commands and their replies from polluting it.
+        groupAllowlist: this.config.controlChatId ? [this.config.controlChatId] : [],
         dmMode: 'allowlist',
         dmAllowlist: [...this.config.allowedOpenIds],
         requireMention: false,
@@ -433,14 +454,19 @@ export class FeishuSupervisorService {
 
   private cardFollowUpTask(event: Lark.CardActionEvent): string | undefined {
     if (!isObject(event.raw) || !isObject(event.raw.action) || !isObject(event.raw.action.form_value)) return undefined;
-    const task = event.raw.action.form_value.follow_up_task;
-    return typeof task === 'string' && task.trim() ? task.trim().slice(0, MAX_COMMAND_VALUE_LENGTH) : undefined;
+    const form = event.raw.action.form_value;
+    const task = typeof form.follow_up_task === 'string' ? form.follow_up_task.trim() : '';
+    const choiceValue = form.decision_choice;
+    const choice = Array.isArray(choiceValue) ? choiceValue[0] : choiceValue;
+    const selected = typeof choice === 'string' && choice.trim() ? `用户选择${choice.trim()}` : '';
+    const combined = [selected, task].filter(Boolean).join('\n');
+    return combined ? combined.slice(0, MAX_COMMAND_VALUE_LENGTH) : undefined;
   }
 
   private async sendApproval(record: SupervisorRecord): Promise<void> {
     if (!this.channel) return;
     const approvalId = String(record.payload?.approvalId || '');
-    const sent = await this.channel.send(this.config!.chatId, { card: approvalCard(record) });
+    const sent = await this.channel.send(this.config!.chatId, { card: buildApprovalCard(record) });
     this.approvalCards.set(approvalId, { approvalId, messageId: sent.messageId });
   }
 

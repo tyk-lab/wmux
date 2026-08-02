@@ -1,12 +1,12 @@
 # 通过飞书管理 wmux AI 监督
 
-本指南说明如何把飞书企业自建应用连接到 wmux：在指定群聊查看审计与人工决策，并由白名单用户在群聊或与机器人的单聊中，对已有终端开启、停止和管理 AI 监督。
+本指南说明如何把飞书企业自建应用连接到 wmux：在指定审计群查看关键状态与人工决策，并由白名单用户在与机器人的单聊中，对已有终端开启、停止和管理 AI 监督。
 
 wmux 使用飞书长连接，不需要给本机配置公网域名或回调地址；但运行 wmux 的电脑必须能访问飞书开放平台，且 wmux 必须保持运行。飞书侧的命令不会在 wmux 离线时排队执行。
 
 ## 你将获得的能力
 
-- 白名单用户可在指定群或与机器人的单聊中列出已有终端、开启或停止 AI 监督，并向指定终端发送任务；命令回复返回命令所在对话。
+- 白名单用户可在与机器人的单聊中列出已有终端、开启或停止 AI 监督，并向指定终端发送任务；命令回复返回该单聊。
 - 当监督 AI 提交“需要人工决定”的建议时，收到带“批准 / 拒绝 / 停止监督”按钮的飞书卡片。
 - 在飞书点击卡片或发送固定命令后，结果同步回 wmux；远程操作会写入项目的本地审计记录。
 - 仅指定群和 Open ID 白名单内的成员能操作；任务只会发送到 `LIST` 返回的已有终端，不会创建新终端。
@@ -15,12 +15,12 @@ wmux 使用飞书长连接，不需要给本机配置公网域名或回调地址
 
 ```text
 白名单用户与机器人单聊  → LIST / START / SEND / STOP / DECIDE，结果回复到单聊
-审计群（WMUX_FEISHU_CHAT_ID） → 启动、停止、裁决与人工审批卡片的审计记录
+审计群（WMUX_FEISHU_CHAT_ID） → 关键生命周期与人工审批卡片，不接收控制命令
 wmux 本地                 → 实际创建监督会话和监督终端
 ```
 
-单聊适合日常控制，审计群适合留存过程记录和处理人工审批。单聊发送者必须在
-`WMUX_FEISHU_ALLOWED_OPEN_IDS` 白名单中；审计群仅接受配置的群会话 ID。
+单聊适合日常控制，审计群适合留存关键过程记录和处理人工审批。单聊发送者必须在
+`WMUX_FEISHU_ALLOWED_OPEN_IDS` 白名单中。默认不允许在审计群发控制命令，避免命令、回复和审计混在同一会话。
 
 ## 1. 创建并配置飞书应用
 
@@ -49,6 +49,7 @@ wmux 本地                 → 实际创建监督会话和监督终端
 | `WMUX_FEISHU_APP_ID` | 应用详情页“凭证与基础信息”中的 App ID |
 | `WMUX_FEISHU_APP_SECRET` | 同页的 App Secret；仅保存到本机环境变量 |
 | `WMUX_FEISHU_CHAT_ID` | **审计目标群**的 `chat_id`，通常以 `oc_` 开头；可在开放平台 API 调试台的群信息返回值或事件日志中取得 |
+| `WMUX_FEISHU_CONTROL_CHAT_ID` | 可选的**独立控制群** `chat_id`；未设置时只允许单聊控制，推荐保持为空 |
 | `WMUX_FEISHU_ALLOWED_OPEN_IDS` | 允许操作者的 `open_id`，多个 ID 用英文逗号分隔；可在开放平台“日志检索 → 事件日志检索”的消息事件中查看 `sender.sender_id.open_id` |
 
 首次查 Open ID 时，可以先填一个占位 `ou_placeholder` 启动 wmux；飞书开发者后台仍会记录事件，只是该用户的命令会被 wmux 忽略。取得真实 Open ID 后再替换并重启 wmux。
@@ -67,6 +68,8 @@ wmux 启动时会自动读取项目工作目录或 `wmux.exe` 同目录的 `.env
 WMUX_FEISHU_APP_ID=cli_xxx
 WMUX_FEISHU_APP_SECRET=你的 App Secret
 WMUX_FEISHU_CHAT_ID=oc_xxx
+# 仅需要独立控制群时才填写；默认留空，只用单聊控制
+# WMUX_FEISHU_CONTROL_CHAT_ID=oc_xxx
 WMUX_FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy
 ```
 
@@ -90,6 +93,8 @@ npm run dev
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_APP_ID', 'cli_xxx', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_APP_SECRET', '你的 App Secret', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_CHAT_ID', 'oc_xxx', 'User')
+# 仅需要独立控制群时才执行：
+# [Environment]::SetEnvironmentVariable('WMUX_FEISHU_CONTROL_CHAT_ID', 'oc_xxx', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_ALLOWED_OPEN_IDS', 'ou_xxx,ou_yyy', 'User')
 ```
 
@@ -97,7 +102,7 @@ npm run dev
 
 ## 4. 启动 wmux、测试并操作
 
-所有命令首行必须以 `WMUX SUPERVISOR` 开头。白名单用户可在审计群或与机器人单聊中发送；审计摘要与待决卡片仍发送到 `WMUX_FEISHU_CHAT_ID` 指定群。建议先按以下流程测试。
+所有命令首行必须以 `WMUX SUPERVISOR` 开头。默认请在与机器人的单聊中发送；回复会回到该单聊。审计摘要与待决卡片发送到 `WMUX_FEISHU_CHAT_ID` 指定群，普通 `continue/rework` 裁决不会刷到群里。仅在设置了 `WMUX_FEISHU_CONTROL_CHAT_ID` 后，才可在该独立控制群发送命令。建议先按以下流程测试。
 
 1. 按第 3 节设置环境变量后启动 wmux；从源码调试时运行 `npm run dev`。
 2. 在与机器人的**单聊**中发送 `WMUX SUPERVISOR LIST`。
@@ -159,7 +164,7 @@ session: current
 
 ## 5. 处理人工决策
 
-当监督 AI 使用 `needs-human` 提交重要建议时，wmux 会在飞书群发送决策卡片。卡片中可填写“后续任务”，再直接点击：
+当监督 AI 使用 `needs-human` 提交重要建议时，wmux 会在飞书群发送决策卡片。若 AI 提供的备选中包含“方案 A / 方案 B”等明确选项，卡片会提供下拉选择；再填写“后续任务”并点击：
 
 - **批准并发送任务**：后续任务必填；wmux 会将 AI 建议和填写的后续任务一起发送给相应工作终端。
 - **拒绝**：不发送建议，通知监督 AI 继续基于当前路线监督。
@@ -221,7 +226,7 @@ task: 这是人工决策测试。不要改文件或执行命令；请提出“�
 
 监督 AI 会把工作终端明确提出的“方案 A / 方案 B 需要用户选择”视为必须人工决策，提交 `needs-human`，而不能用 `continue` 或 `rework` 替代；这一步可能需要等待一个监督裁决周期。出现审批卡片后：
 
-1. 在审计群卡片的“后续任务”中填写：`选择方案 A；不要改文件，只确认已收到。`
+1. 在审计群卡片中选择“方案 A”（若出现下拉选项），并在“后续任务”中填写：`不要改文件，只确认已收到。`
 2. 点击**批准并发送任务**。
 3. 确认卡片更新为“人工决策已处理”，工作终端收到 AI 建议和刚填写的后续任务，审计群出现决策记录。
 
@@ -261,8 +266,8 @@ session: current
 
 | 现象 | 检查项 |
 | --- | --- |
-| 群里没有收到命令回复 | wmux 是否运行；四个环境变量是否都在启动 wmux 的进程环境中；App 是否已发布；机器人是否已加入目标群 |
-| 机器人只发通知、不执行命令 | 群聊：`WMUX_FEISHU_CHAT_ID` 是否为该群的 `chat_id`；单聊：发送者的 Open ID 是否在 `WMUX_FEISHU_ALLOWED_OPEN_IDS`；群聊还需已开通 `im:message.group_msg` |
+| 单聊没有收到命令回复 | wmux 是否运行；必需的四个环境变量是否都在启动 wmux 的进程环境中；App 是否已发布；发送者 Open ID 是否在白名单 |
+| 审计群不执行命令 | 这是默认设计；请改在单聊控制。只有配置了 `WMUX_FEISHU_CONTROL_CHAT_ID` 的独立控制群才接受群聊命令。 |
 | 能收到命令但卡片按钮报错 | 回调配置中是否添加的是 `card.action.trigger`，且使用“长连接接收回调” |
 | 飞书显示已发送但 wmux 没有动作 | wmux 界面可能尚未初始化，或会话已停止；先在 wmux 中打开窗口并重新执行 `LIST` |
 | 不希望机器人读取群内所有消息 | 当前命令可不 @ 机器人，因此必须申请群消息权限。若企业安全策略不允许，应将实现改为“仅 @机器人触发”，再使用更小的 @消息权限 |

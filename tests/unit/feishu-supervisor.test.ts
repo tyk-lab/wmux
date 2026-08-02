@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, loadFeishuEnvironment, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, loadFeishuEnvironment, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -56,16 +56,17 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('允许白名单单聊和指定群聊，拒绝其他来源', () => {
-    const config = { chatId: 'oc-audit', allowedOpenIds: new Set(['ou-allowed']) };
-    expect(isFeishuSupervisorActorAllowed(config, 'oc-audit', 'ou-allowed', 'group')).toBe(true);
+    const config = { controlChatId: 'oc-control', allowedOpenIds: new Set(['ou-allowed']) };
+    expect(isFeishuSupervisorActorAllowed(config, 'oc-control', 'ou-allowed', 'group')).toBe(true);
     expect(isFeishuSupervisorActorAllowed(config, 'oc-direct', 'ou-allowed', 'p2p')).toBe(true);
-    expect(isFeishuSupervisorActorAllowed(config, 'oc-other', 'ou-allowed', 'group')).toBe(false);
-    expect(isFeishuSupervisorActorAllowed(config, 'oc-audit', 'ou-other', 'p2p')).toBe(false);
+    expect(isFeishuSupervisorActorAllowed(config, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
+    expect(isFeishuSupervisorActorAllowed(config, 'oc-control', 'ou-other', 'p2p')).toBe(false);
+    expect(isFeishuSupervisorActorAllowed({ controlChatId: undefined, allowedOpenIds: new Set(['ou-allowed']) }, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
-    expect(parseFeishuDotEnv("WMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
-      WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
+    expect(parseFeishuDotEnv("WMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_CONTROL_CHAT_ID=oc-control\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
+      WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_CONTROL_CHAT_ID: 'oc-control', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
     });
     expect(parseLegacyFeishuEnv('App ID\ncli-test\n\nApp Secret\nsecret-test\n\n单聊会话 ID\noc-direct\n\n群聊会话 ID\noc-audit\n\n用户 ID\nou-allowed')).toEqual({
       WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_APP_SECRET: 'secret-test',
@@ -106,6 +107,21 @@ supervisor_model: k3`)).toEqual({
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('将人工审批渲染为包含方案选择、输入和操作按钮的表单', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: { approvalId: 'appr-1', alternatives: '用户选择方案 A；用户选择方案 B。' },
+    }));
+
+    expect(card).toContain('select_static');
+    expect(card).toContain('选择方案 A');
+    expect(card).toContain('选择方案 B');
+    expect(card).toContain('follow_up_task');
+    expect(card).toContain('批准并发送任务');
+    expect(card).toContain('停止监督');
   });
 
   it('将终端列表渲染为适合飞书阅读的状态文本', () => {

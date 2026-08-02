@@ -144,6 +144,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
       customTitle: supervisorTabTitle(candidate.label),
       cwd: candidate.projectDir,
       startupCommands: launch ? [launch] : undefined,
+      transientSupervisor: true,
     });
     return {
       id: `lane-${index + 1}`,
@@ -626,6 +627,13 @@ export function initPipeBridge(): void {
       if (next) {
         return { ok: false, error: '终端权限确认后需等待代理恢复；请不要在同一裁决中追加 --next' };
       }
+    }
+
+    // The worker can emit several lifecycle updates while it is waiting. Keep
+    // the first pending human decision stable so Feishu has one card to act on.
+    if (outcome === 'needs-human' && session.pendingApprovals.some((approval) => approval.laneId === lane.id)) {
+      store.appendSupervisorLog(lane.id, '重复人工决策已忽略', reason || '该终端已有待决项');
+      return { ok: true, outcome, duplicate: true };
     }
 
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
