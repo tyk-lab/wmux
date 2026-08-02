@@ -23,6 +23,7 @@ export interface SurfaceSlice {
       shell?: string;
       cwd?: string;
       startupCommands?: string[];
+      transientSupervisor?: boolean;
       url?: string;
     },
   ) => SurfaceId | null;
@@ -175,6 +176,7 @@ interface ClosedSurface {
   shell?: string;
   cwd?: string;
   startupCommands?: string[];
+  transientSupervisor?: boolean;
   url?: string;
 }
 const closedSurfaceStack: ClosedSurface[] = [];
@@ -191,6 +193,7 @@ function pushClosedSurface(surface: SurfaceRef): void {
     shell: surface.shell,
     cwd: surface.cwd,
     startupCommands: surface.startupCommands,
+    transientSupervisor: surface.transientSupervisor,
     url: surface.url,
   });
   if (closedSurfaceStack.length > MAX_CLOSED_SURFACES) closedSurfaceStack.shift();
@@ -217,6 +220,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.shell ? { shell: options.shell } : {}),
       ...(options?.cwd ? { cwd: options.cwd } : {}),
       ...(options?.startupCommands?.length ? { startupCommands: options.startupCommands } : {}),
+      ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(options?.url ? { url: options.url } : {}),
     };
     const newSurfaces = [...leaf.surfaces, newSurface];
@@ -499,6 +503,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.shell ? { shell: restored.shell } : {}),
       ...(restored.cwd ? { cwd: restored.cwd } : {}),
       ...(restored.startupCommands ? { startupCommands: restored.startupCommands } : {}),
+      ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.url ? { url: restored.url } : {}),
     });
   },

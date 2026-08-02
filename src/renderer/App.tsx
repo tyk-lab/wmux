@@ -48,6 +48,7 @@ import { buildUserNotifyText } from './supervisor/protocol';
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
+import { omitTransientSupervisorWorkspaces } from './supervisor/session-restore';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
@@ -745,9 +746,12 @@ export default function App() {
         const autoSaved = await window.wmux?.session?.loadAuto?.();
         if (autoSaved && Array.isArray(autoSaved.workspaces) && autoSaved.workspaces.length > 0) {
           const { replaceAllWorkspaces } = useStore.getState();
-          replaceAllWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
-          if (autoSaved.sidebarWidth) setSidebarWidth(autoSaved.sidebarWidth);
-          return;
+          const restored = omitTransientSupervisorWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
+          if (restored.workspaces.length > 0) {
+            replaceAllWorkspaces(restored.workspaces, restored.activeIndex);
+            if (autoSaved.sidebarWidth) setSidebarWidth(autoSaved.sidebarWidth);
+            return;
+          }
         }
       } catch {}
       try {
@@ -756,9 +760,12 @@ export default function App() {
           const session = await window.wmux?.session?.load(sessions[0].name);
           if (session) {
             const { replaceAllWorkspaces } = useStore.getState();
-            replaceAllWorkspaces(session.workspaces);
-            if (session.sidebarWidth) setSidebarWidth(session.sidebarWidth);
-            return;
+            const restored = omitTransientSupervisorWorkspaces(session.workspaces);
+            if (restored.workspaces.length > 0) {
+              replaceAllWorkspaces(restored.workspaces, restored.activeIndex);
+              if (session.sidebarWidth) setSidebarWidth(session.sidebarWidth);
+              return;
+            }
           }
         }
       } catch {}
@@ -1180,13 +1187,18 @@ export default function App() {
     if (!window.wmux?.session?.onAutoSaveRequest) return;
     const unsub = window.wmux.session.onAutoSaveRequest(() => {
       const state = useStore.getState();
+      const activeIndex = state.workspaces.findIndex((workspace) => workspace.id === state.activeWorkspaceId);
+      const supervisorSurfaceIds = state.supervisor.lanes
+        .map((lane) => lane.supervisorSurfaceId)
+        .filter((surfaceId): surfaceId is SurfaceId => !!surfaceId);
+      const persisted = omitTransientSupervisorWorkspaces(state.workspaces, activeIndex, supervisorSurfaceIds);
       const data = {
         version: 1,
         windows: [{
           bounds: { x: 0, y: 0, width: 0, height: 0 }, // main process fills real bounds
           sidebarWidth,
-          activeWorkspaceId: state.activeWorkspaceId,
-          workspaces: state.workspaces.map(ws => ({
+          activeWorkspaceId: persisted.workspaces[persisted.activeIndex]?.id ?? null,
+          workspaces: persisted.workspaces.map(ws => ({
             id: ws.id,
             title: ws.title,
             customColor: ws.customColor,

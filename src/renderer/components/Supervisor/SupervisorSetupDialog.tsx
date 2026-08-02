@@ -439,6 +439,7 @@ export default function SupervisorSetupDialog() {
         customTitle: supervisorTabTitle(lane.label),
         cwd: lane.projectDir,
         startupCommands,
+        transientSupervisor: true,
       });
       return { ...lane, supervisorSurfaceId };
     });

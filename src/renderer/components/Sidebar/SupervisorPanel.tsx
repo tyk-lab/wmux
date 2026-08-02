@@ -298,6 +298,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         customTitle: supervisorTabTitle(lane.label),
         cwd: lane.projectDir,
         startupCommands,
+        transientSupervisor: true,
       });
       if (!newSurfaceId || !lane.supervisorSurfaceId) {
         for (const replacement of replacements) {

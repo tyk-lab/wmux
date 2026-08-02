@@ -24,6 +24,8 @@ export interface SurfaceRef {
   currentCwd?: string;
   /** Commands run once after the terminal PTY spawns (quick-launch profiles — issue #32). */
   startupCommands?: string[];
+  /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
+  transientSupervisor?: boolean;
   /** Initial URL for a browser surface created from a quick-launch profile (issue #32). */
   url?: string;
   /** Rendered markdown content for a `markdown` surface (issue #54). Persisted so
