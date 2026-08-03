@@ -67,6 +67,36 @@ describe('the three-state model', () => {
     reportAgent(surf, { awaitingHuman: false });
     expect(getAgentState(surf)).toMatchObject({ state: 'idle', blockedReason: null });
   });
+
+  it('keeps one blocked identity until the agent resumes', () => {
+    reportAgent(surf, { awaitingHuman: true, reason: 'permission: npm test' });
+    const blockedVersion = getAgentState(surf)?.blockedVersion;
+    const blockedRequestId = getAgentState(surf)?.blockedRequestId;
+    reportMetadata(surf, { model: 'test-model' });
+    reportAgentSession(surf, { sessionId: 'session-1' });
+    expect(getAgentState(surf)?.blockedVersion).toBe(blockedVersion);
+    expect(getAgentState(surf)?.blockedRequestId).toBe(blockedRequestId);
+
+    reportAgent(surf, { awaitingHuman: true, reason: 'permission: npm run build' });
+    expect(getAgentState(surf)?.blockedVersion).toBe(blockedVersion);
+    expect(getAgentState(surf)?.blockedRequestId).toBe(blockedRequestId);
+
+    reportAgent(surf, { awaitingHuman: false });
+    reportAgent(surf, { awaitingHuman: true, reason: 'permission: npm run build' });
+    expect(getAgentState(surf)?.blockedVersion).toBe((blockedVersion || 0) + 1);
+    expect(getAgentState(surf)?.blockedRequestId).not.toBe(blockedRequestId);
+  });
+
+  it('uses a new blocked request identity after an agent release and restart', () => {
+    reportAgent(surf, { awaitingHuman: true, reason: 'permission: npm test' });
+    const firstRequestId = getAgentState(surf)?.blockedRequestId;
+    releaseAgent(surf);
+    reportAgent(surf, { awaitingHuman: true, reason: 'permission: npm test' });
+
+    expect(firstRequestId).toBeTruthy();
+    expect(getAgentState(surf)?.blockedRequestId).toBeTruthy();
+    expect(getAgentState(surf)?.blockedRequestId).not.toBe(firstRequestId);
+  });
 });
 
 describe('run depth is a refcount, not a boolean', () => {
@@ -180,6 +210,8 @@ describe('expiry', () => {
     awaitingHuman: false,
     runDepth: 0,
     blockedReason: null,
+    blockedVersion: 0,
+    blockedRequestId: null,
     sessionId: null,
     metadata: {},
     lastSeq: 0,

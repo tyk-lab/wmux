@@ -28,6 +28,7 @@
  */
 
 import { BrowserWindow } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { IPC_CHANNELS, SurfaceId } from '../shared/types';
 
 export type AgentRunState = 'blocked' | 'working' | 'idle' | 'unknown';
@@ -50,6 +51,10 @@ export interface AgentStateRecord {
   runDepth: number;
   /** What the agent is waiting for, when it told us. */
   blockedReason: string | null;
+  /** Changes only when the human-blocked request changes, not on metadata updates. */
+  blockedVersion: number;
+  /** Unique identity for the current blocked request, including across agent restarts. */
+  blockedRequestId: string | null;
   /** Resumable session handle (a file/id), not a PID — survives a restart. */
   sessionId: string | null;
   metadata: AgentMetadata;
@@ -76,6 +81,8 @@ function blank(surfaceId: SurfaceId): AgentStateRecord {
     awaitingHuman: false,
     runDepth: 0,
     blockedReason: null,
+    blockedVersion: 0,
+    blockedRequestId: null,
     sessionId: null,
     metadata: {},
     lastSeq: 0,
@@ -168,6 +175,7 @@ export interface ReportAgentParams {
 export function reportAgent(surfaceId: SurfaceId, params: ReportAgentParams): AgentStateRecord | null {
   const record = getOrCreate(surfaceId);
   if (!acceptSeq(record, params.seq)) return null;
+  const previousAwaitingHuman = record.awaitingHuman;
 
   if (params.awaitingHuman !== undefined) {
     record.awaitingHuman = !!params.awaitingHuman;
@@ -176,6 +184,12 @@ export function reportAgent(surfaceId: SurfaceId, params: ReportAgentParams): Ag
     record.blockedReason = record.awaitingHuman ? (params.reason ?? null) : null;
   } else if (params.reason !== undefined) {
     record.blockedReason = params.reason;
+  }
+  if (!previousAwaitingHuman && record.awaitingHuman) {
+    record.blockedVersion += 1;
+    record.blockedRequestId = randomUUID();
+  } else if (previousAwaitingHuman && !record.awaitingHuman) {
+    record.blockedRequestId = null;
   }
 
   if (params.runDepth !== undefined && Number.isFinite(params.runDepth)) {
@@ -259,6 +273,8 @@ function forget(surfaceId: SurfaceId): void {
     surfaceId,
     state: 'unknown',
     blockedReason: null,
+    blockedVersion: 0,
+    blockedRequestId: null,
     sessionId: null,
     runDepth: 0,
     metadata: {},
@@ -270,6 +286,8 @@ export interface AgentStateSnapshot {
   surfaceId: SurfaceId;
   state: AgentRunState;
   blockedReason: string | null;
+  blockedVersion: number;
+  blockedRequestId: string | null;
   sessionId: string | null;
   runDepth: number;
   metadata: AgentMetadata;
@@ -281,6 +299,8 @@ function snapshot(record: AgentStateRecord, now = Date.now()): AgentStateSnapsho
     surfaceId: record.surfaceId,
     state: resolveState(record, now),
     blockedReason: record.blockedReason,
+    blockedVersion: record.blockedVersion,
+    blockedRequestId: record.blockedRequestId,
     sessionId: record.sessionId,
     runDepth: record.runDepth,
     metadata: liveMetadata(record, now),
