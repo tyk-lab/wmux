@@ -136,6 +136,11 @@ function hasOnlyFields(fields: Record<string, string>, allowed: string[]): boole
   return Object.keys(fields).every((field) => allowed.includes(field));
 }
 
+/** Friendly control entrypoints for people who should not need to remember command syntax. */
+export function isFeishuSupervisorHelp(input: string): boolean {
+  return ['wmux帮助', 'wmux 帮助', 'wmux help', '帮助'].includes(input.trim().toLowerCase());
+}
+
 /** Parse the intentionally small, non-shell Feishu command grammar. */
 export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCommand | { error: string } {
   const lines = input.replace(/\r/g, '').split('\n').map((line) => line.trim()).filter(Boolean);
@@ -188,6 +193,10 @@ function summary(value: unknown): string {
   return result.error || result.message || (result.ok === false ? '操作未完成。' : '已处理。');
 }
 
+function failedResult(value: unknown): boolean {
+  return isObject(value) && (typeof value.error === 'string' || value.ok === false);
+}
+
 interface FeishuListTerminal {
   surfaceId: string;
   label: string;
@@ -212,6 +221,84 @@ interface FeishuListResult {
   terminals: FeishuListTerminal[];
   session: FeishuListSession | null;
   pendingApprovals: FeishuListApproval[];
+}
+
+function terminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  return terminals.map((terminal) => ({
+    text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervised ? '（监督中）' : ''}`.slice(0, 100) },
+    value: terminal.surfaceId,
+  }));
+}
+
+function cardButton(value: Record<string, string>, text: string, type: 'primary' | 'default' | 'danger' = 'default'): object {
+  return { tag: 'button', text: { tag: 'plain_text', content: text }, type, value };
+}
+
+/** The direct-chat entrypoint for all routine operations. */
+export function buildSupervisorControlMenuCard(): object {
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · AI 监督控制' }, template: 'blue' },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: '请选择操作。终端、任务和停止条件都会在下一步填写，无需记忆命令。' } },
+      {
+        tag: 'column_set', flex_mode: 'none', columns: [
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'status' }, '查看状态')] },
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'start' }, '启动监督', 'primary')] },
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')] },
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'stop' }, '停止监督', 'danger')] },
+        ],
+      },
+      { tag: 'note', elements: [{ tag: 'plain_text', content: '人工决策会单独以审批卡片发送到审计群。高级文本命令仍可用。' }] },
+    ],
+  };
+}
+
+/** Form displayed after selecting “启动监督”; launcher/model options intentionally use existing wmux defaults. */
+export function buildSupervisorStartCard(terminals: FeishuListTerminal[]): object {
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · 启动 AI 监督' }, template: 'blue' },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: '选择一个已有工作终端，填写可核对的停止条件。不会创建终端，也不会向工作终端发送新任务。' } },
+      {
+        tag: 'form', name: 'wmux_supervisor_start', elements: [
+          { tag: 'select_static', name: 'terminal', required: true, label: { tag: 'plain_text', content: '工作终端' }, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(terminals) },
+          { tag: 'input', name: 'stop_when', required: true, label: { tag: 'plain_text', content: '停止条件' }, placeholder: { tag: 'plain_text', content: '例如：测试通过且计划验收项完成' } },
+          { tag: 'select_static', name: 'stop_when_kind', label: { tag: 'plain_text', content: '条件类型' }, options: [
+            { text: { tag: 'plain_text', content: '具体可验证条件（推荐）' }, value: 'concrete' },
+            { text: { tag: 'plain_text', content: '目标方向' }, value: 'direction' },
+          ] },
+          { tag: 'input', name: 'task_description', label: { tag: 'plain_text', content: '停止条件补充说明（可选）' }, placeholder: { tag: 'plain_text', content: '帮助监督 AI 理解何时适合结束' } },
+          { tag: 'input', name: 'preconditions', label: { tag: 'plain_text', content: '已确认前置条件（可选）' }, placeholder: { tag: 'plain_text', content: '例如：测试环境已准备好' } },
+          { tag: 'input', name: 'plan_file', label: { tag: 'plain_text', content: '计划文件绝对路径（可选）' }, placeholder: { tag: 'plain_text', content: '例如：E:\\work\\project\\PLAN.md' } },
+          { tag: 'select_static', name: 'autonomous', label: { tag: 'plain_text', content: '全自动监督' }, options: [
+            { text: { tag: 'plain_text', content: '关闭（推荐）' }, value: 'off' },
+            { text: { tag: 'plain_text', content: '开启（仍禁止高风险操作）' }, value: 'on' },
+          ] },
+          { tag: 'button', text: { tag: 'plain_text', content: '启动监督' }, type: 'primary', complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'form_start' } },
+        ], fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写监督表单。' } },
+      },
+    ],
+  };
+}
+
+/** Form displayed after selecting “发送任务”. */
+export function buildSupervisorSendTaskCard(terminals: FeishuListTerminal[]): object {
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · 向终端发送任务' }, template: 'blue' },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: '选择已有工作终端并填写任务。提交后 wmux 会直接输入并执行这段文本。' } },
+      {
+        tag: 'form', name: 'wmux_supervisor_send', elements: [
+          { tag: 'select_static', name: 'terminal', required: true, label: { tag: 'plain_text', content: '目标终端' }, placeholder: { tag: 'plain_text', content: '选择终端' }, options: terminalOptions(terminals) },
+          { tag: 'input', name: 'task', required: true, input_type: 'multiline_text', rows: 5, label: { tag: 'plain_text', content: '任务内容' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' } },
+          { tag: 'button', text: { tag: 'plain_text', content: '发送任务' }, type: 'primary', complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'form_send' } },
+        ], fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写任务表单。' } },
+      },
+    ],
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -263,7 +350,7 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   ];
   if (result.session) {
     lines.push(`会话 ID：${result.session.sessionId}`);
-    lines.push(`AI 自主决策：${result.session.autonomous ? '开启' : '关闭'}`);
+    lines.push(`监督模式：${result.session.autonomous ? '全自动（高风险仍需人工）' : '有限自主（低风险权限与小范围调整自动处理）'}`);
     lines.push(`停止条件：${result.session.stopWhen}`);
   }
   lines.push('', '终端列表：');
@@ -348,6 +435,8 @@ export class FeishuSupervisorService {
   private channel: Lark.LarkChannel | null = null;
   private readonly seen = new Set<string>();
   private readonly approvalCards = new Map<string, ApprovalCard>();
+  /** Only cards sent to a control chat may open routine control forms. */
+  private readonly controlCards = new Map<string, string>();
 
   constructor(private readonly control: FeishuSupervisorControl) {}
 
@@ -415,6 +504,10 @@ export class FeishuSupervisorService {
     console.info(`[feishu] message received: type=${chatType}, group=${chatId === this.config?.chatId}, sender=${this.config?.allowedOpenIds.has(openId) === true}, duplicate=${this.seen.has(messageId)}`);
     if (!allowed || this.seen.has(messageId)) return;
     this.remember(messageId);
+    if (isFeishuSupervisorHelp(content)) {
+      await this.sendControlCard(buildSupervisorControlMenuCard(), chatId);
+      return;
+    }
     const command = parseFeishuSupervisorCommand(content);
     if ('error' in command) {
       console.info('[feishu] supervisor command rejected: invalid format');
@@ -426,9 +519,18 @@ export class FeishuSupervisorService {
   }
 
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
-    if (!this.config?.allowedOpenIds.has(event.operator.openId) || event.chatId !== this.config.chatId) return;
-    const value = event.action.value as { wmux_action?: string; approval_id?: string; decision?: string };
-    if (value?.wmux_action !== 'decide' || !value.approval_id || !['approve', 'reject', 'stop'].includes(value.decision || '')) return;
+    if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
+    const value = event.action.value as { wmux_action?: string; approval_id?: string; decision?: string; flow?: string };
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send') {
+      if (this.controlCards.get(event.messageId) !== event.chatId) return;
+      const dedupeKey = `${event.messageId}:${value.wmux_action}:${value.flow || ''}`;
+      if (this.seen.has(dedupeKey)) return;
+      this.remember(dedupeKey);
+      const accepted = await this.handleControlCardAction(event, value);
+      if (!accepted) this.seen.delete(dedupeKey);
+      return;
+    }
+    if (event.chatId !== this.config.chatId || value?.wmux_action !== 'decide' || !value.approval_id || !['approve', 'reject', 'stop'].includes(value.decision || '')) return;
     const dedupeKey = `${event.messageId}:${value.decision}`;
     if (this.seen.has(dedupeKey)) return;
     this.remember(dedupeKey);
@@ -452,13 +554,97 @@ export class FeishuSupervisorService {
     }
   }
 
-  private cardFollowUpTask(event: Lark.CardActionEvent): string | undefined {
-    if (!isObject(event.raw) || !isObject(event.raw.action) || !isObject(event.raw.action.form_value)) return undefined;
+  private async handleControlCardAction(
+    event: Lark.CardActionEvent,
+    value: { wmux_action?: string; flow?: string },
+  ): Promise<boolean> {
+    if (value.wmux_action === 'menu') {
+      await this.handleControlMenu(event, value.flow || '');
+      return true;
+    }
+    const form = this.cardFormValues(event);
+    if (value.wmux_action === 'form_start') {
+      const terminal = form.terminal || '';
+      const stopWhen = form.stop_when || '';
+      if (!terminal || !stopWhen) {
+        await this.sendText('请先选择工作终端并填写停止条件。', event.chatId);
+        return false;
+      }
+      const result = await this.control({
+        action: 'start', terminals: [terminal], stopWhen,
+        stopWhenKind: form.stop_when_kind === 'direction' ? 'direction' : 'concrete',
+        taskDescription: form.task_description || undefined,
+        preconditions: form.preconditions || undefined,
+        planFile: form.plan_file || undefined,
+        autonomous: form.autonomous === 'on',
+      }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
+      await this.sendText(summary(result), event.chatId);
+      return !failedResult(result);
+    }
+    if (value.wmux_action === 'form_send') {
+      const terminal = form.terminal || '';
+      const task = form.task || '';
+      if (!terminal || !task) {
+        await this.sendText('请先选择目标终端并填写任务内容。', event.chatId);
+        return false;
+      }
+      const result = await this.control({ action: 'send', terminal, task }, { openId: event.operator.openId, source: 'card' })
+        .catch((err) => ({ error: String(err?.message || err) }));
+      await this.sendText(summary(result), event.chatId);
+      return !failedResult(result);
+    }
+    return false;
+  }
+
+  private async handleControlMenu(event: Lark.CardActionEvent, flow: string): Promise<void> {
+    if (flow === 'stop') {
+      const result = await this.control({ action: 'stop' }, { openId: event.operator.openId, source: 'card' })
+        .catch((err) => ({ error: String(err?.message || err) }));
+      await this.sendText(summary(result), event.chatId);
+      await this.sendControlCard(buildSupervisorControlMenuCard(), event.chatId);
+      return;
+    }
+    const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
+      .catch((err) => ({ error: String(err?.message || err) }));
+    const list = parseListResult(result);
+    if (!list) {
+      await this.sendText(summary(result), event.chatId);
+      return;
+    }
+    if (flow === 'start') {
+      const candidates = list.terminals.filter((terminal) => !terminal.supervised);
+      if (candidates.length === 0) {
+        await this.sendText('暂无可启动监督的终端。请先在 wmux 中创建工作终端，或先停止当前监督。', event.chatId);
+        return;
+      }
+      await this.sendControlCard(buildSupervisorStartCard(candidates), event.chatId);
+      return;
+    }
+    if (flow === 'send') {
+      if (list.terminals.length === 0) {
+        await this.sendText('暂无可发送任务的终端。请先在 wmux 中创建工作终端。', event.chatId);
+        return;
+      }
+      await this.sendControlCard(buildSupervisorSendTaskCard(list.terminals), event.chatId);
+      return;
+    }
+    await this.sendText(formatFeishuSupervisorResponse({ action: 'list' }, result), event.chatId);
+    await this.sendControlCard(buildSupervisorControlMenuCard(), event.chatId);
+  }
+
+  private cardFormValues(event: Lark.CardActionEvent): Record<string, string> {
+    if (!isObject(event.raw) || !isObject(event.raw.action) || !isObject(event.raw.action.form_value)) return {};
     const form = event.raw.action.form_value;
-    const task = typeof form.follow_up_task === 'string' ? form.follow_up_task.trim() : '';
-    const choiceValue = form.decision_choice;
-    const choice = Array.isArray(choiceValue) ? choiceValue[0] : choiceValue;
-    const selected = typeof choice === 'string' && choice.trim() ? `用户选择${choice.trim()}` : '';
+    return Object.fromEntries(Object.entries(form).flatMap(([name, value]) => {
+      const selected = Array.isArray(value) ? value[0] : value;
+      return typeof selected === 'string' ? [[name, selected.trim().slice(0, MAX_COMMAND_VALUE_LENGTH)]] : [];
+    }));
+  }
+
+  private cardFollowUpTask(event: Lark.CardActionEvent): string | undefined {
+    const form = this.cardFormValues(event);
+    const task = form.follow_up_task || '';
+    const selected = form.decision_choice ? `用户选择${form.decision_choice}` : '';
     const combined = [selected, task].filter(Boolean).join('\n');
     return combined ? combined.slice(0, MAX_COMMAND_VALUE_LENGTH) : undefined;
   }
@@ -468,6 +654,18 @@ export class FeishuSupervisorService {
     const approvalId = String(record.payload?.approvalId || '');
     const sent = await this.channel.send(this.config!.chatId, { card: buildApprovalCard(record) });
     this.approvalCards.set(approvalId, { approvalId, messageId: sent.messageId });
+  }
+
+  private async sendControlCard(card: object, chatId: string): Promise<void> {
+    if (!this.channel) return;
+    try {
+      const sent = await this.channel.send(chatId, { card });
+      this.controlCards.set(sent.messageId, chatId);
+      if (this.controlCards.size > 100) this.controlCards.delete(this.controlCards.keys().next().value as string);
+    } catch (err) {
+      console.warn('[feishu] send control card failed', err);
+      await this.sendText('控制卡片发送失败，请稍后发送“wmux帮助”重试。', chatId);
+    }
   }
 
   private async updateApproval(approvalId: string, resolution: string): Promise<void> {

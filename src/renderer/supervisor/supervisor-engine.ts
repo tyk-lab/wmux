@@ -14,6 +14,7 @@ export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 export interface SurfaceStateView {
   state: DeclaredState | string;
   blockedReason?: string | null;
+  updatedAt?: number;
 }
 
 export interface LaneRuntime {
@@ -73,6 +74,8 @@ export type TickAction =
       type: 'notify_supervisor';
       laneId: string;
       text: string;
+      /** Opens exactly one decision window for the reported worker state. */
+      opensReview?: boolean;
     }
   | {
       type: 'notify_user';
@@ -130,7 +133,7 @@ export function tickLane(opts: {
   const st = String(surfaceState.state || 'unknown');
   const mode = session.mode || 'direct';
 
-  // ── blocked → dedicated supervisor may resolve low-risk permissions in an autonomous session ─
+  // ── blocked → a dedicated supervisor may resolve explicit low-risk permissions ─
   if (st === 'blocked') {
     const reason = surfaceState.blockedReason || '等待人类（权限/输入）';
     if (!rt.lastBlockedLogAt || now - rt.lastBlockedLogAt > 15_000) {
@@ -140,14 +143,16 @@ export function tickLane(opts: {
         action: '阻塞',
         detail: `${lane.label}: ${reason}`,
       });
-      if (session.autonomous && lane.supervisorSurfaceId) {
+      if (lane.supervisorSurfaceId) {
         actions.push({
           type: 'notify_supervisor',
           laneId: lane.id,
+          opensReview: true,
           text: [
             `[权限/输入阻塞] 通道=${lane.label} (${lane.surfaceId})`,
             `Hook 原因: ${reason}`,
-            `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当请求是低风险、可逆且命令明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y。`,
+            `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当终端仍为 blocked、原因属于权限请求，且命令低风险、可逆、明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y；同一阻塞状态只确认一次。`,
+            '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 携带 --next 回答一次；业务偏好、用户专属决定或原因不明的输入使用 needs-human。',
             '删除或覆盖、git push/重写历史、发布/部署、云端/生产环境、凭据/权限变更或无法确认的请求，一律使用 needs-human，不要发送权限确认。',
           ].join('\n'),
         });
@@ -161,17 +166,17 @@ export function tickLane(opts: {
         });
       }
       rt.lastBlockedLogAt = now;
-      // Human escalation pauses this lane. Autonomous permission checks keep
-      // polling so a successful safe response can resume the worker normally.
-      if (!session.autonomous) rt.humanNotified = true;
+      // Only lanes without a dedicated supervisor pause on direct human
+      // notification. AI-reviewed permission checks keep polling so a safe
+      // confirmation can resume the worker normally.
+      if (!lane.supervisorSurfaceId) rt.humanNotified = true;
     }
     rt.lastState = st;
     return { actions, runtime: rt };
   }
 
-  // Unified supervision never schedules or injects worker work. The supervisor
-  // terminal receives task-end notifications and records its own evidence-based
-  // decision through the CLI.
+  // The unified scheduler never invents work on its own. Only an explicit,
+  // evidence-based supervisor decision may inject a bounded next step.
   if (mode === 'unified') {
     rt.lastState = st;
     return { actions, runtime: rt };

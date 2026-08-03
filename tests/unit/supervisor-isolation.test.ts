@@ -6,6 +6,7 @@ import {
   isSupervisorDecisionAuthorised,
   isSupervisorNextAllowed,
   isSupervisorProposalAllowed,
+  nextSupervisorDecisionCount,
   normalizedMaxAutoDecisions,
   reachesAutoDecisionLimit,
 } from '../../src/renderer/pipe-bridge';
@@ -64,7 +65,10 @@ describe('supervisor isolation', () => {
     expect(isSupervisorDecisionAuthorised(monitored, '')).toBe(false);
   });
 
-  it('requires human decision for route changes and important suggestions', () => {
+  it('allows small route adjustments but keeps material proposals human-gated', () => {
+    expect(isSupervisorProposalAllowed('continue', 'route-adjustment')).toBe(true);
+    expect(isSupervisorProposalAllowed('rework', 'route-adjustment')).toBe(true);
+    expect(isSupervisorProposalAllowed('needs-human', 'route-adjustment')).toBe(false);
     expect(isSupervisorProposalAllowed('continue', 'route-change')).toBe(false);
     expect(isSupervisorProposalAllowed('rework', 'important')).toBe(false);
     expect(isSupervisorProposalAllowed('needs-human', 'route-change')).toBe(true);
@@ -78,14 +82,17 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('证据不足、测试失败或普通返工本身不是人工升级理由');
     expect(boundary).toContain('低风险检查、补测或查看日志');
     expect(boundary).toContain('不可逆或高影响操作');
-    expect(boundary).toContain('方案 A / 方案 B');
-    expect(boundary).toContain('不要把“等待用户选择”裁决为 continue 或 rework');
+    expect(boundary).toContain('方案 A / B');
+    expect(boundary).toContain('技术实现选择');
+    expect(boundary).toContain('route-adjustment');
+    expect(boundary).toContain('低风险、可逆');
   });
 
-  it('does not allow unified supervision to inject a normal next task', () => {
-    expect(isSupervisorNextAllowed('unified', 'continue', '继续修复')).toBe(false);
-    expect(isSupervisorNextAllowed('unified', 'rework', '补测试')).toBe(false);
+  it('allows ordinary unified supervision to inject bounded next work', () => {
+    expect(isSupervisorNextAllowed('unified', 'continue', '继续修复')).toBe(true);
+    expect(isSupervisorNextAllowed('unified', 'rework', '补测试')).toBe(true);
     expect(isSupervisorNextAllowed('unified', 'needs-human', '建议改为另一方案')).toBe(true);
+    expect(isSupervisorNextAllowed('unified', 'complete', '继续操作')).toBe(false);
     expect(isSupervisorNextAllowed('direct', 'continue', '继续')).toBe(true);
   });
 
@@ -97,7 +104,13 @@ describe('supervisor isolation', () => {
     expect(autonomousActionBlockReason('git push origin main')).toBe('推送或重写 Git 历史');
     expect(autonomousActionBlockReason('npm publish')).toBe('发布软件包');
     expect(autonomousActionBlockReason('Remove-Item -Recurse build')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('Set-Content .env secret')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('删除生产文件后发布')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('gh pr create --fill')).toBe('对外提交或发布');
+    expect(autonomousActionBlockReason('curl -X DELETE https://example.test/item')).toBe('外部写操作');
+    expect(autonomousActionBlockReason('Start-Process pwsh -Verb RunAs')).toBe('管理员权限或系统权限变更');
     expect(autonomousActionBlockReason('npm test -- auth')).toBeNull();
+    expect(autonomousActionBlockReason('Get-Content package.json')).toBeNull();
   });
 
   it('only permits explicit affirmative responses for autonomous terminal permissions', () => {
@@ -105,6 +118,12 @@ describe('supervisor isolation', () => {
     expect(isAutonomousPermissionResponseAllowed('allow')).toBe(true);
     expect(isAutonomousPermissionResponseAllowed('1')).toBe(false);
     expect(isAutonomousPermissionResponseAllowed('')).toBe(false);
+  });
+
+  it('audits permission confirmations without consuming a judgment slot', () => {
+    expect(nextSupervisorDecisionCount(2, 'y')).toBe(2);
+    expect(nextSupervisorDecisionCount(2, '')).toBe(3);
+    expect(nextSupervisorDecisionCount(undefined, 'approve')).toBe(0);
   });
 
   it('requires human review after the configured automatic decision limit', () => {
@@ -284,6 +303,10 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('用户已确认、在本次监督会话内有效');
     expect(briefing).toContain('不要仅因历史审计、任务日志');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
+    expect(briefing).toContain('本会话启用有限自主监督');
+    expect(briefing).toContain('continue / rework 携带 --next');
+    expect(briefing).toContain('--proposal-kind route-adjustment');
+    expect(briefing).toContain('--permission-command');
     expect(workerPrompt).not.toContain('只允许改动 src/auth');
     expect(workerPrompt).not.toContain('设备已上电');
   });
@@ -295,7 +318,8 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('本会话启用全自动监督');
     expect(briefing).toContain('--permission-command');
     expect(briefing).toContain('git push/重写历史');
-    expect(briefing).toContain('不要携带 --next 自动替用户选择');
+    expect(briefing).toContain('多个低风险技术方案');
+    expect(briefing).toContain('needs-human 在全自动模式下也必须等待用户决定');
   });
 
   it('injects recovered audit context only into its dedicated supervisor briefing', () => {
@@ -318,15 +342,22 @@ describe('supervisor isolation', () => {
       sessionId: 'sup-old',
       events: [
         { ts: 1, type: 'worker.task', payload: { task: '修复登录' } },
-        { ts: 2, type: 'supervisor.decision', payload: { outcome: 'rework', reason: '缺少测试', next: '补单测' } },
+        { ts: 2, type: 'supervisor.decision', payload: { outcome: 'rework', proposalKind: 'route-adjustment', reason: '缺少测试', next: '改用现有测试夹具补单测' } },
       ],
     });
 
     expect(restored).toMatchObject({
       currentTask: '修复登录',
       restoredFromSessionId: 'sup-old',
-      decisions: [{ task: '修复登录', outcome: 'rework', reason: '缺少测试', next: '补单测' }],
+      decisions: [{
+        task: '修复登录',
+        outcome: 'rework',
+        proposalKind: 'route-adjustment',
+        reason: '缺少测试',
+        next: '改用现有测试夹具补单测',
+      }],
     });
+    expect(restored?.restoredHistory).toContain('监督裁决：rework（小范围路线调整）');
   });
 
   it('formats a terminal-isolated audit trail for a separate record tab', () => {
@@ -336,7 +367,7 @@ describe('supervisor isolation', () => {
         createdAt: 1,
         events: [
           { ts: 2, type: 'worker.task', payload: { task: '修复登录' } },
-          { ts: 3, type: 'supervisor.decision', payload: { outcome: 'complete', reason: '测试通过' } },
+          { ts: 3, type: 'supervisor.decision', payload: { outcome: 'rework', proposalKind: 'route-adjustment', reason: '测试未覆盖', next: '切换到已有测试夹具' } },
           { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
           { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
           { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
@@ -345,7 +376,7 @@ describe('supervisor isolation', () => {
     });
 
     expect(text).toContain('监督记录 · Auth worker');
-    expect(text).toContain('裁决：complete');
+    expect(text).toContain('裁决：rework · 小范围路线调整');
     expect(text).toContain('已废除旧上下文');
     expect(text).toContain('人工裁决：已批准（路线变更）');
     expect(text).toContain('人工已审阅');

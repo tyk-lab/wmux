@@ -148,7 +148,7 @@ async function cmdBrowser(args: string[]): Promise<void> {
 
 async function cmdSupervisor(args: string[]): Promise<void> {
   if (args[1] !== 'decide') {
-    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>]');
+    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>]');
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -848,7 +848,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
-                          [--reason <text>] [--next <text>] [--proposal-kind <route-change|important>]
+                          [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)

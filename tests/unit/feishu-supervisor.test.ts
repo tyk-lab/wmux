@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, loadFeishuEnvironment, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -44,6 +44,13 @@ supervisor_model: k3`)).toEqual({
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: shell')).toEqual({
       error: 'DECIDE 需要 approval_id 和 action: approve|reject|stop。',
     });
+  });
+
+  it('识别单聊控制菜单的中英文帮助口令', () => {
+    expect(isFeishuSupervisorHelp('wmux帮助')).toBe(true);
+    expect(isFeishuSupervisorHelp('WMUX HELP')).toBe(true);
+    expect(isFeishuSupervisorHelp('帮助')).toBe(true);
+    expect(isFeishuSupervisorHelp('WMUX SUPERVISOR LIST')).toBe(false);
   });
 
   it('解析指定终端发送任务的受限命令', () => {
@@ -124,6 +131,25 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('停止监督');
   });
 
+  it('将日常控制渲染为菜单、启动表单和任务表单', () => {
+    const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
+    const menu = JSON.stringify(buildSupervisorControlMenuCard());
+    const start = JSON.stringify(buildSupervisorStartCard(terminals));
+    const send = JSON.stringify(buildSupervisorSendTaskCard(terminals));
+
+    expect(menu).toContain('查看状态');
+    expect(menu).toContain('启动监督');
+    expect(menu).toContain('发送任务');
+    expect(menu).toContain('停止监督');
+    expect(start).toContain('stop_when');
+    expect(start).toContain('plan_file');
+    expect(start).toContain('form_start');
+    expect(send).toContain('task');
+    expect(send).toContain('form_send');
+    expect(send).toContain('multiline_text');
+    expect(start).toContain('surf-a');
+  });
+
   it('将终端列表渲染为适合飞书阅读的状态文本', () => {
     const response = formatFeishuSupervisorResponse(
       { action: 'list' },
@@ -143,7 +169,7 @@ supervisor_model: k3`)).toEqual({
 
     expect(response).toContain('wmux · AI 监督状态');
     expect(response).toContain('监督会话：进行中');
-    expect(response).toContain('AI 自主决策：关闭');
+    expect(response).toContain('监督模式：有限自主（低风险权限与小范围调整自动处理）');
     expect(response).toContain('1. pwsh.exe · 飞书管理');
     expect(response).toContain('状态：监督中');
     expect(response).toContain('终端 ID：surf-supervised');

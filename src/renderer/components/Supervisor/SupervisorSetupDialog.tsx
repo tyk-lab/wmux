@@ -667,7 +667,7 @@ export default function SupervisorSetupDialog() {
             <span className="supervisor-dialog__row-main">
               <span className="supervisor-dialog__row-label">全自动监督（仅本次会话）</span>
               <span className="supervisor-dialog__row-meta">
-                让监督 AI 自行推进、裁决完成，并自动通过安全策略允许的终端权限确认。
+                普通监督已可推进低风险下一步、确认明确权限和小范围调整；开启后会在相同安全边界内持续自主推进，不受自动判断次数上限。
               </span>
             </span>
           </label>

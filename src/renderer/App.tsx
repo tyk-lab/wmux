@@ -1067,6 +1067,7 @@ export default function App() {
           surfaceState: {
             state: surfaceState.state || 'unknown',
             blockedReason: surfaceState.blockedReason,
+            updatedAt: surfaceState.updatedAt,
           },
           runtime,
           now,
@@ -1118,14 +1119,19 @@ export default function App() {
               );
             }
           } else if (action.type === 'notify_supervisor') {
-            const lane = store.supervisor.lanes.find((item) => item.id === action.laneId);
+            if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: true });
+            const lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
             const sid = lane?.supervisorSurfaceId;
             if (sid) {
               try {
                 sendToSurface(sid, action.text, true);
-              } catch {
-                /* ignore */
+              } catch (err) {
+                if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: false });
+                store.appendSupervisorLog(action.laneId, '监督通知发送失败', String((err as Error)?.message || err));
               }
+            } else if (action.opensReview) {
+              store.updateLane(action.laneId, { awaitingReview: false });
+              store.appendSupervisorLog(action.laneId, '监督通知发送失败', '专属监督终端不存在');
             }
           } else if (action.type === 'notify_user') {
             const lane = store.supervisor.lanes.find((l) => l.id === action.laneId);

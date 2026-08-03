@@ -20,30 +20,34 @@ export function isSupervisorDecisionAuthorised(
   return !!supervisorSurfaceId && lane.supervisorSurfaceId === supervisorSurfaceId;
 }
 
-/** Important proposals are never eligible for automatic continuation. */
+/** Small reversible adjustments are autonomous; material proposals remain human-gated. */
 export function isSupervisorProposalAllowed(outcome: string, proposalKind: string): boolean {
   if (!proposalKind) return true;
+  if (proposalKind === 'route-adjustment') return outcome === 'continue' || outcome === 'rework';
   return (proposalKind === 'route-change' || proposalKind === 'important') && outcome === 'needs-human';
 }
 
-/** Unified supervision can only send a proposal after explicit human approval. */
+/** A supervisor may advance work only from a continuation/rework or a human proposal. */
 export function isSupervisorNextAllowed(
-  mode: string,
+  _mode: string,
   outcome: string,
   next: string,
-  autonomous = false,
+  _autonomous = false,
 ): boolean {
-  return autonomous || mode !== 'unified' || !next || outcome === 'needs-human';
+  return !next || outcome === 'continue' || outcome === 'rework' || outcome === 'needs-human';
 }
 
 const AUTONOMOUS_BLOCKED_ACTIONS: Array<[RegExp, string]> = [
-  [/(?:^|\s)(?:rm|rmdir|del|erase|rd|remove-item)\b/i, '删除或覆盖文件'],
-  [/\bgit\s+(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
+  [/(?:^|\s)(?:rm|rmdir|del|erase|rd|ri|remove-item|clear-content|set-content|out-file)\b|删除|覆盖/i, '删除或覆盖文件'],
+  [/\bgit\b[^\r\n]{0,200}\b(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
   [/\b(?:npm|pnpm|yarn|bun|cargo|twine)\s+(?:publish|release)\b/i, '发布软件包'],
-  [/\b(?:deploy|release|publish)\b/i, '部署、发布或对外提交'],
+  [/\bgh\s+(?:pr\s+(?:create|merge|close)|release\s+create)\b/i, '对外提交或发布'],
+  [/\b(?:curl|invoke-restmethod|invoke-webrequest)\b[^\r\n]{0,300}(?:-x|--request|-method)\s*(?:delete|post|put|patch)\b/i, '外部写操作'],
+  [/\b(?:deploy|release|publish)\b|部署|发布|对外提交/i, '部署、发布或对外提交'],
   [/\b(?:kubectl|helm|terraform|pulumi|aws|az|gcloud)\b/i, '云端或生产环境操作'],
-  [/\b(?:production|prod)\b/i, '生产环境操作'],
-  [/\b(?:credential|secret|token|password|api[ _-]?key)\b/i, '凭据或权限变更'],
+  [/\b(?:production|prod)\b|生产环境|线上环境/i, '生产环境操作'],
+  [/\b(?:credential|secret|token|password|api[ _-]?key)\b|凭据|密钥|令牌|密码/i, '凭据或权限变更'],
+  [/(?:^|\s)(?:sudo|runas)\b|\bstart-process\b[^\n]*\s-verb\s+runas\b|\b(?:set-executionpolicy|takeown|icacls|set-acl|new-localuser|add-localgroupmember)\b|管理员权限|系统权限/i, '管理员权限或系统权限变更'],
 ];
 
 /** Returns why an AI-proposed action must remain a human decision. */
@@ -56,6 +60,28 @@ export function autonomousActionBlockReason(action: string): string | null {
 
 export function isAutonomousPermissionResponseAllowed(response: string): boolean {
   return /^(?:y|yes|allow|approve)$/i.test(response.trim());
+}
+
+interface SupervisorAgentStateView {
+  state?: string;
+  blockedReason?: string | null;
+  updatedAt?: number;
+}
+
+function isPermissionBlockedState(
+  state: SupervisorAgentStateView | undefined,
+): state is SupervisorAgentStateView & { updatedAt: number } {
+  return state?.state === 'blocked'
+    && typeof state.updatedAt === 'number'
+    && /\b(?:permission|approval|allowance)\b|权限|授权/i.test(state.blockedReason || '');
+}
+
+function isQuestionBlockedState(
+  state: SupervisorAgentStateView | undefined,
+): state is SupervisorAgentStateView & { updatedAt: number } {
+  return state?.state === 'blocked'
+    && typeof state.updatedAt === 'number'
+    && /question|input|choice|choose|select|prompt|询问|选择|输入|问题|决定/i.test(state.blockedReason || '');
 }
 
 interface RemoteSupervisorStart {
@@ -224,8 +250,11 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
   if (decision === 'approve') store.approvePending(approvalId);
   else store.rejectPending(approvalId);
   if (lane && (approval.source === 'supervisor-route' || approval.source === 'supervisor-important')) {
-    store.updateLane(lane.id, { awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, ...(decision === 'approve' ? { currentTask: followUpTask } : {}) });
+    store.updateLane(lane.id, { awaitingReview: decision !== 'approve', autoDecisionLimitReached: false, autoDecisionsUsed: 0, ...(decision === 'approve' ? { currentTask: followUpTask } : {}) });
     remoteAudit(session, lane, 'supervisor.proposal.resolved', { approvalId, resolution: decision === 'approve' ? 'approved' : 'rejected', proposalKind: approval.proposalKind || 'important', text: decision === 'approve' ? delivery : undefined });
+    if (decision === 'reject' && lane.supervisorSurfaceId) {
+      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请依据当前任务、计划约束和终端证据重新裁决。\n', true);
+    }
   }
   remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown', task: decision === 'approve' ? followUpTask : undefined });
   return { ok: true, message: decision === 'approve' ? '已批准并发送后续任务。' : '已拒绝建议。' };
@@ -243,6 +272,11 @@ export function reachesAutoDecisionLimit(
 ): boolean {
   const limit = normalizedMaxAutoDecisions(maxAutoDecisions);
   return limit !== null && (lane.autoDecisionsUsed ?? 0) + 1 >= limit;
+}
+
+/** Permission acknowledgements are audited but do not consume a judgment slot. */
+export function nextSupervisorDecisionCount(current: number | undefined, permissionResponse: string): number {
+  return (current ?? 0) + (permissionResponse ? 0 : 1);
 }
 
 export function initPipeBridge(): void {
@@ -601,25 +635,25 @@ export function initPipeBridge(): void {
     // A supervisor must not smuggle a declared route/important proposal through
     // an auto-continue decision. Such proposals always stop for user consent.
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
-      return { ok: false, error: '重要建议或路线变更必须使用 needs-human' };
+      return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；重大路线变更或重要建议必须使用 needs-human' };
+    }
+    if (proposalKind === 'route-adjustment' && !next) {
+      return { ok: false, error: 'route-adjustment 必须携带明确的低风险 --next' };
     }
     if (!isSupervisorNextAllowed(session.mode, outcome, next, session.autonomous)) {
-      return { ok: false, error: '统一监督不会自动注入工作终端；请移除 --next，或通过 needs-human 提交给用户审批' };
+      return { ok: false, error: '只有 continue、rework 或 needs-human 可以携带 --next' };
     }
     const nextBlockReason = autonomousActionBlockReason(next);
-    if (session.autonomous && outcome !== 'needs-human' && nextBlockReason) {
-      return { ok: false, error: `全自动监督禁止${nextBlockReason}；请使用 needs-human 交给人工处理` };
+    if (outcome !== 'needs-human' && nextBlockReason) {
+      return { ok: false, error: `监督 AI 禁止自动执行${nextBlockReason}；请使用 needs-human 交给人工处理` };
     }
     if (permissionCommand || permissionResponse) {
       const permissionBlockReason = autonomousActionBlockReason(permissionCommand);
-      if (!session.autonomous) {
-        return { ok: false, error: '仅全自动监督会话可处理终端权限确认' };
-      }
       if (!permissionCommand || !isAutonomousPermissionResponseAllowed(permissionResponse)) {
         return { ok: false, error: '权限确认必须提供命令说明，并且响应只能是 y、yes、allow 或 approve' };
       }
       if (permissionBlockReason) {
-        return { ok: false, error: `全自动监督禁止${permissionBlockReason}；请交给人工确认` };
+        return { ok: false, error: `监督 AI 禁止自动确认${permissionBlockReason}；请交给人工确认` };
       }
       if (outcome === 'complete' || outcome === 'needs-human') {
         return { ok: false, error: '终端权限确认只能与 continue 或 rework 裁决一起提交' };
@@ -627,6 +661,36 @@ export function initPipeBridge(): void {
       if (next) {
         return { ok: false, error: '终端权限确认后需等待代理恢复；请不要在同一裁决中追加 --next' };
       }
+    }
+    if (!lane.awaitingReview) {
+      return { ok: false, error: '当前没有待裁决轮次；请等待工作终端任务结束或权限阻塞通知' };
+    }
+    const agentState = ((w.__wmux_getAgentStates?.() || {})[surfaceId] || undefined) as SupervisorAgentStateView | undefined;
+    if (permissionCommand || permissionResponse) {
+      if (!isPermissionBlockedState(agentState)) {
+        return { ok: false, error: '未检测到可自动确认的真实权限阻塞；状态未知或普通输入必须交给人工' };
+      }
+      if (lane.lastBlockedResponseStateAt === agentState.updatedAt) {
+        return { ok: false, error: '该权限阻塞状态已经确认过，禁止重复发送响应' };
+      }
+    } else if (agentState?.state === 'blocked' && outcome !== 'needs-human' && !next) {
+      return { ok: false, error: '工作终端仍在阻塞；请明确回答技术问题、确认低风险权限，或使用 needs-human' };
+    } else if (next && outcome !== 'needs-human') {
+      if (agentState?.state === 'working') {
+        return { ok: false, error: '工作终端仍在运行，不能注入下一步' };
+      }
+      if (isPermissionBlockedState(agentState)) {
+        return { ok: false, error: '当前是权限阻塞，必须使用权限确认参数，不能发送普通下一步' };
+      }
+      if (agentState?.state === 'blocked' && !isQuestionBlockedState(agentState)) {
+        return { ok: false, error: '当前阻塞不是明确的技术问题或方案选择，不能自动输入内容' };
+      }
+      if (isQuestionBlockedState(agentState) && lane.lastBlockedResponseStateAt === agentState.updatedAt) {
+        return { ok: false, error: '该技术问题阻塞状态已经回答过，禁止重复发送响应' };
+      }
+    }
+    if (outcome === 'complete' && agentState?.state === 'working') {
+      return { ok: false, error: '工作终端仍在运行，不能判定完成' };
     }
 
     // The worker can emit several lifecycle updates while it is waiting. Keep
@@ -645,8 +709,8 @@ export function initPipeBridge(): void {
       alternatives,
     });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
-    const autoDecisionsUsed = (lane.autoDecisionsUsed ?? 0) + 1;
-    const limitReached = !session.autonomous && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
+    const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
+    const limitReached = !session.autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     store.updateLane(lane.id, {
       autoDecisionsUsed,
       decisions: [
@@ -654,6 +718,7 @@ export function initPipeBridge(): void {
           ts: Date.now(),
           task: lane.currentTask || '（任务未上报）',
           outcome,
+          ...(proposalKind ? { proposalKind: proposalKind as SupervisorDecision['proposalKind'] } : {}),
           reason,
           next,
         },
@@ -680,28 +745,32 @@ export function initPipeBridge(): void {
     }
 
     if (permissionResponse) {
+      try {
+        sendToSurface(lane.surfaceId, permissionResponse, true);
+      } catch (err) {
+        const error = String((err as Error)?.message || err);
+        store.updateLane(lane.id, {
+          awaitingReview: true,
+          autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
+          decisions: lane.decisions || [],
+        });
+        appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', { kind: 'permission', error });
+        store.appendSupervisorLog(lane.id, '权限响应发送失败', error);
+        return { ok: false, error: `权限响应发送失败：${error}` };
+      }
       appendSupervisorRecord(session, lane, 'supervisor.permission-approved', {
         command: permissionCommand,
         response: permissionResponse,
       });
       store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
-      store.updateLane(lane.id, { awaitingReview: false });
-      sendToSurface(lane.surfaceId, permissionResponse, true);
+      store.updateLane(lane.id, {
+        awaitingReview: false,
+        lastBlockedResponseStateAt: agentState!.updatedAt,
+      });
       return { ok: true, outcome, autoAuthorized: true };
     }
 
     if (outcome === 'needs-human') {
-      if (session.autonomous && next && !nextBlockReason) {
-        appendSupervisorRecord(session, lane, 'supervisor.auto-approved', {
-          proposalKind: proposalKind || 'important',
-          reason,
-          next,
-        });
-        store.appendSupervisorLog(lane.id, 'AI 自动批准', reason || '按监督建议继续');
-        store.updateLane(lane.id, { awaitingReview: false });
-        sendToSurface(lane.surfaceId, next, session.submitEnter);
-        return { ok: true, outcome, autoApproved: true };
-      }
       store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
       const kind = proposalKinds.has(proposalKind) ? proposalKind as 'route-change' | 'important' : 'important';
       const approval = {
@@ -736,8 +805,25 @@ export function initPipeBridge(): void {
       return { ok: true, outcome };
     }
 
-    store.updateLane(lane.id, { awaitingReview: false });
-    if (next) sendToSurface(lane.surfaceId, next, session.submitEnter);
+    if (next) {
+      try {
+        sendToSurface(lane.surfaceId, next, session.submitEnter);
+      } catch (err) {
+        const error = String((err as Error)?.message || err);
+        store.updateLane(lane.id, {
+          awaitingReview: true,
+          autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
+          decisions: lane.decisions || [],
+        });
+        appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', { kind: 'next', error });
+        store.appendSupervisorLog(lane.id, '下一步发送失败', error);
+        return { ok: false, error: `下一步发送失败：${error}` };
+      }
+    }
+    store.updateLane(lane.id, {
+      awaitingReview: false,
+      ...(isQuestionBlockedState(agentState) ? { lastBlockedResponseStateAt: agentState.updatedAt } : {}),
+    });
     return { ok: true, outcome };
   };
 

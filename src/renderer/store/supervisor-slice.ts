@@ -26,6 +26,7 @@ export interface SupervisorDecision {
   ts: number;
   task: string;
   outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
+  proposalKind?: 'route-adjustment' | 'route-change' | 'important';
   reason: string;
   next: string;
 }
@@ -71,6 +72,8 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Agent-state version already answered for a permission or technical question. */
+  lastBlockedResponseStateAt?: number;
   /** Automatic AI decisions reached the configured limit; human review must resume supervision. */
   autoDecisionLimitReached?: boolean;
   /** Number of AI decisions since this terminal was last acknowledged by a human. */
@@ -248,6 +251,7 @@ export function clearSupervisorLaneContext(
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
+    lastBlockedResponseStateAt: undefined,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
@@ -282,23 +286,30 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => ({ supervisor: { ...s.supervisor, lanes } }));
   },
   startSupervisor() {
-    set((s) => ({
-      supervisor: {
-        ...s.supervisor,
-        sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        active: true,
-        setupOpen: false,
-        log: [
-          {
-            ts: Date.now(),
-            laneId: '-',
-            action: '启动',
-            detail: `统一监督 通道=${s.supervisor.lanes.filter((l) => l.enabled).length}`,
-          },
-          ...s.supervisor.log,
-        ].slice(0, MAX_LOG),
-      },
-    }));
+    set((s) => {
+      let lanes = s.supervisor.lanes;
+      if (s.supervisor.mode === 'unified') {
+        lanes = lanes.map((lane) => lane.enabled ? { ...lane, awaitingReview: true } : lane);
+      }
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes,
+          sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          active: true,
+          setupOpen: false,
+          log: [
+            {
+              ts: Date.now(),
+              laneId: '-',
+              action: '启动',
+              detail: `统一监督 通道=${s.supervisor.lanes.filter((lane) => lane.enabled).length}`,
+            },
+            ...s.supervisor.log,
+          ].slice(0, MAX_LOG),
+        },
+      };
+    });
   },
   stopSupervisor(detail) {
     set((s) => ({

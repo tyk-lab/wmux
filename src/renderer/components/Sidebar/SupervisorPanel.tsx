@@ -171,7 +171,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
     if (!lane) return;
     updateLane(lane.id, {
-      awaitingReview: false,
+      awaitingReview: true,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
     });
@@ -403,7 +403,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__freedom">
             {supervisor.autonomous
               ? `全自动监督：AI 可在安全策略范围内推进任务、裁决停止条件并处理明确的低风险权限确认；高风险操作仍会等待人工。`
-              : `工作终端由你下达任务；停止条件（${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}）由监督 AI 结合证据裁决，不会自动注入。`}
+              : `有限自主监督：AI 可根据启动信息和证据发送原目标内低风险下一步、处理明确权限及小范围可逆调整；复杂问题等待人工。停止条件类型：${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}。`}
           </div>
           <div className="sup-panel__goal">
             最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
@@ -480,9 +480,15 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   )}
                   {(lane.decisions || []).length > 0 && (() => {
                     const decision = lane.decisions![0];
+                    const decisionKindLabels: Record<string, string> = {
+                      'route-adjustment': ' · 小范围路线调整',
+                      'route-change': ' · 路线变更',
+                      important: ' · 重要建议',
+                    };
+                    const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
                     return (
                       <div className="sup-panel__lane-decision" title={decision.reason || decision.next}>
-                        最新裁决：{decision.outcome} · {decision.reason || decision.next || '未附说明'}
+                        最新裁决：{decision.outcome}{decisionKind} · {decision.reason || decision.next || '未附说明'}
                       </div>
                     );
                   })()}

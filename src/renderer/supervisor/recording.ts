@@ -61,6 +61,15 @@ function markdownText(value: string): string {
   return value.replace(/[\\`]/g, '\\$&').replace(/\r?\n/g, '  \n');
 }
 
+function proposalTitle(proposalKind: string): string {
+  switch (proposalKind) {
+    case 'route-adjustment': return '小范围路线调整';
+    case 'route-change': return '路线变更';
+    case 'important': return '重要建议';
+    default: return '';
+  }
+}
+
 function eventMarkdown(event: AuditEvent): string | null {
   const payload = event.payload || {};
   const at = timestamp(event.ts);
@@ -80,9 +89,8 @@ function eventMarkdown(event: AuditEvent): string | null {
     const next = payloadText(payload, 'next');
     const impact = payloadText(payload, 'impact');
     const alternatives = payloadText(payload, 'alternatives');
-    const proposalLabel = proposalKind === 'route-change'
-      ? ' · 路线变更'
-      : proposalKind === 'important' ? ' · 重要建议' : '';
+    const proposal = proposalTitle(proposalKind);
+    const proposalLabel = proposal ? ` · ${proposal}` : '';
     return [
       `### ${at} · 裁决：${markdownText(outcome)}${proposalLabel}`,
       reason ? `- 原因：${markdownText(reason)}` : '- 原因：未附说明',
@@ -116,6 +124,11 @@ function eventMarkdown(event: AuditEvent): string | null {
     const command = payloadText(payload, 'command') || '未附命令说明';
     const response = payloadText(payload, 'response') || 'y';
     return `### ${at} · AI 自动授权\n\n- 命令：${markdownText(command)}\n- 响应：${markdownText(response)}`;
+  }
+  if (event.type === 'supervisor.delivery.failed') {
+    const kind = payloadText(payload, 'kind') === 'permission' ? '权限响应' : '下一步任务';
+    const error = payloadText(payload, 'error') || '未知错误';
+    return `### ${at} · ${kind}发送失败\n\n${markdownText(error)}`;
   }
   if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
     const kind = payloadText(payload, 'kind');
@@ -186,14 +199,18 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
       if (!['continue', 'rework', 'complete', 'needs-human'].includes(outcome)) continue;
       const reason = payloadText(event.payload || {}, 'reason');
       const next = payloadText(event.payload || {}, 'next');
+      const proposalKind = payloadText(event.payload || {}, 'proposalKind');
       decisions.unshift({
         ts: event.ts,
         task: currentTask || '（任务未上报）',
         outcome: outcome as SupervisorDecision['outcome'],
+        ...(proposalKind ? { proposalKind: proposalKind as SupervisorDecision['proposalKind'] } : {}),
         reason,
         next,
       });
-      lines.push(`${prefix} 监督裁决：${outcome}${reason ? `；原因：${reason}` : ''}${next ? `；下一步：${next}` : ''}`);
+      const proposal = proposalTitle(proposalKind);
+      const proposalLabel = proposal ? `（${proposal}）` : '';
+      lines.push(`${prefix} 监督裁决：${outcome}${proposalLabel}${reason ? `；原因：${reason}` : ''}${next ? `；下一步：${next}` : ''}`);
     }
   }
 

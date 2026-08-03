@@ -132,9 +132,9 @@ describe('supervisor-engine', () => {
     expect(SUPERVISOR_TUI_READY_DELAY_MS).toBe(2_500);
   });
 
-  it('routes an autonomous low-risk permission prompt to its dedicated supervisor', () => {
+  it('routes an ordinary low-risk permission prompt to its dedicated supervisor', () => {
     const { actions, runtime } = tickLane({
-      session: session({ mode: 'unified', autonomous: true }),
+      session: session({ mode: 'unified', autonomous: false }),
       lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
       surfaceState: { state: 'blocked', blockedReason: 'permission: npm test' },
       runtime: blankRuntime(),
@@ -146,6 +146,7 @@ describe('supervisor-engine', () => {
     expect(actions.some((action) => action.type === 'notify_user')).toBe(false);
     expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.text)
       .toContain('--permission-command');
+    expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.opensReview).toBe(true);
     expect(runtime.humanNotified).toBe(false);
   });
 
