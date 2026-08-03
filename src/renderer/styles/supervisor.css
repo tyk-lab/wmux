@@ -5,15 +5,28 @@
 }
 
 .supervisor-dialog {
-  width: min(560px, calc(100vw - 32px));
+  width: min(760px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: var(--ui-bg-1, #1e1e1e);
   border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
   border-radius: 10px;
-  padding: 16px 18px 14px;
   color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.92);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.supervisor-dialog__header {
+  flex: 0 0 auto;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.supervisor-dialog__body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px 18px;
 }
 
 .supervisor-dialog__title {
@@ -24,8 +37,7 @@
 
 .supervisor-dialog__sub {
   font-size: 12px;
-  opacity: 0.65;
-  margin-bottom: 14px;
+  opacity: 0.68;
   line-height: 1.4;
 }
 
@@ -57,19 +69,21 @@
 }
 
 .supervisor-dialog__section {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.supervisor-dialog__section:last-child {
+  margin-bottom: 0;
 }
 
 .supervisor-dialog__label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.55;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.72;
   margin-bottom: 6px;
 }
 
 .supervisor-dialog__label--required {
-  color: #ef5350;
   opacity: 1;
 }
 
@@ -83,15 +97,69 @@
   margin-top: 6px;
   font-size: 11px;
   line-height: 1.4;
-  opacity: 0.55;
+  opacity: 0.65;
+}
+
+.supervisor-dialog__group,
+.supervisor-dialog__advanced {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.09);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.supervisor-dialog__group-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.supervisor-dialog__group-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.supervisor-dialog__group-description {
+  margin: 3px 0 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.62;
+}
+
+.supervisor-dialog__group-heading .supervisor-dialog__group-description {
+  margin-bottom: 0;
+}
+
+.supervisor-dialog__count {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(80, 160, 255, 0.14);
+  color: rgba(150, 205, 255, 0.95);
+  font-size: 11px;
 }
 
 .supervisor-dialog__list {
-  max-height: 160px;
+  max-height: 300px;
   overflow: auto;
   border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
   border-radius: 6px;
   padding: 4px;
+}
+
+.supervisor-dialog__terminal {
+  border-radius: 6px;
+}
+
+.supervisor-dialog__terminal + .supervisor-dialog__terminal {
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.06);
+}
+
+.supervisor-dialog__terminal[data-selected='true'] {
+  background: rgba(80, 160, 255, 0.06);
 }
 
 .supervisor-dialog__restore-row {
@@ -145,6 +213,48 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.supervisor-dialog__current-task {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.supervisor-dialog__lane-settings {
+  margin: 0 8px 8px 32px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.supervisor-dialog__lane-settings > summary {
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.76;
+}
+
+.supervisor-dialog__lane-settings[open] > summary {
+  margin-bottom: 10px;
+}
+
+.supervisor-dialog__lane-settings .supervisor-dialog__section {
+  margin-bottom: 10px;
+}
+
+.supervisor-dialog__warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(244, 180, 60, 0.35);
+  border-radius: 6px;
+  background: rgba(244, 180, 60, 0.08);
+  color: rgba(255, 218, 145, 0.94);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .supervisor-dialog__textarea,
@@ -210,6 +320,93 @@
   background: rgba(80, 160, 255, 0.08);
 }
 
+.supervisor-dialog__radio[data-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.supervisor-dialog__option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.supervisor-dialog__option-list--two-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 12px;
+}
+
+.supervisor-dialog__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.supervisor-dialog__option input,
+.supervisor-dialog__radio input,
+.supervisor-dialog__row input {
+  flex: 0 0 auto;
+}
+
+.supervisor-dialog__autonomous-row {
+  margin: 0 0 12px;
+  border: 1px solid rgba(80, 160, 255, 0.18);
+  background: rgba(80, 160, 255, 0.06);
+}
+
+.supervisor-dialog__hard-risk {
+  margin: 2px 0 14px;
+  padding: 9px 10px;
+  border-left: 3px solid rgba(239, 83, 80, 0.65);
+  border-radius: 4px;
+  background: rgba(239, 83, 80, 0.07);
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 205, 205, 0.9);
+}
+
+.supervisor-dialog__decision-limit .supervisor-dialog__input {
+  max-width: 180px;
+}
+
+.supervisor-dialog__advanced {
+  padding: 0;
+}
+
+.supervisor-dialog__advanced > summary {
+  cursor: pointer;
+  padding: 12px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.supervisor-dialog__advanced[open] > summary {
+  border-bottom: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.supervisor-dialog__advanced-content {
+  padding: 12px;
+}
+
+.supervisor-dialog__advanced-divider {
+  padding-top: 12px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.supervisor-dialog__stacked-input {
+  margin-top: 8px;
+}
+
+.supervisor-dialog__config-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .supervisor-dialog__inline {
   display: flex;
   align-items: center;
@@ -228,17 +425,36 @@
 }
 
 .supervisor-dialog__actions {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  justify-content: flex-end;
-  margin-top: 8px;
-  padding-top: 10px;
+  align-items: center;
+  padding: 11px 18px 12px;
   border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  background: var(--ui-bg-1, #1e1e1e);
+}
+
+.supervisor-dialog__actions-spacer {
+  flex: 1 1 auto;
 }
 
 .supervisor-dialog__btn-ai {
   border-color: rgba(120, 200, 140, 0.35) !important;
+}
+
+@media (max-width: 620px) {
+  .supervisor-dialog__option-list--two-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .supervisor-dialog__actions-spacer {
+    display: none;
+  }
+
+  .supervisor-dialog__actions {
+    justify-content: flex-end;
+  }
 }
 
 /* ── Sidebar panel ──────────────────────────────────────────────────────── */

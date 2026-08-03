@@ -19,6 +19,7 @@ import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
 import { initPipeBridge } from './pipe-bridge';
+import { initSupervisorGenericInputGuard } from './supervisor/generic-input-guard';
 import { useUiTheme } from './hooks/useUiTheme';
 import { useUiMode } from './hooks/useUiMode';
 import type {
@@ -44,7 +45,7 @@ import {
   tickLane,
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
-import { buildUserNotifyText } from './supervisor/protocol';
+import { buildUserNotifyText, effectiveSupervisorStopWhen } from './supervisor/protocol';
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
@@ -793,7 +794,9 @@ export default function App() {
     };
     // Initialize pipe bridge — exposes store operations for V2 pipe handlers
     initPipeBridge();
+    const disposeSupervisorInputGuard = initSupervisorGenericInputGuard();
     return () => {
+      disposeSupervisorInputGuard();
       delete (window as any).__wmux_getActiveWorkspaceId;
       delete (window as any).__wmux_getPaneLoads;
     };
@@ -969,6 +972,7 @@ export default function App() {
 
   // ── AI Supervisor scheduler (opt-in; never auto-starts) ─────────────────
   const supervisorActive = useStore((s) => s.supervisor.active);
+  const supervisorSessionId = useStore((s) => s.supervisor.sessionId);
   const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
   const supervisorDeliveryInFlightRef = useRef(false);
@@ -981,16 +985,21 @@ export default function App() {
     for (const lane of session.lanes) {
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
+        taskGoal: lane.taskGoalOverride?.trim() || session.taskGoal,
         taskDescription: session.taskDescription,
         preconditions: session.preconditions,
-        stopWhen: session.stopWhen,
+        stopWhen: effectiveSupervisorStopWhen(session, lane),
+        autonomyPermissions: session.autonomyPermissions,
+        workScope: session.workScope,
+        scopeRoot: lane.scopeRoot || lane.projectDir,
+        forbiddenActions: session.forbiddenActions,
         supervisorModel: session.supervisorModel || `${launcherName} 默认模型`,
         supervisorReasoningEffort: session.supervisorReasoningEffort
           || (launcher === 'kimi' ? 'Kimi 默认 Thinking' : launcher === 'codex' ? 'Codex 默认推理程度' : '不适用'),
         terminalName: lane.label,
       });
     }
-  }, [supervisorActive]);
+  }, [supervisorActive, supervisorSessionId]);
 
   useEffect(() => {
     if (!supervisorActive) return;
@@ -1139,7 +1148,7 @@ export default function App() {
               mode: session.mode,
               reason: action.reason,
               laneLabel: lane?.label,
-              stopWhen: session.stopWhen,
+              stopWhen: lane ? effectiveSupervisorStopWhen(session, lane) : session.stopWhen,
               doneWhen: session.doneWhen,
               detail: action.detail,
             });

@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { SurfaceId, WorkspaceId, PaneId, SplitNode } from '../../../shared/types';
 import type {
@@ -6,6 +6,20 @@ import type {
   SupervisorLane,
   SupervisorStep,
 } from '../../store/supervisor-slice';
+import {
+  DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
+  DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
+  DEFAULT_SUPERVISOR_WORK_SCOPE,
+  SUPERVISOR_AUTONOMY_PERMISSION_VALUES,
+  SUPERVISOR_FORBIDDEN_ACTION_VALUES,
+  SUPERVISOR_WORK_SCOPE_VALUES,
+  normalizeSupervisorAutonomyPermissions,
+  normalizeSupervisorForbiddenActions,
+  normalizeSupervisorWorkScope,
+  type SupervisorAutonomyPermission,
+  type SupervisorForbiddenAction,
+  type SupervisorWorkScope,
+} from '../../../shared/supervisor-policy';
 import {
   buildSupervisorBriefing,
   stopWhenKindHint,
@@ -65,6 +79,28 @@ const KIMI_THINKING_OPTIONS = [
 const CUSTOM_OPTION = '__custom__';
 const DEFAULT_MODEL_OPTION = '__default__';
 
+const AUTONOMY_PERMISSION_LABELS: Record<SupervisorAutonomyPermission, string> = {
+  'same-route-next': '同一路线继续、返工与低风险补证',
+  'technical-choice': '在等价技术方案中自主选择',
+  'route-adjustment': '执行小范围、可逆的路线调整',
+  'permission-confirm': '确认明确、低风险的终端权限请求',
+};
+
+const WORK_SCOPE_LABELS: Record<SupervisorWorkScope, string> = {
+  project: '当前工程文件夹（默认）',
+  'task-files': '仅当前任务相关文件',
+  'plan-defined': '按计划文件定义的范围',
+};
+
+const FORBIDDEN_ACTION_LABELS: Record<SupervisorForbiddenAction, string> = {
+  'new-dependencies': '新增第三方依赖',
+  'public-api-change': '修改公共 API 或对外行为',
+  'large-refactor': '进行大范围重构',
+  'weaken-tests': '删除、跳过或削弱测试',
+  'build-release-config': '修改构建或发布配置',
+  'external-network': '访问外部网络或服务',
+};
+
 function knownOptionValue(value: string, options: Array<{ value: string }>, fallback = CUSTOM_OPTION): string {
   return options.some((option) => option.value === value.trim()) ? value.trim() : fallback;
 }
@@ -96,6 +132,7 @@ interface TerminalCandidate {
   projectDir?: string;
   label: string;
   state: string;
+  currentTask?: string;
 }
 
 function collectTerminals(
@@ -130,8 +167,10 @@ export default function SupervisorSetupDialog() {
   const startSupervisor = useStore((s) => s.startSupervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const addSurface = useStore((s) => s.addSurface);
+  const closeSurface = useStore((s) => s.closeSurface);
   const createWorkspace = useStore((s) => s.createWorkspace);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -157,6 +196,7 @@ export default function SupervisorSetupDialog() {
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
         const meta = agentMeta.get(s.surfaceId);
         const st = agentStates[s.surfaceId]?.state || 'unknown';
+        const existingLane = supervisor.lanes.find((lane) => lane.surfaceId === s.surfaceId);
         list.push({
           key: s.surfaceId,
           surfaceId: s.surfaceId,
@@ -166,15 +206,19 @@ export default function SupervisorSetupDialog() {
           projectDir: ws.cwd || s.projectDir,
           label: meta?.label || s.title,
           state: String(st),
+          currentTask: supervisor.active ? existingLane?.currentTask : undefined,
         });
       }
     }
     return list;
-  }, [workspaces, agentMeta, agentStates, supervisor.lanes]);
+  }, [workspaces, agentMeta, agentStates, supervisor.active, supervisor.lanes]);
 
+  const [taskGoal, setTaskGoal] = useState(supervisor.taskGoal || '');
   const [taskDescription, setTaskDescription] = useState(supervisor.taskDescription || '');
   const [preconditions, setPreconditions] = useState(supervisor.preconditions || '');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [taskGoalOverrides, setTaskGoalOverrides] = useState<Record<string, string>>({});
+  const [stopWhenOverrides, setStopWhenOverrides] = useState<Record<string, string>>({});
   const [stopWhen, setStopWhen] = useState(supervisor.stopWhen);
   const [stopWhenKind, setStopWhenKind] = useState<StopWhenKind>(
     supervisor.stopWhenKind || 'concrete',
@@ -196,9 +240,19 @@ export default function SupervisorSetupDialog() {
     supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '',
   );
   const [autonomous, setAutonomous] = useState(supervisor.autonomous === true);
+  const [autonomyPermissions, setAutonomyPermissions] = useState<SupervisorAutonomyPermission[]>(
+    supervisor.autonomyPermissions || [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
+  );
+  const [workScope, setWorkScope] = useState<SupervisorWorkScope>(
+    supervisor.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
+  );
+  const [forbiddenActions, setForbiddenActions] = useState<SupervisorForbiddenAction[]>(
+    supervisor.forbiddenActions || [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
+  );
 
   useEffect(() => {
     if (!setupOpen) return;
+    setTaskGoal(supervisor.taskGoal || '');
     setTaskDescription(supervisor.taskDescription || '');
     setPreconditions(supervisor.preconditions || '');
     setStopWhen(supervisor.stopWhen || '');
@@ -218,8 +272,33 @@ export default function SupervisorSetupDialog() {
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
     setMaxAutoDecisions(supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '');
     setAutonomous(supervisor.autonomous === true);
+    setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions));
+    setWorkScope(normalizeSupervisorWorkScope(supervisor.workScope));
+    setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
     setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
+    setTaskGoalOverrides(Object.fromEntries(
+      supervisor.lanes.flatMap((lane) => lane.taskGoalOverride ? [[lane.surfaceId, lane.taskGoalOverride]] : []),
+    ));
+    setStopWhenOverrides(Object.fromEntries(
+      supervisor.lanes.flatMap((lane) => lane.stopWhenOverride ? [[lane.surfaceId, lane.stopWhenOverride]] : []),
+    ));
   }, [setupOpen]);
+
+  useEffect(() => {
+    if (!setupOpen) return;
+    dialogRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeSupervisorSetup();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [setupOpen, closeSupervisorSetup]);
+
+  useEffect(() => {
+    if (!setupOpen || supervisor.active) return;
+    setAutonomous(false);
+    if (supervisor.autonomous) patchSupervisor({ autonomous: false });
+  }, [setupOpen, supervisor.active, supervisor.autonomous, patchSupervisor]);
 
   const launcherKind = useMemo(() => detectSupervisorLauncher(
     launchChoice === CUSTOM_OPTION ? launchCmd : launchChoice,
@@ -282,6 +361,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const configFileData = () => ({
+    taskGoal,
     taskDescription,
     preconditions,
     stopWhen,
@@ -291,6 +371,9 @@ export default function SupervisorSetupDialog() {
     supervisorModel,
     supervisorReasoningEffort: reasoningEffort,
     maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
+    autonomyPermissions,
+    workScope,
+    forbiddenActions,
   });
 
   const configFileDefaultPath = () => {
@@ -322,36 +405,48 @@ export default function SupervisorSetupDialog() {
       return;
     }
     const config = result.config;
+    const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'codex';
+    const loadedLauncherKind = detectSupervisorLauncher(loadedLaunchCommand);
+    const loadedPlanFilePath = config.planFilePath || '';
+    const loadedWorkScope = normalizeSupervisorWorkScope(config.workScope);
+    setTaskGoal(config.taskGoal || '');
     setTaskDescription(config.taskDescription || '');
     setPreconditions(config.preconditions || '');
     setStopWhen(config.stopWhen || '');
     setStopWhenKind(config.stopWhenKind === 'direction' ? 'direction' : 'concrete');
-    setPlanFilePath(config.planFilePath || '');
-    setLaunchCmd(config.supervisorLaunchCmd || 'codex');
-    setLaunchChoice(knownOptionValue(config.supervisorLaunchCmd || 'codex', SUPERVISOR_LAUNCH_OPTIONS));
+    setPlanFilePath(loadedPlanFilePath);
+    setLaunchCmd(loadedLaunchCommand);
+    setLaunchChoice(knownOptionValue(loadedLaunchCommand, SUPERVISOR_LAUNCH_OPTIONS));
     setSupervisorModel(config.supervisorModel || '');
     setModelChoice(config.supervisorModel
-      ? knownOptionValue(config.supervisorModel, CODEX_MODEL_OPTIONS)
+      ? knownOptionValue(config.supervisorModel, modelOptionsFor(loadedLauncherKind))
       : '__default__');
     setReasoningEffort(config.supervisorReasoningEffort || '');
     setMaxAutoDecisions(config.maxAutoDecisions ? String(config.maxAutoDecisions) : '');
+    setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(config.autonomyPermissions));
+    setWorkScope(loadedWorkScope === 'plan-defined' && !loadedPlanFilePath
+      ? 'task-files'
+      : loadedWorkScope);
+    setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
   };
 
-  const buildLanes = (): SupervisorLane[] => {
+  const buildLanes = (preserveCurrentContext: boolean): SupervisorLane[] => {
     const lanes: SupervisorLane[] = [];
-    let i = 0;
     for (const c of candidates) {
       if (!selected.has(c.surfaceId)) continue;
-      i += 1;
       const prev = supervisor.lanes.find((l) => l.surfaceId === c.surfaceId);
       const selectedSourceId = restoreSources[c.surfaceId];
       const selectedSource = restoreAuditHistory
         ? restoreCandidates[c.surfaceId]?.find((candidate) => candidate.surfaceId === selectedSourceId)
         : undefined;
-      const keepsRestoredContext = prev?.restoreSource?.surfaceId === selectedSource?.surfaceId;
+      const keepsRestoredContext = !!selectedSource
+        && prev?.restoreSource?.surfaceId === selectedSource.surfaceId;
+      const keepsCurrentContext = preserveCurrentContext || keepsRestoredContext;
+      const taskGoalOverride = taskGoalOverrides[c.surfaceId]?.trim();
+      const stopWhenOverride = stopWhenOverrides[c.surfaceId]?.trim();
       const steps: SupervisorStep[] = [];
       lanes.push({
-        id: prev?.id || `lane-${i}`,
+        id: prev?.id || `lane-${c.surfaceId}`,
         label: c.label,
         surfaceId: c.surfaceId,
         supervisorSurfaceId: prev?.supervisorSurfaceId || null,
@@ -359,6 +454,7 @@ export default function SupervisorSetupDialog() {
         workspaceId: c.workspaceId,
         workspaceTitle: c.workspaceTitle,
         projectDir: c.projectDir,
+        scopeRoot: supervisor.active ? prev?.scopeRoot || c.projectDir : c.projectDir,
         enabled: true,
         steps,
         maxAutoSteps: 0,
@@ -369,8 +465,10 @@ export default function SupervisorSetupDialog() {
         autoDecisionLimitReached: false,
         autoDecisionsUsed: 0,
         pendingSupervisorDeliveries: prev?.pendingSupervisorDeliveries || [],
-        currentTask: keepsRestoredContext ? prev?.currentTask || '' : '',
-        decisions: keepsRestoredContext ? prev?.decisions || [] : [],
+        currentTask: keepsCurrentContext ? prev?.currentTask || '' : '',
+        decisions: keepsCurrentContext ? prev?.decisions || [] : [],
+        ...(taskGoalOverride ? { taskGoalOverride } : {}),
+        ...(stopWhenOverride ? { stopWhenOverride } : {}),
         ...(selectedSource ? {
           restoreSource: {
             surfaceId: selectedSource.surfaceId,
@@ -385,9 +483,15 @@ export default function SupervisorSetupDialog() {
     return lanes;
   };
 
-  const persistFields = () => {
+  const persistFields = (grantSessionAutonomy: boolean) => {
     patchSupervisor({
       mode: 'unified',
+      directInstructions: '',
+      goal: '',
+      allowPaths: '',
+      denyNotes: '',
+      doneWhen: '',
+      taskGoal,
       taskDescription,
       preconditions,
       stopWhen,
@@ -400,18 +504,29 @@ export default function SupervisorSetupDialog() {
       supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' ? reasoningEffort : '',
       maxAutoSteps: 0,
       maxAutoDecisions: autonomous ? null : normalizeMaxAutoDecisions(maxAutoDecisions),
-      autonomous,
+      autonomous: grantSessionAutonomy ? autonomous : false,
+      autonomyPermissions,
+      workScope,
+      forbiddenActions,
     });
   };
 
-  const ensureDedicatedSupervisors = (lanes: SupervisorLane[]): SupervisorLane[] => {
+  const ensureDedicatedSupervisors = (
+    lanes: SupervisorLane[],
+    replaceExisting = false,
+  ): { ok: boolean; lanes: SupervisorLane[] } => {
     const launchCommand = buildSupervisorLaunchCommand(launchCmd, supervisorModel, reasoningEffort);
     const startupCommands = launchCommand ? [launchCommand] : undefined;
-    const existingTerminalIds = new Set<SurfaceId>();
+    const terminalLocations = new Map<SurfaceId, { workspaceId: WorkspaceId; paneId: PaneId }>();
     for (const workspace of workspaces) {
       const terminals: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
       collectTerminals(workspace.splitTree, terminals);
-      for (const terminal of terminals) existingTerminalIds.add(terminal.surfaceId);
+      for (const terminal of terminals) {
+        terminalLocations.set(terminal.surfaceId, {
+          workspaceId: workspace.id,
+          paneId: terminal.paneId,
+        });
+      }
     }
 
     let supervisorWorkspace = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
@@ -427,12 +542,19 @@ export default function SupervisorSetupDialog() {
     const targetPaneId = supervisorWorkspace
       ? getAllPaneIds(supervisorWorkspace.splitTree)[0]
       : undefined;
-    if (!supervisorWorkspace || !targetPaneId) return lanes;
+    if (!supervisorWorkspace || !targetPaneId) return { ok: false, lanes };
 
-    return lanes.map((lane) => {
-      if (
-        (lane.supervisorSurfaceId && existingTerminalIds.has(lane.supervisorSurfaceId))
-      ) {
+    const createdSurfaceIds: SurfaceId[] = [];
+    const surfacesToClose = new Map<SurfaceId, {
+      surfaceId: SurfaceId;
+      workspaceId: WorkspaceId;
+      paneId: PaneId;
+    }>();
+    const configuredLanes = lanes.map((lane) => {
+      const existingLocation = lane.supervisorSurfaceId
+        ? terminalLocations.get(lane.supervisorSurfaceId)
+        : undefined;
+      if (existingLocation && !replaceExisting) {
         return lane;
       }
       const supervisorSurfaceId = addSurface(supervisorWorkspace.id, targetPaneId, 'terminal', {
@@ -441,8 +563,31 @@ export default function SupervisorSetupDialog() {
         startupCommands,
         transientSupervisor: true,
       });
+      if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
       return { ...lane, supervisorSurfaceId };
     });
+
+    if (configuredLanes.some((lane) => !lane.supervisorSurfaceId)) {
+      for (const surfaceId of createdSurfaceIds) {
+        closeSurface(supervisorWorkspace.id, targetPaneId, surfaceId);
+      }
+      return { ok: false, lanes };
+    }
+    if (replaceExisting) {
+      for (const oldLane of supervisor.lanes) {
+        if (!oldLane.supervisorSurfaceId) continue;
+        const location = terminalLocations.get(oldLane.supervisorSurfaceId);
+        if (!location) continue;
+        surfacesToClose.set(oldLane.supervisorSurfaceId, {
+          surfaceId: oldLane.supervisorSurfaceId,
+          ...location,
+        });
+      }
+    }
+    for (const oldSurface of surfacesToClose.values()) {
+      closeSurface(oldSurface.workspaceId, oldSurface.paneId, oldSurface.surfaceId);
+    }
+    return { ok: true, lanes: configuredLanes };
   };
 
   const sendDedicatedBriefings = () => {
@@ -473,7 +618,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const applyConfig = (andStart: boolean) => {
-    const lanes = buildLanes();
+    const lanes = buildLanes(!andStart || supervisor.active);
     if (lanes.length === 0) {
       window.alert('请至少选择一个要监控的终端。');
       return;
@@ -482,25 +627,32 @@ export default function SupervisorSetupDialog() {
       window.alert('请填写停止条件（方向型或具体条件型），供监督 AI 核对。');
       return;
     }
-
-    persistFields();
-    const configuredLanes = andStart ? ensureDedicatedSupervisors(lanes) : lanes;
-    setSupervisorLanes(configuredLanes);
-    if (andStart && configuredLanes.some((lane) => !lane.supervisorSurfaceId)) {
-      window.alert('无法为所有选中终端创建专属监督 AI；调度尚未启动，请重试。');
+    if (andStart && !launchCmd.trim()) {
+      window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
       return;
     }
+
     if (andStart) {
+      const result = ensureDedicatedSupervisors(lanes, true);
+      if (!result.ok) {
+        window.alert('无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。');
+        return;
+      }
+      persistFields(true);
+      setSupervisorLanes(result.lanes);
       startSupervisor();
       const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
       if (workspaceId) selectWorkspace(workspaceId);
       sendDedicatedBriefings();
+    } else {
+      persistFields(false);
+      setSupervisorLanes(lanes);
+      closeSupervisorSetup();
     }
-    else closeSupervisorSetup();
   };
 
   const openAiSession = () => {
-    const lanes = buildLanes();
+    const lanes = buildLanes(supervisor.active);
     if (lanes.length === 0) {
       window.alert('请先至少选择一个要监控的终端。');
       return;
@@ -509,345 +661,535 @@ export default function SupervisorSetupDialog() {
       window.alert('请先填写停止条件。');
       return;
     }
-    persistFields();
-    const isolatedLanes = ensureDedicatedSupervisors(lanes);
-    setSupervisorLanes(isolatedLanes);
-    if (isolatedLanes.some((lane) => !lane.supervisorSurfaceId)) {
+    if (!launchCmd.trim()) {
+      window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
+      return;
+    }
+    const result = ensureDedicatedSupervisors(lanes, true);
+    if (!result.ok) {
       window.alert('无法为所有选中终端创建专属监督 AI，请重试。');
       return;
     }
+    persistFields(false);
+    setSupervisorLanes(result.lanes);
     closeSupervisorSetup();
     const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
     if (workspaceId) selectWorkspace(workspaceId);
     sendDedicatedBriefings();
   };
 
+  const toggleAutonomyPermission = (permission: SupervisorAutonomyPermission) => {
+    setAutonomyPermissions((current) => current.includes(permission)
+      ? current.filter((item) => item !== permission)
+      : [...current, permission]);
+  };
+
+  const toggleForbiddenAction = (action: SupervisorForbiddenAction) => {
+    setForbiddenActions((current) => current.includes(action)
+      ? current.filter((item) => item !== action)
+      : [...current, action]);
+  };
+
+  const selectedCandidates = candidates.filter((candidate) => selected.has(candidate.surfaceId));
+  const insufficientCandidates = selectedCandidates.filter((candidate) => (
+    !candidate.currentTask?.trim()
+    && !taskGoalOverrides[candidate.surfaceId]?.trim()
+    && !taskGoal.trim()
+    && !planFilePath.trim()
+  ));
+
   return (
     <div className="confirm-dialog__overlay supervisor-dialog__overlay">
       <div
+        ref={dialogRef}
         className="supervisor-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="AI 监督"
+        tabIndex={-1}
       >
-        <div className="supervisor-dialog__title">AI 监督</div>
-        <div className="supervisor-dialog__sub">
-          统一监督：工作终端仍由你正常下达任务；每个选中的终端会创建独立、可见的监督 AI 上下文。
-        </div>
+        <header className="supervisor-dialog__header">
+          <div className="supervisor-dialog__title">AI 监督配置</div>
+          <div className="supervisor-dialog__sub">
+            工作终端仍由你正常下达任务；每个选中的终端使用独立、可见的监督 AI 上下文。
+          </div>
+        </header>
 
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">监控终端</div>
-          <div className="supervisor-dialog__list">
-            {candidates.length === 0 && (
-              <div className="supervisor-dialog__empty">当前没有打开的终端。</div>
+        <div className="supervisor-dialog__body">
+          <section className="supervisor-dialog__group">
+            <div className="supervisor-dialog__group-heading">
+              <div>
+                <div className="supervisor-dialog__group-title">1. 监督对象</div>
+                <div className="supervisor-dialog__group-description">选择工作终端，并按需为单个终端覆盖共享目标或停止条件。</div>
+              </div>
+              <span className="supervisor-dialog__count">已选 {selectedCandidates.length} 个</span>
+            </div>
+            <div className="supervisor-dialog__list">
+              {candidates.length === 0 && (
+                <div className="supervisor-dialog__empty">当前没有打开的终端。</div>
+              )}
+              {candidates.map((candidate) => {
+                const isSelected = selected.has(candidate.surfaceId);
+                return (
+                  <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
+                    <label className="supervisor-dialog__row">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggle(candidate.surfaceId)}
+                      />
+                      <span className="supervisor-dialog__row-main">
+                        <span className="supervisor-dialog__row-label">{candidate.label}</span>
+                        <span className="supervisor-dialog__row-meta">
+                          {candidate.workspaceTitle} · 状态 {candidate.state} · {candidate.surfaceId.slice(0, 12)}…
+                        </span>
+                        <span className="supervisor-dialog__current-task" title={candidate.currentTask || ''}>
+                          当前任务：{candidate.currentTask?.trim() || '尚未收到终端任务事件'}
+                        </span>
+                      </span>
+                    </label>
+                    {isSelected && (
+                      <details className="supervisor-dialog__lane-settings">
+                        <summary>单独设置此终端</summary>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">任务目标覆盖（可选）</div>
+                          <textarea
+                            className="supervisor-dialog__textarea"
+                            aria-label={`${candidate.label} 的任务目标覆盖`}
+                            rows={2}
+                            value={taskGoalOverrides[candidate.surfaceId] || ''}
+                            onChange={(event) => setTaskGoalOverrides((current) => ({
+                              ...current,
+                              [candidate.surfaceId]: event.target.value,
+                            }))}
+                            placeholder="留空则使用共享任务目标、当前任务事件或计划文件"
+                          />
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">停止条件覆盖（可选）</div>
+                          <textarea
+                            className="supervisor-dialog__textarea"
+                            aria-label={`${candidate.label} 的停止条件覆盖`}
+                            rows={2}
+                            value={stopWhenOverrides[candidate.surfaceId] || ''}
+                            onChange={(event) => setStopWhenOverrides((current) => ({
+                              ...current,
+                              [candidate.surfaceId]: event.target.value,
+                            }))}
+                            placeholder="留空则使用下方共享停止条件"
+                          />
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {insufficientCandidates.length > 0 && (
+              <div className="supervisor-dialog__warning" role="status">
+                {insufficientCandidates.map((candidate) => candidate.label).join('、')}：可停止裁决，但自主推进依据不足。请填写任务目标、终端覆盖目标或选择计划文件。
+              </div>
             )}
-            {candidates.map((c) => (
-              <label key={c.key} className="supervisor-dialog__row">
+          </section>
+
+          <section className="supervisor-dialog__group">
+            <div className="supervisor-dialog__group-title">2. 停止裁决</div>
+            <div className="supervisor-dialog__group-description">这是监督 AI 判断继续、返工、完成或交给人工的核心依据。</div>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">停止条件类型</div>
+              <div className="supervisor-dialog__freedom">
+                {(['concrete', 'direction'] as StopWhenKind[]).map((kind) => (
+                  <label key={kind} className="supervisor-dialog__radio" data-active={stopWhenKind === kind}>
+                    <input
+                      type="radio"
+                      name="stopWhenKind"
+                      checked={stopWhenKind === kind}
+                      onChange={() => setStopWhenKind(kind)}
+                    />
+                    <span>{stopWhenKindLabel(kind)}{kind === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="supervisor-dialog__hint">{stopWhenKindHint(stopWhenKind)}</div>
+            </section>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label supervisor-dialog__label--required">
+                停止条件参考 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
+                {' '}· {stopWhenKindLabel(stopWhenKind)}
+              </div>
+              <textarea
+                className="supervisor-dialog__textarea"
+                aria-label="停止条件参考"
+                rows={2}
+                value={stopWhen}
+                onChange={(event) => setStopWhen(event.target.value)}
+                placeholder={stopWhenKind === 'direction'
+                  ? '例如：登录流程可用，错误提示合理，不要大范围重构'
+                  : '例如：npm test 全绿 / 终端出现 BUILD SUCCESS'}
+                required
+              />
+              <div className="supervisor-dialog__hint">终端本轮结束后，监督 AI 会先核对当前证据，不会把“任务结束”直接视为条件已满足。</div>
+            </section>
+          </section>
+
+          <section className="supervisor-dialog__group">
+            <div className="supervisor-dialog__group-title">3. 补充依据</div>
+            <div className="supervisor-dialog__group-description">用于补足监督 AI 的任务目标、验收依据与已确认事实。</div>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">共享任务目标（可选）</div>
+              <textarea
+                className="supervisor-dialog__textarea"
+                aria-label="共享任务目标"
+                rows={2}
+                value={taskGoal}
+                onChange={(event) => setTaskGoal(event.target.value)}
+                placeholder="例如：修复登录流程并保持现有对外行为"
+              />
+              <div className="supervisor-dialog__hint">当终端还没有任务事件、也未选择计划文件时，建议填写；不会直接注入工作终端。</div>
+            </section>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
+              <textarea
+                className="supervisor-dialog__textarea"
+                aria-label="停止条件补充说明"
+                rows={2}
+                value={taskDescription}
+                onChange={(event) => setTaskDescription(event.target.value)}
+                placeholder="例如：认证修复完成后保持现有对外行为，以登录可用和测试通过作为结束参考"
+              />
+              <div className="supervisor-dialog__hint">仅补充停止条件的背景和验收语境，不会注入工作终端。</div>
+            </section>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
+              <div className="supervisor-dialog__plan-actions">
                 <input
-                  type="checkbox"
-                  checked={selected.has(c.surfaceId)}
-                  onChange={() => toggle(c.surfaceId)}
-                />
-                <span className="supervisor-dialog__row-main">
-                  <span className="supervisor-dialog__row-label">{c.label}</span>
-                  <span className="supervisor-dialog__row-meta">
-                    {c.workspaceTitle} · {c.state} · {c.surfaceId.slice(0, 12)}…
-                  </span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </section>
-
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">计划文件（可选 · 停止裁决参考 · Markdown/文本）</div>
-          <div className="supervisor-dialog__plan-actions">
-            <input
-              className="supervisor-dialog__input"
-              value={planFilePath}
-              readOnly
-              placeholder="未选择；选择后仅把路径提供给监督 AI"
-            />
-            <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
-              选择文件
-            </button>
-            {planFilePath && (
-              <button
-                type="button"
-                className="confirm-dialog__btn"
-                onClick={() => {
-                  setPlanFilePath('');
-                }}
-              >
-                清除
-              </button>
-            )}
-          </div>
-          <div className="supervisor-dialog__hint">
-            仅把文件路径提供给专属监督 AI；每次停止裁决前会先检查计划是否更新，首次使用或有更新时才重新读取正文。文件正文不会粘贴进启动输入，也不会自动注入工作终端；监督 AI 会结合其中的范围、验收与约束、停止条件补充说明、终端证据和人工决定综合裁决。
-          </div>
-        </section>
-
-        <section className="supervisor-dialog__section">
-          <label className="supervisor-dialog__row">
-            <input
-              type="checkbox"
-              checked={restoreAuditHistory}
-              onChange={(event) => setRestoreAuditHistory(event.target.checked)}
-            />
-            <span className="supervisor-dialog__row-main">
-              <span className="supervisor-dialog__row-label">恢复审计上下文（手动选择来源）</span>
-              <span className="supervisor-dialog__row-meta">
-                默认关闭：从同项目的历史终端中手动选择来源，不比较当前终端 ID。
-              </span>
-            </span>
-          </label>
-          <div className="supervisor-dialog__hint">
-            为每个已选终端手动选择历史来源；不会比较当前终端 ID。恢复内容仅含任务、终端事件和监督裁决摘要；“重头再来”废除的历史不会列出，计划文件需重新选择。
-          </div>
-          {restoreAuditHistory && candidates.filter((candidate) => selected.has(candidate.surfaceId)).map((candidate) => {
-            const options = restoreCandidates[candidate.surfaceId] || [];
-            return (
-              <div key={candidate.surfaceId} className="supervisor-dialog__restore-row">
-                <div className="supervisor-dialog__row-label">恢复到：{candidate.label}</div>
-                <select
                   className="supervisor-dialog__input"
-                  value={restoreSources[candidate.surfaceId] || ''}
-                  onChange={(event) => setRestoreSources((current) => ({
-                    ...current,
-                    [candidate.surfaceId]: event.target.value,
-                  }))}
-                >
-                  <option value="">不恢复上下文</option>
-                  {options.map((option) => (
-                    <option key={option.surfaceId} value={option.surfaceId}>
-                      {option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
-                      {option.currentTask ? ` · ${option.currentTask.slice(0, 36)}` : ''}
-                      {option.lastDecision ? ` · ${option.lastDecision}` : ''}
-                    </option>
-                  ))}
-                </select>
-                {options.length === 0 && (
-                  <div className="supervisor-dialog__hint">此项目没有可恢复的历史终端。</div>
+                  aria-label="计划文件"
+                  value={planFilePath}
+                  readOnly
+                  title={planFilePath}
+                  placeholder="未选择；选择后仅把路径提供给监督 AI"
+                />
+                <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
+                  选择文件
+                </button>
+                {planFilePath && (
+                  <button
+                    type="button"
+                    className="confirm-dialog__btn"
+                    onClick={() => {
+                      setPlanFilePath('');
+                      if (workScope === 'plan-defined') setWorkScope('task-files');
+                    }}
+                  >
+                    清除
+                  </button>
                 )}
               </div>
-            );
-          })}
-        </section>
+              <div className="supervisor-dialog__hint">监督 AI 首次使用或发现文件更新时才重新读取，并结合最新范围、验收与约束裁决。</div>
+            </section>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
+              <textarea
+                className="supervisor-dialog__textarea"
+                aria-label="前置条件和已确认环境信息"
+                rows={2}
+                value={preconditions}
+                onChange={(event) => setPreconditions(event.target.value)}
+                placeholder="例如：设备已上电；测试台安全状态已确认；必要账号已登录"
+              />
+              <div className="supervisor-dialog__hint">本次监督会话内视为已确认；证据显示条件变化或失效时才再次交给人工。</div>
+            </section>
+          </section>
 
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
-          <textarea
-            className="supervisor-dialog__textarea"
-            rows={3}
-            value={taskDescription}
-            onChange={(e) => setTaskDescription(e.target.value)}
-            placeholder="例如：认证修复完成后，保持现有对外行为；以登录可用和测试通过作为结束参考"
-          />
-          <div className="supervisor-dialog__hint">用于补充停止条件的范围、背景或验收语境，帮助监督 AI 判断何时适当结束；未填写时仅按停止条件和终端证据裁决。不会注入工作终端。</div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
-          <textarea
-            className="supervisor-dialog__textarea"
-            rows={2}
-            value={preconditions}
-            onChange={(e) => setPreconditions(e.target.value)}
-            placeholder={'例如：设备已上电；急停和防护措施已确认；测试台处于安全状态'}
-          />
-          <div className="supervisor-dialog__hint">本次监督内视为你已确认的环境与安全前提，不会因历史“下次确认”提示而重复打扰；仅在终端证据显示条件变化、缺失或出现新的危险操作时才会交给你确认。不是任务或停止条件。</div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <label className="supervisor-dialog__row">
-            <input
-              type="checkbox"
-              checked={autonomous}
-              onChange={(event) => setAutonomous(event.target.checked)}
-            />
-            <span className="supervisor-dialog__row-main">
-              <span className="supervisor-dialog__row-label">全自动监督（仅本次会话）</span>
-              <span className="supervisor-dialog__row-meta">
-                普通监督已可推进低风险下一步、确认明确权限和小范围调整；开启后会在相同安全边界内持续自主推进，不受自动判断次数上限。
+          <section className="supervisor-dialog__group">
+            <div className="supervisor-dialog__group-title">4. 自主权限与边界</div>
+            <div className="supervisor-dialog__group-description">明确监督 AI 可以自主处理的动作，以及本次任务额外禁止的变化。</div>
+            <label className="supervisor-dialog__row supervisor-dialog__autonomous-row">
+              <input
+                type="checkbox"
+                checked={autonomous}
+                onChange={(event) => setAutonomous(event.target.checked)}
+              />
+              <span className="supervisor-dialog__row-main">
+                <span className="supervisor-dialog__row-label">全自动监督（仅本次会话）</span>
+                <span className="supervisor-dialog__row-meta">
+                  开启后在下列权限和安全边界内持续自主推进，不受自动判断次数上限。
+                </span>
               </span>
-            </span>
-          </label>
-          <div className="supervisor-dialog__hint">
-            不保存到配置文件；停止或重头再来后自动失效。删除/覆盖、Git 推送或重写历史、发布/部署、云端或生产环境、凭据和权限变更始终需要人工。
-          </div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">停止条件类型（监督 AI 裁决参考）</div>
-          <div className="supervisor-dialog__freedom">
-            {(['concrete', 'direction'] as StopWhenKind[]).map((k) => (
-              <label key={k} className="supervisor-dialog__radio" data-active={stopWhenKind === k}>
-                <input type="radio" name="stopWhenKind" checked={stopWhenKind === k} onChange={() => setStopWhenKind(k)} />
-                <span>{stopWhenKindLabel(k)}{k === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
-              </label>
-            ))}
-          </div>
-          <div className="supervisor-dialog__hint">{stopWhenKindHint(stopWhenKind)}</div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label supervisor-dialog__label--required">
-            停止条件参考 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
-            {' '}· {stopWhenKindLabel(stopWhenKind)}
-          </div>
-          <textarea
-            className="supervisor-dialog__textarea"
-            rows={2}
-            value={stopWhen}
-            onChange={(e) => setStopWhen(e.target.value)}
-            placeholder={stopWhenKind === 'direction'
-              ? '例如：登录流程可用，错误提示合理，不要大范围重构'
-              : '例如：npm test 全绿 / 终端出现 BUILD SUCCESS'}
-            required
-          />
-          <div className="supervisor-dialog__hint">工作终端结束本轮后，监督 AI 先查看证据，再据此提出继续、返工、完成或交给人工的裁决。</div>
-        </section>
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">监督 AI 启动器</div>
-          <select
-            className="supervisor-dialog__input"
-            value={launchChoice}
-            onChange={(e) => changeLauncher(e.target.value)}
-          >
-            {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-            <option value={CUSTOM_OPTION}>自定义命令</option>
-          </select>
-          {launchChoice === CUSTOM_OPTION && (
-            <input
-              className="supervisor-dialog__input"
-              value={launchCmd}
-              onChange={(e) => setLaunchCmd(e.target.value)}
-              placeholder="例如：&quot;C:\\Tools\\codex.exe&quot;"
-            />
-          )}
-          <div className="supervisor-dialog__hint">每个终端独立启动。自定义命令可用于已安装的兼容 AI 启动器。</div>
-        </section>
-        {launcherModelOptions.length > 0 && (
-          <section className="supervisor-dialog__section">
-            <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
-            <select
-              className="supervisor-dialog__input"
-              value={modelChoice}
-              onChange={(e) => {
-                const choice = e.target.value;
-                setModelChoice(choice);
-                if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
-                else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
-              }}
-            >
-              <option value={DEFAULT_MODEL_OPTION}>使用 {supervisorLauncherDisplayName(launcherKind)} 默认模型</option>
-              {launcherModelOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-              <option value={CUSTOM_OPTION}>{launcherKind === 'grok' ? '自定义模型别名' : '自定义模型 ID'}</option>
-            </select>
-            {modelChoice === CUSTOM_OPTION && (
+            </label>
+            <div className="supervisor-dialog__grid">
+              <section className="supervisor-dialog__section">
+                <div className="supervisor-dialog__label">允许自主处理</div>
+                <div className="supervisor-dialog__option-list">
+                  {SUPERVISOR_AUTONOMY_PERMISSION_VALUES.map((permission) => (
+                    <label key={permission} className="supervisor-dialog__option">
+                      <input
+                        type="checkbox"
+                        checked={autonomyPermissions.includes(permission)}
+                        onChange={() => toggleAutonomyPermission(permission)}
+                      />
+                      <span>{AUTONOMY_PERMISSION_LABELS[permission]}</span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+              <section className="supervisor-dialog__section">
+                <div className="supervisor-dialog__label">工作范围</div>
+                <div className="supervisor-dialog__option-list">
+                  {SUPERVISOR_WORK_SCOPE_VALUES.map((scope) => {
+                    const disabled = scope === 'plan-defined' && !planFilePath;
+                    return (
+                      <label
+                        key={scope}
+                        className="supervisor-dialog__radio"
+                        data-active={workScope === scope}
+                        data-disabled={disabled}
+                      >
+                        <input
+                          type="radio"
+                          name="workScope"
+                          checked={workScope === scope}
+                          disabled={disabled}
+                          onChange={() => setWorkScope(scope)}
+                        />
+                        <span>{WORK_SCOPE_LABELS[scope]}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+            </div>
+            <section className="supervisor-dialog__section">
+              <div className="supervisor-dialog__label">本次额外禁止事项</div>
+              <div className="supervisor-dialog__option-list supervisor-dialog__option-list--two-columns">
+                {SUPERVISOR_FORBIDDEN_ACTION_VALUES.map((action) => (
+                  <label key={action} className="supervisor-dialog__option">
+                    <input
+                      type="checkbox"
+                      checked={forbiddenActions.includes(action)}
+                      onChange={() => toggleForbiddenAction(action)}
+                    />
+                    <span>{FORBIDDEN_ACTION_LABELS[action]}</span>
+                  </label>
+                ))}
+              </div>
+            </section>
+            <div className="supervisor-dialog__hard-risk">
+              删除或覆盖重要数据、Git 推送或重写历史、发布部署、生产或云端变更、凭据及系统权限等硬风险始终交给人工，不能在这里授权绕过。
+            </div>
+            <section className="supervisor-dialog__section supervisor-dialog__decision-limit">
+              <div className="supervisor-dialog__label">最大自动判断次数</div>
               <input
                 className="supervisor-dialog__input"
-                value={supervisorModel}
-                onChange={(e) => setSupervisorModel(e.target.value)}
-                placeholder={launcherKind === 'grok' ? '输入 ~/.grok/config.toml 中的模型别名' : '输入账户可用的模型 ID'}
+                type="number"
+                min={1}
+                max={20}
+                step={1}
+                placeholder="不限制"
+                value={maxAutoDecisions}
+                onChange={(event) => setMaxAutoDecisions(event.target.value)}
+                disabled={autonomous}
               />
-            )}
-            <div className="supervisor-dialog__hint">
-              {launcherKind === 'grok'
-                ? '选择后以 `-m` 传入；自定义模型需先在 `~/.grok/config.toml` 中配置。'
-                : '选择后以 `--model` 传入，不会覆盖启动命令中已有的模型参数。'}
+              <div className="supervisor-dialog__hint">
+                {autonomous
+                  ? '全自动监督已启用：本会话不使用自动判断次数上限。'
+                  : '每个终端独立计数；留空表示不限制，填写 1–20 后达到上限会等待人工审阅。'}
+              </div>
+            </section>
+          </section>
+
+          <details className="supervisor-dialog__advanced">
+            <summary>5. 高级设置</summary>
+            <div className="supervisor-dialog__advanced-content">
+              <section className="supervisor-dialog__section">
+                <div className="supervisor-dialog__label">监督 AI 启动器</div>
+                <select
+                  className="supervisor-dialog__input"
+                  value={launchChoice}
+                  onChange={(event) => changeLauncher(event.target.value)}
+                >
+                  {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                  <option value={CUSTOM_OPTION}>自定义命令</option>
+                </select>
+                {launchChoice === CUSTOM_OPTION && (
+                  <input
+                    className="supervisor-dialog__input supervisor-dialog__stacked-input"
+                    value={launchCmd}
+                    onChange={(event) => setLaunchCmd(event.target.value)}
+                    placeholder="例如：&quot;C:\\Tools\\codex.exe&quot;"
+                  />
+                )}
+                <div className="supervisor-dialog__hint">每个工作终端独立启动一个监督上下文。</div>
+              </section>
+              {launcherModelOptions.length > 0 && (
+                <section className="supervisor-dialog__section">
+                  <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
+                  <select
+                    className="supervisor-dialog__input"
+                    value={modelChoice}
+                    onChange={(event) => {
+                      const choice = event.target.value;
+                      setModelChoice(choice);
+                      if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
+                      else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
+                    }}
+                  >
+                    <option value={DEFAULT_MODEL_OPTION}>使用 {supervisorLauncherDisplayName(launcherKind)} 默认模型</option>
+                    {launcherModelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                    <option value={CUSTOM_OPTION}>{launcherKind === 'grok' ? '自定义模型别名' : '自定义模型 ID'}</option>
+                  </select>
+                  {modelChoice === CUSTOM_OPTION && (
+                    <input
+                      className="supervisor-dialog__input supervisor-dialog__stacked-input"
+                      value={supervisorModel}
+                      onChange={(event) => setSupervisorModel(event.target.value)}
+                      placeholder={launcherKind === 'grok' ? '输入 ~/.grok/config.toml 中的模型别名' : '输入账户可用的模型 ID'}
+                    />
+                  )}
+                </section>
+              )}
+              {launcherKind === 'codex' && (
+                <section className="supervisor-dialog__section">
+                  <div className="supervisor-dialog__label">Codex 推理程度</div>
+                  <select
+                    className="supervisor-dialog__input"
+                    value={reasoningEffort}
+                    onChange={(event) => setReasoningEffort(event.target.value)}
+                  >
+                    <option value="">使用 Codex 默认推理程度</option>
+                    {REASONING_EFFORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </section>
+              )}
+              {launcherKind === 'kimi' && (
+                <section className="supervisor-dialog__section">
+                  <div className="supervisor-dialog__label">Kimi Thinking</div>
+                  <select
+                    className="supervisor-dialog__input"
+                    value={reasoningEffort}
+                    onChange={(event) => setReasoningEffort(event.target.value)}
+                  >
+                    {KIMI_THINKING_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </section>
+              )}
+              {launcherKind === 'grok' && (
+                <section className="supervisor-dialog__section">
+                  <div className="supervisor-dialog__label">Grok Build 推理设置</div>
+                  <div className="supervisor-dialog__hint">推理强度由会话内 `/effort` 设置，不传入其他启动器的参数。</div>
+                </section>
+              )}
+
+              <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
+                <label className="supervisor-dialog__row">
+                  <input
+                    type="checkbox"
+                    checked={restoreAuditHistory}
+                    onChange={(event) => setRestoreAuditHistory(event.target.checked)}
+                  />
+                  <span className="supervisor-dialog__row-main">
+                    <span className="supervisor-dialog__row-label">恢复审计上下文（手动选择来源）</span>
+                    <span className="supervisor-dialog__row-meta">默认关闭；只恢复任务、终端事件和监督裁决摘要。</span>
+                  </span>
+                </label>
+                {restoreAuditHistory && selectedCandidates.map((candidate) => {
+                  const options = restoreCandidates[candidate.surfaceId] || [];
+                  return (
+                    <div key={candidate.surfaceId} className="supervisor-dialog__restore-row">
+                      <div className="supervisor-dialog__row-label">恢复到：{candidate.label}</div>
+                      <select
+                        className="supervisor-dialog__input"
+                        value={restoreSources[candidate.surfaceId] || ''}
+                        onChange={(event) => setRestoreSources((current) => ({
+                          ...current,
+                          [candidate.surfaceId]: event.target.value,
+                        }))}
+                      >
+                        <option value="">不恢复上下文</option>
+                        {options.map((option) => (
+                          <option key={option.surfaceId} value={option.surfaceId}>
+                            {option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
+                            {option.currentTask ? ` · ${option.currentTask.slice(0, 36)}` : ''}
+                            {option.lastDecision ? ` · ${option.lastDecision}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {options.length === 0 && (
+                        <div className="supervisor-dialog__hint">此项目没有可恢复的历史终端。</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+
+              <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
+                <div className="supervisor-dialog__label">配置文件</div>
+                <div className="supervisor-dialog__config-actions">
+                  <button type="button" className="confirm-dialog__btn" onClick={() => void loadConfigFile()}>
+                    导入配置…
+                  </button>
+                  <button type="button" className="confirm-dialog__btn" onClick={() => void saveConfigFile()}>
+                    导出配置…
+                  </button>
+                </div>
+              </section>
+
+              <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
+                <button
+                  type="button"
+                  className="confirm-dialog__btn supervisor-dialog__btn-ai"
+                  onClick={openAiSession}
+                  disabled={supervisor.active}
+                >
+                  仅打开监督终端（不启动）
+                </button>
+                <div className="supervisor-dialog__hint">用于预览专属监督上下文；不会开始调度或监听任务事件。</div>
+              </section>
             </div>
-          </section>
-        )}
-        {launcherKind === 'codex' && (
-          <section className="supervisor-dialog__section">
-            <div className="supervisor-dialog__label">Codex 推理程度</div>
-            <select
-              className="supervisor-dialog__input"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-            >
-              <option value="">使用 Codex 默认推理程度</option>
-              {REASONING_EFFORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            <div className="supervisor-dialog__hint">以 `--config model_reasoning_effort=…` 传入，推理越高响应越慢、消耗越多。</div>
-          </section>
-        )}
-        {launcherKind === 'kimi' && (
-          <section className="supervisor-dialog__section">
-            <div className="supervisor-dialog__label">Kimi Thinking</div>
-            <select
-              className="supervisor-dialog__input"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-            >
-              {KIMI_THINKING_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            <div className="supervisor-dialog__hint">开启后以 `--thinking` 传入；具体推理强度由 Kimi 模型与账号配置决定。</div>
-          </section>
-        )}
-        {launcherKind === 'grok' && (
-          <section className="supervisor-dialog__section">
-            <div className="supervisor-dialog__label">Grok Build 推理设置</div>
-            <div className="supervisor-dialog__hint">Grok Build 的推理强度由会话内 `/effort` 设置；这里不会传入 Codex 或其他不兼容参数。</div>
-          </section>
-        )}
-        <section className="supervisor-dialog__section">
-          <div className="supervisor-dialog__label">最大自动判断次数</div>
-          <input
-            className="supervisor-dialog__input"
-            type="number"
-            min={1}
-            max={20}
-            step={1}
-            placeholder="不限制"
-            value={maxAutoDecisions}
-            onChange={(e) => setMaxAutoDecisions(e.target.value)}
-            disabled={autonomous}
-          />
-          <div className="supervisor-dialog__hint">
-            {autonomous
-              ? '全自动监督已启用：本会话不使用自动判断次数上限。'
-              : '每个监控终端独立计数。留空表示不限制；填写 1–20 后，达到次数会暂停 AI 自动裁决，须经你人工审阅才会继续。'}
-          </div>
-        </section>
+          </details>
+        </div>
 
         <div className="supervisor-dialog__actions">
-          <button type="button" className="confirm-dialog__btn" onClick={() => void loadConfigFile()}>
-            加载配置
-          </button>
-          <button type="button" className="confirm-dialog__btn" onClick={() => void saveConfigFile()}>
-            保存配置
-          </button>
+          {supervisor.active && (
+            <button
+              type="button"
+              className="confirm-dialog__btn"
+              onClick={() => {
+                setAutonomous(false);
+                stopSupervisor();
+              }}
+            >
+              停止监督
+            </button>
+          )}
+          <span className="supervisor-dialog__actions-spacer" />
           <button type="button" className="confirm-dialog__btn" onClick={closeSupervisorSetup}>
             取消
           </button>
-          {supervisor.active && (
-            <button type="button" className="confirm-dialog__btn" onClick={() => stopSupervisor()}>
-              停止调度
-            </button>
-          )}
-          <button type="button" className="confirm-dialog__btn" onClick={() => applyConfig(false)}>
-            仅保存
-          </button>
           <button
             type="button"
-            className="confirm-dialog__btn supervisor-dialog__btn-ai"
-            onClick={openAiSession}
+            className="confirm-dialog__btn"
+            onClick={() => applyConfig(false)}
+            disabled={supervisor.active}
+            title={supervisor.active ? '运行中请使用“应用并继续监督”，以同步专属监督终端。' : undefined}
           >
-            创建专属监督 AI
+            保存设置
           </button>
           <button
             type="button"
             className="confirm-dialog__btn confirm-dialog__btn--danger"
             onClick={() => applyConfig(true)}
           >
-            {supervisor.active ? '应用并继续运行' : '启动'}
+            {supervisor.active ? '应用并继续监督' : '启动 AI 监督'}
           </button>
         </div>
       </div>

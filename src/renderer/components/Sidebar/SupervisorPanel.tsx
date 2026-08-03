@@ -14,6 +14,16 @@ import {
 } from '../../supervisor/recording';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
+import {
+  DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
+  DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
+  DEFAULT_SUPERVISOR_WORK_SCOPE,
+  SUPERVISOR_AUTONOMY_PERMISSION_VALUES,
+  normalizeSupervisorAutonomyPermissions,
+  normalizeSupervisorForbiddenActions,
+  normalizeSupervisorWorkScope,
+  type SupervisorWorkScope,
+} from '../../../shared/supervisor-policy';
 import { clearSupervisorLaneContext, type SupervisorLane } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
 
@@ -27,6 +37,12 @@ function auditTabTitle(lane: SupervisorLane): string {
   return `监督记录 · ${lane.label} · ${lane.surfaceId.slice(5, 13)}`;
 }
 
+const WORK_SCOPE_LABELS: Record<SupervisorWorkScope, string> = {
+  project: '当前工程文件夹',
+  'task-files': '仅当前任务相关文件',
+  'plan-defined': '按计划文件定义',
+};
+
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
@@ -37,6 +53,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
+  const patchSupervisor = useStore((s) => s.patchSupervisor);
   const appendSupervisorLog = useStore((s) => s.appendSupervisorLog);
   const confirmStopCondition = useStore((s) => s.confirmStopCondition);
   const rejectStopCondition = useStore((s) => s.rejectStopCondition);
@@ -60,6 +77,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
   const supervisorThinkingLabel = supervisorLauncher === 'kimi' ? 'Thinking' : '推理程度';
   const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
+  const autonomyPermissionCount = Array.isArray(supervisor.autonomyPermissions)
+    ? supervisor.autonomyPermissions.length
+    : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS.length;
+  const forbiddenActionCount = Array.isArray(supervisor.forbiddenActions)
+    ? supervisor.forbiddenActions.length
+    : DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS.length;
+  const workScope = supervisor.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE;
   const liveSurfaceIds = new Set<string>();
   for (const workspace of workspaces) {
     for (const paneId of getAllPaneIds(workspace.splitTree)) {
@@ -284,7 +308,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       supervisor.supervisorModel,
       supervisor.supervisorReasoningEffort,
     );
-    const startupCommands = launchCommand ? [launchCommand] : undefined;
+    if (!launchCommand) {
+      appendSupervisorLog('-', '启动失败', '未配置可启动的监督 AI，请先打开配置。');
+      openSupervisorSetup();
+      return;
+    }
+    const startupCommands = [launchCommand];
     const replacements: Array<{
       lane: SupervisorLane;
       oldSurfaceId: SurfaceId;
@@ -318,6 +347,34 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }
 
     const replacementByLaneId = new Map(replacements.map((item) => [item.lane.id, item.newSurfaceId]));
+    const normalizedScope = normalizeSupervisorWorkScope(supervisor.workScope);
+    let normalizedDecisionLimit = supervisor.maxAutoDecisions;
+    if (normalizedDecisionLimit !== null) {
+      normalizedDecisionLimit = Number.isFinite(normalizedDecisionLimit) && normalizedDecisionLimit >= 1
+        ? Math.min(20, Math.floor(normalizedDecisionLimit))
+        : 1;
+    }
+    patchSupervisor({
+      mode: 'unified',
+      autonomous: false,
+      autonomyPermissions: normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions),
+      workScope: normalizedScope === 'plan-defined' && !supervisor.planFilePath?.trim()
+        ? 'task-files'
+        : normalizedScope,
+      forbiddenActions: normalizeSupervisorForbiddenActions(supervisor.forbiddenActions),
+      taskGoal: supervisor.taskGoal?.trim()
+        || supervisor.goal?.trim()
+        || supervisor.directInstructions?.trim()
+        || '',
+      stopWhen: supervisor.stopWhen?.trim() || supervisor.doneWhen?.trim() || '',
+      directInstructions: '',
+      goal: '',
+      allowPaths: '',
+      denyNotes: '',
+      doneWhen: '',
+      maxAutoSteps: 0,
+      maxAutoDecisions: normalizedDecisionLimit,
+    });
     setSupervisorLanes(supervisor.lanes.map((lane) =>
       clearSupervisorLaneContext(lane, replacementByLaneId.get(lane.id) || null),
     ));
@@ -401,9 +458,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       {!collapsed && (
         <>
           <div className="sup-panel__freedom">
-            {supervisor.autonomous
-              ? `全自动监督：AI 可在安全策略范围内推进任务、裁决停止条件并处理明确的低风险权限确认；高风险操作仍会等待人工。`
-              : `有限自主监督：AI 可根据启动信息和证据发送原目标内低风险下一步、处理明确权限及小范围可逆调整；复杂问题等待人工。停止条件类型：${stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}。`}
+            {supervisor.autonomous ? '全自动监督' : '有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
+            工作范围为“{WORK_SCOPE_LABELS[workScope]}”，另有 {forbiddenActionCount} 项禁止事项。硬风险始终等待人工。
           </div>
           <div className="sup-panel__goal">
             最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
@@ -411,6 +467,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           {supervisor.taskDescription.trim() && (
             <div className="sup-panel__goal" title={supervisor.taskDescription}>
               停止补充: {supervisor.taskDescription}
+            </div>
+          )}
+          {(supervisor.taskGoal || '').trim() && (
+            <div className="sup-panel__goal" title={supervisor.taskGoal}>
+              任务目标: {supervisor.taskGoal}
             </div>
           )}
           {supervisor.preconditions.trim() && (
@@ -440,6 +501,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {
               if (!lane.enabled && !lane.awaitingStopCheck && !lane.stopConfirmed) return null;
+              const laneTaskGoal = lane.taskGoalOverride?.trim() || (supervisor.taskGoal || '').trim();
+              const laneStopWhen = lane.stopWhenOverride?.trim() || supervisor.stopWhen.trim();
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
               );
@@ -470,6 +533,16 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-task" title={lane.currentTask || '等待任务上报'}>
                     任务: {lane.currentTask || '等待任务上报'}
                   </div>
+                  {laneTaskGoal && (
+                    <div className="sup-panel__lane-task" title={laneTaskGoal}>
+                      目标: {laneTaskGoal}{lane.taskGoalOverride ? '（终端专用）' : ''}
+                    </div>
+                  )}
+                  {lane.stopWhenOverride && (
+                    <div className="sup-panel__lane-task" title={laneStopWhen}>
+                      停止条件: {laneStopWhen}（终端专用）
+                    </div>
+                  )}
                   <div className="sup-panel__lane-supervisor">
                     专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
                   </div>
