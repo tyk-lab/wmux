@@ -1,5 +1,5 @@
 import { StateCreator } from 'zustand';
-import { QuickLaunchProfile } from '../../shared/types';
+import { QuickLaunchProfile, SshConnectionProfile } from '../../shared/types';
 import { Language, detectDefaultLanguage, isLanguage } from '../i18n/core';
 
 // ─── Persistence helpers (issue #12 + issue #15 + issue #19) ─────────────────
@@ -25,6 +25,7 @@ const STORAGE_KEYS = {
   quickLaunchProfiles: 'wmux-quick-launch-profiles',
   language:          'wmux-language',
   appearancePrefs:   'wmux-appearance-prefs',
+  sshConnections:    'wmux-ssh-connections',
 } as const;
 
 // Read the whole settings file once at module load (synchronous IPC). The
@@ -436,6 +437,8 @@ export interface SettingsSlice {
   quickLaunchProfiles: QuickLaunchProfile[];
   /** Selected UI language (issue #56). */
   language: Language;
+  /** Secret-free SSH presets stored in the file-backed settings store. */
+  sshConnections: SshConnectionProfile[];
   /**
    * Broadcast-input mode (issue #64, tmux `synchronize-panes`): when on, typed
    * input + Enter fan out to every terminal pane in the workspace. Runtime-only
@@ -455,6 +458,7 @@ export interface SettingsSlice {
   setAppearancePrefs(prefs: Partial<AppearancePrefs>): void;
   setQuickLaunchProfiles(profiles: QuickLaunchProfile[]): void;
   setLanguage(language: Language): void;
+  setSshConnections(profiles: SshConnectionProfile[]): void;
   toggleBroadcastInput(): void;
 }
 
@@ -471,6 +475,7 @@ export const createSettingsSlice: StateCreator<SettingsSlice> = (set) => ({
   appearancePrefs:   { ...DEFAULT_APPEARANCE_PREFS,   ...loadPersisted<AppearancePrefs>(STORAGE_KEYS.appearancePrefs) },
   quickLaunchProfiles: loadPersistedArray<QuickLaunchProfile>(STORAGE_KEYS.quickLaunchProfiles),
   language:          loadPersistedLanguage(),
+  sshConnections:    loadPersistedArray<SshConnectionProfile>(STORAGE_KEYS.sshConnections),
   broadcastInputActive: false,
 
   setShortcut(action: ShortcutAction, binding: ShortcutBinding): void {
@@ -546,6 +551,11 @@ export const createSettingsSlice: StateCreator<SettingsSlice> = (set) => ({
   setLanguage(language: Language): void {
     persist(STORAGE_KEYS.language, language);
     set({ language });
+  },
+
+  setSshConnections(profiles: SshConnectionProfile[]): void {
+    persist(STORAGE_KEYS.sshConnections, profiles);
+    set({ sshConnections: profiles });
   },
 
   toggleBroadcastInput(): void {

@@ -75,6 +75,8 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       ports: options.ports,
       notificationText: options.notificationText,
       shellState: options.shellState,
+      sshProfileId: options.sshProfileId,
+      sshConnectionState: options.sshConnectionState,
     };
 
     // Always activate the new session — Explorer "Open in wmux", CLI
@@ -216,6 +218,9 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       cwd: config.cwd,
       browserUrl: config.browserUrl,
       browserWidth: config.browserWidth,
+      sshProfileId: config.sshProfileId,
+      // A fresh app process has no SFTP client, so SSH workspaces never reconnect silently.
+      sshConnectionState: config.sshProfileId ? 'disconnected' : undefined,
     }));
 
     // IDs are regenerated above, so a saved activeWorkspaceId is meaningless —

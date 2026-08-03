@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, clipboard, shell, dialog, app, nativeTheme } fr
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId } from '../shared/types';
+import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile } from '../shared/types';
 import { observePtyData, clearActivity } from './claude-observer';
 import { clearAgentState } from './agent-state';
 import { PtyManager } from './pty-manager';
@@ -34,11 +34,13 @@ import {
   MD_DIALOG_EXTENSIONS,
 } from './markdown-file';
 import { grantMarkdownPath, isMarkdownPathGranted } from './markdown-grants';
+import { SshManager, parseOpenSshConfig } from './ssh-manager';
 
 const ptyManager = new PtyManager();
 const notificationManager = new NotificationManager();
 const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
+const sshManager = new SshManager();
 
 export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstance?: CDPProxy): void {
   // Toggle DevTools for the renderer window
@@ -191,6 +193,61 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
 
   // Exposed so diagnostics (and the CLI) can report which path was read.
   ipcMain.handle('config:getUserConfigPath', async () => getConfigPath());
+
+  ipcMain.handle(IPC_CHANNELS.SSH_IMPORT_CONFIG, async () => {
+    try {
+      const configPath = path.join(os.homedir(), '.ssh', 'config');
+      if (!fs.existsSync(configPath)) return { drafts: [] };
+      return { drafts: parseOpenSshConfig(fs.readFileSync(configPath, 'utf8')) };
+    } catch (error) {
+      return { drafts: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_PICK_KEY, async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: '选择 SSH 私钥',
+      defaultPath: path.join(os.homedir(), '.ssh'),
+      properties: ['openFile'],
+    });
+    return result.canceled || result.filePaths.length === 0
+      ? { canceled: true }
+      : { path: result.filePaths[0] };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SSH_CONNECT, async (_event, workspaceId: string, profile: SshConnectionProfile) => {
+    await sshManager.connect(workspaceId, profile);
+    return { ok: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_DISCONNECT, async (_event, workspaceId: string) => {
+    sshManager.disconnect(workspaceId);
+    return { ok: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_LIST, async (_event, workspaceId: string, remotePath: string) => {
+    return { entries: await sshManager.list(workspaceId, remotePath) };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_UPLOAD, async (event, workspaceId: string, remoteDirectory: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: '上传到远程服务器',
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    for (const localPath of result.filePaths) {
+      await sshManager.upload(workspaceId, localPath, path.posix.join(remoteDirectory || '.', path.basename(localPath)));
+    }
+    return { ok: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_DOWNLOAD, async (event, workspaceId: string, remotePath: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showSaveDialog(win as BrowserWindow, {
+      title: '下载远程文件',
+      defaultPath: path.basename(remotePath),
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await sshManager.download(workspaceId, remotePath, result.filePath);
+    return { ok: true, filePath: result.filePath };
+  });
 
   ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string; flash?: boolean }) => {
     const window = BrowserWindow.fromWebContents(_event.sender);
@@ -520,4 +577,4 @@ export function setupAgentPtyForwarding(surfaceId: string, window: BrowserWindow
   });
 }
 
-export { ptyManager, cdpBridge, agentManager };
+export { ptyManager, cdpBridge, agentManager, sshManager };

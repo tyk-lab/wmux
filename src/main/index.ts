@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
-import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding } from './ipc-handlers';
+import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding, sshManager } from './ipc-handlers';
 import { supervisorGenericInputBlockReason } from './supervisor-input-guard';
 import { handleBrowserV2 } from './v2-browser';
 import { handleBridgeV2 } from './v2-bridge';
@@ -1118,6 +1118,7 @@ app.on('will-quit', () => {
   // libuv async handles (batons) are still pending when the process exits,
   // triggering the "Assertion failed: remove_pty_baton" MSVC runtime error.
   ptyManager.killAll();
+  sshManager.disconnectAll();
   pipeServer.stop();
   cdpProxy.stop();
   portScanner.stop();

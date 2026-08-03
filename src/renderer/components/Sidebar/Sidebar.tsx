@@ -26,6 +26,7 @@ interface SidebarProps {
   onSelect: (id: WorkspaceId) => void;
   onClose: (id: WorkspaceId) => void;
   onCreate: () => void;
+  onCreateSsh: () => void;
   onRename: (id: WorkspaceId, title: string) => void;
   onReorder: (ids: WorkspaceId[]) => void;
   onUpdateMetadata: (id: WorkspaceId, partial: Partial<WorkspaceInfo>) => void;
@@ -47,6 +48,7 @@ export default function Sidebar({
   onSelect,
   onClose,
   onCreate,
+  onCreateSsh,
   onRename,
   onReorder,
   onUpdateMetadata,
@@ -322,6 +324,9 @@ export default function Sidebar({
         </button>
         <button className="sidebar__new-btn" onClick={onCreate} title="New workspace">
           +
+        </button>
+        <button className="sidebar__new-btn sidebar__new-btn--ssh" onClick={onCreateSsh} title="添加 SSH 工作区">
+          添加 SSH
         </button>
         {sessionMenuMode && (
           <SessionMenu

@@ -17,9 +17,15 @@ interface TerminalPaneProps {
   showFindBar?: boolean;
   onFindBarClose?: () => void;
   copyModeActive?: boolean;
+  /** Restored SSH terminals wait for an explicit reconnect instead of spawning automatically. */
+  disconnected?: boolean;
 }
 
-export default function TerminalPane({
+function DisconnectedTerminalPane() {
+  return <div className="terminal-pane terminal-pane--disconnected">SSH 终端已断开，请在右侧文件抽屉中重新连接。</div>;
+}
+
+function ActiveTerminalPane({
   surfaceId,
   shell,
   cwd,
@@ -102,4 +108,9 @@ export default function TerminalPane({
       <CopyMode active={copyModeActive} />
     </div>
   );
+}
+
+export default function TerminalPane(props: TerminalPaneProps) {
+  if (props.disconnected) return <DisconnectedTerminalPane />;
+  return <ActiveTerminalPane {...props} />;
 }

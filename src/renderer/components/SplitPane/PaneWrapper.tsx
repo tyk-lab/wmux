@@ -218,6 +218,7 @@ export default function PaneWrapper({
               cwd={surface.cwd || workspace?.cwd}
               colorScheme={surface.colorScheme}
               startupCommands={surface.startupCommands}
+              disconnected={surface.sshRemote === true && workspace?.sshConnectionState === 'disconnected'}
               focused={isFocused && isActive}
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}

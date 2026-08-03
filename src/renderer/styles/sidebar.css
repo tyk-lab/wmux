@@ -74,6 +74,11 @@
   border-color: rgba(var(--ui-overlay-rgb), 0.15);
 }
 
+.sidebar__new-btn--ssh {
+  margin-top: 6px;
+  color: var(--ui-accent);
+}
+
 /* Workspace Row */
 .workspace-row {
   position: relative;

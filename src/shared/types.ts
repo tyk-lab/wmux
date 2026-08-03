@@ -11,6 +11,32 @@ export type SplitNode =
 
 export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor';
 
+export type SshAuthMethod = 'agent' | 'privateKey';
+
+/** Secret-free connection preset persisted in the user's wmux settings. */
+export interface SshConnectionProfile {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: SshAuthMethod;
+  /** Local file path only; the private-key contents are never persisted. */
+  privateKeyPath?: string;
+}
+
+export interface SshConfigDraft extends Partial<SshConnectionProfile> {
+  hostAlias: string;
+}
+
+export interface SshFileEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory' | 'link' | 'other';
+  size: number;
+  modifiedAt?: number;
+}
+
 export interface SurfaceRef {
   id: SurfaceId;
   type: SurfaceType;
@@ -26,6 +52,8 @@ export interface SurfaceRef {
   startupCommands?: string[];
   /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
   transientSupervisor?: boolean;
+  /** Remote terminal restored as an explicit disconnected surface after restart. */
+  sshRemote?: boolean;
   /** Initial URL for a browser surface created from a quick-launch profile (issue #32). */
   url?: string;
   /** Rendered markdown content for a `markdown` surface (issue #54). Persisted so
@@ -103,6 +131,11 @@ export interface WorkspaceInfo {
   statusOverride?: 'running' | 'idle';
   browserUrl?: string;
   browserWidth?: number;
+  /** Saved preset reference; credentials themselves are kept out of session files. */
+  sshProfileId?: string;
+  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'error';
+  /** Runtime-only SFTP failure detail; never persisted in session snapshots. */
+  sshConnectionError?: string;
 }
 
 // Surface
@@ -228,6 +261,7 @@ export interface SavedSession {
     cwd: string;
     splitTree: SplitNode;
     browserUrl?: string;
+    sshProfileId?: string;
   }>;
   sidebarWidth: number;
   // Optional for backward-compat with pre-0.7.6 sessions.
@@ -393,6 +427,14 @@ export const IPC_CHANNELS = {
   UPDATE_INSTALL: 'update:install',
   UPDATE_GET_STATE: 'update:get-state',
   UPDATE_STATE: 'update:state',
+  // SSH / SFTP
+  SSH_IMPORT_CONFIG: 'ssh:import-config',
+  SSH_PICK_KEY: 'ssh:pick-key',
+  SSH_CONNECT: 'ssh:connect',
+  SSH_DISCONNECT: 'ssh:disconnect',
+  SSH_LIST: 'ssh:list',
+  SSH_UPLOAD: 'ssh:upload',
+  SSH_DOWNLOAD: 'ssh:download',
 } as const;
 
 // ─── Orchestration state (wmux-orchestrator plugin) ────────────────────────

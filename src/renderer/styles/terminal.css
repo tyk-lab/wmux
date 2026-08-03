@@ -101,3 +101,11 @@
   75%  { opacity: 1; }
   100% { opacity: 0; }
 }
+/* Restored SSH surfaces are intentionally inert until the user reconnects. */
+.terminal-pane--disconnected {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}

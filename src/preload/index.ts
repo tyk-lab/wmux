@@ -253,6 +253,15 @@ contextBridge.exposeInMainWorld('wmux', {
     saveAs: (content: string, suggestedName?: string, defaultDir?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.MARKDOWN_SAVE_AS, content, suggestedName, defaultDir),
   },
+  ssh: {
+    importConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_IMPORT_CONFIG),
+    pickKey: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_PICK_KEY),
+    connect: (workspaceId: string, profile: any) => ipcRenderer.invoke(IPC_CHANNELS.SSH_CONNECT, workspaceId, profile),
+    disconnect: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DISCONNECT, workspaceId),
+    list: (workspaceId: string, remotePath: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_LIST, workspaceId, remotePath),
+    upload: (workspaceId: string, remoteDirectory: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_UPLOAD, workspaceId, remoteDirectory),
+    download: (workspaceId: string, remotePath: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DOWNLOAD, workspaceId, remotePath),
+  },
   diff: {
     getFiles: (cwd: string) => ipcRenderer.invoke(IPC_CHANNELS.DIFF_GET_FILES, cwd),
     getFileDiff: (cwd: string, file: string) => ipcRenderer.invoke(IPC_CHANNELS.DIFF_GET_DIFF, cwd, file),
