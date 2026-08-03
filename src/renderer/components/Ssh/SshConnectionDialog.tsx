@@ -64,7 +64,7 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect }: Pr
     <div className="ssh-dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <form className="ssh-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
         <div className="ssh-dialog__header">
-          <div><h2>添加 SSH</h2><p>将创建两个独立的 psmux→SSH 终端，以及 SFTP 文件抽屉。</p></div>
+          <div><h2>添加 SSH</h2><p>将创建一个 psmux→SSH 终端、一个普通本地终端，以及 SFTP 文件抽屉。</p></div>
           <button type="button" className="ssh-icon-button" onClick={onClose} aria-label="关闭">×</button>
         </div>
         <div className="ssh-dialog__preset-row">

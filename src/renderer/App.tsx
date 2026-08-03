@@ -614,13 +614,12 @@ function buildSshSplitTree(profile: SshConnectionProfile): SplitNode {
     : '';
   const remoteShell = `ssh -p ${profile.port}${identity} ${profile.username}@${profile.host}`;
   const sessionBase = `ssh-${uuid().replace(/-/g, '').slice(0, 12)}`;
-  const psmuxShell = (pane: 'a' | 'b') =>
-    `psmux new-session -s ${sessionBase}-${pane} -- ${remoteShell}`;
+  const psmuxShell = `psmux new-session -s ${sessionBase} -- ${remoteShell}`;
   return {
     type: 'branch', direction: 'horizontal', ratio: 0.5,
     children: [
-      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal', shell: psmuxShell('a'), sshRemote: true }], activeSurfaceIndex: 0 },
-      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal', shell: psmuxShell('b'), sshRemote: true }], activeSurfaceIndex: 0 },
+      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal', shell: psmuxShell, sshRemote: true }], activeSurfaceIndex: 0 },
+      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }], activeSurfaceIndex: 0 },
     ],
   };
 }
