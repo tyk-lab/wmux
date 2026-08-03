@@ -150,6 +150,25 @@ describe('supervisor-engine', () => {
     expect(runtime.humanNotified).toBe(false);
   });
 
+  it('tells the dedicated supervisor when blocked-input permissions are disabled', () => {
+    const { actions } = tickLane({
+      session: session({ mode: 'unified', autonomyPermissions: [] }),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
+      surfaceState: { state: 'blocked', blockedReason: 'question: choose A or B' },
+      runtime: blankRuntime(),
+      now: 10_000,
+      hasPendingApproval: false,
+    });
+    const supervisorNotice = actions.find((action) => action.type === 'notify_supervisor');
+    const text = supervisorNotice && supervisorNotice.type === 'notify_supervisor'
+      ? supervisorNotice.text
+      : '';
+
+    expect(text).toContain('未勾选“低风险权限确认”');
+    expect(text).toContain('未勾选“技术方案选择”');
+    expect(text).toContain('必须使用 needs-human');
+  });
+
   it('direct queue empty requests stop check instead of auto-stop', () => {
     const { actions } = tickLane({
       session: session({

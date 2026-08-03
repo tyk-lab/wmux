@@ -7,7 +7,13 @@ import type {
   SupervisorSession,
   SupervisorStep,
 } from '../store/supervisor-slice';
-import { buildInjectedPrompt, buildIdleHint, buildStopCheckHint } from './protocol';
+import {
+  buildInjectedPrompt,
+  buildIdleHint,
+  buildStopCheckHint,
+  effectiveSupervisorStopWhen,
+} from './protocol';
+import { DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS } from '../../shared/supervisor-policy';
 
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 
@@ -102,13 +108,6 @@ export interface TickResult {
   runtime: LaneRuntime;
 }
 
-function goalChaseStepPrompt(): string {
-  return (
-    '根据当前终端上下文与下列目标，自行决策并执行最小下一步；' +
-    '若缺信息、需权限或无法判断，说明卡点并停止等待人工。'
-  );
-}
-
 /**
  * Advance one lane for one poll.
  */
@@ -132,6 +131,10 @@ export function tickLane(opts: {
 
   const st = String(surfaceState.state || 'unknown');
   const mode = session.mode || 'direct';
+  const laneStopWhen = effectiveSupervisorStopWhen(session, lane);
+  const autonomyPermissions = Array.isArray(session.autonomyPermissions)
+    ? session.autonomyPermissions
+    : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
 
   // ── blocked → a dedicated supervisor may resolve explicit low-risk permissions ─
   if (st === 'blocked') {
@@ -151,8 +154,12 @@ export function tickLane(opts: {
           text: [
             `[权限/输入阻塞] 通道=${lane.label} (${lane.surfaceId})`,
             `Hook 原因: ${reason}`,
-            `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当终端仍为 blocked、原因属于权限请求，且命令低风险、可逆、明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y；同一阻塞状态只确认一次。`,
-            '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 携带 --next 回答一次；业务偏好、用户专属决定或原因不明的输入使用 needs-human。',
+            autonomyPermissions.includes('permission-confirm')
+              ? `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当终端仍为 blocked、原因属于权限请求，且命令低风险、可逆、明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y；同一阻塞状态只确认一次。`
+              : '本会话未勾选“低风险权限确认”；权限请求必须使用 needs-human。',
+            autonomyPermissions.includes('technical-choice')
+              ? '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 携带 --next 回答一次；业务偏好、用户专属决定或原因不明的输入使用 needs-human。'
+              : '本会话未勾选“技术方案选择”；question / input 必须使用 needs-human，不得自行回答。',
             '删除或覆盖、git push/重写历史、发布/部署、云端/生产环境、凭据/权限变更或无法确认的请求，一律使用 needs-human，不要发送权限确认。',
           ].join('\n'),
         });
@@ -201,17 +208,19 @@ export function tickLane(opts: {
           type: 'log',
           laneId: lane.id,
           action: '核对停止条件',
-          detail: session.stopWhen.trim() || '（未填写停止条件）',
+          detail: laneStopWhen || '（未填写停止条件）',
         });
         actions.push({
           type: 'notify_supervisor',
           laneId: lane.id,
+          opensReview: true,
           text: buildStopCheckHint({
             lane,
-            stopWhen: session.stopWhen,
+            stopWhen: laneStopWhen,
             stopWhenKind: session.stopWhenKind || 'concrete',
             state: st,
             mode: 'direct',
+            autonomyPermissions,
           }),
         });
         const kindLabel =
@@ -220,8 +229,8 @@ export function tickLane(opts: {
           type: 'notify_user',
           laneId: lane.id,
           reason: '指令已执行完，请监督 AI / 你判断停止条件是否满足',
-          detail: session.stopWhen.trim()
-            ? `停止条件（${kindLabel}）: ${session.stopWhen.trim()} — 侧栏可确认「已达」或「未达到」`
+          detail: laneStopWhen
+            ? `停止条件（${kindLabel}）: ${laneStopWhen} — 侧栏可确认「已达」或「未达到」`
             : '请填写停止条件',
           stopAll: false,
           disableLane: false,
@@ -233,12 +242,14 @@ export function tickLane(opts: {
         actions.push({
           type: 'notify_supervisor',
           laneId: lane.id,
+          opensReview: true,
           text: buildStopCheckHint({
             lane,
-            stopWhen: session.stopWhen,
+            stopWhen: laneStopWhen,
             stopWhenKind: session.stopWhenKind || 'concrete',
             state: st,
             mode: 'direct',
+            autonomyPermissions,
           }),
         });
         rt.lastIdleHintAt = now;
@@ -257,12 +268,14 @@ export function tickLane(opts: {
           actions.push({
             type: 'notify_supervisor',
             laneId: lane.id,
+            opensReview: true,
             text: buildStopCheckHint({
               lane,
               stopWhen: session.doneWhen,
               stopWhenKind: session.stopWhenKind || 'concrete',
               state: st,
               mode: 'goal-chase',
+              autonomyPermissions,
             }),
           });
           rt.lastIdleHintAt = now;
@@ -285,10 +298,12 @@ export function tickLane(opts: {
         actions.push({
           type: 'notify_supervisor',
           laneId: lane.id,
+          opensReview: true,
           text: buildStopCheckHint({
             lane,
             stopWhen: session.doneWhen,
             stopWhenKind: session.stopWhenKind || 'concrete',
+            autonomyPermissions,
             state: st,
             mode: 'goal-chase',
           }),
@@ -383,11 +398,15 @@ export function tickLane(opts: {
   }
 
   // goal-chase: ping supervisor AI with doneWhen judgment + next decision
-  if (mode === 'goal-chase' && lane.supervisorSurfaceId) {
-    if (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > session.idleStableMs * 2) {
+  if (mode === 'goal-chase') {
+    if (
+      lane.supervisorSurfaceId
+      && (!rt.lastIdleHintAt || now - rt.lastIdleHintAt > session.idleStableMs * 2)
+    ) {
       actions.push({
         type: 'notify_supervisor',
         laneId: lane.id,
+        opensReview: true,
         text:
           buildIdleHint({
             lane,
@@ -395,19 +414,22 @@ export function tickLane(opts: {
             goal: session.goal,
             doneWhen: session.doneWhen,
             stopWhenKind: session.stopWhenKind || 'concrete',
+            autonomyPermissions,
           }) + '\n',
       });
       rt.lastIdleHintAt = now;
     }
+    // Legacy goal-chase used to inject a generated worker prompt directly,
+    // bypassing the unified decision policy. It is now read-only compatible:
+    // the dedicated supervisor must submit any next step through decide.
+    rt.lastState = st;
+    return { actions, runtime: rt };
   }
 
   const text = buildInjectedPrompt({
     session,
     lane,
-    step:
-      mode === 'goal-chase' && !step.prompt.trim()
-        ? { ...step, prompt: goalChaseStepPrompt() }
-        : step,
+    step,
     stepIndex: stepHuman,
     stepCount,
   });
@@ -429,16 +451,13 @@ export function tickLane(opts: {
     surfaceId: lane.surfaceId,
     stepId: step.id,
     text,
-    countAuto: mode === 'goal-chase',
+    countAuto: false,
   });
   actions.push({
     type: 'log',
     laneId: lane.id,
     action: '派发',
-    detail:
-      mode === 'direct'
-        ? `原样注入 → ${lane.label} (${stepHuman}/${stepCount})`
-        : `目标决策 → ${lane.label} (${lane.autoStepsUsed + 1}/${lane.maxAutoSteps})`,
+    detail: `原样注入 → ${lane.label} (${stepHuman}/${stepCount})`,
   });
   rt.lastDispatchAt = now;
   rt.inProgressSince = now;
