@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
+import { withSurfaceCaller } from './surface-caller';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -84,6 +85,7 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
   if (method.startsWith('browser.') && params.caller === undefined && process.env.WMUX_SURFACE_ID) {
     params = { ...params, caller: process.env.WMUX_SURFACE_ID };
   }
+  params = withSurfaceCaller(method, params, process.env.WMUX_SURFACE_ID);
   return new Promise((resolve, reject) => {
     const client = connectTransport(() => {
       const request = JSON.stringify({ method, params, id: 1, token: PIPE_TOKEN });

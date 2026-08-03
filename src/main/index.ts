@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding } from './ipc-handlers';
+import { supervisorGenericInputBlockReason } from './supervisor-input-guard';
 import { handleBrowserV2 } from './v2-browser';
 import { handleBridgeV2 } from './v2-bridge';
 import { distributeAgents } from './agent-manager';
@@ -759,6 +760,11 @@ app.whenReady().then(() => {
           try {
             const surfaceId = await resolvePtySurface(request.params?.surfaceId || request.params?.id);
             if (!surfaceId.ok) { respondError(-32000, surfaceId.error); return; }
+            const blockReason = await supervisorGenericInputBlockReason(
+              String(request.params?.callerSurfaceId || ''),
+              surfaceId.id,
+            );
+            if (blockReason) { respondError(-32003, blockReason); return; }
             ptyManager.write(surfaceId.id, request.params?.text || '');
             respond({ ok: true });
           } catch (err: any) { respondError(-32000, err.message); }
@@ -792,6 +798,11 @@ app.whenReady().then(() => {
 
             const surfaceId = await resolvePtySurface(request.params?.surfaceId || request.params?.id);
             if (!surfaceId.ok) { respondError(-32000, surfaceId.error); return; }
+            const blockReason = await supervisorGenericInputBlockReason(
+              String(request.params?.callerSurfaceId || ''),
+              surfaceId.id,
+            );
+            if (blockReason) { respondError(-32003, blockReason); return; }
             ptyManager.write(surfaceId.id, key);
             respond({ ok: true });
           } catch (err: any) { respondError(-32000, err.message); }
