@@ -4,12 +4,14 @@ import {
   autonomousActionBlockReason,
   configuredActionBlockReason,
   isAutonomousPermissionResponseAllowed,
+  isRemoteSshControlledLane,
   isSupervisorDecisionAuthorised,
   isSupervisorNextAllowed,
   isSupervisorProposalAllowed,
   nextSupervisorDecisionCount,
   normalizedMaxAutoDecisions,
   reachesAutoDecisionLimit,
+  remoteSshActionBlockReason,
   workScopeBlockReason,
 } from '../../src/renderer/pipe-bridge';
 import {
@@ -65,6 +67,15 @@ describe('supervisor isolation', () => {
     expect(isSupervisorDecisionAuthorised(monitored, 'supervisor-a')).toBe(true);
     expect(isSupervisorDecisionAuthorised(monitored, 'supervisor-b')).toBe(false);
     expect(isSupervisorDecisionAuthorised(monitored, '')).toBe(false);
+  });
+
+  it('derives SSH control from either the lane or its authoritative workspace', () => {
+    const workspaceId = 'workspace-ssh' as any;
+    const workspaces = [{ id: workspaceId, sshProfileId: 'profile-a' }];
+
+    expect(isRemoteSshControlledLane(lane({ workspaceId }), workspaces)).toBe(true);
+    expect(isRemoteSshControlledLane(lane({ remoteSshControl: true }), [])).toBe(true);
+    expect(isRemoteSshControlledLane(lane(), workspaces)).toBe(false);
   });
 
   it('allows small route adjustments but keeps material proposals human-gated', () => {
@@ -124,6 +135,44 @@ describe('supervisor isolation', () => {
     expect(autonomousActionBlockReason('补充覆盖配置加载逻辑的测试')).toBeNull();
     expect(autonomousActionBlockReason('使用现有 token 解析器修复过期逻辑')).toBeNull();
     expect(autonomousActionBlockReason('读取真实 token 值')).toBe('凭据或权限变更');
+  });
+
+  it('adds remote-host boundaries without blocking ordinary low-risk work', () => {
+    expect(remoteSshActionBlockReason('psmux send-keys -t ssh "rm -rf /srv/cache" Enter'))
+      .toBe('删除或覆盖文件');
+    expect(remoteSshActionBlockReason('find /srv/cache -type f -delete'))
+      .toBe('删除或破坏性覆盖远程文件');
+    expect(remoteSshActionBlockReason('psmux send-keys -t ssh "npm install sharp" Enter'))
+      .toBe('安装、卸载或升级软件包');
+    expect(remoteSshActionBlockReason('systemctl restart nginx'))
+      .toBe('服务、进程或主机状态变更');
+    expect(remoteSshActionBlockReason('psmux send-keys -t ssh-task C-c'))
+      .toBe('向 SSH 任务终端发送中断信号');
+    expect(remoteSshActionBlockReason('确认 SSH 远端权限请求并发送 y'))
+      .toBe('SSH 远端权限批准');
+    expect(remoteSshActionBlockReason('chmod 600 ~/.ssh/config'))
+      .toBe('权限、账户、网络或系统配置变更');
+    expect(remoteSshActionBlockReason('DELETE FROM sessions WHERE expired = true'))
+      .toBe('远程数据库破坏性变更');
+    expect(remoteSshActionBlockReason('不要重启服务，只查看 nginx 日志')).toBeNull();
+    expect(remoteSshActionBlockReason('修改当前任务中的 README 文本并运行测试')).toBeNull();
+    expect(remoteSshActionBlockReason('cat /var/log/nginx/access.log')).toBeNull();
+  });
+
+  it('briefs an SSH-controlling supervisor about the indirect remote boundary', () => {
+    const session = createDefaultSupervisorSession();
+    const text = buildSupervisorBriefing(session, {
+      lane: lane({ remoteSshControl: true }),
+      state: 'idle',
+    });
+
+    expect(text).toContain('直接或经 psmux 控制 SSH 远端');
+    expect(text).toContain('低风险、可逆的普通写入');
+    expect(text).toContain('必须使用 needs-human');
+    expect(text).toContain('不得通过 psmux');
+    expect(text).toContain('未授权权限确认');
+    expect(text).toContain('SSH 远程控制终端不允许自动权限确认');
+    expect(text).not.toContain('已授权低风险权限确认');
   });
 
   it('applies selectable project restrictions without replacing hard safety', () => {

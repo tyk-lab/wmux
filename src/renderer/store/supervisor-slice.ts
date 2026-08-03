@@ -64,6 +64,8 @@ export interface SupervisorLane {
   paneId?: PaneId;
   workspaceId?: WorkspaceId;
   workspaceTitle?: string;
+  /** The worker may control an SSH target, including indirectly through psmux. */
+  remoteSshControl?: boolean;
   /** Terminal cwd when supervision begins; audit records live below this project. */
   projectDir?: string;
   /** Immutable work-scope root captured when this supervision session starts. */

@@ -166,6 +166,16 @@ function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane)
   const forbidden = forbiddenActions.length
     ? forbiddenActions.map((item) => `- ${FORBIDDEN_ACTION_TEXT[item]}`).join('\n')
     : '- （没有额外勾选；仍受不可绕过的高风险边界约束）';
+  const remoteSshPolicy = lane.remoteSshControl
+    ? [
+        '## SSH 远程控制安全边界',
+        '此任务终端会直接或经 psmux 控制 SSH 远端，所有动作按目标服务器上的实际影响评估。',
+        '可自主执行只读检查，以及当前目标内低风险、可逆的普通写入。',
+        '删除/覆盖、任何权限批准、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程操作、账户/权限/网络/系统配置及破坏性数据库操作，必须使用 needs-human。',
+        '不得通过 psmux、send-keys、脚本或其他间接方式绕过这些边界。',
+        '',
+      ]
+    : [];
   return [
     '## 用户选择的工作范围与禁止事项',
     `工程目录: ${projectDir}`,
@@ -175,6 +185,7 @@ function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane)
     '',
     '这些选择只能收紧自主权，不能放宽删除/覆盖、Git 推送或重写历史、发布/部署、生产环境、凭据及管理员权限等硬性人工边界。',
     '',
+    ...remoteSshPolicy,
   ];
 }
 
@@ -226,6 +237,9 @@ export function buildSupervisorBriefing(
   const autonomyPermissions = Array.isArray(session.autonomyPermissions)
     ? session.autonomyPermissions
     : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
+  const laneAutonomyPermissions = lane.remoteSshControl
+    ? autonomyPermissions.filter((permission) => permission !== 'permission-confirm')
+    : autonomyPermissions;
   const planFilePath = session.planFilePath.trim();
   const planBlock = session.planFilePath.trim()
     ? [
@@ -284,8 +298,8 @@ export function buildSupervisorBriefing(
   ];
   const policyBlock = structuredPolicyBlock(session, lane);
   const decisionBoundary = session.autonomous
-    ? autonomousDecisionBoundary(autonomyPermissions)
-    : humanDecisionBoundary(autonomyPermissions);
+    ? autonomousDecisionBoundary(laneAutonomyPermissions)
+    : humanDecisionBoundary(laneAutonomyPermissions);
   const postDecisionRule = decisionBoundary.length + 4;
 
   if (session.mode === 'unified') {
@@ -329,7 +343,9 @@ export function buildSupervisorBriefing(
       '3. 证据足以收尾可提交 complete；证据不足时优先用 continue / rework 补证或返工，只有无低风险路径时才 needs-human。',
       ...decisionBoundary.map((line, index) => `${index + 4}. ${line}`),
       `${postDecisionRule}. 每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录裁决；该命令成功时静默。`,
-      `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；自动权限确认可附 --permission-command 与 --permission-response。`,
+      lane.remoteSshControl
+        ? `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；SSH 远程控制终端不允许自动权限确认。`
+        : `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；允许时，自动权限确认可附 --permission-command 与 --permission-response。`,
       '',
     ].join('\n');
   }

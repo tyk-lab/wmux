@@ -245,6 +245,33 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps remote package and service operations human-gated even when optional restrictions are cleared', () => {
+    useStore.getState().patchSupervisor({ forbiddenActions: [] });
+    useStore.getState().updateLane('lane-a', { remoteSshControl: true });
+
+    expect(decide({ next: '通过 psmux send-keys 在 SSH 终端执行 npm install sharp' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/SSH 远程控制终端.*安装/),
+    });
+    expect(decide({ next: '通过 psmux 在 SSH 终端执行 systemctl restart nginx' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/SSH 远程控制终端.*服务/),
+    });
+    expect(decide({ next: '执行 psmux send-keys -t ssh-task C-c' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/SSH 远程控制终端.*中断信号/),
+    });
+    expect(decide({ next: '通过 psmux 在 SSH 终端执行 rm -rf /srv/cache' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/SSH 远程控制终端.*删除/),
+    });
+    expect(decide({ next: '确认 SSH 远端权限请求并发送 y' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/SSH 远程控制终端.*权限批准/),
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   it('allows stop decisions and needs-human with no autonomy permissions selected', () => {
     useStore.getState().patchSupervisor({ autonomyPermissions: [] });
     expect(decide({ next: '' })).toMatchObject({
@@ -292,6 +319,24 @@ describe('supervisor decision bridge', () => {
     agentState = { ...agentState, updatedAt: 99 };
     expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(2);
+  });
+
+  it('always sends an SSH-controlling terminal permission request to a human', () => {
+    screenText = 'Command: npm test\nContinue? [y/N]';
+    agentState = {
+      state: 'blocked',
+      blockedReason: 'permission: npm test',
+      blockedVersion: 1,
+      blockedRequestId: 'remote-request-1',
+      updatedAt: 2,
+    };
+    useStore.getState().updateLane('lane-a', { remoteSshControl: true });
+
+    expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('必须由人工确认'),
+    });
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('rejects a permission command that does not match the current blocked request', () => {

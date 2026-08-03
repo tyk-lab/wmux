@@ -34,6 +34,15 @@ export function isSupervisorDecisionAuthorised(
   return !!supervisorSurfaceId && lane.supervisorSurfaceId === supervisorSurfaceId;
 }
 
+export function isRemoteSshControlledLane(
+  lane: Pick<SupervisorLane, 'remoteSshControl' | 'workspaceId'>,
+  workspaces: ReadonlyArray<{ id: WorkspaceId; sshProfileId?: string }>,
+): boolean {
+  if (lane.remoteSshControl) return true;
+  return !!lane.workspaceId
+    && !!workspaces.find((workspace) => workspace.id === lane.workspaceId)?.sshProfileId;
+}
+
 /** Small reversible adjustments are autonomous; material proposals remain human-gated. */
 export function isSupervisorProposalAllowed(outcome: string, proposalKind: string): boolean {
   if (!proposalKind) return true;
@@ -52,7 +61,7 @@ export function isSupervisorNextAllowed(
 }
 
 const AUTONOMOUS_BLOCKED_ACTIONS: Array<[RegExp, string]> = [
-  [/(?:^|[\s;&|])(?:rm|rmdir|del|erase|rd|ri|remove-item|clear-content|set-content|out-file)\b|删除|(?:覆盖|覆写)(?:.{0,8}(?:文件|数据)|\s+(?:[a-zA-Z]:|\\\\|\/|\.\.?[\\/]|[^\s]+\.[a-z0-9]{1,12}))/i, '删除或覆盖文件'],
+  [/(?:^|[\s;&|("'`])(?:rm|rmdir|del|erase|rd|ri|remove-item|clear-content|set-content|out-file)\b|删除|(?:覆盖|覆写)(?:.{0,8}(?:文件|数据)|\s+(?:[a-zA-Z]:|\\\\|\/|\.\.?[\\/]|[^\s]+\.[a-z0-9]{1,12}))/i, '删除或覆盖文件'],
   [/\bgit\b[^;；&|\r\n]{0,200}\b(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
   [/\b(?:npm|pnpm|yarn|bun|cargo|twine)\s+(?:publish|release)\b/i, '发布软件包'],
   [/\bgh\s+(?:pr\s+(?:create|merge|close)|release\s+create)\b/i, '对外提交或发布'],
@@ -69,6 +78,53 @@ export function autonomousActionBlockReason(action: string): string | null {
   const text = action.trim();
   if (!text) return null;
   for (const [pattern, reason] of AUTONOMOUS_BLOCKED_ACTIONS) {
+    const matches = text.matchAll(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`));
+    for (const match of matches) {
+      const actionOffset = Math.max(0, match[0].search(/[a-zA-Z\u3400-\u9fff]/u));
+      if (!isNegatedMatch(text, (match.index ?? 0) + actionOffset)) return reason;
+    }
+  }
+  return null;
+}
+
+const REMOTE_SSH_HUMAN_ACTIONS: Array<[RegExp, string]> = [
+  [
+    /(?:^|[\s;&|])(?:unlink|shred)\b|\bfind\b[^\r\n]{0,240}\s-delete\b|\brsync\b[^\r\n]{0,240}\s--delete\b|\btruncate\b[^\r\n]{0,120}\s-s\s*0\b|\bgit\b[^\r\n]{0,160}\brestore\b|\bgit\b[^\r\n]{0,160}\bcheckout\s+--(?:\s|$)|\b(?:cp|mv)\b[^\r\n]{0,160}\s-f\b|\b(?:move-item|copy-item)\b[^\r\n]{0,160}\s-force\b|清理.{0,20}(?:文件|目录|日志|缓存|数据)/i,
+    '删除或破坏性覆盖远程文件',
+  ],
+  [
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|update|upgrade|remove|uninstall)\b|\b(?:pip|pip3|uv)\s+(?:install|uninstall|sync|add|remove|upgrade)\b|\bcargo\s+(?:install|uninstall|add|remove|update)\b|\bgo\s+(?:get|install)\b|\bdotnet\s+(?:add|remove)(?:\s+\S+)?\s+package\b|\b(?:apt(?:-get)?|yum|dnf|pacman|zypper|apk|brew|choco|winget|scoop)\s+(?:install|remove|uninstall|update|upgrade|add)\b|(?:安装|卸载|升级|更新).{0,12}(?:软件包|系统包|依赖)/i,
+    '安装、卸载或升级软件包',
+  ],
+  [
+    /\b(?:systemctl|service)\s+(?:start|stop|restart|reload|enable|disable|mask|unmask)\b|\bsc(?:\.exe)?\s+(?:start|stop|config|create|delete|failure)\b|\b(?:start-service|stop-service|restart-service|set-service|new-service|kill|pkill|killall|taskkill|stop-process|start-process)\b|\b(?:reboot|shutdown|halt|poweroff|restart-computer|stop-computer)\b|\b(?:docker|podman)\s+(?:stop|kill|restart|rm|rmi|system\s+prune)\b|\b(?:docker|podman)\s+compose\s+(?:down|stop|restart|rm)\b|\b(?:pm2|supervisorctl)\s+(?:start|stop|restart|reload|delete)\b|(?:启动|停止|重启|重载|启用|禁用).{0,10}(?:服务|进程|守护进程)|(?:终止|杀死).{0,10}(?:进程|任务)/i,
+    '服务、进程或主机状态变更',
+  ],
+  [
+    /\bpsmux\b[^\r\n]{0,240}\bsend-keys\b[^\r\n]{0,120}(?:\bC-c\b|\^C|Ctrl\+C)/i,
+    '向 SSH 任务终端发送中断信号',
+  ],
+  [
+    /(?:\b(?:approve|allow|confirm)\b|确认|批准|允许|授权).{0,32}(?:\b(?:permission|privilege|elevation)\b|权限|提权)|(?:\b(?:permission|privilege|elevation)\b|权限|提权).{0,32}(?:\b(?:approve|allow|confirm)\b|确认|批准|允许|授权)/i,
+    'SSH 远端权限批准',
+  ],
+  [
+    /\b(?:chmod|chown|chgrp|setfacl|setcap|usermod|useradd|userdel|groupadd|groupdel|passwd|visudo|mount|umount|mkfs(?:\.\w+)?|fdisk|parted|iptables|nft|ufw|firewall-cmd|semanage|setenforce|sysctl)\b|\b(?:icacls|set-acl|takeown|netsh|bcdedit|diskpart)\b|(?:修改|变更|调整).{0,10}(?:权限|所有者|用户组|防火墙|系统配置)|(?:挂载|卸载|格式化).{0,10}(?:磁盘|文件系统|分区)/i,
+    '权限、账户、网络或系统配置变更',
+  ],
+  [
+    /\b(?:drop|truncate)\s+(?:database|schema|table)\b|\bdelete\s+from\b|\balter\s+(?:database|schema|table)\b|(?:删除|清空).{0,10}(?:数据库|数据表|远程数据)/i,
+    '远程数据库破坏性变更',
+  ],
+];
+
+/** Returns why an SSH-controlling worker must hand an otherwise allowed action to a human. */
+export function remoteSshActionBlockReason(action: string): string | null {
+  const text = action.trim();
+  if (!text) return null;
+  const generalBlockReason = autonomousActionBlockReason(text);
+  if (generalBlockReason) return generalBlockReason;
+  for (const [pattern, reason] of REMOTE_SSH_HUMAN_ACTIONS) {
     const matches = text.matchAll(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`));
     for (const match of matches) {
       const actionOffset = Math.max(0, match[0].search(/[a-zA-Z\u3400-\u9fff]/u));
@@ -391,8 +447,8 @@ interface RemoteTerminalTask {
   actor?: string;
 }
 
-function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; title: string; cwd?: string }, out: Array<{
-  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string;
+function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; title: string; cwd?: string; sshProfileId?: string }, out: Array<{
+  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string; remoteSshControl: boolean;
 }>): void {
   if (tree.type !== 'leaf') {
     collectRemoteTerminals(tree.children[0], workspace, out);
@@ -410,12 +466,13 @@ function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; t
       workspaceTitle: workspace.title,
       projectDir: workspace.cwd || surface.currentCwd || surface.cwd,
       label,
+      remoteSshControl: !!workspace.sshProfileId,
     });
   }
 }
 
 function remoteTerminalList(): Array<{
-  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string;
+  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string; remoteSshControl: boolean;
 }> {
   const store = useStore.getState();
   const terminals: ReturnType<typeof remoteTerminalList> = [];
@@ -465,6 +522,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
       paneId: candidate.paneId,
       workspaceId: candidate.workspaceId,
       workspaceTitle: candidate.workspaceTitle,
+      remoteSshControl: candidate.remoteSshControl,
       projectDir: candidate.projectDir,
       scopeRoot: candidate.projectDir,
       enabled: true,
@@ -918,6 +976,7 @@ export function initPipeBridge(): void {
     const proposalKinds = new Set(['route-change', 'important']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
+    const remoteSshControl = isRemoteSshControlledLane(lane, store.workspaces);
     if (lane.autoDecisionLimitReached && !session.autonomous) {
       return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
     }
@@ -940,6 +999,10 @@ export function initPipeBridge(): void {
       && !permissionResponse
     ) {
       return { ok: false, error: '统一监督的 continue/rework 必须携带明确的 --next；无法安全推进时请使用 needs-human' };
+    }
+    const remoteNextBlockReason = remoteSshControl ? remoteSshActionBlockReason(next) : null;
+    if (outcome !== 'needs-human' && remoteNextBlockReason) {
+      return { ok: false, error: `SSH 远程控制终端禁止自动执行${remoteNextBlockReason}；请使用 needs-human 交给人工处理` };
     }
     const nextBlockReason = autonomousActionBlockReason(next);
     if (outcome !== 'needs-human' && nextBlockReason) {
@@ -979,6 +1042,9 @@ export function initPipeBridge(): void {
       return { ok: false, error: '当前没有任务目标、已捕获任务或计划文件；可继续停止裁决，但自主发送下一步必须交给人工' };
     }
     if (permissionCommand || permissionResponse) {
+      if (remoteSshControl) {
+        return { ok: false, error: 'SSH 远程控制终端的权限请求必须由人工确认，监督 AI 不得自动发送批准响应' };
+      }
       const permissionBlockReason = autonomousActionBlockReason(permissionCommand);
       const configuredPermissionBlockReason = configuredActionBlockReason(permissionCommand, forbiddenActions);
       if (!permissionCommand || !isAutonomousPermissionResponseAllowed(permissionResponse)) {

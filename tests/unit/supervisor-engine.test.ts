@@ -150,6 +150,25 @@ describe('supervisor-engine', () => {
     expect(runtime.humanNotified).toBe(false);
   });
 
+  it('tells an SSH-controlling supervisor that every permission request needs a human', () => {
+    const { actions } = tickLane({
+      session: session({ mode: 'unified', autonomous: true }),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any, remoteSshControl: true }),
+      surfaceState: { state: 'blocked', blockedReason: 'permission: npm test' },
+      runtime: blankRuntime(),
+      now: 10_000,
+      hasPendingApproval: false,
+    });
+    const supervisorNotice = actions.find((action) => action.type === 'notify_supervisor');
+    const text = supervisorNotice && supervisorNotice.type === 'notify_supervisor'
+      ? supervisorNotice.text
+      : '';
+
+    expect(text).toContain('任何权限请求都必须使用 needs-human');
+    expect(text).toContain('不得通过 psmux 或 send-keys 绕过');
+    expect(text).not.toContain('--permission-command');
+  });
+
   it('tells the dedicated supervisor when blocked-input permissions are disabled', () => {
     const { actions } = tickLane({
       session: session({ mode: 'unified', autonomyPermissions: [] }),

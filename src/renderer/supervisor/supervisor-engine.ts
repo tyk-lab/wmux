@@ -136,6 +136,15 @@ export function tickLane(opts: {
     ? session.autonomyPermissions
     : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
 
+  let permissionInstruction: string;
+  if (lane.remoteSshControl) {
+    permissionInstruction = '当前任务终端会直接或经 psmux 控制 SSH 远端；任何权限请求都必须使用 needs-human，由人工确认。';
+  } else if (autonomyPermissions.includes('permission-confirm')) {
+    permissionInstruction = `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当终端仍为 blocked、原因属于权限请求，且命令低风险、可逆、明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y；同一阻塞状态只确认一次。`;
+  } else {
+    permissionInstruction = '本会话未勾选“低风险权限确认”；权限请求必须使用 needs-human。';
+  }
+
   // ── blocked → a dedicated supervisor may resolve explicit low-risk permissions ─
   if (st === 'blocked') {
     const reason = surfaceState.blockedReason || '等待人类（权限/输入）';
@@ -154,12 +163,13 @@ export function tickLane(opts: {
           text: [
             `[权限/输入阻塞] 通道=${lane.label} (${lane.surfaceId})`,
             `Hook 原因: ${reason}`,
-            autonomyPermissions.includes('permission-confirm')
-              ? `先 read-screen --surface ${lane.surfaceId} 查看实际请求。仅当终端仍为 blocked、原因属于权限请求，且命令低风险、可逆、明确时，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome continue --reason "..." --permission-command "<实际命令>" --permission-response y；同一阻塞状态只确认一次。`
-              : '本会话未勾选“低风险权限确认”；权限请求必须使用 needs-human。',
+            permissionInstruction,
             autonomyPermissions.includes('technical-choice')
               ? '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 携带 --next 回答一次；业务偏好、用户专属决定或原因不明的输入使用 needs-human。'
               : '本会话未勾选“技术方案选择”；question / input 必须使用 needs-human，不得自行回答。',
+            ...(lane.remoteSshControl
+              ? ['SSH 远程控制下，删除/覆盖、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程、账户/权限/网络/系统配置及破坏性数据库操作一律使用 needs-human，不得通过 psmux 或 send-keys 绕过。']
+              : []),
             '删除或覆盖、git push/重写历史、发布/部署、云端/生产环境、凭据/权限变更或无法确认的请求，一律使用 needs-human，不要发送权限确认。',
           ].join('\n'),
         });

@@ -133,6 +133,7 @@ interface TerminalCandidate {
   label: string;
   state: string;
   currentTask?: string;
+  remoteSshControl: boolean;
 }
 
 function collectTerminals(
@@ -207,6 +208,7 @@ export default function SupervisorSetupDialog() {
           label: meta?.label || s.title,
           state: String(st),
           currentTask: supervisor.active ? existingLane?.currentTask : undefined,
+          remoteSshControl: !!ws.sshProfileId,
         });
       }
     }
@@ -453,6 +455,7 @@ export default function SupervisorSetupDialog() {
         paneId: c.paneId,
         workspaceId: c.workspaceId,
         workspaceTitle: c.workspaceTitle,
+        remoteSshControl: c.remoteSshControl,
         projectDir: c.projectDir,
         scopeRoot: supervisor.active ? prev?.scopeRoot || c.projectDir : c.projectDir,
         enabled: true,
@@ -741,7 +744,9 @@ export default function SupervisorSetupDialog() {
                       <span className="supervisor-dialog__row-main">
                         <span className="supervisor-dialog__row-label">{candidate.label}</span>
                         <span className="supervisor-dialog__row-meta">
-                          {candidate.workspaceTitle} · 状态 {candidate.state} · {candidate.surfaceId.slice(0, 12)}…
+                          {candidate.workspaceTitle} · 状态 {candidate.state}
+                          {candidate.remoteSshControl ? ' · SSH 远程控制' : ''}
+                          {' · '}{candidate.surfaceId.slice(0, 12)}…
                         </span>
                         <span className="supervisor-dialog__current-task" title={candidate.currentTask || ''}>
                           当前任务：{candidate.currentTask?.trim() || '尚未收到终端任务事件'}
@@ -933,6 +938,11 @@ export default function SupervisorSetupDialog() {
                     </label>
                   ))}
                 </div>
+                {selectedCandidates.some((candidate) => candidate.remoteSshControl) && (
+                  <div className="supervisor-dialog__hint">
+                    SSH 远程控制终端会忽略“低风险权限确认”；删除/覆盖、发送中断信号、安装升级、服务进程及系统操作始终转人工。
+                  </div>
+                )}
               </section>
               <section className="supervisor-dialog__section">
                 <div className="supervisor-dialog__label">工作范围</div>
