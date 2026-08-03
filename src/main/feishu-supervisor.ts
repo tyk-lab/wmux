@@ -5,7 +5,7 @@ import type { SupervisorRecord } from './supervisor-records';
 
 export type FeishuSupervisorCommand =
   | { action: 'list' }
-  | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
+  | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string }
   | { action: 'stop' }
   | { action: 'decide'; approvalId: string; decision: 'approve' | 'reject' | 'stop'; task?: string };
@@ -169,7 +169,7 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
     return { action: 'decide', approvalId: fields.approval_id, decision: decision as 'approve' | 'reject' | 'stop', task: fields.task || undefined };
   }
   if (verb !== 'START') return { error: '支持 LIST、START、SEND、STOP、DECIDE。' };
-  if (!hasOnlyFields(fields, ['terminals', 'stop_when', 'stop_when_kind', 'task_description', 'preconditions', 'plan_file', 'autonomous', 'supervisor_launch_cmd', 'supervisor_model', 'supervisor_reasoning'])) {
+  if (!hasOnlyFields(fields, ['terminals', 'stop_when', 'stop_when_kind', 'task_goal', 'task_description', 'preconditions', 'plan_file', 'autonomous', 'supervisor_launch_cmd', 'supervisor_model', 'supervisor_reasoning'])) {
     return { error: 'START 包含不支持的字段。' };
   }
   const terminals = (fields.terminals || '').split(',').map((item) => item.trim()).filter(Boolean);
@@ -179,6 +179,7 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
   if (fields.autonomous && !['on', 'off'].includes(fields.autonomous.toLowerCase())) return { error: 'autonomous 只能是 on 或 off。' };
   return {
     action: 'start', terminals, stopWhen: fields.stop_when, stopWhenKind,
+    taskGoal: fields.task_goal || undefined,
     taskDescription: fields.task_description || undefined, preconditions: fields.preconditions || undefined,
     planFile: fields.plan_file || undefined, autonomous: fields.autonomous?.toLowerCase() === 'on',
     supervisorLaunchCmd: fields.supervisor_launch_cmd || undefined,
@@ -234,6 +235,75 @@ function cardButton(value: Record<string, string>, text: string, type: 'primary'
   return { tag: 'button', text: { tag: 'plain_text', content: text }, type, value };
 }
 
+function formButton(
+  name: string,
+  text: string,
+  type: 'primary' | 'default' | 'danger' = 'default',
+  value?: Record<string, string>,
+): object {
+  return {
+    tag: 'button', element_id: name, name,
+    text: { tag: 'plain_text', content: text }, type, action_type: 'form_submit',
+    ...(value ? { value } : {}),
+  };
+}
+
+function buildFormCard(
+  title: string,
+  template: 'blue' | 'orange',
+  description: string,
+  formName: string,
+  formElements: object[],
+): object {
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: title }, template },
+    body: {
+      elements: [
+        { tag: 'markdown', content: description },
+        { tag: 'form', name: formName, elements: formElements },
+      ],
+    },
+  };
+}
+
+export function buildSupervisorResultCard(title: string, content: string, success: boolean): object {
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: title }, template: success ? 'green' : 'grey' },
+    body: { elements: [{ tag: 'markdown', content }] },
+  };
+}
+
+interface ResolvedCardAction {
+  wmux_action?: string;
+  approval_id?: string;
+  decision?: string;
+  flow?: string;
+}
+
+export function resolveFeishuCardAction(value: unknown, name?: string): ResolvedCardAction {
+  const rawValue = isObject(value) ? value : {};
+  if (name === 'wmux_form_start') return { ...rawValue, wmux_action: 'form_start' };
+  if (name === 'wmux_form_send') return { ...rawValue, wmux_action: 'form_send' };
+  const decision = /^wmux_decide_(approve|reject|stop)$/.exec(name || '')?.[1];
+  return decision ? { ...rawValue, wmux_action: 'decide', decision } : rawValue;
+}
+
+export function parseFeishuCardFormValues(raw: unknown): Record<string, string> {
+  if (!isObject(raw)) return {};
+  const rawAction = isObject(raw.action)
+    ? raw.action
+    : isObject(raw.event) && isObject(raw.event.action)
+      ? raw.event.action
+      : null;
+  if (!rawAction || !isObject(rawAction.form_value)) return {};
+  return Object.fromEntries(Object.entries(rawAction.form_value).flatMap(([name, value]) => {
+    const selected = Array.isArray(value) ? value[0] : value;
+    return typeof selected === 'string' ? [[name, selected.trim().slice(0, MAX_COMMAND_VALUE_LENGTH)]] : [];
+  }));
+}
+
 /** The direct-chat entrypoint for all routine operations. */
 export function buildSupervisorControlMenuCard(): object {
   return {
@@ -256,49 +326,48 @@ export function buildSupervisorControlMenuCard(): object {
 
 /** Form displayed after selecting “启动监督”; launcher/model options intentionally use existing wmux defaults. */
 export function buildSupervisorStartCard(terminals: FeishuListTerminal[]): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux · 启动 AI 监督' }, template: 'blue' },
-    elements: [
-      { tag: 'div', text: { tag: 'lark_md', content: '选择一个已有工作终端，填写可核对的停止条件。不会创建终端，也不会向工作终端发送新任务。' } },
-      {
-        tag: 'form', name: 'wmux_supervisor_start', elements: [
-          { tag: 'select_static', name: 'terminal', required: true, label: { tag: 'plain_text', content: '工作终端' }, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(terminals) },
-          { tag: 'input', name: 'stop_when', required: true, label: { tag: 'plain_text', content: '停止条件' }, placeholder: { tag: 'plain_text', content: '例如：测试通过且计划验收项完成' } },
-          { tag: 'select_static', name: 'stop_when_kind', label: { tag: 'plain_text', content: '条件类型' }, options: [
-            { text: { tag: 'plain_text', content: '具体可验证条件（推荐）' }, value: 'concrete' },
-            { text: { tag: 'plain_text', content: '目标方向' }, value: 'direction' },
-          ] },
-          { tag: 'input', name: 'task_description', label: { tag: 'plain_text', content: '停止条件补充说明（可选）' }, placeholder: { tag: 'plain_text', content: '帮助监督 AI 理解何时适合结束' } },
-          { tag: 'input', name: 'preconditions', label: { tag: 'plain_text', content: '已确认前置条件（可选）' }, placeholder: { tag: 'plain_text', content: '例如：测试环境已准备好' } },
-          { tag: 'input', name: 'plan_file', label: { tag: 'plain_text', content: '计划文件绝对路径（可选）' }, placeholder: { tag: 'plain_text', content: '例如：E:\\work\\project\\PLAN.md' } },
-          { tag: 'select_static', name: 'autonomous', label: { tag: 'plain_text', content: '全自动监督' }, options: [
-            { text: { tag: 'plain_text', content: '关闭（推荐）' }, value: 'off' },
-            { text: { tag: 'plain_text', content: '开启（仍禁止高风险操作）' }, value: 'on' },
-          ] },
-          { tag: 'button', text: { tag: 'plain_text', content: '启动监督' }, type: 'primary', complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'form_start' } },
-        ], fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写监督表单。' } },
-      },
+  return buildFormCard(
+    'wmux · 启动 AI 监督',
+    'blue',
+    '选择一个已有工作终端，填写可核对的停止条件。不会创建终端，也不会向工作终端发送新任务。',
+    'wmux_start_form',
+    [
+      { tag: 'markdown', content: '**工作终端**' },
+      { tag: 'select_static', element_id: 'start_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(terminals) },
+      { tag: 'input', element_id: 'start_goal', name: 'task_goal', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '任务目标（可选）' }, placeholder: { tag: 'plain_text', content: '监督 AI 需要围绕什么目标观察和推进' } },
+      { tag: 'input', element_id: 'start_stop', name: 'stop_when', required: true, input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '停止条件' }, placeholder: { tag: 'plain_text', content: '例如：测试通过且计划验收项完成' } },
+      { tag: 'markdown', content: '**停止条件类型**' },
+      { tag: 'select_static', element_id: 'start_kind', name: 'stop_when_kind', placeholder: { tag: 'plain_text', content: '未选择时按具体可验证条件处理' }, options: [
+        { text: { tag: 'plain_text', content: '具体可验证条件（推荐）' }, value: 'concrete' },
+        { text: { tag: 'plain_text', content: '目标方向' }, value: 'direction' },
+      ] },
+      { tag: 'input', element_id: 'start_desc', name: 'task_description', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '停止条件补充说明（可选）' }, placeholder: { tag: 'plain_text', content: '帮助监督 AI 理解何时适合结束' } },
+      { tag: 'input', element_id: 'start_pre', name: 'preconditions', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '已确认前置条件（可选）' }, placeholder: { tag: 'plain_text', content: '例如：测试环境已准备好' } },
+      { tag: 'input', element_id: 'start_plan', name: 'plan_file', max_length: 1000, label: { tag: 'plain_text', content: '计划文件绝对路径（可选）' }, placeholder: { tag: 'plain_text', content: '例如：E:\\work\\project\\PLAN.md' } },
+      { tag: 'markdown', content: '**全自动监督**' },
+      { tag: 'select_static', element_id: 'start_auto', name: 'autonomous', placeholder: { tag: 'plain_text', content: '未选择时关闭' }, options: [
+        { text: { tag: 'plain_text', content: '关闭（推荐）' }, value: 'off' },
+        { text: { tag: 'plain_text', content: '开启（仍禁止高风险操作）' }, value: 'on' },
+      ] },
+      formButton('wmux_form_start', '启动监督', 'primary', { wmux_action: 'form_start' }),
     ],
-  };
+  );
 }
 
 /** Form displayed after selecting “发送任务”. */
 export function buildSupervisorSendTaskCard(terminals: FeishuListTerminal[]): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux · 向终端发送任务' }, template: 'blue' },
-    elements: [
-      { tag: 'div', text: { tag: 'lark_md', content: '选择已有工作终端并填写任务。提交后 wmux 会直接输入并执行这段文本。' } },
-      {
-        tag: 'form', name: 'wmux_supervisor_send', elements: [
-          { tag: 'select_static', name: 'terminal', required: true, label: { tag: 'plain_text', content: '目标终端' }, placeholder: { tag: 'plain_text', content: '选择终端' }, options: terminalOptions(terminals) },
-          { tag: 'input', name: 'task', required: true, input_type: 'multiline_text', rows: 5, label: { tag: 'plain_text', content: '任务内容' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' } },
-          { tag: 'button', text: { tag: 'plain_text', content: '发送任务' }, type: 'primary', complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'form_send' } },
-        ], fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写任务表单。' } },
-      },
+  return buildFormCard(
+    'wmux · 向终端发送任务',
+    'blue',
+    '选择已有工作终端并填写任务。提交后 wmux 会直接输入并执行这段文本。',
+    'wmux_send_form',
+    [
+      { tag: 'markdown', content: '**目标终端**' },
+      { tag: 'select_static', element_id: 'send_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择终端' }, options: terminalOptions(terminals) },
+      { tag: 'input', element_id: 'send_task', name: 'task', required: true, input_type: 'multiline_text', rows: 5, max_length: 1000, label: { tag: 'plain_text', content: '任务内容' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' } },
+      formButton('wmux_form_send', '发送任务', 'primary', { wmux_action: 'form_send' }),
     ],
-  };
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -364,7 +433,7 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   for (const approval of result.pendingApprovals) {
     lines.push(`- ${approval.terminal}：${approval.reason}（${approval.id}）`);
   }
-  lines.push('', '提示：复制“终端 ID”填写到 WMUX SUPERVISOR START 的 terminals 字段。');
+  lines.push('', '提示：发送“wmux帮助”，点击“启动监督”或“发送任务”，即可从下拉列表选择终端。');
   return lines.join('\n');
 }
 
@@ -386,48 +455,41 @@ function decisionOptions(alternatives: string): Array<{ text: { tag: 'plain_text
   return choices.map((choice) => ({ text: { tag: 'plain_text', content: `选择${choice}` }, value: choice }));
 }
 
-/** A V1 form keeps controls compatible with regular bot cards and desktop clients. */
+/** JSON 2.0 is required for form inputs; legacy cards silently drop these controls. */
 export function buildApprovalCard(record: SupervisorRecord): object {
   const payload = record.payload || {};
-  const approvalId = String(payload.approvalId || '');
   const reason = String(payload.reason || '需要人工决策').slice(0, 800);
   const impact = String(payload.impact || '未提供').slice(0, 500);
   const alternatives = String(payload.alternatives || '未提供').slice(0, 500);
   const choices = decisionOptions(alternatives);
-  const action = (decision: string, text: string, type: 'primary' | 'default' | 'danger' = 'default') => ({
-    tag: 'button', text: { tag: 'plain_text', content: text }, type,
-    complex_interaction: true, action_type: 'form_submit', value: { wmux_action: 'decide', approval_id: approvalId, decision },
-  });
   const formElements: object[] = [
     ...(choices.length > 0 ? [{
-      tag: 'select_static', name: 'decision_choice',
-      placeholder: { tag: 'plain_text', content: '选择建议方案（可选）' },
-      options: choices,
+      tag: 'markdown', content: '**建议方案（可选）**',
+    }, {
+      tag: 'select_static', element_id: 'decision_choice', name: 'decision_choice',
+      placeholder: { tag: 'plain_text', content: '选择建议方案' }, options: choices,
     }] : []),
     {
-      tag: 'input', name: 'follow_up_task', required: false,
+      tag: 'input', element_id: 'decision_task', name: 'follow_up_task', required: false,
+      input_type: 'multiline_text', rows: 4, max_length: 1000,
       label: { tag: 'plain_text', content: '后续任务（批准时必填）' },
       placeholder: { tag: 'plain_text', content: '填写要转发到被监督终端的后续任务或决策说明' },
     },
     {
       tag: 'column_set', flex_mode: 'none', columns: [
-        { tag: 'column', width: 'auto', elements: [action('approve', '批准并发送任务', 'primary')] },
-        { tag: 'column', width: 'auto', elements: [action('reject', '拒绝')] },
-        { tag: 'column', width: 'auto', elements: [action('stop', '停止监督', 'danger')] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', '批准并发送任务', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_reject', '拒绝', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'reject' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_stop', '停止监督', 'danger', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'stop' })] },
       ],
     },
   ];
-  return {
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux AI 监督：待人工决策' }, template: 'orange' },
-    elements: [
-      { tag: 'div', text: { tag: 'lark_md', content: `**终端**：${record.terminal.label}\n**原因**：${reason}\n**影响**：${impact}\n**备选**：${alternatives}` } },
-      {
-        tag: 'form', name: 'wmux_supervisor_decision', elements: formElements,
-        fallback: { tag: 'fallback_text', text: { tag: 'plain_text', content: '请升级飞书客户端后填写后续任务并处理该决策。' } },
-      },
-    ],
-  };
+  return buildFormCard(
+    'wmux AI 监督：待人工决策',
+    'orange',
+    `**终端**：${record.terminal.label}\n**原因**：${reason}\n**影响**：${impact}\n**备选**：${alternatives}`,
+    'wmux_decision_form',
+    formElements,
+  );
 }
 
 export class FeishuSupervisorService {
@@ -520,7 +582,7 @@ export class FeishuSupervisorService {
 
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
-    const value = event.action.value as { wmux_action?: string; approval_id?: string; decision?: string; flow?: string };
+    const value = resolveFeishuCardAction(event.action.value, event.action.name);
     if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send') {
       if (this.controlCards.get(event.messageId) !== event.chatId) return;
       const dedupeKey = `${event.messageId}:${value.wmux_action}:${value.flow || ''}`;
@@ -530,6 +592,7 @@ export class FeishuSupervisorService {
       if (!accepted) this.seen.delete(dedupeKey);
       return;
     }
+    if (value.wmux_action === 'decide' && !value.approval_id) value.approval_id = this.approvalIdForMessage(event.messageId);
     if (event.chatId !== this.config.chatId || value?.wmux_action !== 'decide' || !value.approval_id || !['approve', 'reject', 'stop'].includes(value.decision || '')) return;
     const dedupeKey = `${event.messageId}:${value.decision}`;
     if (this.seen.has(dedupeKey)) return;
@@ -547,10 +610,11 @@ export class FeishuSupervisorService {
       return;
     }
     if (card && this.channel) {
-      await this.channel.updateCard(card.messageId, {
-        header: { title: { tag: 'plain_text', content: 'wmux AI 监督：人工决策已处理' }, template: 'green' },
-        elements: [{ tag: 'div', text: { tag: 'plain_text', content: `${value.decision}：${summary(result)}` } }],
-      }).catch(() => undefined);
+      await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
+        'wmux AI 监督：人工决策已处理',
+        `${value.decision}：${summary(result)}`,
+        true,
+      )).catch(() => undefined);
     }
   }
 
@@ -573,6 +637,7 @@ export class FeishuSupervisorService {
       const result = await this.control({
         action: 'start', terminals: [terminal], stopWhen,
         stopWhenKind: form.stop_when_kind === 'direction' ? 'direction' : 'concrete',
+        taskGoal: form.task_goal || undefined,
         taskDescription: form.task_description || undefined,
         preconditions: form.preconditions || undefined,
         planFile: form.plan_file || undefined,
@@ -633,12 +698,7 @@ export class FeishuSupervisorService {
   }
 
   private cardFormValues(event: Lark.CardActionEvent): Record<string, string> {
-    if (!isObject(event.raw) || !isObject(event.raw.action) || !isObject(event.raw.action.form_value)) return {};
-    const form = event.raw.action.form_value;
-    return Object.fromEntries(Object.entries(form).flatMap(([name, value]) => {
-      const selected = Array.isArray(value) ? value[0] : value;
-      return typeof selected === 'string' ? [[name, selected.trim().slice(0, MAX_COMMAND_VALUE_LENGTH)]] : [];
-    }));
+    return parseFeishuCardFormValues(event.raw);
   }
 
   private cardFollowUpTask(event: Lark.CardActionEvent): string | undefined {
@@ -647,6 +707,13 @@ export class FeishuSupervisorService {
     const selected = form.decision_choice ? `用户选择${form.decision_choice}` : '';
     const combined = [selected, task].filter(Boolean).join('\n');
     return combined ? combined.slice(0, MAX_COMMAND_VALUE_LENGTH) : undefined;
+  }
+
+  private approvalIdForMessage(messageId: string): string | undefined {
+    for (const [approvalId, card] of this.approvalCards) {
+      if (card.messageId === messageId) return approvalId;
+    }
+    return undefined;
   }
 
   private async sendApproval(record: SupervisorRecord): Promise<void> {
@@ -671,10 +738,11 @@ export class FeishuSupervisorService {
   private async updateApproval(approvalId: string, resolution: string): Promise<void> {
     const card = this.approvalCards.get(approvalId);
     if (!card || !this.channel) return;
-    await this.channel.updateCard(card.messageId, {
-      header: { title: { tag: 'plain_text', content: 'wmux AI 监督：人工决策已处理' }, template: resolution === 'approved' ? 'green' : 'grey' },
-      elements: [{ tag: 'div', text: { tag: 'plain_text', content: `结果：${resolution}` } }],
-    }).catch(() => undefined);
+    await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
+      'wmux AI 监督：人工决策已处理',
+      `结果：${resolution}`,
+      resolution === 'approved',
+    )).catch(() => undefined);
   }
 
   private async sendText(text: string, chatId = this.config?.chatId): Promise<void> {

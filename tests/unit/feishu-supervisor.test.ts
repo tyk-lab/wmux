@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -10,6 +10,7 @@ describe('飞书 AI 监督命令', () => {
 terminals: surf-a,surf-b
 stop_when: npm test 通过
 stop_when_kind: concrete
+task_goal: 完成飞书监督测试
 task_description: 仅补充结束条件
 autonomous: on
 supervisor_launch_cmd: kimi
@@ -18,6 +19,7 @@ supervisor_model: k3`)).toEqual({
       terminals: ['surf-a', 'surf-b'],
       stopWhen: 'npm test 通过',
       stopWhenKind: 'concrete',
+      taskGoal: '完成飞书监督测试',
       taskDescription: '仅补充结束条件',
       preconditions: undefined,
       planFile: undefined,
@@ -117,12 +119,16 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('将人工审批渲染为包含方案选择、输入和操作按钮的表单', () => {
-    const card = JSON.stringify(buildApprovalCard({
+    const cardObject = buildApprovalCard({
       sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
       terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
       payload: { approvalId: 'appr-1', alternatives: '用户选择方案 A；用户选择方案 B。' },
-    }));
+    }) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const card = JSON.stringify(cardObject);
 
+    expect(cardObject.schema).toBe('2.0');
+    expect(cardObject.body?.elements).toBeInstanceOf(Array);
+    expect(cardObject.elements).toBeUndefined();
     expect(card).toContain('select_static');
     expect(card).toContain('选择方案 A');
     expect(card).toContain('选择方案 B');
@@ -134,13 +140,27 @@ supervisor_model: k3`)).toEqual({
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
     const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
     const menu = JSON.stringify(buildSupervisorControlMenuCard());
-    const start = JSON.stringify(buildSupervisorStartCard(terminals));
-    const send = JSON.stringify(buildSupervisorSendTaskCard(terminals));
+    const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const start = JSON.stringify(startObject);
+    const send = JSON.stringify(sendObject);
 
     expect(menu).toContain('查看状态');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
     expect(menu).toContain('停止监督');
+    expect(startObject.schema).toBe('2.0');
+    expect(startObject.body?.elements).toBeInstanceOf(Array);
+    expect(startObject.elements).toBeUndefined();
+    expect(sendObject.schema).toBe('2.0');
+    expect(sendObject.body?.elements).toBeInstanceOf(Array);
+    expect(sendObject.elements).toBeUndefined();
+    const startForm = (startObject.body?.elements as Array<{ tag?: string; elements?: Array<Record<string, unknown>> }>).find((element) => element.tag === 'form');
+    const selects = startForm?.elements?.filter((element) => element.tag === 'select_static') || [];
+    expect(selects.length).toBeGreaterThan(0);
+    expect(selects.every((select) => !('label' in select))).toBe(true);
+    expect(selects.flatMap((select) => Array.isArray(select.options) ? select.options : []).every((option) => !('selected' in (option as object)))).toBe(true);
+    expect(start).toContain('task_goal');
     expect(start).toContain('stop_when');
     expect(start).toContain('plan_file');
     expect(start).toContain('form_start');
@@ -148,6 +168,28 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
     expect(start).toContain('surf-a');
+  });
+
+  it('兼容飞书两种表单回调包裹结构并按按钮名称恢复动作', () => {
+    expect(parseFeishuCardFormValues({ action: { form_value: { terminal: ' surf-a ', task: '执行测试' } } })).toEqual({
+      terminal: 'surf-a', task: '执行测试',
+    });
+    expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
+    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
+      approval_id: 'appr-1', wmux_action: 'decide', decision: 'approve',
+    });
+  });
+
+  it('使用 JSON 2.0 更新已处理卡片', () => {
+    const card = buildSupervisorResultCard('已处理', '结果：approved', true) as {
+      schema?: string; header?: { template?: string }; body?: { elements?: unknown[] }; elements?: unknown[];
+    };
+
+    expect(card.schema).toBe('2.0');
+    expect(card.header?.template).toBe('green');
+    expect(card.body?.elements).toBeInstanceOf(Array);
+    expect(card.elements).toBeUndefined();
   });
 
   it('将终端列表渲染为适合飞书阅读的状态文本', () => {
@@ -174,6 +216,6 @@ supervisor_model: k3`)).toEqual({
     expect(response).toContain('状态：监督中');
     expect(response).toContain('终端 ID：surf-supervised');
     expect(response).toContain('终端 ID：surf-idle');
-    expect(response).toContain('提示：复制“终端 ID”填写到 WMUX SUPERVISOR START 的 terminals 字段。');
+    expect(response).toContain('点击“启动监督”或“发送任务”，即可从下拉列表选择终端。');
   });
 });
