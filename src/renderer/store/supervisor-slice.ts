@@ -1,5 +1,13 @@
 import { StateCreator } from 'zustand';
 import { PaneId, SurfaceId, WorkspaceId } from '../../shared/types';
+import {
+  DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
+  DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
+  DEFAULT_SUPERVISOR_WORK_SCOPE,
+  type SupervisorAutonomyPermission,
+  type SupervisorForbiddenAction,
+  type SupervisorWorkScope,
+} from '../../shared/supervisor-policy';
 
 /** Legacy values remain readable for saved sessions; new sessions are unified. */
 export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
@@ -58,6 +66,8 @@ export interface SupervisorLane {
   workspaceTitle?: string;
   /** Terminal cwd when supervision begins; audit records live below this project. */
   projectDir?: string;
+  /** Immutable work-scope root captured when this supervision session starts. */
+  scopeRoot?: string;
   enabled: boolean;
   steps: SupervisorStep[];
   /** goal-chase: max autonomous decision injects for this lane. */
@@ -72,14 +82,20 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
-  /** Agent-state version already answered for a permission or technical question. */
-  lastBlockedResponseStateAt?: number;
+  /** Blocked-request generation already answered for a permission or technical question. */
+  lastBlockedResponseVersion?: number;
+  /** Stable blocked-request identity; unlike a counter, it cannot collide after an agent restart. */
+  lastBlockedResponseId?: string;
   /** Automatic AI decisions reached the configured limit; human review must resume supervision. */
   autoDecisionLimitReached?: boolean;
   /** Number of AI decisions since this terminal was last acknowledged by a human. */
   autoDecisionsUsed?: number;
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
+  /** Optional user-authored goal that overrides the shared session context for this lane. */
+  taskGoalOverride?: string;
+  /** Optional lane-specific stop reference; the shared session value remains the fallback. */
+  stopWhenOverride?: string;
   /** Hook lifecycle facts retained until the dedicated supervisor terminal accepts them. */
   pendingSupervisorDeliveries?: SupervisorDelivery[];
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
@@ -128,7 +144,15 @@ export interface SupervisorSession {
   mode: SupervisorMode;
   /** Current-session-only authority for AI decisions and safe terminal confirmations. */
   autonomous: boolean;
+  /** Explicit capabilities granted to the supervisor; hard safety gates still apply. */
+  autonomyPermissions: SupervisorAutonomyPermission[];
+  /** Structured work boundary applied independently to each lane's project directory. */
+  workScope: SupervisorWorkScope;
+  /** User-selected project constraints in addition to the non-overridable safety boundary. */
+  forbiddenActions: SupervisorForbiddenAction[];
 
+  /** Optional shared task goal; a lane may override it. */
+  taskGoal: string;
   /** Optional context that clarifies the stopping condition for the supervisor only. */
   taskDescription: string;
   /** Environment facts the user has already confirmed for the supervisor only. */
@@ -209,6 +233,10 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     active: false,
     mode: 'unified',
     autonomous: false,
+    autonomyPermissions: [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
+    workScope: DEFAULT_SUPERVISOR_WORK_SCOPE,
+    forbiddenActions: [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
+    taskGoal: '',
     taskDescription: '',
     preconditions: '',
     directInstructions: '',
@@ -251,7 +279,8 @@ export function clearSupervisorLaneContext(
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
-    lastBlockedResponseStateAt: undefined,
+    lastBlockedResponseVersion: undefined,
+    lastBlockedResponseId: undefined,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
@@ -298,6 +327,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           active: true,
           setupOpen: false,
+          pendingApprovals: [],
           log: [
             {
               ts: Date.now(),
@@ -434,7 +464,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
             ts: Date.now(),
             laneId,
             action: '停止条件确认',
-            detail: s.supervisor.stopWhen.trim() || '已确认达到结束条件，停止注入',
+            detail: s.supervisor.lanes.find((lane) => lane.id === laneId)?.stopWhenOverride?.trim()
+              || s.supervisor.stopWhen.trim()
+              || '已确认达到结束条件，停止注入',
           },
           ...s.supervisor.log,
         ].slice(0, MAX_LOG),
