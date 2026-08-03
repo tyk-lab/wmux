@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { describe, expect, it } from 'vitest';
 import {
   autonomousActionBlockReason,
+  configuredActionBlockReason,
   isAutonomousPermissionResponseAllowed,
   isSupervisorDecisionAuthorised,
   isSupervisorNextAllowed,
@@ -9,6 +10,7 @@ import {
   nextSupervisorDecisionCount,
   normalizedMaxAutoDecisions,
   reachesAutoDecisionLimit,
+  workScopeBlockReason,
 } from '../../src/renderer/pipe-bridge';
 import {
   createDefaultSupervisorSession,
@@ -83,7 +85,7 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('低风险检查、补测或查看日志');
     expect(boundary).toContain('不可逆或高影响操作');
     expect(boundary).toContain('方案 A / B');
-    expect(boundary).toContain('技术实现选择');
+    expect(boundary).toContain('技术方案选择');
     expect(boundary).toContain('route-adjustment');
     expect(boundary).toContain('低风险、可逆');
   });
@@ -102,6 +104,8 @@ describe('supervisor isolation', () => {
 
   it('blocks high-impact actions from autonomous approval', () => {
     expect(autonomousActionBlockReason('git push origin main')).toBe('推送或重写 Git 历史');
+    expect(autonomousActionBlockReason('不要 git status；执行 git push origin main'))
+      .toBe('推送或重写 Git 历史');
     expect(autonomousActionBlockReason('npm publish')).toBe('发布软件包');
     expect(autonomousActionBlockReason('Remove-Item -Recurse build')).toBe('删除或覆盖文件');
     expect(autonomousActionBlockReason('Set-Content .env secret')).toBe('删除或覆盖文件');
@@ -109,8 +113,59 @@ describe('supervisor isolation', () => {
     expect(autonomousActionBlockReason('gh pr create --fill')).toBe('对外提交或发布');
     expect(autonomousActionBlockReason('curl -X DELETE https://example.test/item')).toBe('外部写操作');
     expect(autonomousActionBlockReason('Start-Process pwsh -Verb RunAs')).toBe('管理员权限或系统权限变更');
+    expect(autonomousActionBlockReason('不要删除或覆盖任何文件，只运行 npm test')).toBeNull();
+    expect(autonomousActionBlockReason('不要删除旧文件; Remove-Item .\\data')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('不要删除任何文件但覆盖 E:\\repo\\config.json')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('&Remove-Item .\\data')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('iwr https://example.test -Method POST')).toBe('外部写操作');
     expect(autonomousActionBlockReason('npm test -- auth')).toBeNull();
     expect(autonomousActionBlockReason('Get-Content package.json')).toBeNull();
+    expect(autonomousActionBlockReason('补充测试覆盖率并验证 token 过期处理')).toBeNull();
+    expect(autonomousActionBlockReason('补充覆盖配置加载逻辑的测试')).toBeNull();
+    expect(autonomousActionBlockReason('使用现有 token 解析器修复过期逻辑')).toBeNull();
+    expect(autonomousActionBlockReason('读取真实 token 值')).toBe('凭据或权限变更');
+  });
+
+  it('applies selectable project restrictions without replacing hard safety', () => {
+    expect(configuredActionBlockReason('执行 npm install foo', ['new-dependencies']))
+      .toBe('新增或升级第三方依赖');
+    expect(configuredActionBlockReason('运行 npm test', ['new-dependencies'])).toBeNull();
+    expect(configuredActionBlockReason('调用外部服务获取数据', ['external-network']))
+      .toBe('访问外部网络或调用外部服务');
+    expect(configuredActionBlockReason('执行 npm install foo', [])).toBeNull();
+    expect(configuredActionBlockReason('不要改变公共 API', ['public-api-change'])).toBeNull();
+    expect(configuredActionBlockReason('不要 npm install；改用 pnpm add lodash', ['new-dependencies']))
+      .toBe('新增或升级第三方依赖');
+    expect(configuredActionBlockReason('只读取 Dockerfile', ['build-release-config'])).toBeNull();
+    expect(configuredActionBlockReason('执行 npm i foo', ['new-dependencies']))
+      .toBe('新增或升级第三方依赖');
+    expect(configuredActionBlockReason('执行 pnpm i foo', ['new-dependencies']))
+      .toBe('新增或升级第三方依赖');
+    expect(configuredActionBlockReason('执行 dotnet add package Foo', ['new-dependencies']))
+      .toBe('新增或升级第三方依赖');
+    expect(workScopeBlockReason('读取 E:\\repo\\src\\app.ts', 'project', 'E:\\repo')).toBeNull();
+    expect(workScopeBlockReason('读取 "E:\\repo folder\\src\\app.ts"', 'project', 'E:\\repo folder'))
+      .toBeNull();
+    expect(workScopeBlockReason('读取 D:\\other\\app.ts', 'project', 'E:\\repo'))
+      .toBe('引用了当前工程文件夹之外的绝对路径');
+    expect(workScopeBlockReason('读取 E:\\repo\\..\\outside\\app.ts', 'project', 'E:\\repo'))
+      .toBe('引用了当前工程文件夹之外的绝对路径');
+    expect(workScopeBlockReason('读取 \\\\server\\share\\app.ts', 'project', 'E:\\repo'))
+      .toBe('引用了当前工程文件夹之外的绝对路径');
+    expect(workScopeBlockReason('执行 \'Get-Content D:\\outside\\secret.txt\'', 'project', 'E:\\repo'))
+      .toBe('引用了当前工程文件夹之外的绝对路径');
+    expect(workScopeBlockReason('Get-Content ..\\secret.txt', 'project', 'E:\\repo'))
+      .toBe('通过相对路径引用了当前工程文件夹之外的位置');
+    expect(workScopeBlockReason('Get-Content src\\..\\..\\secret.txt', 'project', 'E:\\repo'))
+      .toBe('通过相对路径引用了当前工程文件夹之外的位置');
+    expect(workScopeBlockReason('Set-Location ..', 'project', 'E:\\repo'))
+      .toBe('通过相对路径引用了当前工程文件夹之外的位置');
+    expect(workScopeBlockReason('dotnet test /p:CollectCoverage=true', 'project', 'E:\\repo')).toBeNull();
+    expect(workScopeBlockReason('访问 http://localhost:5199/api', 'project', 'E:\\repo')).toBeNull();
+    expect(workScopeBlockReason('读取 /home/Repo/secret', 'project', '/home/repo'))
+      .toBe('引用了当前工程文件夹之外的绝对路径');
+    expect(workScopeBlockReason('运行相关测试', 'project')).toBe('当前终端未上报工程文件夹');
+    expect(autonomousActionBlockReason('git push origin main')).not.toBeNull();
   });
 
   it('only permits explicit affirmative responses for autonomous terminal permissions', () => {
@@ -159,6 +214,23 @@ describe('supervisor isolation', () => {
     store.getState().stopSupervisor();
 
     expect(store.getState().supervisor).toMatchObject({ active: false, autonomous: false });
+  });
+
+  it('clears stale human approvals when a new supervision session starts', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane()]);
+    store.getState().enqueueApproval({
+      laneId: 'lane-a',
+      surfaceId: 'worker-a' as any,
+      laneLabel: 'Auth worker',
+      text: '旧会话建议',
+      source: 'supervisor-important',
+      proposalKind: 'important',
+    });
+
+    store.getState().startSupervisor();
+
+    expect(store.getState().supervisor.pendingApprovals).toEqual([]);
   });
 
   it('omits the optional stop-condition context when it is blank', () => {
@@ -234,9 +306,58 @@ describe('supervisor isolation', () => {
   it('creates unified supervision by default', () => {
     const session = createDefaultSupervisorSession();
     expect(session.mode).toBe('unified');
+    expect(session.taskGoal).toBe('');
     expect(session.taskDescription).toBe('');
     expect(session.maxAutoDecisions).toBeNull();
     expect(session.autonomous).toBe(false);
+    expect(session.autonomyPermissions).toEqual([
+      'same-route-next',
+      'technical-choice',
+      'route-adjustment',
+      'permission-confirm',
+    ]);
+    expect(session.workScope).toBe('project');
+    expect(session.forbiddenActions).toEqual([
+      'new-dependencies',
+      'public-api-change',
+      'large-refactor',
+      'weaken-tests',
+    ]);
+  });
+
+  it('uses lane-specific task and stopping overrides in the briefing', () => {
+    const session = createDefaultSupervisorSession();
+    session.taskGoal = '共享目标';
+    session.stopWhen = '共享停止条件';
+    session.workScope = 'task-files';
+    session.forbiddenActions = ['external-network'];
+    const text = buildSupervisorBriefing(session, {
+      lane: lane({
+        projectDir: 'E:\\repo',
+        taskGoalOverride: '仅修复认证模块',
+        stopWhenOverride: '认证测试全部通过',
+      }),
+      state: 'idle',
+    });
+
+    expect(text).toContain('配置任务目标: 仅修复认证模块');
+    expect(text).not.toContain('配置任务目标: 共享目标');
+    expect(text).toContain('具体条件: 认证测试全部通过');
+    expect(text).not.toContain('具体条件: 共享停止条件');
+    expect(text).toContain('工程目录: E:\\repo');
+    expect(text).toContain('仅限当前任务直接涉及的工程内文件');
+    expect(text).toContain('访问外部网络或调用外部服务');
+  });
+
+  it('warns when no task source exists but still permits stop evaluation', () => {
+    const text = buildSupervisorBriefing(createDefaultSupervisorSession(), {
+      lane: lane(),
+      state: 'idle',
+    });
+
+    expect(text).toContain('当前缺少可核对的任务来源');
+    expect(text).toContain('仍可判断停止条件');
+    expect(text).toContain('不得自主发送 --next');
   });
 
   it('gives autonomous supervisors a strict high-risk boundary', () => {
@@ -318,7 +439,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('本会话启用全自动监督');
     expect(briefing).toContain('--permission-command');
     expect(briefing).toContain('git push/重写历史');
-    expect(briefing).toContain('多个低风险技术方案');
+    expect(briefing).toContain('已授权技术方案选择');
     expect(briefing).toContain('needs-human 在全自动模式下也必须等待用户决定');
   });
 

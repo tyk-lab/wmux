@@ -6,11 +6,25 @@ import { useStore } from './store';
 import { splitNode, getAllPaneIds, findLeaf, buildGridLayout, createLeaf } from './store/split-utils';
 import { surfaceTerminalRegistry } from './hooks/useTerminal';
 import { PaneId, SurfaceId, WorkspaceId, SurfaceType, SplitNode } from '../shared/types';
+import {
+  DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
+  DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
+  DEFAULT_SUPERVISOR_WORK_SCOPE,
+  type SupervisorAutonomyPermission,
+  type SupervisorForbiddenAction,
+  type SupervisorWorkScope,
+} from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
 import { appendSupervisorRecord } from './supervisor/recording';
 import type { SupervisorDecision, SupervisorLane } from './store/supervisor-slice';
-import { buildSupervisorBriefing, SUPERVISOR_TAB_TITLE, SUPERVISOR_WORKSPACE_TITLE, supervisorTabTitle } from './supervisor/protocol';
+import {
+  buildSupervisorBriefing,
+  effectiveSupervisorTaskGoal,
+  SUPERVISOR_TAB_TITLE,
+  SUPERVISOR_WORKSPACE_TITLE,
+  supervisorTabTitle,
+} from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
 
 export function isSupervisorDecisionAuthorised(
@@ -38,15 +52,15 @@ export function isSupervisorNextAllowed(
 }
 
 const AUTONOMOUS_BLOCKED_ACTIONS: Array<[RegExp, string]> = [
-  [/(?:^|\s)(?:rm|rmdir|del|erase|rd|ri|remove-item|clear-content|set-content|out-file)\b|删除|覆盖/i, '删除或覆盖文件'],
-  [/\bgit\b[^\r\n]{0,200}\b(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
+  [/(?:^|[\s;&|])(?:rm|rmdir|del|erase|rd|ri|remove-item|clear-content|set-content|out-file)\b|删除|(?:覆盖|覆写)(?:.{0,8}(?:文件|数据)|\s+(?:[a-zA-Z]:|\\\\|\/|\.\.?[\\/]|[^\s]+\.[a-z0-9]{1,12}))/i, '删除或覆盖文件'],
+  [/\bgit\b[^;；&|\r\n]{0,200}\b(?:push|reset\s+--hard|clean|remote\s+(?:add|remove|set-url))\b/i, '推送或重写 Git 历史'],
   [/\b(?:npm|pnpm|yarn|bun|cargo|twine)\s+(?:publish|release)\b/i, '发布软件包'],
   [/\bgh\s+(?:pr\s+(?:create|merge|close)|release\s+create)\b/i, '对外提交或发布'],
-  [/\b(?:curl|invoke-restmethod|invoke-webrequest)\b[^\r\n]{0,300}(?:-x|--request|-method)\s*(?:delete|post|put|patch)\b/i, '外部写操作'],
+  [/\b(?:curl|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\r\n]{0,300}(?:-x|--request|-method)\s*(?:delete|post|put|patch)\b/i, '外部写操作'],
   [/\b(?:deploy|release|publish)\b|部署|发布|对外提交/i, '部署、发布或对外提交'],
   [/\b(?:kubectl|helm|terraform|pulumi|aws|az|gcloud)\b/i, '云端或生产环境操作'],
   [/\b(?:production|prod)\b|生产环境|线上环境/i, '生产环境操作'],
-  [/\b(?:credential|secret|token|password|api[ _-]?key)\b|凭据|密钥|令牌|密码/i, '凭据或权限变更'],
+  [/(?:\b(?:read|show|print|export|write|modify|change|update|delete|rotate|reset)\b|读取|显示|打印|导出|写入|修改|更改|更新|删除|轮换|重置).{0,24}(?:\b(?:credential|secret|token|password|api[ _-]?key)\b|凭据|密钥|令牌|密码)|(?:\b(?:credential|secret|token|password|api[ _-]?key)\b|凭据|密钥|令牌|密码).{0,24}(?:\b(?:value|content|change|update|delete|rotate|reset)\b|值|内容|变更|更新|删除|轮换|重置)/i, '凭据或权限变更'],
   [/(?:^|\s)(?:sudo|runas)\b|\bstart-process\b[^\n]*\s-verb\s+runas\b|\b(?:set-executionpolicy|takeown|icacls|set-acl|new-localuser|add-localgroupmember)\b|管理员权限|系统权限/i, '管理员权限或系统权限变更'],
 ];
 
@@ -54,8 +68,188 @@ const AUTONOMOUS_BLOCKED_ACTIONS: Array<[RegExp, string]> = [
 export function autonomousActionBlockReason(action: string): string | null {
   const text = action.trim();
   if (!text) return null;
-  const matched = AUTONOMOUS_BLOCKED_ACTIONS.find(([pattern]) => pattern.test(text));
-  return matched?.[1] ?? null;
+  for (const [pattern, reason] of AUTONOMOUS_BLOCKED_ACTIONS) {
+    const matches = text.matchAll(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`));
+    for (const match of matches) {
+      const actionOffset = Math.max(0, match[0].search(/[a-zA-Z\u3400-\u9fff]/u));
+      if (!isNegatedMatch(text, (match.index ?? 0) + actionOffset)) return reason;
+    }
+  }
+  return null;
+}
+
+const CONFIGURED_FORBIDDEN_ACTIONS: Record<SupervisorForbiddenAction, [RegExp, string]> = {
+  'new-dependencies': [
+    /\bnpm\s+(?:i|install|update)\b|\b(?:pnpm|yarn|bun)\s+(?:i|install|add|update|upgrade)\b|\b(?:cargo|pip|uv)\s+(?:install|add|update|upgrade)\b|\bgo\s+get\b|\bdotnet\s+add(?:\s+\S+)?\s+package\b|\bcomposer\s+require\b|新增.{0,12}依赖|升级.{0,12}依赖/i,
+    '新增或升级第三方依赖',
+  ],
+  'public-api-change': [
+    /\b(?:breaking\s+change|public\s+api)\b|改变.{0,16}(?:对外|公共).{0,8}(?:API|接口|协议)|破坏.{0,8}兼容/i,
+    '改变对外 API、协议或兼容行为',
+  ],
+  'large-refactor': [
+    /大范围.{0,8}重构|跨模块.{0,8}(?:重构|改写)|目录迁移|全量重写|rewrite\s+(?:all|entire)/i,
+    '大范围重构或目录迁移',
+  ],
+  'weaken-tests': [
+    /删除.{0,12}测试|跳过.{0,12}测试|弱化.{0,12}(?:测试|验收)|\b(?:disable|skip|remove)\b.{0,24}\btests?\b/i,
+    '删除、跳过或弱化测试',
+  ],
+  'build-release-config': [
+    /(?:修改|编辑|调整|更新|改动|重写).{0,16}(?:构建|发布|部署).{0,8}配置|\b(?:modify|edit|update|change)\b.{0,24}\b(?:electron-builder|dockerfile|\.github[\\/]workflows)\b/i,
+    '修改构建、发布或部署配置',
+  ],
+  'external-network': [
+    /\b(?:curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm|web[_-]?search)\b|访问外部网络|调用外部服务/i,
+    '访问外部网络或调用外部服务',
+  ],
+};
+
+function isNegatedMatch(text: string, index: number): boolean {
+  const prefix = text.slice(Math.max(0, index - 64), index);
+  const boundary = /[，。；;！？!?\n]|(?:但(?:是)?|不过|然而|而是|改为|然后|随后|接着|\bthen\b|\bbut\b|\binstead\b)/gi;
+  let clauseStart = 0;
+  for (const match of prefix.matchAll(boundary)) {
+    clauseStart = (match.index ?? 0) + match[0].length;
+  }
+  const clausePrefix = prefix.slice(clauseStart);
+  return /(?:不要|不得|禁止|避免|不可|不能|无需|无须)[^，。；;！？!?\n]{0,28}$/i.test(clausePrefix);
+}
+
+/** Returns a selected project restriction that matches the proposed action text. */
+export function configuredActionBlockReason(
+  action: string,
+  forbiddenActions: readonly SupervisorForbiddenAction[],
+): string | null {
+  const text = action.trim();
+  if (!text) return null;
+  for (const forbidden of forbiddenActions) {
+    const rule = CONFIGURED_FORBIDDEN_ACTIONS[forbidden];
+    if (!rule) continue;
+    const [pattern, reason] = rule;
+    const matches = text.matchAll(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`));
+    for (const match of matches) {
+      const actionOffset = Math.max(0, match[0].search(/[a-zA-Z\u3400-\u9fff]/u));
+      if (!isNegatedMatch(text, (match.index ?? 0) + actionOffset)) return reason;
+    }
+  }
+  return null;
+}
+
+function normalizeAbsolutePath(value: string): string | null {
+  const normalized = value.trim().replace(/[),;!?]+$/, '').replace(/\\/g, '/');
+  let prefix: string;
+  let rest: string;
+
+  const drive = normalized.match(/^([a-zA-Z]):\/(.*)$/);
+  if (drive) {
+    prefix = `${drive[1].toLowerCase()}:`;
+    rest = drive[2];
+  } else if (normalized.startsWith('//')) {
+    const parts = normalized.slice(2).split('/');
+    if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+    prefix = `//${parts[0].toLowerCase()}/${parts[1].toLowerCase()}`;
+    rest = parts.slice(2).join('/');
+  } else if (normalized.startsWith('/')) {
+    prefix = '';
+    rest = normalized.slice(1);
+  } else {
+    return null;
+  }
+
+  const caseInsensitive = !!prefix;
+  const segments: string[] = [];
+  for (const segment of rest.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(caseInsensitive ? segment.toLowerCase() : segment);
+  }
+  const suffix = segments.join('/');
+  if (!prefix) return `/${suffix}`;
+  return suffix ? `${prefix}/${suffix}` : `${prefix}/`;
+}
+
+type ScopePathStyle = 'windows' | 'posix';
+
+function absolutePathStyle(value: string): ScopePathStyle | null {
+  const normalized = value.trim().replace(/\\/g, '/');
+  if (/^[a-zA-Z]:\//.test(normalized) || normalized.startsWith('//')) return 'windows';
+  return normalized.startsWith('/') ? 'posix' : null;
+}
+
+function pathMatches(action: string, pattern: RegExp): string[] {
+  return [...action.matchAll(pattern)].map((match) => match[1]).filter(Boolean);
+}
+
+function extractPathReferences(action: string, style: ScopePathStyle): { absolute: string[]; relative: string[] } {
+  // URI paths are network destinations, not local filesystem references. They
+  // are governed separately by the external-network restriction.
+  const quotedAbsolute: string[] = [];
+  const withoutStandaloneQuotedPaths = action.replace(/(["'])(.*?)\1/g, (whole, _quote: string, value: string) => {
+    if (absolutePathStyle(value) === style) {
+      quotedAbsolute.push(value);
+      return ' ';
+    }
+    return whole;
+  });
+  const text = withoutStandaloneQuotedPaths.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>|]+/gi, ' ');
+  const boundary = '(?:^|[\\s(\\x22\\x27\\x60=,:])';
+  const absolute = style === 'windows'
+    ? [
+        ...quotedAbsolute,
+        ...pathMatches(text, new RegExp(`${boundary}([a-zA-Z]:[\\\\/][^\\s\\x22\\x27\\x60<>|]*)`, 'g')),
+        ...pathMatches(text, new RegExp(`${boundary}((?:\\\\\\\\|//)[^\\\\/\\s\\x22\\x27\\x60<>|]+[\\\\/][^\\s\\x22\\x27\\x60<>|]*)`, 'g')),
+        ...pathMatches(text, new RegExp('(?:^|[\\s(\\x22\\x27\\x60=,])(\\\\(?!\\\\)[^\\s\\x22\\x27\\x60<>|]+)', 'g')),
+      ]
+    : [
+        ...quotedAbsolute,
+        ...pathMatches(text, new RegExp(`${boundary}(/[^\\s\\x22\\x27\\x60<>|]*)`, 'g')),
+      ];
+  const relative = text
+    .split(/[\s"'`=,:()]+/)
+    .map((candidate) => candidate.replace(/[),;；!?！？]+$/, ''))
+    .filter((candidate) => candidate.split(/[\\/]/).includes('..'));
+  return { absolute, relative };
+}
+
+function resolveRelativePath(root: string, relative: string): string | null {
+  return normalizeAbsolutePath(`${root.replace(/\/$/, '')}/${relative}`);
+}
+
+/** Explicit absolute paths outside the selected lane's immutable project root are never autonomous. */
+export function workScopeBlockReason(
+  action: string,
+  workScope: SupervisorWorkScope,
+  projectDir?: string,
+): string | null {
+  const root = projectDir?.trim();
+  if (!root) return action.trim() ? '当前终端未上报工程文件夹' : null;
+  const normalizedRoot = normalizeAbsolutePath(root);
+  if (!normalizedRoot) return action.trim() ? '当前终端工程文件夹不是可校验的绝对路径' : null;
+  const style = absolutePathStyle(root);
+  if (!style) return action.trim() ? '当前终端工程文件夹不是可校验的绝对路径' : null;
+  if (/\$(?:env:)?[a-z_][\w]*[\\/]|%[a-z_][\w]*%[\\/]|(?:^|\s)~[\\/]/i.test(action)) {
+    return '使用了无法静态校验的工程外路径变量';
+  }
+  const rootPrefix = normalizedRoot.endsWith('/') ? normalizedRoot : `${normalizedRoot}/`;
+  const references = extractPathReferences(action, style);
+  const outside = references.absolute.find((candidate) => {
+    const normalized = normalizeAbsolutePath(candidate);
+    return !!normalized && normalized !== normalizedRoot && !normalized.startsWith(rootPrefix);
+  });
+  if (outside) return '引用了当前工程文件夹之外的绝对路径';
+  const traversesOutside = references.relative.some((candidate) => {
+    const normalized = resolveRelativePath(normalizedRoot, candidate);
+    return !!normalized && normalized !== normalizedRoot && !normalized.startsWith(rootPrefix);
+  });
+  if (traversesOutside) return '通过相对路径引用了当前工程文件夹之外的位置';
+  if (workScope !== 'project' && /(?:全仓|整个工程|所有文件|无关文件|顺手(?:清理|修改|重构)|\b(?:entire|whole)\s+(?:repo|project)\b)/i.test(action)) {
+    return workScope === 'plan-defined' ? '动作超出了计划文件限定范围' : '动作超出了当前任务直接涉及的文件范围';
+  }
+  return null;
 }
 
 export function isAutonomousPermissionResponseAllowed(response: string): boolean {
@@ -65,24 +259,114 @@ export function isAutonomousPermissionResponseAllowed(response: string): boolean
 interface SupervisorAgentStateView {
   state?: string;
   blockedReason?: string | null;
+  blockedVersion?: number;
+  blockedRequestId?: string | null;
+  sessionId?: string | null;
   updatedAt?: number;
 }
 
 function isPermissionBlockedState(
   state: SupervisorAgentStateView | undefined,
-): state is SupervisorAgentStateView & { updatedAt: number } {
+): state is SupervisorAgentStateView & { state: 'blocked' } {
   return state?.state === 'blocked'
-    && typeof state.updatedAt === 'number'
     && /\b(?:permission|approval|allowance)\b|权限|授权/i.test(state.blockedReason || '');
 }
 
 function isQuestionBlockedState(
   state: SupervisorAgentStateView | undefined,
-): state is SupervisorAgentStateView & { updatedAt: number } {
+): state is SupervisorAgentStateView & { state: 'blocked' } {
   return state?.state === 'blocked'
-    && typeof state.updatedAt === 'number'
     && /question|input|choice|choose|select|prompt|询问|选择|输入|问题|决定/i.test(state.blockedReason || '');
 }
+
+const USER_ONLY_DECISION = /\b(?:terms?|billing|payment|purchase|subscription|account|login|credential|secret|token|password|privacy|licen[cs]e|shipping|delivery|address|order)\b|条款|付费|支付|购买|账单|套餐|订阅|账号|账户|登录|凭据|密钥|令牌|密码|隐私|许可|收货|配送|地址|订单|业务取舍|用户偏好/i;
+const TECHNICAL_DECISION = /\b(?:technical|implementation|code|test|build|compile|type|interface|adapter|algorithm|module|file|path)\b|技术|实现|代码|测试|构建|编译|类型|接口|适配|算法|模块|文件|路径/i;
+
+function isLowRiskTechnicalQuestion(
+  state: SupervisorAgentStateView | undefined,
+  proposedAnswer: string,
+): boolean {
+  if (!isQuestionBlockedState(state)) return false;
+  const blockedReason = state.blockedReason || '';
+  return !USER_ONLY_DECISION.test(`${blockedReason}\n${proposedAnswer}`)
+    && TECHNICAL_DECISION.test(blockedReason);
+}
+
+function blockedRequestAlreadyAnswered(lane: SupervisorLane, state: SupervisorAgentStateView): boolean {
+  if (state.blockedRequestId) return lane.lastBlockedResponseId === state.blockedRequestId;
+  return typeof state.blockedVersion === 'number'
+    && lane.lastBlockedResponseVersion === state.blockedVersion;
+}
+
+function selectedAutonomyPermissions(value: unknown): readonly SupervisorAutonomyPermission[] {
+  if (value === undefined) return DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
+  return Array.isArray(value)
+    ? value.filter((item): item is SupervisorAutonomyPermission =>
+      (DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS as readonly unknown[]).includes(item))
+    : [];
+}
+
+function inferredNextPermissions(next: string): SupervisorAutonomyPermission[] {
+  const permissions: SupervisorAutonomyPermission[] = [];
+  if (/选择.{0,12}方案|采用.{0,12}方案|方案\s*[A-Z]\b|\b(?:choose|select|adopt)\b.{0,20}\b(?:option|approach|solution)\b/i.test(next)) {
+    permissions.push('technical-choice');
+  }
+  if (/改用|切换到|调整.{0,8}(?:路线|方案|实现)|替代方案|放弃.{0,16}(?:实现|方案|路线)|从头(?:重做|实现)|重新(?:设计|实现)|推翻|迁移到|全面重写|\b(?:switch|replace|alternative|discard|redesign|migrate|rewrite|start\s+over)\b/i.test(next)) {
+    permissions.push('route-adjustment');
+  }
+  return permissions;
+}
+
+function requiredAutonomyPermissions(opts: {
+  outcome: string;
+  next: string;
+  proposalKind: string;
+  permissionCommand: string;
+  permissionResponse: string;
+  agentState?: SupervisorAgentStateView;
+}): SupervisorAutonomyPermission[] {
+  if (opts.outcome === 'needs-human') return [];
+  if (opts.permissionCommand || opts.permissionResponse) return ['permission-confirm'];
+  if (!opts.next) return [];
+  const required = inferredNextPermissions(opts.next);
+  if (opts.proposalKind === 'route-adjustment') required.push('route-adjustment');
+  if (isLowRiskTechnicalQuestion(opts.agentState, opts.next)) required.push('technical-choice');
+  if (required.length === 0) required.push('same-route-next');
+  return [...new Set(required)];
+}
+
+
+function terminalScreenTail(surfaceId: string, lines = 24): string {
+  const terminal = surfaceTerminalRegistry.get(surfaceId);
+  if (!terminal) return '';
+  const buffer = terminal.buffer.active;
+  const out: string[] = [];
+  for (let index = Math.max(0, buffer.length - lines); index < buffer.length; index++) {
+    out.push(buffer.getLine(index)?.translateToString(true) ?? '');
+  }
+  return out.join('\n').trim();
+}
+
+function normalizedEvidenceText(value: string): string {
+  return value.toLowerCase().replace(/["'`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+export function permissionCommandMatchesEvidence(command: string, evidence: string): boolean {
+  const normalizedCommand = normalizedEvidenceText(command);
+  const normalizedEvidence = normalizedEvidenceText(evidence);
+  if (normalizedCommand.length < 3 || !normalizedEvidence) return false;
+  if (/^(?:permission|approval|allowance|command|request|权限|授权|批准|命令|请求)(?:\s+required)?$/i.test(normalizedCommand)) {
+    return false;
+  }
+  return normalizedEvidence.includes(normalizedCommand);
+}
+
+const AUTONOMY_PERMISSION_LABELS: Record<SupervisorAutonomyPermission, string> = {
+  'same-route-next': '继续原路线的低风险下一步',
+  'technical-choice': '回答低风险技术问题或方案选择',
+  'route-adjustment': '小范围可逆路线调整',
+  'permission-confirm': '确认低风险权限请求',
+};
 
 interface RemoteSupervisorStart {
   action: 'start';
@@ -181,6 +465,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
       workspaceId: candidate.workspaceId,
       workspaceTitle: candidate.workspaceTitle,
       projectDir: candidate.projectDir,
+      scopeRoot: candidate.projectDir,
       enabled: true,
       steps: [], maxAutoSteps: 0, autoStepsUsed: 0, awaitingStopCheck: false, stopConfirmed: false,
       awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
@@ -188,10 +473,13 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   });
   if (lanes.some((lane) => !lane.supervisorSurfaceId)) return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
   store.patchSupervisor({
-    mode: 'unified', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
+    mode: 'unified', taskGoal: '', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
     stopWhen: params.stopWhen, stopWhenKind: params.stopWhenKind, planFilePath: params.planFile || '', planFileContent: '',
     supervisorLaunchCmd: launchCmd, supervisorModel, supervisorReasoningEffort, maxAutoSteps: 0,
     maxAutoDecisions: params.autonomous ? null : store.supervisor.maxAutoDecisions, autonomous: params.autonomous,
+    autonomyPermissions: [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
+    workScope: DEFAULT_SUPERVISOR_WORK_SCOPE,
+    forbiddenActions: [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
   });
   store.setSupervisorLanes(lanes);
   store.startSupervisor();
@@ -643,17 +931,71 @@ export function initPipeBridge(): void {
     if (!isSupervisorNextAllowed(session.mode, outcome, next, session.autonomous)) {
       return { ok: false, error: '只有 continue、rework 或 needs-human 可以携带 --next' };
     }
+    if (
+      session.mode === 'unified'
+      && (outcome === 'continue' || outcome === 'rework')
+      && !next
+      && !permissionCommand
+      && !permissionResponse
+    ) {
+      return { ok: false, error: '统一监督的 continue/rework 必须携带明确的 --next；无法安全推进时请使用 needs-human' };
+    }
     const nextBlockReason = autonomousActionBlockReason(next);
     if (outcome !== 'needs-human' && nextBlockReason) {
       return { ok: false, error: `监督 AI 禁止自动执行${nextBlockReason}；请使用 needs-human 交给人工处理` };
     }
+    const forbiddenActions = Array.isArray(session.forbiddenActions)
+      ? session.forbiddenActions
+      : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS];
+    const configuredNextBlockReason = configuredActionBlockReason(next, forbiddenActions);
+    if (outcome !== 'needs-human' && configuredNextBlockReason) {
+      return { ok: false, error: `该动作命中用户勾选的禁止事项：${configuredNextBlockReason}；请使用 needs-human` };
+    }
+    const scopeBlockReason = workScopeBlockReason(
+      next,
+      session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
+      lane.scopeRoot || lane.projectDir,
+    );
+    if (outcome !== 'needs-human' && scopeBlockReason) {
+      return { ok: false, error: `${scopeBlockReason}；超出工作范围的动作必须使用 needs-human` };
+    }
+    if (
+      next
+      && outcome !== 'needs-human'
+      && session.workScope === 'plan-defined'
+      && !session.planFilePath?.trim()
+    ) {
+      return { ok: false, error: '工作范围设为“仅计划文件定义范围”，但当前没有计划文件；请补充计划文件或使用 needs-human' };
+    }
+    const hasTaskContext = !!(
+      effectiveSupervisorTaskGoal(session, lane)
+      || lane.currentTask?.trim()
+      || session.planFilePath?.trim()
+      || (session.mode !== 'unified' && session.directInstructions?.trim())
+      || (session.mode !== 'unified' && session.goal?.trim())
+    );
+    if (next && outcome !== 'needs-human' && !hasTaskContext) {
+      return { ok: false, error: '当前没有任务目标、已捕获任务或计划文件；可继续停止裁决，但自主发送下一步必须交给人工' };
+    }
     if (permissionCommand || permissionResponse) {
       const permissionBlockReason = autonomousActionBlockReason(permissionCommand);
+      const configuredPermissionBlockReason = configuredActionBlockReason(permissionCommand, forbiddenActions);
       if (!permissionCommand || !isAutonomousPermissionResponseAllowed(permissionResponse)) {
         return { ok: false, error: '权限确认必须提供命令说明，并且响应只能是 y、yes、allow 或 approve' };
       }
       if (permissionBlockReason) {
         return { ok: false, error: `监督 AI 禁止自动确认${permissionBlockReason}；请交给人工确认` };
+      }
+      if (configuredPermissionBlockReason) {
+        return { ok: false, error: `权限请求命中用户勾选的禁止事项：${configuredPermissionBlockReason}；请交给人工确认` };
+      }
+      const permissionScopeBlockReason = workScopeBlockReason(
+        permissionCommand,
+        session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
+        lane.scopeRoot || lane.projectDir,
+      );
+      if (permissionScopeBlockReason) {
+        return { ok: false, error: `${permissionScopeBlockReason}；该权限请求必须交给人工确认` };
       }
       if (outcome === 'complete' || outcome === 'needs-human') {
         return { ok: false, error: '终端权限确认只能与 continue 或 rework 裁决一起提交' };
@@ -666,11 +1008,49 @@ export function initPipeBridge(): void {
       return { ok: false, error: '当前没有待裁决轮次；请等待工作终端任务结束或权限阻塞通知' };
     }
     const agentState = ((w.__wmux_getAgentStates?.() || {})[surfaceId] || undefined) as SupervisorAgentStateView | undefined;
+    const selectedPermissions = selectedAutonomyPermissions(session.autonomyPermissions);
+    const requiredPermissions = requiredAutonomyPermissions({
+      outcome,
+      next,
+      proposalKind,
+      permissionCommand,
+      permissionResponse,
+      agentState,
+    });
+    const missingPermissions = requiredPermissions.filter((permission) => !selectedPermissions.includes(permission));
+    if (missingPermissions.length > 0) {
+      const labels = missingPermissions.map((permission) => AUTONOMY_PERMISSION_LABELS[permission]).join('、');
+      return { ok: false, error: `当前会话未授予“${labels}”；请使用 needs-human 交给人工处理` };
+    }
     if (permissionCommand || permissionResponse) {
       if (!isPermissionBlockedState(agentState)) {
         return { ok: false, error: '未检测到可自动确认的真实权限阻塞；状态未知或普通输入必须交给人工' };
       }
-      if (lane.lastBlockedResponseStateAt === agentState.updatedAt) {
+      const terminalEvidence = terminalScreenTail(surfaceId);
+      if (!terminalEvidence) {
+        return { ok: false, error: '无法读取当前终端中的具体权限命令；不能仅凭 Hook 泛化原因自动确认' };
+      }
+      if (!permissionCommandMatchesEvidence(permissionCommand, terminalEvidence)) {
+        return { ok: false, error: '权限命令与当前终端提示中的具体命令不一致；不能自动确认，请交给人工' };
+      }
+      const permissionEvidence = [agentState.blockedReason || '', terminalEvidence].filter(Boolean).join('\n');
+      const evidenceRisk = autonomousActionBlockReason(permissionEvidence);
+      if (evidenceRisk) {
+        return { ok: false, error: `当前权限提示包含${evidenceRisk}；不能自动确认，请交给人工` };
+      }
+      const configuredEvidenceRisk = configuredActionBlockReason(permissionEvidence, forbiddenActions);
+      if (configuredEvidenceRisk) {
+        return { ok: false, error: `当前权限提示命中禁止事项：${configuredEvidenceRisk}；不能自动确认，请交给人工` };
+      }
+      const evidenceScopeRisk = workScopeBlockReason(
+        permissionEvidence,
+        session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
+        lane.scopeRoot || lane.projectDir,
+      );
+      if (evidenceScopeRisk) {
+        return { ok: false, error: `${evidenceScopeRisk}；不能自动确认，请交给人工` };
+      }
+      if (blockedRequestAlreadyAnswered(lane, agentState)) {
         return { ok: false, error: '该权限阻塞状态已经确认过，禁止重复发送响应' };
       }
     } else if (agentState?.state === 'blocked' && outcome !== 'needs-human' && !next) {
@@ -685,7 +1065,10 @@ export function initPipeBridge(): void {
       if (agentState?.state === 'blocked' && !isQuestionBlockedState(agentState)) {
         return { ok: false, error: '当前阻塞不是明确的技术问题或方案选择，不能自动输入内容' };
       }
-      if (isQuestionBlockedState(agentState) && lane.lastBlockedResponseStateAt === agentState.updatedAt) {
+      if (isQuestionBlockedState(agentState) && !isLowRiskTechnicalQuestion(agentState, next)) {
+        return { ok: false, error: '当前输入涉及用户偏好、业务/账户决定或缺少明确技术证据；请使用 needs-human' };
+      }
+      if (isQuestionBlockedState(agentState) && blockedRequestAlreadyAnswered(lane, agentState)) {
         return { ok: false, error: '该技术问题阻塞状态已经回答过，禁止重复发送响应' };
       }
     }
@@ -765,7 +1148,8 @@ export function initPipeBridge(): void {
       store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
       store.updateLane(lane.id, {
         awaitingReview: false,
-        lastBlockedResponseStateAt: agentState!.updatedAt,
+        lastBlockedResponseVersion: agentState!.blockedVersion,
+        lastBlockedResponseId: agentState!.blockedRequestId || undefined,
       });
       return { ok: true, outcome, autoAuthorized: true };
     }
@@ -822,7 +1206,10 @@ export function initPipeBridge(): void {
     }
     store.updateLane(lane.id, {
       awaitingReview: false,
-      ...(isQuestionBlockedState(agentState) ? { lastBlockedResponseStateAt: agentState.updatedAt } : {}),
+      ...(isQuestionBlockedState(agentState) ? {
+        lastBlockedResponseVersion: agentState.blockedVersion,
+        lastBlockedResponseId: agentState.blockedRequestId || undefined,
+      } : {}),
     });
     return { ok: true, outcome };
   };
