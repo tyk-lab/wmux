@@ -3,6 +3,7 @@ import {
   SHIFT_ENTER_SEQUENCE,
   handleShiftEnter,
   isShiftEnter,
+  shouldBroadcastTerminalInput,
   type TerminalKeyEvent,
 } from '../../src/renderer/hooks/terminal-keys';
 
@@ -58,5 +59,17 @@ describe('Shift+Enter (issue #119)', () => {
 
   it('tells xterm not to handle the key as well', () => {
     expect(handleShiftEnter(keyEvent(), vi.fn())).toBe(false);
+  });
+});
+
+describe('broadcast-input interrupt isolation', () => {
+  it('never broadcasts Ctrl+C, including when normal input sync is enabled', () => {
+    expect(shouldBroadcastTerminalInput('\x03', false)).toBe(false);
+    expect(shouldBroadcastTerminalInput('\x03', true)).toBe(false);
+  });
+
+  it('continues to synchronize ordinary input only when broadcast mode is enabled', () => {
+    expect(shouldBroadcastTerminalInput('a', false)).toBe(false);
+    expect(shouldBroadcastTerminalInput('a', true)).toBe(true);
   });
 });

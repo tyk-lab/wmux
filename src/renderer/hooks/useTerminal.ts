@@ -14,7 +14,7 @@ import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { attachVisibleRenderer, RendererHandle } from '../utils/terminal-renderer';
 import { trimTrailingWhitespace } from '../utils/copy-text';
-import { handleShiftEnter, isShiftEnter } from './terminal-keys';
+import { handleShiftEnter, isShiftEnter, shouldBroadcastTerminalInput } from './terminal-keys';
 import { isConEmuSubcommand } from './osc9';
 import '@xterm/xterm/css/xterm.css';
 
@@ -859,9 +859,13 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // out to every terminal pane in the workspace that owns this surface. Only
       // the focused terminal's onData fires, so this is the single source pane.
       const st = useStore.getState();
-      if (st.broadcastInputActive && surfaceId) {
+      if (surfaceId) {
         const ws = st.workspaces.find((w) => treeHasSurface(w.splitTree, surfaceId));
-        if (ws) {
+        // Ctrl+C (ETX) always stays in the focused terminal. Forwarding it to
+        // another psmux→SSH pane tears down that pane's SSH command as well.
+        // A selected Ctrl+C never reaches onData, so copy behaviour is unchanged.
+        const shouldBroadcast = shouldBroadcastTerminalInput(data, st.broadcastInputActive);
+        if (ws && shouldBroadcast) {
           for (const id of collectActiveTerminalSurfaceIds(ws.splitTree)) {
             window.wmux.pty.write(id, data);
           }

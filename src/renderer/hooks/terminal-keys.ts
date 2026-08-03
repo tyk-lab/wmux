@@ -6,6 +6,14 @@
 /** ESC+CR: what Alt/Option+Enter produces, and what TUI apps read as "newline". */
 export const SHIFT_ENTER_SEQUENCE = '\x1b\r';
 
+/** ETX must stay local: broadcasting Ctrl+C interrupts unrelated SSH sessions. */
+export function shouldBroadcastTerminalInput(
+  data: string,
+  broadcastInputActive: boolean,
+): boolean {
+  return data !== '\x03' && broadcastInputActive;
+}
+
 /** The subset of KeyboardEvent this module looks at. */
 export interface TerminalKeyEvent {
   type: string;
