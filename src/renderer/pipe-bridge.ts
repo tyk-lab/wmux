@@ -373,6 +373,7 @@ interface RemoteSupervisorStart {
   terminals: string[];
   stopWhen: string;
   stopWhenKind: 'concrete' | 'direction';
+  taskGoal?: string;
   taskDescription?: string;
   preconditions?: string;
   planFile?: string;
@@ -473,7 +474,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   });
   if (lanes.some((lane) => !lane.supervisorSurfaceId)) return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
   store.patchSupervisor({
-    mode: 'unified', taskGoal: '', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
+    mode: 'unified', taskGoal: params.taskGoal || '', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
     stopWhen: params.stopWhen, stopWhenKind: params.stopWhenKind, planFilePath: params.planFile || '', planFileContent: '',
     supervisorLaunchCmd: launchCmd, supervisorModel, supervisorReasoningEffort, maxAutoSteps: 0,
     maxAutoDecisions: params.autonomous ? null : store.supervisor.maxAutoDecisions, autonomous: params.autonomous,
