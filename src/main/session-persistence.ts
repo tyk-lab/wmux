@@ -29,6 +29,33 @@ export interface SessionData {
   }>;
 }
 
+function treeHasSshSurface(tree: any): boolean {
+  if (!tree || typeof tree !== 'object') return false;
+  if (tree.type === 'leaf') {
+    return Array.isArray(tree.surfaces) && tree.surfaces.some((surface: any) => {
+      if (surface?.sshRemote || surface?.sshProfileId || surface?.sshFileWorkspaceId) return true;
+      return typeof surface?.shell === 'string' && /\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell);
+    });
+  }
+  return Array.isArray(tree.children) && tree.children.some(treeHasSshSurface);
+}
+
+/** SSH workspaces represent live remote resources and must never be auto-restored. */
+export function omitSshWorkspaces(data: SessionData): SessionData {
+  return {
+    ...data,
+    windows: data.windows.flatMap((window) => {
+      const workspaces = window.workspaces.filter((workspace) =>
+        !workspace.sshProfileId && !treeHasSshSurface(workspace.splitTree));
+      if (workspaces.length === 0) return [];
+      const activeWorkspaceId = workspaces.some((workspace) => workspace.id === window.activeWorkspaceId)
+        ? window.activeWorkspaceId
+        : workspaces[0].id;
+      return [{ ...window, activeWorkspaceId, workspaces }];
+    }),
+  };
+}
+
 export function ensureDirectories(): void {
   if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -40,7 +67,7 @@ export function saveSession(data: SessionData): void {
   // Atomic write: write to temp file, then rename
   const tmpFile = SESSION_FILE + '.tmp';
   try {
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(tmpFile, JSON.stringify(omitSshWorkspaces(data), null, 2), 'utf-8');
     // On Windows, rename won't overwrite, so remove first
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
@@ -59,7 +86,7 @@ export function loadSession(): SessionData | null {
     const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
     const data = JSON.parse(raw) as SessionData;
     if (data.version !== 1) return null;
-    return data;
+    return omitSshWorkspaces(data);
   } catch {
     // Corrupted file — fall back to default
     return null;

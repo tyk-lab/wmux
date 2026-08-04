@@ -2,17 +2,28 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
+import { TextDecoder } from 'util';
 import {
   Client,
+  type Attributes,
   type AnyAuthMethod,
   type ConnectConfig,
   type KeyboardInteractiveCallback,
   type Prompt,
   type SFTPWrapper,
 } from 'ssh2';
-import { SshConfigDraft, SshConnectionProfile, SshFileEntry, SshFileListResult } from '../shared/types';
+import {
+  SshConfigDraft,
+  SshConnectionProfile,
+  SshFileEntry,
+  SshFileListResult,
+  SshTextFileResult,
+  SshTextFileWriteResult,
+} from '../shared/types';
 
 type SshSession = { client: Client; sftp: SFTPWrapper };
+
+export const MAX_SSH_TEXT_BYTES = 5 * 1024 * 1024;
 
 function expandHome(filePath: string, homeDirectory = os.homedir()): string {
   if (filePath === '~') return homeDirectory;
@@ -354,6 +365,31 @@ async function sftpPathExists(sftp: SFTPWrapper, remotePath: string): Promise<bo
   });
 }
 
+function validateSshFilePath(remotePath: string): string {
+  const cleanPath = remotePath?.trim();
+  if (!cleanPath || cleanPath.includes('\0')) throw new Error('远程文件路径无效');
+  return cleanPath;
+}
+
+function remoteMtimeMs(mtime: number | undefined): number {
+  return (mtime || 0) * 1000;
+}
+
+async function statSshTextFile(sftp: SFTPWrapper, remotePath: string): Promise<Attributes> {
+  const attributes = await new Promise<Attributes>((resolve, reject) => {
+    sftp.lstat(remotePath, (error, value) => {
+      if (error || !value) {
+        reject(new Error(error?.message || '无法读取远程文件信息'));
+        return;
+      }
+      resolve(value);
+    });
+  });
+  if ((attributes.mode & 0o170000) !== 0o100000) throw new Error('只能用编辑器打开普通文件');
+  if (attributes.size > MAX_SSH_TEXT_BYTES) throw new Error('远程文件超过 5MB，无法在编辑器中打开');
+  return attributes;
+}
+
 export class SshManager {
   private sessions = new Map<string, SshSession>();
 
@@ -465,6 +501,59 @@ export class SshManager {
         readDirectory(absolutePath);
       });
     });
+  }
+
+  async readTextFile(workspaceId: string, remotePath: string): Promise<SshTextFileResult> {
+    const cleanPath = validateSshFilePath(remotePath);
+    const sftp = this.getSftp(workspaceId);
+    const attributes = await statSshTextFile(sftp, cleanPath);
+    const data = await new Promise<Buffer>((resolve, reject) => {
+      sftp.readFile(cleanPath, (error, value) => {
+        if (error || !value) {
+          reject(new Error(error?.message || '读取远程文件失败'));
+          return;
+        }
+        resolve(value);
+      });
+    });
+    if (data.byteLength > MAX_SSH_TEXT_BYTES) throw new Error('远程文件超过 5MB，无法在编辑器中打开');
+    let content: string;
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(data);
+    } catch {
+      throw new Error('远程文件不是有效的 UTF-8 文本，无法在编辑器中打开');
+    }
+    return { path: cleanPath, content, mtimeMs: remoteMtimeMs(attributes.mtime) };
+  }
+
+  async statTextFile(workspaceId: string, remotePath: string): Promise<{ mtimeMs: number }> {
+    const cleanPath = validateSshFilePath(remotePath);
+    const attributes = await statSshTextFile(this.getSftp(workspaceId), cleanPath);
+    return { mtimeMs: remoteMtimeMs(attributes.mtime) };
+  }
+
+  async writeTextFile(
+    workspaceId: string,
+    remotePath: string,
+    content: string,
+    expectedMtimeMs?: number,
+  ): Promise<SshTextFileWriteResult> {
+    const cleanPath = validateSshFilePath(remotePath);
+    if (typeof content !== 'string') throw new Error('没有可写入的文本内容');
+    if (Buffer.byteLength(content, 'utf8') > MAX_SSH_TEXT_BYTES) throw new Error('文本内容超过 5MB，无法保存');
+    const sftp = this.getSftp(workspaceId);
+    const attributes = await statSshTextFile(sftp, cleanPath);
+    const currentMtimeMs = remoteMtimeMs(attributes.mtime);
+    if (expectedMtimeMs !== undefined && currentMtimeMs !== expectedMtimeMs) {
+      return { conflict: true, currentMtimeMs };
+    }
+    await new Promise<void>((resolve, reject) => {
+      sftp.writeFile(cleanPath, content, 'utf8', (error) => error
+        ? reject(new Error(error.message || '保存远程文件失败'))
+        : resolve());
+    });
+    const updated = await statSshTextFile(sftp, cleanPath);
+    return { ok: true, mtimeMs: remoteMtimeMs(updated.mtime) };
   }
 
   async rename(workspaceId: string, remotePath: string, newName: string): Promise<string> {

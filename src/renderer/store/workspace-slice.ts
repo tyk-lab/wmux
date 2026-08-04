@@ -2,11 +2,19 @@ import { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { WorkspaceId, WorkspaceInfo, SplitNode } from '../../shared/types';
 import { createLeaf, stampCwdOnTree } from './split-utils';
-import { killTreeTerminalPtys } from './pty-teardown';
+import { disconnectWorkspaceSsh, teardownWorkspaceRuntime } from './pty-teardown';
 
 function collectSurfaceIds(tree: SplitNode): string[] {
   if (tree.type === 'leaf') return tree.surfaces.map((s) => s.id);
   return [...collectSurfaceIds(tree.children[0]), ...collectSurfaceIds(tree.children[1])];
+}
+
+function treeHasSshTerminal(tree: SplitNode): boolean {
+  if (tree.type === 'leaf') {
+    return tree.surfaces.some((surface) =>
+      surface.type === 'terminal' && (surface.sshRemote || surface.sshProfileId !== undefined));
+  }
+  return treeHasSshTerminal(tree.children[0]) || treeHasSshTerminal(tree.children[1]);
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -95,7 +103,7 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
     // to discard the entire split tree WITHOUT killing any of its PTYs, orphaning
     // every pane's wrapper shell for the life of the app.
     const closing = get().workspaces.find((w) => w.id === id);
-    if (closing) killTreeTerminalPtys(closing.splitTree);
+    if (closing) teardownWorkspaceRuntime(closing);
 
     set((state) => {
       const idx = state.workspaces.findIndex((w) => w.id === id);
@@ -201,8 +209,21 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
   },
 
   updateSplitTree(id: WorkspaceId, tree: SplitNode): void {
+    const current = get().workspaces.find((workspace) => workspace.id === id);
+    const sshTerminalRemoved = !!current?.sshProfileId
+      && treeHasSshTerminal(current.splitTree)
+      && !treeHasSshTerminal(tree);
+    if (sshTerminalRemoved) disconnectWorkspaceSsh(id);
     set((state) => ({
-      workspaces: state.workspaces.map((w) => (w.id === id ? { ...w, splitTree: tree } : w)),
+      workspaces: state.workspaces.map((w) => (w.id === id ? {
+        ...w,
+        splitTree: tree,
+        ...(sshTerminalRemoved ? {
+          sshProfileId: undefined,
+          sshConnectionState: undefined,
+          sshConnectionError: undefined,
+        } : {}),
+      } : w)),
     }));
   },
 

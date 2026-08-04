@@ -435,6 +435,41 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     name: string,
     type: 'file' | 'directory',
   ) => ({ ok: true, path: await sshManager.createEntry(workspaceId, remoteDirectory, name, type) }));
+  ipcMain.handle(IPC_CHANNELS.SSH_READ_FILE, async (
+    _event,
+    workspaceId: string,
+    remotePath: string,
+  ) => {
+    try {
+      return await sshManager.readTextFile(workspaceId, remotePath);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_STAT_FILE, async (
+    _event,
+    workspaceId: string,
+    remotePath: string,
+  ) => {
+    try {
+      return await sshManager.statTextFile(workspaceId, remotePath);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_WRITE_FILE, async (
+    _event,
+    workspaceId: string,
+    remotePath: string,
+    content: string,
+    expectedMtimeMs?: number,
+  ) => {
+    try {
+      return await sshManager.writeTextFile(workspaceId, remotePath, content, expectedMtimeMs);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 
   ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string; flash?: boolean }) => {
     const window = BrowserWindow.fromWebContents(_event.sender);

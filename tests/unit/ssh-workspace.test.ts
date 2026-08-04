@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attachSshProfileId,
   buildSshSplitTree,
+  findSshFileSurface,
   isMissingSftpPathError,
   parentSshPath,
   updateSshFileSelection,
@@ -76,6 +77,26 @@ describe('parentSshPath', () => {
     expect(isMissingSftpPathError(new Error('No such file'))).toBe(true);
     expect(isMissingSftpPathError('远程目录不存在')).toBe(true);
     expect(isMissingSftpPathError(new Error('Permission denied'))).toBe(false);
+  });
+});
+
+describe('findSshFileSurface', () => {
+  it('finds the pane and tab for an already-open remote file', () => {
+    const tree = buildSshSplitTree(profile('agent'));
+    if (tree.type !== 'branch' || tree.children[1].type !== 'leaf') return;
+    tree.children[1].surfaces.push({
+      id: 'surf-editor',
+      type: 'markdown',
+      sshFileWorkspaceId: 'ws-remote',
+      sshFilePath: '/home/pi/fluidd.cfg',
+    });
+
+    expect(findSshFileSurface(tree, 'ws-remote', '/home/pi/fluidd.cfg')).toEqual({
+      paneId: tree.children[1].paneId,
+      surfaceId: 'surf-editor',
+      index: 1,
+    });
+    expect(findSshFileSurface(tree, 'ws-other', '/home/pi/fluidd.cfg')).toBeNull();
   });
 });
 

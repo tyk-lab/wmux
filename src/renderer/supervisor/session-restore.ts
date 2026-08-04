@@ -32,11 +32,21 @@ function stripSupervisorSurfacesFromTree(tree: SplitNode, transientSurfaceIds: R
   return { ...tree, children: [left, right] };
 }
 
+function treeHasSshSurface(tree: SplitNode): boolean {
+  if (tree.type === 'leaf') {
+    return tree.surfaces.some((surface) => {
+      if (surface.sshRemote || surface.sshProfileId || surface.sshFileWorkspaceId) return true;
+      return typeof surface.shell === 'string' && /\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell);
+    });
+  }
+  return treeHasSshSurface(tree.children[0]) || treeHasSshSurface(tree.children[1]);
+}
+
 /**
- * AI supervision has no restart-safe renderer state, so omit its terminal and
- * panel surfaces from auto/named session layouts instead of restoring a stale shell.
+ * SSH workspaces own live connections and AI supervision owns transient renderer
+ * state. Neither is restart-safe, so omit them from automatic session layouts.
  */
-export function omitTransientSupervisorWorkspaces<T extends { splitTree: SplitNode }>(
+export function omitNonRestorableWorkspaces<T extends { splitTree: SplitNode; sshProfileId?: string }>(
   workspaces: T[],
   activeIndex = 0,
   transientSurfaceIds: Iterable<string> = [],
@@ -46,6 +56,7 @@ export function omitTransientSupervisorWorkspaces<T extends { splitTree: SplitNo
   const retained: T[] = [];
 
   workspaces.forEach((workspace, index) => {
+    if (workspace.sshProfileId || treeHasSshSurface(workspace.splitTree)) return;
     const splitTree = stripSupervisorSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;
     if (index === activeIndex) nextActiveIndex = retained.length;

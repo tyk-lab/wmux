@@ -50,6 +50,21 @@ export function updateSshFileSelection(
   return { selectedPaths: new Set([entry.path]), anchorIndex: clickedIndex };
 }
 
+/** Finds an already-open editor for one remote path so double-clicking reuses its tab. */
+export function findSshFileSurface(
+  tree: SplitNode,
+  workspaceId: string,
+  remotePath: string,
+): { paneId: PaneId; surfaceId: SurfaceId; index: number } | null {
+  if (tree.type === 'branch') {
+    return findSshFileSurface(tree.children[0], workspaceId, remotePath)
+      || findSshFileSurface(tree.children[1], workspaceId, remotePath);
+  }
+  const index = tree.surfaces.findIndex((surface) =>
+    surface.sshFileWorkspaceId === workspaceId && surface.sshFilePath === remotePath);
+  return index >= 0 ? { paneId: tree.paneId, surfaceId: tree.surfaces[index].id, index } : null;
+}
+
 function buildSshShell(profile: SshConnectionProfile): string {
   const identity = profile.authMethod === 'privateKey' && profile.privateKeyPath
     ? ` -i ${quoteSshArgument(profile.privateKeyPath)}`

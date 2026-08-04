@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Terminal, ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -9,6 +9,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
+import { disconnectWorkspaceSsh } from '../store/pty-teardown';
 import { SplitNode, ThemeConfig } from '../../shared/types';
 import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
@@ -73,6 +74,18 @@ function clearStuckRunningState(surfaceId: string): void {
   try {
     useStore.getState().setSurfaceShellState(surfaceId, null);
   } catch { /* best-effort: badge reset is non-critical */ }
+}
+
+function detachExitedSshWorkspace(surfaceId: string): void {
+  const state = useStore.getState();
+  const workspace = state.workspaces.find((item) => treeHasSurface(item.splitTree, surfaceId));
+  if (!workspace?.sshProfileId) return;
+  disconnectWorkspaceSsh(workspace.id);
+  state.updateWorkspaceMetadata(workspace.id, {
+    sshProfileId: undefined,
+    sshConnectionState: undefined,
+    sshConnectionError: undefined,
+  });
 }
 
 // Snapshot the buffer before disposal so a remount (split-tree restructure)
@@ -362,7 +375,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     }
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!terminalRef.current) return;
 
     // Create terminal instance. Theme/font are applied from settings on creation
@@ -740,6 +753,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const unsubExit = window.wmux.pty.onExit(id, (_code: number) => {
         terminal.writeln('\r\n\x1b[2m[process exited]\x1b[0m');
         clearStuckRunningState(id);
+        if (sshProfileId) detachExitedSshWorkspace(id);
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).
         useStore.getState().setSurfaceProgress(id, null);

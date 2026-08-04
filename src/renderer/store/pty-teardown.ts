@@ -16,7 +16,7 @@
  * non-Electron contexts (unit tests, where `window` is undefined) so the store
  * stays testable in Node.
  */
-import { SplitNode, SurfaceRef } from '../../shared/types';
+import { SplitNode, SurfaceRef, WorkspaceInfo } from '../../shared/types';
 
 /** Kill the PTY backing a single terminal surface. Idempotent — the main-process
  *  `PtyManager.kill` no-ops on an unknown/already-dead id, so double-calls (e.g.
@@ -40,4 +40,25 @@ export function killTreeTerminalPtys(tree: SplitNode): void {
   }
   killTreeTerminalPtys(tree.children[0]);
   killTreeTerminalPtys(tree.children[1]);
+}
+
+/** Disconnect the SFTP client owned by an SSH workspace. Safe to call repeatedly. */
+export function disconnectWorkspaceSsh(workspaceId: string): void {
+  try {
+    const disconnect = (globalThis as {
+      window?: { wmux?: { ssh?: { disconnect?: (id: string) => Promise<unknown> } } };
+    }).window?.wmux?.ssh?.disconnect;
+    if (disconnect) void Promise.resolve(disconnect(workspaceId)).catch(() => undefined);
+  } catch {
+    /* preload/window unavailable or already closing — main-process shutdown is the fallback */
+  }
+}
+
+/** Tear down every runtime resource owned by a workspace before its state is removed. */
+export function teardownWorkspaceRuntime(
+  workspace: Pick<WorkspaceInfo, 'id' | 'splitTree' | 'sshProfileId'>,
+): void {
+  killTreeTerminalPtys(workspace.splitTree);
+  if (!workspace.sshProfileId) return;
+  disconnectWorkspaceSsh(workspace.id);
 }

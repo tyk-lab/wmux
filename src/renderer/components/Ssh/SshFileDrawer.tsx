@@ -8,6 +8,7 @@ interface Props {
   state: 'connecting' | 'connected' | 'disconnected' | 'error';
   errorMessage?: string;
   onReconnect: () => void;
+  onOpenFile: (entry: SshFileEntry) => Promise<void>;
 }
 
 interface PreparedSelection {
@@ -71,7 +72,7 @@ function formatModifiedAt(modifiedAt?: number): string {
   }).format(modifiedAt);
 }
 
-export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect }: Props) {
+export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect, onOpenFile }: Props) {
   const [currentPath, setCurrentPath] = useState('.');
   const [pathDraft, setPathDraft] = useState('.');
   const [entries, setEntries] = useState<SshFileEntry[]>([]);
@@ -87,6 +88,7 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const [nameDialogError, setNameDialogError] = useState('');
   const [drawerWidth, setDrawerWidth] = useState(initialDrawerWidth);
   const [resizing, setResizing] = useState(false);
+  const [openingPath, setOpeningPath] = useState<string>();
   const lastValidPathRef = useRef('.');
   const directoryCacheRef = useRef(new Map<string, { result: DirectoryResult; cachedAt: number }>());
   const pendingDirectoriesRef = useRef(new Map<string, Promise<DirectoryResult>>());
@@ -337,6 +339,22 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     }
   };
 
+  const openFile = async (entry: SshFileEntry) => {
+    if (entry.type !== 'file' || openingPath) return;
+    setOpeningPath(entry.path);
+    setTransferStatus(`正在打开 ${entry.name}…`);
+    setError('');
+    try {
+      await onOpenFile(entry);
+      setTransferStatus('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setTransferStatus('');
+    } finally {
+      setOpeningPath(undefined);
+    }
+  };
+
   const selectEntry = (event: React.MouseEvent, entry: SshFileEntry, index: number) => {
     const selection = updateSshFileSelection(
       entries,
@@ -546,7 +564,10 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
         onMouseEnter={() => scheduleDirectoryPrefetch(entry)}
         onMouseLeave={() => { if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current); }}
         onDragStart={(event) => beginRemoteDrag(event, entry)}
-        onDoubleClick={() => entry.type === 'directory' && navigate(entry.path)}
+        onDoubleClick={() => {
+          if (entry.type === 'directory') navigate(entry.path);
+          else if (entry.type === 'file') void openFile(entry);
+        }}
         onClick={(event) => selectEntry(event, entry, index)}
       >
         <span className="ssh-file-cell ssh-file-cell--name" title={entry.name}>

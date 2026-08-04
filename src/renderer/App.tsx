@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
-import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshConnectionProfile } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshConnectionProfile, SshFileEntry } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf, replaceSoleTerminalSurface } from './store/split-utils';
 import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from './dev-ports';
@@ -10,7 +10,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
-import { attachSshProfileId, buildSshSplitTree, upgradeSshSplitTree } from './ssh-workspace';
+import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree } from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import SettingsWindow from './components/Settings/SettingsWindow';
@@ -53,7 +53,7 @@ import { buildUserNotifyText, effectiveSupervisorStopWhen } from './supervisor/p
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
-import { omitTransientSupervisorWorkspaces } from './supervisor/session-restore';
+import { omitNonRestorableWorkspaces } from './supervisor/session-restore';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
@@ -776,7 +776,7 @@ export default function App() {
         const autoSaved = await window.wmux?.session?.loadAuto?.();
         if (autoSaved && Array.isArray(autoSaved.workspaces) && autoSaved.workspaces.length > 0) {
           const { replaceAllWorkspaces } = useStore.getState();
-          const restored = omitTransientSupervisorWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
+          const restored = omitNonRestorableWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
           if (restored.workspaces.length > 0) {
             replaceAllWorkspaces(restored.workspaces, restored.activeIndex);
             if (autoSaved.sidebarWidth) setSidebarWidth(autoSaved.sidebarWidth);
@@ -790,7 +790,7 @@ export default function App() {
           const session = await window.wmux?.session?.load(sessions[0].name);
           if (session) {
             const { replaceAllWorkspaces } = useStore.getState();
-            const restored = omitTransientSupervisorWorkspaces(session.workspaces);
+            const restored = omitNonRestorableWorkspaces(session.workspaces);
             if (restored.workspaces.length > 0) {
               replaceAllWorkspaces(restored.workspaces, restored.activeIndex);
               if (session.sidebarWidth) setSidebarWidth(session.sidebarWidth);
@@ -1241,7 +1241,7 @@ export default function App() {
       const supervisorSurfaceIds = state.supervisor.lanes
         .map((lane) => lane.supervisorSurfaceId)
         .filter((surfaceId): surfaceId is SurfaceId => !!surfaceId);
-      const persisted = omitTransientSupervisorWorkspaces(state.workspaces, activeIndex, supervisorSurfaceIds);
+      const persisted = omitNonRestorableWorkspaces(state.workspaces, activeIndex, supervisorSurfaceIds);
       const data = {
         version: 1,
         windows: [{
@@ -1293,6 +1293,46 @@ export default function App() {
   const handlePaneFocus = useCallback((paneId: PaneId) => {
     setFocusedPaneId(paneId);
   }, []);
+
+  const handleOpenSshFile = useCallback(async (entry: SshFileEntry) => {
+    if (!activeWorkspaceId) throw new Error('SSH 工作区不存在');
+    const stateBeforeRead = useStore.getState();
+    const workspaceBeforeRead = stateBeforeRead.workspaces.find((item) => item.id === activeWorkspaceId);
+    if (!workspaceBeforeRead) throw new Error('SSH 工作区不存在');
+    const existing = findSshFileSurface(workspaceBeforeRead.splitTree, activeWorkspaceId, entry.path);
+    if (existing) {
+      stateBeforeRead.selectSurface(activeWorkspaceId, existing.paneId, existing.index);
+      setFocusedPaneId(existing.paneId);
+      return;
+    }
+
+    const read = window.wmux?.ssh?.readFile?.(activeWorkspaceId, entry.path);
+    if (!read) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+    const file = await read;
+    if (file?.error || typeof file?.content !== 'string') {
+      throw new Error(file?.error || '读取远程文件失败');
+    }
+    const state = useStore.getState();
+    const workspace = state.workspaces.find((item) => item.id === activeWorkspaceId);
+    if (!workspace) throw new Error('SSH 工作区已关闭');
+    const paneId = focusedPaneId && findLeaf(workspace.splitTree, focusedPaneId)
+      ? focusedPaneId
+      : getAllPaneIds(workspace.splitTree)[0];
+    if (!paneId) throw new Error('没有可用于打开编辑器的窗格');
+    const surfaceId = state.addSurface(activeWorkspaceId, paneId, 'markdown', { customTitle: entry.name });
+    if (!surfaceId) throw new Error('无法创建编辑器标签');
+    state.updateSurface(activeWorkspaceId, paneId, surfaceId, {
+      markdownContent: file.content,
+      markdownFileName: entry.name,
+      markdownFilePath: file.path,
+      markdownFileMtime: file.mtimeMs,
+      markdownViewMode: 'source',
+      markdownDirty: false,
+      sshFileWorkspaceId: activeWorkspaceId,
+      sshFilePath: file.path,
+    });
+    setFocusedPaneId(paneId);
+  }, [activeWorkspaceId, focusedPaneId]);
 
   const handleSidebarWidthChange = useCallback((newWidth: number) => {
     setSidebarWidth(newWidth);
@@ -1765,6 +1805,7 @@ export default function App() {
             state={activeWorkspace.sshConnectionState ?? 'disconnected'}
             errorMessage={activeWorkspace.sshConnectionError}
             onReconnect={() => void connectSshWorkspace(activeWorkspace.id, activeSshProfile)}
+            onOpenFile={handleOpenSshFile}
           />
         )}
 

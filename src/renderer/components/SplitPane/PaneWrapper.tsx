@@ -263,6 +263,8 @@ export default function PaneWrapper({
               cwd={workspace?.cwd}
               fileMtime={surface.markdownFileMtime}
               dirty={surface.markdownDirty}
+              remoteWorkspaceId={surface.sshFileWorkspaceId}
+              remotePath={surface.sshFilePath}
               // All of these persist onto the surface (issue #116) so they
               // survive the remount that a split-tree restructure causes,
               // exactly like markdownContent itself.
@@ -283,12 +285,14 @@ export default function PaneWrapper({
                   markdownContent: next,
                   markdownDirty: true,
                 })}
-              onSaved={({ filePath, fileName, mtimeMs }) =>
+              onSaved={({ filePath, fileName, mtimeMs, remote }) =>
                 updateSurface(workspaceId, paneId, surface.id, {
                   markdownFilePath: filePath,
                   markdownFileName: fileName,
                   markdownFileMtime: mtimeMs,
                   markdownDirty: false,
+                  sshFileWorkspaceId: remote ? surface.sshFileWorkspaceId : undefined,
+                  sshFilePath: remote ? surface.sshFilePath : undefined,
                 })}
             />
           )}

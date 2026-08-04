@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { killSurfacePty, killTreeTerminalPtys } from '../../src/renderer/store/pty-teardown';
+import { create } from 'zustand';
+import { killSurfacePty, killTreeTerminalPtys, teardownWorkspaceRuntime } from '../../src/renderer/store/pty-teardown';
+import { createWorkspaceSlice, WorkspaceSlice } from '../../src/renderer/store/workspace-slice';
 import { SplitNode, SurfaceRef, SurfaceId, PaneId } from '../../src/shared/types';
 
 // Regression coverage for issue #65: PTY teardown must run on every destructive
@@ -17,10 +19,12 @@ const leaf = (paneId: string, surfaces: SurfaceRef[]): SplitNode => ({
 
 describe('pty-teardown', () => {
   let kill: ReturnType<typeof vi.fn>;
+  let disconnect: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     kill = vi.fn();
-    (globalThis as any).window = { wmux: { pty: { kill } } };
+    disconnect = vi.fn().mockResolvedValue({ ok: true });
+    (globalThis as any).window = { wmux: { pty: { kill }, ssh: { disconnect } } };
   });
 
   afterEach(() => {
@@ -73,5 +77,50 @@ describe('pty-teardown', () => {
     delete (globalThis as any).window;
     expect(() => killSurfacePty(term('surf-1'))).not.toThrow();
     expect(() => killTreeTerminalPtys(leaf('pane-1', [term('surf-1')]))).not.toThrow();
+  });
+
+  it('closes terminal PTYs and the SFTP session when an SSH workspace closes', () => {
+    teardownWorkspaceRuntime({
+      id: 'ws-ssh',
+      sshProfileId: 'profile-a',
+      splitTree: leaf('pane-1', [term('surf-ssh'), { id: 'surf-md' as SurfaceId, type: 'markdown' }]),
+    });
+
+    expect(kill).toHaveBeenCalledWith('surf-ssh');
+    expect(disconnect).toHaveBeenCalledWith('ws-ssh');
+  });
+
+  it('does not request an SFTP disconnect for an ordinary local workspace', () => {
+    teardownWorkspaceRuntime({ id: 'ws-local', splitTree: leaf('pane-1', [term('surf-local')]) });
+
+    expect(kill).toHaveBeenCalledWith('surf-local');
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it('disconnects SFTP and clears SSH metadata when the remote terminal is removed', () => {
+    const store = create<WorkspaceSlice>()((...args) => createWorkspaceSlice(...args));
+    const localPane = leaf('pane-local', [term('surf-local')]);
+    const remotePane = leaf('pane-remote', [{
+      ...term('surf-remote'),
+      sshRemote: true,
+      sshProfileId: 'profile-a',
+    }]);
+    const workspaceId = store.getState().createWorkspace({
+      sshProfileId: 'profile-a',
+      sshConnectionState: 'connected',
+      splitTree: {
+        type: 'branch',
+        direction: 'horizontal',
+        ratio: 0.5,
+        children: [remotePane, localPane],
+      },
+    });
+
+    store.getState().updateSplitTree(workspaceId, localPane);
+
+    expect(disconnect).toHaveBeenCalledWith(workspaceId);
+    expect(store.getState().workspaces[0]).toMatchObject({ splitTree: localPane });
+    expect(store.getState().workspaces[0].sshProfileId).toBeUndefined();
+    expect(store.getState().workspaces[0].sshConnectionState).toBeUndefined();
   });
 });

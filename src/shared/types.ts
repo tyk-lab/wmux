@@ -45,6 +45,16 @@ export interface SshFileListResult {
   entries: SshFileEntry[];
 }
 
+export interface SshTextFileResult {
+  path: string;
+  content: string;
+  mtimeMs: number;
+}
+
+export type SshTextFileWriteResult =
+  | { ok: true; mtimeMs: number }
+  | { conflict: true; currentMtimeMs: number };
+
 export interface SshConnectResult {
   ok: boolean;
   passwordRequired?: boolean;
@@ -103,6 +113,9 @@ export interface SurfaceRef {
    *  confirmed before closing. Persisted with the content, so an unsaved edit
    *  survives a restart — and comes back still marked unsaved. */
   markdownDirty?: boolean;
+  /** SFTP session and path backing a remotely opened text editor surface. */
+  sshFileWorkspaceId?: string;
+  sshFilePath?: string;
 }
 
 /**
@@ -467,6 +480,9 @@ export const IPC_CHANNELS = {
   SSH_RENAME: 'ssh:rename',
   SSH_DELETE: 'ssh:delete',
   SSH_CREATE: 'ssh:create',
+  SSH_READ_FILE: 'ssh:read-file',
+  SSH_STAT_FILE: 'ssh:stat-file',
+  SSH_WRITE_FILE: 'ssh:write-file',
 } as const;
 
 // ─── Orchestration state (wmux-orchestrator plugin) ────────────────────────

@@ -288,6 +288,12 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.invoke(IPC_CHANNELS.SSH_DELETE, workspaceId, remotePath),
     create: (workspaceId: string, remoteDirectory: string, name: string, type: 'file' | 'directory') =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_CREATE, workspaceId, remoteDirectory, name, type),
+    readFile: (workspaceId: string, remotePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_READ_FILE, workspaceId, remotePath),
+    statFile: (workspaceId: string, remotePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_STAT_FILE, workspaceId, remotePath),
+    writeFile: (workspaceId: string, remotePath: string, content: string, expectedMtimeMs?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_WRITE_FILE, workspaceId, remotePath, content, expectedMtimeMs),
   },
   diff: {
     getFiles: (cwd: string) => ipcRenderer.invoke(IPC_CHANNELS.DIFF_GET_FILES, cwd),

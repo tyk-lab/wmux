@@ -29,13 +29,16 @@ interface MarkdownPaneProps {
   fileMtime?: number;
   /** Buffer differs from disk (F3). */
   dirty?: boolean;
+  /** Existing SSH session and POSIX path backing a remote editor surface. */
+  remoteWorkspaceId?: string;
+  remotePath?: string;
   onViewModeChange?: (mode: MarkdownViewMode) => void;
   /** Reload-from-disk and drag-and-drop both replace the surface's content. */
   onFileLoaded?: (file: { content: string; filePath: string; fileName: string; mtimeMs: number }) => void;
   /** An edit in the textarea — content changed, buffer now differs from disk. */
   onEdit?: (content: string) => void;
   /** A successful write — records the new mtime and clears the dirty flag. */
-  onSaved?: (file: { filePath: string; fileName: string; mtimeMs: number }) => void;
+  onSaved?: (file: { filePath: string; fileName: string; mtimeMs: number; remote: boolean }) => void;
 }
 
 // A dedicated Marked instance rather than the global `marked` + setOptions():
@@ -231,6 +234,7 @@ function OverflowMenu({
 
 interface ToolbarProps {
   filePath?: string;
+  remote: boolean;
   displayPath: string;
   relativePath: string | null;
   viewMode: MarkdownViewMode;
@@ -260,15 +264,15 @@ type Translate = (key: TranslationKey, fallback?: string) => string;
  *  pathless surface is a first-class state (agent-pushed content), not an
  *  error, so the menu should not change shape underneath the user. */
 function menuItems(props: ToolbarProps, t: Translate): MenuItem[] {
-  const { filePath, relativePath, dirty, onCopyText, onReload, onReveal, onOpenInApp, onRevert } = props;
+  const { filePath, remote, relativePath, dirty, onCopyText, onReload, onReveal, onOpenInApp, onRevert } = props;
   const hasPath = !!filePath;
   return [
     { key: 'copyPath', label: t('markdown.copyPath', 'Copy file path'), enabled: hasPath, run: () => onCopyText(filePath!) },
     { key: 'copyRel', label: t('markdown.copyRelativePath', 'Copy relative path'), enabled: !!relativePath, run: () => onCopyText(relativePath!) },
     { key: 'reload', label: t('markdown.reload', 'Reload from disk'), enabled: hasPath, run: () => onReload(filePath!) },
     { key: 'revert', label: t('markdown.revert', 'Discard changes'), enabled: hasPath && dirty, run: onRevert },
-    { key: 'reveal', label: t('markdown.reveal', 'Reveal in File Explorer'), enabled: hasPath, run: () => onReveal(filePath!) },
-    { key: 'openInApp', label: t('markdown.openInApp', 'Open in default app'), enabled: hasPath, run: () => onOpenInApp(filePath!) },
+    { key: 'reveal', label: t('markdown.reveal', 'Reveal in File Explorer'), enabled: hasPath && !remote, run: () => onReveal(filePath!) },
+    { key: 'openInApp', label: t('markdown.openInApp', 'Open in default app'), enabled: hasPath && !remote, run: () => onOpenInApp(filePath!) },
   ];
 }
 
@@ -372,6 +376,8 @@ export default function MarkdownPane({
   cwd,
   fileMtime,
   dirty = false,
+  remoteWorkspaceId,
+  remotePath,
   onViewModeChange,
   onFileLoaded,
   onEdit,
@@ -383,7 +389,7 @@ export default function MarkdownPane({
   const [copied, setCopied] = useState<'doc' | 'path' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [compact, setCompact] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(!!remotePath);
   // Set when the file moved under us. Blocks an in-place save until the user
   // says which side wins — see the banner below.
   const [conflict, setConflict] = useState(false);
@@ -403,10 +409,10 @@ export default function MarkdownPane({
     });
   }, [content]);
 
-  const displayPath = useMemo(
-    () => (filePath ? toDisplayPath(filePath, { cwd, homeDir: window.wmux?.system?.homeDir }) : ''),
-    [filePath, cwd],
-  );
+  const displayPath = useMemo(() => {
+    if (remotePath) return remotePath;
+    return filePath ? toDisplayPath(filePath, { cwd, homeDir: window.wmux?.system?.homeDir }) : '';
+  }, [filePath, cwd, remotePath]);
 
   // ─── Transient feedback ─────────────────────────────────────────────────────
 
@@ -421,6 +427,10 @@ export default function MarkdownPane({
     const timer = window.setTimeout(() => setError(null), 5000);
     return () => window.clearTimeout(timer);
   }, [error]);
+
+  useEffect(() => {
+    if (remotePath) setEditing(true);
+  }, [remotePath]);
 
   // ─── Clipboard ──────────────────────────────────────────────────────────────
 
@@ -507,7 +517,9 @@ export default function MarkdownPane({
   // ─── File actions ───────────────────────────────────────────────────────────
 
   const loadFromDisk = useCallback(async (path: string) => {
-    const res = await window.wmux?.markdown?.readFile?.(path);
+    const res = remoteWorkspaceId && remotePath
+      ? await window.wmux?.ssh?.readFile?.(remoteWorkspaceId, remotePath)
+      : await window.wmux?.markdown?.readFile?.(path);
     if (!res || res.error || typeof res.content !== 'string') {
       setError(res?.error || t('markdown.error.read', 'Could not read the file'));
       return;
@@ -515,11 +527,11 @@ export default function MarkdownPane({
     setConflict(false);
     onFileLoaded?.({
       content: res.content,
-      filePath: res.filePath,
-      fileName: basenameOf(res.filePath),
+      filePath: res.filePath || res.path,
+      fileName: basenameOf(res.filePath || res.path),
       mtimeMs: res.mtimeMs,
     });
-  }, [onFileLoaded, t]);
+  }, [onFileLoaded, remotePath, remoteWorkspaceId, t]);
 
   // Both shell actions are rejected by the main process when the path falls
   // outside the extension whitelist, so surface that rather than dropping it.
@@ -544,7 +556,7 @@ export default function MarkdownPane({
       return;
     }
     setConflict(false);
-    onSaved?.({ filePath: res.filePath, fileName: basenameOf(res.filePath), mtimeMs: res.mtimeMs });
+    onSaved?.({ filePath: res.filePath, fileName: basenameOf(res.filePath), mtimeMs: res.mtimeMs, remote: false });
   }, [content, cwd, filePath, onSaved, t]);
 
   /**
@@ -554,11 +566,10 @@ export default function MarkdownPane({
    */
   const saveInPlace = useCallback(async (force = false) => {
     if (!filePath) { await saveAs(); return; }
-    const res = await window.wmux?.markdown?.saveFile?.(
-      filePath,
-      content,
-      force ? undefined : fileMtime,
-    );
+    const expectedMtimeMs = force ? undefined : fileMtime;
+    const res = remoteWorkspaceId && remotePath
+      ? await window.wmux?.ssh?.writeFile?.(remoteWorkspaceId, remotePath, content, expectedMtimeMs)
+      : await window.wmux?.markdown?.saveFile?.(filePath, content, expectedMtimeMs);
     if (res?.conflict) {
       setConflict(true);
       setError(t('markdown.error.conflict', 'The file changed on disk — nothing was written'));
@@ -569,8 +580,8 @@ export default function MarkdownPane({
       return;
     }
     setConflict(false);
-    onSaved?.({ filePath, fileName: basenameOf(filePath), mtimeMs: res.mtimeMs });
-  }, [content, filePath, fileMtime, onSaved, saveAs, t]);
+    onSaved?.({ filePath, fileName: basenameOf(filePath), mtimeMs: res.mtimeMs, remote: !!remotePath });
+  }, [content, filePath, fileMtime, onSaved, remotePath, remoteWorkspaceId, saveAs, t]);
 
   const save = useCallback(() => { void saveInPlace(false); }, [saveInPlace]);
 
@@ -580,13 +591,15 @@ export default function MarkdownPane({
   useEffect(() => {
     if (!filePath || fileMtime === undefined) return;
     const check = async () => {
-      const res = await window.wmux?.markdown?.statFile?.(filePath);
+      const res = remoteWorkspaceId && remotePath
+        ? await window.wmux?.ssh?.statFile?.(remoteWorkspaceId, remotePath)
+        : await window.wmux?.markdown?.statFile?.(filePath);
       if (res && !res.error && res.mtimeMs !== fileMtime) setConflict(true);
     };
     void check();
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
-  }, [filePath, fileMtime]);
+  }, [filePath, fileMtime, remotePath, remoteWorkspaceId]);
 
   const handleEdit = useCallback((next: string) => {
     setError(null);
@@ -610,9 +623,10 @@ export default function MarkdownPane({
     // preventDefaults both dragover and drop (issue #33).
     event.preventDefault();
     event.stopPropagation();
+    if (remotePath) return;
     const path = window.wmux?.shell?.getPathForFile?.(files[0]);
     if (path) void loadFromDisk(path);
-  }, [loadFromDisk]);
+  }, [loadFromDisk, remotePath]);
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (event.dataTransfer?.types?.includes('Files')) {
@@ -648,8 +662,9 @@ export default function MarkdownPane({
     >
       <MarkdownToolbar
         filePath={filePath}
+        remote={!!remotePath}
         displayPath={displayPath}
-        relativePath={filePath ? toRelativePath(filePath, cwd) : null}
+        relativePath={filePath && !remotePath ? toRelativePath(filePath, cwd) : null}
         viewMode={viewMode}
         editing={editing}
         dirty={dirty}

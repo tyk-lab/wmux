@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import type { SessionData } from '../../src/main/session-persistence';
+import { omitSshWorkspaces, type SessionData } from '../../src/main/session-persistence';
 
 // Use a temp directory for tests
 const TEST_DIR = path.join(os.tmpdir(), 'wmux-test-sessions-' + process.pid);
@@ -77,6 +77,29 @@ describe('session-persistence', () => {
     expect(loaded.windows[0].workspaces[0].customColor).toBe('#C0392B');
     expect(loaded.windows[0].workspaces[1].splitTree.type).toBe('branch');
     expect(loaded.windows[0].workspaces[1].splitTree.children).toHaveLength(2);
+  });
+
+  it('omits SSH workspaces and whole windows that contain nothing else', () => {
+    const local = { id: 'ws-local', title: 'Local', pinned: false, shell: 'pwsh.exe', splitTree: { type: 'leaf', surfaces: [] } };
+    const ssh = { id: 'ws-ssh', title: 'SSH', pinned: false, shell: '', sshProfileId: 'profile-a', splitTree: { type: 'leaf', surfaces: [] } };
+    const legacySsh = {
+      id: 'ws-legacy',
+      title: 'Legacy SSH',
+      pinned: false,
+      shell: '',
+      splitTree: { type: 'leaf', surfaces: [{ type: 'terminal', sshRemote: true }] },
+    };
+    const result = omitSshWorkspaces({
+      version: 1,
+      windows: [
+        { bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200, activeWorkspaceId: 'ws-ssh', workspaces: [local, ssh] },
+        { bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200, activeWorkspaceId: 'ws-legacy', workspaces: [legacySsh] },
+      ],
+    } as SessionData);
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].workspaces.map((workspace) => workspace.id)).toEqual(['ws-local']);
+    expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
   });
 });
 

@@ -1104,6 +1104,19 @@ app.whenReady().then(() => {
   });
 });
 
+let runtimeResourcesReleased = false;
+
+function releaseRuntimeResources(): void {
+  if (runtimeResourcesReleased) return;
+  runtimeResourcesReleased = true;
+  ptyManager.killAll();
+  sshManager.disconnectAll();
+  sshTransferCache.cleanup();
+  pipeServer.stop();
+  cdpProxy.stop();
+  portScanner.stop();
+}
+
 app.on('before-quit', () => {
   isQuitting = true;
   // Cancel pending auto-save timer
@@ -1117,18 +1130,16 @@ app.on('before-quit', () => {
       win.webContents.send('session:request');
     }
   });
+  // Start process/session cleanup while renderer shutdown is still in progress.
+  // In particular, psmux kill-session helpers need time to outlive the PTY.
+  releaseRuntimeResources();
 });
 
 app.on('will-quit', () => {
   // Kill all PTYs before anything else tears down. Without this, node-pty's
   // libuv async handles (batons) are still pending when the process exits,
   // triggering the "Assertion failed: remove_pty_baton" MSVC runtime error.
-  ptyManager.killAll();
-  sshManager.disconnectAll();
-  sshTransferCache.cleanup();
-  pipeServer.stop();
-  cdpProxy.stop();
-  portScanner.stop();
+  releaseRuntimeResources();
 });
 
 app.on('window-all-closed', () => {

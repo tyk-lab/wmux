@@ -196,6 +196,59 @@ describe('SFTP file details', () => {
     expect(parseSshLongnameOwnerGroup('-rw-r--r-- 1 pi users 10 Aug 4 12:00 file.txt'))
       .toEqual({ owner: 'pi', group: 'users' });
   });
+
+  it('reads UTF-8 text and saves only when the remote mtime still matches', async () => {
+    const manager = new SshManager();
+    let mtime = 100;
+    const writes: string[] = [];
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error: Error | undefined, attrs: unknown) => void) => {
+        callback(undefined, { mode: 0o100644, size: 12, mtime, uid: 1000, gid: 1000, atime: 99 });
+      },
+      readFile: (_remotePath: string, callback: (error: Error | undefined, value: Buffer) => void) => {
+        callback(undefined, Buffer.from('你好，wmux\n'));
+      },
+      writeFile: (_remotePath: string, content: string, encoding: string, callback: (error?: Error) => void) => {
+        expect(encoding).toBe('utf8');
+        writes.push(content);
+        mtime += 1;
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.readTextFile('workspace-a', '/home/pi/fluidd.cfg')).resolves.toEqual({
+      path: '/home/pi/fluidd.cfg',
+      content: '你好，wmux\n',
+      mtimeMs: 100_000,
+    });
+    await expect(manager.writeTextFile('workspace-a', '/home/pi/fluidd.cfg', 'stale', 99_000))
+      .resolves.toEqual({ conflict: true, currentMtimeMs: 100_000 });
+    await expect(manager.writeTextFile('workspace-a', '/home/pi/fluidd.cfg', 'saved', 100_000))
+      .resolves.toEqual({ ok: true, mtimeMs: 101_000 });
+    expect(writes).toEqual(['saved']);
+  });
+
+  it('rejects binary files instead of corrupting them as UTF-8 text', async () => {
+    const manager = new SshManager();
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error: Error | undefined, attrs: unknown) => void) => {
+        callback(undefined, { mode: 0o100644, size: 2, mtime: 100, uid: 1000, gid: 1000, atime: 99 });
+      },
+      readFile: (_remotePath: string, callback: (error: Error | undefined, value: Buffer) => void) => {
+        callback(undefined, Buffer.from([0xff, 0xfe]));
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.readTextFile('workspace-a', '/home/pi/image.bin')).rejects.toThrow('UTF-8 文本');
+  });
 });
 
 describe('SFTP mutations', () => {
