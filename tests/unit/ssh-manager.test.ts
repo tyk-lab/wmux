@@ -2,10 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Client, SFTPWrapper } from 'ssh2';
+import type { Client, SFTPWrapper } from 'ssh2';
 import {
   buildAgentAuthMethods,
   buildSshConnectConfig,
+  buildSshChildPath,
+  buildSshRenameTarget,
   findOpenSshIdentityFiles,
   hashKnownHostKey,
   parseOpenSshConfig,
@@ -147,5 +149,122 @@ describe('SFTP paths', () => {
       path: '/home/pi/klipper',
       entries: [{ name: 'klippy', path: '/home/pi/klipper/klippy', type: 'directory', size: 0 }],
     });
+  });
+
+  it('skips realpath for absolute directories to avoid an extra SSH round trip', async () => {
+    const manager = new SshManager();
+    let realpathCalls = 0;
+    const sftp = {
+      realpath: () => { realpathCalls += 1; },
+      readdir: (remotePath: string, callback: (error: Error | undefined, entries: unknown[]) => void) => {
+        expect(remotePath).toBe('/home/pi/klipper');
+        callback(undefined, []);
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.list('workspace-a', '/home/pi/klipper')).resolves.toEqual({
+      path: '/home/pi/klipper',
+      entries: [],
+    });
+    expect(realpathCalls).toBe(0);
+  });
+});
+
+describe('SFTP mutations', () => {
+  it('builds a sibling rename target and rejects path separators', () => {
+    expect(buildSshRenameTarget('/home/pi/old.txt', 'new.txt')).toBe('/home/pi/new.txt');
+    expect(buildSshChildPath('/home/pi', 'new')).toBe('/home/pi/new');
+    expect(() => buildSshRenameTarget('/home/pi/old.txt', '../new.txt')).toThrow('远程文件名无效');
+  });
+
+  it('creates empty files and directories without overwriting existing paths', async () => {
+    const manager = new SshManager();
+    const created: string[] = [];
+    const handle = Buffer.from('handle');
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error?: Error) => void) => {
+        callback(Object.assign(new Error('missing'), { code: 2 }));
+      },
+      mkdir: (remotePath: string, callback: (error?: Error) => void) => {
+        created.push(`directory:${remotePath}`);
+        callback();
+      },
+      open: (remotePath: string, flags: string, callback: (error: Error | undefined, value: Buffer) => void) => {
+        created.push(`file:${remotePath}:${flags}`);
+        callback(undefined, handle);
+      },
+      close: (value: Buffer, callback: (error?: Error) => void) => {
+        expect(value).toBe(handle);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await manager.createEntry('workspace-a', '/home/pi', 'notes.txt', 'file');
+    await manager.createEntry('workspace-a', '/home/pi', 'configs', 'directory');
+
+    expect(created).toEqual(['file:/home/pi/notes.txt:wx', 'directory:/home/pi/configs']);
+  });
+
+  it('renames only when the target does not already exist', async () => {
+    const manager = new SshManager();
+    const renamed: string[] = [];
+    let targetExists = false;
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error?: Error) => void) => {
+        callback(targetExists ? undefined : Object.assign(new Error('missing'), { code: 2 }));
+      },
+      rename: (oldPath: string, newPath: string, callback: (error?: Error) => void) => {
+        renamed.push(`${oldPath}->${newPath}`);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.rename('workspace-a', '/home/pi/old.txt', 'new.txt'))
+      .resolves.toBe('/home/pi/new.txt');
+    targetExists = true;
+    await expect(manager.rename('workspace-a', '/home/pi/old.txt', 'taken.txt'))
+      .rejects.toThrow('“taken.txt”已存在');
+    expect(renamed).toEqual(['/home/pi/old.txt->/home/pi/new.txt']);
+  });
+
+  it('uses unlink for files and rmdir for empty directories', async () => {
+    const manager = new SshManager();
+    const removed: string[] = [];
+    let mode = 0o100000;
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error: Error | undefined, attrs: { mode: number }) => void) => {
+        callback(undefined, { mode });
+      },
+      unlink: (remotePath: string, callback: (error?: Error) => void) => {
+        removed.push(`file:${remotePath}`);
+        callback();
+      },
+      rmdir: (remotePath: string, callback: (error?: Error) => void) => {
+        removed.push(`directory:${remotePath}`);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await manager.deleteEntry('workspace-a', '/home/pi/file.txt');
+    mode = 0o040000;
+    await manager.deleteEntry('workspace-a', '/home/pi/empty');
+
+    expect(removed).toEqual(['file:/home/pi/file.txt', 'directory:/home/pi/empty']);
   });
 });

@@ -280,6 +280,46 @@ function toFileEntry(entry: { filename: string; longname: string; attrs: { size:
   };
 }
 
+function cleanSshEntryName(name: string): string {
+  const cleanName = name?.trim();
+  if (
+    !cleanName
+    || cleanName === '.'
+    || cleanName === '..'
+    || cleanName.includes('/')
+    || cleanName.includes('\0')
+  ) {
+    throw new Error('远程文件名无效');
+  }
+  return cleanName;
+}
+
+export function buildSshChildPath(remoteDirectory: string, name: string): string {
+  const cleanDirectory = remoteDirectory?.trim();
+  if (!cleanDirectory || cleanDirectory.includes('\0')) throw new Error('远程目录路径无效');
+  return path.posix.join(cleanDirectory, cleanSshEntryName(name));
+}
+
+export function buildSshRenameTarget(remotePath: string, newName: string): string {
+  const cleanPath = remotePath?.trim();
+  if (!cleanPath || cleanPath.includes('\0')) throw new Error('远程文件路径无效');
+  return buildSshChildPath(path.posix.dirname(cleanPath), newName);
+}
+
+async function sftpPathExists(sftp: SFTPWrapper, remotePath: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    sftp.lstat(remotePath, (error) => {
+      if (!error) {
+        resolve(true);
+        return;
+      }
+      const code = (error as Error & { code?: number | string }).code;
+      if (code === 2 || code === 'ENOENT') resolve(false);
+      else reject(new Error(error.message || '无法检查远程目标'));
+    });
+  });
+}
+
 export class SshManager {
   private sessions = new Map<string, SshSession>();
 
@@ -370,8 +410,7 @@ export class SshManager {
     const sftp = this.getSftp(workspaceId);
     const directory = remotePath || '.';
     return new Promise((resolve, reject) => {
-      sftp.realpath(directory, (pathError, absolutePath) => {
-        if (pathError || !absolutePath) return reject(new Error(pathError?.message || '无法解析远程目录'));
+      const readDirectory = (absolutePath: string) => {
         sftp.readdir(absolutePath, (error, entries) => {
           if (error) return reject(new Error(error.message || '无法读取远程目录'));
           resolve({
@@ -382,6 +421,70 @@ export class SshManager {
               .sort((a, b) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name)),
           });
         });
+      };
+      if (directory.startsWith('/')) {
+        readDirectory(path.posix.normalize(directory));
+        return;
+      }
+      sftp.realpath(directory, (pathError, absolutePath) => {
+        if (pathError || !absolutePath) return reject(new Error(pathError?.message || '无法解析远程目录'));
+        readDirectory(absolutePath);
+      });
+    });
+  }
+
+  async rename(workspaceId: string, remotePath: string, newName: string): Promise<string> {
+    const targetPath = buildSshRenameTarget(remotePath, newName);
+    const sftp = this.getSftp(workspaceId);
+    if (await sftpPathExists(sftp, targetPath)) throw new Error(`“${newName.trim()}”已存在`);
+    await new Promise<void>((resolve, reject) => sftp.rename(remotePath, targetPath, (error) =>
+      error ? reject(new Error(error.message || '重命名失败')) : resolve()));
+    return targetPath;
+  }
+
+  async createEntry(
+    workspaceId: string,
+    remoteDirectory: string,
+    name: string,
+    type: 'file' | 'directory',
+  ): Promise<string> {
+    if (type !== 'file' && type !== 'directory') throw new Error('远程项目类型无效');
+    const targetPath = buildSshChildPath(remoteDirectory, name);
+    const sftp = this.getSftp(workspaceId);
+    if (await sftpPathExists(sftp, targetPath)) throw new Error(`“${name.trim()}”已存在`);
+    if (type === 'directory') {
+      await new Promise<void>((resolve, reject) => sftp.mkdir(targetPath, (error) =>
+        error ? reject(new Error(error.message || '新建目录失败')) : resolve()));
+      return targetPath;
+    }
+    await new Promise<void>((resolve, reject) => {
+      sftp.open(targetPath, 'wx', (openError, handle) => {
+        if (openError || !handle) {
+          reject(new Error(openError?.message || '新建文件失败'));
+          return;
+        }
+        sftp.close(handle, (closeError) => closeError
+          ? reject(new Error(closeError.message || '关闭新文件失败'))
+          : resolve());
+      });
+    });
+    return targetPath;
+  }
+
+  async deleteEntry(workspaceId: string, remotePath: string): Promise<void> {
+    if (!remotePath?.trim() || remotePath.includes('\0')) throw new Error('远程文件路径无效');
+    const sftp = this.getSftp(workspaceId);
+    await new Promise<void>((resolve, reject) => {
+      sftp.lstat(remotePath, (statError, attributes) => {
+        if (statError || !attributes) {
+          reject(new Error(statError?.message || '无法读取远程文件信息'));
+          return;
+        }
+        const callback = (error?: Error | null) => error
+          ? reject(new Error(error.message || '删除失败；目录必须为空'))
+          : resolve();
+        if ((attributes.mode & 0o170000) === 0o040000) sftp.rmdir(remotePath, callback);
+        else sftp.unlink(remotePath, callback);
       });
     });
   }

@@ -400,6 +400,41 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       icon: path.join(app.getAppPath(), 'resources', 'icon.png'),
     });
   });
+  ipcMain.handle(IPC_CHANNELS.SSH_RENAME, async (
+    _event,
+    workspaceId: string,
+    remotePath: string,
+    newName: string,
+  ) => ({ ok: true, path: await sshManager.rename(workspaceId, remotePath, newName) }));
+  ipcMain.handle(IPC_CHANNELS.SSH_DELETE, async (event, workspaceId: string, remotePath: string) => {
+    if (typeof remotePath !== 'string' || !remotePath.trim() || remotePath.includes('\0')) {
+      throw new Error('远程文件路径无效');
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      type: 'warning' as const,
+      title: '删除远程项目',
+      message: `确定删除“${path.posix.basename(remotePath)}”吗？`,
+      detail: '此操作无法撤销；目录仅在为空时才能删除。',
+      buttons: ['删除', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const confirmation = win
+      ? await dialog.showMessageBox(win, options)
+      : await dialog.showMessageBox(options);
+    if (confirmation.response !== 0) return { canceled: true };
+    await sshManager.deleteEntry(workspaceId, remotePath);
+    return { ok: true };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_CREATE, async (
+    _event,
+    workspaceId: string,
+    remoteDirectory: string,
+    name: string,
+    type: 'file' | 'directory',
+  ) => ({ ok: true, path: await sshManager.createEntry(workspaceId, remoteDirectory, name, type) }));
 
   ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string; flash?: boolean }) => {
     const window = BrowserWindow.fromWebContents(_event.sender);

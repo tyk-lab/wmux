@@ -461,6 +461,9 @@ export const IPC_CHANNELS = {
   SSH_DOWNLOAD_MANY: 'ssh:download-many',
   SSH_PREPARE_DRAG: 'ssh:prepare-drag',
   SSH_START_DRAG: 'ssh:start-drag',
+  SSH_RENAME: 'ssh:rename',
+  SSH_DELETE: 'ssh:delete',
+  SSH_CREATE: 'ssh:create',
 } as const;
 
 // ─── Orchestration state (wmux-orchestrator plugin) ────────────────────────

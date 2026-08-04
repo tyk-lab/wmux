@@ -110,7 +110,7 @@ export class SshTransferCache {
     const localFiles: string[] = [];
     const usedNames = new Set<string>();
     try {
-      for (const [index, file] of files.entries()) {
+      for (const file of files) {
         const localName = uniqueLocalName(file.name, usedNames);
         usedNames.add(localName.toLowerCase());
         const localPath = path.join(directory, localName);

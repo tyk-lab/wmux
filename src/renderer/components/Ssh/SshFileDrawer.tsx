@@ -15,7 +15,26 @@ interface PreparedSelection {
   token: string;
 }
 
+interface DirectoryResult {
+  path: string;
+  entries: SshFileEntry[];
+}
+
+interface EntryContextMenu {
+  entry?: SshFileEntry;
+  x: number;
+  y: number;
+}
+
+interface NameDialogState {
+  action: 'create-file' | 'create-directory' | 'rename';
+  entry?: SshFileEntry;
+  value: string;
+}
+
 const REMOTE_DRAG_TYPE = 'application/x-wmux-remote-file';
+const DIRECTORY_CACHE_TTL = 10_000;
+const MAX_CACHED_DIRECTORIES = 100;
 
 export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect }: Props) {
   const [currentPath, setCurrentPath] = useState('.');
@@ -28,7 +47,15 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const [transferStatus, setTransferStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [dropActive, setDropActive] = useState(false);
+  const [contextMenu, setContextMenu] = useState<EntryContextMenu>();
+  const [nameDialog, setNameDialog] = useState<NameDialogState>();
+  const [nameDialogError, setNameDialogError] = useState('');
   const lastValidPathRef = useRef('.');
+  const directoryCacheRef = useRef(new Map<string, { result: DirectoryResult; cachedAt: number }>());
+  const pendingDirectoriesRef = useRef(new Map<string, Promise<DirectoryResult>>());
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const activeWorkspaceIdRef = useRef(workspaceId);
+  activeWorkspaceIdRef.current = workspaceId;
 
   const selectedFiles = useMemo(
     () => entries.filter((entry) => entry.type === 'file' && selectedPaths.has(entry.path)),
@@ -36,28 +63,60 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   );
   const selectionSignature = selectedFiles.map((entry) => entry.path).sort().join('\n');
 
-  const refresh = useCallback(async () => {
+  const requestDirectory = useCallback((remotePath: string, force = false): Promise<DirectoryResult> => {
+    const cached = directoryCacheRef.current.get(remotePath);
+    if (!force && cached && Date.now() - cached.cachedAt < DIRECTORY_CACHE_TTL) {
+      return Promise.resolve(cached.result);
+    }
+    const pending = pendingDirectoriesRef.current.get(remotePath);
+    if (pending) return pending;
+    const request = window.wmux?.ssh?.list?.(workspaceId, remotePath);
+    if (!request) return Promise.reject(new Error('SSH 文件接口不可用'));
+    let tracked: Promise<DirectoryResult>;
+    tracked = Promise.resolve(request).then((value: DirectoryResult | undefined) => {
+      const result = { path: value?.path || remotePath, entries: value?.entries || [] };
+      if (activeWorkspaceIdRef.current !== workspaceId) return result;
+      const cache = directoryCacheRef.current;
+      if (cache.size >= MAX_CACHED_DIRECTORIES) cache.delete(cache.keys().next().value as string);
+      const cacheEntry = { result, cachedAt: Date.now() };
+      cache.set(remotePath, cacheEntry);
+      cache.set(result.path, cacheEntry);
+      return result;
+    }).finally(() => {
+      if (pendingDirectoriesRef.current.get(remotePath) === tracked) {
+        pendingDirectoriesRef.current.delete(remotePath);
+      }
+    });
+    pendingDirectoriesRef.current.set(remotePath, tracked);
+    return tracked;
+  }, [workspaceId]);
+
+  const refresh = useCallback(async (force = false) => {
     if (state !== 'connected') return;
-    setLoading(true);
+    const requestedWorkspaceId = workspaceId;
+    setLoading(!directoryCacheRef.current.has(currentPath) || force);
     setError('');
     try {
-      const result = await window.wmux?.ssh?.list?.(workspaceId, currentPath);
-      setEntries(result?.entries || []);
-      const resolvedPath = result?.path || currentPath;
+      const result = await requestDirectory(currentPath, force);
+      if (activeWorkspaceIdRef.current !== requestedWorkspaceId) return;
+      setEntries(result.entries);
+      const resolvedPath = result.path;
       lastValidPathRef.current = resolvedPath;
       setCurrentPath(resolvedPath);
       setPathDraft(resolvedPath);
     } catch (reason) {
+      if (activeWorkspaceIdRef.current !== requestedWorkspaceId) return;
       setEntries([]);
       if (isMissingSftpPathError(reason)) {
         const fallbackPath = lastValidPathRef.current === currentPath ? '.' : lastValidPathRef.current;
         try {
-          const fallback = await window.wmux?.ssh?.list?.(workspaceId, fallbackPath);
-          const resolvedFallbackPath = fallback?.path || fallbackPath;
+          const fallback = await requestDirectory(fallbackPath);
+          if (activeWorkspaceIdRef.current !== requestedWorkspaceId) return;
+          const resolvedFallbackPath = fallback.path;
           lastValidPathRef.current = resolvedFallbackPath;
           setCurrentPath(resolvedFallbackPath);
           setPathDraft(resolvedFallbackPath);
-          setEntries(fallback?.entries || []);
+          setEntries(fallback.entries);
           setError('');
           setTransferStatus(`路径不存在，已返回 ${resolvedFallbackPath}`);
           return;
@@ -68,9 +127,9 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      if (activeWorkspaceIdRef.current === requestedWorkspaceId) setLoading(false);
     }
-  }, [workspaceId, currentPath, state]);
+  }, [currentPath, requestDirectory, state, workspaceId]);
 
   useEffect(() => {
     lastValidPathRef.current = '.';
@@ -80,11 +139,34 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     setSelectedPaths(new Set());
     setError('');
     setTransferStatus('');
+    setContextMenu(undefined);
+    setNameDialog(undefined);
+    setNameDialogError('');
+    directoryCacheRef.current.clear();
+    pendingDirectoriesRef.current.clear();
   }, [workspaceId]);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     setPreparedSelection((current) => current?.signature === selectionSignature ? current : undefined);
   }, [selectionSignature]);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(undefined);
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [contextMenu]);
+  useEffect(() => () => {
+    if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+  }, []);
 
   const navigate = (nextPath: string) => {
     const normalized = nextPath.trim() || '.';
@@ -95,8 +177,20 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     }
     setSelectedPaths(new Set());
     setSelectionAnchor(undefined);
-    setCurrentPath(normalized);
-    setPathDraft(normalized);
+    const cached = directoryCacheRef.current.get(normalized);
+    if (cached && Date.now() - cached.cachedAt < DIRECTORY_CACHE_TTL) {
+      setEntries(cached.result.entries);
+      setCurrentPath(cached.result.path);
+      setPathDraft(cached.result.path);
+    } else {
+      setCurrentPath(normalized);
+      setPathDraft(normalized);
+    }
+  };
+
+  const invalidateCurrentDirectory = () => {
+    directoryCacheRef.current.delete(currentPath);
+    directoryCacheRef.current.delete(lastValidPathRef.current);
   };
 
   const upload = async () => {
@@ -105,7 +199,8 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       const result = await window.wmux?.ssh?.upload?.(workspaceId, currentPath);
       if (!result?.canceled) {
         setTransferStatus('上传完成');
-        await refresh();
+        invalidateCurrentDirectory();
+        await refresh(true);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -139,7 +234,8 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       setTransferStatus(rejected.length
         ? `已上传 ${result?.uploaded || 0} 个文件；已忽略目录或无效项：${rejected.join('、')}`
         : `已上传 ${result?.uploaded || localPaths.length} 个文件`);
-      await refresh();
+      invalidateCurrentDirectory();
+      await refresh(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setTransferStatus('');
@@ -173,6 +269,128 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     );
     setSelectedPaths(selection.selectedPaths);
     setSelectionAnchor(selection.anchorIndex);
+  };
+
+  const openEntryContextMenu = (event: React.MouseEvent, entry: SshFileEntry, index: number) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (entry.type === 'file' && !selectedPaths.has(entry.path)) {
+      setSelectedPaths(new Set([entry.path]));
+      setSelectionAnchor(index);
+    } else if (entry.type !== 'file') {
+      setSelectedPaths(new Set());
+      setSelectionAnchor(undefined);
+    }
+    setContextMenu({
+      entry,
+      x: Math.max(4, Math.min(event.clientX, window.innerWidth - 150)),
+      y: Math.max(4, Math.min(event.clientY, window.innerHeight - 180)),
+    });
+  };
+
+  const openCreateContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    setContextMenu({
+      x: Math.max(4, Math.min(event.clientX, window.innerWidth - 150)),
+      y: Math.max(4, Math.min(event.clientY, window.innerHeight - 110)),
+    });
+  };
+
+  const createEntry = async (type: 'file' | 'directory', name: string) => {
+    const typeLabel = type === 'file' ? '文件' : '目录';
+    setError('');
+    setTransferStatus(`正在新建${typeLabel}…`);
+    try {
+      const create = window.wmux?.ssh?.create;
+      if (!create) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+      const result = await create(workspaceId, currentPath, name, type);
+      invalidateCurrentDirectory();
+      setTransferStatus(`${typeLabel}已创建`);
+      await refresh(true);
+      if (type === 'file' && result?.path) setSelectedPaths(new Set([result.path]));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setTransferStatus('');
+    }
+  };
+
+  const renameEntry = async (entry: SshFileEntry, newName: string) => {
+    setError('');
+    setTransferStatus(`正在重命名 ${entry.name}…`);
+    try {
+      const rename = window.wmux?.ssh?.rename;
+      if (!rename) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+      await rename(workspaceId, entry.path, newName);
+      setSelectedPaths(new Set());
+      directoryCacheRef.current.delete(entry.path);
+      invalidateCurrentDirectory();
+      setTransferStatus('重命名完成');
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setTransferStatus('');
+    }
+  };
+
+  const openNameDialog = (action: NameDialogState['action'], entry?: SshFileEntry) => {
+    setContextMenu(undefined);
+    setNameDialogError('');
+    setNameDialog({
+      action,
+      entry,
+      value: action === 'rename' ? entry?.name || '' : action === 'create-file' ? '新建文件' : '新建目录',
+    });
+  };
+
+  const submitNameDialog = () => {
+    if (!nameDialog) return;
+    const name = nameDialog.value.trim();
+    if (!name || name === '.' || name === '..' || name.includes('/')) {
+      setNameDialogError('请输入有效名称，名称不能包含 /');
+      return;
+    }
+    if (entries.some((item) => item.path !== nameDialog.entry?.path && item.name === name)) {
+      setNameDialogError(`“${name}”已存在`);
+      return;
+    }
+    if (nameDialog.action === 'rename' && nameDialog.entry?.name === name) {
+      setNameDialog(undefined);
+      return;
+    }
+    const dialog = nameDialog;
+    setNameDialog(undefined);
+    if (dialog.action === 'rename' && dialog.entry) void renameEntry(dialog.entry, name);
+    else void createEntry(dialog.action === 'create-file' ? 'file' : 'directory', name);
+  };
+
+  const deleteEntry = async (entry: SshFileEntry) => {
+    setError('');
+    setTransferStatus('');
+    try {
+      const result = await window.wmux?.ssh?.delete?.(workspaceId, entry.path);
+      if (result?.canceled) return;
+      setTransferStatus('正在更新目录…');
+      setSelectedPaths((current) => {
+        const next = new Set(current);
+        next.delete(entry.path);
+        return next;
+      });
+      directoryCacheRef.current.delete(entry.path);
+      invalidateCurrentDirectory();
+      setTransferStatus('删除完成');
+      await refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setTransferStatus('');
+    }
+  };
+
+  const scheduleDirectoryPrefetch = (entry: SshFileEntry) => {
+    if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+    if (entry.type !== 'directory') return;
+    prefetchTimerRef.current = setTimeout(() => {
+      void requestDirectory(entry.path).catch(() => undefined);
+    }, 120);
   };
 
   const beginRemoteDrag = (event: React.DragEvent, entry: SshFileEntry) => {
@@ -213,7 +431,7 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }}
     onDrop={(event) => void uploadDroppedFiles(event)}
   >
-    <div className="ssh-file-drawer__header"><strong>远程文件</strong><button onClick={refresh} disabled={loading || state !== 'connected'}>刷新</button></div>
+    <div className="ssh-file-drawer__header"><strong>远程文件</strong><button onClick={() => void refresh(true)} disabled={loading || state !== 'connected'}>刷新</button></div>
     {state !== 'connected' ? <div className="ssh-file-drawer__status">
       <p>{state === 'connecting' ? '正在连接 SFTP…' : state === 'error' ? errorMessage || 'SFTP 连接失败。' : 'SSH 文件连接已断开。'}</p>
       <button className="ssh-primary-button" onClick={onReconnect}>重新连接</button>
@@ -226,11 +444,14 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       </form>
       {error && <p className="ssh-dialog__error ssh-file-drawer__message">{error}</p>}
       {transferStatus && <p className="ssh-file-drawer__message">{transferStatus}</p>}
-      <div className="ssh-file-drawer__list">{entries.map((entry, index) => <button
+      <div className="ssh-file-drawer__list" onContextMenu={openCreateContextMenu}>{entries.map((entry, index) => <button
         key={entry.path}
         className={`ssh-file-entry ${selectedPaths.has(entry.path) ? 'ssh-file-entry--selected' : ''}`}
         aria-pressed={entry.type === 'file' ? selectedPaths.has(entry.path) : undefined}
         draggable={entry.type === 'file'}
+        onContextMenu={(event) => openEntryContextMenu(event, entry, index)}
+        onMouseEnter={() => scheduleDirectoryPrefetch(entry)}
+        onMouseLeave={() => { if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current); }}
         onDragStart={(event) => beginRemoteDrag(event, entry)}
         onDoubleClick={() => entry.type === 'directory' && navigate(entry.path)}
         onClick={(event) => selectEntry(event, entry, index)}
@@ -239,6 +460,60 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       </button>)}</div>
       {loading && <p className="ssh-file-drawer__loading">正在读取…</p>}
       {dropActive && <div className="ssh-file-drawer__drop-overlay">释放以上传文件</div>}
+      {contextMenu && <div
+        className="ssh-file-context-menu"
+        style={{ left: contextMenu.x, top: contextMenu.y }}
+        role="menu"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button role="menuitem" onClick={() => {
+          openNameDialog('create-file');
+        }}>新建文件</button>
+        <button role="menuitem" onClick={() => {
+          openNameDialog('create-directory');
+        }}>新建目录</button>
+        {contextMenu.entry && <div className="ssh-file-context-menu__separator" role="separator" />}
+        {contextMenu.entry && <>
+        <button role="menuitem" onClick={() => {
+          const entry = contextMenu.entry;
+          if (entry) openNameDialog('rename', entry);
+        }}>重命名</button>
+        <button className="ssh-file-context-menu__danger" role="menuitem" onClick={() => {
+          const entry = contextMenu.entry;
+          setContextMenu(undefined);
+          if (entry) void deleteEntry(entry);
+        }}>删除</button>
+        </>}
+      </div>}
     </>}
+    {nameDialog && <div
+      className="ssh-dialog-backdrop"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) setNameDialog(undefined); }}
+    >
+      <form className="ssh-dialog ssh-name-dialog" onSubmit={(event) => {
+        event.preventDefault();
+        submitNameDialog();
+      }}>
+        <div className="ssh-dialog__header">
+          <h2>{nameDialog.action === 'rename' ? '重命名' : nameDialog.action === 'create-file' ? '新建文件' : '新建目录'}</h2>
+          <button className="ssh-icon-button" type="button" onClick={() => setNameDialog(undefined)}>×</button>
+        </div>
+        <input
+          autoFocus
+          value={nameDialog.value}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => {
+            setNameDialog((current) => current ? { ...current, value: event.target.value } : current);
+            setNameDialogError('');
+          }}
+          aria-label="名称"
+        />
+        {nameDialogError && <p className="ssh-dialog__error">{nameDialogError}</p>}
+        <div className="ssh-dialog__actions">
+          <button type="button" onClick={() => setNameDialog(undefined)}>取消</button>
+          <button className="ssh-primary-button" type="submit">确定</button>
+        </div>
+      </form>
+    </div>}
   </aside>;
 }
