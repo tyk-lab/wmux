@@ -2,9 +2,11 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import * as os from 'os';
 import { IPC_CHANNELS } from '../shared/types';
 
+const sshUploadGrants = new Set<string>();
+
 contextBridge.exposeInMainWorld('wmux', {
   pty: {
-    create: (options: { shell: string; cwd: string; env: Record<string, string>; surfaceId?: string; startupCommands?: string[]; cols?: number; rows?: number }) =>
+    create: (options: { shell: string; cwd: string; env: Record<string, string>; surfaceId?: string; startupCommands?: string[]; sshProfileId?: string; cols?: number; rows?: number }) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_CREATE, options) as Promise<{ id: string; shell: string; startupCommandsConsumed?: boolean }>,
     write: (id: string, data: string) =>
       ipcRenderer.send(IPC_CHANNELS.PTY_WRITE, id, data),
@@ -138,7 +140,9 @@ contextBridge.exposeInMainWorld('wmux', {
     // (issue #33).
     getPathForFile: (file: File): string => {
       try {
-        return webUtils.getPathForFile(file);
+        const filePath = webUtils.getPathForFile(file);
+        if (filePath) sshUploadGrants.add(filePath);
+        return filePath;
       } catch {
         return '';
       }
@@ -256,11 +260,28 @@ contextBridge.exposeInMainWorld('wmux', {
   ssh: {
     importConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_IMPORT_CONFIG),
     pickKey: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_PICK_KEY),
-    connect: (workspaceId: string, profile: any) => ipcRenderer.invoke(IPC_CHANNELS.SSH_CONNECT, workspaceId, profile),
+    connect: (workspaceId: string, profile: any, password?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_CONNECT, workspaceId, profile, password),
     disconnect: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DISCONNECT, workspaceId),
+    credentialStatus: (profile: any) => ipcRenderer.invoke(IPC_CHANNELS.SSH_CREDENTIAL_STATUS, profile),
+    updateCredential: (profile: any, password: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_CREDENTIAL_UPDATE, profile, password),
+    deleteCredential: (profile: any) => ipcRenderer.invoke(IPC_CHANNELS.SSH_CREDENTIAL_DELETE, profile),
     list: (workspaceId: string, remotePath: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_LIST, workspaceId, remotePath),
     upload: (workspaceId: string, remoteDirectory: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_UPLOAD, workspaceId, remoteDirectory),
+    uploadPaths: (workspaceId: string, remoteDirectory: string, localPaths: string[]) => {
+      if (localPaths.some((filePath) => !sshUploadGrants.has(filePath))) {
+        return Promise.reject(new Error('上传路径未经拖放授权'));
+      }
+      localPaths.forEach((filePath) => sshUploadGrants.delete(filePath));
+      return ipcRenderer.invoke(IPC_CHANNELS.SSH_UPLOAD_PATHS, workspaceId, remoteDirectory, localPaths);
+    },
     download: (workspaceId: string, remotePath: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DOWNLOAD, workspaceId, remotePath),
+    downloadMany: (workspaceId: string, files: Array<{ path: string; name: string }>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_DOWNLOAD_MANY, workspaceId, files),
+    prepareDrag: (workspaceId: string, files: Array<{ path: string; name: string }>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_PREPARE_DRAG, workspaceId, files),
+    startDrag: (token: string) => ipcRenderer.send(IPC_CHANNELS.SSH_START_DRAG, token),
   },
   diff: {
     getFiles: (cwd: string) => ipcRenderer.invoke(IPC_CHANNELS.DIFF_GET_FILES, cwd),

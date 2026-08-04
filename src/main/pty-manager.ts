@@ -69,6 +69,67 @@ export function parseShellSpec(spec: string | undefined): { command: string; arg
   return { command, args };
 }
 
+/** Returns the owned psmux session created by an SSH surface, if present. */
+export function parsePsmuxSessionName(command: string, args: string[]): string | undefined {
+  const executable = path.basename(command).toLowerCase();
+  if (executable !== 'psmux' && executable !== 'psmux.exe') return undefined;
+  if (args[0] !== 'new-session') return undefined;
+  const sessionFlag = args.indexOf('-s');
+  const sessionName = sessionFlag >= 0 ? args[sessionFlag + 1] : undefined;
+  return sessionName && /^[a-z0-9_-]+$/i.test(sessionName) ? sessionName : undefined;
+}
+
+function stripTerminalControlSequences(output: string): string {
+  return output
+    // OSC/DCS sequences can contain arbitrary printable text and end with BEL
+    // or ST, so remove them before handling the shorter CSI escape sequences.
+    // eslint-disable-next-line no-control-regex -- terminal output contains literal ESC/BEL bytes
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    // eslint-disable-next-line no-control-regex -- terminal output contains literal ESC bytes
+    .replace(/\x1bP[\s\S]*?\x1b\\/g, '')
+    // eslint-disable-next-line no-control-regex -- terminal output contains literal ESC bytes
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    // A control sequence may be split at the end of the latest PTY chunk.
+    // eslint-disable-next-line no-control-regex -- terminal output contains literal ESC bytes
+    .replace(/\x1b(?:\[[0-?]*[ -/]*)?$/g, '')
+    // eslint-disable-next-line no-control-regex -- remove remaining single-byte terminal controls
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
+/** Matches only the initial OpenSSH password prompt at the end of visible PTY output. */
+export function isSshPasswordPrompt(output: string): boolean {
+  return /(?:password\s*[:：]|密码\s*[:：])\s*$/i.test(stripTerminalControlSequences(output));
+}
+
+export interface SshPasswordEndpoint {
+  host: string;
+  port: number;
+  username: string;
+}
+
+/** Ensures a credential can only be injected into the exact SSH endpoint it authenticated. */
+export function isAuthorizedSshPasswordLaunch(
+  command: string,
+  args: string[],
+  endpoint: SshPasswordEndpoint,
+): boolean {
+  if (!parsePsmuxSessionName(command, args)) return false;
+  const separator = args.indexOf('--');
+  if (separator < 0) return false;
+  const expected = [
+    'ssh',
+    '-p', String(endpoint.port),
+    '-o', 'PreferredAuthentications=password,keyboard-interactive',
+    '-o', 'PubkeyAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=yes',
+    '-o', 'NumberOfPasswordPrompts=1',
+    `${endpoint.username}@${endpoint.host}`,
+  ];
+  const remoteCommand = args.slice(separator + 1);
+  return remoteCommand.length === expected.length
+    && remoteCommand.every((value, index) => value === expected[index]);
+}
+
 function getShellIntegrationPath(): string {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -210,6 +271,11 @@ interface PtyEntry {
   // when create() is called again for the same surfaceId (idempotent reuse).
   shell: string;
   startupConsumed: boolean;
+  /** Dedicated psmux session owned by this surface and reaped on explicit close. */
+  psmuxSessionName?: string;
+  sshProfileId?: string;
+  passwordInjected: boolean;
+  authOutputTail: string;
 }
 
 export interface CreateOptions {
@@ -225,6 +291,8 @@ export interface CreateOptions {
    *  they are baked into the shell's own startup (see `startupCommandsConsumed`
    *  in the return value) rather than injected later as keystrokes. */
   startupCommands?: string[];
+  /** Secret-free credential lookup key for a password-authenticated SSH surface. */
+  sshProfileId?: string;
 }
 
 // Primary Device Attributes (DA1). oh-my-posh / PSReadLine probe the terminal
@@ -250,6 +318,11 @@ const DA1_REPLY = '\x1b[?62;4;9;22c';
 
 export class PtyManager {
   private ptys = new Map<SurfaceId, PtyEntry>();
+
+  constructor(private readonly sshPasswordProvider: (
+    profileId: string,
+    launch: { command: string; args: string[] },
+  ) => string | undefined = () => undefined) {}
 
   // ConPTY's input pipe silently drops bytes when a single write outruns the
   // foreground process. Splitting at ~1 KB keeps every chunk well under the
@@ -285,6 +358,9 @@ export class PtyManager {
     const spec = parseShellSpec(options.shell);
     const shell = resolveShell(spec.command);
     const shellExtraArgs = shell === spec.command ? spec.args : [];
+    const psmuxSessionName = shell === spec.command
+      ? parsePsmuxSessionName(spec.command, spec.args)
+      : undefined;
     const shellType = getShellType(shell);
     const integrationDir = getShellIntegrationPath();
     const cliPath = getCliPath();
@@ -389,9 +465,28 @@ export class PtyManager {
       rows: spawnOptions.rows ?? 24,
       shell,
       startupConsumed: startupCommandsConsumed,
+      psmuxSessionName,
+      sshProfileId: options.sshProfileId,
+      passwordInjected: false,
+      authOutputTail: '',
     };
 
     ptyProcess.onData((data) => {
+      if (entry.sshProfileId && !entry.passwordInjected) {
+        entry.authOutputTail = `${entry.authOutputTail}${data}`.slice(-512);
+        if (isSshPasswordPrompt(entry.authOutputTail)) {
+          try {
+            const password = this.sshPasswordProvider(entry.sshProfileId, spec);
+            if (password) {
+              entry.passwordInjected = true;
+              entry.authOutputTail = '';
+              ptyProcess.write(`${password}\r`);
+            }
+          } catch {
+            // Credential lookup failure leaves the prompt interactive.
+          }
+        }
+      }
       // Answer DA1 probes in-process so the prompt never stalls or leaks the
       // reply (see DA1_QUERY note above). Only the escape character is common
       // enough to warrant the cheap guard before the regex scan.
@@ -504,6 +599,23 @@ export class PtyManager {
 
     entry.alive = false; // signals any in-flight chunked write to stop
     const pid = entry.pty.pid;
+
+    // SSH surfaces own a dedicated psmux session. Killing only the attached
+    // client leaves that session (and its remote ssh process) running in the
+    // psmux server, so explicitly reap it whenever the surface is closed.
+    if (entry.psmuxSessionName) {
+      try {
+        const cleaner = spawn(entry.shell, ['kill-session', '-t', entry.psmuxSessionName], {
+          windowsHide: true,
+          detached: true,
+          stdio: 'ignore',
+        });
+        cleaner.on('error', () => { /* psmux unavailable / session already gone */ });
+        cleaner.unref();
+      } catch {
+        // Best effort: the regular PTY tree teardown below must still run.
+      }
+    }
 
     // Tree-kill the shell's whole process subtree BEFORE closing the pseudoconsole
     // (issue #65). With `useConptyDll: true`, node-pty's DLL kill path only calls

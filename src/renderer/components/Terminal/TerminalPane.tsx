@@ -12,17 +12,22 @@ interface TerminalPaneProps {
   colorScheme?: string;
   /** Quick-launch profile startup commands (issue #32). */
   startupCommands?: string[];
+  /** Secret-free key used for one-time SSH password injection in the main process. */
+  sshProfileId?: string;
   focused?: boolean;
   visible?: boolean;
   showFindBar?: boolean;
   onFindBarClose?: () => void;
   copyModeActive?: boolean;
-  /** Restored SSH terminals wait for an explicit reconnect instead of spawning automatically. */
-  disconnected?: boolean;
+  /** Password/SFTP validation must finish before the remote PTY is spawned. */
+  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'error';
 }
 
-function DisconnectedTerminalPane() {
-  return <div className="terminal-pane terminal-pane--disconnected">SSH 终端已断开，请在右侧文件抽屉中重新连接。</div>;
+function PendingSshTerminalPane({ state }: { state: Exclude<TerminalPaneProps['sshConnectionState'], 'connected' | undefined> }) {
+  let message = 'SSH 终端已断开，请在右侧文件抽屉中重新连接。';
+  if (state === 'connecting') message = '正在验证 SSH 凭据…';
+  if (state === 'error') message = 'SSH 认证失败，请在密码窗口或右侧文件抽屉中重新连接。';
+  return <div className="terminal-pane terminal-pane--disconnected">{message}</div>;
 }
 
 function ActiveTerminalPane({
@@ -31,13 +36,14 @@ function ActiveTerminalPane({
   cwd,
   colorScheme,
   startupCommands,
+  sshProfileId,
   focused = true,
   visible = true,
   showFindBar = false,
   onFindBarClose,
   copyModeActive = false,
 }: TerminalPaneProps) {
-  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands });
+  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, sshProfileId });
 
   const [_lastQuery, setLastQuery] = useState('');
 
@@ -111,6 +117,8 @@ function ActiveTerminalPane({
 }
 
 export default function TerminalPane(props: TerminalPaneProps) {
-  if (props.disconnected) return <DisconnectedTerminalPane />;
+  if (props.sshConnectionState && props.sshConnectionState !== 'connected') {
+    return <PendingSshTerminalPane state={props.sshConnectionState} />;
+  }
   return <ActiveTerminalPane {...props} />;
 }

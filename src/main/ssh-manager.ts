@@ -2,14 +2,21 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
-import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2';
-import { SshConfigDraft, SshConnectionProfile, SshFileEntry } from '../shared/types';
+import {
+  Client,
+  type AnyAuthMethod,
+  type ConnectConfig,
+  type KeyboardInteractiveCallback,
+  type Prompt,
+  type SFTPWrapper,
+} from 'ssh2';
+import { SshConfigDraft, SshConnectionProfile, SshFileEntry, SshFileListResult } from '../shared/types';
 
 type SshSession = { client: Client; sftp: SFTPWrapper };
 
-function expandHome(filePath: string): string {
-  if (filePath === '~') return os.homedir();
-  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) return path.join(os.homedir(), filePath.slice(2));
+function expandHome(filePath: string, homeDirectory = os.homedir()): string {
+  if (filePath === '~') return homeDirectory;
+  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) return path.join(homeDirectory, filePath.slice(2));
   return filePath;
 }
 
@@ -77,11 +84,129 @@ export function parseOpenSshConfig(content: string): SshConfigDraft[] {
   return drafts;
 }
 
+const DEFAULT_IDENTITY_FILES = [
+  'id_ed25519',
+  'id_ecdsa',
+  'id_ecdsa_sk',
+  'id_ed25519_sk',
+  'id_rsa',
+  'id_dsa',
+];
+
+function hostPatternMatches(pattern: string, host: string): boolean {
+  const source = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  return new RegExp(`^${source}$`, 'i').test(host);
+}
+
+function hostBlockMatches(patterns: string[], aliases: Set<string>): boolean {
+  let matched = false;
+  for (const rawPattern of patterns) {
+    const negated = rawPattern.startsWith('!');
+    const pattern = negated ? rawPattern.slice(1) : rawPattern;
+    const patternMatches = [...aliases].some((alias) => hostPatternMatches(pattern, alias));
+    if (negated && patternMatches) return false;
+    if (!negated && patternMatches) matched = true;
+  }
+  return matched;
+}
+
+function resolveIdentityPath(
+  rawPath: string,
+  profile: Pick<SshConnectionProfile, 'host' | 'username'>,
+  sshDirectory: string,
+): string {
+  const homeDirectory = path.dirname(sshDirectory);
+  const expanded = rawPath
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/%d/g, homeDirectory)
+    .replace(/%h/g, profile.host)
+    .replace(/%r/g, profile.username);
+  const homeExpanded = expandHome(expanded, homeDirectory);
+  return path.isAbsolute(homeExpanded) ? homeExpanded : path.resolve(sshDirectory, homeExpanded);
+}
+
+/** Finds OpenSSH-configured and conventional private keys usable without an agent. */
+export function findOpenSshIdentityFiles(
+  profile: Pick<SshConnectionProfile, 'host' | 'username'>,
+  sshDirectory = path.join(os.homedir(), '.ssh'),
+): string[] {
+  const configPath = path.join(sshDirectory, 'config');
+  let configContent = '';
+  try {
+    configContent = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    // A config file is optional; conventional identity names still apply.
+  }
+
+  const aliases = new Set([profile.host]);
+  for (const draft of parseOpenSshConfig(configContent)) {
+    if (draft.host === profile.host) aliases.add(draft.hostAlias);
+  }
+
+  const candidates: string[] = [];
+  let activeHostBlock = false;
+  for (const rawLine of configContent.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, '').trim();
+    if (!line) continue;
+    const match = line.match(/^(\S+)\s+(.+)$/);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (key === 'host') {
+      activeHostBlock = hostBlockMatches(value.split(/\s+/), aliases);
+    } else if (key === 'identityfile' && activeHostBlock) {
+      candidates.push(resolveIdentityPath(value, profile, sshDirectory));
+    }
+  }
+
+  candidates.push(...DEFAULT_IDENTITY_FILES.map((name) => path.join(sshDirectory, name)));
+  return [...new Set(candidates)].filter((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile() && !candidate.toLowerCase().endsWith('.pub');
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Agent profiles use the agent first, with OpenSSH identity files as fallback. */
+export function buildAgentAuthMethods(
+  profile: Pick<SshConnectionProfile, 'host' | 'username'>,
+  sshDirectory = path.join(os.homedir(), '.ssh'),
+): AnyAuthMethod[] {
+  const methods: AnyAuthMethod[] = [{
+    type: 'agent',
+    username: profile.username,
+    agent: process.env.SSH_AUTH_SOCK || '\\\\.\\pipe\\openssh-ssh-agent',
+  }];
+  for (const identityPath of findOpenSshIdentityFiles(profile, sshDirectory)) {
+    try {
+      methods.push({ type: 'publickey', username: profile.username, key: fs.readFileSync(identityPath) });
+    } catch {
+      // A key may disappear or become unreadable between discovery and connect.
+    }
+  }
+  return methods;
+}
+
 function validateProfile(profile: SshConnectionProfile): SshConnectionProfile {
   const host = profile.host.trim();
   const username = profile.username.trim();
   const port = Number(profile.port);
-  if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
+  const supportedAuthMethods = new Set(['agent', 'privateKey', 'password']);
+  if (
+    !host
+    || !username
+    || /\s/.test(host)
+    || /\s/.test(username)
+    || !Number.isInteger(port)
+    || port < 1
+    || port > 65535
+    || !supportedAuthMethods.has(profile.authMethod)
+  ) {
     throw new Error('SSH 连接信息无效');
   }
   if (profile.authMethod === 'privateKey' && !profile.privateKeyPath?.trim()) {
@@ -90,7 +215,32 @@ function validateProfile(profile: SshConnectionProfile): SshConnectionProfile {
   return { ...profile, host, username, port, privateKeyPath: profile.privateKeyPath?.trim() };
 }
 
-function connectConfig(profile: SshConnectionProfile): ConnectConfig {
+export class SshAuthenticationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'SshAuthenticationError';
+  }
+}
+
+export class SshPasswordAuthenticationError extends SshAuthenticationError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'SshPasswordAuthenticationError';
+  }
+}
+
+function isAuthenticationFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const level = (error as Error & { level?: string }).level;
+  return level === 'client-authentication'
+    || /authentication methods failed|authentication failure|permission denied/i.test(error.message);
+}
+
+function isSshPasswordPrompt(prompt: string): boolean {
+  return /(?:password\s*[:：]|密码\s*[:：])\s*$/i.test(prompt);
+}
+
+export function buildSshConnectConfig(profile: SshConnectionProfile, password?: string): ConnectConfig {
   const config: ConnectConfig = {
     host: profile.host,
     port: profile.port,
@@ -100,9 +250,15 @@ function connectConfig(profile: SshConnectionProfile): ConnectConfig {
   if (profile.authMethod === 'privateKey') {
     const keyPath = expandHome(profile.privateKeyPath!);
     config.privateKey = fs.readFileSync(keyPath);
-  } else {
-    // Windows OpenSSH uses this named pipe when SSH_AUTH_SOCK is absent.
-    config.agent = process.env.SSH_AUTH_SOCK || '\\\\.\\pipe\\openssh-ssh-agent';
+  } else if (profile.authMethod === 'agent') {
+    // The terminal's OpenSSH client can read IdentityFile/default keys even when
+    // ssh-agent is disabled. ssh2 is a separate connection, so mirror that
+    // behavior before trying the agent instead of failing at the named pipe.
+    config.authHandler = buildAgentAuthMethods(profile);
+  } else if (password) {
+    config.password = password;
+    config.tryKeyboard = true;
+    config.authHandler = ['password', 'keyboard-interactive'];
   }
   const trustedFingerprints = readKnownHostFingerprints(profile.host, profile.port);
   config.hostHash = 'sha256';
@@ -127,34 +283,72 @@ function toFileEntry(entry: { filename: string; longname: string; attrs: { size:
 export class SshManager {
   private sessions = new Map<string, SshSession>();
 
-  async connect(workspaceId: string, rawProfile: SshConnectionProfile): Promise<void> {
+  async connect(workspaceId: string, rawProfile: SshConnectionProfile, password?: string): Promise<void> {
     this.disconnect(workspaceId);
     const profile = validateProfile(rawProfile);
     const client = new Client();
     client.on('error', () => this.disconnect(workspaceId));
     let sftp: SFTPWrapper;
+    let agentError: Error | undefined;
     try {
       sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
-      const fail = (error: Error) => reject(new Error(error.message || 'SSH 连接失败'));
-      client.once('error', fail);
-      client.once('ready', () => {
-        client.sftp((error, wrapper) => {
-          if (error || !wrapper) {
-            fail(error ?? new Error('无法建立 SFTP 会话'));
+        const answerKeyboardInteractive = (
+          _name: string,
+          _instructions: string,
+          _language: string,
+          prompts: Prompt[],
+          finish: KeyboardInteractiveCallback,
+        ) => {
+          const answers = prompts.map((prompt) => isSshPasswordPrompt(prompt.prompt) ? password || '' : '');
+          finish(answers);
+        };
+        const fail = (error: Error & { level?: string }) => {
+          // ssh2 emits an agent-level error and then advances authHandler. Keep
+          // listening so OpenSSH-configured/default keys can complete the same
+          // connection instead of rejecting at the unavailable Windows pipe.
+          if (error.level === 'agent') {
+            agentError = error;
             return;
           }
-          client.removeListener('error', fail);
-          resolve(wrapper);
+          reject(error);
+        };
+        client.on('error', fail);
+        if (profile.authMethod === 'password') {
+          client.on('keyboard-interactive', answerKeyboardInteractive);
+        }
+        client.once('ready', () => {
+          client.sftp((error, wrapper) => {
+            if (error || !wrapper) {
+              fail(error ?? new Error('无法建立 SFTP 会话'));
+              return;
+            }
+            client.removeListener('error', fail);
+            client.removeListener('keyboard-interactive', answerKeyboardInteractive);
+            resolve(wrapper);
+          });
         });
-      });
-      try {
-        client.connect(connectConfig(profile));
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)));
-      }
+        try {
+          client.connect(buildSshConnectConfig(profile, password));
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        }
       });
     } catch (error) {
       try { client.end(); } catch { /* connection already closed */ }
+      if (profile.authMethod === 'password' && isAuthenticationFailure(error)) {
+        throw new SshPasswordAuthenticationError('SSH 密码无效，请重新输入', { cause: error });
+      }
+      if (agentError) {
+        throw new SshAuthenticationError(
+          'SSH Agent 或默认私钥认证失败，请输入 SSH 密码继续',
+          { cause: error },
+        );
+      }
+      if (isAuthenticationFailure(error)) {
+        throw new SshAuthenticationError('当前 SSH 认证方式失败，请输入 SSH 密码继续', {
+          cause: error,
+        });
+      }
       throw error;
     }
     this.sessions.set(workspaceId, { client, sftp });
@@ -172,16 +366,22 @@ export class SshManager {
     [...this.sessions.keys()].forEach((workspaceId) => this.disconnect(workspaceId));
   }
 
-  async list(workspaceId: string, remotePath: string): Promise<SshFileEntry[]> {
+  async list(workspaceId: string, remotePath: string): Promise<SshFileListResult> {
     const sftp = this.getSftp(workspaceId);
     const directory = remotePath || '.';
     return new Promise((resolve, reject) => {
-      sftp.readdir(directory, (error, entries) => {
-        if (error) return reject(new Error(error.message || '无法读取远程目录'));
-        resolve(entries
-          .filter((entry) => entry.filename !== '.' && entry.filename !== '..')
-          .map((entry) => toFileEntry(entry, directory))
-          .sort((a, b) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name)));
+      sftp.realpath(directory, (pathError, absolutePath) => {
+        if (pathError || !absolutePath) return reject(new Error(pathError?.message || '无法解析远程目录'));
+        sftp.readdir(absolutePath, (error, entries) => {
+          if (error) return reject(new Error(error.message || '无法读取远程目录'));
+          resolve({
+            path: absolutePath,
+            entries: entries
+              .filter((entry) => entry.filename !== '.' && entry.filename !== '..')
+              .map((entry) => toFileEntry(entry, absolutePath))
+              .sort((a, b) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name)),
+          });
+        });
       });
     });
   }

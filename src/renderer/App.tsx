@@ -9,6 +9,8 @@ import { aggregateProgress } from './store/progress-slice';
 import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
+import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
+import { attachSshProfileId, buildSshSplitTree, upgradeSshSplitTree } from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import SettingsWindow from './components/Settings/SettingsWindow';
@@ -612,26 +614,6 @@ function buildDefaultSplitTree(): SplitNode {
   };
 }
 
-function quoteSshArgument(value: string): string {
-  return /\s/.test(value) ? `"${value.replace(/"/g, '')}"` : value;
-}
-
-function buildSshSplitTree(profile: SshConnectionProfile): SplitNode {
-  const identity = profile.authMethod === 'privateKey' && profile.privateKeyPath
-    ? ` -i ${quoteSshArgument(profile.privateKeyPath)}`
-    : '';
-  const remoteShell = `ssh -p ${profile.port}${identity} ${profile.username}@${profile.host}`;
-  const sessionBase = `ssh-${uuid().replace(/-/g, '').slice(0, 12)}`;
-  const psmuxShell = `psmux new-session -s ${sessionBase} -- ${remoteShell}`;
-  return {
-    type: 'branch', direction: 'horizontal', ratio: 0.5,
-    children: [
-      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal', shell: psmuxShell, sshRemote: true }], activeSurfaceIndex: 0 },
-      { type: 'leaf', paneId: `pane-${uuid()}` as PaneId, surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }], activeSurfaceIndex: 0 },
-    ],
-  };
-}
-
 export default function App() {
   const {
     workspaces,
@@ -663,7 +645,13 @@ export default function App() {
   const [focusedPaneId, setFocusedPaneId] = useState<PaneId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
+  const [sshPasswordRequest, setSshPasswordRequest] = useState<{
+    workspaceId: WorkspaceId;
+    profile: SshConnectionProfile;
+    errorMessage?: string;
+  } | null>(null);
   const sshWorkspaceIdsRef = useRef<Set<string>>(new Set());
+  const autoReconnectedSshWorkspaceIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const activeIds = new Set<string>(workspaces.filter((workspace) => workspace.sshProfileId).map((workspace) => workspace.id));
     sshWorkspaceIdsRef.current.forEach((workspaceId) => {
@@ -1333,21 +1321,66 @@ export default function App() {
     handleSelectWorkspace(newId);
   }, [createWorkspace, handleSelectWorkspace]);
 
-  const connectSshWorkspace = useCallback(async (workspaceId: WorkspaceId, profile: SshConnectionProfile) => {
+  const connectSshWorkspace = useCallback(async (
+    workspaceId: WorkspaceId,
+    profile: SshConnectionProfile,
+    password?: string,
+  ): Promise<boolean> => {
     updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: undefined });
+    const existingWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+    if (existingWorkspace) {
+      updateSplitTree(workspaceId, attachSshProfileId(existingWorkspace.splitTree, profile.id));
+    }
     try {
-      await window.wmux?.ssh?.connect?.(workspaceId, profile);
+      const result = await window.wmux?.ssh?.connect?.(workspaceId, profile, password);
+      if (!result?.ok) {
+        const errorMessage = result?.error || 'SSH 连接失败';
+        if (result?.passwordRequired) {
+          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
+          setSshPasswordRequest({ workspaceId, profile, errorMessage });
+        } else {
+          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'error', sshConnectionError: errorMessage });
+        }
+        return false;
+      }
+      if (result.authMethod === 'password') {
+        const passwordProfile: SshConnectionProfile = {
+          ...profile,
+          authMethod: 'password',
+          privateKeyPath: undefined,
+        };
+        const profiles = useStore.getState().sshConnections;
+        setSshConnections(profiles.map((item) => item.id === profile.id ? passwordProfile : item));
+        const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
+        if (workspace) {
+          updateSplitTree(workspaceId, upgradeSshSplitTree(workspace.splitTree, passwordProfile));
+        }
+      }
       updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connected' });
+      setSshPasswordRequest((request) => request?.workspaceId === workspaceId ? null : request);
+      return true;
     } catch (reason) {
-      // The remote terminal remains usable even when SFTP authentication fails.
+      const errorMessage = reason instanceof Error ? reason.message : String(reason);
       updateWorkspaceMetadata(workspaceId, {
         sshConnectionState: 'error',
-        sshConnectionError: reason instanceof Error ? reason.message : String(reason),
+        sshConnectionError: errorMessage,
       });
+      return false;
     }
-  }, [updateWorkspaceMetadata]);
+  }, [setSshConnections, updateSplitTree, updateWorkspaceMetadata]);
 
-  const handleCreateSshWorkspace = useCallback((profile: SshConnectionProfile) => {
+  useEffect(() => {
+    for (const workspace of workspaces) {
+      if (workspace.sshConnectionState !== 'disconnected' || !workspace.sshProfileId) continue;
+      if (autoReconnectedSshWorkspaceIdsRef.current.has(workspace.id)) continue;
+      const profile = sshConnections.find((item) => item.id === workspace.sshProfileId);
+      if (!profile || profile.authMethod !== 'password') continue;
+      autoReconnectedSshWorkspaceIdsRef.current.add(workspace.id);
+      void connectSshWorkspace(workspace.id, profile);
+    }
+  }, [connectSshWorkspace, sshConnections, workspaces]);
+
+  const handleCreateSshWorkspace = useCallback((profile: SshConnectionProfile, password?: string) => {
     const existing = sshConnections.findIndex((item) => item.id === profile.id);
     const saved = existing >= 0
       ? sshConnections.map((item, index) => index === existing ? profile : item)
@@ -1361,8 +1394,18 @@ export default function App() {
       sshConnectionState: 'connecting',
     });
     handleSelectWorkspace(workspaceId);
-    void connectSshWorkspace(workspaceId, profile);
+    void connectSshWorkspace(workspaceId, profile, password);
   }, [createWorkspace, connectSshWorkspace, handleSelectWorkspace, setSshConnections, sshConnections]);
+
+  const handleSshProfilesChange = useCallback((profiles: SshConnectionProfile[]) => {
+    setSshConnections(profiles);
+    const state = useStore.getState();
+    for (const workspace of state.workspaces) {
+      if (!workspace.sshProfileId) continue;
+      const profile = profiles.find((item) => item.id === workspace.sshProfileId);
+      if (profile) updateSplitTree(workspace.id, upgradeSshSplitTree(workspace.splitTree, profile));
+    }
+  }, [setSshConnections, updateSplitTree]);
 
   const handleSaveSession = useCallback(async (name: string) => {
     const state = useStore.getState();
@@ -1572,7 +1615,28 @@ export default function App() {
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {tutorialOpen && <Tutorial onClose={handleTutorialClose} />}
       {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
-      {sshDialogOpen && <SshConnectionDialog profiles={sshConnections} onClose={() => setSshDialogOpen(false)} onConnect={handleCreateSshWorkspace} />}
+      {sshDialogOpen && <SshConnectionDialog
+        profiles={sshConnections}
+        onClose={() => setSshDialogOpen(false)}
+        onConnect={handleCreateSshWorkspace}
+        onProfilesChange={handleSshProfilesChange}
+      />}
+      {sshPasswordRequest && <SshPasswordDialog
+        profileName={sshPasswordRequest.profile.name}
+        errorMessage={sshPasswordRequest.errorMessage}
+        onCancel={() => {
+          updateWorkspaceMetadata(sshPasswordRequest.workspaceId, {
+            sshConnectionState: 'error',
+            sshConnectionError: sshPasswordRequest.errorMessage,
+          });
+          setSshPasswordRequest(null);
+        }}
+        onSubmit={(password) => connectSshWorkspace(
+          sshPasswordRequest.workspaceId,
+          sshPasswordRequest.profile,
+          password,
+        )}
+      />}
       <Titlebar
         title={titlebarText}
         onHelpClick={() => setTutorialOpen(true)}

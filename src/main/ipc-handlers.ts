@@ -1,11 +1,12 @@
-import { ipcMain, BrowserWindow, clipboard, shell, dialog, app, nativeTheme } from 'electron';
+import { ipcMain, BrowserWindow, clipboard, shell, dialog, app, nativeTheme, safeStorage } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile } from '../shared/types';
+import { randomUUID } from 'crypto';
+import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectResult } from '../shared/types';
 import { observePtyData, clearActivity } from './claude-observer';
 import { clearAgentState } from './agent-state';
-import { PtyManager } from './pty-manager';
+import { isAuthorizedSshPasswordLaunch, PtyManager, type SshPasswordEndpoint } from './pty-manager';
 import { NotificationManager } from './notification-manager';
 import { detectShells } from './shell-detector';
 import { listSystemFonts } from './font-detector';
@@ -34,13 +35,44 @@ import {
   MD_DIALOG_EXTENSIONS,
 } from './markdown-file';
 import { grantMarkdownPath, isMarkdownPathGranted } from './markdown-grants';
-import { SshManager, parseOpenSshConfig } from './ssh-manager';
+import {
+  SshAuthenticationError,
+  SshManager,
+  SshPasswordAuthenticationError,
+  parseOpenSshConfig,
+} from './ssh-manager';
+import { SshCredentialStore } from './ssh-credential-store';
+import {
+  nextAvailableLocalPath,
+  SshTransferCache,
+  validateLocalUploadFiles,
+  validateRemoteTransferFiles,
+} from './ssh-transfer-cache';
 
-const ptyManager = new PtyManager();
+const sshCredentialStore = new SshCredentialStore(safeStorage);
+const passwordProfiles = new Map<string, SshPasswordEndpoint>();
+const ptyManager = new PtyManager((profileId, launch) => {
+  const endpoint = passwordProfiles.get(profileId);
+  if (!endpoint || !isAuthorizedSshPasswordLaunch(launch.command, launch.args, endpoint)) return undefined;
+  return sshCredentialStore.get(profileId, endpoint);
+});
 const notificationManager = new NotificationManager();
 const cdpBridge = new CDPBridge();
 const agentManager = new AgentManager(ptyManager);
 const sshManager = new SshManager();
+const sshTransferCache = new SshTransferCache();
+
+function asPasswordProfile(profile: SshConnectionProfile): SshConnectionProfile {
+  return { ...profile, authMethod: 'password', privateKeyPath: undefined };
+}
+
+function credentialEndpoint(profile: SshConnectionProfile): SshPasswordEndpoint {
+  return {
+    host: profile.host.trim(),
+    port: Number(profile.port),
+    username: profile.username.trim(),
+  };
+}
 
 export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstance?: CDPProxy): void {
   // Toggle DevTools for the renderer window
@@ -215,16 +247,96 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       : { path: result.filePaths[0] };
   });
 
-  ipcMain.handle(IPC_CHANNELS.SSH_CONNECT, async (_event, workspaceId: string, profile: SshConnectionProfile) => {
-    await sshManager.connect(workspaceId, profile);
-    return { ok: true };
+  ipcMain.handle(IPC_CHANNELS.SSH_CONNECT, async (
+    _event,
+    workspaceId: string,
+    profile: SshConnectionProfile,
+    suppliedPassword?: string,
+  ): Promise<SshConnectResult> => {
+    const passwordProfile = asPasswordProfile(profile);
+    const endpoint = credentialEndpoint(passwordProfile);
+    const connectWithPassword = async (password: string): Promise<SshConnectResult> => {
+      try {
+        await sshManager.connect(workspaceId, passwordProfile, password);
+        sshCredentialStore.save(profile.id, password, endpoint);
+        passwordProfiles.set(profile.id, endpoint);
+        return { ok: true, authMethod: 'password' };
+      } catch (error) {
+        sshManager.disconnect(workspaceId);
+        if (error instanceof SshPasswordAuthenticationError) {
+          sshCredentialStore.delete(profile.id);
+          passwordProfiles.delete(profile.id);
+          return { ok: false, passwordRequired: true, error: error.message };
+        }
+        throw error;
+      }
+    };
+
+    const passwordRequested = profile.authMethod === 'password' || suppliedPassword !== undefined;
+    if (!passwordRequested) {
+      try {
+        await sshManager.connect(workspaceId, profile);
+        sshCredentialStore.delete(profile.id);
+        passwordProfiles.delete(profile.id);
+        return { ok: true, authMethod: profile.authMethod };
+      } catch (error) {
+        if (error instanceof SshAuthenticationError) {
+          const cachedPassword = sshCredentialStore.get(profile.id, endpoint);
+          if (cachedPassword) return connectWithPassword(cachedPassword);
+          return { ok: false, passwordRequired: true, error: error.message };
+        }
+        throw error;
+      }
+    }
+
+    const password = suppliedPassword
+      || sshCredentialStore.get(profile.id, endpoint);
+    if (!password) {
+      return { ok: false, passwordRequired: true, error: '请输入 SSH 密码' };
+    }
+    return connectWithPassword(password);
   });
   ipcMain.handle(IPC_CHANNELS.SSH_DISCONNECT, async (_event, workspaceId: string) => {
     sshManager.disconnect(workspaceId);
     return { ok: true };
   });
+  ipcMain.handle(IPC_CHANNELS.SSH_CREDENTIAL_STATUS, async (_event, profile: SshConnectionProfile) => {
+    const endpoint = credentialEndpoint(profile);
+    return {
+      passwordSaved: sshCredentialStore.has(profile.id, endpoint),
+      privateKeyConfigured: Boolean(profile.privateKeyPath),
+    };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_CREDENTIAL_UPDATE, async (
+    _event,
+    profile: SshConnectionProfile,
+    password: string,
+  ) => {
+    if (!password) return { ok: false, error: 'SSH 密码不能为空' };
+    const passwordProfile = asPasswordProfile(profile);
+    const endpoint = credentialEndpoint(passwordProfile);
+    const verificationId = `credential-${randomUUID()}`;
+    try {
+      await sshManager.connect(verificationId, passwordProfile, password);
+      sshCredentialStore.save(profile.id, password, endpoint);
+      passwordProfiles.set(profile.id, endpoint);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof SshPasswordAuthenticationError) {
+        return { ok: false, error: error.message };
+      }
+      throw error;
+    } finally {
+      sshManager.disconnect(verificationId);
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_CREDENTIAL_DELETE, async (_event, profile: SshConnectionProfile) => {
+    sshCredentialStore.delete(profile.id);
+    passwordProfiles.delete(profile.id);
+    return { ok: true };
+  });
   ipcMain.handle(IPC_CHANNELS.SSH_LIST, async (_event, workspaceId: string, remotePath: string) => {
-    return { entries: await sshManager.list(workspaceId, remotePath) };
+    return sshManager.list(workspaceId, remotePath);
   });
   ipcMain.handle(IPC_CHANNELS.SSH_UPLOAD, async (event, workspaceId: string, remoteDirectory: string) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
@@ -238,6 +350,18 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     }
     return { ok: true };
   });
+  ipcMain.handle(IPC_CHANNELS.SSH_UPLOAD_PATHS, async (
+    _event,
+    workspaceId: string,
+    remoteDirectory: string,
+    localPaths: unknown,
+  ) => {
+    const { files, rejected } = validateLocalUploadFiles(localPaths);
+    for (const localPath of files) {
+      await sshManager.upload(workspaceId, localPath, path.posix.join(remoteDirectory || '.', path.basename(localPath)));
+    }
+    return { ok: true, uploaded: files.length, rejected };
+  });
   ipcMain.handle(IPC_CHANNELS.SSH_DOWNLOAD, async (event, workspaceId: string, remotePath: string) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const result = await dialog.showSaveDialog(win as BrowserWindow, {
@@ -247,6 +371,34 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     if (result.canceled || !result.filePath) return { canceled: true };
     await sshManager.download(workspaceId, remotePath, result.filePath);
     return { ok: true, filePath: result.filePath };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_DOWNLOAD_MANY, async (event, workspaceId: string, remoteFiles: unknown) => {
+    const files = validateRemoteTransferFiles(remoteFiles);
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: '选择下载目录',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    const directory = result.filePaths[0];
+    for (const file of files) {
+      await sshManager.download(workspaceId, file.path, nextAvailableLocalPath(directory, file.name));
+    }
+    return { ok: true, downloaded: files.length };
+  });
+  ipcMain.handle(IPC_CHANNELS.SSH_PREPARE_DRAG, async (event, workspaceId: string, remoteFiles: unknown) => {
+    const prepared = await sshTransferCache.prepare(remoteFiles, (remotePath, localPath) =>
+      sshManager.download(workspaceId, remotePath, localPath), String(event.sender.id));
+    return { ok: true, token: prepared.token };
+  });
+  ipcMain.on(IPC_CHANNELS.SSH_START_DRAG, (event, token: string) => {
+    const files = sshTransferCache.get(token);
+    if (!files) return;
+    event.sender.startDrag({
+      file: files[0],
+      files,
+      icon: path.join(app.getAppPath(), 'resources', 'icon.png'),
+    });
   });
 
   ipcMain.on(IPC_CHANNELS.NOTIFICATION_FIRE, (_event, data: { surfaceId: string; text: string; title?: string; flash?: boolean }) => {
@@ -577,4 +729,4 @@ export function setupAgentPtyForwarding(surfaceId: string, window: BrowserWindow
   });
 }
 
-export { ptyManager, cdpBridge, agentManager, sshManager };
+export { ptyManager, cdpBridge, agentManager, sshManager, sshTransferCache };

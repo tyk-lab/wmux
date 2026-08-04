@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { PaneId, SplitNode, SurfaceId, WorkspaceId, QuickLaunchProfile, ShellInfo } from '../../../shared/types';
+import { PaneId, SplitNode, SurfaceId, WorkspaceId, QuickLaunchProfile, ShellInfo, SurfaceRef, WorkspaceInfo } from '../../../shared/types';
 import { findLeaf, splitNode } from '../../store/split-utils';
 import TerminalPane from '../Terminal/TerminalPane';
 import BrowserPane from '../Browser/BrowserPane';
@@ -29,6 +29,18 @@ interface PaneWrapperProps {
   onSurfaceDragPreviewTarget: (targetPaneId: PaneId, target: SurfaceDragPreviewTarget) => void;
   onClearSurfaceDragPreview: () => void;
   onSurfaceDragCommit: (options?: SurfaceDragCommitOptions) => void;
+}
+
+function sshTerminalState(
+  surface: SurfaceRef,
+  workspaceState: WorkspaceInfo['sshConnectionState'],
+): WorkspaceInfo['sshConnectionState'] {
+  const passwordManaged = surface.shell?.includes('PreferredAuthentications=password,keyboard-interactive');
+  if (passwordManaged) return workspaceState;
+  if (surface.sshRemote && (workspaceState === 'connecting' || workspaceState === 'disconnected')) {
+    return workspaceState;
+  }
+  return undefined;
 }
 
 export default function PaneWrapper({
@@ -218,7 +230,8 @@ export default function PaneWrapper({
               cwd={surface.cwd || workspace?.cwd}
               colorScheme={surface.colorScheme}
               startupCommands={surface.startupCommands}
-              disconnected={surface.sshRemote === true && workspace?.sshConnectionState === 'disconnected'}
+              sshProfileId={surface.sshProfileId}
+              sshConnectionState={sshTerminalState(surface, workspace?.sshConnectionState)}
               focused={isFocused && isActive}
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}

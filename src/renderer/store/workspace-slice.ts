@@ -219,7 +219,9 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       browserUrl: config.browserUrl,
       browserWidth: config.browserWidth,
       sshProfileId: config.sshProfileId,
-      // A fresh app process has no SFTP client, so SSH workspaces never reconnect silently.
+      // A fresh app process has no SFTP client. Password profiles with a saved
+      // DPAPI credential are auto-reconnected by App; other methods wait for
+      // the explicit reconnect action as before.
       sshConnectionState: config.sshProfileId ? 'disconnected' : undefined,
     }));
 

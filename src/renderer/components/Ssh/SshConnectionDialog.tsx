@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { SshConfigDraft, SshConnectionProfile } from '../../../shared/types';
+import SshCredentialManager from './SshCredentialManager';
 import '../../styles/ssh.css';
 
 interface Props {
   profiles: SshConnectionProfile[];
   onClose: () => void;
-  onConnect: (profile: SshConnectionProfile) => void;
+  onConnect: (profile: SshConnectionProfile, password?: string) => void;
+  onProfilesChange: (profiles: SshConnectionProfile[]) => void;
 }
 
 function blankProfile(): SshConnectionProfile {
@@ -25,19 +27,23 @@ function asProfile(draft: SshConfigDraft): SshConnectionProfile {
   };
 }
 
-export default function SshConnectionDialog({ profiles, onClose, onConnect }: Props) {
+export default function SshConnectionDialog({ profiles, onClose, onConnect, onProfilesChange }: Props) {
   const [profile, setProfile] = useState<SshConnectionProfile>(() => profiles[0] ?? blankProfile());
   const [drafts, setDrafts] = useState<SshConfigDraft[]>([]);
   const [importError, setImportError] = useState('');
   const [formError, setFormError] = useState('');
+  const [password, setPassword] = useState('');
+  const [credentialManagerOpen, setCredentialManagerOpen] = useState(false);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      if (credentialManagerOpen) setCredentialManagerOpen(false);
+      else onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [credentialManagerOpen, onClose]);
 
   const update = (patch: Partial<SshConnectionProfile>) => setProfile((current) => ({ ...current, ...patch }));
   const submit = (event: React.FormEvent) => {
@@ -47,8 +53,15 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect }: Pr
       setFormError('请选择私钥文件');
       return;
     }
+    if (profile.authMethod === 'password' && !password && !profiles.some((item) => item.id === profile.id)) {
+      setFormError('请输入 SSH 密码');
+      return;
+    }
     setFormError('');
-    onConnect({ ...profile, name: profile.name.trim(), host: profile.host.trim(), username: profile.username.trim() });
+    onConnect(
+      { ...profile, name: profile.name.trim(), host: profile.host.trim(), username: profile.username.trim() },
+      profile.authMethod === 'password' ? password || undefined : undefined,
+    );
   };
   const importConfig = async () => {
     const result = await window.wmux?.ssh?.importConfig?.();
@@ -60,6 +73,18 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect }: Pr
     if (result?.path) update({ privateKeyPath: result.path });
   };
 
+  if (credentialManagerOpen) {
+    return <SshCredentialManager
+      profiles={profiles}
+      onClose={() => setCredentialManagerOpen(false)}
+      onProfilesChange={(nextProfiles) => {
+        onProfilesChange(nextProfiles);
+        const selected = nextProfiles.find((item) => item.id === profile.id);
+        if (selected) setProfile(selected);
+      }}
+    />;
+  }
+
   return (
     <div className="ssh-dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <form className="ssh-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
@@ -70,17 +95,24 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect }: Pr
         <div className="ssh-dialog__preset-row">
           <select value={profile.id} onChange={(event) => {
             const selected = profiles.find((item) => item.id === event.target.value);
-            if (selected) setProfile(selected);
+            if (selected) {
+              setProfile(selected);
+              setPassword('');
+            }
           }}>
             <option value={profile.id}>当前配置</option>
             {profiles.filter((item) => item.id !== profile.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
-          <button type="button" onClick={() => setProfile(blankProfile())}>新建</button>
+          <button type="button" onClick={() => { setProfile(blankProfile()); setPassword(''); }}>新建</button>
           <button type="button" onClick={importConfig}>导入 ~/.ssh/config</button>
+          <button type="button" onClick={() => setCredentialManagerOpen(true)}>管理凭据</button>
         </div>
         {drafts.length > 0 && <select className="ssh-dialog__import" defaultValue="" onChange={(event) => {
           const draft = drafts.find((item) => item.hostAlias === event.target.value);
-          if (draft) setProfile(asProfile(draft));
+          if (draft) {
+            setProfile(asProfile(draft));
+            setPassword('');
+          }
         }}>
           <option value="" disabled>选择导入的 Host</option>
           {drafts.map((draft) => <option key={draft.hostAlias} value={draft.hostAlias}>{draft.hostAlias}</option>)}
@@ -94,11 +126,13 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect }: Pr
           <label>用户名<input value={profile.username} onChange={(event) => update({ username: event.target.value })} placeholder="ubuntu" required /></label>
         </div>
         <fieldset className="ssh-dialog__auth"><legend>认证方式</legend>
-          <label><input type="radio" checked={profile.authMethod === 'agent'} onChange={() => update({ authMethod: 'agent', privateKeyPath: undefined })} /> SSH Agent</label>
-          <label><input type="radio" checked={profile.authMethod === 'privateKey'} onChange={() => update({ authMethod: 'privateKey' })} /> 私钥文件</label>
+          <label><input type="radio" checked={profile.authMethod === 'agent'} onChange={() => { update({ authMethod: 'agent', privateKeyPath: undefined }); setPassword(''); }} /> SSH Agent</label>
+          <label><input type="radio" checked={profile.authMethod === 'privateKey'} onChange={() => { update({ authMethod: 'privateKey' }); setPassword(''); }} /> 私钥文件</label>
+          <label><input type="radio" checked={profile.authMethod === 'password'} onChange={() => update({ authMethod: 'password', privateKeyPath: undefined })} /> 密码</label>
           {profile.authMethod === 'privateKey' && <div className="ssh-dialog__key"><input value={profile.privateKeyPath || ''} readOnly placeholder="未选择私钥" /><button type="button" onClick={chooseKey}>选择文件</button></div>}
+          {profile.authMethod === 'password' && <div className="ssh-dialog__key"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder={profiles.some((item) => item.id === profile.id) ? '留空使用已保存密码' : '输入 SSH 密码'} /></div>}
         </fieldset>
-        <p className="ssh-dialog__hint">密码认证仅可在远程终端交互，不能用于文件管理。密码和私钥内容不会保存。</p>
+        <p className="ssh-dialog__hint">密码经 Windows DPAPI 加密保存，仅在认证失败时要求重新输入；私钥内容不会保存。</p>
         <div className="ssh-dialog__actions"><button type="button" onClick={onClose}>取消</button><button className="ssh-primary-button" type="submit">连接并创建工作区</button></div>
       </form>
     </div>

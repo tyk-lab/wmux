@@ -11,7 +11,7 @@ export type SplitNode =
 
 export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor';
 
-export type SshAuthMethod = 'agent' | 'privateKey';
+export type SshAuthMethod = 'agent' | 'privateKey' | 'password';
 
 /** Secret-free connection preset persisted in the user's wmux settings. */
 export interface SshConnectionProfile {
@@ -37,6 +37,23 @@ export interface SshFileEntry {
   modifiedAt?: number;
 }
 
+export interface SshFileListResult {
+  path: string;
+  entries: SshFileEntry[];
+}
+
+export interface SshConnectResult {
+  ok: boolean;
+  passwordRequired?: boolean;
+  authMethod?: SshAuthMethod;
+  error?: string;
+}
+
+export interface SshCredentialStatus {
+  passwordSaved: boolean;
+  privateKeyConfigured: boolean;
+}
+
 export interface SurfaceRef {
   id: SurfaceId;
   type: SurfaceType;
@@ -54,6 +71,8 @@ export interface SurfaceRef {
   transientSupervisor?: boolean;
   /** Remote terminal restored as an explicit disconnected surface after restart. */
   sshRemote?: boolean;
+  /** Secret-free lookup key for main-process SSH password injection. */
+  sshProfileId?: string;
   /** Initial URL for a browser surface created from a quick-launch profile (issue #32). */
   url?: string;
   /** Rendered markdown content for a `markdown` surface (issue #54). Persisted so
@@ -432,9 +451,16 @@ export const IPC_CHANNELS = {
   SSH_PICK_KEY: 'ssh:pick-key',
   SSH_CONNECT: 'ssh:connect',
   SSH_DISCONNECT: 'ssh:disconnect',
+  SSH_CREDENTIAL_STATUS: 'ssh:credential-status',
+  SSH_CREDENTIAL_UPDATE: 'ssh:credential-update',
+  SSH_CREDENTIAL_DELETE: 'ssh:credential-delete',
   SSH_LIST: 'ssh:list',
   SSH_UPLOAD: 'ssh:upload',
+  SSH_UPLOAD_PATHS: 'ssh:upload-paths',
   SSH_DOWNLOAD: 'ssh:download',
+  SSH_DOWNLOAD_MANY: 'ssh:download-many',
+  SSH_PREPARE_DRAG: 'ssh:prepare-drag',
+  SSH_START_DRAG: 'ssh:start-drag',
 } as const;
 
 // ─── Orchestration state (wmux-orchestrator plugin) ────────────────────────

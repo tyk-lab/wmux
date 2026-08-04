@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { PtyManager, parseShellSpec, resolveSpawnCwd } from '../../src/main/pty-manager';
+import { isAuthorizedSshPasswordLaunch, isSshPasswordPrompt, PtyManager, parsePsmuxSessionName, parseShellSpec, resolveSpawnCwd } from '../../src/main/pty-manager';
 import type { SurfaceId } from '../../src/shared/types';
 
 const TEST_SHELL = 'cmd.exe';
@@ -243,6 +243,62 @@ describe('parseShellSpec (issue #78 — shell command lines with args)', () => {
       command: 'C:\\some path\\tool.exe',
       args: ['--flag'],
     });
+  });
+});
+
+describe('parsePsmuxSessionName', () => {
+  it('recognizes the dedicated session owned by an SSH surface', () => {
+    expect(parsePsmuxSessionName('psmux.exe', [
+      'new-session', '-s', 'ssh-a1b2c3', '--', 'ssh', 'user@example.com',
+    ])).toBe('ssh-a1b2c3');
+  });
+
+  it('rejects unrelated commands and unsafe session names', () => {
+    expect(parsePsmuxSessionName('ssh.exe', ['user@example.com'])).toBeUndefined();
+    expect(parsePsmuxSessionName('psmux.exe', ['new-session', '-s', 'ssh;stop-process']))
+      .toBeUndefined();
+  });
+});
+
+describe('isSshPasswordPrompt', () => {
+  it('matches an OpenSSH password prompt split across PTY chunks', () => {
+    expect(isSshPasswordPrompt("deploy@server.example.com's pass" + 'word: ')).toBe(true);
+    expect(isSshPasswordPrompt('deploy@server.example.com 的密码：')).toBe(true);
+  });
+
+  it('ignores psmux cursor and ANSI sequences appended after the prompt', () => {
+    expect(isSshPasswordPrompt("pi@10.0.100.7's pass\x1b[32mword:\x1b[0m\x1b[?25h\x1b[1;24H"))
+      .toBe(true);
+    expect(isSshPasswordPrompt("pi@10.0.100.7's password:\x1b["))
+      .toBe(true);
+  });
+
+  it('does not match ordinary shell output mentioning a password', () => {
+    expect(isSshPasswordPrompt('password authentication succeeded\r\n')).toBe(false);
+  });
+});
+
+describe('isAuthorizedSshPasswordLaunch', () => {
+  const endpoint = { host: 'server.example.com', port: 2222, username: 'deploy' };
+  const args = [
+    'new-session', '-s', 'ssh-a1b2c3', '--',
+    'ssh', '-p', '2222',
+    '-o', 'PreferredAuthentications=password,keyboard-interactive',
+    '-o', 'PubkeyAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=yes',
+    '-o', 'NumberOfPasswordPrompts=1',
+    'deploy@server.example.com',
+  ];
+
+  it('allows only the exact authenticated SSH endpoint', () => {
+    expect(isAuthorizedSshPasswordLaunch('psmux.exe', args, endpoint)).toBe(true);
+  });
+
+  it('rejects a local command or a different destination', () => {
+    expect(isAuthorizedSshPasswordLaunch('pwsh.exe', args, endpoint)).toBe(false);
+    expect(isAuthorizedSshPasswordLaunch('psmux.exe', [
+      ...args.slice(0, -1), 'deploy@attacker.example.com',
+    ], endpoint)).toBe(false);
   });
 });
 
