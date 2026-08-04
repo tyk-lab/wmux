@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-  Install wmux turn-level hooks for Claude / Kimi / Codex / Grok / OpenCode.
+  Install wmux turn-level hooks for Claude / Kimi / Codex / Grok / Pi / OpenCode.
 
 .DESCRIPTION
   Rebuilds and synchronizes the CLI / Hook helper, then runs `wmux install-hooks` which writes:
@@ -9,6 +9,7 @@
     - ~/.kimi-code/config.toml         (Kimi)
     - ~/.codex/hooks.json              (Codex — may need /hooks trust)
     - ~/.grok/hooks/wmux.json          (Grok Build)
+    - ~/.pi/agent/extensions/wmux-agent-hooks.ts (Pi Agent extension)
     - ~/.config/opencode/plugin/wmux.js (OpenCode plugin)
 
   Safe to re-run (idempotent). Does not remove your non-wmux hooks.

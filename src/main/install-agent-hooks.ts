@@ -14,6 +14,7 @@ import { ensureKimiHooks, resolveKimiConfigPath } from './kimi-context';
 import { ensureCodexHooks, resolveCodexHooksPath } from './codex-context';
 import { ensureGrokHooks, resolveGrokWmuxHooksPath } from './grok-context';
 import { ensureOpencodePlugin } from './opencode-context';
+import { ensurePiHooks, resolvePiWmuxExtensionPath } from './pi-context';
 import { resolveWmuxHookScriptPath } from './wmux-hook-path';
 
 export interface AgentHookInstallResult {
@@ -103,6 +104,7 @@ export function installAllAgentHooks(opts: InstallAgentHooksOptions = {}): Agent
   results.push(safeRun('kimi', 'Kimi Code', resolveKimiConfigPath(), () => ensureKimiHooks()));
   results.push(safeRun('codex', 'Codex CLI', resolveCodexHooksPath(), () => ensureCodexHooks()));
   results.push(safeRun('grok', 'Grok Build', resolveGrokWmuxHooksPath(), () => ensureGrokHooks()));
+  results.push(safeRun('pi', 'Pi Agent', resolvePiWmuxExtensionPath(), () => ensurePiHooks()));
 
   if (withOpencode) {
     const pluginPath = path.join(os.homedir(), '.config', 'opencode', 'plugin', 'wmux.js');

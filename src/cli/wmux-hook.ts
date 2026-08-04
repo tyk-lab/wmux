@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
  * wmux hook helper — sends a hook event to the wmux pipe.
- * Called by Claude / Kimi / Codex / Grok hooks.
+ * Called by Claude / Kimi / Codex / Grok / Pi hooks.
  *
  * Usage:
  *   node wmux-hook.js <tool-name> [--agent Name]   # PostToolUse
  *   node wmux-hook.js --event <Event> [--agent Name]
+ *   node wmux-hook.js --event PostToolUse --tool <name> [--agent Name]
  *
  * Reads stdin for the harness hook payload (JSON):
  *   - PostToolUse Edit/Write → extracts tool_input.file_path
@@ -27,8 +28,9 @@ function takeFlag(args: string[], name: string): string {
 
 const agentFlag = takeFlag(argv, '--agent');
 const eventFlag = takeFlag(argv, '--event');
+const toolFlag = takeFlag(argv, '--tool');
 
-let tool = '';
+let tool = toolFlag;
 let event = eventFlag;
 if (!event && argv[0] && !argv[0].startsWith('-')) {
   tool = argv[0] || 'unknown';

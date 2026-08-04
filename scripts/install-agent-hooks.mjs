@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cross-platform installer for wmux agent lifecycle hooks.
+ * Cross-platform installer for Claude/Kimi/Codex/Grok/Pi/OpenCode lifecycle hooks.
  *
  * Usage (from repo root):
  *   node scripts/install-agent-hooks.mjs

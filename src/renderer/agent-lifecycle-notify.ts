@@ -16,7 +16,7 @@ export function shouldNotifyAgentLifecycle(supervisorActive: boolean): boolean {
 
 export interface LifecycleNotifyInput {
   kind: LifecycleNotifyKind;
-  /** Product name: Claude / Kimi / Codex / Grok / OpenCode. */
+  /** Product name: Claude / Kimi / Codex / Grok / Pi / OpenCode. */
   agent?: string | null;
   /** Pane label: tab title, cwd folder, wrap --label, … */
   where?: string | null;

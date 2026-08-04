@@ -764,7 +764,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   hook: cmdHook,
   'agent-activity': cmdAgentActivity,
   supervisor: cmdSupervisor,
-  // Install/refresh Claude · Kimi · Codex · Grok · OpenCode lifecycle hooks.
+  // Install/refresh Claude · Kimi · Codex · Grok · Pi · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
     // Most CLI commands run from resources/cli in packaged wmux. Keep the
@@ -848,7 +848,7 @@ Notify:     notify <text>, list-notifications, clear-notifications
 Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
-            (write Claude/Kimi/Codex/Grok turn hooks + OpenCode plugin)
+            (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important>]
                           [--impact <text>] [--alternatives <text>]

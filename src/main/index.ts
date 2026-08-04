@@ -19,6 +19,7 @@ import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context'
 import { ensureKimiHooks } from './kimi-context';
 import { ensureCodexHooks } from './codex-context';
 import { ensureGrokHooks } from './grok-context';
+import { ensurePiHooks } from './pi-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
 import { applyHookToAgentState } from './agent-hook-bridge';
@@ -470,6 +471,11 @@ app.whenReady().then(() => {
   ensureKimiHooks();
   ensureCodexHooks();
   ensureGrokHooks();
+  try {
+    ensurePiHooks();
+  } catch (err) {
+    console.warn('[wmux] Failed to update Pi Agent hooks:', err);
+  }
 
   ipcMain.handle('supervisor:append-record', (_event, record) => {
     const result = appendSupervisorRecord(record);

@@ -9,7 +9,7 @@
 
 wmux 是基于 Electron + xterm.js 的 Windows 终端复用器，专为 AI 代理设计：分屏窗格、内置浏览器、**声明式侧栏 Agent 状态**（Working / Needs you / Idle），以及命名管道 + CLI 可编程接口。
 
-兼容 Claude Code、OpenCode、Codex、Kimi 等终端 agent；有官方 Hook 的自动上报，没有的用 `wmux wrap` 做进程级状态。
+兼容 Claude Code、OpenCode、Codex、Kimi、Pi Agent 等终端 agent；有官方 Hook/扩展事件的自动上报，没有的用 `wmux wrap` 做进程级状态。
 
 ## 快速启动
 
@@ -108,6 +108,7 @@ node scripts/install-agent-hooks.mjs --wmux-exe "$env:LOCALAPPDATA\wmux-build\re
 | Kimi Code | `~/.kimi-code/config.toml` | `# wmux-hooks:start/end` 标记块 |
 | Codex CLI | `~/.codex/hooks.json` | 可能需在 Codex 里 `/hooks` **信任** |
 | Grok Build | `~/.grok/hooks/wmux.json` | 全局 hooks，始终可信 |
+| Pi Agent | `~/.pi/agent/extensions/wmux-agent-hooks.ts` | 独立全局扩展；通过原生生命周期事件上报 |
 | OpenCode | `~/.config/opencode/plugin/wmux.js` | 可用 `--no-opencode` 跳过 |
 
 每条 hook 命令形如：
@@ -125,7 +126,7 @@ node "<仓库>/dist/cli/wmux-hook.js" --event Stop --agent Kimi
 #### 安装后必做
 
 1. **重启 wmux**（若刚编过 main/renderer）  
-2. **重启每个 agent 会话**（claude / kimi / codex / grok），否则仍用旧 hooks  
+2. **重启每个 agent 会话**（claude / kimi / codex / grok / pi），否则仍用旧 hooks
 3. Codex：打开 `/hooks`，信任含 `wmux-hook` 的命令（首次）  
 
 ### 支持矩阵（turn 级）
@@ -136,6 +137,7 @@ node "<仓库>/dist/cli/wmux-hook.js" --event Stop --agent Kimi
 | **Kimi Code** | `~/.kimi-code/config.toml` | `kimi` | 标记块管理 |
 | **Codex CLI** | `~/.codex/hooks.json` | `codex` | 需 trust hooks |
 | **Grok Build** | `~/.grok/hooks/wmux.json` | `grok` | 全局可信 |
+| **Pi Agent** | extension `wmux-agent-hooks.ts` | `pi` | 原生扩展事件 |
 | **OpenCode** | plugin `wmux.js` | `opencode` | 插件 API |
 
 **事件 → 侧栏（固定映射，无 AI 判断）：**
