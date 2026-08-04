@@ -25,6 +25,18 @@ export interface TerminalKeyEvent {
   preventDefault(): void;
 }
 
+/** Bare Ctrl+C is reserved for terminal copy/SIGINT and must never become an app shortcut. */
+export function isTerminalCtrlC(event: TerminalKeyEvent): boolean {
+  return (
+    event.type === 'keydown' &&
+    event.key.toLowerCase() === 'c' &&
+    event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey
+  );
+}
+
 /**
  * Shift+Enter must insert a newline instead of submitting: xterm sends a plain
  * \r for both Enter and Shift+Enter, so a TUI can't tell them apart.

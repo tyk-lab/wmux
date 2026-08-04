@@ -5,6 +5,7 @@ import { splitNode, removeLeaf, getAllPaneIds, findLeaf, adjustPaneRatio } from 
 import { PaneId, SplitNode } from '../../shared/types';
 import { trimTrailingWhitespace } from '../utils/copy-text';
 import { GLOBAL_IN_EDITOR, isEditableTarget } from './shortcut-target';
+import { isTerminalCtrlC } from './terminal-keys';
 import { v4 as uuid } from 'uuid';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -371,6 +372,9 @@ export function useKeyboardShortcuts(
     };
 
     function handleKeyDown(e: KeyboardEvent): void {
+      // Ctrl+C always belongs to the terminal: copy a selection or send ETX.
+      // Keep this explicit so even a persisted custom shortcut cannot close a tab.
+      if (isTerminalCtrlC(e)) return;
       if (!isSafeToIntercept(e)) return;
 
       const inEditor = isEditableTarget(e.target as HTMLElement | null);

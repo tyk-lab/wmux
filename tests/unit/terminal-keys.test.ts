@@ -3,6 +3,7 @@ import {
   SHIFT_ENTER_SEQUENCE,
   handleShiftEnter,
   isShiftEnter,
+  isTerminalCtrlC,
   shouldBroadcastTerminalInput,
   type TerminalKeyEvent,
 } from '../../src/renderer/hooks/terminal-keys';
@@ -19,6 +20,20 @@ function keyEvent(over: Partial<TerminalKeyEvent> = {}): TerminalKeyEvent & { pr
     ...over,
   } as any;
 }
+
+describe('Ctrl+C terminal semantics', () => {
+  it('reserves bare Ctrl+C for the terminal regardless of key casing', () => {
+    expect(isTerminalCtrlC(keyEvent({ key: 'c', ctrlKey: true, shiftKey: false }))).toBe(true);
+    expect(isTerminalCtrlC(keyEvent({ key: 'C', ctrlKey: true, shiftKey: false }))).toBe(true);
+  });
+
+  it('does not reserve modified or non-keydown variants', () => {
+    expect(isTerminalCtrlC(keyEvent({ key: 'c', ctrlKey: true }))).toBe(false);
+    expect(isTerminalCtrlC(keyEvent({ key: 'c', ctrlKey: true, shiftKey: false, altKey: true }))).toBe(false);
+    expect(isTerminalCtrlC(keyEvent({ key: 'c', ctrlKey: true, shiftKey: false, metaKey: true }))).toBe(false);
+    expect(isTerminalCtrlC(keyEvent({ type: 'keyup', key: 'c', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+});
 
 describe('Shift+Enter (issue #119)', () => {
   it('matches a plain Shift+Enter keydown', () => {
