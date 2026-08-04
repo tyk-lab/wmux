@@ -28,13 +28,13 @@ export function updateSshFileSelection(
   range: boolean,
 ): { selectedPaths: Set<string>; anchorIndex: number | undefined } {
   const entry = entries[clickedIndex];
-  if (!entry || entry.type !== 'file') {
+  if (!entry || (entry.type !== 'file' && entry.type !== 'directory')) {
     return { selectedPaths: new Set(), anchorIndex: undefined };
   }
   if (range && anchorIndex !== undefined) {
     const [start, end] = [anchorIndex, clickedIndex].sort((a, b) => a - b);
     const paths = entries.slice(start, end + 1)
-      .filter((item) => item.type === 'file')
+      .filter((item) => item.type === 'file' || item.type === 'directory')
       .map((item) => item.path);
     return {
       selectedPaths: additive ? new Set([...selectedPaths, ...paths]) : new Set(paths),

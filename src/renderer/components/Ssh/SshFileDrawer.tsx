@@ -35,6 +35,41 @@ interface NameDialogState {
 const REMOTE_DRAG_TYPE = 'application/x-wmux-remote-file';
 const DIRECTORY_CACHE_TTL = 10_000;
 const MAX_CACHED_DIRECTORIES = 100;
+const SSH_DRAWER_WIDTH_KEY = 'wmux:ssh-file-drawer-width';
+const MIN_DRAWER_WIDTH = 320;
+const MAX_DRAWER_WIDTH = 800;
+
+function initialDrawerWidth(): number {
+  const maximum = Math.min(MAX_DRAWER_WIDTH, Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 320));
+  const saved = Number(window.localStorage.getItem(SSH_DRAWER_WIDTH_KEY));
+  if (Number.isFinite(saved) && saved >= MIN_DRAWER_WIDTH) return Math.min(maximum, saved);
+  return Math.min(maximum, Math.max(380, window.innerWidth * 0.46));
+}
+
+function formatFileSize(entry: SshFileEntry): string {
+  if (entry.type !== 'file') return '';
+  if (entry.size < 1024) return `${entry.size} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = entry.size / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function formatModifiedAt(modifiedAt?: number): string {
+  if (!modifiedAt) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(modifiedAt);
+}
 
 export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect }: Props) {
   const [currentPath, setCurrentPath] = useState('.');
@@ -50,17 +85,26 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>();
   const [nameDialog, setNameDialog] = useState<NameDialogState>();
   const [nameDialogError, setNameDialogError] = useState('');
+  const [drawerWidth, setDrawerWidth] = useState(initialDrawerWidth);
+  const [resizing, setResizing] = useState(false);
   const lastValidPathRef = useRef('.');
   const directoryCacheRef = useRef(new Map<string, { result: DirectoryResult; cachedAt: number }>());
   const pendingDirectoriesRef = useRef(new Map<string, Promise<DirectoryResult>>());
   const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activeWorkspaceIdRef = useRef(workspaceId);
+  const resizeCleanupRef = useRef<(() => void) | undefined>(undefined);
   activeWorkspaceIdRef.current = workspaceId;
 
   const selectedFiles = useMemo(
     () => entries.filter((entry) => entry.type === 'file' && selectedPaths.has(entry.path)),
     [entries, selectedPaths],
   );
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selectedPaths.has(entry.path)),
+    [entries, selectedPaths],
+  );
+  const canDownloadSelection = selectedEntries.length > 0
+    && selectedEntries.every((entry) => entry.type === 'file');
   const selectionSignature = selectedFiles.map((entry) => entry.path).sort().join('\n');
 
   const requestDirectory = useCallback((remotePath: string, force = false): Promise<DirectoryResult> => {
@@ -166,7 +210,42 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   }, [contextMenu]);
   useEffect(() => () => {
     if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+    resizeCleanupRef.current?.();
   }, []);
+
+  const beginResize = (event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeCleanupRef.current?.();
+    const startX = event.clientX;
+    const startWidth = drawerWidth;
+    let latestWidth = drawerWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    setResizing(true);
+    const move = (pointerEvent: PointerEvent) => {
+      const availableWidth = Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 320);
+      const maxWidth = Math.min(MAX_DRAWER_WIDTH, availableWidth);
+      latestWidth = Math.max(MIN_DRAWER_WIDTH, Math.min(maxWidth, startWidth + startX - pointerEvent.clientX));
+      setDrawerWidth(latestWidth);
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.localStorage.setItem(SSH_DRAWER_WIDTH_KEY, String(Math.round(latestWidth)));
+      setResizing(false);
+      resizeCleanupRef.current = undefined;
+    };
+    resizeCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+  };
 
   const navigate = (nextPath: string) => {
     const normalized = nextPath.trim() || '.';
@@ -274,10 +353,10 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const openEntryContextMenu = (event: React.MouseEvent, entry: SshFileEntry, index: number) => {
     event.preventDefault();
     event.stopPropagation();
-    if (entry.type === 'file' && !selectedPaths.has(entry.path)) {
+    if ((entry.type === 'file' || entry.type === 'directory') && !selectedPaths.has(entry.path)) {
       setSelectedPaths(new Set([entry.path]));
       setSelectionAnchor(index);
-    } else if (entry.type !== 'file') {
+    } else if (entry.type !== 'file' && entry.type !== 'directory') {
       setSelectedPaths(new Set());
       setSelectionAnchor(undefined);
     }
@@ -425,12 +504,14 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     event.dataTransfer.types.includes('Files') && !event.dataTransfer.types.includes(REMOTE_DRAG_TYPE);
 
   return <aside
-    className={`ssh-file-drawer ${dropActive ? 'ssh-file-drawer--drop-active' : ''}`}
+    className={`ssh-file-drawer ${dropActive ? 'ssh-file-drawer--drop-active' : ''} ${resizing ? 'ssh-file-drawer--resizing' : ''}`}
+    style={{ width: drawerWidth, flexBasis: drawerWidth }}
     onDragEnter={(event) => { if (acceptsExternalFiles(event)) { event.preventDefault(); setDropActive(true); } }}
     onDragOver={(event) => { if (acceptsExternalFiles(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }}
     onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }}
     onDrop={(event) => void uploadDroppedFiles(event)}
   >
+    <div className="ssh-file-drawer__resize-handle" onPointerDown={beginResize} title="拖动调整远程文件面板宽度" />
     <div className="ssh-file-drawer__header"><strong>远程文件</strong><button onClick={() => void refresh(true)} disabled={loading || state !== 'connected'}>刷新</button></div>
     {state !== 'connected' ? <div className="ssh-file-drawer__status">
       <p>{state === 'connecting' ? '正在连接 SFTP…' : state === 'error' ? errorMessage || 'SFTP 连接失败。' : 'SSH 文件连接已断开。'}</p>
@@ -440,14 +521,26 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
         <button type="button" onClick={() => navigate(parentSshPath(currentPath))}>↑</button>
         <input value={pathDraft} onChange={(event) => setPathDraft(event.target.value)} aria-label="远程路径" title="输入路径后按 Enter 切换" />
         <button type="button" onClick={upload}>上传</button>
-        <button type="button" onClick={() => void downloadSelected()} disabled={!selectedFiles.length}>下载</button>
+        <button type="button" onClick={() => void downloadSelected()} disabled={!canDownloadSelection}>下载</button>
       </form>
       {error && <p className="ssh-dialog__error ssh-file-drawer__message">{error}</p>}
       {transferStatus && <p className="ssh-file-drawer__message">{transferStatus}</p>}
-      <div className="ssh-file-drawer__list" onContextMenu={openCreateContextMenu}>{entries.map((entry, index) => <button
+      <div className="ssh-file-drawer__list" onContextMenu={openCreateContextMenu}>
+        <div className="ssh-file-table-header" role="row">
+          <span>名称</span><span>大小</span><span>修改时间</span><span>所有者</span><span>组</span><span>权限</span>
+        </div>
+        {currentPath !== '/' && <button
+          className="ssh-file-entry ssh-file-entry--parent"
+          onDoubleClick={() => navigate(parentSshPath(currentPath))}
+          title="双击返回上一级"
+        >
+          <span className="ssh-file-cell ssh-file-cell--name">📁 ..</span>
+          <span /><span /><span /><span /><span />
+        </button>}
+        {entries.map((entry, index) => <button
         key={entry.path}
         className={`ssh-file-entry ${selectedPaths.has(entry.path) ? 'ssh-file-entry--selected' : ''}`}
-        aria-pressed={entry.type === 'file' ? selectedPaths.has(entry.path) : undefined}
+        aria-pressed={entry.type === 'file' || entry.type === 'directory' ? selectedPaths.has(entry.path) : undefined}
         draggable={entry.type === 'file'}
         onContextMenu={(event) => openEntryContextMenu(event, entry, index)}
         onMouseEnter={() => scheduleDirectoryPrefetch(entry)}
@@ -456,7 +549,14 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
         onDoubleClick={() => entry.type === 'directory' && navigate(entry.path)}
         onClick={(event) => selectEntry(event, entry, index)}
       >
-        <span>{entry.type === 'directory' ? '📁' : '📄'} {entry.name}</span><small>{entry.type === 'file' ? `${entry.size} B` : '目录'}</small>
+        <span className="ssh-file-cell ssh-file-cell--name" title={entry.name}>
+          {entry.type === 'directory' ? '📁' : entry.type === 'link' ? '🔗' : '📄'} {entry.name}
+        </span>
+        <span className="ssh-file-cell ssh-file-cell--size">{formatFileSize(entry)}</span>
+        <span className="ssh-file-cell" title={entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : ''}>{formatModifiedAt(entry.modifiedAt)}</span>
+        <span className="ssh-file-cell" title={entry.owner}>{entry.owner || ''}</span>
+        <span className="ssh-file-cell" title={entry.group}>{entry.group || ''}</span>
+        <span className="ssh-file-cell ssh-file-cell--permissions">{entry.permissions || ''}</span>
       </button>)}</div>
       {loading && <p className="ssh-file-drawer__loading">正在读取…</p>}
       {dropActive && <div className="ssh-file-drawer__drop-overlay">释放以上传文件</div>}

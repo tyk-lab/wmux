@@ -266,17 +266,51 @@ export function buildSshConnectConfig(profile: SshConnectionProfile, password?: 
   return config;
 }
 
-function toFileEntry(entry: { filename: string; longname: string; attrs: { size: number; mtime?: number; mode?: number } }, parent: string): SshFileEntry {
+function permissionCharacter(mode: number, read: number, write: number, execute: number, special: number, specialChar: string): string {
+  const readChar = mode & read ? 'r' : '-';
+  const writeChar = mode & write ? 'w' : '-';
+  const executable = Boolean(mode & execute);
+  const executeChar = mode & special ? (executable ? specialChar : specialChar.toUpperCase()) : executable ? 'x' : '-';
+  return `${readChar}${writeChar}${executeChar}`;
+}
+
+export function formatSshPermissions(mode = 0): string {
+  const kind = (mode & 0o170000) === 0o040000 ? 'd'
+    : (mode & 0o170000) === 0o120000 ? 'l'
+      : (mode & 0o170000) === 0o100000 ? '-' : '?';
+  return kind
+    + permissionCharacter(mode, 0o400, 0o200, 0o100, 0o4000, 's')
+    + permissionCharacter(mode, 0o040, 0o020, 0o010, 0o2000, 's')
+    + permissionCharacter(mode, 0o004, 0o002, 0o001, 0o1000, 't');
+}
+
+export function parseSshLongnameOwnerGroup(longname: string): { owner?: string; group?: string } {
+  const fields = longname.trim().split(/\s+/);
+  if (fields.length < 4 || !/^[bcdlps?-][rwxStTs-]{9}[+@.]?$/.test(fields[0])) return {};
+  return { owner: fields[2], group: fields[3] };
+}
+
+function toFileEntry(entry: {
+  filename: string;
+  longname: string;
+  attrs: { size: number; mtime?: number; mode?: number; uid?: number; gid?: number };
+}, parent: string): SshFileEntry {
   const mode = entry.attrs.mode ?? 0;
   const kind = (mode & 0o170000) === 0o040000 ? 'directory'
     : (mode & 0o170000) === 0o120000 ? 'link'
       : (mode & 0o170000) === 0o100000 ? 'file' : 'other';
+  const longnameDetails = parseSshLongnameOwnerGroup(entry.longname || '');
+  const owner = longnameDetails.owner || (entry.attrs.uid !== undefined ? String(entry.attrs.uid) : undefined);
+  const group = longnameDetails.group || (entry.attrs.gid !== undefined ? String(entry.attrs.gid) : undefined);
   return {
     name: entry.filename,
     path: path.posix.join(parent, entry.filename),
     type: kind,
     size: entry.attrs.size ?? 0,
     modifiedAt: entry.attrs.mtime ? entry.attrs.mtime * 1000 : undefined,
+    ...(owner ? { owner } : {}),
+    ...(group ? { group } : {}),
+    permissions: formatSshPermissions(mode),
   };
 }
 

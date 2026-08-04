@@ -87,7 +87,7 @@ describe('updateSshFileSelection', () => {
     { name: 'c.txt', path: '/c.txt', type: 'file', size: 3 },
   ];
 
-  it('supports Ctrl toggling and clears the selection for directories', () => {
+  it('supports Ctrl toggling for files and directories', () => {
     const added = updateSshFileSelection(entries, new Set(['/a.txt']), 2, 0, true, false);
     expect([...added.selectedPaths]).toEqual(['/a.txt', '/b.txt']);
 
@@ -95,15 +95,15 @@ describe('updateSshFileSelection', () => {
     expect([...removed.selectedPaths]).toEqual(['/b.txt']);
 
     const directory = updateSshFileSelection(entries, removed.selectedPaths, 1, 0, false, false);
-    expect(directory.selectedPaths.size).toBe(0);
-    expect(directory.anchorIndex).toBeUndefined();
+    expect([...directory.selectedPaths]).toEqual(['/folder']);
+    expect(directory.anchorIndex).toBe(1);
   });
 
-  it('selects only files in a Shift range and can add that range', () => {
+  it('selects files and directories in a Shift range and can add that range', () => {
     const range = updateSshFileSelection(entries, new Set(), 3, 0, false, true);
-    expect([...range.selectedPaths]).toEqual(['/a.txt', '/b.txt', '/c.txt']);
+    expect([...range.selectedPaths]).toEqual(['/a.txt', '/folder', '/b.txt', '/c.txt']);
 
     const additive = updateSshFileSelection(entries, new Set(['/c.txt']), 2, 0, true, true);
-    expect([...additive.selectedPaths]).toEqual(['/c.txt', '/a.txt', '/b.txt']);
+    expect([...additive.selectedPaths]).toEqual(['/c.txt', '/a.txt', '/folder', '/b.txt']);
   });
 });

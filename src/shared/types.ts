@@ -35,6 +35,9 @@ export interface SshFileEntry {
   type: 'file' | 'directory' | 'link' | 'other';
   size: number;
   modifiedAt?: number;
+  owner?: string;
+  group?: string;
+  permissions?: string;
 }
 
 export interface SshFileListResult {

@@ -9,8 +9,10 @@ import {
   buildSshChildPath,
   buildSshRenameTarget,
   findOpenSshIdentityFiles,
+  formatSshPermissions,
   hashKnownHostKey,
   parseOpenSshConfig,
+  parseSshLongnameOwnerGroup,
   SshAuthenticationError,
   SshManager,
   SshPasswordAuthenticationError,
@@ -137,7 +139,11 @@ describe('SFTP paths', () => {
         callback(undefined, '/home/pi/klipper');
       },
       readdir: (_remotePath: string, callback: (error: Error | undefined, entries: unknown[]) => void) => {
-        callback(undefined, [{ filename: 'klippy', longname: '', attrs: { size: 0, mode: 0o040000 } }]);
+        callback(undefined, [{
+          filename: 'klippy',
+          longname: 'drwxr-xr-x 1 pi pi 0 Aug 4 12:00 klippy',
+          attrs: { size: 0, mode: 0o040755, uid: 1000, gid: 1000, mtime: 1_722_772_800 },
+        }]);
       },
     } as unknown as SFTPWrapper;
     const sessions = (manager as unknown as {
@@ -147,7 +153,16 @@ describe('SFTP paths', () => {
 
     await expect(manager.list('workspace-a', 'klipper')).resolves.toEqual({
       path: '/home/pi/klipper',
-      entries: [{ name: 'klippy', path: '/home/pi/klipper/klippy', type: 'directory', size: 0 }],
+      entries: [{
+        name: 'klippy',
+        path: '/home/pi/klipper/klippy',
+        type: 'directory',
+        size: 0,
+        modifiedAt: 1_722_772_800_000,
+        owner: 'pi',
+        group: 'pi',
+        permissions: 'drwxr-xr-x',
+      }],
     });
   });
 
@@ -171,6 +186,15 @@ describe('SFTP paths', () => {
       entries: [],
     });
     expect(realpathCalls).toBe(0);
+  });
+});
+
+describe('SFTP file details', () => {
+  it('formats Unix permissions and parses owner/group from longname', () => {
+    expect(formatSshPermissions(0o100644)).toBe('-rw-r--r--');
+    expect(formatSshPermissions(0o040755)).toBe('drwxr-xr-x');
+    expect(parseSshLongnameOwnerGroup('-rw-r--r-- 1 pi users 10 Aug 4 12:00 file.txt'))
+      .toEqual({ owner: 'pi', group: 'users' });
   });
 });
 
