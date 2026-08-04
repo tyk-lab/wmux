@@ -15,6 +15,7 @@ describe('inferAgentName', () => {
     expect(inferAgentName('run with claude code')).toBe('Claude');
     expect(inferAgentName('codex')).toBe('Codex');
     expect(inferAgentName('Grok Build')).toBe('Grok');
+    expect(inferAgentName('Pi Agent')).toBe('Pi');
     expect(inferAgentName('opencode worker')).toBe('OpenCode');
   });
 

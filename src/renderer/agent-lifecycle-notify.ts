@@ -32,6 +32,7 @@ const AGENT_PATTERNS: Array<{ re: RegExp; name: string }> = [
   { re: /\bclaude\b/i, name: 'Claude' },
   { re: /\bcodex\b/i, name: 'Codex' },
   { re: /\bgrok\b/i, name: 'Grok' },
+  { re: /\bpi(?:\s+agent)?\b/i, name: 'Pi' },
   { re: /\bopencode\b/i, name: 'OpenCode' },
 ];
 

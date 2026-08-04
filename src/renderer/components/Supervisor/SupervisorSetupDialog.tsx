@@ -63,6 +63,7 @@ const SUPERVISOR_LAUNCH_OPTIONS = [
   { value: 'claude', label: 'Claude Code' },
   { value: 'kimi', label: 'Kimi Code' },
   { value: 'grok', label: 'Grok Build' },
+  { value: 'pi', label: 'Pi Agent' },
   { value: 'opencode', label: 'OpenCode' },
   { value: '', label: '不自动启动' },
 ];
@@ -75,6 +76,15 @@ const REASONING_EFFORT_OPTIONS = [
 const KIMI_THINKING_OPTIONS = [
   { value: '', label: '使用 Kimi 默认 Thinking 设置' },
   { value: 'on', label: '开启 Thinking' },
+];
+const PI_THINKING_OPTIONS = [
+  { value: 'off', label: '关闭' },
+  { value: 'minimal', label: '最小' },
+  { value: 'low', label: '低（更快）' },
+  { value: 'medium', label: '中（均衡）' },
+  { value: 'high', label: '高（更深入）' },
+  { value: 'xhigh', label: '超高' },
+  { value: 'max', label: '最大' },
 ];
 const CUSTOM_OPTION = '__custom__';
 const DEFAULT_MODEL_OPTION = '__default__';
@@ -115,6 +125,25 @@ function modelOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: strin
 function modelChoiceFor(launcher: SupervisorLauncherKind, model: string): string {
   const options = modelOptionsFor(launcher);
   return model ? knownOptionValue(model, options) : DEFAULT_MODEL_OPTION;
+}
+
+function reasoningOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: string; label: string }> {
+  if (launcher === 'codex') return REASONING_EFFORT_OPTIONS;
+  if (launcher === 'kimi') return KIMI_THINKING_OPTIONS;
+  if (launcher === 'pi') return PI_THINKING_OPTIONS;
+  return [];
+}
+
+function customModelOptionLabel(launcher: SupervisorLauncherKind): string {
+  if (launcher === 'grok') return '自定义模型别名';
+  if (launcher === 'pi') return '自定义模型（provider/model）';
+  return '自定义模型 ID';
+}
+
+function customModelPlaceholder(launcher: SupervisorLauncherKind): string {
+  if (launcher === 'grok') return '输入 ~/.grok/config.toml 中的模型别名';
+  if (launcher === 'pi') return '例如：openai-codex/gpt-5.5';
+  return '输入账户可用的模型 ID';
 }
 
 function normalizeMaxAutoDecisions(value: string): number | null {
@@ -314,11 +343,8 @@ export default function SupervisorSetupDialog() {
     const nextLauncher = detectSupervisorLauncher(choice);
     setSupervisorModel('');
     setModelChoice(DEFAULT_MODEL_OPTION);
-    setReasoningEffort(
-      nextLauncher === 'codex' && REASONING_EFFORT_OPTIONS.some((option) => option.value === reasoningEffort)
-        ? reasoningEffort
-        : '',
-    );
+    const reasoningOptions = reasoningOptionsFor(nextLauncher);
+    setReasoningEffort(reasoningOptions.some((option) => option.value === reasoningEffort) ? reasoningEffort : '');
   };
 
   useEffect(() => {
@@ -504,7 +530,9 @@ export default function SupervisorSetupDialog() {
       restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
       supervisorModel: launcherKind === 'other' ? '' : supervisorModel,
-      supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' ? reasoningEffort : '',
+      supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' || launcherKind === 'pi'
+        ? reasoningEffort
+        : '',
       maxAutoSteps: 0,
       maxAutoDecisions: autonomous ? null : normalizeMaxAutoDecisions(maxAutoDecisions),
       autonomous: grantSessionAutonomy ? autonomous : false,
@@ -1034,7 +1062,7 @@ export default function SupervisorSetupDialog() {
                 )}
                 <div className="supervisor-dialog__hint">每个工作终端独立启动一个监督上下文。</div>
               </section>
-              {launcherModelOptions.length > 0 && (
+              {(launcherModelOptions.length > 0 || launcherKind === 'pi') && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
                   <select
@@ -1051,14 +1079,14 @@ export default function SupervisorSetupDialog() {
                     {launcherModelOptions.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
-                    <option value={CUSTOM_OPTION}>{launcherKind === 'grok' ? '自定义模型别名' : '自定义模型 ID'}</option>
+                    <option value={CUSTOM_OPTION}>{customModelOptionLabel(launcherKind)}</option>
                   </select>
                   {modelChoice === CUSTOM_OPTION && (
                     <input
                       className="supervisor-dialog__input supervisor-dialog__stacked-input"
                       value={supervisorModel}
                       onChange={(event) => setSupervisorModel(event.target.value)}
-                      placeholder={launcherKind === 'grok' ? '输入 ~/.grok/config.toml 中的模型别名' : '输入账户可用的模型 ID'}
+                      placeholder={customModelPlaceholder(launcherKind)}
                     />
                   )}
                 </section>
@@ -1087,6 +1115,21 @@ export default function SupervisorSetupDialog() {
                     onChange={(event) => setReasoningEffort(event.target.value)}
                   >
                     {KIMI_THINKING_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </section>
+              )}
+              {launcherKind === 'pi' && (
+                <section className="supervisor-dialog__section">
+                  <div className="supervisor-dialog__label">Pi Thinking</div>
+                  <select
+                    className="supervisor-dialog__input"
+                    value={reasoningEffort}
+                    onChange={(event) => setReasoningEffort(event.target.value)}
+                  >
+                    <option value="">使用 Pi 默认 Thinking 设置</option>
+                    {PI_THINKING_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>

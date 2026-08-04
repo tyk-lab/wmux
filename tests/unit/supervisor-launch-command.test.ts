@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildSupervisorLaunchCommand } from '../../src/renderer/supervisor/launch-command';
+import {
+  buildSupervisorLaunchCommand,
+  detectSupervisorLauncher,
+  supervisorLauncherDisplayName,
+} from '../../src/renderer/supervisor/launch-command';
 
 describe('supervisor launch command', () => {
   it('adds the selected model to a Codex launcher', () => {
@@ -35,6 +39,22 @@ describe('supervisor launch command', () => {
   it('adds a selected Grok Build model with its supported short flag', () => {
     expect(buildSupervisorLaunchCommand('grok', 'grok-build'))
       .toBe("grok -m 'grok-build'");
+  });
+
+  it('adds the selected Pi model and Thinking level', () => {
+    expect(buildSupervisorLaunchCommand('pi', 'openai-codex/gpt-5.5', 'high'))
+      .toBe("pi --model 'openai-codex/gpt-5.5' --thinking 'high'");
+  });
+
+  it('keeps explicit Pi model and Thinking options unchanged', () => {
+    expect(buildSupervisorLaunchCommand('pi --model anthropic/claude-sonnet --thinking max', 'openai/gpt-4o', 'low'))
+      .toBe('pi --model anthropic/claude-sonnet --thinking max');
+  });
+
+  it('recognizes Pi launch commands and displays the Pi Agent name', () => {
+    expect(detectSupervisorLauncher('pi')).toBe('pi');
+    expect(detectSupervisorLauncher('& "C:\\Tools\\pi.exe" --thinking high')).toBe('pi');
+    expect(supervisorLauncherDisplayName('pi')).toBe('Pi Agent');
   });
 
   it('does not add Kimi Thinking or Grok Build model options to another launcher', () => {

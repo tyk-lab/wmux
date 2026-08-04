@@ -1,4 +1,4 @@
-export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'other';
+export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'pi' | 'other';
 
 function matchesLauncherCommand(command: string, executable: string): boolean {
   const escaped = executable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -13,6 +13,7 @@ export function detectSupervisorLauncher(command: string): SupervisorLauncherKin
   if (matchesLauncherCommand(normalized, 'codex')) return 'codex';
   if (matchesLauncherCommand(normalized, 'kimi')) return 'kimi';
   if (matchesLauncherCommand(normalized, 'grok')) return 'grok';
+  if (matchesLauncherCommand(normalized, 'pi')) return 'pi';
   return 'other';
 }
 
@@ -20,6 +21,7 @@ export function supervisorLauncherDisplayName(launcher: SupervisorLauncherKind):
   if (launcher === 'codex') return 'Codex';
   if (launcher === 'kimi') return 'Kimi Code';
   if (launcher === 'grok') return 'Grok Build';
+  if (launcher === 'pi') return 'Pi Agent';
   return '当前启动器';
 }
 
@@ -51,6 +53,9 @@ export function buildSupervisorLaunchCommand(
   }
   if (launcher === 'kimi' && selectedEffort === 'on' && !/(?:^|\s)--thinking(?:\s|$)/i.test(command)) {
     return `${modelCommand} --thinking`;
+  }
+  if (launcher === 'pi' && selectedEffort && !/(?:^|\s)--thinking(?:\s|=)/i.test(command)) {
+    return `${modelCommand} --thinking ${quotePowerShellArgument(selectedEffort)}`;
   }
   return modelCommand;
 }
