@@ -3,6 +3,10 @@ import { v4 as uuid } from 'uuid';
 import { WorkspaceId, WorkspaceInfo, SplitNode } from '../../shared/types';
 import { createLeaf, stampCwdOnTree } from './split-utils';
 import { disconnectWorkspaceSsh, teardownWorkspaceRuntime } from './pty-teardown';
+import {
+  snapshotSurvivingTerminalBuffers,
+  terminalTreeRemountsSurvivors,
+} from '../utils/terminal-buffer-cache';
 
 function collectSurfaceIds(tree: SplitNode): string[] {
   if (tree.type === 'leaf') return tree.surfaces.map((s) => s.id);
@@ -210,6 +214,12 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
 
   updateSplitTree(id: WorkspaceId, tree: SplitNode): void {
     const current = get().workspaces.find((workspace) => workspace.id === id);
+    if (current && terminalTreeRemountsSurvivors(current.splitTree, tree)) {
+      // React can mount the replacement terminal before running the old
+      // terminal's cleanup. Capture survivors before the state write so buffer
+      // restoration never depends on effect cleanup order.
+      snapshotSurvivingTerminalBuffers(tree);
+    }
     const sshTerminalRemoved = !!current?.sshProfileId
       && treeHasSshTerminal(current.splitTree)
       && !treeHasSshTerminal(tree);

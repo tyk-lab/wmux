@@ -15,7 +15,13 @@ import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { attachVisibleRenderer, RendererHandle } from '../utils/terminal-renderer';
 import { trimTrailingWhitespace } from '../utils/copy-text';
-import { handleShiftEnter, isShiftEnter, shouldBroadcastTerminalInput } from './terminal-keys';
+import {
+  consumeTerminalBufferSnapshot,
+  registerTerminalBufferSnapshotter,
+  saveTerminalBufferSnapshot,
+  serializeTerminalBuffer,
+} from '../utils/terminal-buffer-cache';
+import { handleShiftEnter, isShiftEnter, isTerminalCtrlC, shouldBroadcastTerminalInput } from './terminal-keys';
 import { isConEmuSubcommand } from './osc9';
 import '@xterm/xterm/css/xterm.css';
 
@@ -86,25 +92,6 @@ function detachExitedSshWorkspace(surfaceId: string): void {
     sshConnectionState: undefined,
     sshConnectionError: undefined,
   });
-}
-
-// Snapshot the buffer before disposal so a remount (split-tree restructure)
-// can replay it (issue #49). Normal buffer only, so a TUI's own SIGWINCH
-// redraw owns the alt screen after remount. Bounded LRU so a genuine pane
-// close (no remount to consume it) can't grow the cache.
-function snapshotSurfaceBuffer(surfaceId: string | undefined, serializeAddon: SerializeAddon): void {
-  if (!surfaceId) return;
-  try {
-    const snapshot = serializeAddon.serialize({ excludeAltBuffer: true });
-    if (!snapshot) return;
-    if (surfaceBufferCache.size >= MAX_BUFFER_CACHE) {
-      const oldest = surfaceBufferCache.keys().next().value;
-      if (oldest !== undefined) surfaceBufferCache.delete(oldest);
-    }
-    surfaceBufferCache.set(surfaceId, snapshot);
-  } catch {
-    // Serialization failure is non-fatal — just lose the snapshot.
-  }
 }
 
 function setResolvedShellForSurface(surfaceId: string | undefined, resolvedShell: string): void {
@@ -181,14 +168,6 @@ const themeCache = new Map<string, ThemeConfig>();
 // remounts so the wheel handler can distinguish tmux (mouse-enabled) from a
 // plain shell even when xterm's buffer.active.type is reset after remount.
 const surfaceMouseEnabled = new Map<string, boolean>();
-
-// Cache of serialized xterm buffers keyed by surfaceId. A split-tree
-// restructure remounts PaneWrapper (React reconciliation moves it to a
-// different depth/parent), disposing and recreating the terminal — which would
-// otherwise wipe the scrollback (issue #49). We snapshot on unmount and replay
-// on the next mount. Bounded so genuine pane closes can't leak the cache.
-const surfaceBufferCache = new Map<string, string>();
-const MAX_BUFFER_CACHE = 32;
 
 // Live xterm instances keyed by surfaceId, so the pipe bridge can read screen
 // content (surface.read_text / `wmux read-screen`) from the active buffer.
@@ -375,6 +354,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     }
   };
 
+  // Keep terminal setup and teardown in the layout phase so a split-tree
+  // remount restores its proactively captured buffer before the frame paints.
   useLayoutEffect(() => {
     if (!terminalRef.current) return;
 
@@ -465,21 +446,52 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
 
     // Open terminal in the DOM
     terminal.open(terminalRef.current);
+    // Restore into the actual pane dimensions instead of xterm's 80x24 default.
+    // This matters for alternate-screen TUIs whose serialized cursor/layout is
+    // tied to the terminal size at capture time.
+    fit();
+
+    // Consume now, but replay only after the replacement pane has completed its
+    // first ResizeObserver/fit cycle. Resizing an alternate buffer immediately
+    // after replay can erase it, which is the blank adjacent TUI seen when a
+    // split is added or removed.
+    const bufferSnapshot = surfaceId ? consumeTerminalBufferSnapshot(surfaceId) : undefined;
+    let bufferRestorePending = !!bufferSnapshot;
+    const queuedPtyData: string[] = [];
+    let bufferRestoreRaf1: number | null = null;
+    let bufferRestoreRaf2: number | null = null;
 
     if (surfaceId) surfaceTerminalRegistry.set(surfaceId, terminal);
+    const unregisterBufferSnapshotter = surfaceId
+      ? registerTerminalBufferSnapshotter(surfaceId, () =>
+          bufferRestorePending && bufferSnapshot
+            ? bufferSnapshot
+            : serializeTerminalBuffer(serializeAddon))
+      : null;
 
-    // Restore a buffer snapshot captured before a previous unmount (issue #49).
-    // Written now — before the PTY reattaches below — so the restored scrollback
-    // lands ahead of any new PTY output. We snapshot the normal buffer only
-    // (excludeAltBuffer), so a TUI like tmux/vim simply redraws itself via the
-    // post-remount SIGWINCH on top of the restored shell scrollback.
-    if (surfaceId) {
-      const snapshot = surfaceBufferCache.get(surfaceId);
-      if (snapshot) {
-        surfaceBufferCache.delete(surfaceId);
-        terminal.write(snapshot);
-      }
-    }
+    const flushQueuedPtyData = () => {
+      bufferRestorePending = false;
+      for (const data of queuedPtyData.splice(0)) terminal.write(data);
+    };
+
+    const scheduleBufferRestore = () => {
+      if (!bufferSnapshot || !bufferRestorePending || bufferRestoreRaf1 !== null) return;
+      // ResizeObserver queues its own rAF. Waiting two frames ensures that fit
+      // runs first; PTY output is queued meanwhile so replay order stays exact.
+      bufferRestoreRaf1 = requestAnimationFrame(() => {
+        bufferRestoreRaf1 = null;
+        bufferRestoreRaf2 = requestAnimationFrame(() => {
+          bufferRestoreRaf2 = null;
+          if (disposed) return;
+          fit();
+          try {
+            terminal.write(bufferSnapshot, flushQueuedPtyData);
+          } catch {
+            flushQueuedPtyData();
+          }
+        });
+      });
+    };
 
     // Wheel handling — we always take ownership on the capture phase (xterm's
     // own forwarding is unreliable after the WebGL context swap, #41, and an
@@ -676,7 +688,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
 
     // Attach custom key handler for Ctrl+C and Ctrl+V (image paste)
     terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      if (event.type === 'keydown' && event.ctrlKey && event.key === 'c') {
+      if (isTerminalCtrlC(event)) {
         // ConPTY pads lines to full width with real spaces — trim them or
         // pasted blocks carry ragged trailing whitespace (issue #102).
         const selection = trimTrailingWhitespace(terminal.getSelection());
@@ -745,7 +757,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         // Mirror the enable pattern for disable so any of the four modes clears the flag.
         if (/\x1b\[\?100[0236]h/.test(data)) surfaceMouseEnabled.set(id, true);
         else if (/\x1b\[\?100[0236]l/.test(data)) surfaceMouseEnabled.set(id, false);
-        terminal.write(data);
+        if (bufferRestorePending) queuedPtyData.push(data);
+        else terminal.write(data);
       });
 
       // Wire PTY exit → inform user; also auto-heal a stuck "Running" badge
@@ -773,6 +786,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // Deferred visual safety-net (see scheduleDeferredRepaint).
       const deferredResizeId = scheduleDeferredRepaint(terminal);
       cleanupFnsRef.current.push(() => clearTimeout(deferredResizeId));
+      scheduleBufferRestore();
     };
 
     // Fallback path for quick-launch startup commands on shells where the main
@@ -930,6 +944,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       disposed = true;
       resizeObserver.disconnect();
       if (resizeRaf !== null) cancelAnimationFrame(resizeRaf);
+      if (bufferRestoreRaf1 !== null) cancelAnimationFrame(bufferRestoreRaf1);
+      if (bufferRestoreRaf2 !== null) cancelAnimationFrame(bufferRestoreRaf2);
       dataDisposable.dispose();
 
       // Run all IPC unsubscribe functions
@@ -942,9 +958,16 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // kills PTYs. This allows tree restructuring (closing an adjacent pane)
       // to re-mount this component without losing the terminal session.
 
-      // Snapshot the buffer before disposal so a remount can replay it
-      // (see snapshotSurfaceBuffer).
-      snapshotSurfaceBuffer(surfaceId, serializeAddon);
+      // Structural tree updates snapshot all survivors before React starts
+      // reconciliation. This fallback covers other unmount/remount causes.
+      if (surfaceId && unregisterBufferSnapshotter?.()) {
+        saveTerminalBufferSnapshot(
+          surfaceId,
+          bufferRestorePending && bufferSnapshot
+            ? bufferSnapshot
+            : serializeTerminalBuffer(serializeAddon),
+        );
+      }
 
       // Drop the read-screen registry entry — but only if it still points at
       // THIS terminal (StrictMode re-setup may already have registered the
