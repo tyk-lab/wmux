@@ -421,14 +421,14 @@ describe('supervisor isolation', () => {
     expect(supervisorTabTitle('Auth worker')).toBe('AI 监督 · Auth worker');
   });
 
-  it('uses codex as the default dedicated supervisor launch command', () => {
-    expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('codex');
+  it('uses pi as the default dedicated supervisor launch command', () => {
+    expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('pi');
   });
 
-  it('leaves the Codex model and reasoning effort to their defaults by default', () => {
+  it('uses GPT-5.6 Terra and medium thinking effort as the default Pi settings', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.supervisorModel).toBe('');
-    expect(session.supervisorReasoningEffort).toBe('');
+    expect(session.supervisorModel).toBe('gpt-5.6-terra');
+    expect(session.supervisorReasoningEffort).toBe('medium');
   });
 
   it('creates unified supervision by default', () => {

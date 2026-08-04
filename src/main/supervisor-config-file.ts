@@ -59,7 +59,7 @@ export function normalizeSupervisorConfig(
     stopWhen: text(config.stopWhen),
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     planFilePath: text(config.planFilePath),
-    supervisorLaunchCmd: text(config.supervisorLaunchCmd, 'codex'),
+    supervisorLaunchCmd: text(config.supervisorLaunchCmd, 'pi'),
     supervisorModel: text(config.supervisorModel),
     supervisorReasoningEffort: text(config.supervisorReasoningEffort),
     maxAutoDecisions: maxAutoDecisions(config.maxAutoDecisions, legacyDefaults),

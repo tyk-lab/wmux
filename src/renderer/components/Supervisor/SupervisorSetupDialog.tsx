@@ -58,12 +58,17 @@ const GROK_MODEL_OPTIONS = [
   { value: 'grok-build', label: 'Grok Build（推荐）' },
   { value: 'grok-4.5', label: 'Grok 4.5' },
 ];
+const PI_MODEL_OPTIONS = [
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+];
 const SUPERVISOR_LAUNCH_OPTIONS = [
-  { value: 'codex', label: 'Codex（推荐）' },
+  { value: 'pi', label: 'Pi Agent（推荐）' },
+  { value: 'codex', label: 'Codex' },
   { value: 'claude', label: 'Claude Code' },
   { value: 'kimi', label: 'Kimi Code' },
   { value: 'grok', label: 'Grok Build' },
-  { value: 'pi', label: 'Pi Agent' },
   { value: 'opencode', label: 'OpenCode' },
   { value: '', label: '不自动启动' },
 ];
@@ -78,13 +83,13 @@ const KIMI_THINKING_OPTIONS = [
   { value: 'on', label: '开启 Thinking' },
 ];
 const PI_THINKING_OPTIONS = [
-  { value: 'off', label: '关闭' },
-  { value: 'minimal', label: '最小' },
-  { value: 'low', label: '低（更快）' },
   { value: 'medium', label: '中（均衡）' },
+  { value: 'low', label: '低（更快）' },
   { value: 'high', label: '高（更深入）' },
   { value: 'xhigh', label: '超高' },
   { value: 'max', label: '最大' },
+  { value: 'minimal', label: '最小' },
+  { value: 'off', label: '关闭' },
 ];
 const CUSTOM_OPTION = '__custom__';
 const DEFAULT_MODEL_OPTION = '__default__';
@@ -119,6 +124,7 @@ function modelOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: strin
   if (launcher === 'codex') return CODEX_MODEL_OPTIONS;
   if (launcher === 'kimi') return KIMI_MODEL_OPTIONS;
   if (launcher === 'grok') return GROK_MODEL_OPTIONS;
+  if (launcher === 'pi') return PI_MODEL_OPTIONS;
   return [];
 }
 
@@ -437,7 +443,7 @@ export default function SupervisorSetupDialog() {
       return;
     }
     const config = result.config;
-    const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'codex';
+    const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'pi';
     const loadedLauncherKind = detectSupervisorLauncher(loadedLaunchCommand);
     const loadedPlanFilePath = config.planFilePath || '';
     const loadedWorkScope = normalizeSupervisorWorkScope(config.workScope);

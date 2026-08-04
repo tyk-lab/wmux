@@ -44,7 +44,7 @@ describe('supervisor config file', () => {
   it('rejects unrelated JSON files and clamps imported limits', () => {
     expect(parseSupervisorConfig('{"version":1}')).toEqual({ error: '不是受支持的 AI 监督配置文件' });
     expect(parseSupervisorConfig(serializeSupervisorConfig({ maxAutoDecisions: 99 })))
-      .toMatchObject({ maxAutoDecisions: 20, supervisorLaunchCmd: 'codex' });
+      .toMatchObject({ maxAutoDecisions: 20, supervisorLaunchCmd: 'pi' });
     expect(parseSupervisorConfig(serializeSupervisorConfig({ maxAutoDecisions: null })))
       .toMatchObject({ maxAutoDecisions: null });
     expect(parseSupervisorConfig(serializeSupervisorConfig({ maxAutoDecisions: 0 })))

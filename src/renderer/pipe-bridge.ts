@@ -525,7 +525,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   const targetPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
   if (!supervisorWorkspace || !targetPaneId) return { ok: false, error: '无法创建专属监督工作区。', message: '' };
 
-  const launchCmd = params.supervisorLaunchCmd || store.supervisor.supervisorLaunchCmd || 'codex';
+  const launchCmd = params.supervisorLaunchCmd || store.supervisor.supervisorLaunchCmd || 'pi';
   const supervisorModel = params.supervisorModel || '';
   const supervisorReasoningEffort = params.supervisorReasoningEffort || '';
   const launch = buildSupervisorLaunchCommand(launchCmd, supervisorModel, supervisorReasoningEffort);
