@@ -263,7 +263,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'pi',
-    supervisorModel: 'gpt-5.6-terra',
+    supervisorModel: 'openai-codex/gpt-5.6-terra',
     supervisorReasoningEffort: 'medium',
     pendingApprovals: [],
     log: [],

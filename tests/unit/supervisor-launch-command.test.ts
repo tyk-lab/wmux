@@ -46,6 +46,15 @@ describe('supervisor launch command', () => {
       .toBe("pi --model 'openai-codex/gpt-5.5' --thinking 'high'");
   });
 
+  it('qualifies built-in Pi models with their providers', () => {
+    expect(buildSupervisorLaunchCommand('pi', 'gpt-5.6-terra', 'medium'))
+      .toBe("pi --model 'openai-codex/gpt-5.6-terra' --thinking 'medium'");
+    expect(buildSupervisorLaunchCommand('pi', 'k3', 'medium'))
+      .toBe("pi --model 'kimi-coding/k3' --thinking 'medium'");
+    expect(buildSupervisorLaunchCommand('pi', 'grok-4.5', 'medium'))
+      .toBe("pi --model 'xai/grok-4.5' --thinking 'medium'");
+  });
+
   it('keeps explicit Pi model and Thinking options unchanged', () => {
     expect(buildSupervisorLaunchCommand('pi --model anthropic/claude-sonnet --thinking max', 'openai/gpt-4o', 'low'))
       .toBe('pi --model anthropic/claude-sonnet --thinking max');

@@ -59,9 +59,16 @@ const GROK_MODEL_OPTIONS = [
   { value: 'grok-4.5', label: 'Grok 4.5' },
 ];
 const PI_MODEL_OPTIONS = [
-  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
-  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
-  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+  { value: 'openai-codex/gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
+  { value: 'openai-codex/gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
+  { value: 'openai-codex/gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+  { value: 'kimi-coding/k3', label: 'Kimi K3（长上下文）' },
+  { value: 'kimi-coding/k3-256k', label: 'Kimi K3 · 256k' },
+  { value: 'kimi-coding/kimi-for-coding', label: 'Kimi K2.7 Code' },
+  { value: 'kimi-coding/kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
+  { value: 'xai/grok-4.3', label: 'Grok 4.3' },
+  { value: 'xai/grok-4.5', label: 'Grok 4.5' },
+  { value: 'xai/grok-build-0.1', label: 'Grok Build 0.1' },
 ];
 const SUPERVISOR_LAUNCH_OPTIONS = [
   { value: 'pi', label: 'Pi Agent（推荐）' },

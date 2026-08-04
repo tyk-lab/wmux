@@ -29,6 +29,19 @@ function quotePowerShellArgument(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function qualifyPiModel(model: string): string {
+  if (/^gpt-5\.6-(?:sol|terra|luna)$/i.test(model)) {
+    return `openai-codex/${model}`;
+  }
+  if (/^(?:k3|k3-256k|kimi-for-coding(?:-highspeed)?)$/i.test(model)) {
+    return `kimi-coding/${model}`;
+  }
+  if (/^(?:grok-4\.3|grok-4\.5|grok-build-0\.1)$/i.test(model)) {
+    return `xai/${model}`;
+  }
+  return model;
+}
+
 /**
  * Adds only the selected launcher's supported startup options. A caller-supplied
  * --model / -m always wins so existing custom commands stay reproducible.
@@ -39,9 +52,9 @@ export function buildSupervisorLaunchCommand(
   reasoningEffort = '',
 ): string {
   const command = launchCommand.trim();
-  const selectedModel = model.trim();
-  const selectedEffort = reasoningEffort.trim();
   const launcher = detectSupervisorLauncher(command);
+  const selectedModel = launcher === 'pi' ? qualifyPiModel(model.trim()) : model.trim();
+  const selectedEffort = reasoningEffort.trim();
   if (!command || launcher === 'other') return command;
   const modelFlag = launcher === 'grok' ? '-m' : '--model';
   const modelCommand = selectedModel && !/(?:^|\s)(?:--model|-m)(?:\s|=)/i.test(command)

@@ -427,7 +427,7 @@ describe('supervisor isolation', () => {
 
   it('uses GPT-5.6 Terra and medium thinking effort as the default Pi settings', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.supervisorModel).toBe('gpt-5.6-terra');
+    expect(session.supervisorModel).toBe('openai-codex/gpt-5.6-terra');
     expect(session.supervisorReasoningEffort).toBe('medium');
   });
 
