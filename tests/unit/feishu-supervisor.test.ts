@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -71,6 +71,24 @@ supervisor_model: k3`)).toEqual({
     expect(isFeishuSupervisorActorAllowed(config, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
     expect(isFeishuSupervisorActorAllowed(config, 'oc-control', 'ou-other', 'p2p')).toBe(false);
     expect(isFeishuSupervisorActorAllowed({ controlChatId: undefined, allowedOpenIds: new Set(['ou-allowed']) }, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
+  });
+
+  it('将普通审计事件格式化为脱敏的群摘要', () => {
+    const text = formatFeishuSupervisorAuditEvent({
+      sessionId: 'sup-1', projectDir: 'E:\\private', type: 'worker.task',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        task: '读取 E:\\private\\plan.md，token: sk-secret-token-value',
+        cwd: 'E:\\private',
+        apiKey: 'should-not-leak',
+      },
+    });
+
+    expect(text).toContain('工作终端任务更新');
+    expect(text).toContain('task：读取 本地路径已隐藏');
+    expect(text).toContain('cwd：本地路径已隐藏');
+    expect(text).toContain('apiKey：已脱敏');
+    expect(text).not.toContain('sk-secret-token-value');
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
@@ -149,6 +167,8 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
     expect(menu).toContain('停止监督');
+    expect(menu).toContain('白名单用户单聊');
+    expect(menu).not.toContain('审批卡片发送到审计群');
     expect(startObject.schema).toBe('2.0');
     expect(startObject.body?.elements).toBeInstanceOf(Array);
     expect(startObject.elements).toBeUndefined();
@@ -168,6 +188,14 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
     expect(start).toContain('surf-a');
+  });
+
+  it('允许从启动表单重新监督已停止的终端', () => {
+    const card = JSON.stringify(buildSupervisorStartCard([
+      { surfaceId: 'surf-stopped', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true },
+    ]));
+
+    expect(card).toContain('已停止，可重新监督');
   });
 
   it('兼容飞书两种表单回调包裹结构并按按钮名称恢复动作', () => {
@@ -201,7 +229,7 @@ supervisor_model: k3`)).toEqual({
           active: true,
           terminals: [
             { surfaceId: 'surf-supervised', label: 'pwsh.exe', workspace: '飞书管理', supervised: true },
-            { surfaceId: 'surf-idle', label: 'pwsh.exe', workspace: '飞书管理', supervised: false },
+            { surfaceId: 'surf-idle', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true },
           ],
           session: { sessionId: 'sup-1', stopWhen: '验证飞书连接', autonomous: false },
           pendingApprovals: [],
@@ -214,8 +242,31 @@ supervisor_model: k3`)).toEqual({
     expect(response).toContain('监督模式：有限自主（低风险权限与小范围调整自动处理）');
     expect(response).toContain('1. pwsh.exe · 飞书管理');
     expect(response).toContain('状态：监督中');
+    expect(response).toContain('状态：已停止，可重新监督');
     expect(response).toContain('终端 ID：surf-supervised');
     expect(response).toContain('终端 ID：surf-idle');
     expect(response).toContain('点击“启动监督”或“发送任务”，即可从下拉列表选择终端。');
+  });
+
+  it('显示暂停但仍保留的监督会话', () => {
+    const response = formatFeishuSupervisorResponse(
+      { action: 'list' },
+      {
+        ok: true,
+        message: JSON.stringify({
+          active: false,
+          paused: true,
+          terminals: [
+            { surfaceId: 'surf-paused', label: 'pwsh.exe', workspace: '飞书管理', supervised: true },
+          ],
+          session: { sessionId: 'sup-paused', stopWhen: '测试完成', autonomous: false },
+          pendingApprovals: [],
+        }),
+      },
+    );
+
+    expect(response).toContain('监督会话：已暂停（会话已保留）');
+    expect(response).toContain('状态：已暂停（会话已保留）');
+    expect(response).toContain('会话 ID：sup-paused');
   });
 });

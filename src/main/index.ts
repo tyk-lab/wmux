@@ -52,8 +52,8 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
     if (command.planFile && (!path.isAbsolute(command.planFile) || !fs.existsSync(command.planFile) || !fs.statSync(command.planFile).isFile())) {
       return { ok: false, error: 'plan_file 必须是当前电脑上存在的绝对路径。' };
     }
-    if (command.supervisorLaunchCmd && !['', 'codex', 'claude', 'kimi', 'grok', 'opencode'].includes(command.supervisorLaunchCmd.trim())) {
-      return { ok: false, error: 'supervisor_launch_cmd 仅允许 codex、claude、kimi、grok、opencode 或留空。' };
+    if (command.supervisorLaunchCmd && !['', 'codex', 'claude', 'kimi', 'grok', 'pi', 'opencode'].includes(command.supervisorLaunchCmd.trim())) {
+      return { ok: false, error: 'supervisor_launch_cmd 仅允许 codex、claude、kimi、grok、pi、opencode 或留空。' };
     }
   }
   const target = BrowserWindow.getAllWindows()[0];

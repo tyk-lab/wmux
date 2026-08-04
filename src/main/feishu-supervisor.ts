@@ -35,6 +35,19 @@ export function isFeishuSupervisorActorAllowed(
 interface ApprovalCard {
   messageId: string;
   approvalId: string;
+  chatId: string;
+}
+
+type PendingDecisionMessage =
+  | { kind: 'approval'; approvalId: string; record: SupervisorRecord }
+  | { kind: 'text'; text: string };
+
+export function isFeishuApprovalCardContext(
+  card: Pick<ApprovalCard, 'messageId' | 'chatId'> | undefined,
+  messageId: string,
+  chatId: string,
+): boolean {
+  return !!card && card.messageId === messageId && card.chatId === chatId;
 }
 
 const COMMAND_PREFIX = 'WMUX SUPERVISOR ';
@@ -203,6 +216,7 @@ interface FeishuListTerminal {
   label: string;
   workspace: string;
   supervised: boolean;
+  restartable?: boolean;
 }
 
 interface FeishuListSession {
@@ -219,6 +233,7 @@ interface FeishuListApproval {
 
 interface FeishuListResult {
   active: boolean;
+  paused: boolean;
   terminals: FeishuListTerminal[];
   session: FeishuListSession | null;
   pendingApprovals: FeishuListApproval[];
@@ -226,7 +241,7 @@ interface FeishuListResult {
 
 function terminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
-    text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervised ? '（监督中）' : ''}`.slice(0, 100) },
+    text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
     value: terminal.surfaceId,
   }));
 }
@@ -319,7 +334,7 @@ export function buildSupervisorControlMenuCard(): object {
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'stop' }, '停止监督', 'danger')] },
         ],
       },
-      { tag: 'note', elements: [{ tag: 'plain_text', content: '人工决策会单独以审批卡片发送到审计群。高级文本命令仍可用。' }] },
+      { tag: 'note', elements: [{ tag: 'plain_text', content: '人工决策会单独以审批卡片发送到最近的白名单用户单聊。高级文本命令仍可用。' }] },
     ],
   };
 }
@@ -390,6 +405,7 @@ function parseListResult(value: unknown): FeishuListResult | null {
         label: asText(terminal.label),
         workspace: asText(terminal.workspace),
         supervised: terminal.supervised === true,
+        restartable: terminal.restartable === true,
       }];
     });
     const session = isObject(parsed.session) && typeof parsed.session.sessionId === 'string'
@@ -400,7 +416,7 @@ function parseListResult(value: unknown): FeishuListResult | null {
         ? [{ id: approval.id, terminal: asText(approval.terminal), reason: asText(approval.reason) }]
         : [])
       : [];
-    return { active: parsed.active === true, terminals, session, pendingApprovals };
+    return { active: parsed.active === true, paused: parsed.paused === true, terminals, session, pendingApprovals };
   } catch {
     return null;
   }
@@ -412,9 +428,12 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   const result = parseListResult(value);
   if (!result) return summary(value);
 
+  let sessionStatus = '未启动';
+  if (result.active) sessionStatus = '进行中';
+  else if (result.paused) sessionStatus = '已暂停（会话已保留）';
   const lines = [
     'wmux · AI 监督状态',
-    `监督会话：${result.active ? '进行中' : '未启动'}`,
+    `监督会话：${sessionStatus}`,
     `可监督终端：${result.terminals.length} 个`,
   ];
   if (result.session) {
@@ -425,8 +444,11 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   lines.push('', '终端列表：');
   if (result.terminals.length === 0) lines.push('暂无可监督终端。');
   for (const [index, terminal] of result.terminals.entries()) {
+    let terminalStatus = '未监督';
+    if (terminal.supervised) terminalStatus = result.paused ? '已暂停（会话已保留）' : '监督中';
+    else if (terminal.restartable) terminalStatus = '已停止，可重新监督';
     lines.push(`${index + 1}. ${terminal.label} · ${terminal.workspace}`);
-    lines.push(`   状态：${terminal.supervised ? '监督中' : '未监督'}`);
+    lines.push(`   状态：${terminalStatus}`);
     lines.push(`   终端 ID：${terminal.surfaceId}`);
   }
   lines.push('', `待人工审批：${result.pendingApprovals.length ? `${result.pendingApprovals.length} 项` : '无'}`);
@@ -437,15 +459,48 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   return lines.join('\n');
 }
 
-function eventSummary(record: SupervisorRecord): string | null {
-  const titles: Record<string, string> = {
-    'session.started': 'AI 监督已启动',
-    'session.abandoned': 'AI 监督已重置',
-  };
-  const title = titles[record.type];
-  if (!title) return null;
-  const detail = String(record.payload?.reason || record.payload?.outcome || record.payload?.resolution || '').slice(0, 500);
-  return `${title}\n终端：${record.terminal.label}${detail ? `\n摘要：${detail}` : ''}`;
+const AUDIT_EVENT_TITLES: Record<string, string> = {
+  'session.started': 'AI 监督已启动',
+  'session.abandoned': 'AI 监督已重置',
+  'worker.task': '工作终端任务更新',
+  'worker.lifecycle': '工作终端生命周期',
+  'supervisor.delivery.queued': '监督信息待投递',
+  'supervisor.delivery.delivered': '监督信息已投递',
+  'supervisor.delivery.failed': '监督信息投递失败',
+  'supervisor.decision': 'AI 监督裁决',
+  'supervisor.permission-approved': 'AI 监督自动授权',
+  'supervisor.auto-approved': 'AI 监督自动批准',
+  'supervisor.approval.requested': 'AI 监督等待人工决策',
+  'supervisor.proposal.resolved': 'AI 监督人工决策已处理',
+  'supervisor.auto-decision-limit.resolved': 'AI 监督人工复核完成',
+  'supervisor.remote-command': '飞书远程监督命令',
+  'supervisor.remote-decision': '飞书人工决策',
+};
+
+const SENSITIVE_AUDIT_KEY = /(?:secret|token|password|credential|api[_ -]?key)/i;
+const LOCAL_PATH = /(?:[A-Za-z]:[\\/]|\\\\)[^\s"']+/g;
+const INLINE_SECRET = /\b(secret|token|password|api[_ -]?key)\s*[:=]\s*\S+/ig;
+const KNOWN_TOKEN = /\b(?:sk-|ghp_|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}\b/g;
+
+function auditValue(key: string, value: unknown): string {
+  if (SENSITIVE_AUDIT_KEY.test(key)) return '已脱敏';
+  if (key === 'cwd' || key === 'projectDir' || key === 'planFilePath') return '本地路径已隐藏';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!text) return '未提供';
+  return text
+    .replace(LOCAL_PATH, '本地路径已隐藏')
+    .replace(INLINE_SECRET, '$1: 已脱敏')
+    .replace(KNOWN_TOKEN, '已脱敏')
+    .slice(0, 800);
+}
+
+/** Format a durable supervisor event for its redacted Feishu destination. */
+export function formatFeishuSupervisorAuditEvent(record: SupervisorRecord): string {
+  const title = AUDIT_EVENT_TITLES[record.type] || `AI 监督事件：${record.type}`;
+  const details = Object.entries(record.payload || {})
+    .map(([key, value]) => `${key}：${auditValue(key, value)}`)
+    .slice(0, 12);
+  return [title, `终端：${auditValue('terminal', record.terminal.label)}`, ...(details.length > 0 ? ['详情：', ...details] : [])].join('\n');
 }
 
 function decisionOptions(alternatives: string): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
@@ -499,6 +554,11 @@ export class FeishuSupervisorService {
   private readonly approvalCards = new Map<string, ApprovalCard>();
   /** Only cards sent to a control chat may open routine control forms. */
   private readonly controlCards = new Map<string, string>();
+  /** The most recent allowlisted DM becomes the recipient for future decisions. */
+  private decisionChatId: string | undefined;
+  private readonly pendingDecisionMessages: PendingDecisionMessage[] = [];
+  private decisionQueue: Promise<void> = Promise.resolve();
+  private auditQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly control: FeishuSupervisorControl) {}
 
@@ -539,16 +599,29 @@ export class FeishuSupervisorService {
 
   onRecord(record: SupervisorRecord): void {
     if (!this.channel) return;
-    if (record.type === 'supervisor.approval.requested' && record.payload?.approvalId) {
-      void this.sendApproval(record);
+    if (record.type === 'supervisor.approval.requested') {
+      const operation = record.payload?.approvalId
+        ? () => this.sendApproval(record)
+        : () => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record));
+      void this.enqueueDecisionOperation(operation);
       return;
     }
-    if (record.type === 'supervisor.proposal.resolved' && record.payload?.approvalId) {
-      void this.updateApproval(String(record.payload.approvalId), String(record.payload.resolution || '已处理'));
+    if (record.type === 'supervisor.proposal.resolved') {
+      const operation = record.payload?.approvalId
+        ? () => this.resolveApproval(record)
+        : () => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record));
+      void this.enqueueDecisionOperation(operation);
       return;
     }
-    const text = eventSummary(record);
-    if (text) void this.sendText(text);
+    if (record.type === 'supervisor.remote-decision') {
+      // The text command or card action already replies in the same allowlisted DM.
+      return;
+    }
+    if (record.type === 'supervisor.auto-decision-limit.resolved') {
+      void this.enqueueDecisionOperation(() => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record)));
+      return;
+    }
+    this.enqueueAuditText(formatFeishuSupervisorAuditEvent(record));
   }
 
   private allowed(chatId: string, openId: string, chatType: 'group' | 'p2p'): boolean {
@@ -564,7 +637,12 @@ export class FeishuSupervisorService {
   ): Promise<void> {
     const allowed = this.allowed(chatId, openId, chatType);
     console.info(`[feishu] message received: type=${chatType}, group=${chatId === this.config?.chatId}, sender=${this.config?.allowedOpenIds.has(openId) === true}, duplicate=${this.seen.has(messageId)}`);
-    if (!allowed || this.seen.has(messageId)) return;
+    if (!allowed) return;
+    if (chatType === 'p2p') {
+      this.decisionChatId = chatId;
+      await this.enqueueDecisionOperation(() => this.flushPendingDecisionMessages());
+    }
+    if (this.seen.has(messageId)) return;
     this.remember(messageId);
     if (isFeishuSupervisorHelp(content)) {
       await this.sendControlCard(buildSupervisorControlMenuCard(), chatId);
@@ -574,6 +652,10 @@ export class FeishuSupervisorService {
     if ('error' in command) {
       console.info('[feishu] supervisor command rejected: invalid format');
       return void this.sendText(command.error, chatId);
+    }
+    if (command.action === 'decide' && chatType !== 'p2p') {
+      await this.sendText('人工决策仅支持白名单用户单聊。', chatId);
+      return;
     }
     console.info(`[feishu] supervisor command accepted: ${command.action}`);
     const result = await this.control(command, { openId, source: 'text' }).catch((err) => ({ error: String(err?.message || err) }));
@@ -593,7 +675,14 @@ export class FeishuSupervisorService {
       return;
     }
     if (value.wmux_action === 'decide' && !value.approval_id) value.approval_id = this.approvalIdForMessage(event.messageId);
-    if (event.chatId !== this.config.chatId || value?.wmux_action !== 'decide' || !value.approval_id || !['approve', 'reject', 'stop'].includes(value.decision || '')) return;
+    const card = value?.approval_id ? this.approvalCards.get(value.approval_id) : undefined;
+    if (
+      value?.wmux_action !== 'decide'
+      || !value.approval_id
+      || !['approve', 'reject', 'stop'].includes(value.decision || '')
+      || !isFeishuApprovalCardContext(card, event.messageId, event.chatId)
+    ) return;
+    this.decisionChatId = event.chatId;
     const dedupeKey = `${event.messageId}:${value.decision}`;
     if (this.seen.has(dedupeKey)) return;
     this.remember(dedupeKey);
@@ -601,7 +690,6 @@ export class FeishuSupervisorService {
       action: 'decide', approvalId: value.approval_id, decision: value.decision as 'approve' | 'reject' | 'stop', task: this.cardFollowUpTask(event),
     }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
     const failed = !!(result && typeof result === 'object' && (result as { error?: string }).error);
-    const card = this.approvalCards.get(value.approval_id);
     if (failed) {
       // A missing/invalid follow-up task is correctable in the same card.
       // Do not let the click dedupe prevent the user from submitting again.
@@ -677,7 +765,7 @@ export class FeishuSupervisorService {
       return;
     }
     if (flow === 'start') {
-      const candidates = list.terminals.filter((terminal) => !terminal.supervised);
+      const candidates = list.terminals.filter((terminal) => !terminal.supervised || terminal.restartable);
       if (candidates.length === 0) {
         await this.sendText('暂无可启动监督的终端。请先在 wmux 中创建工作终端，或先停止当前监督。', event.chatId);
         return;
@@ -719,8 +807,83 @@ export class FeishuSupervisorService {
   private async sendApproval(record: SupervisorRecord): Promise<void> {
     if (!this.channel) return;
     const approvalId = String(record.payload?.approvalId || '');
-    const sent = await this.channel.send(this.config!.chatId, { card: buildApprovalCard(record) });
-    this.approvalCards.set(approvalId, { approvalId, messageId: sent.messageId });
+    const chatId = this.decisionChatId;
+    if (!chatId) {
+      this.queuePendingDecision({ kind: 'approval', approvalId, record });
+      return;
+    }
+    try {
+      const sent = await this.channel.send(chatId, { card: buildApprovalCard(record) });
+      this.approvalCards.set(approvalId, { approvalId, messageId: sent.messageId, chatId });
+      if (this.approvalCards.size > 100) this.approvalCards.delete(this.approvalCards.keys().next().value as string);
+    } catch (err) {
+      console.warn('[feishu] send approval card failed', err);
+      this.queuePendingDecision({ kind: 'approval', approvalId, record });
+    }
+  }
+
+  private async resolveApproval(record: SupervisorRecord): Promise<void> {
+    const approvalId = String(record.payload?.approvalId || '');
+    this.removePendingApproval(approvalId);
+    const updated = await this.updateApproval(approvalId, String(record.payload?.resolution || '已处理'));
+    if (!updated) await this.sendDecisionText(formatFeishuSupervisorAuditEvent(record));
+  }
+
+  private enqueueDecisionOperation(operation: () => Promise<void>): Promise<void> {
+    const next = this.decisionQueue
+      .catch(() => undefined)
+      .then(operation)
+      .catch((err) => console.warn('[feishu] decision delivery failed', err));
+    this.decisionQueue = next;
+    return next;
+  }
+
+  private queuePendingDecision(message: PendingDecisionMessage): void {
+    if (message.kind === 'approval') this.removePendingApproval(message.approvalId);
+    this.pendingDecisionMessages.push(message);
+    if (this.pendingDecisionMessages.length > 100) this.pendingDecisionMessages.shift();
+  }
+
+  private removePendingApproval(approvalId: string): void {
+    for (let index = this.pendingDecisionMessages.length - 1; index >= 0; index -= 1) {
+      const message = this.pendingDecisionMessages[index];
+      if (message.kind === 'approval' && message.approvalId === approvalId) {
+        this.pendingDecisionMessages.splice(index, 1);
+      }
+    }
+  }
+
+  private async flushPendingDecisionMessages(): Promise<void> {
+    if (!this.decisionChatId || this.pendingDecisionMessages.length === 0) return;
+    const pending = this.pendingDecisionMessages.splice(0);
+    for (const message of pending) {
+      if (message.kind === 'approval') await this.sendApproval(message.record);
+      else await this.sendDecisionText(message.text);
+    }
+  }
+
+  private async sendDecisionText(text: string): Promise<void> {
+    const chatId = this.decisionChatId;
+    if (!this.channel || !chatId) {
+      this.queuePendingDecision({ kind: 'text', text });
+      return;
+    }
+    try {
+      await this.channel.send(chatId, { text: text.slice(0, 1800) });
+    } catch (err) {
+      console.warn('[feishu] send decision text failed', err);
+      this.queuePendingDecision({ kind: 'text', text });
+    }
+  }
+
+  private enqueueAuditText(text: string): void {
+    this.auditQueue = this.auditQueue
+      .catch(() => undefined)
+      .then(async () => {
+        await this.sendText(text);
+        // Keep detailed events ordered and below one group's bot message limit.
+        await new Promise<void>((resolve) => setTimeout(resolve, 220));
+      });
   }
 
   private async sendControlCard(card: object, chatId: string): Promise<void> {
@@ -735,14 +898,19 @@ export class FeishuSupervisorService {
     }
   }
 
-  private async updateApproval(approvalId: string, resolution: string): Promise<void> {
+  private async updateApproval(approvalId: string, resolution: string): Promise<boolean> {
     const card = this.approvalCards.get(approvalId);
-    if (!card || !this.channel) return;
-    await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
-      'wmux AI 监督：人工决策已处理',
-      `结果：${resolution}`,
-      resolution === 'approved',
-    )).catch(() => undefined);
+    if (!card || !this.channel) return false;
+    try {
+      await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
+        'wmux AI 监督：人工决策已处理',
+        `结果：${resolution}`,
+        resolution === 'approved',
+      ));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async sendText(text: string, chatId = this.config?.chatId): Promise<void> {
