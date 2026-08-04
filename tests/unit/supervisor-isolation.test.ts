@@ -259,10 +259,89 @@ describe('supervisor isolation', () => {
     const store = makeStore();
     store.getState().patchSupervisor({ autonomous: true });
     store.getState().startSupervisor();
+    store.getState().pauseSupervisor();
 
     store.getState().stopSupervisor();
 
-    expect(store.getState().supervisor).toMatchObject({ active: false, autonomous: false });
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: false, autonomous: false });
+  });
+
+  it('pauses and resumes the same session without discarding its pending decision', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane({ awaitingReview: true })]);
+    store.getState().patchSupervisor({ autonomous: true });
+    store.getState().startSupervisor();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a',
+      surfaceId: 'worker-a' as any,
+      laneLabel: 'Auth worker',
+      text: '改用方案 B',
+      source: 'supervisor-route',
+      proposalKind: 'route-change',
+    });
+    const sessionId = store.getState().supervisor.sessionId;
+
+    store.getState().pauseSupervisor('人工选择暂停');
+
+    expect(store.getState().supervisor).toMatchObject({
+      active: false,
+      paused: true,
+      autonomous: true,
+      sessionId,
+    });
+    expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '暂停', detail: '人工选择暂停' });
+
+    store.getState().resumeSupervisor();
+
+    expect(store.getState().supervisor).toMatchObject({
+      active: true,
+      paused: false,
+      autonomous: true,
+      sessionId,
+    });
+    expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '继续', detail: '继续原监督会话' });
+  });
+
+  it('cancels a pending decision without recording it as rejected', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane()]);
+    store.getState().startSupervisor();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a',
+      surfaceId: 'worker-a' as any,
+      laneLabel: 'Auth worker',
+      text: '等待人工确认',
+      source: 'supervisor-important',
+      proposalKind: 'important',
+    });
+    const approval = store.getState().supervisor.pendingApprovals[0];
+
+    expect(store.getState().cancelPending(approval.id, '用户已通过其他方式发送信息')).toEqual(approval);
+    expect(store.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(store.getState().supervisor.log[0]).toMatchObject({
+      action: '取消决策',
+      detail: '用户已通过其他方式发送信息',
+    });
+    expect(store.getState().supervisor.log.some((entry) => entry.action === '拒绝')).toBe(false);
+  });
+
+  it('resumes only the lane whose decision was cancelled by alternate input', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([
+      lane({ awaitingReview: true }),
+      lane({ id: 'lane-b', surfaceId: 'worker-b' as any, awaitingReview: true }),
+    ]);
+    store.getState().startSupervisor();
+    store.getState().updateLane('lane-a', { resumeAfterCancelledDecision: true });
+    store.getState().pauseSupervisor();
+
+    store.getState().resumeSupervisor();
+
+    const [cancelledLane, unrelatedLane] = store.getState().supervisor.lanes;
+    expect(cancelledLane).toMatchObject({ awaitingReview: false, resumeAfterCancelledDecision: false });
+    expect(unrelatedLane).toMatchObject({ awaitingReview: true });
   });
 
   it('clears stale human approvals when a new supervision session starts', () => {
@@ -355,6 +434,7 @@ describe('supervisor isolation', () => {
   it('creates unified supervision by default', () => {
     const session = createDefaultSupervisorSession();
     expect(session.mode).toBe('unified');
+    expect(session.paused).toBe(false);
     expect(session.taskGoal).toBe('');
     expect(session.taskDescription).toBe('');
     expect(session.maxAutoDecisions).toBeNull();
@@ -541,6 +621,7 @@ describe('supervisor isolation', () => {
           { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
           { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
           { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
+          { ts: 7, type: 'supervisor.proposal.resolved', payload: { resolution: 'cancelled', proposalKind: 'important' } },
         ],
       }],
     });
@@ -549,6 +630,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('裁决：rework · 小范围路线调整');
     expect(text).toContain('已废除旧上下文');
     expect(text).toContain('人工裁决：已批准（路线变更）');
+    expect(text).toContain('人工裁决：已取消（用户已通过其他方式发送信息）（重要建议）');
     expect(text).toContain('人工已审阅');
     expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });

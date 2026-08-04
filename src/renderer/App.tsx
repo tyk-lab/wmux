@@ -480,23 +480,21 @@ function queueSupervisorDelivery(
   appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
 }
 
-/** A new task typed by the user supersedes any unapproved suggestion for this worker lane. */
-function cancelPendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane): void {
+/** Direct worker input cancels proposals that the user has already answered another way. */
+function cancelPendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane): boolean {
   const store = useStore.getState();
   const pending = store.supervisor.pendingApprovals.filter((item) => item.laneId === lane.id);
   for (const item of pending) {
-    store.rejectPending(item.id);
+    store.cancelPending(item.id, '用户已在任务终端通过其他方式发送信息');
     if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
       appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
         approvalId: item.id,
-        resolution: 'handled-manually',
+        resolution: 'cancelled',
         proposalKind: item.proposalKind || 'important',
       });
     }
   }
-  if (pending.length > 0) {
-    store.appendSupervisorLog(lane.id, '已取消待批准建议', '检测到用户在工作终端手动发送了新任务');
-  }
+  return pending.length > 0;
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -512,9 +510,16 @@ function handleSupervisorHookEvent(event: any): void {
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
-    cancelPendingApprovalsForManualTask(session, auditLane);
+    const cancelledDecision = cancelPendingApprovalsForManualTask(session, auditLane);
     store.updateLane(lane.id, {
-      awaitingReview: !!lane.autoDecisionLimitReached,
+      awaitingReview: cancelledDecision || !!lane.autoDecisionLimitReached,
+      ...(cancelledDecision ? {
+        awaitingStopCheck: false,
+        stopConfirmed: false,
+        resumeAfterCancelledDecision: true,
+        autoDecisionLimitReached: false,
+        autoDecisionsUsed: 0,
+      } : {}),
       ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
     });
@@ -522,7 +527,7 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    if (!lane.autoDecisionLimitReached) {
+    if (!cancelledDecision && !lane.autoDecisionLimitReached) {
       const deliveryTask = task || lane.currentTask || '（任务已开始，Hook 未提供任务说明）';
       queueSupervisorDelivery(
         session,
@@ -531,6 +536,9 @@ function handleSupervisorHookEvent(event: any): void {
         deliveryTask,
         `[任务开始] ${lane.label}: ${deliveryTask}\n`,
       );
+    }
+    if (cancelledDecision) {
+      store.pauseSupervisor('用户在任务终端另行输入，当前决策已取消');
     }
     return;
   }
@@ -1009,12 +1017,19 @@ export default function App() {
   const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
   const supervisorDeliveryInFlightRef = useRef(false);
+  const recordedSupervisorSessionIdRef = useRef('');
   useEffect(() => {
     if (!supervisorActive) return;
     supervisorRuntimeRef.current = {};
     const session = useStore.getState().supervisor;
+    if (recordedSupervisorSessionIdRef.current === session.sessionId) return;
+    recordedSupervisorSessionIdRef.current = session.sessionId;
     const launcher = detectSupervisorLauncher(session.supervisorLaunchCmd);
     const launcherName = supervisorLauncherDisplayName(launcher);
+    let defaultReasoning = '不适用';
+    if (launcher === 'codex') defaultReasoning = 'Codex 默认推理程度';
+    else if (launcher === 'kimi') defaultReasoning = 'Kimi 默认 Thinking';
+    else if (launcher === 'pi') defaultReasoning = 'Pi 默认 Thinking';
     for (const lane of session.lanes) {
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
@@ -1027,8 +1042,7 @@ export default function App() {
         scopeRoot: lane.scopeRoot || lane.projectDir,
         forbiddenActions: session.forbiddenActions,
         supervisorModel: session.supervisorModel || `${launcherName} 默认模型`,
-        supervisorReasoningEffort: session.supervisorReasoningEffort
-          || (launcher === 'kimi' ? 'Kimi 默认 Thinking' : launcher === 'codex' ? 'Codex 默认推理程度' : '不适用'),
+        supervisorReasoningEffort: session.supervisorReasoningEffort || defaultReasoning,
         terminalName: lane.label,
       });
     }

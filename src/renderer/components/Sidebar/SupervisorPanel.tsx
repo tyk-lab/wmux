@@ -47,9 +47,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const supervisor = useStore((s) => s.supervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const startSupervisor = useStore((s) => s.startSupervisor);
+  const pauseSupervisor = useStore((s) => s.pauseSupervisor);
+  const resumeSupervisor = useStore((s) => s.resumeSupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
-  const rejectPending = useStore((s) => s.rejectPending);
+  const cancelPending = useStore((s) => s.cancelPending);
   const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
@@ -75,7 +77,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const mode = supervisor.mode || 'unified';
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
-  const supervisorThinkingLabel = supervisorLauncher === 'kimi' ? 'Thinking' : '推理程度';
+  const supervisorThinkingLabel = supervisorLauncher === 'codex' ? '推理程度' : 'Thinking';
   const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
   const autonomyPermissionCount = Array.isArray(supervisor.autonomyPermissions)
     ? supervisor.autonomyPermissions.length
@@ -94,6 +96,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const missingDedicatedSupervisor = supervisor.lanes.some(
     (lane) => !lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId),
   );
+  let statusLabel = '已停止';
+  if (supervisor.active) statusLabel = '运行中';
+  else if (supervisor.paused) statusLabel = '已暂停';
 
   const openSupervisorSession = () => {
     const target = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
@@ -188,30 +193,15 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }
   };
 
-  const onReject = (id: string) => {
+  const onPause = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
-    rejectPending(id);
-    if (!item || (item.source !== 'supervisor-route' && item.source !== 'supervisor-important')) return;
-    const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
-    if (!lane) return;
-    updateLane(lane.id, {
-      awaitingReview: true,
-      autoDecisionLimitReached: false,
-      autoDecisionsUsed: 0,
-    });
-    appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
-      approvalId: item.id,
-      resolution: 'rejected',
-      proposalKind: item.proposalKind || 'important',
-    });
-    if (lane.supervisorSurfaceId) {
-      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请以当前任务说明和终端证据继续监督，计划文件仅作背景参考。\n', true);
-    }
+    if (!item) return;
+    pauseSupervisor(`人工暂停待决项：${item.laneLabel}；决策内容已保留`);
   };
 
   const onCancel = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
-    rejectPending(id);
+    cancelPending(id, '用户已通过任务终端等其他方式发送信息');
     setProposalEdits((current) => {
       const { [id]: _discarded, ...rest } = current;
       return rest;
@@ -220,16 +210,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
     if (!lane) return;
     updateLane(lane.id, {
-      awaitingReview: false,
+      awaitingReview: true,
+      awaitingStopCheck: false,
+      stopConfirmed: false,
+      resumeAfterCancelledDecision: true,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
     });
     appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
       approvalId: item.id,
-      resolution: 'handled-manually',
+      resolution: 'cancelled',
       proposalKind: item.proposalKind || 'important',
     });
-    appendSupervisorLog(lane.id, '已取消建议', '由用户在工作终端自行处理');
+    pauseSupervisor('用户取消当前决策并改由其他方式发送信息');
   };
 
   const resumeAfterHumanReview = (lane: SupervisorLane) => {
@@ -245,6 +238,31 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     appendSupervisorLog(lane.id, '人工已审阅', '自动判断计数已重置，可继续监督');
     if (lane.supervisorSurfaceId) {
       sendToSurface(lane.supervisorSurfaceId, '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n', true);
+    }
+  };
+
+  const resumePausedSession = () => {
+    if (!supervisor.paused) return;
+    if (missingDedicatedSupervisor) {
+      openSupervisorSetup();
+      return;
+    }
+
+    const cancelledDecisionLanes = supervisor.lanes.filter((lane) => (
+      lane.enabled
+      && lane.awaitingReview
+      && lane.resumeAfterCancelledDecision
+      && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)
+    ));
+    resumeSupervisor();
+    for (const lane of cancelledDecisionLanes) {
+      if (lane.supervisorSurfaceId) {
+        sendToSurface(
+          lane.supervisorSurfaceId,
+          '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n',
+          true,
+        );
+      }
     }
   };
 
@@ -412,19 +430,29 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
   if (!expanded) {
     return (
-      <div className="sup-panel sup-panel--compact" data-active={supervisor.active ? '1' : '0'}>
+      <div
+        className="sup-panel sup-panel--compact"
+        data-active={supervisor.active ? '1' : '0'}
+        data-paused={supervisor.paused ? '1' : '0'}
+      >
         <button type="button" className="sup-panel__header" onClick={openSupervisorSession}>
           <span className="sup-panel__dot" />
           <span className="sup-panel__title">AI 监督</span>
-          <span className="sup-panel__status">{supervisor.active ? '运行中' : '已停止'}</span>
+          <span className="sup-panel__status">{statusLabel}</span>
           <span className="sup-panel__meta-right">{enabled.length} 通道 · 展开会话</span>
         </button>
         <div className="sup-panel__compact-actions">
           <button type="button" onClick={openSupervisorSession}>打开</button>
           <button type="button" onClick={openSupervisorSetup}>配置</button>
-          {supervisor.active ? (
+          {supervisor.active && (
             <button type="button" onClick={() => stopSupervisor()}>停止</button>
-          ) : (
+          )}
+          {!supervisor.active && supervisor.paused && (
+            <button type="button" className="sup-panel__btn-primary" onClick={resumePausedSession}>
+              {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续会话'}
+            </button>
+          )}
+          {!supervisor.active && !supervisor.paused && (
             <button type="button" className="sup-panel__btn-primary" onClick={missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}>
               {missingDedicatedSupervisor ? '创建 AI' : '启动新会话'}
             </button>
@@ -438,6 +466,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     <div
       className="sup-panel"
       data-active={supervisor.active ? '1' : '0'}
+      data-paused={supervisor.paused ? '1' : '0'}
       data-collapsed={collapsed ? '1' : '0'}
     >
       <button
@@ -448,7 +477,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       >
         <span className="sup-panel__dot" />
         <span className="sup-panel__title">AI 监督</span>
-        <span className="sup-panel__status">{supervisor.active ? '运行中' : '已停止'}</span>
+        <span className="sup-panel__status">{statusLabel}</span>
         <span className="sup-panel__meta-right">
           {modeLabel(mode)} · {enabled.length} 通道{supervisor.autonomous ? ' · 全自动' : ''}
           {pendingCount > 0 ? ` · ${pendingCount} 待批` : ''}
@@ -457,6 +486,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
       {!collapsed && (
         <>
+          {supervisor.paused && (
+            <div className="sup-panel__paused-notice">
+              {missingDedicatedSupervisor
+                ? '会话已暂停，但专属监督终端已缺失；请停止后重新配置。'
+                : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续会话”即可恢复。'}
+            </div>
+          )}
           <div className="sup-panel__freedom">
             {supervisor.autonomous ? '全自动监督' : '有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
             工作范围为“{WORK_SCOPE_LABELS[workScope]}”，另有 {forbiddenActionCount} 项禁止事项。硬风险始终等待人工。
@@ -492,7 +528,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
             监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
           </div>
-          {(supervisorLauncher === 'codex' || supervisorLauncher === 'kimi') && (
+          {(supervisorLauncher === 'codex' || supervisorLauncher === 'kimi' || supervisorLauncher === 'pi') && (
             <div className="sup-panel__goal" title={supervisor.supervisorReasoningEffort || `${supervisorLauncherName} 默认${supervisorThinkingLabel}`}>
               {supervisorThinkingLabel}: {supervisor.supervisorReasoningEffort || '默认'}
             </div>
@@ -572,13 +608,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   </div>
                   {lane.awaitingStopCheck && !lane.stopConfirmed && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
-                      <button type="button" onClick={() => rejectStopCondition(lane.id)}>
+                      <button type="button" onClick={() => rejectStopCondition(lane.id)} disabled={!supervisor.active}>
                         未达到
                       </button>
                       <button
                         type="button"
                         className="sup-panel__btn-primary"
                         onClick={() => confirmStopCondition(lane.id)}
+                        disabled={!supervisor.active}
                       >
                         已达停止条件
                       </button>
@@ -591,6 +628,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         type="button"
                         className="sup-panel__btn-primary"
                         onClick={() => resumeAfterHumanReview(lane)}
+                        disabled={!supervisor.active}
                       >
                         我已人工审阅，继续监督
                       </button>
@@ -645,6 +683,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                           value={proposalEdits[a.id] ?? a.text}
                           onChange={(event) => setProposalEdits((current) => ({ ...current, [a.id]: event.target.value }))}
                           placeholder="例如：按上述建议继续，但先补充测试"
+                          disabled={!supervisor.active}
                         />
                       </label>
                     </div>
@@ -656,19 +695,30 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   )}
                   <div className="sup-panel__approval-actions">
                     {a.proposalKind && (
-                      <button type="button" onClick={() => onCancel(a.id)} title="不发送建议；由你在工作终端自行处理">
+                      <button
+                        type="button"
+                        onClick={() => onCancel(a.id)}
+                        title="不发送建议；你已通过任务终端等其他方式发送信息"
+                        disabled={!supervisor.active}
+                      >
                         取消
                       </button>
                     )}
-                    <button type="button" onClick={() => onReject(a.id)}>
-                      拒绝
+                    <button
+                      type="button"
+                      onClick={() => onPause(a.id)}
+                      title="保留当前待决项并暂停会话"
+                      disabled={!supervisor.active}
+                    >
+                      暂停
                     </button>
                     <button
                       type="button"
                       className="sup-panel__btn-primary"
                       onClick={() => onApprove(a.id)}
+                      disabled={!supervisor.active}
                     >
-                      {a.proposalKind ? '批准并发送' : '批准并发送'}
+                      批准并发送
                     </button>
                   </div>
                 </div>
@@ -694,11 +744,21 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             <button type="button" onClick={openSupervisorSetup}>
               配置
             </button>
-            {supervisor.active ? (
+            {supervisor.active && (
               <button type="button" onClick={() => stopSupervisor()}>
                 停止
               </button>
-            ) : (
+            )}
+            {!supervisor.active && supervisor.paused && (
+              <button
+                type="button"
+                className="sup-panel__btn-primary"
+                onClick={resumePausedSession}
+              >
+                {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续会话'}
+              </button>
+            )}
+            {!supervisor.active && !supervisor.paused && (
               <button
                 type="button"
                 className="sup-panel__btn-primary"

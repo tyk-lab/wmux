@@ -201,6 +201,10 @@ export default function SupervisorSetupDialog() {
   const createWorkspace = useStore((s) => s.createWorkspace);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const sessionRetained = supervisor.active || supervisor.paused;
+  let primaryActionLabel = '启动 AI 监督';
+  if (supervisor.active) primaryActionLabel = '应用并继续监督';
+  else if (supervisor.paused) primaryActionLabel = '返回监督会话';
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -236,13 +240,13 @@ export default function SupervisorSetupDialog() {
           projectDir: ws.cwd || s.projectDir,
           label: meta?.label || s.title,
           state: String(st),
-          currentTask: supervisor.active ? existingLane?.currentTask : undefined,
+          currentTask: sessionRetained ? existingLane?.currentTask : undefined,
           remoteSshControl: !!ws.sshProfileId,
         });
       }
     }
     return list;
-  }, [workspaces, agentMeta, agentStates, supervisor.active, supervisor.lanes]);
+  }, [workspaces, agentMeta, agentStates, sessionRetained, supervisor.lanes]);
 
   const [taskGoal, setTaskGoal] = useState(supervisor.taskGoal || '');
   const [taskDescription, setTaskDescription] = useState(supervisor.taskDescription || '');
@@ -326,10 +330,10 @@ export default function SupervisorSetupDialog() {
   }, [setupOpen, closeSupervisorSetup]);
 
   useEffect(() => {
-    if (!setupOpen || supervisor.active) return;
+    if (!setupOpen || sessionRetained) return;
     setAutonomous(false);
     if (supervisor.autonomous) patchSupervisor({ autonomous: false });
-  }, [setupOpen, supervisor.active, supervisor.autonomous, patchSupervisor]);
+  }, [setupOpen, sessionRetained, supervisor.autonomous, patchSupervisor]);
 
   const launcherKind = useMemo(() => detectSupervisorLauncher(
     launchChoice === CUSTOM_OPTION ? launchCmd : launchChoice,
@@ -483,7 +487,7 @@ export default function SupervisorSetupDialog() {
         workspaceTitle: c.workspaceTitle,
         remoteSshControl: c.remoteSshControl,
         projectDir: c.projectDir,
-        scopeRoot: supervisor.active ? prev?.scopeRoot || c.projectDir : c.projectDir,
+        scopeRoot: sessionRetained ? prev?.scopeRoot || c.projectDir : c.projectDir,
         enabled: true,
         steps,
         maxAutoSteps: 0,
@@ -649,7 +653,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const applyConfig = (andStart: boolean) => {
-    const lanes = buildLanes(!andStart || supervisor.active);
+    const lanes = buildLanes(!andStart || sessionRetained);
     if (lanes.length === 0) {
       window.alert('请至少选择一个要监控的终端。');
       return;
@@ -683,7 +687,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const openAiSession = () => {
-    const lanes = buildLanes(supervisor.active);
+    const lanes = buildLanes(sessionRetained);
     if (lanes.length === 0) {
       window.alert('请先至少选择一个要监控的终端。');
       return;
@@ -1201,7 +1205,7 @@ export default function SupervisorSetupDialog() {
                   type="button"
                   className="confirm-dialog__btn supervisor-dialog__btn-ai"
                   onClick={openAiSession}
-                  disabled={supervisor.active}
+                  disabled={sessionRetained}
                 >
                   仅打开监督终端（不启动）
                 </button>
@@ -1212,7 +1216,7 @@ export default function SupervisorSetupDialog() {
         </div>
 
         <div className="supervisor-dialog__actions">
-          {supervisor.active && (
+          {sessionRetained && (
             <button
               type="button"
               className="confirm-dialog__btn"
@@ -1232,17 +1236,17 @@ export default function SupervisorSetupDialog() {
             type="button"
             className="confirm-dialog__btn"
             onClick={() => applyConfig(false)}
-            disabled={supervisor.active}
-            title={supervisor.active ? '运行中请使用“应用并继续监督”，以同步专属监督终端。' : undefined}
+            disabled={sessionRetained}
+            title={sessionRetained ? '当前会话仍在保留；请先继续或停止该会话。' : undefined}
           >
             保存设置
           </button>
           <button
             type="button"
             className="confirm-dialog__btn confirm-dialog__btn--danger"
-            onClick={() => applyConfig(true)}
+            onClick={supervisor.paused ? closeSupervisorSetup : () => applyConfig(true)}
           >
-            {supervisor.active ? '应用并继续监督' : '启动 AI 监督'}
+            {primaryActionLabel}
           </button>
         </div>
       </div>

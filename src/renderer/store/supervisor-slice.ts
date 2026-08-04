@@ -84,6 +84,8 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Marks review created by alternate input so resume clears only this lane. */
+  resumeAfterCancelledDecision?: boolean;
   /** Blocked-request generation already answered for a permission or technical question. */
   lastBlockedResponseVersion?: number;
   /** Stable blocked-request identity; unlike a counter, it cannot collide after an agent restart. */
@@ -143,6 +145,8 @@ export interface SupervisorLogEntry {
 export interface SupervisorSession {
   sessionId: string;
   active: boolean;
+  /** Paused sessions retain their lanes, pending decisions, and session identity. */
+  paused: boolean;
   mode: SupervisorMode;
   /** Current-session-only authority for AI decisions and safe terminal confirmations. */
   autonomous: boolean;
@@ -212,10 +216,13 @@ export interface SupervisorSlice {
   patchSupervisor: (partial: Partial<SupervisorSession>) => void;
   setSupervisorLanes: (lanes: SupervisorLane[]) => void;
   startSupervisor: () => void;
+  pauseSupervisor: (detail?: string) => void;
+  resumeSupervisor: () => void;
   stopSupervisor: (detail?: string) => void;
   appendSupervisorLog: (laneId: string, action: string, detail: string) => void;
   enqueueApproval: (item: Omit<PendingApproval, 'id' | 'createdAt'>) => void;
   approvePending: (id: string) => PendingApproval | null;
+  cancelPending: (id: string, detail?: string) => PendingApproval | null;
   rejectPending: (id: string) => void;
   updateLane: (laneId: string, patch: Partial<SupervisorLane>) => void;
   updateStep: (laneId: string, stepId: string, patch: Partial<SupervisorStep>) => void;
@@ -233,6 +240,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
   return {
     sessionId: '',
     active: false,
+    paused: false,
     mode: 'unified',
     autonomous: false,
     autonomyPermissions: [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
@@ -281,6 +289,7 @@ export function clearSupervisorLaneContext(
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
+    resumeAfterCancelledDecision: false,
     lastBlockedResponseVersion: undefined,
     lastBlockedResponseId: undefined,
     autoDecisionLimitReached: false,
@@ -318,16 +327,18 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   },
   startSupervisor() {
     set((s) => {
-      let lanes = s.supervisor.lanes;
-      if (s.supervisor.mode === 'unified') {
-        lanes = lanes.map((lane) => lane.enabled ? { ...lane, awaitingReview: true } : lane);
-      }
+      const lanes = s.supervisor.lanes.map((lane) => ({
+        ...lane,
+        ...(s.supervisor.mode === 'unified' && lane.enabled ? { awaitingReview: true } : {}),
+        resumeAfterCancelledDecision: false,
+      }));
       return {
         supervisor: {
           ...s.supervisor,
           lanes,
           sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           active: true,
+          paused: false,
           setupOpen: false,
           pendingApprovals: [],
           log: [
@@ -343,11 +354,62 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
+  pauseSupervisor(detail) {
+    set((s) => {
+      if (!s.supervisor.active) return s;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          active: false,
+          paused: true,
+          log: [
+            {
+              ts: Date.now(),
+              laneId: '-',
+              action: '暂停',
+              detail: detail || '监督会话已暂停，可继续原会话',
+            },
+            ...s.supervisor.log,
+          ].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
+  resumeSupervisor() {
+    set((s) => {
+      if (!s.supervisor.paused || !s.supervisor.sessionId) return s;
+      const pendingLaneIds = new Set(s.supervisor.pendingApprovals.map((item) => item.laneId));
+      const lanes = s.supervisor.lanes.map((lane) => (
+        lane.resumeAfterCancelledDecision && !pendingLaneIds.has(lane.id)
+          ? { ...lane, awaitingReview: false, resumeAfterCancelledDecision: false }
+          : lane
+      ));
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes,
+          active: true,
+          paused: false,
+          setupOpen: false,
+          log: [
+            {
+              ts: Date.now(),
+              laneId: '-',
+              action: '继续',
+              detail: '继续原监督会话',
+            },
+            ...s.supervisor.log,
+          ].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
   stopSupervisor(detail) {
     set((s) => ({
       supervisor: {
         ...s.supervisor,
         active: false,
+        paused: false,
         // Autonomous authority is deliberately non-resumable: stopping ends
         // the consent scope, so a later session must be enabled explicitly.
         autonomous: false,
@@ -399,6 +461,26 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       supervisor: {
         ...s.supervisor,
         pendingApprovals: s.supervisor.pendingApprovals.filter((a) => a.id !== id),
+      },
+    }));
+    return found;
+  },
+  cancelPending(id, detail) {
+    const found = get().supervisor.pendingApprovals.find((a) => a.id === id) ?? null;
+    if (!found) return null;
+    set((s) => ({
+      supervisor: {
+        ...s.supervisor,
+        pendingApprovals: s.supervisor.pendingApprovals.filter((a) => a.id !== id),
+        log: [
+          {
+            ts: Date.now(),
+            laneId: found.laneId,
+            action: '取消决策',
+            detail: detail || '待决项已取消',
+          },
+          ...s.supervisor.log,
+        ].slice(0, MAX_LOG),
       },
     }));
     return found;
