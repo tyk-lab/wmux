@@ -40,7 +40,7 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 
 > **开发时验证 Agent 侧栏：** 改完主进程 / CLI 后需 `npm run build:main` 并**重启** wmux；只热更渲染进程不会带上 `report-agent` / `wrap` 链路。
 
-### 环境变量与敏感配置（必读）
+## 环境变量与敏感配置（必读）
 
 `docs/env.txt` 包含飞书 / Lark 等第三方服务的敏感凭据（App ID、App Secret、会话 ID 等），**仅限本地开发使用，绝不能提交到远程仓库**。该文件已加入忽略列表，如果你从其他地方复制了它，请确认：
 
@@ -51,6 +51,8 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 ## 侧栏 Agent 状态
 
 左侧工作区行显示本会话代理状态（优先级从高到低）：
+
+> 本节只覆盖日常开发与使用；完整的 Hook 协议与 CLI 细节见 `CLAUDE.md`。
 
 | 状态 | 含义 |
 |------|------|
@@ -134,7 +136,7 @@ node "<仓库>/dist/cli/wmux-hook.js" --event Stop --agent Kimi
 #### 安装后必做
 
 1. **重启 wmux**（若刚编过 main/renderer）  
-2. **重启每个 agent 会话**（claude / kimi / codex / grok / pi），否则仍用旧 hooks
+2. **重启每个 agent 会话**（claude / kimi / codex / grok / pi），否则仍用旧 hooks  
 3. Codex：打开 `/hooks`，信任含 `wmux-hook` 的命令（首次）  
 
 ### 支持矩阵（turn 级）
@@ -204,17 +206,12 @@ wmux agent-state
 | `could not report agent state` | 使用含 agent-state 的构建并重启 wmux |
 | install-hooks 指向错误路径 | 在本仓库根目录执行；成功后 hook 路径应为当前仓库的 `dist/cli/wmux-hook.js` |
 
-更完整的模块与 CLI 说明见 `CLAUDE.md`。
-
 ## 编译 Windows 可执行文件
 
-从克隆仓库到产出 exe 的完整命令流程：
+确认已按「方式二：从源码运行」完成克隆和 `npm ci` 后，执行完整编译与打包：
 
 ```bash
-git clone https://github.com/amirlehmam/wmux.git
-cd wmux
-npm ci            # 1. 安装依赖
-npm run build     # 2. 编译 + 打包，产出 exe
+npm run build     # 编译 + 打包，产出 NSIS 安装包
 ```
 
 `npm run build` 实际调用 `node scripts/build-package.mjs`，顺序为：
