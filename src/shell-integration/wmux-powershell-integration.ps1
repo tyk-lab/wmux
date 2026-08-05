@@ -13,7 +13,20 @@ try {
 } catch {}
 
 # wmux CLI shortcut — Claude Code and users can just type: wmux browser open <url>
-function wmux { node "$env:WMUX_CLI" @args }
+# Fallback CLI next to this script, captured at source time ($PSScriptRoot is
+# empty once the function runs in the interactive session). Panes can outlive
+# the wmux instance that spawned them; after an update/move $env:WMUX_CLI
+# points at a deleted file and node crashes with MODULE_NOT_FOUND.
+$script:_wmux_cli_fallback = Join-Path $PSScriptRoot '..\cli\wmux.js'
+function wmux {
+    $cli = $env:WMUX_CLI
+    if (-not $cli -or -not (Test-Path $cli)) { $cli = $script:_wmux_cli_fallback }
+    if (-not (Test-Path $cli)) {
+        Write-Host "wmux: CLI not found at '$cli' - wmux was updated or moved; restart this shell." -ForegroundColor Red
+        return
+    }
+    node $cli @args
+}
 
 # Named pipe client helper. State updates carry an "auth <token> " prefix —
 # wmux injects WMUX_PIPE_TOKEN into every shell it spawns, and the pipe server

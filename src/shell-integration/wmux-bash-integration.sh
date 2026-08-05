@@ -5,7 +5,25 @@
 export WMUX=1
 
 # wmux CLI shortcut — Claude Code and users can just type: wmux browser open <url>
-wmux() { node "$WMUX_CLI" "$@"; }
+# Panes can outlive the wmux instance that spawned them; after an update/move
+# $WMUX_CLI points at a deleted file and node crashes with MODULE_NOT_FOUND.
+# Resolve the copy next to this script at source time and fall back to it.
+if [ -n "$BASH_VERSION" ]; then
+    _wmux_self="${BASH_SOURCE[0]}"
+elif [ -n "$ZSH_VERSION" ]; then
+    _wmux_self="${(%):-%x}"
+fi
+[ -n "$_wmux_self" ] && _WMUX_CLI_FALLBACK="$(cd "$(dirname "$_wmux_self")/../cli" 2>/dev/null && { pwd -W 2>/dev/null || pwd; })/wmux.js"
+unset _wmux_self
+wmux() {
+    local cli="$WMUX_CLI"
+    if [ -z "$cli" ] || [ ! -f "$cli" ]; then cli="$_WMUX_CLI_FALLBACK"; fi
+    if [ -z "$cli" ] || [ ! -f "$cli" ]; then
+        echo "wmux: CLI not found (WMUX_CLI='$WMUX_CLI') - wmux was updated or moved; restart this shell." >&2
+        return 1
+    fi
+    node "$cli" "$@"
+}
 export -f wmux
 
 _wmux_report() {

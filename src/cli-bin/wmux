@@ -4,5 +4,16 @@
 # Bash tool, orchestrator hook scripts) — not just interactive panes. Runs the
 # Node pipe client via the $WMUX_CLI path wmux injects; falls back to the copy
 # next to this shim. There is no wmux.exe in this dir, so no PATHEXT collision.
-CLI="${WMUX_CLI:-$(cd "$(dirname "$0")/../cli" && pwd)/wmux.js}"
+CLI="$WMUX_CLI"
+# Also fall back when $WMUX_CLI is stale — a pane that outlived a wmux
+# update/move, where node would otherwise crash with MODULE_NOT_FOUND.
+# `pwd -W` gives the Windows form on MSYS/Git Bash (node is a Win32 process
+# and cannot open /c/... paths); plain `pwd` elsewhere (WSL).
+if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
+  CLI="$(cd "$(dirname "$0")/../cli" 2>/dev/null && { pwd -W 2>/dev/null || pwd; })/wmux.js"
+fi
+if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
+  echo "wmux: CLI not found (WMUX_CLI='$WMUX_CLI') - wmux was updated or moved; restart this shell." >&2
+  exit 1
+fi
 exec node "$CLI" "$@"
