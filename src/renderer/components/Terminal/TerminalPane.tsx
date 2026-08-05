@@ -12,6 +12,8 @@ interface TerminalPaneProps {
   colorScheme?: string;
   /** Quick-launch profile startup commands (issue #32). */
   startupCommands?: string[];
+  /** Text injected after an interactive startup command has initialized. */
+  startupInput?: string;
   /** Secret-free key used for one-time SSH password injection in the main process. */
   sshProfileId?: string;
   focused?: boolean;
@@ -36,6 +38,7 @@ function ActiveTerminalPane({
   cwd,
   colorScheme,
   startupCommands,
+  startupInput,
   sshProfileId,
   focused = true,
   visible = true,
@@ -43,7 +46,7 @@ function ActiveTerminalPane({
   onFindBarClose,
   copyModeActive = false,
 }: TerminalPaneProps) {
-  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, sshProfileId });
+  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, startupInput, sshProfileId });
 
   const [_lastQuery, setLastQuery] = useState('');
 

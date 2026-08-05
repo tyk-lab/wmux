@@ -101,7 +101,7 @@ const REMOTE_SSH_HUMAN_ACTIONS: Array<[RegExp, string]> = [
     '服务、进程或主机状态变更',
   ],
   [
-    /\bpsmux\b[^\r\n]{0,240}\bsend-keys\b[^\r\n]{0,120}(?:\bC-c\b|\^C|Ctrl\+C)/i,
+    /\bwmux\b[^\r\n]{0,240}\bsend-key\s+c\b[^\r\n]{0,120}\s--ctrl\b/i,
     '向 SSH 任务终端发送中断信号',
   ],
   [

@@ -37,7 +37,7 @@ function treeHasSshSurface(tree: SplitNode): boolean {
     return tree.surfaces.some((surface) => {
       if (surface.sshRemote || surface.sshProfileId || surface.sshFileWorkspaceId) return true;
       return typeof surface.shell === 'string'
-        && (/\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell) || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell));
+        && /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell);
     });
   }
   return treeHasSshSurface(tree.children[0]) || treeHasSshSurface(tree.children[1]);

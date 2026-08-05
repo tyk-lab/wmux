@@ -80,6 +80,8 @@ export interface SurfaceRef {
   currentCwd?: string;
   /** Commands run once after the terminal PTY spawns (quick-launch profiles — issue #32). */
   startupCommands?: string[];
+  /** Text injected once after an interactive startup command has had time to initialize. */
+  startupInput?: string;
   /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
   transientSupervisor?: boolean;
   /** Remote terminal restored as an explicit disconnected surface after restart. */

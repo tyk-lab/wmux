@@ -249,19 +249,19 @@ describe('supervisor decision bridge', () => {
     useStore.getState().patchSupervisor({ forbiddenActions: [] });
     useStore.getState().updateLane('lane-a', { remoteSshControl: true });
 
-    expect(decide({ next: '通过 psmux send-keys 在 SSH 终端执行 npm install sharp' })).toMatchObject({
+    expect(decide({ next: '在 SSH 终端执行 npm install sharp' })).toMatchObject({
       ok: false,
       error: expect.stringMatching(/SSH 远程控制终端.*安装/),
     });
-    expect(decide({ next: '通过 psmux 在 SSH 终端执行 systemctl restart nginx' })).toMatchObject({
+    expect(decide({ next: '在 SSH 终端执行 systemctl restart nginx' })).toMatchObject({
       ok: false,
       error: expect.stringMatching(/SSH 远程控制终端.*服务/),
     });
-    expect(decide({ next: '执行 psmux send-keys -t ssh-task C-c' })).toMatchObject({
+    expect(decide({ next: 'wmux send-key c --ctrl --surface ssh-task' })).toMatchObject({
       ok: false,
       error: expect.stringMatching(/SSH 远程控制终端.*中断信号/),
     });
-    expect(decide({ next: '通过 psmux 在 SSH 终端执行 rm -rf /srv/cache' })).toMatchObject({
+    expect(decide({ next: '在 SSH 终端执行 rm -rf /srv/cache' })).toMatchObject({
       ok: false,
       error: expect.stringMatching(/SSH 远程控制终端.*删除/),
     });

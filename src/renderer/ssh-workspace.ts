@@ -1,8 +1,47 @@
 import { v4 as uuid } from 'uuid';
 import { PaneId, SplitNode, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef } from '../shared/types';
 
+export type SshCompanionAgent = 'codex' | 'kimi' | 'grok' | 'none';
+
 function quoteSshArgument(value: string): string {
   return /\s/.test(value) ? `"${value.replace(/"/g, '')}"` : value;
+}
+
+function quotePowerShellArgument(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** Gives the companion Agent terminal an explicit, scoped control contract. */
+export function buildSshAgentInstruction(remoteSurfaceId: SurfaceId): string {
+  return [
+    `你负责协助操作同一 wmux 工作区内的 SSH 终端，目标 surfaceId 是 ${remoteSurfaceId}。`,
+    `读取最近输出：wmux read-screen --surface ${remoteSurfaceId} --lines 100。`,
+    `发送文本：wmux send --surface ${remoteSurfaceId} "<命令或输入>"。`,
+    `提交输入：wmux send-key enter --surface ${remoteSurfaceId}。`,
+    `中断当前远程命令：wmux send-key c --ctrl --surface ${remoteSurfaceId}；键名是 c，Ctrl 用 --ctrl 修饰，不要把 ctrl+c 当作键名。`,
+    '发送后必须再读取屏幕确认结果。中断命令、删除数据、安装软件、修改服务/进程/账号/权限/网络/系统配置前，必须获得用户明确批准。',
+  ].join(' ');
+}
+
+function buildCompanionSurface(agent: Exclude<SshCompanionAgent, 'none'>, instruction: string): SurfaceRef {
+  const displayName = agent === 'codex' ? 'Codex' : agent === 'kimi' ? 'Kimi' : 'Grok';
+  if (agent === 'kimi') {
+    return {
+      id: `surf-${uuid()}` as SurfaceId,
+      type: 'terminal',
+      customTitle: `${displayName} · 控制 SSH`,
+      shell: 'pwsh.exe',
+      startupCommands: ['kimi'],
+      startupInput: instruction,
+    };
+  }
+  return {
+    id: `surf-${uuid()}` as SurfaceId,
+    type: 'terminal',
+    customTitle: `${displayName} · 控制 SSH`,
+    shell: 'pwsh.exe',
+    startupCommands: [`${agent} ${quotePowerShellArgument(instruction)}`],
+  };
 }
 
 /** Returns a valid POSIX parent for absolute and home-relative SFTP paths. */
@@ -72,9 +111,7 @@ function buildSshShell(profile: SshConnectionProfile): string {
   const passwordOptions = profile.authMethod === 'password'
     ? ' -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=yes -o NumberOfPasswordPrompts=1'
     : '';
-  const remoteShell = `ssh -p ${profile.port}${identity}${passwordOptions} ${profile.username}@${profile.host}`;
-  const sessionBase = `ssh-${uuid().replace(/-/g, '').slice(0, 12)}`;
-  return `psmux.exe new-session -s ${sessionBase} -- ${remoteShell}`;
+  return `ssh.exe -p ${profile.port}${identity}${passwordOptions} ${profile.username}@${profile.host}`;
 }
 
 function mapSshSurfaces(tree: SplitNode, update: (surface: SurfaceRef) => SurfaceRef): SplitNode {
@@ -101,15 +138,25 @@ export function upgradeSshSplitTree(tree: SplitNode, profile: SshConnectionProfi
   }));
 }
 
-/** Builds the remote terminal plus its ordinary local companion. */
-export function buildSshSplitTree(profile: SshConnectionProfile): SplitNode {
+/** Builds a direct SSH terminal plus a local Codex terminal scoped to control it. */
+export function buildSshSplitTree(profile: SshConnectionProfile, companionAgent: SshCompanionAgent = 'codex'): SplitNode {
   const remoteSurface = {
     id: `surf-${uuid()}` as SurfaceId,
     type: 'terminal' as const,
+    customTitle: `SSH · ${profile.name}`,
     shell: buildSshShell(profile),
     sshRemote: true,
     sshProfileId: profile.id,
   };
+  if (companionAgent === 'none') {
+    return {
+      type: 'leaf',
+      paneId: `pane-${uuid()}` as PaneId,
+      surfaces: [remoteSurface],
+      activeSurfaceIndex: 0,
+    };
+  }
+  const agentInstruction = buildSshAgentInstruction(remoteSurface.id);
 
   return {
     type: 'branch',
@@ -125,7 +172,7 @@ export function buildSshSplitTree(profile: SshConnectionProfile): SplitNode {
       {
         type: 'leaf',
         paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [{ id: `surf-${uuid()}` as SurfaceId, type: 'terminal' }],
+        surfaces: [buildCompanionSurface(companionAgent, agentInstruction)],
         activeSurfaceIndex: 0,
       },
     ],

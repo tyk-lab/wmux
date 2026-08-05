@@ -47,6 +47,8 @@ interface UseTerminalOptions {
   colorScheme?: string;
   /** Quick-launch profile commands, run once after the PTY is first created (issue #32). */
   startupCommands?: string[];
+  /** Text injected after an interactive startup command has initialized. */
+  startupInput?: string;
   /** Secret-free key used by the main process to inject a saved SSH password once. */
   sshProfileId?: string;
 }
@@ -81,6 +83,8 @@ function clearStuckRunningState(surfaceId: string): void {
     useStore.getState().setSurfaceShellState(surfaceId, null);
   } catch { /* best-effort: badge reset is non-critical */ }
 }
+
+const startupInputScheduledSurfaceIds = new Set<string>();
 
 function detachExitedSshWorkspace(surfaceId: string): void {
   const state = useStore.getState();
@@ -320,7 +324,7 @@ async function fetchTheme(name: string): Promise<ThemeConfig> {
   }
 }
 
-export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = true, colorScheme, startupCommands, sshProfileId }: UseTerminalOptions = {}): UseTerminalResult {
+export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = true, colorScheme, startupCommands, startupInput, sshProfileId }: UseTerminalOptions = {}): UseTerminalResult {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -332,6 +336,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
   // startup commands without listing them as a dependency.
   const startupCommandsRef = useRef<string[] | undefined>(startupCommands);
   startupCommandsRef.current = startupCommands;
+  const startupInputRef = useRef<string | undefined>(startupInput);
+  startupInputRef.current = startupInput;
 
   // Subscribe to relevant settings so changes apply live.
   const prefs = useStore((s) => s.terminalPrefs);
@@ -810,6 +816,15 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }, 600);
     };
 
+    const runStartupInput = (id: string) => {
+      const input = startupInputRef.current;
+      if (!input || startupInputScheduledSurfaceIds.has(id)) return;
+      startupInputScheduledSurfaceIds.add(id);
+      // PTYs survive workspace switches, so this timer intentionally survives
+      // the React pane unmount and delivers the prompt to the still-live TUI.
+      setTimeout(() => window.wmux.pty.write(id, input + '\r'), 2_500);
+    };
+
     // Resolve effective shell: explicit (workspace) > user default preference > main-process fallback.
     // Read prefs at spawn time so changing the default later doesn't re-spawn live PTYs.
     const effectiveShell = shell || useStore.getState().workspacePrefs.defaultShell || '';
@@ -857,6 +872,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       window.wmux.pty.has(surfaceId).then((exists: boolean) => {
         if (exists) {
           attachToPty(surfaceId!);
+          runStartupInput(surfaceId!);
         } else {
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
           window.wmux.pty.create({ shell: effectiveShell, cwd: spawnCwd, env: {}, surfaceId, startupCommands: startupCommandsRef.current, sshProfileId, cols: initialCols, rows: initialRows })
@@ -866,6 +882,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
               setResolvedShellForSurface(surfaceId, created.shell);
               attachToPty(created.id);
               runStartupCommands(created.id, !!created.startupCommandsConsumed);
+              runStartupInput(created.id);
             })
             .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
         }
@@ -878,6 +895,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           setResolvedShellForSurface(surfaceId, created.shell);
           attachToPty(created.id);
           runStartupCommands(created.id, !!created.startupCommandsConsumed);
+          runStartupInput(created.id);
         })
         .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
     }
@@ -892,7 +910,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       if (surfaceId) {
         const ws = st.workspaces.find((w) => treeHasSurface(w.splitTree, surfaceId));
         // Ctrl+C (ETX) always stays in the focused terminal. Forwarding it to
-        // another psmux→SSH pane tears down that pane's SSH command as well.
+        // another SSH pane would interrupt that pane's remote command as well.
         // A selected Ctrl+C never reaches onData, so copy behaviour is unchanged.
         const shouldBroadcast = shouldBroadcastTerminalInput(data, st.broadcastInputActive);
         if (ws && shouldBroadcast) {

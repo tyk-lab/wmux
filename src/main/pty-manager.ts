@@ -69,16 +69,6 @@ export function parseShellSpec(spec: string | undefined): { command: string; arg
   return { command, args };
 }
 
-/** Returns the owned psmux session created by an SSH surface, if present. */
-export function parsePsmuxSessionName(command: string, args: string[]): string | undefined {
-  const executable = path.basename(command).toLowerCase();
-  if (executable !== 'psmux' && executable !== 'psmux.exe') return undefined;
-  if (args[0] !== 'new-session') return undefined;
-  const sessionFlag = args.indexOf('-s');
-  const sessionName = sessionFlag >= 0 ? args[sessionFlag + 1] : undefined;
-  return sessionName && /^[a-z0-9_-]+$/i.test(sessionName) ? sessionName : undefined;
-}
-
 function stripTerminalControlSequences(output: string): string {
   return output
     // OSC/DCS sequences can contain arbitrary printable text and end with BEL
@@ -113,11 +103,7 @@ export function isAuthorizedSshPasswordLaunch(
   args: string[],
   endpoint: SshPasswordEndpoint,
 ): boolean {
-  if (!parsePsmuxSessionName(command, args)) return false;
-  const separator = args.indexOf('--');
-  if (separator < 0) return false;
-  const expected = [
-    'ssh',
+  const expectedArgs = [
     '-p', String(endpoint.port),
     '-o', 'PreferredAuthentications=password,keyboard-interactive',
     '-o', 'PubkeyAuthentication=no',
@@ -125,9 +111,10 @@ export function isAuthorizedSshPasswordLaunch(
     '-o', 'NumberOfPasswordPrompts=1',
     `${endpoint.username}@${endpoint.host}`,
   ];
-  const remoteCommand = args.slice(separator + 1);
-  return remoteCommand.length === expected.length
-    && remoteCommand.every((value, index) => value === expected[index]);
+  const executable = path.basename(command).toLowerCase();
+  if (executable !== 'ssh' && executable !== 'ssh.exe') return false;
+  return args.length === expectedArgs.length
+    && args.every((value, index) => value === expectedArgs[index]);
 }
 
 function getShellIntegrationPath(): string {
@@ -271,8 +258,6 @@ interface PtyEntry {
   // when create() is called again for the same surfaceId (idempotent reuse).
   shell: string;
   startupConsumed: boolean;
-  /** Dedicated psmux session owned by this surface and reaped on explicit close. */
-  psmuxSessionName?: string;
   sshProfileId?: string;
   passwordInjected: boolean;
   authOutputTail: string;
@@ -358,9 +343,6 @@ export class PtyManager {
     const spec = parseShellSpec(options.shell);
     const shell = resolveShell(spec.command);
     const shellExtraArgs = shell === spec.command ? spec.args : [];
-    const psmuxSessionName = shell === spec.command
-      ? parsePsmuxSessionName(spec.command, spec.args)
-      : undefined;
     const shellType = getShellType(shell);
     const integrationDir = getShellIntegrationPath();
     const cliPath = getCliPath();
@@ -465,7 +447,6 @@ export class PtyManager {
       rows: spawnOptions.rows ?? 24,
       shell,
       startupConsumed: startupCommandsConsumed,
-      psmuxSessionName,
       sshProfileId: options.sshProfileId,
       passwordInjected: false,
       authOutputTail: '',
@@ -599,23 +580,6 @@ export class PtyManager {
 
     entry.alive = false; // signals any in-flight chunked write to stop
     const pid = entry.pty.pid;
-
-    // SSH surfaces own a dedicated psmux session. Killing only the attached
-    // client leaves that session (and its remote ssh process) running in the
-    // psmux server, so explicitly reap it whenever the surface is closed.
-    if (entry.psmuxSessionName) {
-      try {
-        const cleaner = spawn(entry.shell, ['kill-session', '-t', entry.psmuxSessionName], {
-          windowsHide: true,
-          detached: true,
-          stdio: 'ignore',
-        });
-        cleaner.on('error', () => { /* psmux unavailable / session already gone */ });
-        cleaner.unref();
-      } catch {
-        // Best effort: the regular PTY tree teardown below must still run.
-      }
-    }
 
     // Tree-kill the shell's whole process subtree BEFORE closing the pseudoconsole
     // (issue #65). With `useConptyDll: true`, node-pty's DLL kill path only calls

@@ -230,6 +230,7 @@ export default function PaneWrapper({
               cwd={surface.cwd || workspace?.cwd}
               colorScheme={surface.colorScheme}
               startupCommands={surface.startupCommands}
+              startupInput={surface.startupInput}
               sshProfileId={surface.sshProfileId}
               sshConnectionState={sshTerminalState(surface, workspace?.sshConnectionState)}
               focused={isFocused && isActive}

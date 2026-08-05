@@ -138,15 +138,15 @@ describe('supervisor isolation', () => {
   });
 
   it('adds remote-host boundaries without blocking ordinary low-risk work', () => {
-    expect(remoteSshActionBlockReason('psmux send-keys -t ssh "rm -rf /srv/cache" Enter'))
+    expect(remoteSshActionBlockReason('wmux send --surface ssh "rm -rf /srv/cache"'))
       .toBe('删除或覆盖文件');
     expect(remoteSshActionBlockReason('find /srv/cache -type f -delete'))
       .toBe('删除或破坏性覆盖远程文件');
-    expect(remoteSshActionBlockReason('psmux send-keys -t ssh "npm install sharp" Enter'))
+    expect(remoteSshActionBlockReason('wmux send --surface ssh "npm install sharp"'))
       .toBe('安装、卸载或升级软件包');
     expect(remoteSshActionBlockReason('systemctl restart nginx'))
       .toBe('服务、进程或主机状态变更');
-    expect(remoteSshActionBlockReason('psmux send-keys -t ssh-task C-c'))
+    expect(remoteSshActionBlockReason('wmux send-key c --ctrl --surface ssh-task'))
       .toBe('向 SSH 任务终端发送中断信号');
     expect(remoteSshActionBlockReason('确认 SSH 远端权限请求并发送 y'))
       .toBe('SSH 远端权限批准');
@@ -166,10 +166,10 @@ describe('supervisor isolation', () => {
       state: 'idle',
     });
 
-    expect(text).toContain('直接或经 psmux 控制 SSH 远端');
+    expect(text).toContain('直接或间接控制 SSH 远端');
     expect(text).toContain('低风险、可逆的普通写入');
     expect(text).toContain('必须使用 needs-human');
-    expect(text).toContain('不得通过 psmux');
+    expect(text).toContain('不得通过终端转发');
     expect(text).toContain('未授权权限确认');
     expect(text).toContain('SSH 远程控制终端不允许自动权限确认');
     expect(text).not.toContain('已授权低风险权限确认');

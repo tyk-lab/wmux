@@ -23,6 +23,7 @@ export interface SurfaceSlice {
       shell?: string;
       cwd?: string;
       startupCommands?: string[];
+      startupInput?: string;
       transientSupervisor?: boolean;
       url?: string;
     },
@@ -87,7 +88,7 @@ export interface SurfaceSlice {
 
   /**
    * Re-create the most-recently-closed surface (issue #64, Ctrl+Shift+T) into the
-   * given pane. Restores tab metadata (type/title/shell/cwd/url/startup commands);
+   * given pane. Restores tab metadata (type/title/shell/cwd/url/startup commands/input);
    * a terminal restarts fresh since its PTY is gone. Returns null if the
    * reopen-stack is empty.
    */
@@ -176,6 +177,7 @@ interface ClosedSurface {
   shell?: string;
   cwd?: string;
   startupCommands?: string[];
+  startupInput?: string;
   transientSupervisor?: boolean;
   url?: string;
 }
@@ -193,6 +195,7 @@ function pushClosedSurface(surface: SurfaceRef): void {
     shell: surface.shell,
     cwd: surface.cwd,
     startupCommands: surface.startupCommands,
+    startupInput: surface.startupInput,
     transientSupervisor: surface.transientSupervisor,
     url: surface.url,
   });
@@ -220,6 +223,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.shell ? { shell: options.shell } : {}),
       ...(options?.cwd ? { cwd: options.cwd } : {}),
       ...(options?.startupCommands?.length ? { startupCommands: options.startupCommands } : {}),
+      ...(options?.startupInput ? { startupInput: options.startupInput } : {}),
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(options?.url ? { url: options.url } : {}),
     };
@@ -503,6 +507,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.shell ? { shell: restored.shell } : {}),
       ...(restored.cwd ? { cwd: restored.cwd } : {}),
       ...(restored.startupCommands ? { startupCommands: restored.startupCommands } : {}),
+      ...(restored.startupInput ? { startupInput: restored.startupInput } : {}),
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.url ? { url: restored.url } : {}),
     });

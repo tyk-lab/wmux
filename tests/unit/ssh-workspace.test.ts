@@ -28,11 +28,48 @@ describe('buildSshSplitTree', () => {
     if (tree.type !== 'branch') return;
     const remote = tree.children[0].type === 'leaf' ? tree.children[0].surfaces[0] : undefined;
 
-    expect(remote?.shell).toContain('psmux.exe new-session');
+    expect(remote?.shell).toMatch(/^ssh\.exe -p 2222 /);
     expect(remote?.shell).toContain('PreferredAuthentications=password,keyboard-interactive');
     expect(remote?.shell).toContain('NumberOfPasswordPrompts=1');
     expect(remote?.sshProfileId).toBe('profile-a');
     expect(remote).not.toHaveProperty('password');
+  });
+
+  it('starts a Codex companion with scoped instructions for controlling the SSH terminal', () => {
+    const tree = buildSshSplitTree(profile('agent'));
+    if (tree.type !== 'branch' || tree.children[0].type !== 'leaf' || tree.children[1].type !== 'leaf') return;
+    const remote = tree.children[0].surfaces[0];
+    const companion = tree.children[1].surfaces[0];
+    const launchCommand = companion.startupCommands?.[0] || '';
+
+    expect(remote.customTitle).toBe('SSH · Production');
+    expect(companion.customTitle).toBe('Codex · 控制 SSH');
+    expect(companion.shell).toBe('pwsh.exe');
+    expect(launchCommand).toMatch(/^codex '/);
+    expect(launchCommand).toContain(remote.id);
+    expect(launchCommand).toContain('wmux read-screen --surface');
+    expect(launchCommand).toContain('wmux send --surface');
+    expect(launchCommand).toContain('wmux send-key enter --surface');
+    expect(launchCommand).toContain(`wmux send-key c --ctrl --surface ${remote.id}`);
+    expect(launchCommand).toContain('不要把 ctrl+c 当作键名');
+  });
+
+  it('supports Kimi, Grok, or no companion agent', () => {
+    const kimiTree = buildSshSplitTree(profile('agent'), 'kimi');
+    const grokTree = buildSshSplitTree(profile('agent'), 'grok');
+    const sshOnlyTree = buildSshSplitTree(profile('agent'), 'none');
+    if (kimiTree.type !== 'branch' || kimiTree.children[1].type !== 'leaf') return;
+    if (grokTree.type !== 'branch' || grokTree.children[1].type !== 'leaf') return;
+
+    const kimi = kimiTree.children[1].surfaces[0];
+    const grok = grokTree.children[1].surfaces[0];
+    expect(kimi.customTitle).toBe('Kimi · 控制 SSH');
+    expect(kimi.startupCommands).toEqual(['kimi']);
+    expect(kimi.startupInput).toContain('wmux send-key c --ctrl --surface');
+    expect(grok.customTitle).toBe('Grok · 控制 SSH');
+    expect(grok.startupCommands?.[0]).toMatch(/^grok '/);
+    expect(sshOnlyTree.type).toBe('leaf');
+    if (sshOnlyTree.type === 'leaf') expect(sshOnlyTree.surfaces).toHaveLength(1);
   });
 
   it('keeps a secret-free profile id on agent terminals for password fallback', () => {

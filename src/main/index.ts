@@ -1130,8 +1130,7 @@ app.on('before-quit', () => {
       win.webContents.send('session:request');
     }
   });
-  // Start process/session cleanup while renderer shutdown is still in progress.
-  // In particular, psmux kill-session helpers need time to outlive the PTY.
+  // Start process cleanup while renderer shutdown is still in progress.
   releaseRuntimeResources();
 });
 

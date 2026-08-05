@@ -10,7 +10,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
-import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree } from './ssh-workspace';
+import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree, type SshCompanionAgent } from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import SettingsWindow from './components/Settings/SettingsWindow';
@@ -1418,7 +1418,7 @@ export default function App() {
     }
   }, [connectSshWorkspace, sshConnections, workspaces]);
 
-  const handleCreateSshWorkspace = useCallback((profile: SshConnectionProfile, password?: string) => {
+  const handleCreateSshWorkspace = useCallback((profile: SshConnectionProfile, companionAgent: SshCompanionAgent, password?: string) => {
     const existing = sshConnections.findIndex((item) => item.id === profile.id);
     const saved = existing >= 0
       ? sshConnections.map((item, index) => index === existing ? profile : item)
@@ -1427,7 +1427,7 @@ export default function App() {
     setSshDialogOpen(false);
     const workspaceId = createWorkspace({
       title: profile.name,
-      splitTree: buildSshSplitTree(profile),
+      splitTree: buildSshSplitTree(profile, companionAgent),
       sshProfileId: profile.id,
       sshConnectionState: 'connecting',
     });

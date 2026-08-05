@@ -123,14 +123,6 @@ describe('supervisor session restore', () => {
         id: 'ws-legacy-ssh' as any,
         splitTree: leaf([{ id: 'ssh-terminal' as any, type: 'terminal', sshRemote: true }]),
       },
-      {
-        id: 'ws-legacy-psmux' as any,
-        splitTree: leaf([{
-          id: 'ssh-terminal-2' as any,
-          type: 'terminal',
-          shell: 'psmux.exe new-session -s ssh-old -- ssh pi@10.0.100.7',
-        }]),
-      },
     ]);
 
     expect(result.workspaces).toEqual([]);

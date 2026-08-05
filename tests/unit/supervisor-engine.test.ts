@@ -165,7 +165,7 @@ describe('supervisor-engine', () => {
       : '';
 
     expect(text).toContain('任何权限请求都必须使用 needs-human');
-    expect(text).toContain('不得通过 psmux 或 send-keys 绕过');
+    expect(text).toContain('不得通过终端转发、脚本或其他间接方式绕过');
     expect(text).not.toContain('--permission-command');
   });
 
