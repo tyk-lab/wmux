@@ -55,6 +55,13 @@ export function isFeishuApprovalCardContext(
 const COMMAND_PREFIX = 'WMUX SUPERVISOR ';
 const MAX_COMMAND_VALUE_LENGTH = 4000;
 const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_DECISION_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
+const LEGACY_DOT_ENV_KEY_MAP: Record<string, FeishuEnvKey> = {
+  FEISHU_APP_ID: 'WMUX_FEISHU_APP_ID',
+  FEISHU_APP_SECRET: 'WMUX_FEISHU_APP_SECRET',
+  FEISHU_CHAT_ID: 'WMUX_FEISHU_DECISION_CHAT_ID',
+  FEISHU_GROUP_CHAT_ID: 'WMUX_FEISHU_CHAT_ID',
+  FEISHU_USER_OPEN_ID: 'WMUX_FEISHU_ALLOWED_OPEN_IDS',
+};
 
 type FeishuEnvKey = typeof FEISHU_ENV_KEYS[number];
 
@@ -67,10 +74,11 @@ function applyFeishuEnv(target: NodeJS.ProcessEnv, values: Partial<Record<Feishu
 export function parseFeishuDotEnv(content: string): Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } {
   const values: Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } = {};
   for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE))\s*=\s*(.*?)\s*$/.exec(rawLine);
+    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE)|FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|GROUP_CHAT_ID|USER_OPEN_ID))\s*=\s*(.*?)\s*$/.exec(rawLine);
     if (!match) continue;
     const value = match[2].replace(/^(['"])(.*)\1$/, '$2').trim();
-    if (value) values[match[1] as keyof typeof values] = value;
+    const key = LEGACY_DOT_ENV_KEY_MAP[match[1]] || match[1] as FeishuEnvKey | 'WMUX_FEISHU_ENV_FILE';
+    if (value) values[key] = value;
   }
   return values;
 }
