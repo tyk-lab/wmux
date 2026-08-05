@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * Cross-platform installer for Claude/Kimi/Codex/Grok/Pi/OpenCode lifecycle hooks.
+ * On Windows, Pi is configured to prefer Git Bash when no valid custom shell exists.
  *
  * Usage (from repo root):
  *   node scripts/install-agent-hooks.mjs

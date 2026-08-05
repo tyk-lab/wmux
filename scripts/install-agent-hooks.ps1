@@ -10,6 +10,7 @@
     - ~/.codex/hooks.json              (Codex — may need /hooks trust)
     - ~/.grok/hooks/wmux.json          (Grok Build)
     - ~/.pi/agent/extensions/wmux-agent-hooks.ts (Pi Agent extension)
+    - ~/.pi/agent/settings.json        (Pi Git Bash shellPath on Windows, when available)
     - ~/.config/opencode/plugin/wmux.js (OpenCode plugin)
 
   Safe to re-run (idempotent). Does not remove your non-wmux hooks.

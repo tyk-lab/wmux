@@ -1,5 +1,20 @@
-import { describe, it, expect } from 'vitest';
-import { formatInstallAgentHooksReport, type AgentHookInstallResult } from '../../src/main/install-agent-hooks';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  ensurePiGitBashShell,
+  formatInstallAgentHooksReport,
+  type AgentHookInstallResult,
+} from '../../src/main/install-agent-hooks';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 describe('formatInstallAgentHooksReport', () => {
   it('prints ok/fail rows and notes', () => {
@@ -14,5 +29,38 @@ describe('formatInstallAgentHooksReport', () => {
     expect(text).toContain('[FAIL] Codex CLI');
     expect(text).toContain('/hooks');
     expect(text).toContain('Restart each agent');
+  });
+});
+
+describe('ensurePiGitBashShell', () => {
+  it('replaces the legacy WSL bash path and preserves other Pi settings', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pi-shell-'));
+    temporaryDirectories.push(directory);
+    const settingsPath = path.join(directory, 'settings.json');
+    const gitBashPath = path.join(directory, 'Git', 'bin', 'bash.exe');
+    fs.mkdirSync(path.dirname(gitBashPath), { recursive: true });
+    fs.writeFileSync(gitBashPath, 'placeholder');
+    fs.writeFileSync(settingsPath, JSON.stringify({ defaultModel: 'k3', shellPath: 'C:\\Windows\\System32\\bash.exe' }));
+
+    expect(ensurePiGitBashShell(settingsPath, gitBashPath, 'win32')).toContain('configured Git Bash');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
+      defaultModel: 'k3',
+      shellPath: gitBashPath,
+    });
+  });
+
+  it('preserves a valid user-configured Bash path', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pi-shell-'));
+    temporaryDirectories.push(directory);
+    const settingsPath = path.join(directory, 'settings.json');
+    const customBashPath = path.join(directory, 'custom-bash.exe');
+    const gitBashPath = path.join(directory, 'Git', 'bin', 'bash.exe');
+    fs.mkdirSync(path.dirname(gitBashPath), { recursive: true });
+    fs.writeFileSync(customBashPath, 'placeholder');
+    fs.writeFileSync(gitBashPath, 'placeholder');
+    fs.writeFileSync(settingsPath, JSON.stringify({ shellPath: customBashPath }));
+
+    expect(ensurePiGitBashShell(settingsPath, gitBashPath, 'win32')).toContain('preserved existing');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8')).shellPath).toBe(customBashPath);
   });
 });

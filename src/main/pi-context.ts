@@ -23,6 +23,10 @@ export function resolvePiWmuxExtensionPath(homeDir = os.homedir(), env = process
   return path.join(resolvePiAgentDir(homeDir, env), 'extensions', 'wmux-agent-hooks.ts');
 }
 
+export function resolvePiSettingsPath(homeDir = os.homedir(), env = process.env): string {
+  return path.join(resolvePiAgentDir(homeDir, env), 'settings.json');
+}
+
 /** Build a dependency-free Pi extension with a fixed, argv-safe Hook target. */
 export function buildPiWmuxExtension(hookScript: string): string {
   const script = JSON.stringify(hookScript.split(path.sep).join('/'));

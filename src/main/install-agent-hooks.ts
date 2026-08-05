@@ -9,12 +9,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { ensureClaudeHooks } from './claude-context';
 import { ensureKimiHooks, resolveKimiConfigPath } from './kimi-context';
 import { ensureCodexHooks, resolveCodexHooksPath } from './codex-context';
 import { ensureGrokHooks, resolveGrokWmuxHooksPath } from './grok-context';
 import { ensureOpencodePlugin } from './opencode-context';
-import { ensurePiHooks, resolvePiWmuxExtensionPath } from './pi-context';
+import { ensurePiHooks, resolvePiSettingsPath, resolvePiWmuxExtensionPath } from './pi-context';
 import { resolveWmuxHookScriptPath } from './wmux-hook-path';
 
 export interface AgentHookInstallResult {
@@ -45,16 +46,70 @@ function ensureClaudeSettingsFile(): void {
   }
 }
 
-function safeRun(id: string, label: string, targetPath: string, fn: () => void): AgentHookInstallResult {
+function isLegacyWslBashPath(shellPath: string): boolean {
+  const normalized = shellPath.replace(/\//g, '\\').toLowerCase();
+  return /^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(normalized);
+}
+
+function resolveGitBashPath(): string | undefined {
+  const candidates = [
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
+  ].filter((candidate): candidate is string => !!candidate);
   try {
-    fn();
+    const gitPath = execFileSync('where.exe', ['git.exe'], { encoding: 'utf-8', windowsHide: true, timeout: 3000 })
+      .split(/\r?\n/)
+      .find(Boolean);
+    if (gitPath) candidates.push(path.resolve(path.dirname(gitPath), '..', 'bin', 'bash.exe'));
+  } catch {
+    // Git may not be installed; leave Pi's existing shell configuration alone.
+  }
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
+/** Prefer Git Bash for Pi on Windows without replacing a valid custom Bash setup. */
+export function ensurePiGitBashShell(
+  settingsPath = resolvePiSettingsPath(),
+  gitBashPath = resolveGitBashPath(),
+  platform = process.platform,
+): string {
+  if (platform !== 'win32') return 'not required on this platform';
+  if (!gitBashPath) return 'Git Bash not found — shellPath unchanged';
+
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('settings must be a JSON object');
+      }
+      settings = parsed as Record<string, unknown>;
+    } catch (err: any) {
+      throw new Error(`cannot update Pi settings: ${err?.message || String(err)}`, { cause: err });
+    }
+  }
+
+  const existingShellPath = typeof settings.shellPath === 'string' ? settings.shellPath.trim() : '';
+  if (existingShellPath && fs.existsSync(existingShellPath) && !isLegacyWslBashPath(existingShellPath)) {
+    return `preserved existing shellPath: ${existingShellPath}`;
+  }
+  if (existingShellPath === gitBashPath) return `using Git Bash: ${gitBashPath}`;
+
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, `${JSON.stringify({ ...settings, shellPath: gitBashPath }, null, 2)}\n`, 'utf-8');
+  return `configured Git Bash: ${gitBashPath}`;
+}
+
+function safeRun(id: string, label: string, targetPath: string, fn: () => void | string): AgentHookInstallResult {
+  try {
+    const detail = fn();
     const exists = fs.existsSync(targetPath);
     return {
       id,
       label,
       ok: true,
       path: targetPath,
-      detail: exists ? 'updated' : 'ran (path may be created on next agent launch)',
+      detail: detail || (exists ? 'updated' : 'ran (path may be created on next agent launch)'),
     };
   } catch (err: any) {
     return {
@@ -105,6 +160,9 @@ export function installAllAgentHooks(opts: InstallAgentHooksOptions = {}): Agent
   results.push(safeRun('codex', 'Codex CLI', resolveCodexHooksPath(), () => ensureCodexHooks()));
   results.push(safeRun('grok', 'Grok Build', resolveGrokWmuxHooksPath(), () => ensureGrokHooks()));
   results.push(safeRun('pi', 'Pi Agent', resolvePiWmuxExtensionPath(), () => ensurePiHooks()));
+  results.push(safeRun('pi-shell', 'Pi Agent Bash', resolvePiSettingsPath(), () => {
+    return ensurePiGitBashShell();
+  }));
 
   if (withOpencode) {
     const pluginPath = path.join(os.homedir(), '.config', 'opencode', 'plugin', 'wmux.js');
@@ -127,6 +185,7 @@ export function formatInstallAgentHooksReport(results: AgentHookInstallResult[])
   lines.push('Notes:');
   lines.push('  - Restart each agent session to load new hooks.');
   lines.push('  - Codex may require `/hooks` trust for wmux-hook commands.');
+  lines.push('  - On Windows, Pi uses Git Bash when available; an existing valid shellPath is preserved.');
   lines.push('  - Run inside a wmux pane so WMUX_SURFACE_ID is set when agents fire hooks.');
   return lines.join('\n');
 }
