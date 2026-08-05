@@ -19,9 +19,12 @@ import {
   clearSupervisorLaneContext,
   createSupervisorSlice,
   isSurfaceSupervised,
+  supervisorDefaultsForAgent,
   type SupervisorLane,
   type SupervisorSlice,
 } from '../../src/renderer/store/supervisor-slice';
+import type { DefaultSupervisorAgent } from '../../src/shared/types';
+import { DEFAULT_WORKSPACE_PREFS } from '../../src/renderer/store/settings-slice';
 import {
   autonomousDecisionBoundary,
   buildInjectedPrompt,
@@ -47,8 +50,15 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   };
 }
 
-function makeStore() {
-  return create<SupervisorSlice>()((...args) => createSupervisorSlice(...args));
+type SupervisorTestStore = SupervisorSlice & {
+  workspacePrefs: { defaultSupervisorAgent: DefaultSupervisorAgent };
+};
+
+function makeStore(defaultSupervisorAgent: DefaultSupervisorAgent = 'pi') {
+  return create<SupervisorTestStore>()((set, get, api) => ({
+    workspacePrefs: { defaultSupervisorAgent },
+    ...createSupervisorSlice(set as never, get as never, api as never),
+  }));
 }
 
 describe('supervisor isolation', () => {
@@ -461,6 +471,39 @@ describe('supervisor isolation', () => {
     const session = createDefaultSupervisorSession();
     expect(session.supervisorModel).toBe('kimi-coding/k3-256k');
     expect(session.supervisorReasoningEffort).toBe('medium');
+  });
+
+  it('applies the configured default Agent only to a fresh supervision session', () => {
+    const store = makeStore('codex');
+    store.getState().openSupervisorSetup();
+    expect(store.getState().supervisor).toMatchObject({
+      supervisorLaunchCmd: 'codex',
+      supervisorModel: 'gpt-5.6-terra',
+      supervisorReasoningEffort: 'medium',
+    });
+
+    store.getState().patchSupervisor({
+      sessionId: 'retained-session',
+      supervisorLaunchCmd: 'kimi',
+      supervisorModel: 'k3-256k',
+    });
+    store.getState().openSupervisorSetup();
+    expect(store.getState().supervisor.supervisorLaunchCmd).toBe('kimi');
+  });
+
+  it('provides launcher-compatible defaults for every configurable supervisor Agent', () => {
+    expect(supervisorDefaultsForAgent('pi')).toMatchObject({ supervisorLaunchCmd: 'pi', supervisorModel: 'kimi-coding/k3-256k' });
+    expect(supervisorDefaultsForAgent('codex')).toMatchObject({ supervisorLaunchCmd: 'codex', supervisorModel: 'gpt-5.6-terra' });
+    expect(supervisorDefaultsForAgent('claude')).toMatchObject({ supervisorLaunchCmd: 'claude', supervisorModel: '' });
+    expect(supervisorDefaultsForAgent('kimi')).toMatchObject({ supervisorLaunchCmd: 'kimi', supervisorModel: 'k3-256k' });
+    expect(supervisorDefaultsForAgent('grok')).toMatchObject({ supervisorLaunchCmd: 'grok', supervisorModel: 'grok-build' });
+    expect(supervisorDefaultsForAgent('opencode')).toMatchObject({ supervisorLaunchCmd: 'opencode', supervisorModel: '' });
+    expect(supervisorDefaultsForAgent('none').supervisorLaunchCmd).toBe('');
+  });
+
+  it('keeps backward-compatible defaults for existing settings files', () => {
+    expect(DEFAULT_WORKSPACE_PREFS.defaultSupervisorAgent).toBe('pi');
+    expect(DEFAULT_WORKSPACE_PREFS.defaultSshAgent).toBe('codex');
   });
 
   it('creates unified supervision by default', () => {

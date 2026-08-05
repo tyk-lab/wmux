@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
-import { SurfaceId, WorkspaceId, PaneId, SplitNode } from '../../../shared/types';
+import { SurfaceId, WorkspaceId, PaneId, SplitNode, type DefaultSupervisorAgent } from '../../../shared/types';
 import type {
   StopWhenKind,
   SupervisorLane,
@@ -208,6 +208,8 @@ export default function SupervisorSetupDialog() {
   const patchSupervisor = useStore((s) => s.patchSupervisor);
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
   const startSupervisor = useStore((s) => s.startSupervisor);
+  const defaultSupervisorAgent = useStore((s) => s.workspacePrefs.defaultSupervisorAgent);
+  const setWorkspacePrefs = useStore((s) => s.setWorkspacePrefs);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const addSurface = useStore((s) => s.addSurface);
   const closeSurface = useStore((s) => s.closeSurface);
@@ -352,6 +354,11 @@ export default function SupervisorSetupDialog() {
     launchChoice === CUSTOM_OPTION ? launchCmd : launchChoice,
   ), [launchChoice, launchCmd]);
   const launcherModelOptions = modelOptionsFor(launcherKind);
+  const selectedDefaultAgent = launchChoice === ''
+    ? 'none'
+    : SUPERVISOR_LAUNCH_OPTIONS.some((option) => option.value === launchChoice)
+      ? launchChoice as DefaultSupervisorAgent
+      : null;
 
   const changeLauncher = (choice: string) => {
     setLaunchChoice(choice);
@@ -1061,16 +1068,31 @@ export default function SupervisorSetupDialog() {
             <div className="supervisor-dialog__advanced-content">
               <section className="supervisor-dialog__section">
                 <div className="supervisor-dialog__label">监督 AI 启动器</div>
-                <select
-                  className="supervisor-dialog__input"
-                  value={launchChoice}
-                  onChange={(event) => changeLauncher(event.target.value)}
-                >
-                  {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                  <option value={CUSTOM_OPTION}>自定义命令</option>
-                </select>
+                <div className="supervisor-dialog__default-agent-row">
+                  <select
+                    className="supervisor-dialog__input"
+                    value={launchChoice}
+                    onChange={(event) => changeLauncher(event.target.value)}
+                  >
+                    {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}{selectedDefaultAgent === option.value && defaultSupervisorAgent === selectedDefaultAgent ? '（当前默认）' : ''}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_OPTION}>自定义命令</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="confirm-dialog__btn"
+                    disabled={!selectedDefaultAgent || selectedDefaultAgent === defaultSupervisorAgent}
+                    onClick={() => {
+                      if (selectedDefaultAgent) setWorkspacePrefs({ defaultSupervisorAgent: selectedDefaultAgent });
+                    }}
+                    title={selectedDefaultAgent ? '将当前 Agent 用作以后新建 AI 监督的默认选择' : '自定义命令不能保存为默认 Agent'}
+                  >
+                    {selectedDefaultAgent === defaultSupervisorAgent ? '已为默认' : '设为默认'}
+                  </button>
+                </div>
                 {launchChoice === CUSTOM_OPTION && (
                   <input
                     className="supervisor-dialog__input supervisor-dialog__stacked-input"
@@ -1079,7 +1101,7 @@ export default function SupervisorSetupDialog() {
                     placeholder="例如：&quot;C:\\Tools\\codex.exe&quot;"
                   />
                 )}
-                <div className="supervisor-dialog__hint">每个工作终端独立启动一个监督上下文。</div>
+                <div className="supervisor-dialog__hint">每个工作终端独立启动一个监督上下文；默认设置仅影响以后新建的监督。</div>
               </section>
               {(launcherModelOptions.length > 0 || launcherKind === 'pi') && (
                 <section className="supervisor-dialog__section">

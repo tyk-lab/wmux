@@ -1,5 +1,5 @@
 import { StateCreator } from 'zustand';
-import { PaneId, SurfaceId, WorkspaceId } from '../../shared/types';
+import { DefaultSupervisorAgent, PaneId, SurfaceId, WorkspaceId } from '../../shared/types';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -276,6 +276,45 @@ export function createDefaultSupervisorSession(): SupervisorSession {
   };
 }
 
+export function supervisorDefaultsForAgent(agent: DefaultSupervisorAgent): Pick<
+  SupervisorSession,
+  'supervisorLaunchCmd' | 'supervisorModel' | 'supervisorReasoningEffort'
+> {
+  if (agent === 'pi') {
+    return {
+      supervisorLaunchCmd: 'pi',
+      supervisorModel: 'kimi-coding/k3-256k',
+      supervisorReasoningEffort: 'medium',
+    };
+  }
+  if (agent === 'codex') {
+    return {
+      supervisorLaunchCmd: 'codex',
+      supervisorModel: 'gpt-5.6-terra',
+      supervisorReasoningEffort: 'medium',
+    };
+  }
+  if (agent === 'kimi') {
+    return {
+      supervisorLaunchCmd: 'kimi',
+      supervisorModel: 'k3-256k',
+      supervisorReasoningEffort: 'on',
+    };
+  }
+  if (agent === 'grok') {
+    return {
+      supervisorLaunchCmd: 'grok',
+      supervisorModel: 'grok-build',
+      supervisorReasoningEffort: '',
+    };
+  }
+  return {
+    supervisorLaunchCmd: agent === 'none' ? '' : agent,
+    supervisorModel: '',
+    supervisorReasoningEffort: '',
+  };
+}
+
 /** Keep monitored-terminal facts while dropping transient supervisor state. */
 export function clearSupervisorLaneContext(
   lane: SupervisorLane,
@@ -315,7 +354,16 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   supervisor: createDefaultSupervisorSession(),
 
   openSupervisorSetup() {
-    set((s) => ({ supervisor: { ...s.supervisor, setupOpen: true } }));
+    set((s) => {
+      if (s.supervisor.active || s.supervisor.paused || s.supervisor.sessionId) {
+        return { supervisor: { ...s.supervisor, setupOpen: true } };
+      }
+      const workspacePrefs = (s as unknown as {
+        workspacePrefs?: { defaultSupervisorAgent?: DefaultSupervisorAgent };
+      }).workspacePrefs;
+      const defaults = supervisorDefaultsForAgent(workspacePrefs?.defaultSupervisorAgent || 'pi');
+      return { supervisor: { ...s.supervisor, ...defaults, setupOpen: true } };
+    });
   },
   closeSupervisorSetup() {
     set((s) => ({ supervisor: { ...s.supervisor, setupOpen: false } }));
