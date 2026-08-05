@@ -131,6 +131,46 @@ describe('飞书人工决策单聊路由', () => {
     expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' });
   });
 
+  it('从控制卡路由暂停或继续监督并刷新按钮状态', async () => {
+    let paused = false;
+    const control = vi.fn(async (command: { action: string }) => {
+      if (command.action === 'toggle-pause') {
+        paused = !paused;
+        return { ok: true, message: paused ? '已暂停当前 AI 监督。' : '已继续原 AI 监督会话。' };
+      }
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: !paused,
+          paused,
+          terminals: [],
+          session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+          pendingApprovals: [],
+        }),
+      };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('暂停监督');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a',
+      messageId: 'om-1',
+      operator: { openId: 'ou-allowed' },
+      action: { value: { wmux_action: 'menu', flow: 'toggle-pause' } },
+      raw: {},
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'toggle-pause')).toBe(true));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督。' });
+    expect(JSON.stringify(send.mock.calls[2][1])).toContain('继续监督');
+  });
+
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {
     const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
     service.start();

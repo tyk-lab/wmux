@@ -70,20 +70,26 @@ function proposalTitle(proposalKind: string): string {
   }
 }
 
-function eventMarkdown(event: AuditEvent): string | null {
+function outcomeTitle(outcome: string): string {
+  switch (outcome) {
+    case 'continue': return '继续推进';
+    case 'rework': return '需要返工';
+    case 'complete': return '已完成';
+    case 'needs-human': return '需要人工决策';
+    default: return outcome || '未知';
+  }
+}
+
+function inlineMarkdownText(value: string): string {
+  return markdownText(value.replace(/\r?\n/g, '；'));
+}
+
+function decisionEventMarkdown(event: AuditEvent): string | null {
   const payload = event.payload || {};
   const at = timestamp(event.ts);
-  if (event.type === 'worker.task') {
-    const task = payloadText(payload, 'task');
-    return task ? `### ${at} · 任务\n\n${markdownText(task)}` : null;
-  }
-  if (event.type === 'worker.lifecycle') {
-    const lifecycle = payloadText(payload, 'event') || '未知';
-    const message = payloadText(payload, 'message');
-    return `### ${at} · 终端事件：${markdownText(lifecycle)}${message ? `\n\n${markdownText(message)}` : ''}`;
-  }
   if (event.type === 'supervisor.decision') {
     const outcome = payloadText(payload, 'outcome') || '未知';
+    const outcomeLabel = outcomeTitle(outcome);
     const proposalKind = payloadText(payload, 'proposalKind');
     const reason = payloadText(payload, 'reason');
     const next = payloadText(payload, 'next');
@@ -92,16 +98,15 @@ function eventMarkdown(event: AuditEvent): string | null {
     const proposal = proposalTitle(proposalKind);
     const proposalLabel = proposal ? ` · ${proposal}` : '';
     return [
-      `### ${at} · 裁决：${markdownText(outcome)}${proposalLabel}`,
-      reason ? `- 原因：${markdownText(reason)}` : '- 原因：未附说明',
+      `#### 【AI 裁决】${markdownText(outcomeLabel)}${proposalLabel}`,
+      '',
+      `> **判断结果：${markdownText(outcomeLabel)}** · ${at}`,
+      '',
+      reason ? `- 判断依据：${markdownText(reason)}` : '- 判断依据：未附说明',
       impact ? `- 影响：${markdownText(impact)}` : '',
       alternatives ? `- 备选：${markdownText(alternatives)}` : '',
-      next ? `- 下一步：${markdownText(next)}` : '',
+      next ? `- 建议下一步：${markdownText(next)}` : '',
     ].filter(Boolean).join('\n');
-  }
-  if (event.type === 'session.abandoned') {
-    const reason = payloadText(payload, 'reason') || '用户选择重头再来';
-    return `### ${at} · 已废除旧上下文\n\n${markdownText(reason)}`;
   }
   if (event.type === 'supervisor.proposal.resolved') {
     const resolutionValue = payloadText(payload, 'resolution');
@@ -111,34 +116,58 @@ function eventMarkdown(event: AuditEvent): string | null {
     else if (resolutionValue === 'handled-manually') resolution = '已由用户自行处理';
     const kind = payloadText(payload, 'proposalKind') === 'route-change' ? '路线变更' : '重要建议';
     const text = payloadText(payload, 'text');
-    return `### ${at} · 人工裁决：${resolution}（${kind}）${text ? `\n\n${markdownText(text)}` : ''}`;
+    return [
+      `#### 【人工裁决】${resolution} · ${kind}`,
+      '',
+      `> **最终结果：${resolution}** · ${at}`,
+      text ? `\n- 裁决内容：${markdownText(text)}` : '',
+    ].filter(Boolean).join('\n');
   }
   if (event.type === 'supervisor.auto-decision-limit.resolved') {
-    return `### ${at} · 人工已审阅\n\n已重置该终端的自动判断计数。`;
+    return `#### 【人工复核】已确认继续监督\n\n> **复核结果：已审阅** · ${at}\n\n- 已重置该终端的自动判断计数。`;
   }
   if (event.type === 'supervisor.auto-approved') {
     const reason = payloadText(payload, 'reason') || '监督建议符合自动化安全策略';
     const next = payloadText(payload, 'next');
-    return `### ${at} · AI 自动批准\n\n- 原因：${markdownText(reason)}${next ? `\n- 已发送：${markdownText(next)}` : ''}`;
+    return `#### 【AI 裁决】自动批准\n\n> **判断结果：已自动批准** · ${at}\n\n- 判断依据：${markdownText(reason)}${next ? `\n- 已发送：${markdownText(next)}` : ''}`;
   }
   if (event.type === 'supervisor.permission-approved') {
     const command = payloadText(payload, 'command') || '未附命令说明';
     const response = payloadText(payload, 'response') || 'y';
-    return `### ${at} · AI 自动授权\n\n- 命令：${markdownText(command)}\n- 响应：${markdownText(response)}`;
+    return `#### 【AI 裁决】自动授权\n\n> **判断结果：已授权** · ${at}\n\n- 命令：${markdownText(command)}\n- 响应：${markdownText(response)}`;
+  }
+  return null;
+}
+
+function operationalEventMarkdown(event: AuditEvent): string | null {
+  const payload = event.payload || {};
+  const at = timestamp(event.ts);
+  if (event.type === 'worker.task') {
+    const task = payloadText(payload, 'task');
+    return task ? `- ${at} · **任务输入**：${inlineMarkdownText(task)}` : null;
+  }
+  if (event.type === 'worker.lifecycle') {
+    const lifecycle = payloadText(payload, 'event') || '未知';
+    const message = payloadText(payload, 'message');
+    return `- ${at} · **终端事件**：${inlineMarkdownText(lifecycle)}${message ? `；${inlineMarkdownText(message)}` : ''}`;
+  }
+  if (event.type === 'session.abandoned') {
+    const reason = payloadText(payload, 'reason') || '用户选择重头再来';
+    return `- ${at} · **旧上下文已废除**：${inlineMarkdownText(reason)}`;
   }
   if (event.type === 'supervisor.delivery.failed') {
     const kind = payloadText(payload, 'kind') === 'permission' ? '权限响应' : '下一步任务';
     const error = payloadText(payload, 'error') || '未知错误';
-    return `### ${at} · ${kind}发送失败\n\n${markdownText(error)}`;
+    return `- ${at} · **${kind}发送失败**：${inlineMarkdownText(error)}`;
   }
   if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
     const kind = payloadText(payload, 'kind');
     const label = kind === 'task-start' ? '任务开始' : kind === 'task-end' ? '任务结束' : '任务中断';
     const status = event.type === 'supervisor.delivery.queued' ? '待投递' : '已送达';
-    return `### ${at} · 监督通知${status}\n\n${label}`;
+    return `- ${at} · 监督通知${status}：${label}`;
   }
   if (event.type === 'session.started') {
-    return `### ${at} · 监督会话启动`;
+    return `- ${at} · 监督会话启动`;
   }
   return null;
 }
@@ -160,13 +189,23 @@ export function formatSupervisorAuditTrail(lane: SupervisorLane, trail: Supervis
   }
 
   const sessions = trail.sessions.flatMap((session) => {
-    const events = session.events.map(eventMarkdown).filter((entry): entry is string => !!entry);
+    const decisions = session.events.map(decisionEventMarkdown).filter((entry): entry is string => !!entry);
+    const operations = session.events.map(operationalEventMarkdown).filter((entry): entry is string => !!entry);
     return [
       '',
       `## 会话 \`${markdownText(session.sessionId)}\``,
       '',
       `开始：${timestamp(session.createdAt)}`,
-      ...(events.length ? ['', ...events] : ['', '暂无可展示的事件。']),
+      '',
+      '### 关键裁决',
+      '',
+      ...(decisions.length ? decisions.flatMap((decision, index) => index === 0 ? [decision] : ['', '---', '', decision]) : ['> 本会话暂无 AI 裁决或人工决定。']),
+      '',
+      '### 运行轨迹（辅助信息）',
+      '',
+      '> 以下为任务、终端生命周期和通知投递记录，不代表裁决结论。',
+      '',
+      ...(operations.length ? operations : ['- 暂无运行事件。']),
     ];
   });
   return [...header, ...sessions].join('\n');

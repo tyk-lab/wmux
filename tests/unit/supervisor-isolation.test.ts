@@ -655,18 +655,30 @@ describe('supervisor isolation', () => {
           { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
           { ts: 7, type: 'supervisor.proposal.resolved', payload: { resolution: 'cancelled', proposalKind: 'important' } },
           { ts: 8, type: 'supervisor.proposal.resolved', payload: { resolution: 'handled-manually', proposalKind: 'important', text: '直接发送的裁决内容' } },
+          { ts: 9, type: 'worker.lifecycle', payload: { event: 'Stop' } },
+          { ts: 10, type: 'supervisor.delivery.queued', payload: { kind: 'task-end' } },
+          { ts: 11, type: 'supervisor.delivery.delivered', payload: { kind: 'task-end' } },
         ],
       }],
     });
 
     expect(text).toContain('监督记录 · Auth worker');
-    expect(text).toContain('裁决：rework · 小范围路线调整');
-    expect(text).toContain('已废除旧上下文');
-    expect(text).toContain('人工裁决：已批准（路线变更）');
-    expect(text).toContain('人工裁决：已取消（用户已通过其他方式发送信息）（重要建议）');
-    expect(text).toContain('人工裁决：已由用户自行处理（重要建议）');
+    expect(text).toContain('### 关键裁决');
+    expect(text).toContain('【AI 裁决】需要返工 · 小范围路线调整');
+    expect(text).toContain('判断结果：需要返工');
+    expect(text).toContain('【人工裁决】已批准 · 路线变更');
+    expect(text).toContain('【人工裁决】已取消（用户已通过其他方式发送信息） · 重要建议');
+    expect(text).toContain('【人工裁决】已由用户自行处理 · 重要建议');
     expect(text).toContain('直接发送的裁决内容');
-    expect(text).toContain('人工已审阅');
+    expect(text).toContain('【人工复核】已确认继续监督');
+    expect(text).toContain('### 运行轨迹（辅助信息）');
+    expect(text).toContain('不代表裁决结论');
+    expect(text).toContain('**任务输入**：修复登录');
+    expect(text).toContain('**旧上下文已废除**：用户选择重头再来');
+    expect(text).toContain('**终端事件**：Stop');
+    expect(text).toContain('监督通知待投递：任务结束');
+    expect(text).toContain('监督通知已送达：任务结束');
+    expect(text.indexOf('### 关键裁决')).toBeLessThan(text.indexOf('### 运行轨迹（辅助信息）'));
     expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });
 });
