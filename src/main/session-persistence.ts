@@ -34,19 +34,65 @@ function treeHasSshSurface(tree: any): boolean {
   if (tree.type === 'leaf') {
     return Array.isArray(tree.surfaces) && tree.surfaces.some((surface: any) => {
       if (surface?.sshRemote || surface?.sshProfileId || surface?.sshFileWorkspaceId) return true;
-      return typeof surface?.shell === 'string' && /\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell);
+      return typeof surface?.shell === 'string'
+        && ( /\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell) || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell) );
     });
   }
   return Array.isArray(tree.children) && tree.children.some(treeHasSshSurface);
 }
 
-/** SSH workspaces represent live remote resources and must never be auto-restored. */
-export function omitSshWorkspaces(data: SessionData): SessionData {
+function isTransientSupervisorSurface(surface: any): boolean {
+  return surface?.type === 'supervisor' || surface?.transientSupervisor === true;
+}
+
+function stripTransientSupervisorSurfaces(tree: any): any | null {
+  if (!tree || typeof tree !== 'object') return null;
+  if (tree.type === 'leaf') {
+    const originalSurfaces = Array.isArray(tree.surfaces) ? tree.surfaces : [];
+    const surfaces = originalSurfaces.filter((surface: any) => !isTransientSupervisorSurface(surface));
+    // Empty local workspaces are valid restart state. Only drop a leaf that
+    // became empty because every surface in it was transient supervision UI.
+    if (surfaces.length === 0 && originalSurfaces.length > 0) return null;
+    const previousActive = originalSurfaces[tree.activeSurfaceIndex];
+    const activeSurfaceIndex = previousActive
+      ? surfaces.findIndex((surface: any) => surface.id === previousActive.id)
+      : -1;
+    return {
+      ...tree,
+      surfaces,
+      activeSurfaceIndex: activeSurfaceIndex >= 0
+        ? activeSurfaceIndex
+        : Math.min(tree.activeSurfaceIndex, surfaces.length - 1),
+    };
+  }
+  if (tree.type !== 'branch') return tree;
+  const children = Array.isArray(tree.children) ? tree.children : [];
+  const left = stripTransientSupervisorSurfaces(children[0]);
+  const right = stripTransientSupervisorSurfaces(children[1]);
+  if (!left) return right;
+  if (!right) return left;
+  return { ...tree, children: [left, right] };
+}
+
+function isSshWorkspace(workspace: SessionData['windows'][number]['workspaces'][number]): boolean {
+  return !!workspace.sshProfileId
+    || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(workspace.shell || '')
+    || treeHasSshSurface(workspace.splitTree);
+}
+
+/**
+ * AI-supervisor terminals and SSH workspaces own live runtime state, so they
+ * must never reach the auto-restored session file.
+ */
+export function omitRestartUnsafeWorkspaces(data: SessionData): SessionData {
   return {
     ...data,
     windows: data.windows.flatMap((window) => {
-      const workspaces = window.workspaces.filter((workspace) =>
-        !workspace.sshProfileId && !treeHasSshSurface(workspace.splitTree));
+      const workspaces = window.workspaces.flatMap((workspace) => {
+        if (isSshWorkspace(workspace)) return [];
+        const splitTree = stripTransientSupervisorSurfaces(workspace.splitTree);
+        return splitTree ? [{ ...workspace, splitTree }] : [];
+      });
       if (workspaces.length === 0) return [];
       const activeWorkspaceId = workspaces.some((workspace) => workspace.id === window.activeWorkspaceId)
         ? window.activeWorkspaceId
@@ -54,6 +100,11 @@ export function omitSshWorkspaces(data: SessionData): SessionData {
       return [{ ...window, activeWorkspaceId, workspaces }];
     }),
   };
+}
+
+/** @deprecated Use omitRestartUnsafeWorkspaces for newly added call sites. */
+export function omitSshWorkspaces(data: SessionData): SessionData {
+  return omitRestartUnsafeWorkspaces(data);
 }
 
 export function ensureDirectories(): void {
@@ -67,7 +118,7 @@ export function saveSession(data: SessionData): void {
   // Atomic write: write to temp file, then rename
   const tmpFile = SESSION_FILE + '.tmp';
   try {
-    fs.writeFileSync(tmpFile, JSON.stringify(omitSshWorkspaces(data), null, 2), 'utf-8');
+    fs.writeFileSync(tmpFile, JSON.stringify(omitRestartUnsafeWorkspaces(data), null, 2), 'utf-8');
     // On Windows, rename won't overwrite, so remove first
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
@@ -86,7 +137,7 @@ export function loadSession(): SessionData | null {
     const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
     const data = JSON.parse(raw) as SessionData;
     if (data.version !== 1) return null;
-    return omitSshWorkspaces(data);
+    return omitRestartUnsafeWorkspaces(data);
   } catch {
     // Corrupted file — fall back to default
     return null;

@@ -36,7 +36,8 @@ function treeHasSshSurface(tree: SplitNode): boolean {
   if (tree.type === 'leaf') {
     return tree.surfaces.some((surface) => {
       if (surface.sshRemote || surface.sshProfileId || surface.sshFileWorkspaceId) return true;
-      return typeof surface.shell === 'string' && /\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell);
+      return typeof surface.shell === 'string'
+        && (/\bpsmux(?:\.exe)?\b.*\bssh\b/i.test(surface.shell) || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell));
     });
   }
   return treeHasSshSurface(tree.children[0]) || treeHasSshSurface(tree.children[1]);
@@ -56,7 +57,7 @@ export function omitNonRestorableWorkspaces<T extends { splitTree: SplitNode; ss
   const retained: T[] = [];
 
   workspaces.forEach((workspace, index) => {
-    if (workspace.sshProfileId || treeHasSshSurface(workspace.splitTree)) return;
+    if (workspace.sshProfileId || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '') || treeHasSshSurface(workspace.splitTree)) return;
     const splitTree = stripSupervisorSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;
     if (index === activeIndex) nextActiveIndex = retained.length;

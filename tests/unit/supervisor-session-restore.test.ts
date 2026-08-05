@@ -103,4 +103,15 @@ describe('supervisor session restore', () => {
     expect(result.workspaces).toEqual([]);
     expect(result.activeIndex).toBe(0);
   });
+
+  it('omits a legacy workspace whose shell directly launches SSH', () => {
+    const result = omitNonRestorableWorkspaces([{
+      id: 'ws-direct-ssh' as any,
+      shell: 'ssh user@example.com',
+      splitTree: leaf([{ id: 'terminal' as any, type: 'terminal' }]),
+    }]);
+
+    expect(result.workspaces).toEqual([]);
+    expect(result.activeIndex).toBe(0);
+  });
 });

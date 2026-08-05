@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { omitSshWorkspaces, type SessionData } from '../../src/main/session-persistence';
+import { omitRestartUnsafeWorkspaces, omitSshWorkspaces, type SessionData } from '../../src/main/session-persistence';
 
 // Use a temp directory for tests
 const TEST_DIR = path.join(os.tmpdir(), 'wmux-test-sessions-' + process.pid);
@@ -99,6 +99,40 @@ describe('session-persistence', () => {
 
     expect(result.windows).toHaveLength(1);
     expect(result.windows[0].workspaces.map((workspace) => workspace.id)).toEqual(['ws-local']);
+    expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
+  });
+
+  it('removes transient supervisor surfaces and legacy direct SSH workspaces', () => {
+    const local = {
+      id: 'ws-local', title: 'Local', pinned: false, shell: 'pwsh.exe', splitTree: {
+        type: 'leaf', paneId: 'pane-local', activeSurfaceIndex: 1,
+        surfaces: [
+          { id: 'local-terminal', type: 'terminal' },
+          { id: 'supervisor-terminal', type: 'terminal', transientSupervisor: true },
+        ],
+      },
+    };
+    const supervisorOnly = {
+      id: 'ws-supervisor', title: 'AI 监督', pinned: true, shell: 'pwsh.exe', splitTree: {
+        type: 'leaf', paneId: 'pane-supervisor', activeSurfaceIndex: 0,
+        surfaces: [{ id: 'supervisor-panel', type: 'supervisor' }],
+      },
+    };
+    const legacyDirectSsh = {
+      id: 'ws-direct-ssh', title: 'Legacy SSH', pinned: false, shell: 'ssh user@example.com', splitTree: {
+        type: 'leaf', paneId: 'pane-ssh', activeSurfaceIndex: 0,
+        surfaces: [{ id: 'ssh-terminal', type: 'terminal' }],
+      },
+    };
+
+    const result = omitRestartUnsafeWorkspaces({
+      version: 1,
+      windows: [{ bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200, activeWorkspaceId: 'ws-supervisor', workspaces: [local, supervisorOnly, legacyDirectSsh] }],
+    } as SessionData);
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].workspaces).toHaveLength(1);
+    expect(result.windows[0].workspaces[0].splitTree.surfaces).toEqual([{ id: 'local-terminal', type: 'terminal' }]);
     expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
   });
 });
