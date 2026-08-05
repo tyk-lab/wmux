@@ -1,6 +1,7 @@
 import type {
   StopWhenKind,
   SupervisorLane,
+  SupervisorLaneConfig,
   SupervisorMode,
   SupervisorSession,
   SupervisorStep,
@@ -79,11 +80,44 @@ export function supervisorTabTitle(laneLabel: string): string {
 }
 
 export function effectiveSupervisorTaskGoal(session: SupervisorSession, lane: SupervisorLane): string {
+  if (lane.config) return lane.config.taskGoal?.trim() || '';
   return lane.taskGoalOverride?.trim() || session.taskGoal?.trim() || '';
 }
 
 export function effectiveSupervisorStopWhen(session: SupervisorSession, lane: SupervisorLane): string {
+  if (lane.config) return lane.config.stopWhen?.trim() || '';
   return lane.stopWhenOverride?.trim() || session.stopWhen.trim();
+}
+
+export function effectiveSupervisorLaneConfig(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): SupervisorLaneConfig {
+  if (lane.config) {
+    return {
+      taskGoal: lane.config.taskGoal || '',
+      taskDescription: lane.config.taskDescription || '',
+      preconditions: lane.config.preconditions || '',
+      stopWhen: lane.config.stopWhen || '',
+      stopWhenKind: lane.config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+      planFilePath: lane.config.planFilePath || '',
+    };
+  }
+  return {
+    taskGoal: lane.taskGoalOverride?.trim() || session.taskGoal || '',
+    taskDescription: session.taskDescription || '',
+    preconditions: session.preconditions || '',
+    stopWhen: lane.stopWhenOverride?.trim() || session.stopWhen || '',
+    stopWhenKind: session.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+    planFilePath: session.planFilePath || '',
+  };
+}
+
+export function effectiveSupervisorStopWhenKind(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): StopWhenKind {
+  return effectiveSupervisorLaneConfig(session, lane).stopWhenKind;
 }
 
 function permissionEnabled(
@@ -233,15 +267,16 @@ export function buildSupervisorBriefing(
   const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
   const taskGoal = effectiveSupervisorTaskGoal(session, lane);
   const currentTask = lane.currentTask?.trim() || '';
-  const effectiveStopWhen = effectiveSupervisorStopWhen(session, lane);
+  const laneConfig = effectiveSupervisorLaneConfig(session, lane);
+  const effectiveStopWhen = laneConfig.stopWhen.trim();
   const autonomyPermissions = Array.isArray(session.autonomyPermissions)
     ? session.autonomyPermissions
     : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
   const laneAutonomyPermissions = lane.remoteSshControl
     ? autonomyPermissions.filter((permission) => permission !== 'permission-confirm')
     : autonomyPermissions;
-  const planFilePath = session.planFilePath.trim();
-  const planBlock = session.planFilePath.trim()
+  const planFilePath = laneConfig.planFilePath.trim();
+  const planBlock = planFilePath
     ? [
         '## 计划文件（停止裁决参考 · 可更新）',
         `路径: ${planFilePath}`,
@@ -250,10 +285,10 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
-  const preconditionsBlock = session.preconditions.trim()
+  const preconditionsBlock = laneConfig.preconditions.trim()
     ? [
         '## 已确认的前置条件 / 环境信息',
-        session.preconditions.trim(),
+        laneConfig.preconditions.trim(),
         '',
         '这些信息是用户已确认、在本次监督会话内有效的环境与安全前提；不要仅因历史审计、任务日志出现“下次确认”“再次确认”等泛化提醒而重复要求人工确认。',
         '仅当当前终端证据明确表明条件已变化、缺失、失效，或任务进入未被这些前置条件覆盖的新危险操作时，说明具体冲突并交给人类确认。它们不是任务或停止条件。',
@@ -276,10 +311,10 @@ export function buildSupervisorBriefing(
   const decisionEvidence = planFilePath
     ? '综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。'
     : '综合停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。';
-  const stopContextBlock = session.taskDescription.trim()
+  const stopContextBlock = laneConfig.taskDescription.trim()
     ? [
         '## 停止条件补充说明（可选）',
-        session.taskDescription.trim(),
+        laneConfig.taskDescription.trim(),
         '',
       ]
     : [];
@@ -303,7 +338,7 @@ export function buildSupervisorBriefing(
   const postDecisionRule = decisionBoundary.length + 4;
 
   if (session.mode === 'unified') {
-    const kind = session.stopWhenKind || 'concrete';
+    const kind = laneConfig.stopWhenKind;
     return [
       '# AI 监督 · 统一监督',
       '',
@@ -351,7 +386,7 @@ export function buildSupervisorBriefing(
   }
 
   if (session.mode === 'direct') {
-    const kind = session.stopWhenKind || 'concrete';
+    const kind = laneConfig.stopWhenKind;
     return [
       '# AI 监督 · 直接注入',
       '',

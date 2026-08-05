@@ -12,6 +12,7 @@ import {
   buildIdleHint,
   buildStopCheckHint,
   effectiveSupervisorStopWhen,
+  effectiveSupervisorStopWhenKind,
 } from './protocol';
 import { DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS } from '../../shared/supervisor-policy';
 
@@ -132,6 +133,7 @@ export function tickLane(opts: {
   const st = String(surfaceState.state || 'unknown');
   const mode = session.mode || 'direct';
   const laneStopWhen = effectiveSupervisorStopWhen(session, lane);
+  const laneStopWhenKind = effectiveSupervisorStopWhenKind(session, lane);
   const autonomyPermissions = Array.isArray(session.autonomyPermissions)
     ? session.autonomyPermissions
     : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
@@ -227,14 +229,13 @@ export function tickLane(opts: {
           text: buildStopCheckHint({
             lane,
             stopWhen: laneStopWhen,
-            stopWhenKind: session.stopWhenKind || 'concrete',
+            stopWhenKind: laneStopWhenKind,
             state: st,
             mode: 'direct',
             autonomyPermissions,
           }),
         });
-        const kindLabel =
-          (session.stopWhenKind || 'concrete') === 'direction' ? '方向' : '具体条件';
+        const kindLabel = laneStopWhenKind === 'direction' ? '方向' : '具体条件';
         actions.push({
           type: 'notify_user',
           laneId: lane.id,
@@ -256,7 +257,7 @@ export function tickLane(opts: {
           text: buildStopCheckHint({
             lane,
             stopWhen: laneStopWhen,
-            stopWhenKind: session.stopWhenKind || 'concrete',
+            stopWhenKind: laneStopWhenKind,
             state: st,
             mode: 'direct',
             autonomyPermissions,

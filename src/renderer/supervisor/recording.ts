@@ -345,7 +345,8 @@ export function appendSupervisorRecord(
   type: string,
   payload: Record<string, unknown> = {},
 ): void {
-  if (!session.sessionId || !lane.projectDir) return;
+  const managementSessionId = lane.managementSessionId || session.sessionId;
+  if (!managementSessionId || !lane.projectDir) return;
   const api = (window as any).wmux?.supervisor;
   if (!api?.appendRecord) return;
 
@@ -353,7 +354,7 @@ export function appendSupervisorRecord(
     Object.entries(payload).map(([key, value]) => [key, compact(value)]),
   );
   void api.appendRecord({
-    sessionId: session.sessionId,
+    sessionId: managementSessionId,
     projectDir: lane.projectDir,
     type,
     terminal: {

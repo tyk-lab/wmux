@@ -49,7 +49,11 @@ import {
   tickLane,
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
-import { buildUserNotifyText, effectiveSupervisorStopWhen } from './supervisor/protocol';
+import {
+  buildUserNotifyText,
+  effectiveSupervisorLaneConfig,
+  effectiveSupervisorStopWhen,
+} from './supervisor/protocol';
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
@@ -1001,16 +1005,21 @@ export default function App() {
   // ── AI Supervisor scheduler (opt-in; never auto-starts) ─────────────────
   const supervisorActive = useStore((s) => s.supervisor.active);
   const supervisorSessionId = useStore((s) => s.supervisor.sessionId);
+  const supervisorLaneSessionKey = useStore((s) => s.supervisor.lanes
+    .map((lane) => lane.managementSessionId || lane.id)
+    .join('|'));
   const supervisorPollMs = useStore((s) => s.supervisor.pollMs);
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
+  const supervisorRuntimeSessionIdRef = useRef('');
   const supervisorDeliveryInFlightRef = useRef(false);
-  const recordedSupervisorSessionIdRef = useRef('');
+  const recordedSupervisorManagementIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!supervisorActive) return;
-    supervisorRuntimeRef.current = {};
     const session = useStore.getState().supervisor;
-    if (recordedSupervisorSessionIdRef.current === session.sessionId) return;
-    recordedSupervisorSessionIdRef.current = session.sessionId;
+    if (supervisorRuntimeSessionIdRef.current !== session.sessionId) {
+      supervisorRuntimeRef.current = {};
+      supervisorRuntimeSessionIdRef.current = session.sessionId;
+    }
     const launcher = detectSupervisorLauncher(session.supervisorLaunchCmd);
     const launcherName = supervisorLauncherDisplayName(launcher);
     let defaultReasoning = '不适用';
@@ -1018,12 +1027,18 @@ export default function App() {
     else if (launcher === 'kimi') defaultReasoning = 'Kimi 默认 Thinking';
     else if (launcher === 'pi') defaultReasoning = 'Pi 默认 Thinking';
     for (const lane of session.lanes) {
+      const managementSessionId = lane.managementSessionId || session.sessionId;
+      if (!managementSessionId || recordedSupervisorManagementIdsRef.current.has(managementSessionId)) continue;
+      recordedSupervisorManagementIdsRef.current.add(managementSessionId);
+      const laneConfig = effectiveSupervisorLaneConfig(session, lane);
       appendSupervisorRecord(session, lane, 'session.started', {
         mode: session.mode,
-        taskGoal: lane.taskGoalOverride?.trim() || session.taskGoal,
-        taskDescription: session.taskDescription,
-        preconditions: session.preconditions,
-        stopWhen: effectiveSupervisorStopWhen(session, lane),
+        taskGoal: laneConfig.taskGoal,
+        taskDescription: laneConfig.taskDescription,
+        preconditions: laneConfig.preconditions,
+        stopWhen: laneConfig.stopWhen,
+        stopWhenKind: laneConfig.stopWhenKind,
+        planFilePath: laneConfig.planFilePath,
         autonomyPermissions: session.autonomyPermissions,
         workScope: session.workScope,
         scopeRoot: lane.scopeRoot || lane.projectDir,
@@ -1033,7 +1048,7 @@ export default function App() {
         terminalName: lane.label,
       });
     }
-  }, [supervisorActive, supervisorSessionId]);
+  }, [supervisorActive, supervisorSessionId, supervisorLaneSessionKey]);
 
   useEffect(() => {
     if (!supervisorActive) return;

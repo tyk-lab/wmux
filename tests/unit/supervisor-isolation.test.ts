@@ -29,6 +29,7 @@ import {
   autonomousDecisionBoundary,
   buildInjectedPrompt,
   buildSupervisorBriefing,
+  effectiveSupervisorLaneConfig,
   humanDecisionBoundary,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
@@ -551,6 +552,64 @@ describe('supervisor isolation', () => {
     expect(text).toContain('工程目录: E:\\repo');
     expect(text).toContain('仅限当前任务直接涉及的工程内文件');
     expect(text).toContain('访问外部网络或调用外部服务');
+  });
+
+  it('keeps all task semantics isolated between dedicated supervisors', () => {
+    const session = createDefaultSupervisorSession();
+    session.taskGoal = '旧共享目标';
+    session.stopWhen = '旧共享停止条件';
+    const authLane = lane({
+      config: {
+        taskGoal: '只处理认证模块',
+        taskDescription: '保持现有登录错误提示',
+        preconditions: '认证测试环境已登录',
+        stopWhen: '认证测试全部通过',
+        stopWhenKind: 'concrete',
+        planFilePath: 'D:\\plans\\auth.md',
+      },
+    });
+    const docsLane = lane({
+      id: 'lane-docs',
+      surfaceId: 'surf-docs' as any,
+      label: 'Docs worker',
+      config: {
+        taskGoal: '只校正文档',
+        taskDescription: '保持原有章节结构',
+        preconditions: '文档术语表已确认',
+        stopWhen: '文档方向符合术语表',
+        stopWhenKind: 'direction',
+        planFilePath: 'D:\\plans\\docs.md',
+      },
+    });
+
+    const authBriefing = buildSupervisorBriefing(session, { lane: authLane, state: 'idle' });
+    const docsBriefing = buildSupervisorBriefing(session, { lane: docsLane, state: 'idle' });
+
+    expect(effectiveSupervisorLaneConfig(session, authLane)).toEqual(authLane.config);
+    expect(authBriefing).toContain('只处理认证模块');
+    expect(authBriefing).toContain('认证测试环境已登录');
+    expect(authBriefing).toContain('D:\\plans\\auth.md');
+    expect(authBriefing).not.toContain('只校正文档');
+    expect(authBriefing).not.toContain('旧共享目标');
+    expect(docsBriefing).toContain('只校正文档');
+    expect(docsBriefing).toContain('方向描述: 文档方向符合术语表');
+    expect(docsBriefing).toContain('D:\\plans\\docs.md');
+    expect(docsBriefing).not.toContain('认证测试全部通过');
+  });
+
+  it('preserves an existing lane management session when supervision starts', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([
+      lane({ managementSessionId: 'sup-lane-existing' }),
+      lane({ id: 'lane-b', surfaceId: 'surf-b' as any, managementSessionId: undefined }),
+    ]);
+
+    store.getState().startSupervisor();
+
+    const [existing, added] = store.getState().supervisor.lanes;
+    expect(existing.managementSessionId).toBe('sup-lane-existing');
+    expect(added.managementSessionId).toMatch(/^sup-lane-/);
+    expect(added.managementSessionId).not.toBe(existing.managementSessionId);
   });
 
   it('warns when no task source exists but still permits stop evaluation', () => {

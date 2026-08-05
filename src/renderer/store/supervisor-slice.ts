@@ -55,8 +55,20 @@ export interface SupervisorRestoreSource {
   sessionId: string;
 }
 
+/** Task semantics owned by one monitored terminal and its dedicated supervisor. */
+export interface SupervisorLaneConfig {
+  taskGoal: string;
+  taskDescription: string;
+  preconditions: string;
+  stopWhen: string;
+  stopWhenKind: StopWhenKind;
+  planFilePath: string;
+}
+
 export interface SupervisorLane {
   id: string;
+  /** Stable identity for this terminal's management/audit conversation. */
+  managementSessionId?: string;
   label: string;
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */
@@ -96,9 +108,11 @@ export interface SupervisorLane {
   autoDecisionsUsed?: number;
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
-  /** Optional user-authored goal that overrides the shared session context for this lane. */
+  /** Independent task configuration for this terminal and its dedicated supervisor. */
+  config?: SupervisorLaneConfig;
+  /** @deprecated Compatibility with sessions created before per-terminal configuration. */
   taskGoalOverride?: string;
-  /** Optional lane-specific stop reference; the shared session value remains the fallback. */
+  /** @deprecated Compatibility with sessions created before per-terminal configuration. */
   stopWhenOverride?: string;
   /** Hook lifecycle facts retained until the dedicated supervisor terminal accepts them. */
   pendingSupervisorDeliveries?: SupervisorDelivery[];
@@ -322,6 +336,7 @@ export function clearSupervisorLaneContext(
 ): SupervisorLane {
   return {
     ...lane,
+    managementSessionId: `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     supervisorSurfaceId,
     enabled: true,
     steps: [],
@@ -378,6 +393,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lanes = s.supervisor.lanes.map((lane) => ({
         ...lane,
+        managementSessionId: lane.managementSessionId
+          || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         ...(s.supervisor.mode === 'unified' && lane.enabled ? { awaitingReview: true } : {}),
         resumeAfterCancelledDecision: false,
       }));
@@ -628,7 +645,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
             ts: Date.now(),
             laneId,
             action: '停止条件确认',
-            detail: s.supervisor.lanes.find((lane) => lane.id === laneId)?.stopWhenOverride?.trim()
+            detail: s.supervisor.lanes.find((lane) => lane.id === laneId)?.config?.stopWhen?.trim()
+              || s.supervisor.lanes.find((lane) => lane.id === laneId)?.stopWhenOverride?.trim()
               || s.supervisor.stopWhen.trim()
               || '已确认达到结束条件，停止注入',
           },

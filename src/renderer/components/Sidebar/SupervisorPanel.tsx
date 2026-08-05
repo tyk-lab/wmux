@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { buildSupervisorBriefing, modeLabel, stopWhenKindLabel, supervisorTabTitle } from '../../supervisor/protocol';
+import {
+  buildSupervisorBriefing,
+  effectiveSupervisorLaneConfig,
+  modeLabel,
+  stopWhenKindLabel,
+  supervisorTabTitle,
+} from '../../supervisor/protocol';
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
@@ -77,7 +83,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
   const supervisorThinkingLabel = supervisorLauncher === 'codex' ? '推理程度' : 'Thinking';
-  const planFileName = supervisor.planFilePath.split(/[\\/]/).pop() || '';
   const autonomyPermissionCount = Array.isArray(supervisor.autonomyPermissions)
     ? supervisor.autonomyPermissions.length
     : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS.length;
@@ -376,7 +381,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       mode: 'unified',
       autonomous: false,
       autonomyPermissions: normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions),
-      workScope: normalizedScope === 'plan-defined' && !supervisor.planFilePath?.trim()
+      workScope: normalizedScope === 'plan-defined' && supervisor.lanes.some(
+        (lane) => !effectiveSupervisorLaneConfig(supervisor, lane).planFilePath.trim(),
+      )
         ? 'task-files'
         : normalizedScope,
       forbiddenActions: normalizeSupervisorForbiddenActions(supervisor.forbiddenActions),
@@ -503,31 +510,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__goal">
             最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
           </div>
-          {supervisor.taskDescription.trim() && (
-            <div className="sup-panel__goal" title={supervisor.taskDescription}>
-              停止补充: {supervisor.taskDescription}
-            </div>
-          )}
-          {(supervisor.taskGoal || '').trim() && (
-            <div className="sup-panel__goal" title={supervisor.taskGoal}>
-              任务目标: {supervisor.taskGoal}
-            </div>
-          )}
-          {supervisor.preconditions.trim() && (
-            <div className="sup-panel__goal" title={supervisor.preconditions}>
-              前置条件: {supervisor.preconditions}
-            </div>
-          )}
-          {supervisor.stopWhen.trim() && (
-            <div className="sup-panel__goal" title={supervisor.stopWhen}>
-              停止({stopWhenKindLabel(supervisor.stopWhenKind || 'concrete')}): {supervisor.stopWhen}
-            </div>
-          )}
-          {planFileName && (
-            <div className="sup-panel__goal" title={supervisor.planFilePath}>
-              计划: {planFileName}
-            </div>
-          )}
           <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
             监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
           </div>
@@ -540,8 +522,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {
               if (!lane.enabled && !lane.awaitingStopCheck && !lane.stopConfirmed) return null;
-              const laneTaskGoal = lane.taskGoalOverride?.trim() || (supervisor.taskGoal || '').trim();
-              const laneStopWhen = lane.stopWhenOverride?.trim() || supervisor.stopWhen.trim();
+              const laneConfig = effectiveSupervisorLaneConfig(supervisor, lane);
+              const planFileName = laneConfig.planFilePath.split(/[\\/]/).pop() || '';
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
               );
@@ -572,18 +554,32 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-task" title={lane.currentTask || '等待任务上报'}>
                     任务: {lane.currentTask || '等待任务上报'}
                   </div>
-                  {laneTaskGoal && (
-                    <div className="sup-panel__lane-task" title={laneTaskGoal}>
-                      目标: {laneTaskGoal}{lane.taskGoalOverride ? '（终端专用）' : ''}
+                  {laneConfig.taskGoal && (
+                    <div className="sup-panel__lane-task" title={laneConfig.taskGoal}>
+                      目标: {laneConfig.taskGoal}
                     </div>
                   )}
-                  {lane.stopWhenOverride && (
-                    <div className="sup-panel__lane-task" title={laneStopWhen}>
-                      停止条件: {laneStopWhen}（终端专用）
+                  <div className="sup-panel__lane-task" title={laneConfig.stopWhen}>
+                    停止({stopWhenKindLabel(laneConfig.stopWhenKind)}): {laneConfig.stopWhen}
+                  </div>
+                  {laneConfig.taskDescription && (
+                    <div className="sup-panel__lane-task" title={laneConfig.taskDescription}>
+                      停止补充: {laneConfig.taskDescription}
+                    </div>
+                  )}
+                  {laneConfig.preconditions && (
+                    <div className="sup-panel__lane-task" title={laneConfig.preconditions}>
+                      前置条件: {laneConfig.preconditions}
+                    </div>
+                  )}
+                  {planFileName && (
+                    <div className="sup-panel__lane-task" title={laneConfig.planFilePath}>
+                      计划: {planFileName}
                     </div>
                   )}
                   <div className="sup-panel__lane-supervisor">
                     专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
+                    {lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}
                   </div>
                   {lane.restoredFromSessionId && (
                     <div className="sup-panel__lane-supervisor">

@@ -20,6 +20,7 @@ import { appendSupervisorRecord } from './supervisor/recording';
 import { clearSupervisorLaneContext, type SupervisorDecision, type SupervisorLane } from './store/supervisor-slice';
 import {
   buildSupervisorBriefing,
+  effectiveSupervisorLaneConfig,
   effectiveSupervisorTaskGoal,
   SUPERVISOR_TAB_TITLE,
   SUPERVISOR_WORKSPACE_TITLE,
@@ -559,6 +560,14 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
       remoteSshControl: candidate.remoteSshControl,
       projectDir: candidate.projectDir,
       scopeRoot: candidate.projectDir,
+      config: {
+        taskGoal: params.taskGoal || '',
+        taskDescription: params.taskDescription || '',
+        preconditions: params.preconditions || '',
+        stopWhen: params.stopWhen,
+        stopWhenKind: params.stopWhenKind,
+        planFilePath: params.planFile || '',
+      },
       enabled: true,
       steps: [], maxAutoSteps: 0, autoStepsUsed: 0, awaitingStopCheck: false, stopConfirmed: false,
       awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
@@ -1092,6 +1101,7 @@ export function initPipeBridge(): void {
       session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
       lane.scopeRoot || lane.projectDir,
     );
+    const laneConfig = effectiveSupervisorLaneConfig(session, lane);
     if (outcome !== 'needs-human' && scopeBlockReason) {
       return { ok: false, error: `${scopeBlockReason}；超出工作范围的动作必须使用 needs-human` };
     }
@@ -1099,14 +1109,14 @@ export function initPipeBridge(): void {
       next
       && outcome !== 'needs-human'
       && session.workScope === 'plan-defined'
-      && !session.planFilePath?.trim()
+      && !laneConfig.planFilePath.trim()
     ) {
       return { ok: false, error: '工作范围设为“仅计划文件定义范围”，但当前没有计划文件；请补充计划文件或使用 needs-human' };
     }
     const hasTaskContext = !!(
       effectiveSupervisorTaskGoal(session, lane)
       || lane.currentTask?.trim()
-      || session.planFilePath?.trim()
+      || laneConfig.planFilePath.trim()
       || (session.mode !== 'unified' && session.directInstructions?.trim())
       || (session.mode !== 'unified' && session.goal?.trim())
     );

@@ -4,7 +4,7 @@ import { SurfaceId, WorkspaceId, PaneId, SplitNode, type DefaultSupervisorAgent 
 import type {
   StopWhenKind,
   SupervisorLane,
-  SupervisorStep,
+  SupervisorLaneConfig,
 } from '../../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
@@ -22,6 +22,7 @@ import {
 } from '../../../shared/supervisor-policy';
 import {
   buildSupervisorBriefing,
+  effectiveSupervisorLaneConfig,
   stopWhenKindHint,
   stopWhenKindLabel,
   SUPERVISOR_TAB_TITLE,
@@ -178,6 +179,17 @@ interface TerminalCandidate {
   remoteSshControl: boolean;
 }
 
+function emptyLaneConfig(): SupervisorLaneConfig {
+  return {
+    taskGoal: '',
+    taskDescription: '',
+    preconditions: '',
+    stopWhen: '',
+    stopWhenKind: 'concrete',
+    planFilePath: '',
+  };
+}
+
 function collectTerminals(
   tree: SplitNode,
   out: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }>,
@@ -219,7 +231,7 @@ export default function SupervisorSetupDialog() {
   const sessionRetained = supervisor.active || supervisor.paused;
   let primaryActionLabel = '启动 AI 监督';
   if (supervisor.active) primaryActionLabel = '应用并继续监督';
-  else if (supervisor.paused) primaryActionLabel = '返回监督会话';
+  else if (supervisor.paused) primaryActionLabel = '应用并返回监督会话';
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -263,17 +275,8 @@ export default function SupervisorSetupDialog() {
     return list;
   }, [workspaces, agentMeta, agentStates, sessionRetained, supervisor.lanes]);
 
-  const [taskGoal, setTaskGoal] = useState(supervisor.taskGoal || '');
-  const [taskDescription, setTaskDescription] = useState(supervisor.taskDescription || '');
-  const [preconditions, setPreconditions] = useState(supervisor.preconditions || '');
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [taskGoalOverrides, setTaskGoalOverrides] = useState<Record<string, string>>({});
-  const [stopWhenOverrides, setStopWhenOverrides] = useState<Record<string, string>>({});
-  const [stopWhen, setStopWhen] = useState(supervisor.stopWhen);
-  const [stopWhenKind, setStopWhenKind] = useState<StopWhenKind>(
-    supervisor.stopWhenKind || 'concrete',
-  );
-  const [planFilePath, setPlanFilePath] = useState(supervisor.planFilePath);
+  const [laneConfigs, setLaneConfigs] = useState<Record<string, SupervisorLaneConfig>>({});
   const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
@@ -302,12 +305,6 @@ export default function SupervisorSetupDialog() {
 
   useEffect(() => {
     if (!setupOpen) return;
-    setTaskGoal(supervisor.taskGoal || '');
-    setTaskDescription(supervisor.taskDescription || '');
-    setPreconditions(supervisor.preconditions || '');
-    setStopWhen(supervisor.stopWhen || '');
-    setStopWhenKind(supervisor.stopWhenKind || 'concrete');
-    setPlanFilePath(supervisor.planFilePath || '');
     setRestoreAuditHistory(supervisor.restoreAuditHistory === true);
     setRestoreSources(Object.fromEntries(
       supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
@@ -325,12 +322,9 @@ export default function SupervisorSetupDialog() {
     setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions));
     setWorkScope(normalizeSupervisorWorkScope(supervisor.workScope));
     setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
-    setSelected(new Set(supervisor.lanes.filter((l) => l.enabled).map((l) => l.surfaceId)));
-    setTaskGoalOverrides(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => lane.taskGoalOverride ? [[lane.surfaceId, lane.taskGoalOverride]] : []),
-    ));
-    setStopWhenOverrides(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => lane.stopWhenOverride ? [[lane.surfaceId, lane.stopWhenOverride]] : []),
+    setSelected(new Set(supervisor.lanes.map((lane) => lane.surfaceId)));
+    setLaneConfigs(Object.fromEntries(
+      supervisor.lanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
     ));
   }, [setupOpen]);
 
@@ -390,6 +384,12 @@ export default function SupervisorSetupDialog() {
   if (!setupOpen) return null;
 
   const toggle = (surfaceId: string) => {
+    if (sessionRetained && supervisor.lanes.some((lane) => lane.surfaceId === surfaceId)) return;
+    if (!selected.has(surfaceId)) {
+      setLaneConfigs((current) => current[surfaceId]
+        ? current
+        : { ...current, [surfaceId]: emptyLaneConfig() });
+    }
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(surfaceId)) next.delete(surfaceId);
@@ -398,7 +398,14 @@ export default function SupervisorSetupDialog() {
     });
   };
 
-  const choosePlanFile = async () => {
+  const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
+    setLaneConfigs((current) => ({
+      ...current,
+      [surfaceId]: { ...(current[surfaceId] || emptyLaneConfig()), ...patch },
+    }));
+  };
+
+  const choosePlanFile = async (surfaceId: string) => {
     try {
       const result = await (window as any).wmux?.markdown?.openFile?.();
       if (!result || result.canceled) return;
@@ -406,27 +413,26 @@ export default function SupervisorSetupDialog() {
         window.alert(result.error || '无法读取计划文件。');
         return;
       }
-      setPlanFilePath(result.filePath);
+      updateLaneConfig(surfaceId, { planFilePath: result.filePath });
     } catch (err: any) {
       window.alert(`选择计划文件失败：${String(err?.message || err)}`);
     }
   };
 
-  const configFileData = () => ({
-    taskGoal,
-    taskDescription,
-    preconditions,
-    stopWhen,
-    stopWhenKind,
-    planFilePath,
-    supervisorLaunchCmd: launchCmd,
-    supervisorModel,
-    supervisorReasoningEffort: reasoningEffort,
-    maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
-    autonomyPermissions,
-    workScope,
-    forbiddenActions,
-  });
+  const configFileData = () => {
+    const surfaceId = Array.from(selected)[0];
+    const laneConfig = laneConfigs[surfaceId] || emptyLaneConfig();
+    return {
+      ...laneConfig,
+      supervisorLaunchCmd: launchCmd,
+      supervisorModel,
+      supervisorReasoningEffort: reasoningEffort,
+      maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
+      autonomyPermissions,
+      workScope,
+      forbiddenActions,
+    };
+  };
 
   const configFileDefaultPath = () => {
     const selectedTerminal = candidates.find((candidate) => selected.has(candidate.surfaceId) && candidate.projectDir)
@@ -437,6 +443,10 @@ export default function SupervisorSetupDialog() {
   };
 
   const saveConfigFile = async () => {
+    if (selected.size !== 1) {
+      window.alert('导出任务配置时请只选择一个终端。');
+      return;
+    }
     const result = await (window as any).wmux?.supervisor?.saveConfig?.(
       configFileData(),
       configFileDefaultPath(),
@@ -457,29 +467,44 @@ export default function SupervisorSetupDialog() {
       return;
     }
     const config = result.config;
+    const selectedSurfaceIds = Array.from(selected);
+    if (selectedSurfaceIds.length === 0) {
+      window.alert('请先选择要应用配置的终端。');
+      return;
+    }
     const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'pi';
     const loadedLauncherKind = detectSupervisorLauncher(loadedLaunchCommand);
     const loadedPlanFilePath = config.planFilePath || '';
     const loadedWorkScope = normalizeSupervisorWorkScope(config.workScope);
-    setTaskGoal(config.taskGoal || '');
-    setTaskDescription(config.taskDescription || '');
-    setPreconditions(config.preconditions || '');
-    setStopWhen(config.stopWhen || '');
-    setStopWhenKind(config.stopWhenKind === 'direction' ? 'direction' : 'concrete');
-    setPlanFilePath(loadedPlanFilePath);
-    setLaunchCmd(loadedLaunchCommand);
-    setLaunchChoice(knownOptionValue(loadedLaunchCommand, SUPERVISOR_LAUNCH_OPTIONS));
-    setSupervisorModel(config.supervisorModel || '');
-    setModelChoice(config.supervisorModel
-      ? knownOptionValue(config.supervisorModel, modelOptionsFor(loadedLauncherKind))
-      : '__default__');
-    setReasoningEffort(config.supervisorReasoningEffort || '');
-    setMaxAutoDecisions(config.maxAutoDecisions ? String(config.maxAutoDecisions) : '');
-    setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(config.autonomyPermissions));
-    setWorkScope(loadedWorkScope === 'plan-defined' && !loadedPlanFilePath
-      ? 'task-files'
-      : loadedWorkScope);
-    setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
+    setLaneConfigs((current) => {
+      const next = { ...current };
+      for (const surfaceId of selectedSurfaceIds) {
+        next[surfaceId] = {
+          taskGoal: config.taskGoal || '',
+          taskDescription: config.taskDescription || '',
+          preconditions: config.preconditions || '',
+          stopWhen: config.stopWhen || '',
+          stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+          planFilePath: loadedPlanFilePath,
+        };
+      }
+      return next;
+    });
+    if (!sessionRetained) {
+      setLaunchCmd(loadedLaunchCommand);
+      setLaunchChoice(knownOptionValue(loadedLaunchCommand, SUPERVISOR_LAUNCH_OPTIONS));
+      setSupervisorModel(config.supervisorModel || '');
+      setModelChoice(config.supervisorModel
+        ? knownOptionValue(config.supervisorModel, modelOptionsFor(loadedLauncherKind))
+        : '__default__');
+      setReasoningEffort(config.supervisorReasoningEffort || '');
+      setMaxAutoDecisions(config.maxAutoDecisions ? String(config.maxAutoDecisions) : '');
+      setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(config.autonomyPermissions));
+      setWorkScope(loadedWorkScope === 'plan-defined' && !loadedPlanFilePath
+        ? 'task-files'
+        : loadedWorkScope);
+      setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
+    }
   };
 
   const buildLanes = (preserveCurrentContext: boolean): SupervisorLane[] => {
@@ -494,11 +519,19 @@ export default function SupervisorSetupDialog() {
       const keepsRestoredContext = !!selectedSource
         && prev?.restoreSource?.surfaceId === selectedSource.surfaceId;
       const keepsCurrentContext = preserveCurrentContext || keepsRestoredContext;
-      const taskGoalOverride = taskGoalOverrides[c.surfaceId]?.trim();
-      const stopWhenOverride = stopWhenOverrides[c.surfaceId]?.trim();
-      const steps: SupervisorStep[] = [];
+      const restoreSource = selectedSource
+        ? {
+            surfaceId: selectedSource.surfaceId,
+            label: selectedSource.label,
+            sessionId: selectedSource.sessionId,
+          }
+        : keepsCurrentContext ? prev?.restoreSource : undefined;
+      const config = laneConfigs[c.surfaceId]
+        || (prev ? effectiveSupervisorLaneConfig(supervisor, prev) : emptyLaneConfig());
       lanes.push({
         id: prev?.id || `lane-${c.surfaceId}`,
+        managementSessionId: prev?.managementSessionId
+          || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         label: c.label,
         surfaceId: c.surfaceId,
         supervisorSurfaceId: prev?.supervisorSurfaceId || null,
@@ -508,35 +541,39 @@ export default function SupervisorSetupDialog() {
         remoteSshControl: c.remoteSshControl,
         projectDir: c.projectDir,
         scopeRoot: sessionRetained ? prev?.scopeRoot || c.projectDir : c.projectDir,
-        enabled: true,
-        steps,
-        maxAutoSteps: 0,
-        autoStepsUsed: 0,
-        awaitingStopCheck: false,
-        stopConfirmed: false,
-        awaitingReview: false,
-        autoDecisionLimitReached: false,
-        autoDecisionsUsed: 0,
-        pendingSupervisorDeliveries: prev?.pendingSupervisorDeliveries || [],
+        enabled: keepsCurrentContext ? prev?.enabled ?? true : true,
+        steps: keepsCurrentContext ? prev?.steps || [] : [],
+        maxAutoSteps: keepsCurrentContext ? prev?.maxAutoSteps || 0 : 0,
+        autoStepsUsed: keepsCurrentContext ? prev?.autoStepsUsed || 0 : 0,
+        awaitingStopCheck: keepsCurrentContext ? prev?.awaitingStopCheck || false : false,
+        stopConfirmed: keepsCurrentContext ? prev?.stopConfirmed || false : false,
+        awaitingReview: keepsCurrentContext ? prev?.awaitingReview || false : false,
+        resumeAfterCancelledDecision: keepsCurrentContext ? prev?.resumeAfterCancelledDecision : false,
+        lastBlockedResponseVersion: keepsCurrentContext ? prev?.lastBlockedResponseVersion : undefined,
+        lastBlockedResponseId: keepsCurrentContext ? prev?.lastBlockedResponseId : undefined,
+        autoDecisionLimitReached: keepsCurrentContext ? prev?.autoDecisionLimitReached || false : false,
+        autoDecisionsUsed: keepsCurrentContext ? prev?.autoDecisionsUsed || 0 : 0,
+        pendingSupervisorDeliveries: keepsCurrentContext ? prev?.pendingSupervisorDeliveries || [] : [],
         currentTask: keepsCurrentContext ? prev?.currentTask || '' : '',
         decisions: keepsCurrentContext ? prev?.decisions || [] : [],
-        ...(taskGoalOverride ? { taskGoalOverride } : {}),
-        ...(stopWhenOverride ? { stopWhenOverride } : {}),
-        ...(selectedSource ? {
-          restoreSource: {
-            surfaceId: selectedSource.surfaceId,
-            label: selectedSource.label,
-            sessionId: selectedSource.sessionId,
-          },
-        } : {}),
-        ...(keepsRestoredContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
-        ...(keepsRestoredContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
+        config: {
+          taskGoal: config.taskGoal.trim(),
+          taskDescription: config.taskDescription.trim(),
+          preconditions: config.preconditions.trim(),
+          stopWhen: config.stopWhen.trim(),
+          stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+          planFilePath: config.planFilePath.trim(),
+        },
+        ...(restoreSource ? { restoreSource } : {}),
+        ...(keepsCurrentContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
+        ...(keepsCurrentContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
       });
     }
     return lanes;
   };
 
-  const persistFields = (grantSessionAutonomy: boolean) => {
+  const persistFields = (lanes: SupervisorLane[], grantSessionAutonomy: boolean) => {
+    const legacyConfig = lanes[0]?.config || emptyLaneConfig();
     patchSupervisor({
       mode: 'unified',
       directInstructions: '',
@@ -544,12 +581,14 @@ export default function SupervisorSetupDialog() {
       allowPaths: '',
       denyNotes: '',
       doneWhen: '',
-      taskGoal,
-      taskDescription,
-      preconditions,
-      stopWhen,
-      stopWhenKind,
-      planFilePath,
+      // Compatibility mirror for old saved sessions and remote integrations.
+      // Runtime decisions always read the owning lane.config first.
+      taskGoal: legacyConfig.taskGoal,
+      taskDescription: legacyConfig.taskDescription,
+      preconditions: legacyConfig.preconditions,
+      stopWhen: legacyConfig.stopWhen,
+      stopWhenKind: legacyConfig.stopWhenKind,
+      planFilePath: legacyConfig.planFilePath,
       planFileContent: '',
       restoreAuditHistory,
       supervisorLaunchCmd: launchCmd,
@@ -680,8 +719,13 @@ export default function SupervisorSetupDialog() {
       window.alert('请至少选择一个要监控的终端。');
       return;
     }
-    if (!stopWhen.trim()) {
-      window.alert('请填写停止条件（方向型或具体条件型），供监督 AI 核对。');
+    const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
+    if (missingStopWhen.length > 0) {
+      window.alert(`请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`);
+      return;
+    }
+    if (workScope === 'plan-defined' && lanes.some((lane) => !lane.config?.planFilePath.trim())) {
+      window.alert('工作范围选择“按计划文件定义”时，每个被监督终端都必须选择自己的计划文件。');
       return;
     }
     if (andStart && !launchCmd.trim()) {
@@ -690,19 +734,19 @@ export default function SupervisorSetupDialog() {
     }
 
     if (andStart) {
-      const result = ensureDedicatedSupervisors(lanes, true);
+      const result = ensureDedicatedSupervisors(lanes, false);
       if (!result.ok) {
         window.alert('无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。');
         return;
       }
-      persistFields(true);
+      persistFields(result.lanes, true);
       setSupervisorLanes(result.lanes);
-      startSupervisor();
+      if (!sessionRetained) startSupervisor();
       const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
       if (workspaceId) selectWorkspace(workspaceId);
       sendDedicatedBriefings();
     } else {
-      persistFields(false);
+      persistFields(lanes, false);
       setSupervisorLanes(lanes);
       closeSupervisorSetup();
     }
@@ -714,20 +758,21 @@ export default function SupervisorSetupDialog() {
       window.alert('请先至少选择一个要监控的终端。');
       return;
     }
-    if (!stopWhen.trim()) {
-      window.alert('请先填写停止条件。');
+    const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
+    if (missingStopWhen.length > 0) {
+      window.alert(`请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`);
       return;
     }
     if (!launchCmd.trim()) {
       window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
       return;
     }
-    const result = ensureDedicatedSupervisors(lanes, true);
+    const result = ensureDedicatedSupervisors(lanes, false);
     if (!result.ok) {
       window.alert('无法为所有选中终端创建专属监督 AI，请重试。');
       return;
     }
-    persistFields(false);
+    persistFields(result.lanes, false);
     setSupervisorLanes(result.lanes);
     closeSupervisorSetup();
     const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
@@ -750,9 +795,8 @@ export default function SupervisorSetupDialog() {
   const selectedCandidates = candidates.filter((candidate) => selected.has(candidate.surfaceId));
   const insufficientCandidates = selectedCandidates.filter((candidate) => (
     !candidate.currentTask?.trim()
-    && !taskGoalOverrides[candidate.surfaceId]?.trim()
-    && !taskGoal.trim()
-    && !planFilePath.trim()
+    && !laneConfigs[candidate.surfaceId]?.taskGoal.trim()
+    && !laneConfigs[candidate.surfaceId]?.planFilePath.trim()
   ));
 
   return (
@@ -777,7 +821,7 @@ export default function SupervisorSetupDialog() {
             <div className="supervisor-dialog__group-heading">
               <div>
                 <div className="supervisor-dialog__group-title">1. 监督对象</div>
-                <div className="supervisor-dialog__group-description">选择工作终端，并按需为单个终端覆盖共享目标或停止条件。</div>
+                <div className="supervisor-dialog__group-description">每个终端分别配置任务依据，并由自己的专属监督 AI 管理。</div>
               </div>
               <span className="supervisor-dialog__count">已选 {selectedCandidates.length} 个</span>
             </div>
@@ -787,12 +831,16 @@ export default function SupervisorSetupDialog() {
               )}
               {candidates.map((candidate) => {
                 const isSelected = selected.has(candidate.surfaceId);
+                const laneConfig = laneConfigs[candidate.surfaceId] || emptyLaneConfig();
+                const isExistingLane = sessionRetained
+                  && supervisor.lanes.some((lane) => lane.surfaceId === candidate.surfaceId);
                 return (
                   <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
                     <label className="supervisor-dialog__row">
                       <input
                         type="checkbox"
                         checked={isSelected}
+                        disabled={isExistingLane}
                         onChange={() => toggle(candidate.surfaceId)}
                       />
                       <span className="supervisor-dialog__row-main">
@@ -808,34 +856,97 @@ export default function SupervisorSetupDialog() {
                       </span>
                     </label>
                     {isSelected && (
-                      <details className="supervisor-dialog__lane-settings">
-                        <summary>单独设置此终端</summary>
+                      <details className="supervisor-dialog__lane-settings" open>
+                        <summary>{isExistingLane ? '当前独立监督配置（会保留原管理会话）' : '配置此终端的独立监督任务'}</summary>
                         <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">任务目标覆盖（可选）</div>
+                          <div className="supervisor-dialog__label">任务目标（可选）</div>
                           <textarea
                             className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的任务目标覆盖`}
+                            aria-label={`${candidate.label} 的任务目标`}
                             rows={2}
-                            value={taskGoalOverrides[candidate.surfaceId] || ''}
-                            onChange={(event) => setTaskGoalOverrides((current) => ({
-                              ...current,
-                              [candidate.surfaceId]: event.target.value,
-                            }))}
-                            placeholder="留空则使用共享任务目标、当前任务事件或计划文件"
+                            value={laneConfig.taskGoal}
+                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
+                            placeholder="例如：修复此终端负责的认证模块并保持现有行为"
                           />
                         </div>
                         <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">停止条件覆盖（可选）</div>
+                          <div className="supervisor-dialog__label">停止条件类型</div>
+                          <div className="supervisor-dialog__freedom">
+                            {(['concrete', 'direction'] as StopWhenKind[]).map((kind) => (
+                              <label key={kind} className="supervisor-dialog__radio" data-active={laneConfig.stopWhenKind === kind}>
+                                <input
+                                  type="radio"
+                                  name={`stopWhenKind-${candidate.surfaceId}`}
+                                  checked={laneConfig.stopWhenKind === kind}
+                                  onChange={() => updateLaneConfig(candidate.surfaceId, { stopWhenKind: kind })}
+                                />
+                                <span>{stopWhenKindLabel(kind)}{kind === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div className="supervisor-dialog__hint">{stopWhenKindHint(laneConfig.stopWhenKind)}</div>
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label supervisor-dialog__label--required">
+                            停止条件 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
+                          </div>
                           <textarea
                             className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的停止条件覆盖`}
+                            aria-label={`${candidate.label} 的停止条件`}
                             rows={2}
-                            value={stopWhenOverrides[candidate.surfaceId] || ''}
-                            onChange={(event) => setStopWhenOverrides((current) => ({
-                              ...current,
-                              [candidate.surfaceId]: event.target.value,
-                            }))}
-                            placeholder="留空则使用下方共享停止条件"
+                            value={laneConfig.stopWhen}
+                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { stopWhen: event.target.value })}
+                            placeholder={laneConfig.stopWhenKind === 'direction'
+                              ? '例如：此终端负责的登录流程可用，错误提示合理'
+                              : '例如：认证模块单测全部通过'}
+                          />
+                          <div className="supervisor-dialog__hint">只用于此终端的继续、返工、完成或人工接管裁决。</div>
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
+                          <textarea
+                            className="supervisor-dialog__textarea"
+                            aria-label={`${candidate.label} 的停止条件补充说明`}
+                            rows={2}
+                            value={laneConfig.taskDescription}
+                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskDescription: event.target.value })}
+                            placeholder="补充此终端的验收语境和边界"
+                          />
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
+                          <div className="supervisor-dialog__plan-actions">
+                            <input
+                              className="supervisor-dialog__input"
+                              aria-label={`${candidate.label} 的计划文件`}
+                              value={laneConfig.planFilePath}
+                              readOnly
+                              title={laneConfig.planFilePath}
+                              placeholder="未选择；仅提供给此终端的监督 AI"
+                            />
+                            <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile(candidate.surfaceId)}>
+                              选择文件
+                            </button>
+                            {laneConfig.planFilePath && (
+                              <button
+                                type="button"
+                                className="confirm-dialog__btn"
+                                onClick={() => updateLaneConfig(candidate.surfaceId, { planFilePath: '' })}
+                              >
+                                清除
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
+                          <textarea
+                            className="supervisor-dialog__textarea"
+                            aria-label={`${candidate.label} 的前置条件`}
+                            rows={2}
+                            value={laneConfig.preconditions}
+                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { preconditions: event.target.value })}
+                            placeholder="例如：此终端对应的测试环境已准备好"
                           />
                         </div>
                       </details>
@@ -846,123 +957,13 @@ export default function SupervisorSetupDialog() {
             </div>
             {insufficientCandidates.length > 0 && (
               <div className="supervisor-dialog__warning" role="status">
-                {insufficientCandidates.map((candidate) => candidate.label).join('、')}：可停止裁决，但自主推进依据不足。请填写任务目标、终端覆盖目标或选择计划文件。
+                {insufficientCandidates.map((candidate) => candidate.label).join('、')}：可停止裁决，但自主推进依据不足。请为对应终端填写任务目标或选择计划文件。
               </div>
             )}
           </section>
 
           <section className="supervisor-dialog__group">
-            <div className="supervisor-dialog__group-title">2. 停止裁决</div>
-            <div className="supervisor-dialog__group-description">这是监督 AI 判断继续、返工、完成或交给人工的核心依据。</div>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">停止条件类型</div>
-              <div className="supervisor-dialog__freedom">
-                {(['concrete', 'direction'] as StopWhenKind[]).map((kind) => (
-                  <label key={kind} className="supervisor-dialog__radio" data-active={stopWhenKind === kind}>
-                    <input
-                      type="radio"
-                      name="stopWhenKind"
-                      checked={stopWhenKind === kind}
-                      onChange={() => setStopWhenKind(kind)}
-                    />
-                    <span>{stopWhenKindLabel(kind)}{kind === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
-                  </label>
-                ))}
-              </div>
-              <div className="supervisor-dialog__hint">{stopWhenKindHint(stopWhenKind)}</div>
-            </section>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">
-                停止条件参考 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
-                {' '}· {stopWhenKindLabel(stopWhenKind)}
-              </div>
-              <textarea
-                className="supervisor-dialog__textarea"
-                aria-label="停止条件参考"
-                rows={2}
-                value={stopWhen}
-                onChange={(event) => setStopWhen(event.target.value)}
-                placeholder={stopWhenKind === 'direction'
-                  ? '例如：登录流程可用，错误提示合理，不要大范围重构'
-                  : '例如：npm test 全绿 / 终端出现 BUILD SUCCESS'}
-                required
-              />
-              <div className="supervisor-dialog__hint">终端本轮结束后，监督 AI 会先核对当前证据，不会把“任务结束”直接视为条件已满足。</div>
-            </section>
-          </section>
-
-          <section className="supervisor-dialog__group">
-            <div className="supervisor-dialog__group-title">3. 补充依据</div>
-            <div className="supervisor-dialog__group-description">用于补足监督 AI 的任务目标、验收依据与已确认事实。</div>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">共享任务目标（可选）</div>
-              <textarea
-                className="supervisor-dialog__textarea"
-                aria-label="共享任务目标"
-                rows={2}
-                value={taskGoal}
-                onChange={(event) => setTaskGoal(event.target.value)}
-                placeholder="例如：修复登录流程并保持现有对外行为"
-              />
-              <div className="supervisor-dialog__hint">当终端还没有任务事件、也未选择计划文件时，建议填写；不会直接注入工作终端。</div>
-            </section>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
-              <textarea
-                className="supervisor-dialog__textarea"
-                aria-label="停止条件补充说明"
-                rows={2}
-                value={taskDescription}
-                onChange={(event) => setTaskDescription(event.target.value)}
-                placeholder="例如：认证修复完成后保持现有对外行为，以登录可用和测试通过作为结束参考"
-              />
-              <div className="supervisor-dialog__hint">仅补充停止条件的背景和验收语境，不会注入工作终端。</div>
-            </section>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
-              <div className="supervisor-dialog__plan-actions">
-                <input
-                  className="supervisor-dialog__input"
-                  aria-label="计划文件"
-                  value={planFilePath}
-                  readOnly
-                  title={planFilePath}
-                  placeholder="未选择；选择后仅把路径提供给监督 AI"
-                />
-                <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile()}>
-                  选择文件
-                </button>
-                {planFilePath && (
-                  <button
-                    type="button"
-                    className="confirm-dialog__btn"
-                    onClick={() => {
-                      setPlanFilePath('');
-                      if (workScope === 'plan-defined') setWorkScope('task-files');
-                    }}
-                  >
-                    清除
-                  </button>
-                )}
-              </div>
-              <div className="supervisor-dialog__hint">监督 AI 首次使用或发现文件更新时才重新读取，并结合最新范围、验收与约束裁决。</div>
-            </section>
-            <section className="supervisor-dialog__section">
-              <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
-              <textarea
-                className="supervisor-dialog__textarea"
-                aria-label="前置条件和已确认环境信息"
-                rows={2}
-                value={preconditions}
-                onChange={(event) => setPreconditions(event.target.value)}
-                placeholder="例如：设备已上电；测试台安全状态已确认；必要账号已登录"
-              />
-              <div className="supervisor-dialog__hint">本次监督会话内视为已确认；证据显示条件变化或失效时才再次交给人工。</div>
-            </section>
-          </section>
-
-          <section className="supervisor-dialog__group">
-            <div className="supervisor-dialog__group-title">4. 自主权限与边界</div>
+            <div className="supervisor-dialog__group-title">2. 会话统一的自主权限与边界</div>
             <div className="supervisor-dialog__group-description">明确监督 AI 可以自主处理的动作，以及本次任务额外禁止的变化。</div>
             <label className="supervisor-dialog__row supervisor-dialog__autonomous-row">
               <input
@@ -1002,7 +1003,10 @@ export default function SupervisorSetupDialog() {
                 <div className="supervisor-dialog__label">工作范围</div>
                 <div className="supervisor-dialog__option-list">
                   {SUPERVISOR_WORK_SCOPE_VALUES.map((scope) => {
-                    const disabled = scope === 'plan-defined' && !planFilePath;
+                    const disabled = scope === 'plan-defined' && (
+                      selectedCandidates.length === 0
+                      || selectedCandidates.some((candidate) => !laneConfigs[candidate.surfaceId]?.planFilePath.trim())
+                    );
                     return (
                       <label
                         key={scope}
@@ -1064,7 +1068,7 @@ export default function SupervisorSetupDialog() {
           </section>
 
           <details className="supervisor-dialog__advanced">
-            <summary>5. 高级设置</summary>
+            <summary>3. 会话高级设置</summary>
             <div className="supervisor-dialog__advanced-content">
               <section className="supervisor-dialog__section">
                 <div className="supervisor-dialog__label">监督 AI 启动器</div>
@@ -1072,6 +1076,7 @@ export default function SupervisorSetupDialog() {
                   <select
                     className="supervisor-dialog__input"
                     value={launchChoice}
+                    disabled={sessionRetained}
                     onChange={(event) => changeLauncher(event.target.value)}
                   >
                     {SUPERVISOR_LAUNCH_OPTIONS.map((option) => (
@@ -1084,7 +1089,7 @@ export default function SupervisorSetupDialog() {
                   <button
                     type="button"
                     className="confirm-dialog__btn"
-                    disabled={!selectedDefaultAgent || selectedDefaultAgent === defaultSupervisorAgent}
+                    disabled={sessionRetained || !selectedDefaultAgent || selectedDefaultAgent === defaultSupervisorAgent}
                     onClick={() => {
                       if (selectedDefaultAgent) setWorkspacePrefs({ defaultSupervisorAgent: selectedDefaultAgent });
                     }}
@@ -1097,11 +1102,16 @@ export default function SupervisorSetupDialog() {
                   <input
                     className="supervisor-dialog__input supervisor-dialog__stacked-input"
                     value={launchCmd}
+                    disabled={sessionRetained}
                     onChange={(event) => setLaunchCmd(event.target.value)}
                     placeholder="例如：&quot;C:\\Tools\\codex.exe&quot;"
                   />
                 )}
-                <div className="supervisor-dialog__hint">每个工作终端独立启动一个监督上下文；默认设置仅影响以后新建的监督。</div>
+                <div className="supervisor-dialog__hint">
+                  {sessionRetained
+                    ? '现有管理会话会被保留；启动器、模型和 Thinking 需在停止监督并启动新会话后更改。'
+                    : '每个工作终端独立启动一个监督上下文；默认设置仅影响以后新建的监督。'}
+                </div>
               </section>
               {(launcherModelOptions.length > 0 || launcherKind === 'pi') && (
                 <section className="supervisor-dialog__section">
@@ -1109,6 +1119,7 @@ export default function SupervisorSetupDialog() {
                   <select
                     className="supervisor-dialog__input"
                     value={modelChoice}
+                    disabled={sessionRetained}
                     onChange={(event) => {
                       const choice = event.target.value;
                       setModelChoice(choice);
@@ -1126,6 +1137,7 @@ export default function SupervisorSetupDialog() {
                     <input
                       className="supervisor-dialog__input supervisor-dialog__stacked-input"
                       value={supervisorModel}
+                      disabled={sessionRetained}
                       onChange={(event) => setSupervisorModel(event.target.value)}
                       placeholder={customModelPlaceholder(launcherKind)}
                     />
@@ -1138,6 +1150,7 @@ export default function SupervisorSetupDialog() {
                   <select
                     className="supervisor-dialog__input"
                     value={reasoningEffort}
+                    disabled={sessionRetained}
                     onChange={(event) => setReasoningEffort(event.target.value)}
                   >
                     <option value="">使用 Codex 默认推理程度</option>
@@ -1153,6 +1166,7 @@ export default function SupervisorSetupDialog() {
                   <select
                     className="supervisor-dialog__input"
                     value={reasoningEffort}
+                    disabled={sessionRetained}
                     onChange={(event) => setReasoningEffort(event.target.value)}
                   >
                     {KIMI_THINKING_OPTIONS.map((option) => (
@@ -1167,6 +1181,7 @@ export default function SupervisorSetupDialog() {
                   <select
                     className="supervisor-dialog__input"
                     value={reasoningEffort}
+                    disabled={sessionRetained}
                     onChange={(event) => setReasoningEffort(event.target.value)}
                   >
                     <option value="">使用 Pi 默认 Thinking 设置</option>
@@ -1229,12 +1244,13 @@ export default function SupervisorSetupDialog() {
                 <div className="supervisor-dialog__label">配置文件</div>
                 <div className="supervisor-dialog__config-actions">
                   <button type="button" className="confirm-dialog__btn" onClick={() => void loadConfigFile()}>
-                    导入配置…
+                    导入到已选终端…
                   </button>
                   <button type="button" className="confirm-dialog__btn" onClick={() => void saveConfigFile()}>
-                    导出配置…
+                    导出单个终端配置…
                   </button>
                 </div>
+                <div className="supervisor-dialog__hint">导入会把任务字段复制到当前已选终端，之后仍分别保存；导出时请只选择一个终端。</div>
               </section>
 
               <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
@@ -1281,7 +1297,7 @@ export default function SupervisorSetupDialog() {
           <button
             type="button"
             className="confirm-dialog__btn confirm-dialog__btn--danger"
-            onClick={supervisor.paused ? closeSupervisorSetup : () => applyConfig(true)}
+            onClick={() => applyConfig(true)}
           >
             {primaryActionLabel}
           </button>
