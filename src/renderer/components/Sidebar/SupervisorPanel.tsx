@@ -51,7 +51,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const resumeSupervisor = useStore((s) => s.resumeSupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
-  const cancelPending = useStore((s) => s.cancelPending);
   const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
@@ -199,30 +198,26 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     pauseSupervisor(`人工暂停待决项：${item.laneLabel}；决策内容已保留`);
   };
 
-  const onCancel = (id: string) => {
+  const openTaskTerminalForDecision = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
-    cancelPending(id, '用户已通过任务终端等其他方式发送信息');
-    setProposalEdits((current) => {
-      const { [id]: _discarded, ...rest } = current;
-      return rest;
-    });
-    if (!item || (item.source !== 'supervisor-route' && item.source !== 'supervisor-important')) return;
+    if (!item) return;
     const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
     if (!lane) return;
-    updateLane(lane.id, {
-      awaitingReview: true,
-      awaitingStopCheck: false,
-      stopConfirmed: false,
-      resumeAfterCancelledDecision: true,
-      autoDecisionLimitReached: false,
-      autoDecisionsUsed: 0,
-    });
-    appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
-      approvalId: item.id,
-      resolution: 'cancelled',
-      proposalKind: item.proposalKind || 'important',
-    });
-    pauseSupervisor('用户取消当前决策并改由其他方式发送信息');
+    const targetWorkspace = workspaces.find((workspace) => workspace.id === lane.workspaceId)
+      || workspaces.find((workspace) => getAllPaneIds(workspace.splitTree).some((candidatePaneId) =>
+        findLeaf(workspace.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.id === lane.surfaceId),
+      ));
+    if (!targetWorkspace) return;
+    const targetPaneId = getAllPaneIds(targetWorkspace.splitTree).find((candidatePaneId) =>
+      findLeaf(targetWorkspace.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.id === lane.surfaceId),
+    );
+    if (!targetPaneId) return;
+    const targetPane = findLeaf(targetWorkspace.splitTree, targetPaneId);
+    const surfaceIndex = targetPane?.surfaces.findIndex((surface) => surface.id === lane.surfaceId) ?? -1;
+    if (surfaceIndex < 0) return;
+    selectWorkspace(targetWorkspace.id);
+    selectSurface(targetWorkspace.id, targetPaneId, surfaceIndex);
+    appendSupervisorLog(lane.id, '等待人工裁决', '请在任务终端发送裁决内容；发送后监督会继续运行');
   };
 
   const resumeAfterHumanReview = (lane: SupervisorLane) => {
@@ -248,22 +243,26 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       return;
     }
 
-    const cancelledDecisionLanes = supervisor.lanes.filter((lane) => (
+    const pendingLaneIds = new Set(supervisor.pendingApprovals.map((item) => item.laneId));
+    const cancelledDecisionLaneIds = new Set(supervisor.lanes.filter((lane) => (
       lane.enabled
       && lane.awaitingReview
       && lane.resumeAfterCancelledDecision
-      && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)
-    ));
+      && !pendingLaneIds.has(lane.id)
+    )).map((lane) => lane.id));
     resumeSupervisor();
-    for (const lane of cancelledDecisionLanes) {
-      if (lane.supervisorSurfaceId) {
-        sendToSurface(
-          lane.supervisorSurfaceId,
-          '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n',
-          true,
-        );
-      }
+    for (const lane of supervisor.lanes) {
+      if (!lane.enabled || !lane.supervisorSurfaceId || pendingLaneIds.has(lane.id)) continue;
+      const message = cancelledDecisionLaneIds.has(lane.id)
+        ? '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n'
+        : '[会话继续] 用户已恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n';
+      sendToSurface(lane.supervisorSurfaceId, message, true);
     }
+  };
+
+  const pauseActiveSession = () => {
+    if (!supervisor.active) return;
+    pauseSupervisor('用户手动暂停监督；现有监督终端与会话上下文已保留');
   };
 
   const restartFromScratch = () => {
@@ -446,11 +445,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           <button type="button" onClick={openSupervisorSession}>打开</button>
           <button type="button" onClick={openSupervisorSetup}>配置</button>
           {supervisor.active && (
-            <button type="button" onClick={() => stopSupervisor()}>停止</button>
+            <>
+              <button type="button" onClick={pauseActiveSession}>暂停监督</button>
+              <button type="button" onClick={() => stopSupervisor()}>停止监督</button>
+            </>
           )}
           {!supervisor.active && supervisor.paused && (
             <button type="button" className="sup-panel__btn-primary" onClick={resumePausedSession}>
-              {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续会话'}
+              {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
             </button>
           )}
           {!supervisor.active && !supervisor.paused && (
@@ -491,7 +493,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             <div className="sup-panel__paused-notice">
               {missingDedicatedSupervisor
                 ? '会话已暂停，但专属监督终端已缺失；请停止后重新配置。'
-                : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续会话”即可恢复。'}
+                : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续监督”即可恢复。'}
             </div>
           )}
           <div className="sup-panel__freedom">
@@ -698,11 +700,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     {a.proposalKind && (
                       <button
                         type="button"
-                        onClick={() => onCancel(a.id)}
-                        title="不发送建议；你已通过任务终端等其他方式发送信息"
+                        onClick={() => openTaskTerminalForDecision(a.id)}
+                        title="切换到对应任务终端；发送的信息将作为人工裁决记录"
                         disabled={!supervisor.active}
                       >
-                        取消
+                        去任务终端裁决
                       </button>
                     )}
                     <button
@@ -746,9 +748,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               配置
             </button>
             {supervisor.active && (
-              <button type="button" onClick={() => stopSupervisor()}>
-                停止
-              </button>
+              <>
+                <button type="button" onClick={pauseActiveSession}>
+                  暂停监督
+                </button>
+                <button type="button" onClick={() => stopSupervisor()}>
+                  停止监督
+                </button>
+              </>
             )}
             {!supervisor.active && supervisor.paused && (
               <button
@@ -756,7 +763,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 className="sup-panel__btn-primary"
                 onClick={resumePausedSession}
               >
-                {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续会话'}
+                {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
               </button>
             )}
             {!supervisor.active && !supervisor.paused && (

@@ -24,6 +24,7 @@ export interface SessionData {
       shell: string;
       cwd?: string; // last reported working dir — restored so new terminals reopen here (issue #20)
       splitTree: any; // SplitNode serialized
+      transientSupervisorWorkspace?: boolean;
       sshProfileId?: string;
     }>;
   }>;
@@ -80,6 +81,10 @@ function isSshWorkspace(workspace: SessionData['windows'][number]['workspaces'][
     || treeHasSshSurface(workspace.splitTree);
 }
 
+function isSupervisorWorkspace(workspace: SessionData['windows'][number]['workspaces'][number]): boolean {
+  return workspace.transientSupervisorWorkspace === true || workspace.title?.trim() === 'AI 监督';
+}
+
 /**
  * AI-supervisor terminals and SSH workspaces own live runtime state, so they
  * must never reach the auto-restored session file.
@@ -89,6 +94,7 @@ export function omitRestartUnsafeWorkspaces(data: SessionData): SessionData {
     ...data,
     windows: data.windows.flatMap((window) => {
       const workspaces = window.workspaces.flatMap((workspace) => {
+        if (isSupervisorWorkspace(workspace)) return [];
         if (isSshWorkspace(workspace)) return [];
         const splitTree = stripTransientSupervisorSurfaces(workspace.splitTree);
         return splitTree ? [{ ...workspace, splitTree }] : [];

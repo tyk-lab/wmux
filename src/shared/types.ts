@@ -166,6 +166,8 @@ export interface WorkspaceInfo {
   statusOverride?: 'running' | 'idle';
   browserUrl?: string;
   browserWidth?: number;
+  /** Runtime-owned AI-supervisor workspace; excluded from automatic restart restore. */
+  transientSupervisorWorkspace?: boolean;
   /** Saved preset reference; credentials themselves are kept out of session files. */
   sshProfileId?: string;
   sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -296,6 +298,7 @@ export interface SavedSession {
     cwd: string;
     splitTree: SplitNode;
     browserUrl?: string;
+    transientSupervisorWorkspace?: boolean;
     sshProfileId?: string;
   }>;
   sidebarWidth: number;

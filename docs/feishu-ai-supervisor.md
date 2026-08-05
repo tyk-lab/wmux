@@ -9,7 +9,7 @@ wmux 使用飞书长连接，不需要给本机配置公网域名或回调地址
 - 白名单用户可在与机器人的单聊中列出已有终端、开启或停止 AI 监督，并向指定终端发送任务；命令回复返回该单聊。
 - 日常控制无需记忆命令：发送“wmux帮助”即可打开菜单，按卡片选择终端并填写任务或停止条件。
 - 审计群实时接收任务、生命周期、监督投递、裁决、授权和会话结束等脱敏审计事件；终端屏幕全文不会外发。
-- 当监督 AI 提交“需要人工决定”的建议时，最近与机器人联系的白名单用户会在单聊中收到带“批准 / 拒绝 / 停止监督”按钮的飞书卡片。
+- 当监督 AI 提交“需要人工决定”的建议时，配置的决策单聊（未配置时为最近联系机器人的白名单用户单聊）会收到带“批准并发送任务 / 暂停监督 / 停止监督”按钮的飞书卡片。
 - 在飞书点击卡片或发送固定命令后，结果同步回 wmux；远程操作会写入项目的本地审计记录。
 - 仅指定群和 Open ID 白名单内的成员能操作；任务只会发送到 `LIST` 返回的已有终端，不会创建新终端。
 
@@ -52,11 +52,12 @@ wmux 本地                 → 实际创建监督会话和监督终端
 | `WMUX_FEISHU_APP_SECRET` | 同页的 App Secret；仅保存到本机环境变量 |
 | `WMUX_FEISHU_CHAT_ID` | **审计目标群**的 `chat_id`，通常以 `oc_` 开头；可在开放平台 API 调试台的群信息返回值或事件日志中取得 |
 | `WMUX_FEISHU_CONTROL_CHAT_ID` | 可选的**独立控制群** `chat_id`；未设置时只允许单聊控制，推荐保持为空 |
+| `WMUX_FEISHU_DECISION_CHAT_ID` | 推荐填写的**人工决策单聊** `chat_id`；设置后待决卡片可在 wmux 启动后直接推送，无需先发送“wmux帮助”激活单聊 |
 | `WMUX_FEISHU_ALLOWED_OPEN_IDS` | 允许操作者的 `open_id`，多个 ID 用英文逗号分隔；可在开放平台“日志检索 → 事件日志检索”的消息事件中查看 `sender.sender_id.open_id` |
 
 首次查 Open ID 时，可以先填一个占位 `ou_placeholder` 启动 wmux；飞书开发者后台仍会记录事件，只是该用户的命令会被 wmux 忽略。取得真实 Open ID 后再替换并重启 wmux。
 
-`WMUX_FEISHU_CHAT_ID` 必须填写审计**群**的 ID，不能填写与机器人的单聊会话 ID。单聊控制不需要单独配置会话 ID，只需把操作者的 Open ID 放入白名单。
+`WMUX_FEISHU_CHAT_ID` 必须填写审计**群**的 ID，不能填写与机器人的单聊会话 ID。人工决策单聊可通过 `WMUX_FEISHU_DECISION_CHAT_ID` 单独配置；单聊控制权限仍由操作者 Open ID 白名单决定。
 
 ## 3. 设置 Windows 环境变量
 
@@ -70,6 +71,7 @@ wmux 启动时会自动读取项目工作目录或 `wmux.exe` 同目录的 `.env
 WMUX_FEISHU_APP_ID=cli_xxx
 WMUX_FEISHU_APP_SECRET=你的 App Secret
 WMUX_FEISHU_CHAT_ID=oc_xxx
+WMUX_FEISHU_DECISION_CHAT_ID=oc_xxx
 # 仅需要独立控制群时才填写；默认留空，只用单聊控制
 # WMUX_FEISHU_CONTROL_CHAT_ID=oc_xxx
 WMUX_FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy
@@ -83,6 +85,7 @@ WMUX_FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy
 $env:WMUX_FEISHU_APP_ID = 'cli_xxx'
 $env:WMUX_FEISHU_APP_SECRET = '你的 App Secret'
 $env:WMUX_FEISHU_CHAT_ID = 'oc_xxx'
+$env:WMUX_FEISHU_DECISION_CHAT_ID = 'oc_xxx'
 $env:WMUX_FEISHU_ALLOWED_OPEN_IDS = 'ou_xxx,ou_yyy'
 npm run dev
 ```
@@ -95,6 +98,7 @@ npm run dev
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_APP_ID', 'cli_xxx', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_APP_SECRET', '你的 App Secret', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_CHAT_ID', 'oc_xxx', 'User')
+[Environment]::SetEnvironmentVariable('WMUX_FEISHU_DECISION_CHAT_ID', 'oc_xxx', 'User')
 # 仅需要独立控制群时才执行：
 # [Environment]::SetEnvironmentVariable('WMUX_FEISHU_CONTROL_CHAT_ID', 'oc_xxx', 'User')
 [Environment]::SetEnvironmentVariable('WMUX_FEISHU_ALLOWED_OPEN_IDS', 'ou_xxx,ou_yyy', 'User')
@@ -104,7 +108,9 @@ npm run dev
 
 ## 4. 启动 wmux、测试并操作
 
-默认请在与机器人的单聊中发送“**wmux帮助**”（也支持 `WMUX HELP` 或“帮助”）。机器人会显示**查看状态、启动监督、发送任务、停止监督**菜单；点击后选择终端、填写表单即可操作，无需复制 `surfaceId` 或输入长命令。普通监督审计摘要发送到 `WMUX_FEISHU_CHAT_ID` 指定群，待决卡片和决策结果只发送到最近联系机器人的白名单用户单聊。wmux 每次启动后若尚无有效单聊，待决消息会暂存在内存，直到首个白名单用户发来单聊消息。仅在设置了 `WMUX_FEISHU_CONTROL_CHAT_ID` 后，才可在该独立控制群发送高级非决策文本命令。
+默认请在与机器人的单聊中发送“**wmux帮助**”（也支持 `WMUX HELP` 或“帮助”）。机器人会显示**查看状态、启动监督、发送任务、停止监督**菜单；点击后选择终端、填写表单即可操作，无需复制 `surfaceId` 或输入长命令。普通监督审计摘要发送到 `WMUX_FEISHU_CHAT_ID` 指定群，待决卡片和决策结果只发送到白名单用户单聊。推荐设置 `WMUX_FEISHU_DECISION_CHAT_ID`，使 wmux 每次启动后都能直接推送人工决策；未设置时使用最近联系机器人的白名单单聊，并在首次有效单聊前暂存待决消息。仅在设置了 `WMUX_FEISHU_CONTROL_CHAT_ID` 后，才可在该独立控制群发送高级非决策文本命令。
+
+人工决策卡提供“批准并发送任务 / 暂停监督 / 停止监督”。暂停只保留当前会话和待决项，不会把它记为拒绝；继续监督后原卡仍可处理。若用户改为直接向对应任务终端发送信息，该信息本身会记为已完成的人工裁决，待决卡同步更新，监督保持运行。
 
 ### 日常卡片操作（推荐）
 
@@ -182,10 +188,10 @@ session: current
 
 ## 5. 处理人工决策
 
-当监督 AI 使用 `needs-human` 提交重要建议时，wmux 会向最近联系机器人的白名单用户单聊发送决策卡片；不会回退发送到审计群。若 wmux 启动后还没有有效单聊，卡片会暂存在内存，直到白名单用户首次联系机器人。若 AI 提供的备选中包含“方案 A / 方案 B”等明确选项，卡片会提供下拉选择；再填写“后续任务”并点击：
+当监督 AI 使用 `needs-human` 提交重要建议时，wmux 会向 `WMUX_FEISHU_DECISION_CHAT_ID` 配置的单聊发送决策卡片；未配置时使用最近联系机器人的白名单用户单聊，且在首次有效单聊前暂存卡片。决策卡不会回退发送到审计群。若 AI 提供的备选中包含“方案 A / 方案 B”等明确选项，卡片会提供下拉选择；再填写“后续任务”并点击：
 
 - **批准并发送任务**：后续任务必填；wmux 会将 AI 建议和填写的后续任务一起发送给相应工作终端。
-- **拒绝**：不发送建议，通知监督 AI 继续基于当前路线监督。
+- **暂停监督**：保留当前会话、监督终端和待决项；继续监督后仍可使用原决策卡。
 - **停止监督**：停止当前监督会话。
 
 也可以使用文本命令：
@@ -197,7 +203,7 @@ action: approve
 task: 按当前路线继续，完成测试后汇报结果
 ```
 
-`action` 仅支持 `approve`、`reject`、`stop`。`approve` 必须带 `task`，作为后续任务发送到被监督终端；`reject` 和 `stop` 不需要 `task`。待决项超过 24 小时、已被处理，或监督会话已经停止时，wmux 会拒绝执行旧操作。
+`action` 支持 `approve`、`pause`、`stop`，并为兼容旧文本命令保留 `reject`。`approve` 必须带 `task`，作为后续任务发送到被监督终端；其他动作不需要 `task`。待决项超过 24 小时、已被处理，或监督会话已经停止时，wmux 会拒绝执行旧操作。
 
 ## 6. 端到端测试：任务发布与人工决策
 
@@ -257,7 +263,7 @@ action: approve
 task: 选择方案 A；不要改文件，只确认已收到。
 ```
 
-也可分别点击**拒绝**（不转发任务、监督继续）和**停止监督**（结束会话）来测试对应分支；每个待决项只能处理一次。
+也可分别点击**暂停监督**（保留待决项和监督上下文）和**停止监督**（结束会话）来测试对应分支。暂停后原待决项仍可继续处理；批准、直接向任务终端发送信息或停止后，该待决项才会结束。
 
 ### 6.4 收尾与验收清单
 
@@ -297,12 +303,12 @@ session: current
 | 现象 | 原因 | 处理方式 |
 | --- | --- | --- |
 | 单聊发送 `WMUX SUPERVISOR LIST` 没有回复，日志出现 `dm_disabled` | 旧进程只允许群聊，或仍在使用旧版本 | 使用支持单聊白名单的版本，确认发送者 Open ID 已加入 `WMUX_FEISHU_ALLOWED_OPEN_IDS`，然后重启 wmux。 |
-| 单聊能收到回复，但审计消息没有到预期位置 | `WMUX_FEISHU_CHAT_ID` 填成了单聊 ID，或修改环境变量后没有重启 | 将它设置为实际审计群的 `oc_...` ID；单聊不配置 chat ID；完整重启 wmux 后重测。 |
+| 单聊能收到回复，但审计消息没有到预期位置 | `WMUX_FEISHU_CHAT_ID` 填成了单聊 ID，或修改环境变量后没有重启 | 将 `WMUX_FEISHU_CHAT_ID` 设置为实际审计群的 `oc_...` ID；人工决策单聊 ID 单独填写到 `WMUX_FEISHU_DECISION_CHAT_ID`；完整重启 wmux 后重测。 |
 | 日志有 `[ws] ws client ready`，但命令仍无结果 | 这只表示长连接已建立，不代表事件、权限和访问策略均正确 | 检查 `im.message.receive_v1` 已发布、消息权限已开通，并检查单聊白名单或审计群 ID。 |
 | 本地监督终端提示 `TERM is set to "dumb"`，Codex 拒绝启动交互界面 | 旧 Electron/终端进程继承了 `TERM=dumb` | 使用包含 TERM 修复的 wmux 并重启；停止旧监督会话后新建会话。不要在旧提示中输入 `y`，该会话无法靠确认恢复。 |
 
 ## 8. 人工审批如何流转
 
-非决策类监督审计事件会按发生顺序实时推送到审计群；为避免飞书群机器人限流，wmux 会以约 220 毫秒的最小间隔顺序发送。路径、凭据字段和常见令牌会脱敏，终端屏幕全文不会发送。监督 AI 提交 `needs-human` 时，最近有效的白名单用户单聊会收到可批准、拒绝或停止的审批卡片；卡片与处理结果都不会发送到审计群，并会同步回 wmux 的当前监督会话。
+非决策类监督审计事件会按发生顺序实时推送到审计群；为避免飞书群机器人限流，wmux 会以约 220 毫秒的最小间隔顺序发送。路径、凭据字段和常见令牌会脱敏，终端屏幕全文不会发送。监督 AI 提交 `needs-human` 时，配置的决策单聊（或最近有效的白名单用户单聊）会收到可批准、暂停或停止的审批卡片；卡片与处理结果都不会发送到审计群，并会同步回 wmux 的当前监督会话。
 
 飞书任务输入受 Open ID 白名单、单聊/独立控制群访问策略和当前终端 ID 校验保护；由于 `SEND` 与“批准并发送任务”会实际向终端输入并提交内容，请仅向可信用户授予白名单权限。AI 自主监督仍不会绕过关键风险限制。

@@ -290,6 +290,7 @@ describe('supervisor isolation', () => {
       sessionId,
     });
     expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(store.getState().supervisor.lanes[0].supervisorSurfaceId).toBe('supervisor-a');
     expect(store.getState().supervisor.log[0]).toMatchObject({ action: '暂停', detail: '人工选择暂停' });
 
     store.getState().resumeSupervisor();
@@ -301,6 +302,7 @@ describe('supervisor isolation', () => {
       sessionId,
     });
     expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(store.getState().supervisor.lanes[0].supervisorSurfaceId).toBe('supervisor-a');
     expect(store.getState().supervisor.log[0]).toMatchObject({ action: '继续', detail: '继续原监督会话' });
   });
 
@@ -325,6 +327,36 @@ describe('supervisor isolation', () => {
       detail: '用户已通过其他方式发送信息',
     });
     expect(store.getState().supervisor.log.some((entry) => entry.action === '拒绝')).toBe(false);
+  });
+
+  it('treats direct task input as a resolved human decision without pausing supervision', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane({ awaitingReview: true, autoDecisionLimitReached: true, autoDecisionsUsed: 3 })]);
+    store.getState().startSupervisor();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a',
+      surfaceId: 'worker-a' as any,
+      laneLabel: 'Auth worker',
+      text: '等待人工确认',
+      source: 'supervisor-important',
+      proposalKind: 'important',
+    });
+
+    const resolved = store.getState().resolvePendingWithManualTask('lane-a', '使用现有接口继续并补充测试');
+
+    expect(resolved).toHaveLength(1);
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false, pendingApprovals: [] });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: false,
+      resumeAfterCancelledDecision: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+      currentTask: '使用现有接口继续并补充测试',
+    });
+    expect(store.getState().supervisor.log[0]).toMatchObject({
+      action: '人工裁决',
+      detail: '使用现有接口继续并补充测试',
+    });
   });
 
   it('resumes only the lane whose decision was cancelled by alternate input', () => {
@@ -425,9 +457,9 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('pi');
   });
 
-  it('uses GPT-5.6 Terra and medium thinking effort as the default Pi settings', () => {
+  it('uses Kimi K3 256k with medium thinking as the default Pi settings', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.supervisorModel).toBe('openai-codex/gpt-5.6-terra');
+    expect(session.supervisorModel).toBe('kimi-coding/k3-256k');
     expect(session.supervisorReasoningEffort).toBe('medium');
   });
 
@@ -622,6 +654,7 @@ describe('supervisor isolation', () => {
           { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
           { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
           { ts: 7, type: 'supervisor.proposal.resolved', payload: { resolution: 'cancelled', proposalKind: 'important' } },
+          { ts: 8, type: 'supervisor.proposal.resolved', payload: { resolution: 'handled-manually', proposalKind: 'important', text: '直接发送的裁决内容' } },
         ],
       }],
     });
@@ -631,6 +664,8 @@ describe('supervisor isolation', () => {
     expect(text).toContain('已废除旧上下文');
     expect(text).toContain('人工裁决：已批准（路线变更）');
     expect(text).toContain('人工裁决：已取消（用户已通过其他方式发送信息）（重要建议）');
+    expect(text).toContain('人工裁决：已由用户自行处理（重要建议）');
+    expect(text).toContain('直接发送的裁决内容');
     expect(text).toContain('人工已审阅');
     expect(text).toContain('D:\\\\repo\\\\.wmux\\\\supervisor');
   });

@@ -398,4 +398,25 @@ describe('supervisor decision bridge', () => {
     expect(writes).not.toHaveBeenCalled();
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
   });
+
+  it('pauses from a Feishu decision while retaining the approval and still allows stop', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      reason: '需要人工决定',
+      impact: '影响当前实现',
+      alternatives: '继续或停止',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'pause', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: expect.stringContaining('已暂停') });
+    expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: true });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+
+    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'stop', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: '已停止当前 AI 监督。' });
+    expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: false, pendingApprovals: [] });
+  });
 });

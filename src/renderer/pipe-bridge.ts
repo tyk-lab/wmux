@@ -518,7 +518,12 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
 
   let supervisorWorkspace = store.workspaces.find((workspace) => workspace.id === store.supervisor.supervisorWorkspaceId);
   if (!supervisorWorkspace) {
-    const workspaceId = store.createWorkspace({ title: SUPERVISOR_WORKSPACE_TITLE, pinned: true, splitTree: createLeaf(undefined, 'supervisor') });
+    const workspaceId = store.createWorkspace({
+      title: SUPERVISOR_WORKSPACE_TITLE,
+      pinned: true,
+      transientSupervisorWorkspace: true,
+      splitTree: createLeaf(undefined, 'supervisor'),
+    });
     store.patchSupervisor({ supervisorWorkspaceId: workspaceId });
     supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
   }
@@ -602,29 +607,55 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): { ok: boolean; mess
   sendToSurface(terminal.surfaceId, task, true);
   const session = useStore.getState().supervisor;
   const lane = session.lanes.find((item) => item.surfaceId === terminal.surfaceId);
-  if (lane) store.updateLane(lane.id, { currentTask: task });
+  let manuallyResolved = false;
+  if (lane) {
+    const resolved = store.resolvePendingWithManualTask(lane.id, task);
+    manuallyResolved = resolved.length > 0;
+    for (const approval of resolved) {
+      if (approval.source !== 'supervisor-route' && approval.source !== 'supervisor-important') continue;
+      remoteAudit(session, lane, 'supervisor.proposal.resolved', {
+        approvalId: approval.id,
+        resolution: 'handled-manually',
+        proposalKind: approval.proposalKind || 'important',
+        text: task,
+        actor: params.actor || 'unknown',
+      });
+    }
+    store.updateLane(lane.id, { currentTask: task });
+  }
   remoteAudit(session, lane, 'supervisor.remote-command', { action: 'send-task', terminal: terminal.surfaceId, actor: params.actor || 'unknown', task });
-  return { ok: true, message: `已向 ${terminal.label} 发送任务。` };
+  return { ok: true, message: manuallyResolved
+    ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
+    : `已向 ${terminal.label} 发送任务。` };
 }
 
-function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'reject' | 'stop', task?: string, actor?: string): { ok: boolean; message: string; error?: string } {
+function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'reject' | 'pause' | 'stop', task?: string, actor?: string): { ok: boolean; message: string; error?: string } {
   const store = useStore.getState();
   const session = store.supervisor;
-  if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
-  if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
   const approval = session.pendingApprovals.find((item) => item.id === approvalId);
   if (!approval) return { ok: false, error: '该待决项不存在、已过期或已处理。', message: '' };
   if (Date.now() - approval.createdAt > 24 * 60 * 60 * 1000) {
     store.rejectPending(approvalId);
     return { ok: false, error: '该待决项已超过 24 小时，已作废。', message: '' };
   }
+  if (decision === 'pause') {
+    if (session.paused) return { ok: true, message: '当前 AI 监督已经暂停，待决项仍保留。' };
+    if (!session.active) return { ok: false, error: '当前监督会话已停止，不能暂停旧待决项。', message: '' };
+    const lane = session.lanes.find((item) => item.id === approval.laneId);
+    store.pauseSupervisor(`飞书人工暂停待决项：${approval.laneLabel}；决策内容已保留`);
+    remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
+    return { ok: true, message: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' };
+  }
   const lane = session.lanes.find((item) => item.id === approval.laneId);
   if (decision === 'stop') {
+    if (!session.active && !session.paused) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
     store.rejectPending(approvalId);
     store.stopSupervisor('飞书人工决定停止监督');
     remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
     return { ok: true, message: '已停止当前 AI 监督。' };
   }
+  if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
+  if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
   const followUpTask = task?.trim() || '';
   if (decision === 'approve' && !followUpTask) return { ok: false, error: '批准时需要填写后续任务。', message: '' };
   const delivery = [approval.text.trim(), followUpTask].filter(Boolean).join('\n\n');
@@ -1352,8 +1383,8 @@ export function initPipeBridge(): void {
     }
     if (action === 'decide') {
       const decision = String(params?.decision || '');
-      if (!['approve', 'reject', 'stop'].includes(decision)) return { ok: false, error: '无效的人工决策。', message: '' };
-      return decideRemoteSupervisor(String(params?.approvalId || ''), decision as 'approve' | 'reject' | 'stop', String(params?.task || ''), String(params?.actor || 'unknown'));
+      if (!['approve', 'reject', 'pause', 'stop'].includes(decision)) return { ok: false, error: '无效的人工决策。', message: '' };
+      return decideRemoteSupervisor(String(params?.approvalId || ''), decision as 'approve' | 'reject' | 'pause' | 'stop', String(params?.task || ''), String(params?.actor || 'unknown'));
     }
     return { ok: false, error: '不支持的监督控制动作。', message: '' };
   };

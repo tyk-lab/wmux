@@ -21,6 +21,7 @@ interface MessageEvent {
 
 interface ChannelHandlers {
   message: (event: MessageEvent) => void;
+  cardAction: (event: any) => void;
 }
 
 function approvalRecord(approvalId: string): SupervisorRecord {
@@ -41,6 +42,7 @@ function approvalRecord(approvalId: string): SupervisorRecord {
 describe('飞书人工决策单聊路由', () => {
   let handlers: ChannelHandlers;
   let send: ReturnType<typeof vi.fn>;
+  let updateCard: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.stubEnv('WMUX_FEISHU_APP_ID', 'cli-test');
@@ -48,14 +50,16 @@ describe('飞书人工决策单聊路由', () => {
     vi.stubEnv('WMUX_FEISHU_CHAT_ID', 'oc-audit');
     vi.stubEnv('WMUX_FEISHU_ALLOWED_OPEN_IDS', 'ou-allowed');
     vi.stubEnv('WMUX_FEISHU_CONTROL_CHAT_ID', '');
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', '');
 
     let messageSequence = 0;
     send = vi.fn(async () => ({ messageId: `om-${++messageSequence}` }));
+    updateCard = vi.fn(async () => undefined);
     larkMocks.createLarkChannel.mockReturnValue({
       on: vi.fn((registered: ChannelHandlers) => { handlers = registered; }),
       connect: vi.fn(async () => undefined),
       send,
-      updateCard: vi.fn(async () => undefined),
+      updateCard,
     });
   });
 
@@ -85,6 +89,46 @@ describe('飞书人工决策单聊路由', () => {
       expect(approvalCall?.[0]).toBe('oc-dm-a');
     });
     expect(send.mock.calls.some(([chatId]) => chatId === 'oc-audit')).toBe(false);
+  });
+
+  it('配置单聊会话后无需先发送帮助即可主动推送审批', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+
+    service.onRecord(approvalRecord('appr-proactive'));
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe('oc-dm-configured');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('待人工决策');
+  });
+
+  it('暂停审批会保留原卡和待决项供继续后处理', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async () => ({ ok: true, message: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    service.onRecord(approvalRecord('appr-pause'));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId: 'om-1',
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_decide_pause',
+        value: { wmux_action: 'decide', approval_id: 'appr-pause', decision: 'pause' },
+      },
+      raw: {},
+    });
+
+    await vi.waitFor(() => expect(control).toHaveBeenCalledTimes(1));
+    expect(control.mock.calls[0][0]).toMatchObject({
+      action: 'decide', approvalId: 'appr-pause', decision: 'pause',
+    });
+    expect(updateCard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' });
   });
 
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {

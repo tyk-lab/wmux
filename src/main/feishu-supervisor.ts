@@ -7,8 +7,9 @@ export type FeishuSupervisorCommand =
   | { action: 'list' }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string }
+  | { action: 'toggle-pause' }
   | { action: 'stop' }
-  | { action: 'decide'; approvalId: string; decision: 'approve' | 'reject' | 'stop'; task?: string };
+  | { action: 'decide'; approvalId: string; decision: 'approve' | 'reject' | 'pause' | 'stop'; task?: string };
 
 export interface FeishuSupervisorControl {
   (command: FeishuSupervisorCommand, actor: { openId: string; source: 'text' | 'card' }): Promise<unknown>;
@@ -19,6 +20,7 @@ interface FeishuConfig {
   appSecret: string;
   chatId: string;
   controlChatId?: string;
+  decisionChatId?: string;
   allowedOpenIds: Set<string>;
 }
 
@@ -52,7 +54,7 @@ export function isFeishuApprovalCardContext(
 
 const COMMAND_PREFIX = 'WMUX SUPERVISOR ';
 const MAX_COMMAND_VALUE_LENGTH = 4000;
-const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
+const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_DECISION_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
 
 type FeishuEnvKey = typeof FEISHU_ENV_KEYS[number];
 
@@ -65,7 +67,7 @@ function applyFeishuEnv(target: NodeJS.ProcessEnv, values: Partial<Record<Feishu
 export function parseFeishuDotEnv(content: string): Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } {
   const values: Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } = {};
   for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE))\s*=\s*(.*?)\s*$/.exec(rawLine);
+    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE))\s*=\s*(.*?)\s*$/.exec(rawLine);
     if (!match) continue;
     const value = match[2].replace(/^(['"])(.*)\1$/, '$2').trim();
     if (value) values[match[1] as keyof typeof values] = value;
@@ -78,6 +80,7 @@ export function parseLegacyFeishuEnv(content: string): Partial<Record<FeishuEnvK
   const labels: Record<string, FeishuEnvKey> = {
     'App ID': 'WMUX_FEISHU_APP_ID',
     'App Secret': 'WMUX_FEISHU_APP_SECRET',
+    '单聊会话 ID': 'WMUX_FEISHU_DECISION_CHAT_ID',
     '群聊会话 ID': 'WMUX_FEISHU_CHAT_ID',
     '用户 ID': 'WMUX_FEISHU_ALLOWED_OPEN_IDS',
   };
@@ -133,9 +136,10 @@ function envConfig(env = process.env): FeishuConfig | null {
   const appSecret = env.WMUX_FEISHU_APP_SECRET?.trim();
   const chatId = env.WMUX_FEISHU_CHAT_ID?.trim();
   const controlChatId = env.WMUX_FEISHU_CONTROL_CHAT_ID?.trim();
+  const decisionChatId = env.WMUX_FEISHU_DECISION_CHAT_ID?.trim();
   const allowedOpenIds = new Set((env.WMUX_FEISHU_ALLOWED_OPEN_IDS || '').split(',').map((item) => item.trim()).filter(Boolean));
   if (!appId || !appSecret || !chatId || allowedOpenIds.size === 0) return null;
-  return { appId, appSecret, chatId, controlChatId, allowedOpenIds };
+  return { appId, appSecret, chatId, controlChatId, decisionChatId, allowedOpenIds };
 }
 
 function fieldMap(lines: string[]): Record<string, string> {
@@ -175,11 +179,11 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
   if (verb === 'DECIDE') {
     if (!hasOnlyFields(fields, ['approval_id', 'action', 'task'])) return { error: 'DECIDE 包含不支持的字段。' };
     const decision = fields.action?.toLowerCase();
-    if (!fields.approval_id || !['approve', 'reject', 'stop'].includes(decision || '')) {
-      return { error: 'DECIDE 需要 approval_id 和 action: approve|reject|stop。' };
+    if (!fields.approval_id || !['approve', 'reject', 'pause', 'stop'].includes(decision || '')) {
+      return { error: 'DECIDE 需要 approval_id 和 action: approve|reject|pause|stop。' };
     }
     if (decision === 'approve' && !fields.task) return { error: '批准时需要 task，作为后续任务发送到被监督终端。' };
-    return { action: 'decide', approvalId: fields.approval_id, decision: decision as 'approve' | 'reject' | 'stop', task: fields.task || undefined };
+    return { action: 'decide', approvalId: fields.approval_id, decision: decision as 'approve' | 'reject' | 'pause' | 'stop', task: fields.task || undefined };
   }
   if (verb !== 'START') return { error: '支持 LIST、START、SEND、STOP、DECIDE。' };
   if (!hasOnlyFields(fields, ['terminals', 'stop_when', 'stop_when_kind', 'task_goal', 'task_description', 'preconditions', 'plan_file', 'autonomous', 'supervisor_launch_cmd', 'supervisor_model', 'supervisor_reasoning'])) {
@@ -301,7 +305,7 @@ export function resolveFeishuCardAction(value: unknown, name?: string): Resolved
   const rawValue = isObject(value) ? value : {};
   if (name === 'wmux_form_start') return { ...rawValue, wmux_action: 'form_start' };
   if (name === 'wmux_form_send') return { ...rawValue, wmux_action: 'form_send' };
-  const decision = /^wmux_decide_(approve|reject|stop)$/.exec(name || '')?.[1];
+  const decision = /^wmux_decide_(approve|reject|pause|stop)$/.exec(name || '')?.[1];
   return decision ? { ...rawValue, wmux_action: 'decide', decision } : rawValue;
 }
 
@@ -320,7 +324,8 @@ export function parseFeishuCardFormValues(raw: unknown): Record<string, string> 
 }
 
 /** The direct-chat entrypoint for all routine operations. */
-export function buildSupervisorControlMenuCard(): object {
+export function buildSupervisorControlMenuCard(state?: { active: boolean; paused: boolean }): object {
+  const pauseLabel = state?.paused ? '继续监督' : state?.active ? '暂停监督' : '暂停/继续监督';
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: 'wmux · AI 监督控制' }, template: 'blue' },
@@ -331,6 +336,11 @@ export function buildSupervisorControlMenuCard(): object {
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'status' }, '查看状态')] },
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'start' }, '启动监督', 'primary')] },
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')] },
+        ],
+      },
+      {
+        tag: 'column_set', flex_mode: 'none', columns: [
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'toggle-pause' }, pauseLabel)] },
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'stop' }, '停止监督', 'danger')] },
         ],
       },
@@ -533,7 +543,7 @@ export function buildApprovalCard(record: SupervisorRecord): object {
     {
       tag: 'column_set', flex_mode: 'none', columns: [
         { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', '批准并发送任务', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_reject', '拒绝', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'reject' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_pause', '暂停监督', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'pause' })] },
         { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_stop', '停止监督', 'danger', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'stop' })] },
       ],
     },
@@ -554,8 +564,8 @@ export class FeishuSupervisorService {
   private readonly approvalCards = new Map<string, ApprovalCard>();
   /** Only cards sent to a control chat may open routine control forms. */
   private readonly controlCards = new Map<string, string>();
-  /** The most recent allowlisted DM becomes the recipient for future decisions. */
-  private decisionChatId: string | undefined;
+  /** Configured decision DM, falling back to the most recent allowlisted DM. */
+  private decisionChatId: string | undefined = this.config?.decisionChatId;
   private readonly pendingDecisionMessages: PendingDecisionMessage[] = [];
   private decisionQueue: Promise<void> = Promise.resolve();
   private auditQueue: Promise<void> = Promise.resolve();
@@ -645,7 +655,7 @@ export class FeishuSupervisorService {
     if (this.seen.has(messageId)) return;
     this.remember(messageId);
     if (isFeishuSupervisorHelp(content)) {
-      await this.sendControlCard(buildSupervisorControlMenuCard(), chatId);
+      await this.sendCurrentControlMenu(chatId, openId);
       return;
     }
     const command = parseFeishuSupervisorCommand(content);
@@ -679,7 +689,7 @@ export class FeishuSupervisorService {
     if (
       value?.wmux_action !== 'decide'
       || !value.approval_id
-      || !['approve', 'reject', 'stop'].includes(value.decision || '')
+      || !['approve', 'reject', 'pause', 'stop'].includes(value.decision || '')
       || !isFeishuApprovalCardContext(card, event.messageId, event.chatId)
     ) return;
     this.decisionChatId = event.chatId;
@@ -687,7 +697,7 @@ export class FeishuSupervisorService {
     if (this.seen.has(dedupeKey)) return;
     this.remember(dedupeKey);
     const result = await this.control({
-      action: 'decide', approvalId: value.approval_id, decision: value.decision as 'approve' | 'reject' | 'stop', task: this.cardFollowUpTask(event),
+      action: 'decide', approvalId: value.approval_id, decision: value.decision as 'approve' | 'reject' | 'pause' | 'stop', task: this.cardFollowUpTask(event),
     }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
     const failed = !!(result && typeof result === 'object' && (result as { error?: string }).error);
     if (failed) {
@@ -695,6 +705,10 @@ export class FeishuSupervisorService {
       // Do not let the click dedupe prevent the user from submitting again.
       this.seen.delete(dedupeKey);
       await this.sendText(`人工决策未执行：${summary(result)}`, event.chatId);
+      return;
+    }
+    if (value.decision === 'pause') {
+      await this.sendText(summary(result), event.chatId);
       return;
     }
     if (card && this.channel) {
@@ -750,11 +764,18 @@ export class FeishuSupervisorService {
   }
 
   private async handleControlMenu(event: Lark.CardActionEvent, flow: string): Promise<void> {
+    if (flow === 'toggle-pause') {
+      const result = await this.control({ action: 'toggle-pause' }, { openId: event.operator.openId, source: 'card' })
+        .catch((err) => ({ error: String(err?.message || err) }));
+      await this.sendText(summary(result), event.chatId);
+      await this.sendCurrentControlMenu(event.chatId, event.operator.openId);
+      return;
+    }
     if (flow === 'stop') {
       const result = await this.control({ action: 'stop' }, { openId: event.operator.openId, source: 'card' })
         .catch((err) => ({ error: String(err?.message || err) }));
       await this.sendText(summary(result), event.chatId);
-      await this.sendControlCard(buildSupervisorControlMenuCard(), event.chatId);
+      await this.sendCurrentControlMenu(event.chatId, event.operator.openId);
       return;
     }
     const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
@@ -782,7 +803,16 @@ export class FeishuSupervisorService {
       return;
     }
     await this.sendText(formatFeishuSupervisorResponse({ action: 'list' }, result), event.chatId);
-    await this.sendControlCard(buildSupervisorControlMenuCard(), event.chatId);
+    await this.sendControlCard(buildSupervisorControlMenuCard({ active: list.active, paused: list.paused }), event.chatId);
+  }
+
+  private async sendCurrentControlMenu(chatId: string, openId: string): Promise<void> {
+    const result = await this.control({ action: 'list' }, { openId, source: 'card' })
+      .catch(() => null);
+    const list = parseListResult(result);
+    await this.sendControlCard(buildSupervisorControlMenuCard(list
+      ? { active: list.active, paused: list.paused }
+      : undefined), chatId);
   }
 
   private cardFormValues(event: Lark.CardActionEvent): Record<string, string> {
@@ -905,7 +935,7 @@ export class FeishuSupervisorService {
       await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
         'wmux AI 监督：人工决策已处理',
         `结果：${resolution}`,
-        resolution === 'approved',
+        resolution === 'approved' || resolution === 'handled-manually',
       ));
       return true;
     } catch {

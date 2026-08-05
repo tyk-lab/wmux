@@ -482,21 +482,21 @@ function queueSupervisorDelivery(
   appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
 }
 
-/** Direct worker input cancels proposals that the user has already answered another way. */
-function cancelPendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane): boolean {
+/** Direct worker input is the human decision and keeps the supervision session running. */
+function resolvePendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane, task: string): boolean {
   const store = useStore.getState();
-  const pending = store.supervisor.pendingApprovals.filter((item) => item.laneId === lane.id);
-  for (const item of pending) {
-    store.cancelPending(item.id, '用户已在任务终端通过其他方式发送信息');
+  const resolved = store.resolvePendingWithManualTask(lane.id, task);
+  for (const item of resolved) {
     if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
       appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
         approvalId: item.id,
-        resolution: 'cancelled',
+        resolution: 'handled-manually',
         proposalKind: item.proposalKind || 'important',
+        text: task,
       });
     }
   }
-  return pending.length > 0;
+  return resolved.length > 0;
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -512,13 +512,13 @@ function handleSupervisorHookEvent(event: any): void {
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
-    const cancelledDecision = cancelPendingApprovalsForManualTask(session, auditLane);
+    const manuallyResolved = resolvePendingApprovalsForManualTask(session, auditLane, task);
     store.updateLane(lane.id, {
-      awaitingReview: cancelledDecision || !!lane.autoDecisionLimitReached,
-      ...(cancelledDecision ? {
+      awaitingReview: manuallyResolved ? false : !!lane.autoDecisionLimitReached,
+      ...(manuallyResolved ? {
         awaitingStopCheck: false,
         stopConfirmed: false,
-        resumeAfterCancelledDecision: true,
+        resumeAfterCancelledDecision: false,
         autoDecisionLimitReached: false,
         autoDecisionsUsed: 0,
       } : {}),
@@ -529,7 +529,7 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    if (!cancelledDecision && !lane.autoDecisionLimitReached) {
+    if (manuallyResolved || !lane.autoDecisionLimitReached) {
       const deliveryTask = task || lane.currentTask || '（任务已开始，Hook 未提供任务说明）';
       queueSupervisorDelivery(
         session,
@@ -538,9 +538,6 @@ function handleSupervisorHookEvent(event: any): void {
         deliveryTask,
         `[任务开始] ${lane.label}: ${deliveryTask}\n`,
       );
-    }
-    if (cancelledDecision) {
-      store.pauseSupervisor('用户在任务终端另行输入，当前决策已取消');
     }
     return;
   }
@@ -1258,6 +1255,7 @@ export default function App() {
             splitTree: ws.splitTree,
             browserUrl: ws.browserUrl,
             browserWidth: ws.browserWidth,
+            transientSupervisorWorkspace: ws.transientSupervisorWorkspace,
             sshProfileId: ws.sshProfileId,
           })),
         }],
@@ -1460,6 +1458,7 @@ export default function App() {
         splitTree: ws.splitTree,
         browserUrl: ws.browserUrl || '',
         browserWidth: ws.browserWidth,
+        transientSupervisorWorkspace: ws.transientSupervisorWorkspace,
         sshProfileId: ws.sshProfileId,
       })),
       sidebarWidth,

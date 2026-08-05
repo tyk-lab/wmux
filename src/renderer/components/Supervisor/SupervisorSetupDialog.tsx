@@ -582,6 +582,7 @@ export default function SupervisorSetupDialog() {
       const workspaceId = createWorkspace({
         title: SUPERVISOR_WORKSPACE_TITLE,
         pinned: true,
+        transientSupervisorWorkspace: true,
         splitTree: createLeaf(undefined, 'supervisor'),
       });
       patchSupervisor({ supervisorWorkspaceId: workspaceId });

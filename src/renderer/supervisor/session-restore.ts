@@ -47,7 +47,12 @@ function treeHasSshSurface(tree: SplitNode): boolean {
  * SSH workspaces own live connections and AI supervision owns transient renderer
  * state. Neither is restart-safe, so omit them from automatic session layouts.
  */
-export function omitNonRestorableWorkspaces<T extends { splitTree: SplitNode; sshProfileId?: string }>(
+export function omitNonRestorableWorkspaces<T extends {
+  splitTree: SplitNode;
+  title?: string;
+  transientSupervisorWorkspace?: boolean;
+  sshProfileId?: string;
+}>(
   workspaces: T[],
   activeIndex = 0,
   transientSurfaceIds: Iterable<string> = [],
@@ -57,6 +62,7 @@ export function omitNonRestorableWorkspaces<T extends { splitTree: SplitNode; ss
   const retained: T[] = [];
 
   workspaces.forEach((workspace, index) => {
+    if (workspace.transientSupervisorWorkspace || workspace.title?.trim() === 'AI 监督') return;
     if (workspace.sshProfileId || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '') || treeHasSshSurface(workspace.splitTree)) return;
     const splitTree = stripSupervisorSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;

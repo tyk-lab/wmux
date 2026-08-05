@@ -87,6 +87,7 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       ports: options.ports,
       notificationText: options.notificationText,
       shellState: options.shellState,
+      transientSupervisorWorkspace: options.transientSupervisorWorkspace,
       sshProfileId: options.sshProfileId,
       sshConnectionState: options.sshConnectionState,
     };
@@ -249,6 +250,7 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       cwd: config.cwd,
       browserUrl: config.browserUrl,
       browserWidth: config.browserWidth,
+      transientSupervisorWorkspace: config.transientSupervisorWorkspace,
       sshProfileId: config.sshProfileId,
       // A fresh app process has no SFTP client. Password profiles with a saved
       // DPAPI credential are auto-reconnected by App; other methods wait for

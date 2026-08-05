@@ -43,6 +43,39 @@ describe('supervisor session restore', () => {
     expect(result.activeIndex).toBe(0);
   });
 
+  it('drops a legacy AI-supervisor workspace even when only its audit Markdown tab remains', () => {
+    const result = omitNonRestorableWorkspaces([
+      {
+        id: 'ws-work' as any,
+        title: 'Local',
+        splitTree: leaf([{ id: 'worker' as any, type: 'terminal' }]),
+      },
+      {
+        id: 'ws-supervisor' as any,
+        title: 'AI 监督',
+        splitTree: leaf([{
+          id: 'supervisor-record' as any,
+          type: 'markdown',
+          customTitle: '监督记录 · worker',
+        }]),
+      },
+    ], 1);
+
+    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['ws-work']);
+    expect(result.activeIndex).toBe(0);
+  });
+
+  it('drops a marked supervisor workspace after the user renames it', () => {
+    const result = omitNonRestorableWorkspaces([{
+      id: 'ws-renamed-supervisor' as any,
+      title: 'Review room',
+      transientSupervisorWorkspace: true,
+      splitTree: leaf([{ id: 'record' as any, type: 'markdown' }]),
+    }]);
+
+    expect(result.workspaces).toEqual([]);
+  });
+
   it('retains a user terminal that merely has an AI supervision-like title', () => {
     const result = omitNonRestorableWorkspaces([{
       id: 'ws-work' as any,

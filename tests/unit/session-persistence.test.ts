@@ -118,6 +118,20 @@ describe('session-persistence', () => {
         surfaces: [{ id: 'supervisor-panel', type: 'supervisor' }],
       },
     };
+    const supervisorRecordOnly = {
+      id: 'ws-supervisor-record', title: 'AI 监督', pinned: true, shell: 'pwsh.exe', splitTree: {
+        type: 'leaf', paneId: 'pane-record', activeSurfaceIndex: 0,
+        surfaces: [{ id: 'supervisor-record', type: 'markdown', customTitle: '监督记录 · worker' }],
+      },
+    };
+    const renamedSupervisorRecordOnly = {
+      id: 'ws-renamed-supervisor-record', title: 'Review room', pinned: true, shell: 'pwsh.exe',
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-renamed-record', activeSurfaceIndex: 0,
+        surfaces: [{ id: 'renamed-supervisor-record', type: 'markdown' }],
+      },
+    };
     const legacyDirectSsh = {
       id: 'ws-direct-ssh', title: 'Legacy SSH', pinned: false, shell: 'ssh user@example.com', splitTree: {
         type: 'leaf', paneId: 'pane-ssh', activeSurfaceIndex: 0,
@@ -127,7 +141,7 @@ describe('session-persistence', () => {
 
     const result = omitRestartUnsafeWorkspaces({
       version: 1,
-      windows: [{ bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200, activeWorkspaceId: 'ws-supervisor', workspaces: [local, supervisorOnly, legacyDirectSsh] }],
+      windows: [{ bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200, activeWorkspaceId: 'ws-supervisor', workspaces: [local, supervisorOnly, supervisorRecordOnly, renamedSupervisorRecordOnly, legacyDirectSsh] }],
     } as SessionData);
 
     expect(result.windows).toHaveLength(1);

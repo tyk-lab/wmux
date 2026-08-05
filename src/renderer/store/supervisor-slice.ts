@@ -222,6 +222,7 @@ export interface SupervisorSlice {
   appendSupervisorLog: (laneId: string, action: string, detail: string) => void;
   enqueueApproval: (item: Omit<PendingApproval, 'id' | 'createdAt'>) => void;
   approvePending: (id: string) => PendingApproval | null;
+  resolvePendingWithManualTask: (laneId: string, task: string) => PendingApproval[];
   cancelPending: (id: string, detail?: string) => PendingApproval | null;
   rejectPending: (id: string) => void;
   updateLane: (laneId: string, patch: Partial<SupervisorLane>) => void;
@@ -263,7 +264,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'pi',
-    supervisorModel: 'openai-codex/gpt-5.6-terra',
+    supervisorModel: 'kimi-coding/k3-256k',
     supervisorReasoningEffort: 'medium',
     pendingApprovals: [],
     log: [],
@@ -461,6 +462,37 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       supervisor: {
         ...s.supervisor,
         pendingApprovals: s.supervisor.pendingApprovals.filter((a) => a.id !== id),
+      },
+    }));
+    return found;
+  },
+  resolvePendingWithManualTask(laneId, task) {
+    const found = get().supervisor.pendingApprovals.filter((item) => item.laneId === laneId);
+    if (found.length === 0) return [];
+    const decisionText = task.trim();
+    set((s) => ({
+      supervisor: {
+        ...s.supervisor,
+        pendingApprovals: s.supervisor.pendingApprovals.filter((item) => item.laneId !== laneId),
+        lanes: s.supervisor.lanes.map((lane) => lane.id === laneId ? {
+          ...lane,
+          awaitingReview: false,
+          awaitingStopCheck: false,
+          stopConfirmed: false,
+          resumeAfterCancelledDecision: false,
+          autoDecisionLimitReached: false,
+          autoDecisionsUsed: 0,
+          ...(decisionText ? { currentTask: decisionText } : {}),
+        } : lane),
+        log: [
+          {
+            ts: Date.now(),
+            laneId,
+            action: '人工裁决',
+            detail: decisionText || '用户已直接向任务终端发送信息',
+          },
+          ...s.supervisor.log,
+        ].slice(0, MAX_LOG),
       },
     }));
     return found;

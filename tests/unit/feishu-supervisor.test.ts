@@ -44,7 +44,10 @@ supervisor_model: k3`)).toEqual({
       error: '批准时需要 task，作为后续任务发送到被监督终端。',
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: shell')).toEqual({
-      error: 'DECIDE 需要 approval_id 和 action: approve|reject|stop。',
+      error: 'DECIDE 需要 approval_id 和 action: approve|reject|pause|stop。',
+    });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: pause')).toEqual({
+      action: 'decide', approvalId: 'appr-1', decision: 'pause', task: undefined,
     });
   });
 
@@ -97,7 +100,7 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseLegacyFeishuEnv('App ID\ncli-test\n\nApp Secret\nsecret-test\n\n单聊会话 ID\noc-direct\n\n群聊会话 ID\noc-audit\n\n用户 ID\nou-allowed')).toEqual({
       WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_APP_SECRET: 'secret-test',
-      WMUX_FEISHU_CHAT_ID: 'oc-audit', WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
+      WMUX_FEISHU_DECISION_CHAT_ID: 'oc-direct', WMUX_FEISHU_CHAT_ID: 'oc-audit', WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
     });
   });
 
@@ -152,6 +155,8 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('选择方案 B');
     expect(card).toContain('follow_up_task');
     expect(card).toContain('批准并发送任务');
+    expect(card).toContain('暂停监督');
+    expect(card).not.toContain('拒绝');
     expect(card).toContain('停止监督');
   });
 
@@ -206,6 +211,9 @@ supervisor_model: k3`)).toEqual({
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'approve',
+    });
+    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_pause')).toEqual({
+      approval_id: 'appr-1', wmux_action: 'decide', decision: 'pause',
     });
   });
 
