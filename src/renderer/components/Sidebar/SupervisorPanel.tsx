@@ -343,6 +343,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     for (const { lane, location } of lanesToRestart) {
       const newSurfaceId = addSurface(location!.workspaceId, location!.paneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
+        shell: 'pwsh.exe',
         cwd: lane.projectDir,
         startupCommands,
         transientSupervisor: true,

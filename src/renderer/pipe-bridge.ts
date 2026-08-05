@@ -532,6 +532,7 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   const lanes: SupervisorLane[] = candidates.map((candidate, index) => {
     const supervisorSurfaceId = store.addSurface(supervisorWorkspace!.id, targetPaneId!, 'terminal', {
       customTitle: supervisorTabTitle(candidate.label),
+      shell: 'pwsh.exe',
       cwd: candidate.projectDir,
       startupCommands: launch ? [launch] : undefined,
       transientSupervisor: true,

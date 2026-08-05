@@ -607,6 +607,7 @@ export default function SupervisorSetupDialog() {
       }
       const supervisorSurfaceId = addSurface(supervisorWorkspace.id, targetPaneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
+        shell: 'pwsh.exe',
         cwd: lane.projectDir,
         startupCommands,
         transientSupervisor: true,
