@@ -1,7 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { PaneId, SplitNode, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef } from '../shared/types';
-
-export type SshCompanionAgent = 'codex' | 'kimi' | 'grok' | 'none';
+import { PaneId, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef } from '../shared/types';
 
 function quoteSshArgument(value: string): string {
   return /\s/.test(value) ? `"${value.replace(/"/g, '')}"` : value;

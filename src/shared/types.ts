@@ -10,6 +10,8 @@ export type SplitNode =
   | { type: 'branch'; direction: 'horizontal' | 'vertical'; ratio: number; children: [SplitNode, SplitNode] };
 
 export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor';
+export type DefaultSupervisorAgent = 'pi' | 'codex' | 'claude' | 'kimi' | 'grok' | 'opencode' | 'none';
+export type SshCompanionAgent = 'codex' | 'kimi' | 'grok' | 'none';
 
 export type SshAuthMethod = 'agent' | 'privateKey' | 'password';
 

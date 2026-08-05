@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { v4 as uuid } from 'uuid';
-import { SshConfigDraft, SshConnectionProfile } from '../../../shared/types';
-import type { SshCompanionAgent } from '../../ssh-workspace';
+import { SshConfigDraft, SshConnectionProfile, type SshCompanionAgent } from '../../../shared/types';
 import SshCredentialManager from './SshCredentialManager';
 import '../../styles/ssh.css';
 
 interface Props {
   profiles: SshConnectionProfile[];
+  defaultCompanionAgent: SshCompanionAgent;
   onClose: () => void;
   onConnect: (profile: SshConnectionProfile, companionAgent: SshCompanionAgent, password?: string) => void;
   onProfilesChange: (profiles: SshConnectionProfile[]) => void;
+  onSetDefaultCompanionAgent: (agent: SshCompanionAgent) => void;
 }
 
 function blankProfile(): SshConnectionProfile {
@@ -28,14 +29,21 @@ function asProfile(draft: SshConfigDraft): SshConnectionProfile {
   };
 }
 
-export default function SshConnectionDialog({ profiles, onClose, onConnect, onProfilesChange }: Props) {
+export default function SshConnectionDialog({
+  profiles,
+  defaultCompanionAgent,
+  onClose,
+  onConnect,
+  onProfilesChange,
+  onSetDefaultCompanionAgent,
+}: Props) {
   const [profile, setProfile] = useState<SshConnectionProfile>(() => profiles[0] ?? blankProfile());
   const [drafts, setDrafts] = useState<SshConfigDraft[]>([]);
   const [importError, setImportError] = useState('');
   const [formError, setFormError] = useState('');
   const [password, setPassword] = useState('');
   const [credentialManagerOpen, setCredentialManagerOpen] = useState(false);
-  const [companionAgent, setCompanionAgent] = useState<SshCompanionAgent>('codex');
+  const [companionAgent, setCompanionAgent] = useState<SshCompanionAgent>(defaultCompanionAgent);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -135,14 +143,24 @@ export default function SshConnectionDialog({ profiles, onClose, onConnect, onPr
           {profile.authMethod === 'privateKey' && <div className="ssh-dialog__key"><input value={profile.privateKeyPath || ''} readOnly placeholder="未选择私钥" /><button type="button" onClick={chooseKey}>选择文件</button></div>}
           {profile.authMethod === 'password' && <div className="ssh-dialog__key"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder={profiles.some((item) => item.id === profile.id) ? '留空使用已保存密码' : '输入 SSH 密码'} /></div>}
         </fieldset>
-        <label className="ssh-dialog__agent">辅助 Agent
-          <select value={companionAgent} onChange={(event) => setCompanionAgent(event.target.value as SshCompanionAgent)}>
-            <option value="codex">Codex（默认）</option>
-            <option value="kimi">Kimi Code</option>
-            <option value="grok">Grok Build</option>
-            <option value="none">无（仅创建 SSH 终端）</option>
-          </select>
-        </label>
+        <div className="ssh-dialog__agent">
+          <label htmlFor="ssh-companion-agent">辅助 Agent</label>
+          <span className="ssh-dialog__agent-choice">
+            <select id="ssh-companion-agent" value={companionAgent} onChange={(event) => setCompanionAgent(event.target.value as SshCompanionAgent)}>
+              <option value="codex">Codex{defaultCompanionAgent === 'codex' ? '（当前默认）' : ''}</option>
+              <option value="kimi">Kimi Code{defaultCompanionAgent === 'kimi' ? '（当前默认）' : ''}</option>
+              <option value="grok">Grok Build{defaultCompanionAgent === 'grok' ? '（当前默认）' : ''}</option>
+              <option value="none">无（仅创建 SSH 终端）{defaultCompanionAgent === 'none' ? '（当前默认）' : ''}</option>
+            </select>
+            <button
+              type="button"
+              disabled={companionAgent === defaultCompanionAgent}
+              onClick={() => onSetDefaultCompanionAgent(companionAgent)}
+            >
+              {companionAgent === defaultCompanionAgent ? '已为默认' : '设为默认'}
+            </button>
+          </span>
+        </div>
         <p className="ssh-dialog__hint">密码经 Windows DPAPI 加密保存，仅在认证失败时要求重新输入；私钥内容不会保存。</p>
         {companionAgent !== 'none' && <p className="ssh-dialog__control-guide"><strong>Agent 控制 SSH：</strong>使用 <code>read-screen</code> 读取输出、<code>send</code> 发送文本、<code>send-key enter</code> 提交。中断命令必须使用 <code>send-key c --ctrl</code>，不能把 <code>ctrl+c</code> 当键名。创建后会自动把 SSH 终端 ID 和完整说明交给 Agent。</p>}
         <div className="ssh-dialog__actions"><button type="button" onClick={onClose}>取消</button><button className="ssh-primary-button" type="submit">连接并创建工作区</button></div>

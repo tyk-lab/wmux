@@ -1,5 +1,5 @@
 import { StateCreator } from 'zustand';
-import { QuickLaunchProfile, SshConnectionProfile } from '../../shared/types';
+import { DefaultSupervisorAgent, QuickLaunchProfile, SshCompanionAgent, SshConnectionProfile } from '../../shared/types';
 import { Language, detectDefaultLanguage, isLanguage } from '../i18n/core';
 
 // ─── Persistence helpers (issue #12 + issue #15 + issue #19) ─────────────────
@@ -286,6 +286,10 @@ export interface WorkspacePrefs {
    * programmatic closes never prompt.
    */
   confirmWorkspaceClose: boolean;
+  /** Launcher selected when creating a fresh AI-supervision session. */
+  defaultSupervisorAgent: DefaultSupervisorAgent;
+  /** Companion selected when creating an SSH workspace. */
+  defaultSshAgent: SshCompanionAgent;
 }
 
 export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
@@ -297,6 +301,8 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   autoOpenDiffTab: false,
   // Accidental × / Ctrl+Shift+W kills every PTY in the session; ask first for agents.
   confirmWorkspaceClose: true,
+  defaultSupervisorAgent: 'pi',
+  defaultSshAgent: 'codex',
 };
 
 // ─── Terminal settings ────────────────────────────────────────────────────────

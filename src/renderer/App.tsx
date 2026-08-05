@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
-import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshConnectionProfile, SshFileEntry } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf, replaceSoleTerminalSurface } from './store/split-utils';
 import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from './dev-ports';
@@ -10,7 +10,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
-import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree, type SshCompanionAgent } from './ssh-workspace';
+import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree } from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import SettingsWindow from './components/Settings/SettingsWindow';
@@ -634,6 +634,8 @@ export default function App() {
     toggleSidebar,
     sshConnections,
     setSshConnections,
+    workspacePrefs,
+    setWorkspacePrefs,
   } = useStore();
 
   useUiTheme();
@@ -1656,9 +1658,11 @@ export default function App() {
       {settingsOpen && <SettingsWindow onClose={() => setSettingsOpen(false)} />}
       {sshDialogOpen && <SshConnectionDialog
         profiles={sshConnections}
+        defaultCompanionAgent={workspacePrefs.defaultSshAgent}
         onClose={() => setSshDialogOpen(false)}
         onConnect={handleCreateSshWorkspace}
         onProfilesChange={handleSshProfilesChange}
+        onSetDefaultCompanionAgent={(agent) => setWorkspacePrefs({ defaultSshAgent: agent })}
       />}
       {sshPasswordRequest && <SshPasswordDialog
         profileName={sshPasswordRequest.profile.name}
