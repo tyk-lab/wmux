@@ -7,6 +7,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
+import { isSupervisorDecideHelp, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -149,8 +150,12 @@ async function cmdBrowser(args: string[]): Promise<void> {
 }
 
 async function cmdSupervisor(args: string[]): Promise<void> {
+  if (isSupervisorDecideHelp(args)) {
+    console.log(SUPERVISOR_DECIDE_USAGE);
+    return;
+  }
   if (args[1] !== 'decide') {
-    throw new Error('Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>]');
+    throw new Error(SUPERVISOR_DECIDE_USAGE);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
