@@ -485,6 +485,12 @@ function remoteAudit(session: ReturnType<typeof useStore.getState>['supervisor']
   if (lane) appendSupervisorRecord(session, lane, type, payload);
 }
 
+function hasLiveSurface(surfaceId: SurfaceId): boolean {
+  return useStore.getState().workspaces.some((workspace) => getAllPaneIds(workspace.splitTree).some((paneId) =>
+    findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => surface.id === surfaceId),
+  ));
+}
+
 /** A stopped session must not leave its dedicated AI tabs attached to a replacement session. */
 function closeStoppedSupervisorSurfaces(lanes: SupervisorLane[]): void {
   for (const lane of lanes) {
@@ -1374,6 +1380,29 @@ export function initPipeBridge(): void {
     }
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
+    if (action === 'toggle-pause') {
+      const session = useStore.getState().supervisor;
+      const actor = String(params?.actor || 'unknown');
+      if (session.active) {
+        useStore.getState().pauseSupervisor('由飞书远程暂停；现有监督终端与会话上下文已保留');
+        for (const lane of session.lanes) remoteAudit(session, lane, 'supervisor.remote-command', { action: 'pause', actor });
+        return { ok: true, message: '已暂停当前 AI 监督；会话、监督终端和待决项均已保留。' };
+      }
+      if (session.paused) {
+        const missingLane = session.lanes.find((lane) => lane.enabled && (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)));
+        if (missingLane) return { ok: false, error: `专属监督终端已缺失：${missingLane.label}。请在 wmux 中停止后重新配置。`, message: '' };
+        useStore.getState().resumeSupervisor();
+        const resumed = useStore.getState().supervisor;
+        const pendingLaneIds = new Set(resumed.pendingApprovals.map((item) => item.laneId));
+        for (const lane of resumed.lanes) {
+          remoteAudit(resumed, lane, 'supervisor.remote-command', { action: 'resume', actor });
+          if (!lane.enabled || !lane.supervisorSurfaceId || pendingLaneIds.has(lane.id)) continue;
+          sendToSurface(lane.supervisorSurfaceId, '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+        }
+        return { ok: true, message: '已继续原 AI 监督会话。' };
+      }
+      return { ok: false, error: '当前没有运行中或暂停保留的 AI 监督。', message: '' };
+    }
     if (action === 'stop') {
       const session = useStore.getState().supervisor;
       if (!session.active && !session.paused) return { ok: false, error: '当前没有运行中或暂停保留的 AI 监督。', message: '' };

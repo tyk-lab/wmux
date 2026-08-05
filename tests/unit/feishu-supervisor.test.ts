@@ -163,6 +163,8 @@ supervisor_model: k3`)).toEqual({
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
     const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
     const menu = JSON.stringify(buildSupervisorControlMenuCard());
+    const activeMenu = JSON.stringify(buildSupervisorControlMenuCard({ active: true, paused: false }));
+    const pausedMenu = JSON.stringify(buildSupervisorControlMenuCard({ active: false, paused: true }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const start = JSON.stringify(startObject);
@@ -171,7 +173,12 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('查看状态');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
+    expect(menu).toContain('暂停/继续监督');
     expect(menu).toContain('停止监督');
+    expect(activeMenu).toContain('暂停监督');
+    expect(activeMenu).not.toContain('暂停/继续监督');
+    expect(pausedMenu).toContain('继续监督');
+    expect(pausedMenu).not.toContain('暂停/继续监督');
     expect(menu).toContain('白名单用户单聊');
     expect(menu).not.toContain('审批卡片发送到审计群');
     expect(startObject.schema).toBe('2.0');

@@ -655,7 +655,7 @@ export class FeishuSupervisorService {
     if (this.seen.has(messageId)) return;
     this.remember(messageId);
     if (isFeishuSupervisorHelp(content)) {
-      await this.sendCurrentControlMenu(chatId, openId);
+      await this.sendCurrentControlMenu(chatId, openId, 'text');
       return;
     }
     const command = parseFeishuSupervisorCommand(content);
@@ -806,8 +806,8 @@ export class FeishuSupervisorService {
     await this.sendControlCard(buildSupervisorControlMenuCard({ active: list.active, paused: list.paused }), event.chatId);
   }
 
-  private async sendCurrentControlMenu(chatId: string, openId: string): Promise<void> {
-    const result = await this.control({ action: 'list' }, { openId, source: 'card' })
+  private async sendCurrentControlMenu(chatId: string, openId: string, source: 'text' | 'card' = 'card'): Promise<void> {
+    const result = await this.control({ action: 'list' }, { openId, source })
       .catch(() => null);
     const list = parseListResult(result);
     await this.sendControlCard(buildSupervisorControlMenuCard(list

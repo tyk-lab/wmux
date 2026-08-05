@@ -419,4 +419,31 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ ok: true, message: '已停止当前 AI 监督。' });
     expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: false, pendingApprovals: [] });
   });
+
+  it('toggles pause and resume from the Feishu control menu without replacing the session', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'Work',
+      splitTree: {
+        type: 'leaf',
+        paneId: 'pane-control' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi' },
+        ],
+      },
+    }]);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    const sessionId = useStore.getState().supervisor.sessionId;
+
+    expect(remoteControl({ action: 'toggle-pause', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: expect.stringContaining('已暂停') });
+    expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: true, sessionId });
+
+    expect(remoteControl({ action: 'toggle-pause', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: '已继续原 AI 监督会话。' });
+    expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false, sessionId });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[会话继续]'));
+  });
 });
