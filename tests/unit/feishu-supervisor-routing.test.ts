@@ -155,7 +155,7 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help', content: 'wmux帮助', chatType: 'p2p',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).toContain('暂停监督');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('暂停全部');
 
     handlers.cardAction({
       chatId: 'oc-dm-a',
@@ -168,7 +168,49 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'toggle-pause')).toBe(true));
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
     expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督。' });
-    expect(JSON.stringify(send.mock.calls[2][1])).toContain('继续监督');
+    expect(JSON.stringify(send.mock.calls[2][1])).toContain('继续全部');
+  });
+
+  it('从飞书控制卡只暂停所选 AI 监督通道', async () => {
+    const control = vi.fn(async (command: { action: string; terminal?: string }) => {
+      if (command.action === 'pause-lane') return { ok: true, message: '已暂停 Auth worker；其他通道继续运行。' };
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: true,
+          paused: false,
+          terminals: [{
+            surfaceId: 'surf-a', label: 'Auth worker', workspace: 'workspace-a',
+            supervised: true, supervisionState: 'active', managementSessionId: 'sup-lane-a',
+          }],
+          session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+          pendingApprovals: [],
+        }),
+      };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-lane', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: { wmux_action: 'menu', flow: 'lane-control' } }, raw: {},
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(send.mock.calls[1][1])).toContain('控制单个 AI 监督');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-2', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_lane_control', value: { wmux_action: 'form_lane_control' } },
+      raw: { action: { form_value: { terminal: 'surf-a', lane_action: 'pause-lane' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'pause-lane')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'pause-lane')?.[0]).toEqual({
+      action: 'pause-lane', terminal: 'surf-a',
+    });
   });
 
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {

@@ -51,6 +51,9 @@ import {
 } from './supervisor/supervisor-engine';
 import {
   buildUserNotifyText,
+  effectiveSupervisorAutonomyPermissions,
+  effectiveSupervisorAutonomous,
+  effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   effectiveSupervisorStopWhen,
 } from './supervisor/protocol';
@@ -59,6 +62,7 @@ import { appendSupervisorRecord } from './supervisor/recording';
 import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
 import { omitNonRestorableWorkspaces } from './supervisor/session-restore';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
+import { supervisorLaneControlState } from './store/supervisor-slice';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 
@@ -509,7 +513,7 @@ function handleSupervisorHookEvent(event: any): void {
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
   if (!session.active || !surfaceId) return;
 
-  const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
+  const lane = session.lanes.find((item) => item.surfaceId === surfaceId && supervisorLaneControlState(item) === 'active');
   if (!lane?.supervisorSurfaceId) return;
   const lifecycle = String(event.event || '');
   const projectDir = resolveSupervisorProjectDir(lane, event.cwd);
@@ -1039,10 +1043,11 @@ export default function App() {
         stopWhen: laneConfig.stopWhen,
         stopWhenKind: laneConfig.stopWhenKind,
         planFilePath: laneConfig.planFilePath,
-        autonomyPermissions: session.autonomyPermissions,
+        autonomous: effectiveSupervisorAutonomous(session, lane),
+        autonomyPermissions: effectiveSupervisorAutonomyPermissions(session, lane),
         workScope: session.workScope,
         scopeRoot: lane.scopeRoot || lane.projectDir,
-        forbiddenActions: session.forbiddenActions,
+        forbiddenActions: effectiveSupervisorForbiddenActions(session, lane),
         supervisorModel: session.supervisorModel || `${launcherName} 默认模型`,
         supervisorReasoningEffort: session.supervisorReasoningEffort || defaultReasoning,
         terminalName: lane.label,
@@ -1064,7 +1069,7 @@ export default function App() {
         for (const lane of session.lanes) {
           const delivery = lane.pendingSupervisorDeliveries?.[0];
           const supervisorSurfaceId = lane.supervisorSurfaceId;
-          if (!lane.enabled || !delivery || !supervisorSurfaceId) continue;
+          if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
           if (!canDeliverToSupervisor(supervisorState)) continue;
           const exists = await pty.has(supervisorSurfaceId);
@@ -1112,7 +1117,7 @@ export default function App() {
       const states = agentStatesRef.current;
 
       for (const lane of session.lanes) {
-        if (!lane.enabled) continue;
+        if (supervisorLaneControlState(lane) !== 'active') continue;
         if (!supervisorRuntimeRef.current[lane.id]) {
           supervisorRuntimeRef.current[lane.id] = blankRuntime();
         }
@@ -1209,10 +1214,14 @@ export default function App() {
             });
             const disableLane = action.disableLane !== false;
             if (disableLane) {
-              store.updateLane(action.laneId, { enabled: false });
+              store.updateLane(action.laneId, {
+                enabled: false,
+                controlState: 'stopped',
+                autonomousOverride: undefined,
+              });
               const remaining = useStore
                 .getState()
-                .supervisor.lanes.filter((l) => l.enabled);
+                .supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) !== 'stopped');
               if (action.stopAll || remaining.length === 0) {
                 store.stopSupervisor(action.reason);
               }

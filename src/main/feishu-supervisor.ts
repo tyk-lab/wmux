@@ -7,6 +7,9 @@ export type FeishuSupervisorCommand =
   | { action: 'list' }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string }
+  | { action: 'pause-lane'; terminal: string }
+  | { action: 'resume-lane'; terminal: string }
+  | { action: 'stop-lane'; terminal: string }
   | { action: 'toggle-pause' }
   | { action: 'stop' }
   | { action: 'decide'; approvalId: string; decision: 'approve' | 'reject' | 'pause' | 'stop'; task?: string };
@@ -175,9 +178,17 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
   const verb = header.slice(COMMAND_PREFIX.length).trim();
   const fields = fieldMap(lines);
   if (verb === 'LIST') return { action: 'list' };
+  if (verb === 'PAUSE' || verb === 'RESUME') {
+    if (!hasOnlyFields(fields, ['terminal']) || !fields.terminal) {
+      return { error: `${verb} 需要 terminal。` };
+    }
+    return { action: verb === 'PAUSE' ? 'pause-lane' : 'resume-lane', terminal: fields.terminal };
+  }
   if (verb === 'STOP') {
-    if (!hasOnlyFields(fields, ['session']) || (fields.session && fields.session.toLowerCase() !== 'current')) return { error: 'STOP 仅支持 session: current。' };
-    return { action: 'stop' };
+    if (!hasOnlyFields(fields, ['session', 'terminal'])) return { error: 'STOP 仅支持 session 或 terminal。' };
+    if (fields.terminal && !fields.session) return { action: 'stop-lane', terminal: fields.terminal };
+    if (fields.session?.toLowerCase() === 'current' && !fields.terminal) return { action: 'stop' };
+    return { error: 'STOP 需要 terminal: <终端 ID> 或 session: current。' };
   }
   if (verb === 'SEND') {
     if (!hasOnlyFields(fields, ['terminal', 'task'])) return { error: 'SEND 包含不支持的字段。' };
@@ -193,7 +204,7 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
     if (decision === 'approve' && !fields.task) return { error: '批准时需要 task，作为后续任务发送到被监督终端。' };
     return { action: 'decide', approvalId: fields.approval_id, decision: decision as 'approve' | 'reject' | 'pause' | 'stop', task: fields.task || undefined };
   }
-  if (verb !== 'START') return { error: '支持 LIST、START、SEND、STOP、DECIDE。' };
+  if (verb !== 'START') return { error: '支持 LIST、START、SEND、PAUSE、RESUME、STOP、DECIDE。' };
   if (!hasOnlyFields(fields, ['terminals', 'stop_when', 'stop_when_kind', 'task_goal', 'task_description', 'preconditions', 'plan_file', 'autonomous', 'supervisor_launch_cmd', 'supervisor_model', 'supervisor_reasoning'])) {
     return { error: 'START 包含不支持的字段。' };
   }
@@ -229,6 +240,12 @@ interface FeishuListTerminal {
   workspace: string;
   supervised: boolean;
   restartable?: boolean;
+  supervisionState?: 'active' | 'paused' | 'stopped' | 'none';
+  managementSessionId?: string;
+  autonomous?: boolean;
+  autonomyPermissionCount?: number;
+  forbiddenActionCount?: number;
+  policyOverridden?: boolean;
 }
 
 interface FeishuListSession {
@@ -253,7 +270,7 @@ interface FeishuListResult {
 
 function terminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
-    text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
+    text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervisionState === 'paused' ? '（已暂停）' : terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
     value: terminal.surfaceId,
   }));
 }
@@ -313,6 +330,7 @@ export function resolveFeishuCardAction(value: unknown, name?: string): Resolved
   const rawValue = isObject(value) ? value : {};
   if (name === 'wmux_form_start') return { ...rawValue, wmux_action: 'form_start' };
   if (name === 'wmux_form_send') return { ...rawValue, wmux_action: 'form_send' };
+  if (name === 'wmux_form_lane_control') return { ...rawValue, wmux_action: 'form_lane_control' };
   const decision = /^wmux_decide_(approve|reject|pause|stop)$/.exec(name || '')?.[1];
   return decision ? { ...rawValue, wmux_action: 'decide', decision } : rawValue;
 }
@@ -333,7 +351,7 @@ export function parseFeishuCardFormValues(raw: unknown): Record<string, string> 
 
 /** The direct-chat entrypoint for all routine operations. */
 export function buildSupervisorControlMenuCard(state?: { active: boolean; paused: boolean }): object {
-  const pauseLabel = state?.paused ? '继续监督' : state?.active ? '暂停监督' : '暂停/继续监督';
+  const pauseLabel = state?.paused ? '继续全部' : state?.active ? '暂停全部' : '暂停/继续全部';
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: 'wmux · AI 监督控制' }, template: 'blue' },
@@ -348,8 +366,9 @@ export function buildSupervisorControlMenuCard(state?: { active: boolean; paused
       },
       {
         tag: 'column_set', flex_mode: 'none', columns: [
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'lane-control' }, '控制单个监督')] },
           { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'toggle-pause' }, pauseLabel)] },
-          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'stop' }, '停止监督', 'danger')] },
+          { tag: 'column', width: 'auto', elements: [cardButton({ wmux_action: 'menu', flow: 'stop' }, '停止全部', 'danger')] },
         ],
       },
       { tag: 'note', elements: [{ tag: 'plain_text', content: '人工决策会单独以审批卡片发送到最近的白名单用户单聊。高级文本命令仍可用。' }] },
@@ -403,6 +422,27 @@ export function buildSupervisorSendTaskCard(terminals: FeishuListTerminal[]): ob
   );
 }
 
+/** Form displayed after selecting “控制单个监督”. */
+export function buildSupervisorLaneControlCard(terminals: FeishuListTerminal[]): object {
+  return buildFormCard(
+    'wmux · 控制单个 AI 监督',
+    'orange',
+    '选择监督终端和操作。暂停会保留该 AI 的上下文，停止只结束该通道，其他监督不受影响。',
+    'wmux_lane_control_form',
+    [
+      { tag: 'markdown', content: '**AI 监督终端**' },
+      { tag: 'select_static', element_id: 'lane_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要控制的监督' }, options: terminalOptions(terminals) },
+      { tag: 'markdown', content: '**操作**' },
+      { tag: 'select_static', element_id: 'lane_action', name: 'lane_action', required: true, placeholder: { tag: 'plain_text', content: '选择操作' }, options: [
+        { text: { tag: 'plain_text', content: '暂停（保留上下文）' }, value: 'pause-lane' },
+        { text: { tag: 'plain_text', content: '继续' }, value: 'resume-lane' },
+        { text: { tag: 'plain_text', content: '停止此监督' }, value: 'stop-lane' },
+      ] },
+      formButton('wmux_form_lane_control', '执行单通道控制', 'primary', { wmux_action: 'form_lane_control' }),
+    ],
+  );
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
 }
@@ -424,6 +464,14 @@ function parseListResult(value: unknown): FeishuListResult | null {
         workspace: asText(terminal.workspace),
         supervised: terminal.supervised === true,
         restartable: terminal.restartable === true,
+        supervisionState: ['active', 'paused', 'stopped', 'none'].includes(String(terminal.supervisionState))
+          ? terminal.supervisionState as FeishuListTerminal['supervisionState']
+          : undefined,
+        managementSessionId: typeof terminal.managementSessionId === 'string' ? terminal.managementSessionId : undefined,
+        autonomous: typeof terminal.autonomous === 'boolean' ? terminal.autonomous : undefined,
+        autonomyPermissionCount: typeof terminal.autonomyPermissionCount === 'number' ? terminal.autonomyPermissionCount : undefined,
+        forbiddenActionCount: typeof terminal.forbiddenActionCount === 'number' ? terminal.forbiddenActionCount : undefined,
+        policyOverridden: terminal.policyOverridden === true,
       }];
     });
     const session = isObject(parsed.session) && typeof parsed.session.sessionId === 'string'
@@ -463,11 +511,17 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   if (result.terminals.length === 0) lines.push('暂无可监督终端。');
   for (const [index, terminal] of result.terminals.entries()) {
     let terminalStatus = '未监督';
-    if (terminal.supervised) terminalStatus = result.paused ? '已暂停（会话已保留）' : '监督中';
+    if (terminal.supervisionState === 'active') terminalStatus = result.paused ? '全局暂停（通道保留）' : '监督中';
+    else if (terminal.supervisionState === 'paused') terminalStatus = '单通道已暂停（上下文已保留）';
+    else if (terminal.supervised) terminalStatus = result.paused ? '已暂停（会话已保留）' : '监督中';
     else if (terminal.restartable) terminalStatus = '已停止，可重新监督';
     lines.push(`${index + 1}. ${terminal.label} · ${terminal.workspace}`);
     lines.push(`   状态：${terminalStatus}`);
     lines.push(`   终端 ID：${terminal.surfaceId}`);
+    if (terminal.managementSessionId) lines.push(`   管理会话 ID：${terminal.managementSessionId}`);
+    if (typeof terminal.autonomous === 'boolean') {
+      lines.push(`   权限：${terminal.autonomous ? '全自动' : '有限自主'} · 允许 ${terminal.autonomyPermissionCount ?? 0}/4 · 禁止 ${terminal.forbiddenActionCount ?? 0}${terminal.policyOverridden ? '（终端专用）' : '（会话默认）'}`);
+    }
   }
   lines.push('', `待人工审批：${result.pendingApprovals.length ? `${result.pendingApprovals.length} 项` : '无'}`);
   for (const approval of result.pendingApprovals) {
@@ -492,6 +546,7 @@ const AUDIT_EVENT_TITLES: Record<string, string> = {
   'supervisor.proposal.resolved': 'AI 监督人工决策已处理',
   'supervisor.auto-decision-limit.resolved': 'AI 监督人工复核完成',
   'supervisor.remote-command': '飞书远程监督命令',
+  'supervisor.lane-control': 'AI 监督单通道控制',
   'supervisor.remote-decision': '飞书人工决策',
 };
 
@@ -551,8 +606,8 @@ export function buildApprovalCard(record: SupervisorRecord): object {
     {
       tag: 'column_set', flex_mode: 'none', columns: [
         { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', '批准并发送任务', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_pause', '暂停监督', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'pause' })] },
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_stop', '停止监督', 'danger', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'stop' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_pause', '暂停此监督', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'pause' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_stop', '停止此监督', 'danger', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'stop' })] },
       ],
     },
   ];
@@ -683,7 +738,7 @@ export class FeishuSupervisorService {
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
     const value = resolveFeishuCardAction(event.action.value, event.action.name);
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_lane_control') {
       if (this.controlCards.get(event.messageId) !== event.chatId) return;
       const dedupeKey = `${event.messageId}:${value.wmux_action}:${value.flow || ''}`;
       if (this.seen.has(dedupeKey)) return;
@@ -768,6 +823,20 @@ export class FeishuSupervisorService {
       await this.sendText(summary(result), event.chatId);
       return !failedResult(result);
     }
+    if (value.wmux_action === 'form_lane_control') {
+      const terminal = form.terminal || '';
+      const action = form.lane_action || '';
+      if (!terminal || !['pause-lane', 'resume-lane', 'stop-lane'].includes(action)) {
+        await this.sendText('请先选择 AI 监督终端和有效操作。', event.chatId);
+        return false;
+      }
+      const result = await this.control({ action, terminal } as FeishuSupervisorCommand, {
+        openId: event.operator.openId,
+        source: 'card',
+      }).catch((err) => ({ error: String(err?.message || err) }));
+      await this.sendText(summary(result), event.chatId);
+      return !failedResult(result);
+    }
     return false;
   }
 
@@ -808,6 +877,15 @@ export class FeishuSupervisorService {
         return;
       }
       await this.sendControlCard(buildSupervisorSendTaskCard(list.terminals), event.chatId);
+      return;
+    }
+    if (flow === 'lane-control') {
+      const candidates = list.terminals.filter((terminal) => terminal.supervisionState === 'active' || terminal.supervisionState === 'paused');
+      if (candidates.length === 0) {
+        await this.sendText('暂无可单独控制的 AI 监督通道。', event.chatId);
+        return;
+      }
+      await this.sendControlCard(buildSupervisorLaneControlCard(candidates), event.chatId);
       return;
     }
     await this.sendText(formatFeishuSupervisorResponse({ action: 'list' }, result), event.chatId);

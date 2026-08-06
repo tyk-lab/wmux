@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -64,6 +64,16 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR SEND\nterminal: surf-a')).toEqual({
       error: 'SEND 需要 terminal 和 task。',
+    });
+  });
+
+  it('解析单个 AI 监督的暂停、继续和停止命令', () => {
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR PAUSE\nterminal: surf-a')).toEqual({ action: 'pause-lane', terminal: 'surf-a' });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR RESUME\nterminal: sup-lane-a')).toEqual({ action: 'resume-lane', terminal: 'sup-lane-a' });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR STOP\nterminal: surf-a')).toEqual({ action: 'stop-lane', terminal: 'surf-a' });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR STOP\nsession: current')).toEqual({ action: 'stop' });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR STOP\nterminal: surf-a\nsession: current')).toEqual({
+      error: 'STOP 需要 terminal: <终端 ID> 或 session: current。',
     });
   });
 
@@ -159,9 +169,9 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('选择方案 B');
     expect(card).toContain('follow_up_task');
     expect(card).toContain('批准并发送任务');
-    expect(card).toContain('暂停监督');
+    expect(card).toContain('暂停此监督');
     expect(card).not.toContain('拒绝');
-    expect(card).toContain('停止监督');
+    expect(card).toContain('停止此监督');
   });
 
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
@@ -171,18 +181,22 @@ supervisor_model: k3`)).toEqual({
     const pausedMenu = JSON.stringify(buildSupervisorControlMenuCard({ active: false, paused: true }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
+      { ...terminals[0], supervised: true, supervisionState: 'active' },
+    ]));
     const start = JSON.stringify(startObject);
     const send = JSON.stringify(sendObject);
 
     expect(menu).toContain('查看状态');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
-    expect(menu).toContain('暂停/继续监督');
-    expect(menu).toContain('停止监督');
-    expect(activeMenu).toContain('暂停监督');
-    expect(activeMenu).not.toContain('暂停/继续监督');
-    expect(pausedMenu).toContain('继续监督');
-    expect(pausedMenu).not.toContain('暂停/继续监督');
+    expect(menu).toContain('控制单个监督');
+    expect(menu).toContain('暂停/继续全部');
+    expect(menu).toContain('停止全部');
+    expect(activeMenu).toContain('暂停全部');
+    expect(activeMenu).not.toContain('暂停/继续全部');
+    expect(pausedMenu).toContain('继续全部');
+    expect(pausedMenu).not.toContain('暂停/继续全部');
     expect(menu).toContain('白名单用户单聊');
     expect(menu).not.toContain('审批卡片发送到审计群');
     expect(startObject.schema).toBe('2.0');
@@ -204,6 +218,9 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
     expect(start).toContain('surf-a');
+    expect(laneControl).toContain('pause-lane');
+    expect(laneControl).toContain('resume-lane');
+    expect(laneControl).toContain('stop-lane');
   });
 
   it('允许从启动表单重新监督已停止的终端', () => {
@@ -220,6 +237,7 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'approve',
     });
@@ -247,7 +265,11 @@ supervisor_model: k3`)).toEqual({
         message: JSON.stringify({
           active: true,
           terminals: [
-            { surfaceId: 'surf-supervised', label: 'pwsh.exe', workspace: '飞书管理', supervised: true },
+            {
+              surfaceId: 'surf-supervised', label: 'pwsh.exe', workspace: '飞书管理', supervised: true,
+              supervisionState: 'active', managementSessionId: 'sup-lane-auth', autonomous: true,
+              autonomyPermissionCount: 2, forbiddenActionCount: 3, policyOverridden: true,
+            },
             { surfaceId: 'surf-idle', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true },
           ],
           session: { sessionId: 'sup-1', stopWhen: '验证飞书连接', autonomous: false },
@@ -263,6 +285,8 @@ supervisor_model: k3`)).toEqual({
     expect(response).toContain('状态：监督中');
     expect(response).toContain('状态：已停止，可重新监督');
     expect(response).toContain('终端 ID：surf-supervised');
+    expect(response).toContain('管理会话 ID：sup-lane-auth');
+    expect(response).toContain('权限：全自动 · 允许 2/4 · 禁止 3（终端专用）');
     expect(response).toContain('终端 ID：surf-idle');
     expect(response).toContain('点击“启动监督”或“发送任务”，即可从下拉列表选择终端。');
   });

@@ -6,6 +6,7 @@ import type {
   SupervisorLane,
   SupervisorLaneConfig,
 } from '../../store/supervisor-slice';
+import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -28,6 +29,7 @@ import {
   SUPERVISOR_TAB_TITLE,
   SUPERVISOR_WORKSPACE_TITLE,
   supervisorTabTitle,
+  supervisorLaneBriefingChanged,
 } from '../../supervisor/protocol';
 import {
   listSupervisorRestoreCandidates,
@@ -277,6 +279,9 @@ export default function SupervisorSetupDialog() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [laneConfigs, setLaneConfigs] = useState<Record<string, SupervisorLaneConfig>>({});
+  const [lanePermissionOverrides, setLanePermissionOverrides] = useState<
+    Record<string, SupervisorAutonomyPermission[]>
+  >({});
   const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
@@ -296,6 +301,8 @@ export default function SupervisorSetupDialog() {
   const [autonomyPermissions, setAutonomyPermissions] = useState<SupervisorAutonomyPermission[]>(
     supervisor.autonomyPermissions || [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
   );
+  const [laneAutonomousOverrides, setLaneAutonomousOverrides] = useState<Record<string, boolean>>({});
+  const [laneForbiddenActionOverrides, setLaneForbiddenActionOverrides] = useState<Record<string, SupervisorForbiddenAction[]>>({});
   const [workScope, setWorkScope] = useState<SupervisorWorkScope>(
     supervisor.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
   );
@@ -325,6 +332,21 @@ export default function SupervisorSetupDialog() {
     setSelected(new Set(supervisor.lanes.map((lane) => lane.surfaceId)));
     setLaneConfigs(Object.fromEntries(
       supervisor.lanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
+    ));
+    setLanePermissionOverrides(Object.fromEntries(
+      supervisor.lanes.flatMap((lane) => Array.isArray(lane.autonomyPermissionsOverride)
+        ? [[lane.surfaceId, [...lane.autonomyPermissionsOverride]]]
+        : []),
+    ));
+    setLaneAutonomousOverrides(Object.fromEntries(
+      supervisor.lanes.flatMap((lane) => typeof lane.autonomousOverride === 'boolean'
+        ? [[lane.surfaceId, lane.autonomousOverride]]
+        : []),
+    ));
+    setLaneForbiddenActionOverrides(Object.fromEntries(
+      supervisor.lanes.flatMap((lane) => Array.isArray(lane.forbiddenActionsOverride)
+        ? [[lane.surfaceId, [...lane.forbiddenActionsOverride]]]
+        : []),
     ));
   }, [setupOpen]);
 
@@ -436,7 +458,7 @@ export default function SupervisorSetupDialog() {
 
   const configFileDefaultPath = () => {
     const selectedTerminal = candidates.find((candidate) => selected.has(candidate.surfaceId) && candidate.projectDir)
-      || supervisor.lanes.find((lane) => lane.enabled && lane.projectDir);
+      || supervisor.lanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped' && lane.projectDir);
     if (!selectedTerminal?.projectDir) return undefined;
     const projectDir = selectedTerminal.projectDir.replace(/[\\/]+$/, '');
     return `${projectDir}\\.wmux\\ai-supervisor.wmux-supervisor.json`;
@@ -542,6 +564,9 @@ export default function SupervisorSetupDialog() {
         projectDir: c.projectDir,
         scopeRoot: sessionRetained ? prev?.scopeRoot || c.projectDir : c.projectDir,
         enabled: keepsCurrentContext ? prev?.enabled ?? true : true,
+        controlState: keepsCurrentContext && prev
+          ? supervisorLaneControlState(prev)
+          : 'active',
         steps: keepsCurrentContext ? prev?.steps || [] : [],
         maxAutoSteps: keepsCurrentContext ? prev?.maxAutoSteps || 0 : 0,
         autoStepsUsed: keepsCurrentContext ? prev?.autoStepsUsed || 0 : 0,
@@ -564,6 +589,15 @@ export default function SupervisorSetupDialog() {
           stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
           planFilePath: config.planFilePath.trim(),
         },
+        ...(Array.isArray(lanePermissionOverrides[c.surfaceId])
+          ? { autonomyPermissionsOverride: [...lanePermissionOverrides[c.surfaceId]] }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, c.surfaceId)
+          ? { autonomousOverride: laneAutonomousOverrides[c.surfaceId] }
+          : {}),
+        ...(Array.isArray(laneForbiddenActionOverrides[c.surfaceId])
+          ? { forbiddenActionsOverride: [...laneForbiddenActionOverrides[c.surfaceId]] }
+          : {}),
         ...(restoreSource ? { restoreSource } : {}),
         ...(keepsCurrentContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
         ...(keepsCurrentContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
@@ -597,7 +631,7 @@ export default function SupervisorSetupDialog() {
         ? reasoningEffort
         : '',
       maxAutoSteps: 0,
-      maxAutoDecisions: autonomous ? null : normalizeMaxAutoDecisions(maxAutoDecisions),
+      maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
       autonomous: grantSessionAutonomy ? autonomous : false,
       autonomyPermissions,
       workScope,
@@ -686,12 +720,14 @@ export default function SupervisorSetupDialog() {
     return { ok: true, lanes: configuredLanes };
   };
 
-  const sendDedicatedBriefings = () => {
+  const sendDedicatedBriefings = (laneIds: ReadonlySet<string>) => {
+    if (laneIds.size === 0) return;
     window.setTimeout(() => void (async () => {
       try {
         let session = useStore.getState().supervisor;
         if (session.restoreAuditHistory) {
           for (const lane of session.lanes) {
+            if (!laneIds.has(lane.id)) continue;
             if (!lane.restoreSource || lane.restoredFromSessionId || (lane.decisions?.length ?? 0) > 0) continue;
             const restored = await restoreSelectedLaneHistory(lane, lane.restoreSource);
             if (restored) useStore.getState().updateLane(lane.id, restored);
@@ -700,6 +736,7 @@ export default function SupervisorSetupDialog() {
         }
         const states = (window as any).__wmux_getAgentStates?.() || {};
         for (const lane of session.lanes) {
+          if (!laneIds.has(lane.id)) continue;
           if (!lane.supervisorSurfaceId) continue;
           const text = buildSupervisorBriefing(session, {
             lane,
@@ -734,7 +771,7 @@ export default function SupervisorSetupDialog() {
     }
 
     if (andStart) {
-      const result = ensureDedicatedSupervisors(lanes, false);
+      const result = ensureDedicatedSupervisors(lanes, !sessionRetained);
       if (!result.ok) {
         window.alert('无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。');
         return;
@@ -742,9 +779,19 @@ export default function SupervisorSetupDialog() {
       persistFields(result.lanes, true);
       setSupervisorLanes(result.lanes);
       if (!sessionRetained) startSupervisor();
+      const nextSession = useStore.getState().supervisor;
+      const previousBySurfaceId = new Map(supervisor.lanes.map((lane) => [lane.surfaceId, lane]));
+      const briefingLaneIds = new Set(nextSession.lanes
+        .filter((lane) => supervisorLaneBriefingChanged(
+          supervisor,
+          previousBySurfaceId.get(lane.surfaceId),
+          nextSession,
+          lane,
+        ))
+        .map((lane) => lane.id));
       const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
       if (workspaceId) selectWorkspace(workspaceId);
-      sendDedicatedBriefings();
+      sendDedicatedBriefings(briefingLaneIds);
     } else {
       persistFields(lanes, false);
       setSupervisorLanes(lanes);
@@ -767,7 +814,7 @@ export default function SupervisorSetupDialog() {
       window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
       return;
     }
-    const result = ensureDedicatedSupervisors(lanes, false);
+    const result = ensureDedicatedSupervisors(lanes, true);
     if (!result.ok) {
       window.alert('无法为所有选中终端创建专属监督 AI，请重试。');
       return;
@@ -777,7 +824,7 @@ export default function SupervisorSetupDialog() {
     closeSupervisorSetup();
     const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
     if (workspaceId) selectWorkspace(workspaceId);
-    sendDedicatedBriefings();
+    sendDedicatedBriefings(new Set(result.lanes.map((lane) => lane.id)));
   };
 
   const toggleAutonomyPermission = (permission: SupervisorAutonomyPermission) => {
@@ -832,6 +879,12 @@ export default function SupervisorSetupDialog() {
               {candidates.map((candidate) => {
                 const isSelected = selected.has(candidate.surfaceId);
                 const laneConfig = laneConfigs[candidate.surfaceId] || emptyLaneConfig();
+                const lanePermissionOverride = lanePermissionOverrides[candidate.surfaceId];
+                const lanePolicyOverride = Array.isArray(lanePermissionOverride)
+                  || Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, candidate.surfaceId)
+                  || Array.isArray(laneForbiddenActionOverrides[candidate.surfaceId]);
+                const laneAutonomous = laneAutonomousOverrides[candidate.surfaceId] ?? autonomous;
+                const laneForbiddenActions = laneForbiddenActionOverrides[candidate.surfaceId] || forbiddenActions;
                 const isExistingLane = sessionRetained
                   && supervisor.lanes.some((lane) => lane.surfaceId === candidate.surfaceId);
                 return (
@@ -949,6 +1002,92 @@ export default function SupervisorSetupDialog() {
                             placeholder="例如：此终端对应的测试环境已准备好"
                           />
                         </div>
+                        <div className="supervisor-dialog__section">
+                          <label className="supervisor-dialog__row">
+                            <input
+                              type="checkbox"
+                              checked={lanePolicyOverride}
+                              onChange={(event) => {
+                                const checked = event.target.checked;
+                                setLanePermissionOverrides((current) => {
+                                  if (checked) return { ...current, [candidate.surfaceId]: [...autonomyPermissions] };
+                                  const next = { ...current };
+                                  delete next[candidate.surfaceId];
+                                  return next;
+                                });
+                                setLaneAutonomousOverrides((current) => {
+                                  if (checked) return { ...current, [candidate.surfaceId]: autonomous };
+                                  const next = { ...current };
+                                  delete next[candidate.surfaceId];
+                                  return next;
+                                });
+                                setLaneForbiddenActionOverrides((current) => {
+                                  if (checked) return { ...current, [candidate.surfaceId]: [...forbiddenActions] };
+                                  const next = { ...current };
+                                  delete next[candidate.surfaceId];
+                                  return next;
+                                });
+                              }}
+                            />
+                            <span className="supervisor-dialog__row-main">
+                              <span className="supervisor-dialog__row-label">为此终端单独设置监督权限</span>
+                              <span className="supervisor-dialog__row-meta">可覆盖全自动、允许自主处理和禁止事项；关闭时继承会话默认。</span>
+                            </span>
+                          </label>
+                          {lanePolicyOverride && Array.isArray(lanePermissionOverride) && (
+                            <div className="supervisor-dialog__option-list">
+                              <label className="supervisor-dialog__option">
+                                <input
+                                  type="checkbox"
+                                  checked={laneAutonomous}
+                                  onChange={(event) => setLaneAutonomousOverrides((current) => ({
+                                    ...current,
+                                    [candidate.surfaceId]: event.target.checked,
+                                  }))}
+                                />
+                                <span>全自动监督（仅此终端）</span>
+                              </label>
+                              <div className="supervisor-dialog__label">允许自主处理</div>
+                              {SUPERVISOR_AUTONOMY_PERMISSION_VALUES.map((permission) => (
+                                <label key={permission} className="supervisor-dialog__option">
+                                  <input
+                                    type="checkbox"
+                                    checked={lanePermissionOverride.includes(permission)}
+                                    onChange={() => setLanePermissionOverrides((current) => {
+                                      const selectedPermissions = current[candidate.surfaceId] || [];
+                                      return {
+                                        ...current,
+                                        [candidate.surfaceId]: selectedPermissions.includes(permission)
+                                          ? selectedPermissions.filter((item) => item !== permission)
+                                          : [...selectedPermissions, permission],
+                                      };
+                                    })}
+                                  />
+                                  <span>{AUTONOMY_PERMISSION_LABELS[permission]}</span>
+                                </label>
+                              ))}
+                              <div className="supervisor-dialog__label">此终端额外禁止事项</div>
+                              {SUPERVISOR_FORBIDDEN_ACTION_VALUES.map((action) => (
+                                <label key={action} className="supervisor-dialog__option">
+                                  <input
+                                    type="checkbox"
+                                    checked={laneForbiddenActions.includes(action)}
+                                    onChange={() => setLaneForbiddenActionOverrides((current) => {
+                                      const selectedActions = current[candidate.surfaceId] || [];
+                                      return {
+                                        ...current,
+                                        [candidate.surfaceId]: selectedActions.includes(action)
+                                          ? selectedActions.filter((item) => item !== action)
+                                          : [...selectedActions, action],
+                                      };
+                                    })}
+                                  />
+                                  <span>{FORBIDDEN_ACTION_LABELS[action]}</span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </details>
                     )}
                   </div>
@@ -963,8 +1102,8 @@ export default function SupervisorSetupDialog() {
           </section>
 
           <section className="supervisor-dialog__group">
-            <div className="supervisor-dialog__group-title">2. 会话统一的自主权限与边界</div>
-            <div className="supervisor-dialog__group-description">明确监督 AI 可以自主处理的动作，以及本次任务额外禁止的变化。</div>
+            <div className="supervisor-dialog__group-title">2. 会话默认的自主权限与边界</div>
+            <div className="supervisor-dialog__group-description">所有终端默认使用这些权限；在终端配置中可单独覆盖全自动、允许自主处理和禁止事项。</div>
             <label className="supervisor-dialog__row supervisor-dialog__autonomous-row">
               <input
                 type="checkbox"
@@ -1057,11 +1196,10 @@ export default function SupervisorSetupDialog() {
                 placeholder="不限制"
                 value={maxAutoDecisions}
                 onChange={(event) => setMaxAutoDecisions(event.target.value)}
-                disabled={autonomous}
               />
               <div className="supervisor-dialog__hint">
                 {autonomous
-                  ? '全自动监督已启用：本会话不使用自动判断次数上限。'
+                  ? '会话默认为全自动，但单独关闭全自动的终端仍使用此上限。'
                   : '每个终端独立计数；留空表示不限制，填写 1–20 后达到上限会等待人工审阅。'}
               </div>
             </section>

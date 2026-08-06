@@ -29,8 +29,12 @@ import {
   autonomousDecisionBoundary,
   buildInjectedPrompt,
   buildSupervisorBriefing,
+  effectiveSupervisorAutonomyPermissions,
+  effectiveSupervisorAutonomous,
+  effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   humanDecisionBoundary,
+  supervisorLaneBriefingChanged,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
 import { formatSupervisorAuditTrail, summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
@@ -268,6 +272,7 @@ describe('supervisor isolation', () => {
 
   it('revokes autonomous authority when the supervision session stops', () => {
     const store = makeStore();
+    store.getState().setSupervisorLanes([lane({ autonomousOverride: true })]);
     store.getState().patchSupervisor({ autonomous: true });
     store.getState().startSupervisor();
     store.getState().pauseSupervisor();
@@ -275,6 +280,8 @@ describe('supervisor isolation', () => {
     store.getState().stopSupervisor();
 
     expect(store.getState().supervisor).toMatchObject({ active: false, paused: false, autonomous: false });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'stopped', enabled: false });
+    expect(store.getState().supervisor.lanes[0].autonomousOverride).toBeUndefined();
   });
 
   it('pauses and resumes the same session without discarding its pending decision', () => {
@@ -612,6 +619,106 @@ describe('supervisor isolation', () => {
     expect(added.managementSessionId).not.toBe(existing.managementSessionId);
   });
 
+  it('pauses, resumes, and stops one supervisor lane without changing the other lane', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([
+      lane({ pendingSupervisorDeliveries: [{ id: 'delivery-a', kind: 'task-end', text: 'done', task: 'auth', createdAt: 1 }] }),
+      lane({ id: 'lane-b', surfaceId: 'worker-b' as any, supervisorSurfaceId: 'supervisor-b' as any }),
+    ]);
+    store.getState().startSupervisor();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a', surfaceId: 'worker-a' as any, laneLabel: 'Auth worker',
+      text: '等待决策', source: 'supervisor-important',
+    });
+
+    store.getState().pauseSupervisorLane('lane-a', '仅暂停 A');
+    let session = store.getState().supervisor;
+    expect(session).toMatchObject({ active: true, paused: false });
+    expect(session.lanes[0]).toMatchObject({ controlState: 'paused', enabled: true });
+    expect(session.lanes[1]).toMatchObject({ controlState: 'active', enabled: true });
+    expect(session.lanes[0].pendingSupervisorDeliveries).toHaveLength(1);
+    expect(session.pendingApprovals).toHaveLength(1);
+
+    store.getState().resumeSupervisorLane('lane-a', '仅继续 A');
+    expect(store.getState().supervisor.lanes[0].controlState).toBe('active');
+
+    store.getState().stopSupervisorLane('lane-a', '仅停止 A');
+    session = store.getState().supervisor;
+    expect(session).toMatchObject({ active: true, paused: false });
+    expect(session.lanes[0]).toMatchObject({ controlState: 'stopped', enabled: false, supervisorSurfaceId: null });
+    expect(session.lanes[1].controlState).toBe('active');
+    expect(session.pendingApprovals).toHaveLength(0);
+  });
+
+  it('inherits session permissions by default and supports complete per-lane policy overrides', () => {
+    const session = createDefaultSupervisorSession();
+    session.autonomous = false;
+    session.autonomyPermissions = ['same-route-next'];
+    session.forbiddenActions = ['external-network'];
+    const inherited = lane();
+    const overridden = lane({
+      autonomousOverride: true,
+      autonomyPermissionsOverride: ['technical-choice', 'route-adjustment'],
+      forbiddenActionsOverride: ['large-refactor', 'weaken-tests'],
+    });
+
+    expect(effectiveSupervisorAutonomous(session, inherited)).toBe(false);
+    expect(effectiveSupervisorAutonomyPermissions(session, inherited)).toEqual(['same-route-next']);
+    expect(effectiveSupervisorForbiddenActions(session, inherited)).toEqual(['external-network']);
+    expect(effectiveSupervisorAutonomous(session, overridden)).toBe(true);
+    expect(effectiveSupervisorAutonomyPermissions(session, overridden)).toEqual(['technical-choice', 'route-adjustment']);
+    expect(effectiveSupervisorForbiddenActions(session, overridden)).toEqual(['large-refactor', 'weaken-tests']);
+
+    const briefing = buildSupervisorBriefing(session, { lane: overridden, state: 'idle' });
+    expect(briefing).toContain('本终端启用全自动监督');
+    expect(briefing).toContain('大范围重构');
+    expect(briefing).toContain('删除、跳过或弱化测试');
+    expect(briefing).not.toContain('访问外部网络或调用外部服务');
+  });
+
+  it('briefs only a newly added or explicitly changed supervision lane', () => {
+    const previousSession = createDefaultSupervisorSession();
+    previousSession.taskGoal = '认证任务';
+    previousSession.stopWhen = '认证测试通过';
+    const previousLane = lane();
+    const migratedLane = lane({
+      config: {
+        taskGoal: '认证任务',
+        taskDescription: '',
+        preconditions: '',
+        stopWhen: '认证测试通过',
+        stopWhenKind: 'concrete',
+        planFilePath: '',
+      },
+    });
+    const nextSession = { ...previousSession, lanes: [migratedLane] };
+
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      previousLane,
+      nextSession,
+      migratedLane,
+    )).toBe(false);
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      undefined,
+      nextSession,
+      lane({ id: 'lane-new', surfaceId: 'worker-new' as any, supervisorSurfaceId: 'supervisor-new' as any }),
+    )).toBe(true);
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      previousLane,
+      nextSession,
+      lane({ config: { ...migratedLane.config!, stopWhen: '认证与集成测试通过' } }),
+    )).toBe(true);
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      previousLane,
+      { ...nextSession, autonomous: true },
+      migratedLane,
+    )).toBe(true);
+  });
+
   it('warns when no task source exists but still permits stop evaluation', () => {
     const text = buildSupervisorBriefing(createDefaultSupervisorSession(), {
       lane: lane(),
@@ -687,7 +794,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('用户已确认、在本次监督会话内有效');
     expect(briefing).toContain('不要仅因历史审计、任务日志');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
-    expect(briefing).toContain('本会话启用有限自主监督');
+    expect(briefing).toContain('本终端启用有限自主监督');
     expect(briefing).toContain('continue / rework 携带 --next');
     expect(briefing).toContain('--proposal-kind route-adjustment');
     expect(briefing).toContain('--permission-command');
@@ -699,7 +806,7 @@ describe('supervisor isolation', () => {
     const session = { ...createDefaultSupervisorSession(), autonomous: true };
     const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'blocked' });
 
-    expect(briefing).toContain('本会话启用全自动监督');
+    expect(briefing).toContain('本终端启用全自动监督');
     expect(briefing).toContain('--permission-command');
     expect(briefing).toContain('git push/重写历史');
     expect(briefing).toContain('已授权技术方案选择');

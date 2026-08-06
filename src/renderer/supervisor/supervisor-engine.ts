@@ -7,14 +7,15 @@ import type {
   SupervisorSession,
   SupervisorStep,
 } from '../store/supervisor-slice';
+import { supervisorLaneControlState } from '../store/supervisor-slice';
 import {
   buildInjectedPrompt,
   buildIdleHint,
   buildStopCheckHint,
+  effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorStopWhen,
   effectiveSupervisorStopWhenKind,
 } from './protocol';
-import { DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS } from '../../shared/supervisor-policy';
 
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 
@@ -123,7 +124,7 @@ export function tickLane(opts: {
   const { session, lane, surfaceState, now } = opts;
   const rt: LaneRuntime = { ...opts.runtime };
   const actions: TickAction[] = [];
-  if (!lane.enabled || rt.humanNotified || lane.stopConfirmed) {
+  if (supervisorLaneControlState(lane) !== 'active' || rt.humanNotified || lane.stopConfirmed) {
     return { actions, runtime: rt };
   }
   // A worker finished a turn. Its supervisor must inspect that turn before the
@@ -134,9 +135,7 @@ export function tickLane(opts: {
   const mode = session.mode || 'direct';
   const laneStopWhen = effectiveSupervisorStopWhen(session, lane);
   const laneStopWhenKind = effectiveSupervisorStopWhenKind(session, lane);
-  const autonomyPermissions = Array.isArray(session.autonomyPermissions)
-    ? session.autonomyPermissions
-    : DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
+  const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
 
   let permissionInstruction: string;
   if (lane.remoteSshControl) {

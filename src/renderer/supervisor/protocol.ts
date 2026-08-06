@@ -120,6 +120,84 @@ export function effectiveSupervisorStopWhenKind(
   return effectiveSupervisorLaneConfig(session, lane).stopWhenKind;
 }
 
+export function effectiveSupervisorAutonomyPermissions(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): SupervisorAutonomyPermission[] {
+  if (Array.isArray(lane.autonomyPermissionsOverride)) {
+    return [...lane.autonomyPermissionsOverride];
+  }
+  return Array.isArray(session.autonomyPermissions)
+    ? [...session.autonomyPermissions]
+    : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
+}
+
+export function effectiveSupervisorAutonomous(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): boolean {
+  return typeof lane.autonomousOverride === 'boolean'
+    ? lane.autonomousOverride
+    : session.autonomous === true;
+}
+
+export function effectiveSupervisorForbiddenActions(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): SupervisorForbiddenAction[] {
+  if (Array.isArray(lane.forbiddenActionsOverride)) {
+    return [...lane.forbiddenActionsOverride];
+  }
+  return Array.isArray(session.forbiddenActions)
+    ? [...session.forbiddenActions]
+    : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS];
+}
+
+function sameStringList(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  const a = left || [];
+  const b = right || [];
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+/** Whether a dedicated supervisor must receive a fresh briefing after setup is applied. */
+export function supervisorLaneBriefingChanged(
+  previousSession: SupervisorSession,
+  previousLane: SupervisorLane | undefined,
+  nextSession: SupervisorSession,
+  nextLane: SupervisorLane,
+): boolean {
+  if (!previousLane?.supervisorSurfaceId
+    || previousLane.supervisorSurfaceId !== nextLane.supervisorSurfaceId) return true;
+
+  const previousConfig = effectiveSupervisorLaneConfig(previousSession, previousLane);
+  const nextConfig = effectiveSupervisorLaneConfig(nextSession, nextLane);
+  const configChanged = (Object.keys(previousConfig) as Array<keyof SupervisorLaneConfig>)
+    .some((key) => previousConfig[key].trim() !== nextConfig[key].trim());
+  if (configChanged) return true;
+
+  return previousSession.mode !== nextSession.mode
+    || effectiveSupervisorAutonomous(previousSession, previousLane)
+      !== effectiveSupervisorAutonomous(nextSession, nextLane)
+    || previousSession.maxAutoDecisions !== nextSession.maxAutoDecisions
+    || previousSession.workScope !== nextSession.workScope
+    || !sameStringList(
+      effectiveSupervisorAutonomyPermissions(previousSession, previousLane),
+      effectiveSupervisorAutonomyPermissions(nextSession, nextLane),
+    )
+    || !sameStringList(
+      effectiveSupervisorForbiddenActions(previousSession, previousLane),
+      effectiveSupervisorForbiddenActions(nextSession, nextLane),
+    )
+    || previousLane.currentTask !== nextLane.currentTask
+    || previousLane.remoteSshControl !== nextLane.remoteSshControl
+    || previousLane.scopeRoot !== nextLane.scopeRoot
+    || previousLane.projectDir !== nextLane.projectDir
+    || previousLane.restoreSource?.surfaceId !== nextLane.restoreSource?.surfaceId
+    || previousLane.restoreSource?.sessionId !== nextLane.restoreSource?.sessionId
+    || previousLane.restoredHistory !== nextLane.restoredHistory
+    || previousLane.restoredFromSessionId !== nextLane.restoredFromSessionId;
+}
+
 function permissionEnabled(
   permissions: readonly SupervisorAutonomyPermission[],
   permission: SupervisorAutonomyPermission,
@@ -193,9 +271,7 @@ const FORBIDDEN_ACTION_TEXT: Record<SupervisorForbiddenAction, string> = {
 
 function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane): string[] {
   const projectDir = lane.scopeRoot?.trim() || lane.projectDir?.trim() || '（当前终端工程目录未上报）';
-  const forbiddenActions = Array.isArray(session.forbiddenActions)
-    ? session.forbiddenActions
-    : DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS;
+  const forbiddenActions = effectiveSupervisorForbiddenActions(session, lane);
   const workScope = session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE;
   const forbidden = forbiddenActions.length
     ? forbiddenActions.map((item) => `- ${FORBIDDEN_ACTION_TEXT[item]}`).join('\n')
@@ -269,9 +345,8 @@ export function buildSupervisorBriefing(
   const currentTask = lane.currentTask?.trim() || '';
   const laneConfig = effectiveSupervisorLaneConfig(session, lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
-  const autonomyPermissions = Array.isArray(session.autonomyPermissions)
-    ? session.autonomyPermissions
-    : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
+  const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
+  const autonomous = effectiveSupervisorAutonomous(session, lane);
   const laneAutonomyPermissions = lane.remoteSshControl
     ? autonomyPermissions.filter((permission) => permission !== 'permission-confirm')
     : autonomyPermissions;
@@ -332,7 +407,7 @@ export function buildSupervisorBriefing(
     '',
   ];
   const policyBlock = structuredPolicyBlock(session, lane);
-  const decisionBoundary = session.autonomous
+  const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions)
     : humanDecisionBoundary(laneAutonomyPermissions);
   const postDecisionRule = decisionBoundary.length + 4;
@@ -342,9 +417,9 @@ export function buildSupervisorBriefing(
     return [
       '# AI 监督 · 统一监督',
       '',
-      session.autonomous
-        ? '本会话启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 等待用户。'
-        : '本会话启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给用户。',
+      autonomous
+        ? '本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 等待用户。'
+        : '本终端启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给用户。',
       '',
       ...taskContextBlock,
       ...stopContextBlock,
@@ -356,8 +431,8 @@ export function buildSupervisorBriefing(
       stopWhenJudgmentGuide(kind, effectiveStopWhen),
       '',
       '## 自动判断上限',
-      session.autonomous
-        ? '本会话不设自动判断次数上限；用户可随时从侧栏停止并切回人工审核。'
+      autonomous
+        ? '本终端不设自动判断次数上限；用户可随时从侧栏停止并切回人工审核。'
         : session.maxAutoDecisions
         ? `本终端每 ${session.maxAutoDecisions} 次 AI 裁决后必须等待人工审阅；达到上限时不要再调用裁决命令，等待用户确认后再继续。`
         : '本终端未设置自动判断次数上限；仅在重大路线变更、高影响风险、需求取舍或确无低风险推进路径时提交 needs-human。',
@@ -368,7 +443,7 @@ export function buildSupervisorBriefing(
       '## 本轮裁决流程',
       decisionReadStep,
       `2. 条件仅作参考；${decisionEvidence}`,
-      session.autonomous
+      autonomous
         ? `3. ${autonomyPermissions.includes('same-route-next') ? '已授权的安全推进可使用 continue / rework 携带 --next' : '未授权原路线 --next'}；${autonomyPermissions.includes('route-adjustment') ? '小范围路线调整另附 route-adjustment' : '路线调整必须 needs-human'}；复杂、高影响或需要用户偏好的问题使用 needs-human 并等待用户。`
         : `3. ${autonomyPermissions.includes('same-route-next') ? '原目标内低风险推进使用 continue / rework 携带 --next' : '未授权原路线 --next，无法推进时使用 needs-human'}；${autonomyPermissions.includes('route-adjustment') ? '小范围路线调整另附 --proposal-kind route-adjustment' : '路线调整必须 needs-human'}。复杂、高影响或需要用户偏好的问题使用 needs-human。`,
       '',

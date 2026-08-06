@@ -17,9 +17,17 @@ import {
 import { v4 as uuid } from 'uuid';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
 import { appendSupervisorRecord } from './supervisor/recording';
-import { clearSupervisorLaneContext, type SupervisorDecision, type SupervisorLane } from './store/supervisor-slice';
+import {
+  clearSupervisorLaneContext,
+  supervisorLaneControlState,
+  type SupervisorDecision,
+  type SupervisorLane,
+} from './store/supervisor-slice';
 import {
   buildSupervisorBriefing,
+  effectiveSupervisorAutonomyPermissions,
+  effectiveSupervisorAutonomous,
+  effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   effectiveSupervisorTaskGoal,
   SUPERVISOR_TAB_TITLE,
@@ -654,20 +662,26 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
     return { ok: false, error: '该待决项已超过 24 小时，已作废。', message: '' };
   }
   if (decision === 'pause') {
-    if (session.paused) return { ok: true, message: '当前 AI 监督已经暂停，待决项仍保留。' };
     if (!session.active) return { ok: false, error: '当前监督会话已停止，不能暂停旧待决项。', message: '' };
     const lane = session.lanes.find((item) => item.id === approval.laneId);
-    store.pauseSupervisor(`飞书人工暂停待决项：${approval.laneLabel}；决策内容已保留`);
+    if (!lane) return { ok: false, error: '待决项对应的监督通道不存在。', message: '' };
+    if (supervisorLaneControlState(lane) === 'paused') return { ok: true, message: `${lane.label} 已经暂停，待决项仍保留。` };
+    store.pauseSupervisorLane(lane.id, `飞书人工暂停待决项：${approval.laneLabel}；该通道决策内容已保留`);
     remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
-    return { ok: true, message: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' };
+    return { ok: true, message: `已暂停 ${lane.label} 的 AI 监督；其他监督通道继续运行。` };
   }
   const lane = session.lanes.find((item) => item.id === approval.laneId);
   if (decision === 'stop') {
     if (!session.active && !session.paused) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
     store.rejectPending(approvalId);
-    store.stopSupervisor('飞书人工决定停止监督');
     remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
-    return { ok: true, message: '已停止当前 AI 监督。' };
+    if (lane) {
+      closeStoppedSupervisorSurfaces([lane]);
+      store.stopSupervisorLane(lane.id, `飞书人工停止 ${lane.label}`);
+    }
+    return { ok: true, message: lane
+      ? `已停止 ${lane.label} 的 AI 监督；其他监督通道不受影响。`
+      : '待决项对应通道不存在，已移除该待决项。' };
   }
   if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
   if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
@@ -1055,10 +1069,13 @@ export function initPipeBridge(): void {
     const permissionResponse = String(params?.permissionResponse || '').trim().slice(0, 16);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
     const proposalKinds = new Set(['route-change', 'important']);
-    const lane = session.lanes.find((item) => item.surfaceId === surfaceId && item.enabled);
+    const lane = session.lanes.find((item) => item.surfaceId === surfaceId);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
+    const laneState = supervisorLaneControlState(lane);
+    if (laneState !== 'active') return { ok: false, error: laneState === 'paused' ? '当前监督通道已暂停' : '当前监督通道已停止' };
+    const autonomous = effectiveSupervisorAutonomous(session, lane);
     const remoteSshControl = isRemoteSshControlledLane(lane, store.workspaces);
-    if (lane.autoDecisionLimitReached && !session.autonomous) {
+    if (lane.autoDecisionLimitReached && !autonomous) {
       return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
     }
     // A supervisor must not smuggle a declared route/important proposal through
@@ -1069,7 +1086,7 @@ export function initPipeBridge(): void {
     if (proposalKind === 'route-adjustment' && !next) {
       return { ok: false, error: 'route-adjustment 必须携带明确的低风险 --next' };
     }
-    if (!isSupervisorNextAllowed(session.mode, outcome, next, session.autonomous)) {
+    if (!isSupervisorNextAllowed(session.mode, outcome, next, autonomous)) {
       return { ok: false, error: '只有 continue、rework 或 needs-human 可以携带 --next' };
     }
     if (
@@ -1089,9 +1106,7 @@ export function initPipeBridge(): void {
     if (outcome !== 'needs-human' && nextBlockReason) {
       return { ok: false, error: `监督 AI 禁止自动执行${nextBlockReason}；请使用 needs-human 交给人工处理` };
     }
-    const forbiddenActions = Array.isArray(session.forbiddenActions)
-      ? session.forbiddenActions
-      : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS];
+    const forbiddenActions = effectiveSupervisorForbiddenActions(session, lane);
     const configuredNextBlockReason = configuredActionBlockReason(next, forbiddenActions);
     if (outcome !== 'needs-human' && configuredNextBlockReason) {
       return { ok: false, error: `该动作命中用户勾选的禁止事项：${configuredNextBlockReason}；请使用 needs-human` };
@@ -1157,7 +1172,9 @@ export function initPipeBridge(): void {
       return { ok: false, error: '当前没有待裁决轮次；请等待工作终端任务结束或权限阻塞通知' };
     }
     const agentState = ((w.__wmux_getAgentStates?.() || {})[surfaceId] || undefined) as SupervisorAgentStateView | undefined;
-    const selectedPermissions = selectedAutonomyPermissions(session.autonomyPermissions);
+    const selectedPermissions = selectedAutonomyPermissions(
+      effectiveSupervisorAutonomyPermissions(session, lane),
+    );
     const requiredPermissions = requiredAutonomyPermissions({
       outcome,
       next,
@@ -1242,7 +1259,7 @@ export function initPipeBridge(): void {
     });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
     const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
-    const limitReached = !session.autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
+    const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     store.updateLane(lane.id, {
       autoDecisionsUsed,
       decisions: [
@@ -1375,11 +1392,27 @@ export function initPipeBridge(): void {
           active: state.active,
           paused: state.paused,
           terminals: remoteTerminalList().map((terminal) => ({
+            ...(() => {
+              const lane = state.lanes.find((item) => item.surfaceId === terminal.surfaceId);
+              const supervisionState = lane ? supervisorLaneControlState(lane) : 'none';
+              return {
+                supervised: !!lane && supervisionState !== 'stopped' && (state.active || state.paused),
+                restartable: supervisionState === 'stopped',
+                supervisionState,
+                managementSessionId: lane?.managementSessionId || null,
+                autonomous: lane ? effectiveSupervisorAutonomous(state, lane) : null,
+                autonomyPermissionCount: lane ? effectiveSupervisorAutonomyPermissions(state, lane).length : null,
+                forbiddenActionCount: lane ? effectiveSupervisorForbiddenActions(state, lane).length : null,
+                policyOverridden: !!lane && (
+                  Array.isArray(lane.autonomyPermissionsOverride)
+                  || typeof lane.autonomousOverride === 'boolean'
+                  || Array.isArray(lane.forbiddenActionsOverride)
+                ),
+              };
+            })(),
             surfaceId: terminal.surfaceId,
             label: terminal.label,
             workspace: terminal.workspaceTitle,
-            supervised: (state.active || state.paused) && state.lanes.some((lane) => lane.surfaceId === terminal.surfaceId && lane.enabled),
-            restartable: !state.active && !state.paused && state.lanes.some((lane) => lane.surfaceId === terminal.surfaceId && lane.enabled),
           })),
           session: state.active || state.paused
             ? { sessionId: state.sessionId, stopWhen: state.stopWhen, autonomous: state.autonomous }
@@ -1390,6 +1423,41 @@ export function initPipeBridge(): void {
     }
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
+    if (action === 'pause-lane' || action === 'resume-lane' || action === 'stop-lane') {
+      const session = useStore.getState().supervisor;
+      const actor = String(params?.actor || 'unknown');
+      const terminal = String(params?.terminal || '');
+      const lane = session.lanes.find((item) => item.surfaceId === terminal || item.managementSessionId === terminal);
+      if (!lane) return { ok: false, error: '没有找到对应的 AI 监督通道。', message: '' };
+      const laneState = supervisorLaneControlState(lane);
+      if (action === 'pause-lane') {
+        if (laneState === 'stopped') return { ok: false, error: `${lane.label} 已停止，不能暂停。`, message: '' };
+        if (laneState === 'paused') return { ok: true, message: `${lane.label} 已经暂停。` };
+        remoteAudit(session, lane, 'supervisor.remote-command', { action: 'pause-lane', actor });
+        useStore.getState().pauseSupervisorLane(lane.id, `由飞书暂停 ${lane.label}`);
+        return { ok: true, message: `已暂停 ${lane.label} 的 AI 监督；其他通道继续运行。` };
+      }
+      if (action === 'resume-lane') {
+        if (laneState === 'stopped') return { ok: false, error: `${lane.label} 已停止；请重新配置后启动。`, message: '' };
+        if (laneState === 'active') return { ok: true, message: `${lane.label} 已经在监督中。` };
+        if (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)) {
+          return { ok: false, error: `${lane.label} 的专属监督终端已缺失；请在 wmux 中重新配置。`, message: '' };
+        }
+        remoteAudit(session, lane, 'supervisor.remote-command', { action: 'resume-lane', actor });
+        useStore.getState().resumeSupervisorLane(lane.id, `由飞书继续 ${lane.label}`);
+        if (session.active && !session.pendingApprovals.some((item) => item.laneId === lane.id)) {
+          sendToSurface(lane.supervisorSurfaceId, '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+        }
+        return { ok: true, message: session.paused
+          ? `${lane.label} 已设为继续；当前会话仍处于全局暂停。`
+          : `已继续 ${lane.label} 的 AI 监督。` };
+      }
+      if (laneState === 'stopped') return { ok: true, message: `${lane.label} 已经停止。` };
+      remoteAudit(session, lane, 'supervisor.remote-command', { action: 'stop-lane', actor });
+      closeStoppedSupervisorSurfaces([lane]);
+      useStore.getState().stopSupervisorLane(lane.id, `由飞书停止 ${lane.label}`);
+      return { ok: true, message: `已停止 ${lane.label} 的 AI 监督；其他通道不受影响。` };
+    }
     if (action === 'toggle-pause') {
       const session = useStore.getState().supervisor;
       const actor = String(params?.actor || 'unknown');
@@ -1399,14 +1467,17 @@ export function initPipeBridge(): void {
         return { ok: true, message: '已暂停当前 AI 监督；会话、监督终端和待决项均已保留。' };
       }
       if (session.paused) {
-        const missingLane = session.lanes.find((lane) => lane.enabled && (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)));
+        const missingLane = session.lanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped'
+          && (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)));
         if (missingLane) return { ok: false, error: `专属监督终端已缺失：${missingLane.label}。请在 wmux 中停止后重新配置。`, message: '' };
         useStore.getState().resumeSupervisor();
         const resumed = useStore.getState().supervisor;
         const pendingLaneIds = new Set(resumed.pendingApprovals.map((item) => item.laneId));
         for (const lane of resumed.lanes) {
           remoteAudit(resumed, lane, 'supervisor.remote-command', { action: 'resume', actor });
-          if (!lane.enabled || !lane.supervisorSurfaceId || pendingLaneIds.has(lane.id)) continue;
+          if (supervisorLaneControlState(lane) !== 'active'
+            || !lane.supervisorSurfaceId
+            || pendingLaneIds.has(lane.id)) continue;
           sendToSurface(lane.supervisorSurfaceId, '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
         }
         return { ok: true, message: '已继续原 AI 监督会话。' };

@@ -20,6 +20,7 @@ export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
 export type StopWhenKind = 'direction' | 'concrete';
 
 export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
+export type SupervisorLaneControlState = 'active' | 'paused' | 'stopped';
 
 export interface SupervisorStep {
   id: string;
@@ -83,6 +84,8 @@ export interface SupervisorLane {
   /** Immutable work-scope root captured when this supervision session starts. */
   scopeRoot?: string;
   enabled: boolean;
+  /** Independent runtime control; missing legacy values derive from enabled. */
+  controlState?: SupervisorLaneControlState;
   steps: SupervisorStep[];
   /** goal-chase: max autonomous decision injects for this lane. */
   maxAutoSteps: number;
@@ -110,6 +113,12 @@ export interface SupervisorLane {
   currentTask?: string;
   /** Independent task configuration for this terminal and its dedicated supervisor. */
   config?: SupervisorLaneConfig;
+  /** Optional per-terminal override; undefined inherits the session defaults. */
+  autonomyPermissionsOverride?: SupervisorAutonomyPermission[];
+  /** Optional per-terminal full-auto switch; undefined inherits the session default. */
+  autonomousOverride?: boolean;
+  /** Optional per-terminal forbidden actions; undefined inherits the session defaults. */
+  forbiddenActionsOverride?: SupervisorForbiddenAction[];
   /** @deprecated Compatibility with sessions created before per-terminal configuration. */
   taskGoalOverride?: string;
   /** @deprecated Compatibility with sessions created before per-terminal configuration. */
@@ -233,6 +242,9 @@ export interface SupervisorSlice {
   pauseSupervisor: (detail?: string) => void;
   resumeSupervisor: () => void;
   stopSupervisor: (detail?: string) => void;
+  pauseSupervisorLane: (laneId: string, detail?: string) => void;
+  resumeSupervisorLane: (laneId: string, detail?: string) => void;
+  stopSupervisorLane: (laneId: string, detail?: string) => void;
   appendSupervisorLog: (laneId: string, action: string, detail: string) => void;
   enqueueApproval: (item: Omit<PendingApproval, 'id' | 'createdAt'>) => void;
   approvePending: (id: string) => PendingApproval | null;
@@ -339,6 +351,7 @@ export function clearSupervisorLaneContext(
     managementSessionId: `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     supervisorSurfaceId,
     enabled: true,
+    controlState: 'active',
     steps: [],
     autoStepsUsed: 0,
     awaitingStopCheck: false,
@@ -362,7 +375,15 @@ export function isSurfaceSupervised(
   session: Pick<SupervisorSession, 'active' | 'lanes'>,
   surfaceId: SurfaceId,
 ): boolean {
-  return session.active && session.lanes.some((lane) => lane.enabled && lane.surfaceId === surfaceId);
+  return session.active && session.lanes.some((lane) => (
+    supervisorLaneControlState(lane) === 'active' && lane.surfaceId === surfaceId
+  ));
+}
+
+export function supervisorLaneControlState(
+  lane: Pick<SupervisorLane, 'enabled' | 'controlState'>,
+): SupervisorLaneControlState {
+  return lane.controlState || (lane.enabled ? 'active' : 'stopped');
 }
 
 export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], SupervisorSlice> = (set, get) => ({
@@ -393,9 +414,12 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lanes = s.supervisor.lanes.map((lane) => ({
         ...lane,
+        controlState: supervisorLaneControlState(lane),
         managementSessionId: lane.managementSessionId
           || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        ...(s.supervisor.mode === 'unified' && lane.enabled ? { awaitingReview: true } : {}),
+        ...(s.supervisor.mode === 'unified' && supervisorLaneControlState(lane) === 'active'
+          ? { awaitingReview: true }
+          : {}),
         resumeAfterCancelledDecision: false,
       }));
       return {
@@ -412,7 +436,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
               ts: Date.now(),
               laneId: '-',
               action: '启动',
-              detail: `统一监督 通道=${s.supervisor.lanes.filter((lane) => lane.enabled).length}`,
+              detail: `统一监督 通道=${s.supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active').length}`,
             },
             ...s.supervisor.log,
           ].slice(0, MAX_LOG),
@@ -474,6 +498,12 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => ({
       supervisor: {
         ...s.supervisor,
+        lanes: s.supervisor.lanes.map((lane) => ({
+          ...lane,
+          enabled: false,
+          controlState: 'stopped',
+          autonomousOverride: undefined,
+        })),
         active: false,
         paused: false,
         // Autonomous authority is deliberately non-resumable: stopping ends
@@ -490,6 +520,70 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ].slice(0, MAX_LOG),
       },
     }));
+  },
+  pauseSupervisorLane(laneId, detail) {
+    set((s) => {
+      const lane = s.supervisor.lanes.find((item) => item.id === laneId);
+      if (!lane || supervisorLaneControlState(lane) !== 'active') return s;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes: s.supervisor.lanes.map((item) => item.id === laneId
+            ? { ...item, controlState: 'paused' }
+            : item),
+          log: [{
+            ts: Date.now(), laneId, action: '暂停通道', detail: detail || `${lane.label} 已暂停`,
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
+  resumeSupervisorLane(laneId, detail) {
+    set((s) => {
+      const lane = s.supervisor.lanes.find((item) => item.id === laneId);
+      if (!lane || supervisorLaneControlState(lane) !== 'paused') return s;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes: s.supervisor.lanes.map((item) => item.id === laneId
+            ? { ...item, enabled: true, controlState: 'active' }
+            : item),
+          log: [{
+            ts: Date.now(), laneId, action: '继续通道', detail: detail || `${lane.label} 已继续`,
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
+  stopSupervisorLane(laneId, detail) {
+    set((s) => {
+      const lane = s.supervisor.lanes.find((item) => item.id === laneId);
+      if (!lane || supervisorLaneControlState(lane) === 'stopped') return s;
+      const lanes = s.supervisor.lanes.map((item) => item.id === laneId
+        ? {
+            ...item,
+            enabled: false,
+            controlState: 'stopped' as const,
+            supervisorSurfaceId: null,
+            awaitingReview: false,
+            awaitingStopCheck: false,
+            pendingSupervisorDeliveries: [],
+            autonomousOverride: undefined,
+          }
+        : item);
+      const hasRetainedLane = lanes.some((item) => supervisorLaneControlState(item) !== 'stopped');
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes,
+          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => item.laneId !== laneId),
+          ...(hasRetainedLane ? {} : { active: false, paused: false, autonomous: false }),
+          log: [{
+            ts: Date.now(), laneId, action: '停止通道', detail: detail || `${lane.label} 已停止`,
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
   },
   appendSupervisorLog(laneId, action, detail) {
     set((s) => ({
@@ -637,7 +731,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ...s.supervisor,
         lanes: s.supervisor.lanes.map((l) =>
           l.id === laneId
-            ? { ...l, awaitingStopCheck: false, stopConfirmed: true, enabled: false }
+            ? {
+                ...l,
+                awaitingStopCheck: false,
+                stopConfirmed: true,
+                enabled: false,
+                controlState: 'stopped' as const,
+                autonomousOverride: undefined,
+              }
             : l,
         ),
         log: [
@@ -654,7 +755,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ].slice(0, MAX_LOG),
       },
     }));
-    const remaining = get().supervisor.lanes.filter((l) => l.enabled);
+    const remaining = get().supervisor.lanes.filter(
+      (lane) => supervisorLaneControlState(lane) !== 'stopped',
+    );
     if (remaining.length === 0) {
       get().stopSupervisor('全部通道已达停止条件');
     }

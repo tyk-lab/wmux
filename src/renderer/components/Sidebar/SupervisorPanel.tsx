@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import {
   buildSupervisorBriefing,
+  effectiveSupervisorAutonomyPermissions,
+  effectiveSupervisorAutonomous,
+  effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   modeLabel,
   stopWhenKindLabel,
@@ -30,7 +33,11 @@ import {
   normalizeSupervisorWorkScope,
   type SupervisorWorkScope,
 } from '../../../shared/supervisor-policy';
-import { clearSupervisorLaneContext, type SupervisorLane } from '../../store/supervisor-slice';
+import {
+  clearSupervisorLaneContext,
+  supervisorLaneControlState,
+  type SupervisorLane,
+} from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
 
 interface SupervisorPanelProps {
@@ -52,6 +59,9 @@ const WORK_SCOPE_LABELS: Record<SupervisorWorkScope, string> = {
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
+  const pauseSupervisorLane = useStore((s) => s.pauseSupervisorLane);
+  const resumeSupervisorLane = useStore((s) => s.resumeSupervisorLane);
+  const stopSupervisorLane = useStore((s) => s.stopSupervisorLane);
   const startSupervisor = useStore((s) => s.startSupervisor);
   const pauseSupervisor = useStore((s) => s.pauseSupervisor);
   const resumeSupervisor = useStore((s) => s.resumeSupervisor);
@@ -77,7 +87,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
-  const enabled = supervisor.lanes.filter((l) => l.enabled);
+  const enabled = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
   const pendingCount = supervisor.pendingApprovals.length;
   const mode = supervisor.mode || 'unified';
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
@@ -98,7 +108,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }
   }
   const missingDedicatedSupervisor = supervisor.lanes.some(
-    (lane) => !lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId),
+    (lane) => supervisorLaneControlState(lane) !== 'stopped'
+      && (!lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId)),
   );
   let statusLabel = '已停止';
   if (supervisor.active) statusLabel = '运行中';
@@ -200,7 +211,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const onPause = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
-    pauseSupervisor(`人工暂停待决项：${item.laneLabel}；决策内容已保留`);
+    pauseSupervisorLane(item.laneId, `人工暂停待决项：${item.laneLabel}；该通道决策内容已保留`);
   };
 
   const openTaskTerminalForDecision = (id: string) => {
@@ -250,14 +261,16 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
     const pendingLaneIds = new Set(supervisor.pendingApprovals.map((item) => item.laneId));
     const cancelledDecisionLaneIds = new Set(supervisor.lanes.filter((lane) => (
-      lane.enabled
+      supervisorLaneControlState(lane) === 'active'
       && lane.awaitingReview
       && lane.resumeAfterCancelledDecision
       && !pendingLaneIds.has(lane.id)
     )).map((lane) => lane.id));
     resumeSupervisor();
     for (const lane of supervisor.lanes) {
-      if (!lane.enabled || !lane.supervisorSurfaceId || pendingLaneIds.has(lane.id)) continue;
+      if (supervisorLaneControlState(lane) !== 'active'
+        || !lane.supervisorSurfaceId
+        || pendingLaneIds.has(lane.id)) continue;
       const message = cancelledDecisionLaneIds.has(lane.id)
         ? '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n'
         : '[会话继续] 用户已恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n';
@@ -268,6 +281,50 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const pauseActiveSession = () => {
     if (!supervisor.active) return;
     pauseSupervisor('用户手动暂停监督；现有监督终端与会话上下文已保留');
+  };
+
+  const closeDedicatedSupervisor = (lane: SupervisorLane): boolean => {
+    if (!lane.supervisorSurfaceId) return true;
+    for (const workspace of workspaces) {
+      for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+        const pane = findLeaf(workspace.splitTree, candidatePaneId);
+        if (!pane?.surfaces.some((surface) => surface.id === lane.supervisorSurfaceId)) continue;
+        if (pane.surfaces.length === 1) {
+          const replacement = addSurface(workspace.id, candidatePaneId, 'terminal', { cwd: lane.projectDir });
+          if (!replacement) return false;
+        }
+        closeSurface(workspace.id, candidatePaneId, lane.supervisorSurfaceId);
+        return true;
+      }
+    }
+    return true;
+  };
+
+  const pauseLane = (lane: SupervisorLane) => {
+    pauseSupervisorLane(lane.id, `用户暂停 ${lane.label}；其他监督通道继续运行`);
+    appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'pause' });
+  };
+
+  const resumeLane = (lane: SupervisorLane) => {
+    if (!lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId)) {
+      openSupervisorSetup();
+      return;
+    }
+    resumeSupervisorLane(lane.id, `用户继续 ${lane.label}；其他监督通道状态不变`);
+    appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'resume' });
+    if (supervisor.active && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)) {
+      sendToSurface(lane.supervisorSurfaceId, '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+    }
+  };
+
+  const stopLane = (lane: SupervisorLane) => {
+    if (!window.confirm(`将只停止“${lane.label}”的监督并关闭其专属监督 AI；其他通道不受影响。是否继续？`)) return;
+    if (!closeDedicatedSupervisor(lane)) {
+      window.alert(`无法安全关闭“${lane.label}”的专属监督 AI，该通道未停止。`);
+      return;
+    }
+    appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'stop' });
+    stopSupervisorLane(lane.id, `用户停止 ${lane.label}；其他监督通道状态不变`);
   };
 
   const restartFromScratch = () => {
@@ -401,7 +458,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       maxAutoDecisions: normalizedDecisionLimit,
     });
     setSupervisorLanes(supervisor.lanes.map((lane) =>
-      clearSupervisorLaneContext(lane, replacementByLaneId.get(lane.id) || null),
+      ({
+        ...clearSupervisorLaneContext(lane, replacementByLaneId.get(lane.id) || null),
+        autonomousOverride: undefined,
+      }),
     ));
     for (const replacement of replacements) {
       closeSurface(replacement.workspaceId, replacement.paneId, replacement.oldSurfaceId);
@@ -521,8 +581,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {
-              if (!lane.enabled && !lane.awaitingStopCheck && !lane.stopConfirmed) return null;
+              const laneControlState = supervisorLaneControlState(lane);
               const laneConfig = effectiveSupervisorLaneConfig(supervisor, lane);
+              const lanePermissions = effectiveSupervisorAutonomyPermissions(supervisor, lane);
+              const laneAutonomous = effectiveSupervisorAutonomous(supervisor, lane);
+              const laneForbiddenActions = effectiveSupervisorForbiddenActions(supervisor, lane);
+              const lanePolicyOverridden = Array.isArray(lane.autonomyPermissionsOverride)
+                || typeof lane.autonomousOverride === 'boolean'
+                || Array.isArray(lane.forbiddenActionsOverride);
               const planFileName = laneConfig.planFilePath.split(/[\\/]/).pop() || '';
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
@@ -532,7 +598,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-head">
                     <span className="sup-panel__lane-label">{lane.label}</span>
                     <span className="sup-panel__lane-progress">
-                      {(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
+                      {laneControlState === 'active' ? '监督中' : laneControlState === 'paused' ? '已暂停' : '已停止'}
+                      {' · '}{(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
                     </span>
                   </div>
                   <div className="sup-panel__lane-detail">
@@ -581,6 +648,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
                     {lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}
                   </div>
+                  <div className="sup-panel__lane-supervisor">
+                    权限: {laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length}
+                    {lanePolicyOverridden ? '（终端专用）' : '（会话默认）'}
+                  </div>
                   {lane.restoredFromSessionId && (
                     <div className="sup-panel__lane-supervisor">
                       已恢复审计: {lane.restoredFromSessionId}
@@ -601,6 +672,21 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     );
                   })()}
                   <div className="sup-panel__lane-actions">
+                    {laneControlState === 'active' && (
+                      <button type="button" onClick={() => pauseLane(lane)} disabled={!supervisor.active}>
+                        暂停此监督
+                      </button>
+                    )}
+                    {laneControlState === 'paused' && (
+                      <button type="button" onClick={() => resumeLane(lane)} disabled={!supervisor.active}>
+                        继续此监督
+                      </button>
+                    )}
+                    {laneControlState !== 'stopped' && (
+                      <button type="button" onClick={() => stopLane(lane)}>
+                        停止此监督
+                      </button>
+                    )}
                     <button type="button" onClick={() => void openAuditTrail(lane)} disabled={loadingRecordLaneId === lane.id}>
                       {loadingRecordLaneId === lane.id ? '读取记录…' : '查看/刷新记录'}
                     </button>
