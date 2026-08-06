@@ -30,6 +30,7 @@ import {
   readSupervisorAuditTrail,
 } from './supervisor-records';
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
+import { createFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
   parseSupervisorConfig,
   serializeSupervisorConfig,
@@ -59,9 +60,48 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
   }
   const target = BrowserWindow.getAllWindows()[0];
   if (!target || target.isDestroyed()) return { ok: false, error: 'wmux 窗口未就绪。' };
-  const payload = JSON.stringify({ ...command, actor: actor.openId, source: actor.source });
-  const result = await target.webContents.executeJavaScript(`window.__wmux_supervisorRemoteControl?.(${payload})`);
-  return result ?? { ok: false, error: 'wmux 界面尚未初始化监督控制器。' };
+  let forwardedCommand: FeishuSupervisorCommand = command;
+  let preservedDirectory = '';
+  if (command.action === 'create-task') {
+    const name = command.name.trim();
+    const task = command.task.trim();
+    if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。' };
+    try {
+      const directory = createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
+      preservedDirectory = directory.displayPath;
+      forwardedCommand = {
+        ...command,
+        name: directory.taskName,
+        task,
+        cwd: directory.cwd,
+        displayPath: directory.displayPath,
+      };
+    } catch {
+      return { ok: false, error: '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。' };
+    }
+  }
+  const payload = JSON.stringify({ ...forwardedCommand, actor: actor.openId, source: actor.source });
+  try {
+    const result = await target.webContents.executeJavaScript(`window.__wmux_supervisorRemoteControl?.(${payload})`);
+    if (result) {
+      if (
+        preservedDirectory
+        && typeof result === 'object'
+        && result !== null
+        && ((result as { ok?: boolean }).ok === false || typeof (result as { error?: unknown }).error === 'string')
+      ) {
+        const error = String((result as { error?: string }).error || 'Codex 终端未能打开。');
+        return { ...result, error: `${error} 已保留任务目录：${preservedDirectory}` };
+      }
+      return result;
+    }
+  } catch (error) {
+    if (!preservedDirectory) throw error;
+    console.warn('[feishu] direct task workspace creation failed after directory creation', error);
+  }
+  return preservedDirectory
+    ? { ok: false, error: `Codex 终端未能打开；已保留任务目录：${preservedDirectory}` }
+    : { ok: false, error: 'wmux 界面尚未初始化监督控制器。' };
 }
 
 // Route the V2 methods that live in their own modules: browser.* (per-caller

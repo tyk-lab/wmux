@@ -455,6 +455,49 @@ interface RemoteTerminalTask {
   terminal: string;
   task: string;
   actor?: string;
+  force?: boolean;
+}
+
+interface RemoteDirectTerminalTask {
+  action: 'create-task';
+  name: string;
+  task: string;
+  cwd: string;
+  displayPath?: string;
+  actor?: string;
+}
+
+type RemoteTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
+
+interface RemoteTerminalTaskResult {
+  ok: boolean;
+  message: string;
+  error?: string;
+  code?: 'terminal_busy';
+  terminal?: {
+    surfaceId: SurfaceId;
+    label: string;
+    workspace: string;
+    activityState: RemoteTerminalActivityState;
+    activityUpdatedAt: number | null;
+  };
+}
+
+const REMOTE_WORKING_STATE_MAX_AGE_MS = 15 * 60 * 1000;
+
+function remoteTerminalActivity(surfaceId: SurfaceId): {
+  activityState: RemoteTerminalActivityState;
+  activityUpdatedAt: number | null;
+} {
+  const record = (window as any).__wmux_getAgentStates?.()?.[surfaceId];
+  const updatedAt = Number.isFinite(record?.updatedAt) ? Number(record.updatedAt) : null;
+  const state = ['idle', 'working', 'blocked', 'unknown'].includes(String(record?.state))
+    ? record.state as RemoteTerminalActivityState
+    : 'unknown';
+  if (state === 'working' && (!updatedAt || Date.now() - updatedAt > REMOTE_WORKING_STATE_MAX_AGE_MS)) {
+    return { activityState: 'unknown', activityUpdatedAt: updatedAt };
+  }
+  return { activityState: state, activityUpdatedAt: updatedAt };
 }
 
 function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; title: string; cwd?: string; sshProfileId?: string }, out: Array<{
@@ -489,6 +532,36 @@ function remoteTerminalList(): Array<{
   for (const workspace of store.workspaces) collectRemoteTerminals(workspace.splitTree, workspace, terminals);
   const supervisorIds = new Set(store.supervisor.lanes.map((lane) => lane.supervisorSurfaceId).filter(Boolean));
   return terminals.filter((terminal) => !supervisorIds.has(terminal.surfaceId));
+}
+
+function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok: boolean; message: string; error?: string } {
+  const name = String(params.name || '').trim();
+  const task = String(params.task || '').trim();
+  const cwd = String(params.cwd || '').trim();
+  if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。', message: '' };
+  if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(cwd)) return { ok: false, error: '任务目录必须是 Windows 绝对路径。', message: '' };
+
+  const tree = createLeaf(undefined, 'terminal', cwd);
+  const surface = tree.surfaces[0];
+  tree.surfaces[0] = {
+    ...surface,
+    customTitle: `Codex直连 · ${name}`,
+    shell: 'pwsh.exe',
+    cwd,
+    startupCommands: ['codex'],
+  };
+  useStore.getState().createWorkspace({ title: name, cwd, splitTree: tree });
+  window.setTimeout(() => {
+    try {
+      sendToSurface(surface.id, task, true);
+    } catch {
+      // The workspace and task folder remain available for a manual retry.
+    }
+  }, SUPERVISOR_TUI_READY_DELAY_MS);
+  return {
+    ok: true,
+    message: `已创建 Codex 直连终端“${name}”；首条任务将在终端就绪后自动发送。目录：${params.displayPath || cwd}`,
+  };
 }
 
 function remoteAudit(session: ReturnType<typeof useStore.getState>['supervisor'], lane: SupervisorLane | undefined, type: string, payload: Record<string, unknown>): void {
@@ -655,12 +728,28 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   return { ok: true, message: `已启动 AI 监督：${lanes.map((lane) => `${lane.label} (${lane.surfaceId})`).join('、')}` };
 }
 
-function sendRemoteTerminalTask(params: RemoteTerminalTask): { ok: boolean; message: string; error?: string } {
+function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskResult {
   const store = useStore.getState();
   const terminal = remoteTerminalList().find((item) => item.surfaceId === params.terminal);
   if (!terminal) return { ok: false, error: '终端不存在或不可发送任务；请先执行 LIST 获取最新终端。', message: '' };
   const task = params.task.trim();
   if (!task) return { ok: false, error: '任务内容不能为空。', message: '' };
+
+  const activity = remoteTerminalActivity(terminal.surfaceId);
+  if (activity.activityState === 'working' && params.force !== true) {
+    return {
+      ok: false,
+      error: `${terminal.label} 正在执行任务，需要确认后才能继续发送。`,
+      message: '',
+      code: 'terminal_busy',
+      terminal: {
+        surfaceId: terminal.surfaceId,
+        label: terminal.label,
+        workspace: terminal.workspaceTitle,
+        ...activity,
+      },
+    };
+  }
 
   try {
     sendTaskToSurface(terminal.surfaceId, task, true);
@@ -1475,6 +1564,7 @@ export function initPipeBridge(): void {
             surfaceId: terminal.surfaceId,
             label: terminal.label,
             workspace: terminal.workspaceTitle,
+            ...remoteTerminalActivity(terminal.surfaceId),
           })),
           session: state.active || state.paused
             ? { sessionId: state.sessionId, stopWhen: state.stopWhen, autonomous: state.autonomous }
@@ -1484,6 +1574,7 @@ export function initPipeBridge(): void {
       };
     }
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
+    if (action === 'create-task') return createRemoteDirectTerminalTask(params as RemoteDirectTerminalTask);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
     if (action === 'pause-lane' || action === 'resume-lane' || action === 'stop-lane') {
       const session = useStore.getState().supervisor;

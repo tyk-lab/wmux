@@ -452,7 +452,7 @@ describe('飞书人工决策单聊路由', () => {
       action: { value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'back-start' }) }, raw: {},
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
-    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('AI 监督控制');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('任务与监督控制');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
@@ -466,8 +466,122 @@ describe('飞书人工决策单聊路由', () => {
       action: { value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'back-send' }) }, raw: {},
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
-    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('AI 监督控制');
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('任务与监督控制');
     expect(control.mock.calls.every(([command]) => command.action === 'list')).toBe(true);
+  });
+
+  it('从控制首页创建 Codex 直连终端任务并返回最新首页', async () => {
+    const listMessage = JSON.stringify({
+      active: false,
+      paused: false,
+      terminals: [{ surfaceId: 'surf-direct', label: 'Codex直连 · 修复登录页', workspace: '修复登录页', supervised: false, supervisionState: 'none' }],
+      session: null,
+      pendingApprovals: [],
+    });
+    const control = vi.fn(async (command: { action: string }) => command.action === 'create-task'
+      ? { ok: true, message: '已创建 Codex 直连终端“修复登录页”。' }
+      : { ok: true, message: listMessage });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-create', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'create-task', nonce: 'open-create' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const createCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(createCard).toContain('添加 Codex 终端任务');
+    expect(control).toHaveBeenCalledTimes(1);
+
+    const formNonce = /"wmux_action":"form_create_task"[^}]*"nonce":"([^"]+)"/.exec(createCard)?.[1];
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_create_task', value: currentControlValue({ wmux_action: 'form_create_task', nonce: formNonce }) },
+      raw: { action: { form_value: { task_name: '修复登录页', task: '检查登录流程并修复测试' } } },
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'create-task')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'create-task')?.[0]).toEqual({
+      action: 'create-task', name: '修复登录页', task: '检查登录流程并修复测试',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    const refreshedHome = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(refreshedHome).toContain('已创建 Codex 直连终端');
+    expect(refreshedHome).toContain('可添加终端 1 个');
+  });
+
+  it('忙碌任务终端需二次确认且任务正文只保存在内存中', async () => {
+    const listMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'surf-busy', label: 'Grok worker', workspace: 'workspace-a', supervised: true,
+        supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
+      }],
+      session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+      pendingApprovals: [],
+    });
+    const control = vi.fn(async (command: { action: string; terminal?: string; task?: string; force?: boolean }) => {
+      if (command.action === 'send' && command.force) return { ok: true, message: '已强制发送任务。' };
+      if (command.action === 'send') {
+        return {
+          ok: false,
+          code: 'terminal_busy',
+          error: 'Grok worker 正在执行任务，需要确认后才能继续发送。',
+          terminal: {
+            surfaceId: 'surf-busy', label: 'Grok worker', workspace: 'workspace-a',
+            activityState: 'working', activityUpdatedAt: Date.now(),
+          },
+        };
+      }
+      return { ok: true, message: listMessage };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-busy', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'send', nonce: 'open-busy-send' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('执行中');
+
+    updateCard.mockRejectedValueOnce(new Error('busy confirmation patch failed'));
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_send', value: currentControlValue({ wmux_action: 'form_send', nonce: 'submit-busy-send' }) },
+      raw: { action: { form_value: { terminal: 'surf-busy', task: '仅存在于内存的任务正文' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    const confirmationCard = JSON.stringify(send.mock.calls[1][1]);
+    expect(confirmationCard).toContain('确认向忙碌终端发送任务');
+    expect(confirmationCard).not.toContain('仅存在于内存的任务正文');
+    expect(control.mock.calls.some(([command]) => command.action === 'send' && !command.force)).toBe(true);
+    const confirmationId = /"confirmation_id":"([^"]+)"/.exec(confirmationCard)?.[1];
+    expect(confirmationId).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-2', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({
+        wmux_action: 'confirm_busy_send', terminal: 'surf-busy', confirmation_id: confirmationId, nonce: 'confirm-busy-send',
+      }) },
+      raw: {},
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'send' && command.force)).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'send' && command.force)?.[0]).toMatchObject({
+      terminal: 'surf-busy', task: '仅存在于内存的任务正文', force: true,
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('已强制发送任务。');
   });
 
   it('原地更新失败时降级发送替代控制卡', async () => {
@@ -492,7 +606,7 @@ describe('飞书人工决策单聊路由', () => {
 
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-    expect(JSON.stringify(send.mock.calls[1][1])).toContain('AI 监督控制');
+    expect(JSON.stringify(send.mock.calls[1][1])).toContain('任务与监督控制');
   });
 
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {

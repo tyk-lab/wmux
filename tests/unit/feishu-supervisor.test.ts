@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -128,7 +128,7 @@ supervisor_model: k3`)).toEqual({
       fs.writeFileSync(path.join(directory, 'legacy.txt'), 'App ID\ncli-from-file\n\nApp Secret\nsecret-from-file\n\n群聊会话 ID\noc-audit\n\n用户 ID\nou-allowed\n', 'utf8');
       const env: NodeJS.ProcessEnv = { WMUX_FEISHU_APP_ID: 'cli-from-launcher' };
 
-      loadFeishuEnvironment(env, directory, path.join(directory, 'wmux.exe'));
+      loadFeishuEnvironment(env, directory, path.join(directory, 'wmux.exe'), path.join(directory, 'appdata'));
 
       expect(env).toMatchObject({
         WMUX_FEISHU_APP_ID: 'cli-from-launcher', WMUX_FEISHU_APP_SECRET: 'secret-from-file',
@@ -148,9 +148,35 @@ supervisor_model: k3`)).toEqual({
       fs.writeFileSync(path.join(executableDir, 'legacy.txt'), 'App ID\ncli-from-exe-dir\n\nApp Secret\nsecret-from-exe-dir\n\n群聊会话 ID\noc-audit\n\n用户 ID\nou-allowed\n', 'utf8');
       const env: NodeJS.ProcessEnv = {};
 
-      loadFeishuEnvironment(env, directory, executableDir);
+      loadFeishuEnvironment(env, directory, executableDir, path.join(directory, 'appdata'));
 
       expect(env.WMUX_FEISHU_APP_ID).toBe('cli-from-exe-dir');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('安装版从用户配置目录加载飞书凭据', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-feishu-appdata-env-'));
+    const appDataDir = path.join(directory, 'appdata');
+    try {
+      fs.mkdirSync(appDataDir);
+      fs.writeFileSync(path.join(appDataDir, '.env'), [
+        'WMUX_FEISHU_APP_ID=cli-installed',
+        'WMUX_FEISHU_APP_SECRET=secret-installed',
+        'WMUX_FEISHU_CHAT_ID=oc-audit',
+        'WMUX_FEISHU_ALLOWED_OPEN_IDS=ou-allowed',
+      ].join('\n'), 'utf8');
+      const env: NodeJS.ProcessEnv = {};
+
+      loadFeishuEnvironment(env, path.join(directory, 'working'), path.join(directory, 'installed'), appDataDir);
+
+      expect(env).toMatchObject({
+        WMUX_FEISHU_APP_ID: 'cli-installed',
+        WMUX_FEISHU_APP_SECRET: 'secret-installed',
+        WMUX_FEISHU_CHAT_ID: 'oc-audit',
+        WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
+      });
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -196,6 +222,7 @@ supervisor_model: k3`)).toEqual({
     }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const createTask = JSON.stringify(buildDirectTerminalTaskCard());
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
       { ...terminals[0], supervised: true, supervisionState: 'active' },
     ]));
@@ -210,6 +237,7 @@ supervisor_model: k3`)).toEqual({
     expect(menu).not.toContain('"tag":"note"');
     expect(menu).toContain('"text_size":"notation"');
     expect(menu).toContain('刷新状态');
+    expect(menu).toContain('添加终端任务');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
     expect(activeMenu).toContain('管理监督');
@@ -247,6 +275,10 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('task');
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
+    expect(createTask).toContain('添加 Codex 终端任务');
+    expect(createTask).toContain('task_name');
+    expect(createTask).toContain('form_create_task');
+    expect(createTask).toContain('返回控制首页');
     expect(start).toContain('surf-a');
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
@@ -274,6 +306,39 @@ supervisor_model: k3`)).toEqual({
     expect(stopLane).toContain('surf-a');
   });
 
+  it('在发送任务和管理监督中展示四种任务终端状态', () => {
+    const updatedAt = Date.now();
+    const terminals = [
+      { surfaceId: 'surf-idle', label: 'Codex', workspace: '代码', supervised: true, supervisionState: 'active' as const, activityState: 'idle' as const, activityUpdatedAt: updatedAt },
+      { surfaceId: 'surf-working', label: 'Grok', workspace: '分析', supervised: true, supervisionState: 'active' as const, activityState: 'working' as const, activityUpdatedAt: updatedAt },
+      { surfaceId: 'surf-blocked', label: 'Kimi', workspace: '文档', supervised: true, supervisionState: 'active' as const, activityState: 'blocked' as const, activityUpdatedAt: updatedAt },
+      { surfaceId: 'surf-unknown', label: 'Shell', workspace: '其他', supervised: true, supervisionState: 'active' as const, activityState: 'unknown' as const },
+    ];
+
+    const sendCard = JSON.stringify(buildSupervisorSendTaskCard(terminals));
+    const managementCard = JSON.stringify(buildSupervisorManagementCard(terminals, { active: true, paused: false }));
+
+    for (const card of [sendCard, managementCard]) {
+      expect(card).toContain('空闲');
+      expect(card).toContain('执行中');
+      expect(card).toContain('等待人工');
+      expect(card).toContain('未知');
+      expect(card).toContain('刚刚');
+    }
+  });
+
+  it('忙碌确认卡不携带任务正文', () => {
+    const card = JSON.stringify(buildBusyTaskConfirmationCard({
+      surfaceId: 'surf-working', label: 'Grok', workspace: '分析', activityState: 'working', activityUpdatedAt: Date.now(),
+    }, 'confirm-1'));
+
+    expect(card).toContain('确认向忙碌终端发送任务');
+    expect(card).toContain('仍然发送');
+    expect(card).toContain('confirm_busy_send');
+    expect(card).toContain('confirm-1');
+    expect(card).not.toContain('任务正文');
+  });
+
   it('允许从启动表单重新监督已停止的终端', () => {
     const card = JSON.stringify(buildSupervisorStartCard([
       { surfaceId: 'surf-stopped', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true },
@@ -288,6 +353,7 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_create_task')).toEqual({ wmux_action: 'form_create_task' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'approve',
@@ -323,8 +389,9 @@ supervisor_model: k3`)).toEqual({
               surfaceId: 'surf-supervised', label: 'pwsh.exe', workspace: '飞书管理', supervised: true,
               supervisionState: 'active', managementSessionId: 'sup-lane-auth', autonomous: true,
               autonomyPermissionCount: 2, forbiddenActionCount: 3, policyOverridden: true,
+              activityState: 'working', activityUpdatedAt: Date.now(),
             },
-            { surfaceId: 'surf-idle', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true },
+            { surfaceId: 'surf-idle', label: 'pwsh.exe', workspace: '飞书管理', supervised: false, restartable: true, activityState: 'idle', activityUpdatedAt: Date.now() },
           ],
           session: { sessionId: 'sup-1', stopWhen: '验证飞书连接', autonomous: false },
           pendingApprovals: [],
@@ -339,6 +406,8 @@ supervisor_model: k3`)).toEqual({
     expect(response).toContain('1. pwsh.exe · 飞书管理');
     expect(response).toContain('状态：监督中');
     expect(response).toContain('状态：已停止，可重新监督');
+    expect(response).toContain('任务终端：执行中');
+    expect(response).toContain('任务终端：空闲');
     expect(response).toContain('终端 ID：surf-supervised');
     expect(response).toContain('管理会话 ID：sup-lane-auth');
     expect(response).toContain('权限：全自动 · 允许 2/4 · 禁止 3（终端专用）');

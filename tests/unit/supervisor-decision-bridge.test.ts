@@ -80,8 +80,90 @@ describe('supervisor decision bridge', () => {
 
   afterEach(() => {
     useStore.getState().resetSupervisorSession();
+    useStore.getState().replaceAllWorkspaces([]);
     surfaceTerminalRegistry.delete('worker-a');
     Reflect.deleteProperty(globalThis, 'window');
+  });
+
+  it('reports task terminal activity and rejects an unconfirmed busy send', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'Work',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-control' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'Codex worker' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi', customTitle: 'AI 监督 · Codex worker' },
+        ],
+      },
+    }]);
+    agentState = { state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() };
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    const listResult = remoteControl({ action: 'list' });
+    const listed = JSON.parse(listResult.message).terminals.find((terminal: any) => terminal.surfaceId === 'worker-a');
+    expect(listed).toMatchObject({ activityState: 'working', activityUpdatedAt: agentState.updatedAt });
+
+    expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '继续执行', actor: 'ou-user' }))
+      .toMatchObject({ ok: false, code: 'terminal_busy', terminal: { activityState: 'working' } });
+    expect(writes).not.toHaveBeenCalled();
+
+    expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '确认后继续执行', actor: 'ou-user', force: true }))
+      .toMatchObject({ ok: true });
+    expect(writes).toHaveBeenCalledWith('worker-a', '确认后继续执行');
+  });
+
+  it('creates an unsupervised Codex direct terminal that remains sendable and supervisable', () => {
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    const result = remoteControl({
+      action: 'create-task',
+      name: '修复登录页',
+      task: '检查登录流程并补齐测试',
+      cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
+      displayPath: '桌面\\wmux任务\\修复登录页-20260806-090807',
+      actor: 'ou-user',
+    });
+
+    expect(result).toMatchObject({ ok: true, message: expect.stringContaining('首条任务将在终端就绪后自动发送') });
+    const workspace = useStore.getState().workspaces.find((item) => item.title === '修复登录页');
+    expect(workspace).toBeTruthy();
+    const directSurface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
+    expect(directSurface).toMatchObject({
+      customTitle: 'Codex直连 · 修复登录页',
+      cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
+      startupCommands: ['codex'],
+    });
+    expect(directSurface).not.toHaveProperty('startupInput');
+    expect(writes).toHaveBeenCalledWith(directSurface?.id, '检查登录流程并补齐测试');
+
+    const listed = JSON.parse(remoteControl({ action: 'list' }).message).terminals.find(
+      (terminal: any) => terminal.surfaceId === directSurface?.id,
+    );
+    expect(listed).toMatchObject({
+      label: 'Codex直连 · 修复登录页',
+      workspace: '修复登录页',
+      supervised: false,
+      supervisionState: 'none',
+    });
+
+    surfaceTerminalRegistry.set(directSurface!.id, {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    writes.mockClear();
+    expect(remoteControl({ action: 'send', terminal: directSurface?.id, task: '继续检查错误处理', actor: 'ou-user' }))
+      .toMatchObject({ ok: true });
+    expect(writes).toHaveBeenCalledWith(directSurface?.id, '继续检查错误处理');
+
+    expect(remoteControl({
+      action: 'start', terminals: [directSurface?.id], stopWhen: '测试通过', stopWhenKind: 'concrete', autonomous: false,
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().supervisor.lanes.some((item) => item.surfaceId === directSurface?.id)).toBe(true);
+    surfaceTerminalRegistry.delete(directSurface!.id);
   });
 
   function decide(params: Record<string, unknown>): any {
