@@ -549,7 +549,9 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }
       if (parts.length > 0 && ptyIdRef.current) {
         terminal.paste(parts.join(' '));
-        try { terminal.focus(); } catch { /* no-op */ }
+        if (!document.querySelector('[aria-modal="true"]')) {
+          try { terminal.focus(); } catch { /* no-op */ }
+        }
       }
     };
     dropHost.addEventListener('dragover', onDragOver);
@@ -1104,7 +1106,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             window.wmux.pty.resize(ptyIdRef.current, dims.cols, dims.rows);
           }
           try { term.refresh(0, term.rows - 1); } catch { /* no-op */ }
-          if (focused) {
+          if (focused && !document.querySelector('[aria-modal="true"]')) {
             try { term.focus(); } catch { /* no-op */ }
           }
         });

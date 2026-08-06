@@ -58,9 +58,9 @@ function ActiveTerminalPane({
   activeRef.current = focused && visible;
 
   const focusTerminal = useCallback(() => {
-    if (!activeRef.current) return;
+    if (!activeRef.current || document.querySelector('[aria-modal="true"]')) return;
     requestAnimationFrame(() => {
-      if (!activeRef.current) return;
+      if (!activeRef.current || document.querySelector('[aria-modal="true"]')) return;
       try { xtermRef.current?.focus(); } catch { /* terminal may be disposing */ }
     });
   }, [xtermRef]);
