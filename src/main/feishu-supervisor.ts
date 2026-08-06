@@ -516,7 +516,7 @@ export function buildDirectTerminalTaskCard(): object {
     'wmux_create_task_form',
     [
       { tag: 'input', element_id: 'create_task_name', name: 'task_name', required: true, max_length: 100, label: { tag: 'plain_text', content: '任务名称' }, placeholder: { tag: 'plain_text', content: '例如：修复登录页问题' } },
-      { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 4000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 Codex 的完整任务' } },
+      { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 1000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 Codex 的完整任务' } },
       formButton('wmux_form_create_task', '创建并发送', 'primary', { wmux_action: 'form_create_task' }),
     ],
     controlHomeFooter(),

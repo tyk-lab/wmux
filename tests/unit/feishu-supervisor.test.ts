@@ -222,7 +222,8 @@ supervisor_model: k3`)).toEqual({
     }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
-    const createTask = JSON.stringify(buildDirectTerminalTaskCard());
+    const createTaskObject = buildDirectTerminalTaskCard() as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
+    const createTask = JSON.stringify(createTaskObject);
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
       { ...terminals[0], supervised: true, supervisionState: 'active' },
     ]));
@@ -279,6 +280,10 @@ supervisor_model: k3`)).toEqual({
     expect(createTask).toContain('task_name');
     expect(createTask).toContain('form_create_task');
     expect(createTask).toContain('返回控制首页');
+    const createTaskForm = createTaskObject.body?.elements?.find((element) => element.tag === 'form');
+    const createTaskInputs = createTaskForm?.elements?.filter((element) => element.tag === 'input') || [];
+    expect(createTaskInputs).toHaveLength(2);
+    expect(createTaskInputs.every((input) => Number(input.max_length) >= 1 && Number(input.max_length) <= 1000)).toBe(true);
     expect(start).toContain('surf-a');
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
