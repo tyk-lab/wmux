@@ -45,6 +45,7 @@ import {
   blankRuntime,
   makeGoalChaseStep,
   pasteSubmitDelayMs,
+  sendTaskToSurface,
   sendToSurface,
   tickLane,
   type LaneRuntime,
@@ -1160,7 +1161,7 @@ export default function App() {
             // Resume inject path clears stop-check wait when new work is sent.
             store.updateLane(action.laneId, { awaitingStopCheck: false });
             try {
-              sendToSurface(action.surfaceId, action.text, session.submitEnter);
+              sendTaskToSurface(action.surfaceId, action.text, session.submitEnter);
               store.updateStep(action.laneId, action.stepId, {
                 status: 'in_progress',
                 dispatchedAt: now,

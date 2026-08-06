@@ -41,8 +41,11 @@ describe('supervisor decision bridge', () => {
     surfaceTerminalRegistry.set('worker-a', {
       buffer: {
         active: {
+          baseY: 0,
+          cursorX: 0,
+          cursorY: 0,
           length: 1,
-          getLine: () => ({ translateToString: () => screenText }),
+          getLine: () => ({ translateToString: (_trimRight?: boolean, start = 0, end?: number) => screenText.slice(start, end) }),
         },
       },
     } as any);
@@ -97,6 +100,29 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledWith('worker-a', '运行相关单元测试');
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not append a supervisor next step to an unsubmitted user draft', () => {
+    screenText = '│ > 用户尚未提交的任务草稿';
+    const terminal = surfaceTerminalRegistry.get('worker-a') as any;
+    terminal.buffer.active.cursorX = screenText.length;
+
+    expect(decide({ next: '监督建议的下一步' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('输入框已有未提交内容'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ awaitingReview: true });
+  });
+
+  it('fails closed when the task terminal input state is unavailable', () => {
+    surfaceTerminalRegistry.delete('worker-a');
+
+    expect(decide({ next: '监督建议的下一步' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('输入状态不可用'),
+    });
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('allows a bounded route adjustment and rejects material or incomplete proposals', () => {
@@ -431,6 +457,25 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ ok: true, message: '已批准，AI 监督将按当前建议继续。' });
     expect(writes).toHaveBeenCalledWith('worker-a', '按现有方案完成实现并运行测试');
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
+  it('keeps a pending approval when the task terminal already contains a draft', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '按现有方案继续实现',
+      reason: '需要用户批准当前方案',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    screenText = '› 用户正在编辑但尚未提交的 Codex 草稿';
+    const terminal = surfaceTerminalRegistry.get('worker-a') as any;
+    terminal.buffer.active.cursorX = screenText.length;
+
+    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('输入框已有未提交内容') });
+    expect(writes).not.toHaveBeenCalled();
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
   });
 
   it('requires adjustment guidance and sends it back to the owning AI supervisor', () => {

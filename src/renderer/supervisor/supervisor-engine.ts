@@ -7,6 +7,7 @@ import type {
   SupervisorSession,
   SupervisorStep,
 } from '../store/supervisor-slice';
+import { surfaceTerminalRegistry } from '../hooks/useTerminal';
 import { supervisorLaneControlState } from '../store/supervisor-slice';
 import {
   buildInjectedPrompt,
@@ -16,6 +17,7 @@ import {
   effectiveSupervisorStopWhen,
   effectiveSupervisorStopWhenKind,
 } from './protocol';
+import { hasPendingTerminalInput } from './pending-input-guard';
 
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 
@@ -499,6 +501,18 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
       }
     }, pasteSubmitDelayMs(text));
   }
+}
+
+/** Send a new task without ever appending it to an existing user draft. */
+export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+  const terminal = surfaceTerminalRegistry.get(surfaceId);
+  if (!terminal?.buffer.active) {
+    throw new Error('任务终端输入状态不可用；为避免覆盖未知输入，已取消本次发送。请等待终端恢复后重试。');
+  }
+  if (hasPendingTerminalInput(terminal.buffer.active)) {
+    throw new Error('任务终端输入框已有未提交内容；为避免与 AI 裁决粘连，已取消本次发送。请先提交或清空原输入后重试。');
+  }
+  sendToSurface(surfaceId, text, submitEnter);
 }
 
 /** Build a pending goal-chase decision step (id unique enough for UI). */

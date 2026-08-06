@@ -15,7 +15,7 @@ import {
   detectSupervisorLauncher,
   supervisorLauncherDisplayName,
 } from '../../supervisor/launch-command';
-import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
+import { sendTaskToSurface, sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import {
   appendSupervisorRecord,
   formatSupervisorAuditTrail,
@@ -182,7 +182,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       const text = proposalEdits[id] ?? item.text;
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
-      if (text.trim()) sendToSurface(item.surfaceId, text, supervisor.submitEnter);
+      if (text.trim()) sendTaskToSurface(item.surfaceId, text, supervisor.submitEnter);
       approvePending(id);
       setProposalEdits((current) => {
         const next = { ...current };

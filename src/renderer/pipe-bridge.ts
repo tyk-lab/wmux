@@ -15,7 +15,7 @@ import {
   type SupervisorWorkScope,
 } from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
-import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
+import { sendTaskToSurface, sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   clearSupervisorLaneContext,
@@ -662,7 +662,11 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): { ok: boolean; mess
   const task = params.task.trim();
   if (!task) return { ok: false, error: '任务内容不能为空。', message: '' };
 
-  sendToSurface(terminal.surfaceId, task, true);
+  try {
+    sendTaskToSurface(terminal.surfaceId, task, true);
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message || err), message: '' };
+  }
   const session = useStore.getState().supervisor;
   const lane = session.lanes.find((item) => item.surfaceId === terminal.surfaceId);
   let manuallyResolved = false;
@@ -726,7 +730,13 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
     return { ok: false, error: '待决项对应的 AI 监督已不存在，无法提交调整说明。', message: '' };
   }
   const delivery = [approval.text.trim(), followUpTask].filter(Boolean).join('\n\n');
-  if (decision === 'approve' && delivery) sendToSurface(approval.surfaceId, delivery, session.submitEnter);
+  if (decision === 'approve' && delivery) {
+    try {
+      sendTaskToSurface(approval.surfaceId, delivery, session.submitEnter);
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message || err), message: '' };
+    }
+  }
   if (decision === 'approve') store.approvePending(approvalId);
   else store.rejectPending(approvalId);
   if (lane && (approval.source === 'supervisor-route' || approval.source === 'supervisor-important')) {
@@ -1409,7 +1419,7 @@ export function initPipeBridge(): void {
 
     if (next) {
       try {
-        sendToSurface(lane.surfaceId, next, session.submitEnter);
+        sendTaskToSurface(lane.surfaceId, next, session.submitEnter);
       } catch (err) {
         const error = String((err as Error)?.message || err);
         store.updateLane(lane.id, {
