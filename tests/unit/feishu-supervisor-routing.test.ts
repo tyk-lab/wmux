@@ -213,6 +213,42 @@ describe('飞书人工决策单聊路由', () => {
     });
   });
 
+  it('启动监督表单排除运行中和暂停保留的终端', async () => {
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: JSON.stringify({
+        active: true,
+        paused: false,
+        terminals: [
+          { surfaceId: 'surf-active', label: 'Active worker', workspace: 'workspace-a', supervised: false, supervisionState: 'active' },
+          { surfaceId: 'surf-paused', label: 'Paused worker', workspace: 'workspace-a', supervised: false, supervisionState: 'paused' },
+          { surfaceId: 'surf-idle', label: 'Idle worker', workspace: 'workspace-a', supervised: false, supervisionState: 'none' },
+          { surfaceId: 'surf-stopped', label: 'Stopped worker', workspace: 'workspace-a', supervised: false, restartable: true, supervisionState: 'stopped' },
+        ],
+        session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+        pendingApprovals: [],
+      }),
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-start', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: { wmux_action: 'menu', flow: 'start' } }, raw: {},
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    const startCard = JSON.stringify(send.mock.calls[1][1]);
+    expect(startCard).toContain('surf-idle');
+    expect(startCard).toContain('surf-stopped');
+    expect(startCard).not.toContain('surf-active');
+    expect(startCard).not.toContain('surf-paused');
+  });
+
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {
     const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
     service.start();

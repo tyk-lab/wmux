@@ -280,6 +280,7 @@ supervisor_model: k3`)).toEqual({
 
     expect(response).toContain('wmux · AI 监督状态');
     expect(response).toContain('监督会话：进行中');
+    expect(response).toContain('可监督终端：1 个');
     expect(response).toContain('监督模式：有限自主（低风险权限与小范围调整自动处理）');
     expect(response).toContain('1. pwsh.exe · 飞书管理');
     expect(response).toContain('状态：监督中');

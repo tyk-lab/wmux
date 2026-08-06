@@ -268,6 +268,12 @@ interface FeishuListResult {
   pendingApprovals: FeishuListApproval[];
 }
 
+function isStartableSupervisorTerminal(terminal: FeishuListTerminal): boolean {
+  if (terminal.supervisionState === 'active' || terminal.supervisionState === 'paused') return false;
+  if (terminal.supervisionState === 'stopped') return true;
+  return !terminal.supervised;
+}
+
 function terminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
     text: { tag: 'plain_text', content: `${terminal.label} · ${terminal.workspace}${terminal.supervisionState === 'paused' ? '（已暂停）' : terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
@@ -378,6 +384,7 @@ export function buildSupervisorControlMenuCard(state?: { active: boolean; paused
 
 /** Form displayed after selecting “启动监督”; launcher/model options intentionally use existing wmux defaults. */
 export function buildSupervisorStartCard(terminals: FeishuListTerminal[]): object {
+  const candidates = terminals.filter(isStartableSupervisorTerminal);
   return buildFormCard(
     'wmux · 启动 AI 监督',
     'blue',
@@ -385,7 +392,7 @@ export function buildSupervisorStartCard(terminals: FeishuListTerminal[]): objec
     'wmux_start_form',
     [
       { tag: 'markdown', content: '**工作终端**' },
-      { tag: 'select_static', element_id: 'start_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(terminals) },
+      { tag: 'select_static', element_id: 'start_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(candidates) },
       { tag: 'input', element_id: 'start_goal', name: 'task_goal', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '任务目标（可选）' }, placeholder: { tag: 'plain_text', content: '监督 AI 需要围绕什么目标观察和推进' } },
       { tag: 'input', element_id: 'start_stop', name: 'stop_when', required: true, input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '停止条件' }, placeholder: { tag: 'plain_text', content: '例如：测试通过且计划验收项完成' } },
       { tag: 'markdown', content: '**停止条件类型**' },
@@ -497,10 +504,11 @@ export function formatFeishuSupervisorResponse(command: FeishuSupervisorCommand,
   let sessionStatus = '未启动';
   if (result.active) sessionStatus = '进行中';
   else if (result.paused) sessionStatus = '已暂停（会话已保留）';
+  const startableTerminalCount = result.terminals.filter(isStartableSupervisorTerminal).length;
   const lines = [
     'wmux · AI 监督状态',
     `监督会话：${sessionStatus}`,
-    `可监督终端：${result.terminals.length} 个`,
+    `可监督终端：${startableTerminalCount} 个`,
   ];
   if (result.session) {
     lines.push(`会话 ID：${result.session.sessionId}`);
@@ -863,7 +871,7 @@ export class FeishuSupervisorService {
       return;
     }
     if (flow === 'start') {
-      const candidates = list.terminals.filter((terminal) => !terminal.supervised || terminal.restartable);
+      const candidates = list.terminals.filter(isStartableSupervisorTerminal);
       if (candidates.length === 0) {
         await this.sendText('暂无可启动监督的终端。请先在 wmux 中创建工作终端，或先停止当前监督。', event.chatId);
         return;
