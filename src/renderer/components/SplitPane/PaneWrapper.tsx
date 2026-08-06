@@ -185,6 +185,24 @@ export default function PaneWrapper({
     };
   }, []);
 
+  useEffect(() => {
+    if (!dragActive) return;
+
+    const clearInterruptedDrag = () => setDragActive(false);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') clearInterruptedDrag();
+    };
+
+    document.addEventListener('pointerdown', clearInterruptedDrag, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', clearInterruptedDrag);
+    return () => {
+      document.removeEventListener('pointerdown', clearInterruptedDrag, true);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', clearInterruptedDrag);
+    };
+  }, [dragActive]);
+
   const handleFindBarClose = useCallback(() => {
     setFindBarVisible(false);
   }, []);

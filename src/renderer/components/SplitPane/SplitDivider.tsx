@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import '../../styles/splitpane.css';
 
 interface SplitDividerProps {
@@ -60,6 +60,34 @@ export default function SplitDivider({ direction, onRatioChange, onDoubleClick }
     },
     [dragging],
   );
+
+  useEffect(() => {
+    if (!dragging) return;
+
+    // Pointer capture normally ends the resize, but Electron can omit the
+    // matching pointerup/pointercancel when focus moves to another window. In
+    // that case the full-window drag overlay would permanently block inputs.
+    const cancelInterruptedDrag = () => setDragging(false);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') cancelInterruptedDrag();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelInterruptedDrag();
+    };
+
+    window.addEventListener('blur', cancelInterruptedDrag);
+    window.addEventListener('pointerup', cancelInterruptedDrag, true);
+    window.addEventListener('pointercancel', cancelInterruptedDrag, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('blur', cancelInterruptedDrag);
+      window.removeEventListener('pointerup', cancelInterruptedDrag, true);
+      window.removeEventListener('pointercancel', cancelInterruptedDrag, true);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [dragging]);
 
   return (
     <div
