@@ -1657,8 +1657,27 @@ export default function App() {
       if (event.key === 'Escape') handleSurfaceDragEnd();
     };
 
+    // Native dragend is not guaranteed when Electron loses focus or React
+    // detaches the dragged tab during a drop. The stale drag state leaves an
+    // invisible drop-zone layer above terminal and supervisor inputs. Any new
+    // pointer interaction means the old drag has ended, so clear it in capture
+    // phase before normal application handling resumes.
+    const onPointerDown = () => handleSurfaceDragEnd();
+    const onWindowBlur = () => handleSurfaceDragEnd();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') handleSurfaceDragEnd();
+    };
+
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onWindowBlur);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onWindowBlur);
+    };
   }, [surfaceDrag, handleSurfaceDragEnd]);
 
   // Clear zoom when the zoomed pane no longer exists
