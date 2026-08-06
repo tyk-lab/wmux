@@ -238,6 +238,13 @@
   opacity: 0.76;
 }
 
+.supervisor-dialog__toggle-hint {
+  float: right;
+  margin-left: 12px;
+  color: rgba(150, 205, 255, 0.95);
+  font-weight: 500;
+}
+
 .supervisor-dialog__lane-settings[open] > summary {
   margin-bottom: 10px;
 }
@@ -454,6 +461,21 @@
   padding: 11px 18px 12px;
   border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
   background: var(--ui-bg-1, #1e1e1e);
+}
+
+.supervisor-dialog__notice {
+  flex: 0 0 auto;
+  padding: 9px 18px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  background: rgba(80, 160, 255, 0.1);
+  color: rgba(180, 220, 255, 0.96);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.supervisor-dialog__notice[data-kind='error'] {
+  background: rgba(244, 80, 80, 0.1);
+  color: rgba(255, 178, 178, 0.96);
 }
 
 .supervisor-dialog__actions-spacer {

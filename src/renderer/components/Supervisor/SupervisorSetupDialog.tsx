@@ -230,6 +230,7 @@ export default function SupervisorSetupDialog() {
   const createWorkspace = useStore((s) => s.createWorkspace);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const lastFocusedFieldRef = useRef<HTMLElement | null>(null);
   const sessionRetained = supervisor.active || supervisor.paused;
   let primaryActionLabel = '启动 AI 监督';
   if (supervisor.active) primaryActionLabel = '应用并继续监督';
@@ -280,6 +281,8 @@ export default function SupervisorSetupDialog() {
   }, [workspaces, agentMeta, agentStates, sessionRetained, supervisor.lanes]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [terminalConfigExpansion, setTerminalConfigExpansion] = useState<Record<string, boolean>>({});
+  const [dialogNotice, setDialogNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [laneConfigs, setLaneConfigs] = useState<Record<string, SupervisorLaneConfig>>({});
   const [lanePermissionOverrides, setLanePermissionOverrides] = useState<
     Record<string, SupervisorAutonomyPermission[]>
@@ -314,6 +317,7 @@ export default function SupervisorSetupDialog() {
 
   useEffect(() => {
     if (!setupOpen) return;
+    setDialogNotice(null);
     setRestoreAuditHistory(supervisor.restoreAuditHistory === true);
     setRestoreSources(Object.fromEntries(
       supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
@@ -331,7 +335,18 @@ export default function SupervisorSetupDialog() {
     setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions));
     setWorkScope(normalizeSupervisorWorkScope(supervisor.workScope));
     setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
-    setSelected(new Set(supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)));
+    const boundSurfaceIds = supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId);
+    setSelected(new Set(boundSurfaceIds));
+    setTerminalConfigExpansion((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const surfaceId of boundSurfaceIds) {
+        if (typeof next[surfaceId] === 'boolean') continue;
+        next[surfaceId] = true;
+        changed = true;
+      }
+      return changed ? next : current;
+    });
     setLaneConfigs(Object.fromEntries(
       supervisor.lanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
     ));
@@ -361,6 +376,21 @@ export default function SupervisorSetupDialog() {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [setupOpen, closeSupervisorSetup]);
+
+  useEffect(() => {
+    if (!setupOpen) return;
+    const restoreDialogFocus = () => {
+      requestAnimationFrame(() => {
+        const dialog = dialogRef.current;
+        if (!dialog || dialog.contains(document.activeElement)) return;
+        const field = lastFocusedFieldRef.current;
+        if (field?.isConnected && dialog.contains(field)) field.focus();
+        else dialog.focus();
+      });
+    };
+    window.addEventListener('focus', restoreDialogFocus);
+    return () => window.removeEventListener('focus', restoreDialogFocus);
+  }, [setupOpen]);
 
   useEffect(() => {
     if (!setupOpen || sessionRetained) return;
@@ -411,10 +441,16 @@ export default function SupervisorSetupDialog() {
     if (sessionRetained && supervisor.lanes.some((lane) => (
       lane.surfaceId === surfaceId && isSupervisorLaneBound(lane)
     ))) return;
+    setDialogNotice(null);
     if (!selected.has(surfaceId)) {
       setLaneConfigs((current) => current[surfaceId]
         ? current
         : { ...current, [surfaceId]: emptyLaneConfig() });
+    }
+    if (!selected.has(surfaceId)) {
+      setTerminalConfigExpansion((current) => typeof current[surfaceId] === 'boolean'
+        ? current
+        : { ...current, [surfaceId]: true });
     }
     setSelected((prev) => {
       const next = new Set(prev);
@@ -424,7 +460,14 @@ export default function SupervisorSetupDialog() {
     });
   };
 
+  const setTerminalConfigExpanded = (surfaceId: string, expanded: boolean) => {
+    setTerminalConfigExpansion((current) => current[surfaceId] === expanded
+      ? current
+      : { ...current, [surfaceId]: expanded });
+  };
+
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
+    setDialogNotice(null);
     setLaneConfigs((current) => ({
       ...current,
       [surfaceId]: { ...(current[surfaceId] || emptyLaneConfig()), ...patch },
@@ -436,12 +479,12 @@ export default function SupervisorSetupDialog() {
       const result = await (window as any).wmux?.markdown?.openFile?.();
       if (!result || result.canceled) return;
       if (result.error || !result.filePath) {
-        window.alert(result.error || '无法读取计划文件。');
+        setDialogNotice({ kind: 'error', message: result.error || '无法读取计划文件。' });
         return;
       }
       updateLaneConfig(surfaceId, { planFilePath: result.filePath });
     } catch (err: any) {
-      window.alert(`选择计划文件失败：${String(err?.message || err)}`);
+      setDialogNotice({ kind: 'error', message: `选择计划文件失败：${String(err?.message || err)}` });
     }
   };
 
@@ -470,7 +513,7 @@ export default function SupervisorSetupDialog() {
 
   const saveConfigFile = async () => {
     if (selected.size !== 1) {
-      window.alert('导出任务配置时请只选择一个终端。');
+      setDialogNotice({ kind: 'error', message: '导出任务配置时请只选择一个终端。' });
       return;
     }
     const result = await (window as any).wmux?.supervisor?.saveConfig?.(
@@ -479,23 +522,23 @@ export default function SupervisorSetupDialog() {
     );
     if (!result || result.canceled) return;
     if (result.error) {
-      window.alert(`保存监督配置失败：${result.error}`);
+      setDialogNotice({ kind: 'error', message: `保存监督配置失败：${result.error}` });
       return;
     }
-    window.alert(`已保存监督配置：${result.filePath}`);
+    setDialogNotice({ kind: 'success', message: `已保存监督配置：${result.filePath}` });
   };
 
   const loadConfigFile = async () => {
     const result = await (window as any).wmux?.supervisor?.loadConfig?.(configFileDefaultPath());
     if (!result || result.canceled) return;
     if (result.error || !result.config) {
-      window.alert(`加载监督配置失败：${result.error || '文件内容无效'}`);
+      setDialogNotice({ kind: 'error', message: `加载监督配置失败：${result.error || '文件内容无效'}` });
       return;
     }
     const config = result.config;
     const selectedSurfaceIds = Array.from(selected);
     if (selectedSurfaceIds.length === 0) {
-      window.alert('请先选择要应用配置的终端。');
+      setDialogNotice({ kind: 'error', message: '请先选择要应用配置的终端。' });
       return;
     }
     const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'pi';
@@ -531,6 +574,7 @@ export default function SupervisorSetupDialog() {
         : loadedWorkScope);
       setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
     }
+    setDialogNotice({ kind: 'success', message: `已将配置导入 ${selectedSurfaceIds.length} 个终端。` });
   };
 
   const buildLanes = (preserveCurrentContext: boolean): SupervisorLane[] => {
@@ -757,34 +801,39 @@ export default function SupervisorSetupDialog() {
   };
 
   const applyConfig = (andStart: boolean) => {
+    setDialogNotice(null);
     const lanes = buildLanes(!andStart || sessionRetained);
     if (lanes.length === 0) {
-      window.alert('请至少选择一个要监控的终端。');
+      setDialogNotice({ kind: 'error', message: '请至少选择一个要监控的终端。' });
       return;
     }
     const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
-      window.alert(`请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`);
+      setDialogNotice({
+        kind: 'error',
+        message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
+      });
       return;
     }
     if (workScope === 'plan-defined' && lanes.some((lane) => !lane.config?.planFilePath.trim())) {
-      window.alert('工作范围选择“按计划文件定义”时，每个被监督终端都必须选择自己的计划文件。');
+      setDialogNotice({ kind: 'error', message: '工作范围选择“按计划文件定义”时，每个被监督终端都必须选择自己的计划文件。' });
       return;
     }
     if (andStart && !launchCmd.trim()) {
-      window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
+      setDialogNotice({ kind: 'error', message: '请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。' });
       return;
     }
 
     if (andStart) {
       const result = ensureDedicatedSupervisors(lanes, !sessionRetained);
       if (!result.ok) {
-        window.alert('无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。');
+        setDialogNotice({ kind: 'error', message: '无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。' });
         return;
       }
       persistFields(result.lanes, true);
       setSupervisorLanes(result.lanes);
       if (!sessionRetained) startSupervisor();
+      else closeSupervisorSetup();
       const nextSession = useStore.getState().supervisor;
       const previousBySurfaceId = new Map(supervisor.lanes.map((lane) => [lane.surfaceId, lane]));
       const briefingLaneIds = new Set(nextSession.lanes
@@ -806,23 +855,27 @@ export default function SupervisorSetupDialog() {
   };
 
   const openAiSession = () => {
+    setDialogNotice(null);
     const lanes = buildLanes(sessionRetained);
     if (lanes.length === 0) {
-      window.alert('请先至少选择一个要监控的终端。');
+      setDialogNotice({ kind: 'error', message: '请先至少选择一个要监控的终端。' });
       return;
     }
     const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
-      window.alert(`请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`);
+      setDialogNotice({
+        kind: 'error',
+        message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
+      });
       return;
     }
     if (!launchCmd.trim()) {
-      window.alert('请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。');
+      setDialogNotice({ kind: 'error', message: '请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。' });
       return;
     }
     const result = ensureDedicatedSupervisors(lanes, true);
     if (!result.ok) {
-      window.alert('无法为所有选中终端创建专属监督 AI，请重试。');
+      setDialogNotice({ kind: 'error', message: '无法为所有选中终端创建专属监督 AI，请重试。' });
       return;
     }
     persistFields(result.lanes, false);
@@ -861,6 +914,12 @@ export default function SupervisorSetupDialog() {
         aria-modal="true"
         aria-label="AI 监督"
         tabIndex={-1}
+        onFocusCapture={(event) => {
+          const target = event.target;
+          if (target instanceof HTMLElement && target.matches('input, textarea, select, [contenteditable="true"]')) {
+            lastFocusedFieldRef.current = target;
+          }
+        }}
       >
         <header className="supervisor-dialog__header">
           <div className="supervisor-dialog__title">AI 监督配置</div>
@@ -895,6 +954,7 @@ export default function SupervisorSetupDialog() {
                   && supervisor.lanes.some((lane) => (
                     lane.surfaceId === candidate.surfaceId && isSupervisorLaneBound(lane)
                   ));
+                const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? true;
                 return (
                   <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
                     <label className="supervisor-dialog__row">
@@ -917,8 +977,20 @@ export default function SupervisorSetupDialog() {
                       </span>
                     </label>
                     {isSelected && (
-                      <details className="supervisor-dialog__lane-settings" open>
-                        <summary>{isExistingLane ? '当前独立监督配置（会保留原管理会话）' : '配置此终端的独立监督任务'}</summary>
+                      <details
+                        className="supervisor-dialog__lane-settings"
+                        open={isConfigExpanded}
+                        onToggle={(event) => setTerminalConfigExpanded(
+                          candidate.surfaceId,
+                          event.currentTarget.open,
+                        )}
+                      >
+                        <summary>
+                          {isExistingLane ? '当前独立监督配置（会保留原管理会话）' : '配置此终端的独立监督任务'}
+                          <span className="supervisor-dialog__toggle-hint">
+                            {isConfigExpanded ? '折叠' : '展开'}
+                          </span>
+                        </summary>
                         <div className="supervisor-dialog__section">
                           <div className="supervisor-dialog__label">任务目标（可选）</div>
                           <textarea
@@ -1413,6 +1485,16 @@ export default function SupervisorSetupDialog() {
             </div>
           </details>
         </div>
+
+        {dialogNotice && (
+          <div
+            className="supervisor-dialog__notice"
+            data-kind={dialogNotice.kind}
+            role={dialogNotice.kind === 'error' ? 'alert' : 'status'}
+          >
+            {dialogNotice.message}
+          </div>
+        )}
 
         <div className="supervisor-dialog__actions">
           {sessionRetained && (
