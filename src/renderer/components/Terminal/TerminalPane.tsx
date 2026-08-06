@@ -46,7 +46,7 @@ function ActiveTerminalPane({
   onFindBarClose,
   copyModeActive = false,
 }: TerminalPaneProps) {
-  const { terminalRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, startupInput, sshProfileId });
+  const { terminalRef, xtermRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, startupInput, sshProfileId });
 
   const [_lastQuery, setLastQuery] = useState('');
 
@@ -56,6 +56,33 @@ function ActiveTerminalPane({
   lastQueryRef.current = _lastQuery;
   const activeRef = useRef(false);
   activeRef.current = focused && visible;
+
+  const focusTerminal = useCallback(() => {
+    if (!activeRef.current) return;
+    requestAnimationFrame(() => {
+      if (!activeRef.current) return;
+      try { xtermRef.current?.focus(); } catch { /* terminal may be disposing */ }
+    });
+  }, [xtermRef]);
+
+  // Switching panes already restores focus in useTerminal, but clicking an
+  // already-focused pane does not change React state. If a sidebar field or the
+  // find bar owns DOM focus, xterm's hidden textarea therefore stays blurred and
+  // the terminal appears read-only. Reassert focus after every pointer press in
+  // the terminal viewport; controls such as the find bar are siblings and are
+  // intentionally outside this handler.
+  const handleTerminalPointerDown = useCallback(() => {
+    focusTerminal();
+  }, [focusTerminal]);
+
+  const previousModesRef = useRef({ showFindBar, copyModeActive });
+  useEffect(() => {
+    const previous = previousModesRef.current;
+    previousModesRef.current = { showFindBar, copyModeActive };
+    if ((previous.showFindBar && !showFindBar) || (previous.copyModeActive && !copyModeActive)) {
+      focusTerminal();
+    }
+  }, [showFindBar, copyModeActive, focusTerminal]);
 
   // F3 / Shift+F3 cycle search matches without reopening the find bar. Only the
   // focused, visible terminal acts (there's exactly one at a time).
@@ -101,11 +128,16 @@ function ActiveTerminalPane({
       searchAddonRef.current.clearDecorations();
     }
     onFindBarClose?.();
-  }, [searchAddonRef, onFindBarClose]);
+    focusTerminal();
+  }, [searchAddonRef, onFindBarClose, focusTerminal]);
 
   return (
     <div className={`terminal-pane ${focused ? 'terminal-pane--focused' : ''}`}>
-      <div ref={terminalRef} className="terminal-pane__container" />
+      <div
+        ref={terminalRef}
+        className="terminal-pane__container"
+        onPointerDown={handleTerminalPointerDown}
+      />
       {showFindBar && (
         <FindBar
           onSearch={handleSearch}
