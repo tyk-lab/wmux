@@ -417,6 +417,53 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
   });
 
+  it('approves the original proposal without requiring supplemental input', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '按现有方案完成实现并运行测试',
+      reason: '需要用户批准当前方案',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: '已批准，AI 监督将按当前建议继续。' });
+    expect(writes).toHaveBeenCalledWith('worker-a', '按现有方案完成实现并运行测试');
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
+  it('requires adjustment guidance and sends it back to the owning AI supervisor', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '改用新框架重写当前模块',
+      reason: '需要用户选择调整方向',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'reject', actor: 'ou-user' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('填写具体意见') });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+
+    useStore.getState().updateLane('lane-a', { supervisorSurfaceId: undefined });
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'reject', task: '保留现有框架。', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('AI 监督已不存在') });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    useStore.getState().updateLane('lane-a', { supervisorSurfaceId: 'supervisor-a' as any });
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'reject', task: '保留现有框架，只调整适配层。', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: '已将补充说明交给 AI 监督重新处理。' });
+    expect(writes).toHaveBeenCalledWith(
+      'supervisor-a',
+      expect.stringContaining('[用户补充说明]\n保留现有框架，只调整适配层。'),
+    );
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
   it('pauses only the owning lane from a Feishu decision while retaining the approval and still allows stop', () => {
     expect(decide({
       outcome: 'needs-human',

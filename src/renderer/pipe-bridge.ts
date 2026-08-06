@@ -721,20 +721,34 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
   if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
   if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
   const followUpTask = task?.trim() || '';
-  if (decision === 'approve' && !followUpTask) return { ok: false, error: '批准时需要填写后续任务。', message: '' };
+  if (decision === 'reject' && !followUpTask) return { ok: false, error: '按补充说明调整时需要填写具体意见。', message: '' };
+  if (decision === 'reject' && (!lane || !lane.supervisorSurfaceId)) {
+    return { ok: false, error: '待决项对应的 AI 监督已不存在，无法提交调整说明。', message: '' };
+  }
   const delivery = [approval.text.trim(), followUpTask].filter(Boolean).join('\n\n');
   if (decision === 'approve' && delivery) sendToSurface(approval.surfaceId, delivery, session.submitEnter);
   if (decision === 'approve') store.approvePending(approvalId);
   else store.rejectPending(approvalId);
   if (lane && (approval.source === 'supervisor-route' || approval.source === 'supervisor-important')) {
-    store.updateLane(lane.id, { awaitingReview: decision !== 'approve', autoDecisionLimitReached: false, autoDecisionsUsed: 0, ...(decision === 'approve' ? { currentTask: followUpTask } : {}) });
-    remoteAudit(session, lane, 'supervisor.proposal.resolved', { approvalId, resolution: decision === 'approve' ? 'approved' : 'rejected', proposalKind: approval.proposalKind || 'important', text: decision === 'approve' ? delivery : undefined });
+    store.updateLane(lane.id, {
+      awaitingReview: decision !== 'approve',
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+      ...(decision === 'approve' && followUpTask ? { currentTask: followUpTask } : {}),
+    });
+    remoteAudit(session, lane, 'supervisor.proposal.resolved', {
+      approvalId,
+      resolution: decision === 'approve' ? 'approved' : 'rejected',
+      proposalKind: approval.proposalKind || 'important',
+      text: decision === 'approve' ? delivery : followUpTask,
+    });
     if (decision === 'reject' && lane.supervisorSurfaceId) {
-      sendToSurface(lane.supervisorSurfaceId, '[人工决定] 已拒绝该建议；请依据当前任务、计划约束和终端证据重新裁决。\n', true);
+      sendToSurface(lane.supervisorSurfaceId, `[人工决定] 当前建议需要调整。\n\n[用户补充说明]\n${followUpTask}\n\n请依据补充说明、当前任务、计划约束和终端证据重新裁决。\n`, true);
     }
   }
-  remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown', task: decision === 'approve' ? followUpTask : undefined });
-  return { ok: true, message: decision === 'approve' ? '已批准并发送后续任务。' : '已拒绝建议。' };
+  remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown', task: followUpTask || undefined });
+  if (decision === 'reject') return { ok: true, message: '已将补充说明交给 AI 监督重新处理。' };
+  return { ok: true, message: followUpTask ? '已批准并发送补充任务。' : '已批准，AI 监督将按当前建议继续。' };
 }
 
 export function normalizedMaxAutoDecisions(value: unknown): number | null {
