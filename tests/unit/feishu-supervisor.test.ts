@@ -41,7 +41,10 @@ supervisor_model: k3`)).toEqual({
       action: 'decide', approvalId: 'appr-1', decision: 'approve', task: '按当前路线继续并补齐测试',
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: approve')).toEqual({
-      error: '批准时需要 task，作为后续任务发送到被监督终端。',
+      action: 'decide', approvalId: 'appr-1', decision: 'approve', task: undefined,
+    });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: reject')).toEqual({
+      action: 'decide', approvalId: 'appr-1', decision: 'reject', task: undefined,
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: shell')).toEqual({
       error: 'DECIDE 需要 approval_id 和 action: approve|reject|pause|stop。',
@@ -168,9 +171,13 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('选择方案 A');
     expect(card).toContain('选择方案 B');
     expect(card).toContain('follow_up_task');
-    expect(card).toContain('批准并发送任务');
+    expect(card).toContain('批准并继续');
+    expect(card).toContain('按补充说明调整');
+    expect(card).toContain('调整时必填，批准时可选');
+    expect(card).toContain('处理当前决策');
+    expect(card).toContain('监督控制');
     expect(card).toContain('暂停此监督');
-    expect(card).not.toContain('拒绝');
+    expect(card).toContain('"decision":"reject"');
     expect(card).toContain('停止此监督');
   });
 
@@ -194,6 +201,8 @@ supervisor_model: k3`)).toEqual({
     ]));
     const start = JSON.stringify(startObject);
     const send = JSON.stringify(sendObject);
+    const startElements = startObject.body?.elements as Array<{ tag?: string }> | undefined;
+    const sendElements = sendObject.body?.elements as Array<{ tag?: string }> | undefined;
 
     expect(menuObject.schema).toBe('2.0');
     expect(menuObject.body?.elements).toBeInstanceOf(Array);
@@ -219,9 +228,13 @@ supervisor_model: k3`)).toEqual({
     expect(startObject.schema).toBe('2.0');
     expect(startObject.body?.elements).toBeInstanceOf(Array);
     expect(startObject.elements).toBeUndefined();
+    expect(startElements?.at(-1)?.tag).toBe('column_set');
+    expect(start).toContain('返回控制首页');
     expect(sendObject.schema).toBe('2.0');
     expect(sendObject.body?.elements).toBeInstanceOf(Array);
     expect(sendObject.elements).toBeUndefined();
+    expect(sendElements?.at(-1)?.tag).toBe('column_set');
+    expect(send).toContain('返回控制首页');
     const startForm = (startObject.body?.elements as Array<{ tag?: string; elements?: Array<Record<string, unknown>> }>).find((element) => element.tag === 'form');
     const selects = startForm?.elements?.filter((element) => element.tag === 'select_static') || [];
     expect(selects.length).toBeGreaterThan(0);
@@ -281,6 +294,9 @@ supervisor_model: k3`)).toEqual({
     });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_pause')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'pause',
+    });
+    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_reject')).toEqual({
+      approval_id: 'appr-1', wmux_action: 'decide', decision: 'reject',
     });
   });
 

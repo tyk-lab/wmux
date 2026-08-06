@@ -202,7 +202,6 @@ export function parseFeishuSupervisorCommand(input: string): FeishuSupervisorCom
     if (!fields.approval_id || !['approve', 'reject', 'pause', 'stop'].includes(decision || '')) {
       return { error: 'DECIDE 需要 approval_id 和 action: approve|reject|pause|stop。' };
     }
-    if (decision === 'approve' && !fields.task) return { error: '批准时需要 task，作为后续任务发送到被监督终端。' };
     return { action: 'decide', approvalId: fields.approval_id, decision: decision as 'approve' | 'reject' | 'pause' | 'stop', task: fields.task || undefined };
   }
   if (verb !== 'START') return { error: '支持 LIST、START、SEND、PAUSE、RESUME、STOP、DECIDE。' };
@@ -330,6 +329,7 @@ function buildFormCard(
   description: string,
   formName: string,
   formElements: object[],
+  footerElements: object[] = [],
 ): object {
   return {
     schema: '2.0',
@@ -338,9 +338,19 @@ function buildFormCard(
       elements: [
         { tag: 'markdown', content: description },
         { tag: 'form', name: formName, elements: formElements },
+        ...footerElements,
       ],
     },
   };
+}
+
+function controlHomeFooter(): object[] {
+  return [{
+    tag: 'column_set', flex_mode: 'none', columns: [{
+      tag: 'column', width: 'auto',
+      elements: [cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页')],
+    }],
+  }];
 }
 
 export function buildSupervisorResultCard(title: string, content: string, success: boolean): object {
@@ -477,6 +487,7 @@ export function buildSupervisorStartCard(terminals: FeishuListTerminal[], adding
       ] },
       formButton('wmux_form_start', adding ? '添加监督终端' : '启动监督', 'primary', { wmux_action: 'form_start' }),
     ],
+    controlHomeFooter(),
   );
 }
 
@@ -493,6 +504,7 @@ export function buildSupervisorSendTaskCard(terminals: FeishuListTerminal[]): ob
       { tag: 'input', element_id: 'send_task', name: 'task', required: true, input_type: 'multiline_text', rows: 5, max_length: 1000, label: { tag: 'plain_text', content: '任务内容' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' } },
       formButton('wmux_form_send', '发送任务', 'primary', { wmux_action: 'form_send' }),
     ],
+    controlHomeFooter(),
   );
 }
 
@@ -762,12 +774,19 @@ export function buildApprovalCard(record: SupervisorRecord): object {
     {
       tag: 'input', element_id: 'decision_task', name: 'follow_up_task', required: false,
       input_type: 'multiline_text', rows: 4, max_length: 1000,
-      label: { tag: 'plain_text', content: '后续任务（批准时必填）' },
-      placeholder: { tag: 'plain_text', content: '填写要转发到被监督终端的后续任务或决策说明' },
+      label: { tag: 'plain_text', content: '补充说明（调整时必填，批准时可选）' },
+      placeholder: { tag: 'plain_text', content: '批准时可留空；需要调整时填写交给 AI 监督的具体意见' },
     },
+    { tag: 'markdown', content: '**处理当前决策**' },
     {
       tag: 'column_set', flex_mode: 'none', columns: [
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', '批准并发送任务', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', '批准并继续', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_reject', '按补充说明调整', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'reject' })] },
+      ],
+    },
+    { tag: 'markdown', content: '**监督控制**' },
+    {
+      tag: 'column_set', flex_mode: 'none', columns: [
         { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_pause', '暂停此监督', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'pause' })] },
         { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_stop', '停止此监督', 'danger', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'stop' })] },
       ],

@@ -422,6 +422,54 @@ describe('飞书人工决策单聊路由', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it('启动监督和发送任务表单可直接返回控制首页', async () => {
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: JSON.stringify({
+        active: false,
+        paused: false,
+        terminals: [{ surfaceId: 'surf-idle', label: 'Worker', workspace: 'workspace-a', supervised: false, supervisionState: 'none' }],
+        session: null,
+        pendingApprovals: [],
+      }),
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-back', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'start', nonce: 'open-start' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('返回控制首页');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'back-start' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('AI 监督控制');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'send', nonce: 'open-send' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('返回控制首页');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'back-send' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('AI 监督控制');
+    expect(control.mock.calls.every(([command]) => command.action === 'list')).toBe(true);
+  });
+
   it('原地更新失败时降级发送替代控制卡', async () => {
     updateCard.mockRejectedValueOnce(new Error('patch failed'));
     const control = vi.fn(async () => ({
