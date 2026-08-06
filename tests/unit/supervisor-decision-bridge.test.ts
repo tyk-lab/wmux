@@ -440,7 +440,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes).toEqual([]);
   });
 
-  it('toggles pause and resume from the Feishu control menu without replacing the session', () => {
+  it('pauses and resumes explicitly from the Feishu control menu without replacing the session', () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-control' as any,
       title: 'Work',
@@ -457,13 +457,73 @@ describe('supervisor decision bridge', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
     const sessionId = useStore.getState().supervisor.sessionId;
 
-    expect(remoteControl({ action: 'toggle-pause', actor: 'ou-user' }))
+    expect(remoteControl({ action: 'pause-all', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: expect.stringContaining('已暂停') });
     expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: true, sessionId });
 
-    expect(remoteControl({ action: 'toggle-pause', actor: 'ou-user' }))
+    expect(remoteControl({ action: 'resume-all', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: '已继续原 AI 监督会话。' });
     expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false, sessionId });
     expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[会话继续]'));
+  });
+
+  it('adds a new supervised terminal from Feishu without replacing the active session', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'Work',
+      cwd: 'E:\\repo',
+      splitTree: {
+        type: 'leaf',
+        paneId: 'pane-control' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'worker A' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi', customTitle: 'AI 监督 · worker A' },
+          { id: 'worker-b' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'worker B' },
+          { id: 'supervisor-old-b' as any, type: 'terminal', shell: 'pi', customTitle: 'AI 监督 · worker B（旧）' },
+        ],
+      },
+    }]);
+    useStore.getState().patchSupervisor({ supervisorWorkspaceId: 'ws-control' as any });
+    useStore.getState().setSupervisorLanes([
+      ...useStore.getState().supervisor.lanes,
+      {
+        ...lane(),
+        id: 'lane-old-b',
+        label: 'worker B',
+        surfaceId: 'worker-b' as any,
+        supervisorSurfaceId: 'supervisor-old-b' as any,
+        enabled: false,
+        controlState: 'stopped',
+      },
+    ]);
+    const before = useStore.getState().supervisor;
+    const existingManagementSessionId = before.lanes[0].managementSessionId;
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'start',
+      terminals: ['worker-b'],
+      stopWhen: '新增终端测试通过',
+      stopWhenKind: 'concrete',
+      autonomous: false,
+      actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('已添加 AI 监督终端') });
+
+    const after = useStore.getState().supervisor;
+    expect(after).toMatchObject({ active: true, paused: false, sessionId: before.sessionId });
+    expect(after.lanes).toHaveLength(2);
+    expect(after.lanes[0]).toMatchObject({ surfaceId: 'worker-a', managementSessionId: existingManagementSessionId });
+    expect(after.lanes.some((item) => item.id === 'lane-old-b')).toBe(false);
+    expect(useStore.getState().workspaces[0].splitTree.type === 'leaf'
+      && useStore.getState().workspaces[0].splitTree.surfaces.some((surface) => surface.id === 'supervisor-old-b')).toBe(false);
+    expect(after.lanes[1]).toMatchObject({
+      surfaceId: 'worker-b',
+      awaitingReview: true,
+      config: { stopWhen: '新增终端测试通过' },
+    });
+    expect(writes.mock.calls.some(([surfaceId, text]) => (
+      surfaceId === after.lanes[1].supervisorSurfaceId && String(text).includes('新增终端测试通过')
+    ))).toBe(true);
   });
 });

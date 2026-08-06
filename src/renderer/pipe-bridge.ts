@@ -19,6 +19,7 @@ import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/super
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   clearSupervisorLaneContext,
+  isSupervisorLaneBound,
   supervisorLaneControlState,
   type SupervisorDecision,
   type SupervisorLane,
@@ -521,12 +522,15 @@ function closeStoppedSupervisorSurfaces(lanes: SupervisorLane[]): void {
 
 function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; message: string; error?: string } {
   const store = useStore.getState();
-  if (store.supervisor.active || store.supervisor.paused) {
-    return { ok: false, error: '当前已有运行中或暂停保留的 AI 监督；请先继续处理或停止。', message: '' };
-  }
+  const retainedSession = store.supervisor.active || store.supervisor.paused;
   const previousLanes = store.supervisor.lanes;
+  const boundSurfaceIds = new Set(retainedSession
+    ? previousLanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)
+    : []);
   const selectedIds = new Set(params.terminals);
-  const candidates = remoteTerminalList().filter((terminal) => selectedIds.has(terminal.surfaceId));
+  const candidates = remoteTerminalList().filter((terminal) => (
+    selectedIds.has(terminal.surfaceId) && !boundSurfaceIds.has(terminal.surfaceId)
+  ));
   if (candidates.length !== selectedIds.size) return { ok: false, error: '包含不存在或不可监督的终端 ID；先执行 LIST 获取最新终端。', message: '' };
   if (!params.stopWhen.trim()) return { ok: false, error: '停止条件不能为空。', message: '' };
   if (candidates.some((candidate) => !candidate.projectDir)) return { ok: false, error: '所选终端缺少项目目录，无法写入审计记录。', message: '' };
@@ -546,10 +550,10 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
   if (!supervisorWorkspace || !targetPaneId) return { ok: false, error: '无法创建专属监督工作区。', message: '' };
 
   const launchCmd = params.supervisorLaunchCmd || store.supervisor.supervisorLaunchCmd || 'pi';
-  const supervisorModel = params.supervisorModel || '';
-  const supervisorReasoningEffort = params.supervisorReasoningEffort || '';
+  const supervisorModel = params.supervisorModel || (retainedSession ? store.supervisor.supervisorModel : '');
+  const supervisorReasoningEffort = params.supervisorReasoningEffort || (retainedSession ? store.supervisor.supervisorReasoningEffort : '');
   const launch = buildSupervisorLaunchCommand(launchCmd, supervisorModel, supervisorReasoningEffort);
-  const lanes: SupervisorLane[] = candidates.map((candidate, index) => {
+  const lanes: SupervisorLane[] = candidates.map((candidate) => {
     const supervisorSurfaceId = store.addSurface(supervisorWorkspace!.id, targetPaneId!, 'terminal', {
       customTitle: supervisorTabTitle(candidate.label),
       shell: 'pwsh.exe',
@@ -557,8 +561,8 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
       startupCommands: launch ? [launch] : undefined,
       transientSupervisor: true,
     });
-    return clearSupervisorLaneContext({
-      id: `lane-${index + 1}`,
+    const lane = clearSupervisorLaneContext({
+      id: `lane-${uuid()}`,
       label: candidate.label,
       surfaceId: candidate.surfaceId,
       supervisorSurfaceId,
@@ -576,10 +580,12 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
         stopWhenKind: params.stopWhenKind,
         planFilePath: params.planFile || '',
       },
+      autonomousOverride: retainedSession ? params.autonomous : undefined,
       enabled: true,
       steps: [], maxAutoSteps: 0, autoStepsUsed: 0, awaitingStopCheck: false, stopConfirmed: false,
       awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
     }, supervisorSurfaceId);
+    return retainedSession ? { ...lane, awaitingReview: true } : lane;
   });
   if (lanes.some((lane) => !lane.supervisorSurfaceId)) {
     for (const lane of lanes) {
@@ -587,11 +593,40 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
     }
     return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
   }
-  if (previousLanes.length > 0) {
+  if (!retainedSession && previousLanes.length > 0) {
     for (const lane of previousLanes) {
       remoteAudit(store.supervisor, lane, 'session.abandoned', { reason: '飞书启动新的监督会话', actor: params.actor || 'unknown' });
     }
     closeStoppedSupervisorSurfaces(previousLanes);
+  }
+  if (retainedSession) {
+    const supersededStoppedLanes = previousLanes.filter((lane) => (
+      selectedIds.has(lane.surfaceId) && !isSupervisorLaneBound(lane)
+    ));
+    for (const lane of supersededStoppedLanes) {
+      remoteAudit(store.supervisor, lane, 'session.abandoned', {
+        reason: '飞书在当前会话中重新添加此终端', actor: params.actor || 'unknown',
+      });
+    }
+    closeStoppedSupervisorSurfaces(supersededStoppedLanes);
+    const retainedLanes = previousLanes.filter((lane) => !supersededStoppedLanes.includes(lane));
+    store.setSupervisorLanes([...retainedLanes, ...lanes]);
+    const session = useStore.getState().supervisor;
+    for (const lane of lanes) {
+      remoteAudit(session, lane, 'supervisor.remote-command', {
+        action: 'add', terminals: [lane.surfaceId], autonomous: params.autonomous, actor: params.actor || 'unknown',
+      });
+    }
+    const addedLaneIds = new Set(lanes.map((lane) => lane.id));
+    window.setTimeout(() => {
+      const current = useStore.getState().supervisor;
+      const states = (window as any).__wmux_getAgentStates?.() || {};
+      for (const lane of current.lanes) {
+        if (!addedLaneIds.has(lane.id) || !lane.supervisorSurfaceId) continue;
+        sendToSurface(lane.supervisorSurfaceId, buildSupervisorBriefing(current, { lane, state: String(states[lane.surfaceId]?.state || 'unknown') }), true);
+      }
+    }, SUPERVISOR_TUI_READY_DELAY_MS);
+    return { ok: true, message: `已添加 AI 监督终端：${lanes.map((lane) => `${lane.label} (${lane.surfaceId})`).join('、')}` };
   }
   store.patchSupervisor({
     mode: 'unified', taskGoal: params.taskGoal || '', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
@@ -1461,15 +1496,23 @@ export function initPipeBridge(): void {
       useStore.getState().stopSupervisorLane(lane.id, `由飞书停止 ${lane.label} 并解除终端绑定`);
       return { ok: true, message: `已停止 ${lane.label} 的 AI 监督并解除终端绑定；可重新选择该终端启动监督，其他通道不受影响。` };
     }
-    if (action === 'toggle-pause') {
+    if (action === 'pause-all' || action === 'resume-all' || action === 'toggle-pause') {
       const session = useStore.getState().supervisor;
       const actor = String(params?.actor || 'unknown');
-      if (session.active) {
+      if (action === 'pause-all' && session.paused) {
+        return { ok: true, message: '当前 AI 监督已经全部暂停。' };
+      }
+      if (action === 'resume-all' && session.active) {
+        return { ok: true, message: '当前 AI 监督已经在运行。' };
+      }
+      const shouldPause = action === 'pause-all' || (action === 'toggle-pause' && session.active);
+      if (shouldPause && session.active) {
         useStore.getState().pauseSupervisor('由飞书远程暂停；现有监督终端与会话上下文已保留');
         for (const lane of session.lanes) remoteAudit(session, lane, 'supervisor.remote-command', { action: 'pause', actor });
         return { ok: true, message: '已暂停当前 AI 监督；会话、监督终端和待决项均已保留。' };
       }
-      if (session.paused) {
+      const shouldResume = action === 'resume-all' || (action === 'toggle-pause' && session.paused);
+      if (shouldResume && session.paused) {
         const missingLane = session.lanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped'
           && (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)));
         if (missingLane) return { ok: false, error: `专属监督终端已缺失：${missingLane.label}。请在 wmux 中停止后重新配置。`, message: '' };
