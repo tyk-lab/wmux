@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -176,9 +176,17 @@ supervisor_model: k3`)).toEqual({
 
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
     const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
-    const menu = JSON.stringify(buildSupervisorControlMenuCard());
-    const activeMenu = JSON.stringify(buildSupervisorControlMenuCard({ active: true, paused: false }));
-    const pausedMenu = JSON.stringify(buildSupervisorControlMenuCard({ active: false, paused: true }));
+    const menuObject = buildSupervisorControlMenuCard() as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const menu = JSON.stringify(menuObject);
+    const activeMenu = JSON.stringify(buildSupervisorControlMenuCard({
+      active: true, paused: false, totalTerminals: 2, availableTerminals: 1, supervisedTerminals: 1, pendingApprovals: 2,
+    }));
+    const pausedMenu = JSON.stringify(buildSupervisorControlMenuCard({
+      active: false, paused: true, totalTerminals: 2, availableTerminals: 1, supervisedTerminals: 1, pendingApprovals: 0,
+    }));
+    const idleMenu = JSON.stringify(buildSupervisorControlMenuCard({
+      active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
+    }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
@@ -187,17 +195,26 @@ supervisor_model: k3`)).toEqual({
     const start = JSON.stringify(startObject);
     const send = JSON.stringify(sendObject);
 
-    expect(menu).toContain('查看状态');
+    expect(menuObject.schema).toBe('2.0');
+    expect(menuObject.body?.elements).toBeInstanceOf(Array);
+    expect(menuObject.elements).toBeUndefined();
+    expect(menu).not.toContain('"tag":"note"');
+    expect(menu).toContain('"text_size":"notation"');
+    expect(menu).toContain('刷新状态');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
-    expect(menu).toContain('控制单个监督');
-    expect(menu).toContain('暂停/继续全部');
-    expect(menu).toContain('停止全部');
-    expect(activeMenu).toContain('暂停全部');
-    expect(activeMenu).not.toContain('暂停/继续全部');
-    expect(pausedMenu).toContain('继续全部');
-    expect(pausedMenu).not.toContain('暂停/继续全部');
-    expect(menu).toContain('白名单用户单聊');
+    expect(activeMenu).toContain('管理监督');
+    expect(menu).not.toContain('停止全部');
+    expect(activeMenu).toContain('添加监督终端');
+    expect(activeMenu).toContain('监督通道 1 个');
+    expect(activeMenu).toContain('待审批 2 项');
+    expect(activeMenu).not.toContain('暂停全部');
+    expect(activeMenu).not.toContain('停止全部');
+    expect(pausedMenu).toContain('已暂停（上下文已保留）');
+    expect(pausedMenu).toContain('继续全部监督');
+    expect(idleMenu).toContain('启动监督');
+    expect(idleMenu).not.toContain('管理监督');
+    expect(menu).toContain('白名单用户');
     expect(menu).not.toContain('审批卡片发送到审计群');
     expect(startObject.schema).toBe('2.0');
     expect(startObject.body?.elements).toBeInstanceOf(Array);
@@ -221,6 +238,27 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
     expect(laneControl).toContain('stop-lane');
+  });
+
+  it('将暂停和停止收拢到管理卡，并为停止提供确认卡', () => {
+    const terminal = { surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: true, supervisionState: 'active' as const };
+    const activeManagement = JSON.stringify(buildSupervisorManagementCard([terminal], { active: true, paused: false }));
+    const pausedManagement = JSON.stringify(buildSupervisorManagementCard([terminal], { active: false, paused: true }));
+    const stopAll = JSON.stringify(buildSupervisorStopConfirmationCard());
+    const stopLane = JSON.stringify(buildSupervisorStopConfirmationCard(terminal));
+
+    expect(activeManagement).toContain('暂停全部');
+    expect(activeManagement).toContain('stop-confirm');
+    expect(activeManagement).toContain('暂停此监督');
+    expect(activeManagement).not.toContain('继续此监督');
+    expect(pausedManagement).toContain('继续全部');
+    expect(pausedManagement).toContain('随会话暂停（继续全部后恢复）');
+    expect(pausedManagement).not.toContain('继续此监督');
+    expect(pausedManagement).not.toContain('暂停此监督');
+    expect(activeManagement).toContain('stop-lane');
+    expect(stopAll).toContain('确认停止全部');
+    expect(stopLane).toContain('confirm_stop_lane');
+    expect(stopLane).toContain('surf-a');
   });
 
   it('允许从启动表单重新监督已停止的终端', () => {

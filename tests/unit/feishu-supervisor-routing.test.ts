@@ -8,7 +8,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
   createLarkChannel: larkMocks.createLarkChannel,
 }));
 
-import { FeishuSupervisorService, isFeishuApprovalCardContext } from '../../src/main/feishu-supervisor';
+import { FEISHU_CONTROL_CARD_VERSION, FeishuSupervisorService, isFeishuApprovalCardContext } from '../../src/main/feishu-supervisor';
 import type { SupervisorRecord } from '../../src/main/supervisor-records';
 
 interface MessageEvent {
@@ -22,6 +22,10 @@ interface MessageEvent {
 interface ChannelHandlers {
   message: (event: MessageEvent) => void;
   cardAction: (event: any) => void;
+}
+
+function currentControlValue(value: Record<string, unknown>): Record<string, unknown> {
+  return { ...value, wmux_card_version: FEISHU_CONTROL_CARD_VERSION };
 }
 
 function approvalRecord(approvalId: string): SupervisorRecord {
@@ -131,12 +135,16 @@ describe('飞书人工决策单聊路由', () => {
     expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督，原待决项和决策卡均已保留。' });
   });
 
-  it('从控制卡路由暂停或继续监督并刷新按钮状态', async () => {
+  it('从管理卡暂停或继续全部监督并刷新首页状态', async () => {
     let paused = false;
     const control = vi.fn(async (command: { action: string }) => {
-      if (command.action === 'toggle-pause') {
-        paused = !paused;
-        return { ok: true, message: paused ? '已暂停当前 AI 监督。' : '已继续原 AI 监督会话。' };
+      if (command.action === 'pause-all') {
+        paused = true;
+        return { ok: true, message: '已暂停当前 AI 监督。' };
+      }
+      if (command.action === 'resume-all') {
+        paused = false;
+        return { ok: true, message: '已继续原 AI 监督会话。' };
       }
       return {
         ok: true,
@@ -152,10 +160,63 @@ describe('飞书人工决策单聊路由', () => {
     const service = new FeishuSupervisorService(control);
     service.start();
     handlers.message({
-      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help', content: 'wmux帮助', chatType: 'p2p',
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help', content: '帮助', chatType: 'p2p',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).toContain('暂停全部');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('管理监督');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a',
+      messageId: 'om-1',
+      operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'manage' }) },
+      raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('暂停全部');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a',
+      messageId: 'om-1',
+      operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'pause-all' }) },
+      raw: {},
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'pause-all')).toBe(true));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已暂停当前 AI 监督。');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已暂停（上下文已保留）');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('继续全部监督');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a',
+      messageId: 'om-1',
+      operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'resume-all', nonce: 'resume-now' }) },
+      raw: {},
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'resume-all')).toBe(true));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('已继续原 AI 监督会话。');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('监督状态：进行中');
+  });
+
+  it('拒绝不带当前版本标识的旧控制卡', async () => {
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: JSON.stringify({
+        active: true, paused: false, terminals: [], session: null, pendingApprovals: [],
+      }),
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-old-card', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(control).toHaveBeenCalledTimes(1);
 
     handlers.cardAction({
       chatId: 'oc-dm-a',
@@ -165,10 +226,9 @@ describe('飞书人工决策单聊路由', () => {
       raw: {},
     });
 
-    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'toggle-pause')).toBe(true));
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
-    expect(send.mock.calls[1][1]).toEqual({ text: '已暂停当前 AI 监督。' });
-    expect(JSON.stringify(send.mock.calls[2][1])).toContain('继续全部');
+    await Promise.resolve();
+    expect(control).toHaveBeenCalledTimes(1);
+    expect(updateCard).not.toHaveBeenCalled();
   });
 
   it('从飞书控制卡只暂停所选 AI 监督通道', async () => {
@@ -197,26 +257,114 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: { wmux_action: 'menu', flow: 'lane-control' } }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'manage' }) }, raw: {},
     });
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-    expect(JSON.stringify(send.mock.calls[1][1])).toContain('控制单个 AI 监督');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('管理 AI 监督');
 
     handlers.cardAction({
-      chatId: 'oc-dm-a', messageId: 'om-2', operator: { openId: 'ou-allowed' },
-      action: { name: 'wmux_form_lane_control', value: { wmux_action: 'form_lane_control' } },
-      raw: { action: { form_value: { terminal: 'surf-a', lane_action: 'pause-lane' } } },
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'lane_control', flow: 'pause-lane', terminal: 'surf-a' }) },
+      raw: {},
     });
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'pause-lane')).toBe(true));
     expect(control.mock.calls.find(([command]) => command.action === 'pause-lane')?.[0]).toEqual({
       action: 'pause-lane', terminal: 'surf-a',
     });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('停止全部监督前必须经过二次确认', async () => {
+    const control = vi.fn(async (command: { action: string }) => {
+      if (command.action === 'stop') return { ok: true, message: '已停止当前 AI 监督。' };
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: true,
+          paused: false,
+          terminals: [{ surfaceId: 'surf-a', label: 'Auth worker', workspace: 'workspace-a', supervised: true, supervisionState: 'active' }],
+          session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+          pendingApprovals: [],
+        }),
+      };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-stop', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'manage' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'stop-confirm' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('确认停止全部');
+    expect(control.mock.calls.some(([command]) => command.action === 'stop')).toBe(false);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'stop' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'stop')).toBe(true));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('停止单个监督通道前必须经过二次确认', async () => {
+    const control = vi.fn(async (command: { action: string; terminal?: string }) => {
+      if (command.action === 'stop-lane') return { ok: true, message: '已停止 Auth worker 的 AI 监督。' };
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: true,
+          paused: false,
+          terminals: [{ surfaceId: 'surf-a', label: 'Auth worker', workspace: 'workspace-a', supervised: true, supervisionState: 'active' }],
+          session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+          pendingApprovals: [],
+        }),
+      };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-stop-lane', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'manage' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'stop_lane_confirm', flow: 'stop-lane', terminal: 'surf-a' }) },
+      raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('confirm_stop_lane');
+    expect(control.mock.calls.some(([command]) => command.action === 'stop-lane')).toBe(false);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'confirm_stop_lane', terminal: 'surf-a' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'stop-lane')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'stop-lane')?.[0]).toEqual({
+      action: 'stop-lane', terminal: 'surf-a',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('启动监督表单排除运行中和暂停保留的终端', async () => {
-    const control = vi.fn(async () => ({
-      ok: true,
-      message: JSON.stringify({
+    const listMessage = JSON.stringify({
         active: true,
         paused: false,
         terminals: [
@@ -227,8 +375,10 @@ describe('飞书人工决策单聊路由', () => {
         ],
         session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
         pendingApprovals: [],
-      }),
-    }));
+      });
+    const control = vi.fn(async (command: { action: string }) => command.action === 'start'
+      ? { ok: true, message: '已添加 AI 监督终端。' }
+      : { ok: true, message: listMessage });
     const service = new FeishuSupervisorService(control);
     service.start();
     handlers.message({
@@ -238,15 +388,63 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: { wmux_action: 'menu', flow: 'start' } }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'start' }) }, raw: {},
     });
 
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-    const startCard = JSON.stringify(send.mock.calls[1][1]);
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const startCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(startCard).toContain('添加 AI 监督终端');
     expect(startCard).toContain('surf-idle');
     expect(startCard).toContain('surf-stopped');
     expect(startCard).not.toContain('surf-active');
     expect(startCard).not.toContain('surf-paused');
+
+    const formNonce = /"wmux_action":"form_start"[^}]*"nonce":"([^"]+)"/.exec(startCard)?.[1];
+    expect(formNonce).toBeTruthy();
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_start', value: currentControlValue({ wmux_action: 'form_start', nonce: formNonce }) },
+      raw: { action: { form_value: { terminal: 'surf-idle', stop_when: '测试通过' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    const refreshedHome = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(refreshedHome).toContain('已添加 AI 监督终端。');
+    const refreshedStartNonce = /"wmux_action":"menu","flow":"start"[^}]*"nonce":"([^"]+)"/.exec(refreshedHome)?.[1];
+    expect(refreshedStartNonce).toBeTruthy();
+    expect(refreshedStartNonce).not.toBe(formNonce);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'start', nonce: refreshedStartNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('添加 AI 监督终端');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('原地更新失败时降级发送替代控制卡', async () => {
+    updateCard.mockRejectedValueOnce(new Error('patch failed'));
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: JSON.stringify({
+        active: false, paused: false, terminals: [], session: null, pendingApprovals: [],
+      }),
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-fallback', content: 'wmux帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'refresh-1' }) }, raw: {},
+    });
+
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(send.mock.calls[1][1])).toContain('AI 监督控制');
   });
 
   it('将新审批发送给最近联系机器人的白名单单聊', async () => {
