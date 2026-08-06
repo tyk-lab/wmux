@@ -286,6 +286,8 @@ describe('supervisor decision bridge', () => {
       alternatives: '保持现状',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
 
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    useStore.getState().rejectPending(approval.id);
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
     expect(decide({ outcome: 'complete', next: '' })).toMatchObject({ ok: true, outcome: 'complete' });
     expect(writes).not.toHaveBeenCalled();
@@ -395,6 +397,22 @@ describe('supervisor decision bridge', () => {
       impact: '影响外部接口',
       alternatives: '保留当前路线',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
+    expect(writes).not.toHaveBeenCalled();
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+  });
+
+  it('does not let a supervisor bypass a pending user decision after receiving supplemental context', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      reason: '需要用户决定',
+      alternatives: '继续或停止',
+    })).toMatchObject({ ok: true });
+
+    expect(decide({ outcome: 'continue', next: '根据用户补充意见继续' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('仍有待用户决策项'),
+    });
     expect(writes).not.toHaveBeenCalled();
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
   });

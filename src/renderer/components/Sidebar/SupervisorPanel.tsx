@@ -84,6 +84,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const [collapsed, setCollapsed] = useState(false);
   const [loadingRecordLaneId, setLoadingRecordLaneId] = useState<string | null>(null);
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
+  const [supervisorNotes, setSupervisorNotes] = useState<Record<string, string>>({});
 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
@@ -183,6 +184,16 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
       if (text.trim()) sendToSurface(item.surfaceId, text, supervisor.submitEnter);
       approvePending(id);
+      setProposalEdits((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setSupervisorNotes((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       if (isHumanProposal && lane) {
         updateLane(lane.id, {
           awaitingReview: false,
@@ -212,6 +223,30 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
     pauseSupervisorLane(item.laneId, `人工暂停待决项：${item.laneLabel}；该通道决策内容已保留`);
+  };
+
+  const sendSupervisorNote = (id: string) => {
+    const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
+    const lane = item ? supervisor.lanes.find((entry) => entry.id === item.laneId) : undefined;
+    const note = supervisorNotes[id]?.trim().slice(0, 4000) || '';
+    if (!item || !lane || !lane.supervisorSurfaceId || !note) return;
+    try {
+      const paused = supervisorLaneControlState(lane) === 'paused';
+      sendToSurface(lane.supervisorSurfaceId, [
+        '[用户对当前待决项的补充意见]',
+        `待决项: ${item.reason || item.text || item.laneLabel}`,
+        `补充意见: ${note}`,
+        '',
+        '这是提供给你的补充上下文，不是发给任务终端的新任务。当前待决项仍由用户决定；不得因此自动发送 --next。',
+        paused
+          ? '此监督通道已暂停；请记住意见并等待用户继续。'
+          : '请用该意见更新你对待决项的理解，然后等待用户决策。',
+      ].join('\n'), true);
+      setSupervisorNotes((current) => ({ ...current, [id]: '' }));
+      appendSupervisorLog(lane.id, '已发送补充意见', '补充信息已发送给该通道的专属监督 AI');
+    } catch (err: any) {
+      appendSupervisorLog(lane.id, '补充意见发送失败', String(err?.message || err));
+    }
   };
 
   const openTaskTerminalForDecision = (id: string) => {
@@ -727,7 +762,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           {supervisor.pendingApprovals.length > 0 && (
             <div className="sup-panel__approvals">
             <div className="sup-panel__approvals-title">需人工处理</div>
-              {supervisor.pendingApprovals.map((a) => (
+              {supervisor.pendingApprovals.map((a) => {
+                const lane = supervisor.lanes.find((entry) => entry.id === a.laneId);
+                const laneControlState = lane ? supervisorLaneControlState(lane) : 'stopped';
+                const note = supervisorNotes[a.id] || '';
+                return (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">
                     <strong>{a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
@@ -778,6 +817,26 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                       {a.text.length > 400 ? '…' : ''}
                     </pre>
                   )}
+                  <label className="sup-panel__proposal-edit sup-panel__proposal-note">
+                    <span>给 AI 监督的补充意见（可选）</span>
+                    <textarea
+                      className="sup-panel__proposal-input"
+                      value={note}
+                      maxLength={4000}
+                      onChange={(event) => setSupervisorNotes((current) => ({ ...current, [a.id]: event.target.value }))}
+                      placeholder="例如：优先保持现有 API，暂时不引入新依赖"
+                      disabled={!supervisor.active || laneControlState === 'stopped' || !lane?.supervisorSurfaceId}
+                    />
+                  </label>
+                  <div className="sup-panel__approval-actions">
+                    <button
+                      type="button"
+                      onClick={() => sendSupervisorNote(a.id)}
+                      disabled={!supervisor.active || laneControlState === 'stopped' || !lane?.supervisorSurfaceId || !note.trim()}
+                    >
+                      发送补充意见给 AI 监督
+                    </button>
+                  </div>
                   <div className="sup-panel__approval-actions">
                     {a.proposalKind && (
                       <button
@@ -789,14 +848,25 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         去任务终端裁决
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => onPause(a.id)}
-                      title="保留当前待决项并暂停会话"
-                      disabled={!supervisor.active}
-                    >
-                      暂停
-                    </button>
+                    {laneControlState === 'paused' ? (
+                      <button
+                        type="button"
+                        onClick={() => lane && resumeLane(lane)}
+                        title="保留当前待决项并继续此监督通道"
+                        disabled={!supervisor.active || !lane}
+                      >
+                        继续此监督
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onPause(a.id)}
+                        title="保留当前待决项并暂停此监督通道"
+                        disabled={!supervisor.active || laneControlState === 'stopped'}
+                      >
+                        暂停此监督
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="sup-panel__btn-primary"
@@ -807,7 +877,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

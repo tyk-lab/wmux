@@ -1073,6 +1073,9 @@ export function initPipeBridge(): void {
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
     const laneState = supervisorLaneControlState(lane);
     if (laneState !== 'active') return { ok: false, error: laneState === 'paused' ? '当前监督通道已暂停' : '当前监督通道已停止' };
+    if (outcome !== 'needs-human' && session.pendingApprovals.some((approval) => approval.laneId === lane.id)) {
+      return { ok: false, error: '当前通道仍有待用户决策项；补充意见只用于更新上下文，不能绕过用户自动继续' };
+    }
     const autonomous = effectiveSupervisorAutonomous(session, lane);
     const remoteSshControl = isRemoteSshControlledLane(lane, store.workspaces);
     if (lane.autoDecisionLimitReached && !autonomous) {

@@ -835,6 +835,10 @@
   gap: 5px;
 }
 
+.sup-panel__proposal-note {
+  margin-top: 8px;
+}
+
 .sup-panel__proposal-input {
   width: 100%;
   min-height: 58px;
