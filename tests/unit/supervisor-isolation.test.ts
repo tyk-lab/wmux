@@ -18,6 +18,7 @@ import {
   createDefaultSupervisorSession,
   clearSupervisorLaneContext,
   createSupervisorSlice,
+  isSupervisorLaneBound,
   isSurfaceSupervised,
   supervisorDefaultsForAgent,
   type SupervisorLane,
@@ -619,7 +620,7 @@ describe('supervisor isolation', () => {
     expect(added.managementSessionId).not.toBe(existing.managementSessionId);
   });
 
-  it('pauses, resumes, and stops one supervisor lane without changing the other lane', () => {
+  it('keeps a paused lane bound but releases a stopped lane without changing the other lane', () => {
     const store = makeStore();
     store.getState().setSupervisorLanes([
       lane({ pendingSupervisorDeliveries: [{ id: 'delivery-a', kind: 'task-end', text: 'done', task: 'auth', createdAt: 1 }] }),
@@ -635,6 +636,7 @@ describe('supervisor isolation', () => {
     let session = store.getState().supervisor;
     expect(session).toMatchObject({ active: true, paused: false });
     expect(session.lanes[0]).toMatchObject({ controlState: 'paused', enabled: true });
+    expect(session.lanes[0]).toMatchObject({ surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a' });
     expect(session.lanes[1]).toMatchObject({ controlState: 'active', enabled: true });
     expect(session.lanes[0].pendingSupervisorDeliveries).toHaveLength(1);
     expect(session.pendingApprovals).toHaveLength(1);
@@ -645,9 +647,15 @@ describe('supervisor isolation', () => {
     store.getState().stopSupervisorLane('lane-a', '仅停止 A');
     session = store.getState().supervisor;
     expect(session).toMatchObject({ active: true, paused: false });
-    expect(session.lanes[0]).toMatchObject({ controlState: 'stopped', enabled: false, supervisorSurfaceId: null });
-    expect(session.lanes[1].controlState).toBe('active');
+    expect(session.lanes.find((item) => item.id === 'lane-a')).toBeUndefined();
+    expect(session.lanes).toHaveLength(1);
+    expect(session.lanes[0]).toMatchObject({ id: 'lane-b', surfaceId: 'worker-b', controlState: 'active' });
     expect(session.pendingApprovals).toHaveLength(0);
+  });
+
+  it('treats legacy stopped lanes as unbound while paused lanes remain bound', () => {
+    expect(isSupervisorLaneBound(lane({ controlState: 'paused' }))).toBe(true);
+    expect(isSupervisorLaneBound(lane({ controlState: 'stopped', enabled: false }))).toBe(false);
   });
 
   it('inherits session permissions by default and supports complete per-lane policy overrides', () => {

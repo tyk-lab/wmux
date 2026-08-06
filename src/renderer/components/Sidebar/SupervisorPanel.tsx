@@ -353,13 +353,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const stopLane = (lane: SupervisorLane) => {
-    if (!window.confirm(`将只停止“${lane.label}”的监督并关闭其专属监督 AI；其他通道不受影响。是否继续？`)) return;
+    if (!window.confirm(`将停止“${lane.label}”的监督、关闭其专属监督 AI，并解除与任务终端的绑定；之后可重新选择该终端启动监督，其他通道不受影响。是否继续？`)) return;
     if (!closeDedicatedSupervisor(lane)) {
       window.alert(`无法安全关闭“${lane.label}”的专属监督 AI，该通道未停止。`);
       return;
     }
     appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'stop' });
-    stopSupervisorLane(lane.id, `用户停止 ${lane.label}；其他监督通道状态不变`);
+    stopSupervisorLane(lane.id, `用户停止 ${lane.label} 并解除终端绑定；其他监督通道状态不变`);
   };
 
   const restartFromScratch = () => {

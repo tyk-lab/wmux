@@ -6,7 +6,7 @@ import type {
   SupervisorLane,
   SupervisorLaneConfig,
 } from '../../store/supervisor-slice';
-import { supervisorLaneControlState } from '../../store/supervisor-slice';
+import { isSupervisorLaneBound, supervisorLaneControlState } from '../../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -259,7 +259,9 @@ export default function SupervisorSetupDialog() {
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
         const meta = agentMeta.get(s.surfaceId);
         const st = agentStates[s.surfaceId]?.state || 'unknown';
-        const existingLane = supervisor.lanes.find((lane) => lane.surfaceId === s.surfaceId);
+        const existingLane = supervisor.lanes.find((lane) => (
+          lane.surfaceId === s.surfaceId && isSupervisorLaneBound(lane)
+        ));
         list.push({
           key: s.surfaceId,
           surfaceId: s.surfaceId,
@@ -329,7 +331,7 @@ export default function SupervisorSetupDialog() {
     setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions));
     setWorkScope(normalizeSupervisorWorkScope(supervisor.workScope));
     setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
-    setSelected(new Set(supervisor.lanes.map((lane) => lane.surfaceId)));
+    setSelected(new Set(supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)));
     setLaneConfigs(Object.fromEntries(
       supervisor.lanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
     ));
@@ -406,7 +408,9 @@ export default function SupervisorSetupDialog() {
   if (!setupOpen) return null;
 
   const toggle = (surfaceId: string) => {
-    if (sessionRetained && supervisor.lanes.some((lane) => lane.surfaceId === surfaceId)) return;
+    if (sessionRetained && supervisor.lanes.some((lane) => (
+      lane.surfaceId === surfaceId && isSupervisorLaneBound(lane)
+    ))) return;
     if (!selected.has(surfaceId)) {
       setLaneConfigs((current) => current[surfaceId]
         ? current
@@ -533,7 +537,9 @@ export default function SupervisorSetupDialog() {
     const lanes: SupervisorLane[] = [];
     for (const c of candidates) {
       if (!selected.has(c.surfaceId)) continue;
-      const prev = supervisor.lanes.find((l) => l.surfaceId === c.surfaceId);
+      const prev = supervisor.lanes.find((l) => (
+        l.surfaceId === c.surfaceId && isSupervisorLaneBound(l)
+      ));
       const selectedSourceId = restoreSources[c.surfaceId];
       const selectedSource = restoreAuditHistory
         ? restoreCandidates[c.surfaceId]?.find((candidate) => candidate.surfaceId === selectedSourceId)
@@ -886,7 +892,9 @@ export default function SupervisorSetupDialog() {
                 const laneAutonomous = laneAutonomousOverrides[candidate.surfaceId] ?? autonomous;
                 const laneForbiddenActions = laneForbiddenActionOverrides[candidate.surfaceId] || forbiddenActions;
                 const isExistingLane = sessionRetained
-                  && supervisor.lanes.some((lane) => lane.surfaceId === candidate.surfaceId);
+                  && supervisor.lanes.some((lane) => (
+                    lane.surfaceId === candidate.surfaceId && isSupervisorLaneBound(lane)
+                  ));
                 return (
                   <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
                     <label className="supervisor-dialog__row">

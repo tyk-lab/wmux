@@ -677,10 +677,10 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
     remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
     if (lane) {
       closeStoppedSupervisorSurfaces([lane]);
-      store.stopSupervisorLane(lane.id, `飞书人工停止 ${lane.label}`);
+      store.stopSupervisorLane(lane.id, `飞书人工停止 ${lane.label} 并解除终端绑定`);
     }
     return { ok: true, message: lane
-      ? `已停止 ${lane.label} 的 AI 监督；其他监督通道不受影响。`
+      ? `已停止 ${lane.label} 的 AI 监督并解除终端绑定；可重新选择该终端启动监督，其他通道不受影响。`
       : '待决项对应通道不存在，已移除该待决项。' };
   }
   if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
@@ -1458,8 +1458,8 @@ export function initPipeBridge(): void {
       if (laneState === 'stopped') return { ok: true, message: `${lane.label} 已经停止。` };
       remoteAudit(session, lane, 'supervisor.remote-command', { action: 'stop-lane', actor });
       closeStoppedSupervisorSurfaces([lane]);
-      useStore.getState().stopSupervisorLane(lane.id, `由飞书停止 ${lane.label}`);
-      return { ok: true, message: `已停止 ${lane.label} 的 AI 监督；其他通道不受影响。` };
+      useStore.getState().stopSupervisorLane(lane.id, `由飞书停止 ${lane.label} 并解除终端绑定`);
+      return { ok: true, message: `已停止 ${lane.label} 的 AI 监督并解除终端绑定；可重新选择该终端启动监督，其他通道不受影响。` };
     }
     if (action === 'toggle-pause') {
       const session = useStore.getState().supervisor;

@@ -386,6 +386,13 @@ export function supervisorLaneControlState(
   return lane.controlState || (lane.enabled ? 'active' : 'stopped');
 }
 
+/** Paused lanes remain bound; stopped lanes are historical compatibility data only. */
+export function isSupervisorLaneBound(
+  lane: Pick<SupervisorLane, 'enabled' | 'controlState'>,
+): boolean {
+  return supervisorLaneControlState(lane) !== 'stopped';
+}
+
 export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], SupervisorSlice> = (set, get) => ({
   supervisor: createDefaultSupervisorSession(),
 
@@ -559,18 +566,12 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lane = s.supervisor.lanes.find((item) => item.id === laneId);
       if (!lane || supervisorLaneControlState(lane) === 'stopped') return s;
-      const lanes = s.supervisor.lanes.map((item) => item.id === laneId
-        ? {
-            ...item,
-            enabled: false,
-            controlState: 'stopped' as const,
-            supervisorSurfaceId: null,
-            awaitingReview: false,
-            awaitingStopCheck: false,
-            pendingSupervisorDeliveries: [],
-            autonomousOverride: undefined,
-          }
-        : item);
+      // Stopping ends this terminal's management relationship. The audit record
+      // has already been persisted by the caller, so retaining a stopped lane
+      // here only makes the setup dialog treat the worker as still bound and
+      // prevents selecting it for a fresh dedicated supervisor. Pausing uses a
+      // separate path and deliberately keeps the lane and management session.
+      const lanes = s.supervisor.lanes.filter((item) => item.id !== laneId);
       const hasRetainedLane = lanes.some((item) => supervisorLaneControlState(item) !== 'stopped');
       return {
         supervisor: {
@@ -579,7 +580,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           pendingApprovals: s.supervisor.pendingApprovals.filter((item) => item.laneId !== laneId),
           ...(hasRetainedLane ? {} : { active: false, paused: false, autonomous: false }),
           log: [{
-            ts: Date.now(), laneId, action: '停止通道', detail: detail || `${lane.label} 已停止`,
+            ts: Date.now(), laneId, action: '停止通道', detail: detail || `${lane.label} 已停止并解除终端绑定`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };

@@ -437,7 +437,7 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'stop', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: expect.stringContaining('已停止 worker 的 AI 监督') });
     expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: false, pendingApprovals: [] });
-    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'stopped', enabled: false });
+    expect(useStore.getState().supervisor.lanes).toEqual([]);
   });
 
   it('toggles pause and resume from the Feishu control menu without replacing the session', () => {
