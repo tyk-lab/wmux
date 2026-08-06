@@ -13,6 +13,9 @@
  *   npm run build
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clearPackageLocks } from './clear-package-locks.mjs';
@@ -21,6 +24,55 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const args = process.argv.slice(2);
 const packageOnly = args.includes('--package-only');
 const ebArgs = args.filter((a) => a !== '--package-only');
+const require = createRequire(import.meta.url);
+
+const feishuEnvKeys = [
+  'WMUX_FEISHU_APP_ID',
+  'WMUX_FEISHU_APP_SECRET',
+  'WMUX_FEISHU_CHAT_ID',
+  'WMUX_FEISHU_CONTROL_CHAT_ID',
+  'WMUX_FEISHU_DECISION_CHAT_ID',
+  'WMUX_FEISHU_ALLOWED_OPEN_IDS',
+];
+/** Persist only the allowlisted Feishu values for the locally installed app. */
+function syncLocalFeishuConfig() {
+  const sourcePath = path.join(projectRoot, '.env');
+  let content;
+  try {
+    content = fs.readFileSync(sourcePath, 'utf8');
+  } catch {
+    return;
+  }
+
+  const { parseFeishuDotEnv, parseLegacyFeishuEnv } = require(path.join(projectRoot, 'dist', 'main', 'feishu-supervisor.js'));
+  const parsed = parseFeishuDotEnv(content);
+  const values = Object.fromEntries(feishuEnvKeys.flatMap((key) => parsed[key] ? [[key, parsed[key]]] : []));
+  if (parsed.WMUX_FEISHU_ENV_FILE) {
+    const referencedPath = path.isAbsolute(parsed.WMUX_FEISHU_ENV_FILE)
+      ? parsed.WMUX_FEISHU_ENV_FILE
+      : path.resolve(projectRoot, parsed.WMUX_FEISHU_ENV_FILE);
+    try {
+      const legacyValues = parseLegacyFeishuEnv(fs.readFileSync(referencedPath, 'utf8'));
+      for (const [key, value] of Object.entries(legacyValues)) {
+        if (!values[key]) values[key] = value;
+      }
+    } catch {
+      console.warn(`[build-package] Feishu config reference is unavailable: ${referencedPath}`);
+    }
+  }
+
+  const lines = feishuEnvKeys.flatMap((key) => values[key] ? [`${key}=${values[key]}`] : []);
+  if (lines.length === 0) return;
+
+  const instanceSuffix = process.env.WMUX_INSTANCE?.trim() ? `-${process.env.WMUX_INSTANCE.trim()}` : '';
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  const targetDir = path.join(appData, `wmux${instanceSuffix}`);
+  const targetPath = path.join(targetDir, '.env');
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(targetPath, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+  try { fs.chmodSync(targetPath, 0o600); } catch { /* best effort on Windows */ }
+  console.log(`[build-package] Synced local Feishu configuration to ${targetPath}`);
+}
 
 function run(label, command, commandArgs) {
   console.log(`\n==> ${label}`);
@@ -46,6 +98,8 @@ if (!packageOnly) {
   // Compile can take long enough for sync clients to re-open leftovers.
   clearPackageLocks({ root: projectRoot });
 }
+
+syncLocalFeishuConfig();
 
 run(
   'Package (electron-builder)',
