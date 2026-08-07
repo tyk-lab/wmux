@@ -118,6 +118,19 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledWith('worker-a', '确认后继续执行');
   });
 
+  it('returns recent supervision logs with lane labels for Feishu', () => {
+    useStore.getState().appendSupervisorLog('lane-a', '任务完成', '测试已通过');
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    const result = remoteControl({ action: 'logs' });
+    const payload = JSON.parse(result.message);
+    expect(result).toMatchObject({ ok: true });
+    expect(payload).toMatchObject({ active: true, paused: false });
+    expect(payload.entries[0]).toMatchObject({
+      laneLabel: 'worker', action: '任务完成', detail: '测试已通过',
+    });
+  });
+
   it('creates an unsupervised Codex direct terminal that remains sendable and supervisable', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
     const result = remoteControl({

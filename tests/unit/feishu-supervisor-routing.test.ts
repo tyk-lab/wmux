@@ -478,6 +478,52 @@ describe('飞书人工决策单聊路由', () => {
     expect(control.mock.calls.every(([command]) => command.action === 'list')).toBe(true);
   });
 
+  it('可从控制首页查看并刷新监督状态和监督日志', async () => {
+    const listMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'surf-a', label: 'Codex任务', workspace: 'workspace-a', supervised: true,
+        supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
+      }],
+      session: { sessionId: 'sup-1', stopWhen: '完成测试', autonomous: false },
+      pendingApprovals: [],
+    });
+    const logMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      sessionId: 'sup-1',
+      entries: [{ ts: Date.now(), laneLabel: 'Codex任务', action: '任务完成', detail: '测试已通过' }],
+    });
+    const control = vi.fn(async (command: { action: string }) => ({
+      ok: true,
+      message: command.action === 'logs' ? logMessage : listMessage,
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-observe', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'detail-status', nonce: 'status-1' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('AI 监督状态');
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('Codex任务');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'logs', nonce: 'logs-1' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('AI 监督日志');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('测试已通过');
+    expect(control.mock.calls.some(([command]) => command.action === 'logs')).toBe(true);
+  });
+
   it('从控制首页创建 Codex 直连终端任务并返回最新首页', async () => {
     const listMessage = JSON.stringify({
       active: false,

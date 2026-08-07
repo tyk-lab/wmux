@@ -1598,6 +1598,24 @@ export function initPipeBridge(): void {
         }),
       };
     }
+    if (action === 'logs') {
+      const state = useStore.getState().supervisor;
+      const laneLabels = new Map(state.lanes.map((lane) => [lane.id, lane.label]));
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: state.active,
+          paused: state.paused,
+          sessionId: state.sessionId,
+          entries: state.log.slice(0, 20).map((entry) => ({
+            ts: entry.ts,
+            laneLabel: entry.laneId === '-' ? '会话' : laneLabels.get(entry.laneId) || '未知通道',
+            action: entry.action,
+            detail: entry.detail,
+          })),
+        }),
+      };
+    }
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'create-task') return createRemoteDirectTerminalTask(params as RemoteDirectTerminalTask);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);

@@ -11,6 +11,7 @@ import {
 
 export type FeishuSupervisorCommand =
   | { action: 'list' }
+  | { action: 'logs' }
   | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string; force?: boolean }
@@ -297,6 +298,20 @@ interface FeishuControlState {
   pendingApprovals: number;
 }
 
+interface FeishuSupervisorLogEntry {
+  ts: number;
+  laneLabel: string;
+  action: string;
+  detail: string;
+}
+
+interface FeishuSupervisorLogResult {
+  active: boolean;
+  paused: boolean;
+  sessionId: string;
+  entries: FeishuSupervisorLogEntry[];
+}
+
 function isStartableSupervisorTerminal(terminal: FeishuListTerminal): boolean {
   if (terminal.supervisionState === 'active' || terminal.supervisionState === 'paused') return false;
   if (terminal.supervisionState === 'stopped') return true;
@@ -348,6 +363,24 @@ function cardButton(value: Record<string, string>, text: string, type: 'primary'
     tag: 'button', text: { tag: 'plain_text', content: text }, type,
     value: { ...value, wmux_card_version: FEISHU_CONTROL_CARD_VERSION, nonce: nextControlActionNonce() },
   };
+}
+
+/** Keep action labels readable on both narrow mobile cards and wide desktop cards. */
+function responsiveButtonRows(buttons: object[], columnsPerRow = 2): object[] {
+  const rows: object[] = [];
+  for (let index = 0; index < buttons.length; index += columnsPerRow) {
+    rows.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: buttons.slice(index, index + columnsPerRow).map((button) => ({
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [button],
+      })),
+    });
+  }
+  return rows;
 }
 
 function formButton(
@@ -434,7 +467,7 @@ interface PendingBusyTaskConfirmation {
 function isReusableControlAction(value: ResolvedCardAction): boolean {
   if (value.wmux_action === 'stop_lane_confirm') return true;
   return value.wmux_action === 'menu'
-    && ['create-task', 'start', 'send', 'manage', 'status', 'stop-confirm'].includes(value.flow || '');
+    && ['create-task', 'start', 'send', 'manage', 'status', 'detail-status', 'logs', 'stop-confirm'].includes(value.flow || '');
 }
 
 export function resolveFeishuCardAction(value: unknown, name?: string): ResolvedCardAction {
@@ -468,21 +501,22 @@ export function buildSupervisorControlMenuCard(state?: FeishuControlState, notic
   const summaryText = state
     ? `**监督状态：${sessionStatus}**\n监督通道 ${state.supervisedTerminals} 个 · 可添加终端 ${state.availableTerminals} 个 · 待审批 ${state.pendingApprovals} 项`
     : '**监督状态：读取中**\n点击刷新状态获取最新信息。';
-  const operations = [
+  const terminalOperations = [
     cardButton({ wmux_action: 'menu', flow: 'create-task' }, '添加终端任务', 'primary'),
+    ...(state?.totalTerminals !== 0
+      ? [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')]
+      : []),
+  ];
+  const supervisorOperations = [
     ...(state?.paused
       ? [cardButton({ wmux_action: 'menu', flow: 'resume-all' }, '继续全部监督', 'primary')]
       : []),
     ...(state?.availableTerminals !== 0
       ? [cardButton({ wmux_action: 'menu', flow: 'start' }, sessionRunning ? '添加监督终端' : '启动监督', 'primary')]
       : []),
-    ...(state?.totalTerminals !== 0
-      ? [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')]
-      : []),
     ...(sessionRunning || (state?.supervisedTerminals || 0) > 0
       ? [cardButton({ wmux_action: 'menu', flow: 'manage' }, '管理监督')]
       : []),
-    cardButton({ wmux_action: 'menu', flow: 'status' }, '刷新状态'),
   ];
   return {
     schema: '2.0',
@@ -495,11 +529,17 @@ export function buildSupervisorControlMenuCard(state?: FeishuControlState, notic
           content: `${notice.success ? '✅' : '⚠️'} **${notice.success ? '操作成功' : '操作未完成'}**：${notice.text}`,
         }] : []),
         { tag: 'markdown', content: summaryText },
-        {
-          tag: 'column_set', flex_mode: 'none', columns: operations.map((button) => ({
-            tag: 'column', width: 'auto', elements: [button],
-          })),
-        },
+        { tag: 'markdown', content: '**任务终端**' },
+        ...responsiveButtonRows(terminalOperations),
+        ...(supervisorOperations.length > 0 ? [
+          { tag: 'markdown', content: '**AI 监督**' },
+          ...responsiveButtonRows(supervisorOperations),
+        ] : []),
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'menu', flow: 'detail-status' }, '查看监督状态'),
+          cardButton({ wmux_action: 'menu', flow: 'logs' }, '查看监督日志'),
+        ]),
         {
           tag: 'div',
           text: {
@@ -693,6 +733,123 @@ export function buildSupervisorManagementCard(
   };
 }
 
+function supervisionStatusText(result: Pick<FeishuListResult, 'active' | 'paused'>): string {
+  if (result.active) return '进行中';
+  if (result.paused) return '已暂停（上下文已保留）';
+  return '未启动';
+}
+
+function terminalSupervisionStatusText(terminal: FeishuListTerminal, sessionPaused: boolean): string {
+  if (terminal.supervisionState === 'active') return sessionPaused ? '随会话暂停' : '监督中';
+  if (terminal.supervisionState === 'paused') return '单通道已暂停';
+  if (terminal.supervisionState === 'stopped' || terminal.restartable) return '已停止，可重新监督';
+  return terminal.supervised ? '监督中' : '未监督';
+}
+
+function cardAuditValue(key: string, value: unknown, maxLength: number): string {
+  return auditValue(key, value).slice(0, maxLength);
+}
+
+/** Detailed, read-only status view kept separate from the compact control homepage. */
+export function buildSupervisorStatusCard(result: FeishuListResult): object {
+  const supervised = result.terminals.filter((terminal) => (
+    terminal.supervised || terminal.restartable || terminal.supervisionState && terminal.supervisionState !== 'none'
+  ));
+  const visibleSupervised = supervised.slice(0, 10);
+  const sessionLines = [
+    `会话状态：${supervisionStatusText(result)}`,
+    `监督通道：${supervised.filter((terminal) => ['active', 'paused'].includes(terminal.supervisionState || '')).length} 个`,
+    `待人工审批：${result.pendingApprovals.length} 项`,
+  ];
+  if (result.session) {
+    sessionLines.push(`会话 ID：${cardAuditValue('sessionId', result.session.sessionId, 100)}`);
+    sessionLines.push(`监督模式：${result.session.autonomous ? '全自动（高风险仍需人工）' : '有限自主'}`);
+    sessionLines.push(`停止条件：${cardAuditValue('stopWhen', result.session.stopWhen, 300)}`);
+  }
+  const laneElements = visibleSupervised.length > 0
+    ? visibleSupervised.map((terminal) => ({
+        tag: 'div',
+        text: {
+          tag: 'plain_text',
+          content: `${cardAuditValue('terminalLabel', terminal.label, 100)} · ${terminalSupervisionStatusText(terminal, result.paused)}\n任务终端：${terminalActivityText(terminal)}\n工作区：${cardAuditValue('workspace', terminal.workspace, 200)}`,
+        },
+      }))
+    : [{ tag: 'div', text: { tag: 'plain_text', content: '当前没有 AI 监督通道。' } }];
+  const approvalElements = result.pendingApprovals.length > 0
+    ? result.pendingApprovals.slice(0, 5).map((approval) => ({
+        tag: 'div',
+        text: { tag: 'plain_text', content: `${cardAuditValue('terminalLabel', approval.terminal, 100)}：${cardAuditValue('reason', approval.reason, 300)}` },
+      }))
+    : [];
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · AI 监督状态' }, template: result.paused ? 'orange' : result.active ? 'blue' : 'grey' },
+    body: {
+      elements: [
+        { tag: 'div', text: { tag: 'plain_text', content: sessionLines.join('\n') } },
+        { tag: 'hr' },
+        { tag: 'markdown', content: '**监督通道**' },
+        ...laneElements,
+        ...(supervised.length > visibleSupervised.length ? [{
+          tag: 'div', text: { tag: 'plain_text', content: `另有 ${supervised.length - visibleSupervised.length} 个监督通道，请在桌面端查看。` },
+        }] : []),
+        ...(approvalElements.length > 0 ? [
+          { tag: 'hr' },
+          { tag: 'markdown', content: '**待人工审批**' },
+          ...approvalElements,
+        ] : []),
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'menu', flow: 'detail-status' }, '刷新监督状态', 'primary'),
+          cardButton({ wmux_action: 'menu', flow: 'logs' }, '查看监督日志'),
+          cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页'),
+        ]),
+      ],
+    },
+  };
+}
+
+function formatSupervisorLogTime(ts: number): string {
+  if (!Number.isFinite(ts)) return '未知时间';
+  const date = new Date(ts);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** Recent in-memory supervision activity, intentionally capped for Feishu cards. */
+export function buildSupervisorLogCard(result: FeishuSupervisorLogResult): object {
+  const sessionStatus = supervisionStatusText(result);
+  const entries = result.entries.slice(0, 12);
+  const logElements = entries.length > 0
+    ? entries.map((entry) => ({
+        tag: 'div',
+        text: {
+          tag: 'plain_text',
+          content: `${formatSupervisorLogTime(entry.ts)} · ${cardAuditValue('laneLabel', entry.laneLabel, 100)} · ${cardAuditValue('action', entry.action, 100)}\n${cardAuditValue('detail', entry.detail, 400)}`,
+        },
+      }))
+    : [{ tag: 'div', text: { tag: 'plain_text', content: '暂无 AI 监督日志。启动监督或执行控制操作后会在这里显示。' } }];
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · AI 监督日志' }, template: 'grey' },
+    body: {
+      elements: [
+        { tag: 'div', text: { tag: 'plain_text', content: `会话状态：${sessionStatus}\n会话 ID：${cardAuditValue('sessionId', result.sessionId || '暂无', 100)}\n最近记录：${entries.length} 条` } },
+        { tag: 'hr' },
+        ...logElements,
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'menu', flow: 'logs' }, '刷新监督日志', 'primary'),
+          cardButton({ wmux_action: 'menu', flow: 'detail-status' }, '查看监督状态'),
+          cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页'),
+        ]),
+      ],
+    },
+  };
+}
+
 export function buildSupervisorStopConfirmationCard(terminal?: { surfaceId: string; label: string }): object {
   const isLane = !!terminal;
   return {
@@ -777,6 +934,31 @@ function parseListResult(value: unknown): FeishuListResult | null {
         : [])
       : [];
     return { active: parsed.active === true, paused: parsed.paused === true, terminals, session, pendingApprovals };
+  } catch {
+    return null;
+  }
+}
+
+function parseSupervisorLogResult(value: unknown): FeishuSupervisorLogResult | null {
+  if (!isObject(value) || typeof value.message !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value.message) as unknown;
+    if (!isObject(parsed) || !Array.isArray(parsed.entries)) return null;
+    const entries = parsed.entries.flatMap((entry): FeishuSupervisorLogEntry[] => {
+      if (!isObject(entry) || typeof entry.ts !== 'number' || !Number.isFinite(entry.ts)) return [];
+      return [{
+        ts: entry.ts,
+        laneLabel: asText(entry.laneLabel, '会话'),
+        action: asText(entry.action, '状态更新'),
+        detail: asText(entry.detail),
+      }];
+    });
+    return {
+      active: parsed.active === true,
+      paused: parsed.paused === true,
+      sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : '',
+      entries,
+    };
   } catch {
     return null;
   }
@@ -1597,6 +1779,15 @@ export class FeishuSupervisorService {
       });
       return;
     }
+    if (flow === 'logs') {
+      const result = await this.control({ action: 'logs' }, { openId: event.operator.openId, source: 'card' })
+        .catch((err) => ({ error: String(err?.message || err) }));
+      const logs = parseSupervisorLogResult(result);
+      await this.replaceControlCard(event, logs
+        ? buildSupervisorLogCard(logs)
+        : buildSupervisorControlMenuCard(undefined, { text: summary(result), success: false }));
+      return;
+    }
     const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
       .catch((err) => ({ error: String(err?.message || err) }));
     const list = parseListResult(result);
@@ -1636,6 +1827,10 @@ export class FeishuSupervisorService {
         return;
       }
       await this.replaceControlCard(event, buildSupervisorManagementCard(candidates, list));
+      return;
+    }
+    if (flow === 'detail-status') {
+      await this.replaceControlCard(event, buildSupervisorStatusCard(list));
       return;
     }
     await this.replaceControlCard(event, buildSupervisorControlMenuCard(controlStateFromList(list)));

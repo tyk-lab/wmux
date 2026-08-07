@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -307,13 +307,18 @@ supervisor_model: k3`)).toEqual({
     const send = JSON.stringify(sendObject);
     const startElements = startObject.body?.elements as Array<{ tag?: string }> | undefined;
     const sendElements = sendObject.body?.elements as Array<{ tag?: string }> | undefined;
+    const activeMenuObject = buildSupervisorControlMenuCard({
+      active: true, paused: false, totalTerminals: 2, availableTerminals: 1, supervisedTerminals: 1, pendingApprovals: 2,
+    }) as { body?: { elements?: Array<{ tag?: string; columns?: Array<{ width?: string; weight?: number }> }> } };
+    const activeButtonRows = activeMenuObject.body?.elements?.filter((element) => element.tag === 'column_set') || [];
 
     expect(menuObject.schema).toBe('2.0');
     expect(menuObject.body?.elements).toBeInstanceOf(Array);
     expect(menuObject.elements).toBeUndefined();
     expect(menu).not.toContain('"tag":"note"');
     expect(menu).toContain('"text_size":"notation"');
-    expect(menu).toContain('刷新状态');
+    expect(menu).toContain('查看监督状态');
+    expect(menu).toContain('查看监督日志');
     expect(menu).toContain('添加终端任务');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
@@ -322,6 +327,13 @@ supervisor_model: k3`)).toEqual({
     expect(activeMenu).toContain('添加监督终端');
     expect(activeMenu).toContain('监督通道 1 个');
     expect(activeMenu).toContain('待审批 2 项');
+    expect(activeMenu).toContain('**任务终端**');
+    expect(activeMenu).toContain('**AI 监督**');
+    expect(activeButtonRows.length).toBeGreaterThanOrEqual(3);
+    expect(activeButtonRows.every((row) => (row.columns?.length || 0) <= 2)).toBe(true);
+    expect(activeButtonRows.flatMap((row) => row.columns || []).every((column) => (
+      column.width === 'weighted' && column.weight === 1
+    ))).toBe(true);
     expect(activeMenu).not.toContain('暂停全部');
     expect(activeMenu).not.toContain('停止全部');
     expect(pausedMenu).toContain('已暂停（上下文已保留）');
@@ -373,6 +385,45 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
     expect(laneControl).toContain('stop-lane');
+  });
+
+  it('将监督状态和最近日志渲染为适合移动端的只读卡片并脱敏', () => {
+    const status = JSON.stringify(buildSupervisorStatusCard({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'surf-a', label: 'Codex任务', workspace: 'C:\\Users\\tyk\\project', supervised: true,
+        supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(), autonomous: false,
+      }],
+      session: { sessionId: 'sup-1', stopWhen: '测试通过', autonomous: false },
+      pendingApprovals: [{ id: 'approval-1', terminal: 'Codex任务', reason: '等待确认发布方式' }],
+    }));
+    const logs = JSON.stringify(buildSupervisorLogCard({
+      active: true,
+      paused: false,
+      sessionId: 'sup-1',
+      entries: [{
+        ts: Date.now(), laneLabel: 'Codex任务', action: '任务发送',
+        detail: 'token=abc123456789 C:\\Users\\tyk\\secret.txt',
+      }],
+    }));
+    const emptyLogs = JSON.stringify(buildSupervisorLogCard({
+      active: false, paused: false, sessionId: '', entries: [],
+    }));
+
+    expect(status).toContain('AI 监督状态');
+    expect(status).toContain('监督通道：1 个');
+    expect(status).toContain('任务终端：执行中');
+    expect(status).toContain('待人工审批');
+    expect(status).toContain('刷新监督状态');
+    expect(status).not.toContain('C:\\\\Users');
+    expect(logs).toContain('AI 监督日志');
+    expect(logs).toContain('Codex任务');
+    expect(logs).toContain('刷新监督日志');
+    expect(logs).toContain('已脱敏');
+    expect(logs).toContain('本地路径已隐藏');
+    expect(logs).not.toContain('abc123456789');
+    expect(emptyLogs).toContain('暂无 AI 监督日志');
   });
 
   it('将暂停和停止收拢到管理卡，并为停止提供确认卡', () => {
