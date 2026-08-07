@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -105,6 +106,81 @@ supervisor_model: k3`)).toEqual({
     expect(text).toContain('cwd：本地路径已隐藏');
     expect(text).toContain('apiKey：已脱敏');
     expect(text).not.toContain('sk-secret-token-value');
+  });
+
+  it('将终端事件归并为清晰且脱敏的当前状态卡', () => {
+    const started = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-1', projectDir: 'E:\\private', type: 'session.started', ts: 1_700_000_000_000,
+      terminal: { surfaceId: 'surf-1', label: 'codex', workspaceTitle: '桌面任务' }, payload: {},
+    });
+    const working = reduceFeishuAuditTerminalStatus(started, {
+      sessionId: 'sup-1', projectDir: 'E:\\private', type: 'worker.task', ts: 1_700_000_001_000,
+      terminal: { surfaceId: 'surf-1', label: 'codex', workspaceTitle: '桌面任务' },
+      payload: { task: '读取 E:\\private\\plan.md，token: sk-secret-token-value' },
+    });
+    const blocked = reduceFeishuAuditTerminalStatus(working, {
+      sessionId: 'sup-1', projectDir: 'E:\\private', type: 'worker.blocked', ts: 1_700_000_002_000,
+      terminal: { surfaceId: 'surf-1', label: 'codex', workspaceTitle: '桌面任务' },
+      payload: { reason: '等待输入' },
+    });
+    const cardText = JSON.stringify(buildFeishuAuditStatusCard(blocked));
+    const alertText = JSON.stringify(buildFeishuAuditAlertCard({
+      sessionId: 'sup-1', projectDir: 'E:\\private', type: 'worker.blocked', ts: 1_700_000_002_000,
+      terminal: { surfaceId: 'surf-1', label: 'codex', workspaceTitle: '桌面任务' }, payload: { reason: '等待输入' },
+    }, blocked));
+
+    expect(blocked.taskState).toBe('blocked');
+    expect(blocked.currentTask).toContain('本地路径已隐藏');
+    expect(cardText).toContain('当前任务');
+    expect(cardText).toContain('下一步');
+    expect(cardText).not.toContain('sk-secret-token-value');
+    expect(cardText).not.toContain('E:\\\\private');
+    expect(alertText).toContain('终端任务已阻塞');
+  });
+
+  it('同一终端进入新监督会话时不沿用旧任务状态', () => {
+    const completed = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-old', projectDir: '', type: 'supervisor.decision',
+      terminal: { surfaceId: 'surf-1', label: 'codex', workspaceTitle: '旧工作区' }, payload: { outcome: 'complete' },
+    });
+    const restarted = reduceFeishuAuditTerminalStatus(completed, {
+      sessionId: 'sup-new', projectDir: '', type: 'worker.lifecycle',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { event: 'SessionStart' },
+    });
+
+    expect(restarted.taskState).toBe('waiting');
+    expect(restarted.currentTask).toBe('尚未收到任务');
+    expect(restarted.workspaceTitle).toBeUndefined();
+  });
+
+  it('自动判断上限要求人工复核时不提前发送完成提醒', () => {
+    const record = {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.decision' as const,
+      terminal: { surfaceId: 'surf-1', label: 'codex' },
+      payload: { outcome: 'complete', requiresHuman: true },
+    };
+    const status = reduceFeishuAuditTerminalStatus(undefined, record);
+
+    expect(status.taskState).toBe('awaiting-human');
+    expect(JSON.stringify(buildFeishuAuditAlertCard(record, status))).toContain('任务等待人工复核');
+  });
+
+  it('人工从飞书暂停监督时保留待决状态，停止时清空待决状态', () => {
+    const awaiting = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { approvalId: 'approval-1' },
+    });
+    const paused = reduceFeishuAuditTerminalStatus(awaiting, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.remote-decision',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { decision: 'pause' },
+    });
+    const stopped = reduceFeishuAuditTerminalStatus(paused, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.remote-decision',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { decision: 'stop' },
+    });
+
+    expect(paused).toMatchObject({ taskState: 'paused', supervisionState: '已暂停', pendingHuman: '待处理；详细内容不在群内展示' });
+    expect(stopped).toMatchObject({ taskState: 'stopped', supervisionState: '已停止', pendingHuman: '无' });
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
@@ -276,13 +352,22 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('task');
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
-    expect(createTask).toContain('添加 Codex 终端任务');
+    expect(createTask).toContain('添加 AI 终端任务');
+    expect(createTask).toContain('Codex（默认）');
+    expect(createTask).toContain('Kimi');
+    expect(createTask).toContain('Grok');
+    expect(createTask).toContain('创建项目管理终端');
+    expect(createTask).toContain(PROJECT_MANAGER_TERMINAL_STARTUP_INPUT);
+    expect(createTask).toContain('create_project_manager');
     expect(createTask).toContain('task_name');
     expect(createTask).toContain('form_create_task');
     expect(createTask).toContain('返回控制首页');
     const createTaskForm = createTaskObject.body?.elements?.find((element) => element.tag === 'form');
     const createTaskInputs = createTaskForm?.elements?.filter((element) => element.tag === 'input') || [];
+    const createTaskSelects = createTaskForm?.elements?.filter((element) => element.tag === 'select_static') || [];
     expect(createTaskInputs).toHaveLength(2);
+    expect(createTaskSelects).toHaveLength(1);
+    expect(createTaskSelects[0]).toMatchObject({ name: 'agent' });
     expect(createTaskInputs.every((input) => Number(input.max_length) >= 1 && Number(input.max_length) <= 1000)).toBe(true);
     expect(start).toContain('surf-a');
     expect(laneControl).toContain('pause-lane');

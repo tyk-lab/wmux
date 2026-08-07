@@ -3,6 +3,11 @@ import { initPipeBridge } from '../../src/renderer/pipe-bridge';
 import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
+import {
+  PROJECT_MANAGER_TERMINAL_CWD,
+  PROJECT_MANAGER_TERMINAL_NAME,
+  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+} from '../../src/shared/project-manager-terminal';
 
 function lane(): SupervisorLane {
   return {
@@ -132,9 +137,9 @@ describe('supervisor decision bridge', () => {
       customTitle: 'Codex直连 · 修复登录页',
       cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
       startupCommands: ['codex'],
+      startupInput: '检查登录流程并补齐测试',
     });
-    expect(directSurface).not.toHaveProperty('startupInput');
-    expect(writes).toHaveBeenCalledWith(directSurface?.id, '检查登录流程并补齐测试');
+    expect(writes).not.toHaveBeenCalled();
 
     const listed = JSON.parse(remoteControl({ action: 'list' }).message).terminals.find(
       (terminal: any) => terminal.surfaceId === directSurface?.id,
@@ -166,6 +171,60 @@ describe('supervisor decision bridge', () => {
     surfaceTerminalRegistry.delete(directSurface!.id);
   });
 
+  it.each([
+    ['kimi', 'Kimi'],
+    ['grok', 'Grok'],
+  ] as const)('creates a %s direct terminal with the selected launcher', (agent, label) => {
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    expect(remoteControl({
+      action: 'create-task',
+      name: `${label}任务`,
+      task: '执行首条任务',
+      agent,
+      cwd: `E:\\Desktop\\wmux任务\\${label}任务-20260807-120000`,
+    })).toMatchObject({ ok: true, message: expect.stringContaining(`已创建 ${label} 直连终端`) });
+
+    const workspace = useStore.getState().workspaces.find((item) => item.title === `${label}任务`);
+    const surface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
+    expect(surface).toMatchObject({
+      customTitle: `${label}直连 · ${label}任务`,
+      startupCommands: [agent],
+      startupInput: '执行首条任务',
+    });
+  });
+
+  it('creates one fixed Grok project management terminal and invokes its progress skill first', () => {
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    const command = {
+      action: 'create-task',
+      name: PROJECT_MANAGER_TERMINAL_NAME,
+      task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+      agent: 'grok',
+      preset: 'project-manager',
+      cwd: PROJECT_MANAGER_TERMINAL_CWD,
+    };
+
+    expect(remoteControl({ ...command, cwd: 'E:\\wrong-project' })).toMatchObject({
+      ok: false,
+      error: '项目管理终端启动配置无效。',
+    });
+    expect(useStore.getState().workspaces.some((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME)).toBe(false);
+
+    expect(remoteControl(command)).toMatchObject({ ok: true, message: expect.stringContaining('项目管理终端') });
+    const workspace = useStore.getState().workspaces.find((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME);
+    const surface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
+    expect(workspace?.cwd).toBe(PROJECT_MANAGER_TERMINAL_CWD);
+    expect(surface).toMatchObject({
+      customTitle: PROJECT_MANAGER_TERMINAL_NAME,
+      cwd: PROJECT_MANAGER_TERMINAL_CWD,
+      startupCommands: ['grok'],
+      startupInput: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+    });
+
+    expect(remoteControl(command)).toMatchObject({ ok: true, message: '项目管理终端已存在，已切换到该终端。' });
+    expect(useStore.getState().workspaces.filter((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME)).toHaveLength(1);
+  });
+
   function decide(params: Record<string, unknown>): any {
     return (globalThis.window as any).__wmux_supervisorDecide({
       surfaceId: 'worker-a',
@@ -182,6 +241,23 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledWith('worker-a', '运行相关单元测试');
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('records that a decision needs human review when the automatic limit is reached', () => {
+    const appendRecord = vi.fn(async () => undefined);
+    (globalThis.window as any).wmux.supervisor = { appendRecord };
+    useStore.getState().patchSupervisor({ maxAutoDecisions: 1 });
+
+    expect(decide({ next: '运行相关单元测试' })).toMatchObject({
+      ok: true,
+      outcome: 'continue',
+      requiresHuman: true,
+    });
+    expect(writes).not.toHaveBeenCalled();
+    expect(appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'supervisor.decision',
+      payload: expect.objectContaining({ requiresHuman: true }),
+    }));
   });
 
   it('does not append a supervisor next step to an unsubmitted user draft', () => {

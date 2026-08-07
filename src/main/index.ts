@@ -32,6 +32,13 @@ import {
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
 import { createFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
+  PROJECT_MANAGER_TERMINAL_AGENT,
+  PROJECT_MANAGER_TERMINAL_CWD,
+  PROJECT_MANAGER_TERMINAL_NAME,
+  PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH,
+  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+} from '../shared/project-manager-terminal';
+import {
   parseSupervisorConfig,
   serializeSupervisorConfig,
 } from './supervisor-config-file';
@@ -63,21 +70,43 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
   let forwardedCommand: FeishuSupervisorCommand = command;
   let preservedDirectory = '';
   if (command.action === 'create-task') {
-    const name = command.name.trim();
-    const task = command.task.trim();
+    const projectManager = command.preset === 'project-manager';
+    const name = projectManager ? PROJECT_MANAGER_TERMINAL_NAME : command.name.trim();
+    const task = projectManager ? PROJECT_MANAGER_TERMINAL_STARTUP_INPUT : command.task.trim();
+    const agent = projectManager ? PROJECT_MANAGER_TERMINAL_AGENT : command.agent || 'codex';
     if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。' };
-    try {
-      const directory = createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
-      preservedDirectory = directory.displayPath;
+    if (!['codex', 'kimi', 'grok'].includes(agent)) return { ok: false, error: 'AI 终端类型仅允许 codex、kimi 或 grok。' };
+    if (projectManager) {
+      try {
+        if (!fs.statSync(PROJECT_MANAGER_TERMINAL_CWD).isDirectory()) throw new Error('not a directory');
+        const skillPath = path.join(PROJECT_MANAGER_TERMINAL_CWD, PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH);
+        if (!fs.statSync(skillPath).isFile()) throw new Error('skill not found');
+      } catch {
+        return { ok: false, error: `项目管理终端目录或 inspect-project-progress 技能不存在：${PROJECT_MANAGER_TERMINAL_CWD}` };
+      }
       forwardedCommand = {
         ...command,
-        name: directory.taskName,
+        name,
         task,
-        cwd: directory.cwd,
-        displayPath: directory.displayPath,
+        agent,
+        cwd: PROJECT_MANAGER_TERMINAL_CWD,
+        displayPath: PROJECT_MANAGER_TERMINAL_CWD,
       };
-    } catch {
-      return { ok: false, error: '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。' };
+    } else {
+      try {
+        const directory = createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
+        preservedDirectory = directory.displayPath;
+        forwardedCommand = {
+          ...command,
+          name: directory.taskName,
+          task,
+          agent,
+          cwd: directory.cwd,
+          displayPath: directory.displayPath,
+        };
+      } catch {
+        return { ok: false, error: '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。' };
+      }
     }
   }
   const payload = JSON.stringify({ ...forwardedCommand, actor: actor.openId, source: actor.source });
@@ -90,7 +119,7 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
         && result !== null
         && ((result as { ok?: boolean }).ok === false || typeof (result as { error?: unknown }).error === 'string')
       ) {
-        const error = String((result as { error?: string }).error || 'Codex 终端未能打开。');
+        const error = String((result as { error?: string }).error || 'AI 终端未能打开。');
         return { ...result, error: `${error} 已保留任务目录：${preservedDirectory}` };
       }
       return result;
@@ -100,7 +129,7 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
     console.warn('[feishu] direct task workspace creation failed after directory creation', error);
   }
   return preservedDirectory
-    ? { ok: false, error: `Codex 终端未能打开；已保留任务目录：${preservedDirectory}` }
+    ? { ok: false, error: `AI 终端未能打开；已保留任务目录：${preservedDirectory}` }
     : { ok: false, error: 'wmux 界面尚未初始化监督控制器。' };
 }
 

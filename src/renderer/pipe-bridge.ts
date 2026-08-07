@@ -16,6 +16,11 @@ import {
 } from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
 import { sendTaskToSurface, sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
+import {
+  PROJECT_MANAGER_TERMINAL_CWD,
+  PROJECT_MANAGER_TERMINAL_NAME,
+  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+} from '../shared/project-manager-terminal';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   clearSupervisorLaneContext,
@@ -462,6 +467,8 @@ interface RemoteDirectTerminalTask {
   action: 'create-task';
   name: string;
   task: string;
+  agent?: 'codex' | 'kimi' | 'grok';
+  preset?: 'project-manager';
   cwd: string;
   displayPath?: string;
   actor?: string;
@@ -538,29 +545,42 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
   const name = String(params.name || '').trim();
   const task = String(params.task || '').trim();
   const cwd = String(params.cwd || '').trim();
+  const agent = String(params.agent || 'codex').toLowerCase();
+  const projectManager = params.preset === 'project-manager';
   if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。', message: '' };
+  if (!['codex', 'kimi', 'grok'].includes(agent)) return { ok: false, error: 'AI 终端类型仅允许 Codex、Kimi 或 Grok。', message: '' };
   if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(cwd)) return { ok: false, error: '任务目录必须是 Windows 绝对路径。', message: '' };
+
+  if (projectManager) {
+    if (name !== PROJECT_MANAGER_TERMINAL_NAME || task !== PROJECT_MANAGER_TERMINAL_STARTUP_INPUT || agent !== 'grok' || cwd !== PROJECT_MANAGER_TERMINAL_CWD) {
+      return { ok: false, error: '项目管理终端启动配置无效。', message: '' };
+    }
+    const existing = remoteTerminalList().find((terminal) => (
+      terminal.label === PROJECT_MANAGER_TERMINAL_NAME
+      && terminal.projectDir?.toLowerCase() === PROJECT_MANAGER_TERMINAL_CWD.toLowerCase()
+    ));
+    if (existing) {
+      useStore.getState().selectWorkspace(existing.workspaceId);
+      return { ok: true, message: '项目管理终端已存在，已切换到该终端。' };
+    }
+  }
+
+  const agentLabel = agent === 'kimi' ? 'Kimi' : agent === 'grok' ? 'Grok' : 'Codex';
 
   const tree = createLeaf(undefined, 'terminal', cwd);
   const surface = tree.surfaces[0];
   tree.surfaces[0] = {
     ...surface,
-    customTitle: `Codex直连 · ${name}`,
+    customTitle: projectManager ? PROJECT_MANAGER_TERMINAL_NAME : `${agentLabel}直连 · ${name}`,
     shell: 'pwsh.exe',
     cwd,
-    startupCommands: ['codex'],
+    startupCommands: [agent],
+    startupInput: task,
   };
   useStore.getState().createWorkspace({ title: name, cwd, splitTree: tree });
-  window.setTimeout(() => {
-    try {
-      sendToSurface(surface.id, task, true);
-    } catch {
-      // The workspace and task folder remain available for a manual retry.
-    }
-  }, SUPERVISOR_TUI_READY_DELAY_MS);
   return {
     ok: true,
-    message: `已创建 Codex 直连终端“${name}”；首条任务将在终端就绪后自动发送。目录：${params.displayPath || cwd}`,
+    message: `已创建 ${agentLabel} 直连终端“${name}”；首条任务将在终端就绪后自动发送。目录：${params.displayPath || cwd}`,
   };
 }
 
@@ -1400,6 +1420,8 @@ export function initPipeBridge(): void {
       return { ok: true, outcome, duplicate: true };
     }
 
+    const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
+    const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
       outcome,
       reason,
@@ -1407,10 +1429,9 @@ export function initPipeBridge(): void {
       proposalKind,
       impact,
       alternatives,
+      requiresHuman: limitReached && outcome !== 'needs-human',
     });
     store.appendSupervisorLog(lane.id, '监督裁决', `${outcome}${reason ? `：${reason}` : ''}`);
-    const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
-    const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     store.updateLane(lane.id, {
       autoDecisionsUsed,
       decisions: [

@@ -1185,6 +1185,11 @@ export default function App() {
           } else if (action.type === 'notify_supervisor') {
             if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: true });
             const lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
+            if (lane && action.statusEvent === 'blocked') {
+              appendSupervisorRecord(session, lane, 'worker.blocked', {
+                reason: action.statusDetail || '终端正在等待输入或权限处理',
+              });
+            }
             const sid = lane?.supervisorSurfaceId;
             if (sid) {
               try {

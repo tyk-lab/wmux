@@ -147,7 +147,20 @@ describe('supervisor-engine', () => {
     expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.text)
       .toContain('--permission-command');
     expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.opensReview).toBe(true);
+    expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.statusEvent).toBe('blocked');
+    expect(supervisorNotice && supervisorNotice.type === 'notify_supervisor' && supervisorNotice.statusDetail).toBe('permission: npm test');
     expect(runtime.humanNotified).toBe(false);
+
+    const repeated = tickLane({
+      session: session({ mode: 'unified', autonomous: false }),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
+      surfaceState: { state: 'blocked', blockedReason: 'permission: npm test' },
+      runtime,
+      now: 30_000,
+      hasPendingApproval: false,
+    });
+    const repeatedNotice = repeated.actions.find((action) => action.type === 'notify_supervisor');
+    expect(repeatedNotice && repeatedNotice.type === 'notify_supervisor' && repeatedNotice.statusEvent).toBeUndefined();
   });
 
   it('tells an SSH-controlling supervisor that every permission request needs a human', () => {

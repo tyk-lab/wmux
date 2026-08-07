@@ -3,10 +3,15 @@ import fs from 'fs';
 import path from 'path';
 import type { SupervisorRecord } from './supervisor-records';
 import { getAppDataDir } from '../shared/instance';
+import {
+  PROJECT_MANAGER_TERMINAL_AGENT,
+  PROJECT_MANAGER_TERMINAL_NAME,
+  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+} from '../shared/project-manager-terminal';
 
 export type FeishuSupervisorCommand =
   | { action: 'list' }
-  | { action: 'create-task'; name: string; task: string; cwd?: string; displayPath?: string }
+  | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string; force?: boolean }
   | { action: 'pause-lane'; terminal: string }
@@ -331,7 +336,7 @@ function terminalOptions(terminals: FeishuListTerminal[], showActivity = false):
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '3';
+export const FEISHU_CONTROL_CARD_VERSION = '5';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -369,6 +374,7 @@ function buildFormCard(
   formName: string,
   formElements: object[],
   footerElements: object[] = [],
+  beforeFormElements: object[] = [],
 ): object {
   return {
     schema: '2.0',
@@ -376,6 +382,7 @@ function buildFormCard(
     body: {
       elements: [
         { tag: 'markdown', content: description },
+        ...beforeFormElements,
         { tag: 'form', name: formName, elements: formElements },
         ...footerElements,
       ],
@@ -497,7 +504,7 @@ export function buildSupervisorControlMenuCard(state?: FeishuControlState, notic
           tag: 'div',
           text: {
             tag: 'plain_text',
-            content: '可创建 Codex 直连终端、发送任务或添加 AI 监督；人工决策仍会私发给白名单用户。',
+            content: '可创建项目管理终端或 Codex、Kimi、Grok 普通直连终端，发送任务或添加 AI 监督；人工决策仍私发白名单用户。',
             text_size: 'notation',
             text_color: 'grey',
           },
@@ -510,16 +517,33 @@ export function buildSupervisorControlMenuCard(state?: FeishuControlState, notic
 /** Form displayed after selecting “添加终端任务”. */
 export function buildDirectTerminalTaskCard(): object {
   return buildFormCard(
-    'wmux · 添加 Codex 终端任务',
+    'wmux · 添加 AI 终端任务',
     'blue',
-    '将在桌面“wmux任务”目录中新建独立任务文件夹，打开一个 Codex 直连终端，并在终端就绪后自动发送首条任务。该终端默认不受监督，可稍后添加监督。',
+    '将在桌面“wmux任务”目录中新建独立任务文件夹，打开一个直连 AI 终端，并在终端就绪后自动发送首条任务。默认使用 Codex；该终端默认不受监督，可稍后添加监督。',
     'wmux_create_task_form',
     [
       { tag: 'input', element_id: 'create_task_name', name: 'task_name', required: true, max_length: 100, label: { tag: 'plain_text', content: '任务名称' }, placeholder: { tag: 'plain_text', content: '例如：修复登录页问题' } },
-      { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 1000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 Codex 的完整任务' } },
+      { tag: 'markdown', content: '**AI 终端类型（默认 Codex）**' },
+      { tag: 'select_static', element_id: 'create_task_agent', name: 'agent', placeholder: { tag: 'plain_text', content: 'Codex（默认）' }, options: [
+        { text: { tag: 'plain_text', content: 'Codex（默认）' }, value: 'codex' },
+        { text: { tag: 'plain_text', content: 'Kimi' }, value: 'kimi' },
+        { text: { tag: 'plain_text', content: 'Grok' }, value: 'grok' },
+      ] },
+      { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 1000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 AI 终端的完整任务' } },
       formButton('wmux_form_create_task', '创建并发送', 'primary', { wmux_action: 'form_create_task' }),
     ],
     controlHomeFooter(),
+    [
+      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在固定 Release 目录打开 Grok，并首先运行 `/inspect-project-progress` 读取项目进度技能。' },
+      {
+        tag: 'column_set', flex_mode: 'none', columns: [{
+          tag: 'column', width: 'auto',
+          elements: [cardButton({ wmux_action: 'create_project_manager' }, '创建项目管理终端', 'primary')],
+        }],
+      },
+      { tag: 'hr' },
+      { tag: 'markdown', content: '**普通终端任务**' },
+    ],
   );
 }
 
@@ -824,6 +848,7 @@ const AUDIT_EVENT_TITLES: Record<string, string> = {
   'session.abandoned': 'AI 监督已重置',
   'worker.task': '工作终端任务更新',
   'worker.lifecycle': '工作终端生命周期',
+  'worker.blocked': '工作终端等待处理',
   'supervisor.delivery.queued': '监督信息待投递',
   'supervisor.delivery.delivered': '监督信息已投递',
   'supervisor.delivery.failed': '监督信息投递失败',
@@ -853,6 +878,231 @@ function auditValue(key: string, value: unknown): string {
     .replace(INLINE_SECRET, '$1: 已脱敏')
     .replace(KNOWN_TOKEN, '已脱敏')
     .slice(0, 800);
+}
+
+export type FeishuAuditTaskState =
+  | 'waiting'
+  | 'working'
+  | 'reviewing'
+  | 'blocked'
+  | 'awaiting-human'
+  | 'completed'
+  | 'failed'
+  | 'paused'
+  | 'stopped';
+
+export interface FeishuAuditTerminalStatus {
+  sessionId: string;
+  surfaceId: string;
+  terminalLabel: string;
+  workspaceTitle?: string;
+  taskState: FeishuAuditTaskState;
+  supervisionState: '监督中' | '已暂停' | '已停止';
+  currentTask: string;
+  latestResult: string;
+  nextStep: string;
+  pendingHuman: string;
+  updatedAt: number;
+}
+
+const AUDIT_TASK_STATE_TEXT: Record<FeishuAuditTaskState, string> = {
+  waiting: '等待任务',
+  working: '执行中',
+  reviewing: '等待监督裁决',
+  blocked: '终端阻塞',
+  'awaiting-human': '等待人工处理',
+  completed: '任务已完成',
+  failed: '执行异常',
+  paused: '监督已暂停',
+  stopped: '监督已停止',
+};
+
+function auditPayloadText(record: SupervisorRecord, key: string, fallback = ''): string {
+  const value = record.payload?.[key];
+  if (value === undefined || value === null || value === '') return fallback;
+  return auditValue(key, value);
+}
+
+function initialFeishuAuditTerminalStatus(record: SupervisorRecord): FeishuAuditTerminalStatus {
+  return {
+    sessionId: record.sessionId,
+    surfaceId: record.terminal.surfaceId,
+    terminalLabel: auditValue('terminal', record.terminal.label),
+    workspaceTitle: record.terminal.workspaceTitle
+      ? auditValue('workspace', record.terminal.workspaceTitle)
+      : undefined,
+    taskState: 'waiting',
+    supervisionState: '监督中',
+    currentTask: '尚未收到任务',
+    latestResult: '监督状态已建立',
+    nextStep: '等待任务终端上报',
+    pendingHuman: '无',
+    updatedAt: record.ts ?? Date.now(),
+  };
+}
+
+/** Collapse the durable event stream into one human-readable current terminal state. */
+export function reduceFeishuAuditTerminalStatus(
+  previous: FeishuAuditTerminalStatus | undefined,
+  record: SupervisorRecord,
+): FeishuAuditTerminalStatus {
+  const reset = !previous || previous.sessionId !== record.sessionId;
+  const next: FeishuAuditTerminalStatus = {
+    ...(reset ? initialFeishuAuditTerminalStatus(record) : previous),
+    sessionId: record.sessionId,
+    surfaceId: record.terminal.surfaceId,
+    terminalLabel: auditValue('terminal', record.terminal.label),
+    workspaceTitle: record.terminal.workspaceTitle
+      ? auditValue('workspace', record.terminal.workspaceTitle)
+      : reset ? undefined : previous?.workspaceTitle,
+    updatedAt: record.ts ?? Date.now(),
+  };
+  const event = auditPayloadText(record, 'event', '未知');
+  const task = auditPayloadText(record, 'task');
+  const reason = auditPayloadText(record, 'reason');
+  const action = auditPayloadText(record, 'action');
+
+  if (record.type === 'session.started') {
+    return { ...next, taskState: 'waiting', supervisionState: '监督中', latestResult: 'AI 监督已启动', nextStep: '等待工作终端接收任务', pendingHuman: '无' };
+  }
+  if (record.type === 'session.abandoned') {
+    return { ...next, taskState: 'stopped', supervisionState: '已停止', latestResult: reason || '原监督上下文已结束', nextStep: '需要时重新启动监督', pendingHuman: '无' };
+  }
+  if (record.type === 'worker.task') {
+    return { ...next, taskState: 'working', supervisionState: '监督中', currentTask: task || next.currentTask, latestResult: '任务已提交到工作终端', nextStep: '等待终端完成本轮任务', pendingHuman: '无' };
+  }
+  if (record.type === 'worker.blocked') {
+    return { ...next, taskState: 'blocked', latestResult: reason || '终端正在等待输入或权限处理', nextStep: '等待监督 AI 核对；需要用户决定时会私发通知', pendingHuman: '尚未确认是否需要人工' };
+  }
+  if (record.type === 'worker.lifecycle') {
+    if (event === 'StopFailure') return { ...next, taskState: 'failed', latestResult: auditPayloadText(record, 'message', '本轮任务执行失败'), nextStep: '等待监督 AI 分析并给出返工方案' };
+    if (event === 'Interrupt') return { ...next, taskState: 'failed', latestResult: '本轮任务已中断', nextStep: '等待监督 AI 判断是否继续' };
+    if (event === 'Stop') return { ...next, taskState: 'reviewing', latestResult: '工作终端已结束本轮任务', nextStep: '等待监督 AI 读取证据并裁决' };
+    return { ...next, latestResult: `终端状态更新：${event}` };
+  }
+  if (record.type === 'supervisor.delivery.queued' || record.type === 'supervisor.delivery.delivered') {
+    const deliveryKind = auditPayloadText(record, 'kind');
+    const delivery = deliveryKind === 'task-start' ? '任务开始' : deliveryKind === 'task-end' ? '任务结束' : deliveryKind === 'task-interrupted' ? '任务中断' : '状态更新';
+    const deliveryState = record.type === 'supervisor.delivery.queued' ? '等待通知监督 AI' : '已通知监督 AI';
+    return { ...next, latestResult: `${deliveryState}：${delivery}` };
+  }
+  if (record.type === 'supervisor.delivery.failed') {
+    return { ...next, taskState: 'failed', latestResult: auditPayloadText(record, 'error', '监督信息发送失败'), nextStep: '等待自动重试或人工检查终端连接' };
+  }
+  if (record.type === 'supervisor.decision') {
+    const outcome = auditPayloadText(record, 'outcome');
+    const decisionNext = auditPayloadText(record, 'next');
+    if (record.payload?.requiresHuman === true) {
+      const result = outcome === 'complete'
+        ? '监督 AI 认为任务已完成，等待人工复核'
+        : '监督 AI 已给出下一步，但自动判断次数已达上限';
+      return { ...next, taskState: 'awaiting-human', latestResult: result, nextStep: '请白名单用户检查终端结果', pendingHuman: '待复核；详细内容不在群内展示' };
+    }
+    if (outcome === 'complete') return { ...next, taskState: 'completed', latestResult: reason || '监督 AI 判定任务已完成', nextStep: '无需继续执行', pendingHuman: '无' };
+    if (outcome === 'needs-human') return { ...next, taskState: 'awaiting-human', latestResult: '监督 AI 请求人工决策', nextStep: '等待白名单用户处理私聊决策卡', pendingHuman: '详细决策内容已私发白名单用户' };
+    if (outcome === 'rework') return { ...next, taskState: 'working', latestResult: reason || '监督 AI 要求返工', nextStep: decisionNext || '等待工作终端返工', pendingHuman: '无' };
+    if (outcome === 'continue') return { ...next, taskState: 'working', latestResult: reason || '监督 AI 决定继续推进', nextStep: decisionNext || '等待工作终端继续', pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.approval.requested') {
+    return { ...next, taskState: 'awaiting-human', latestResult: '当前任务需要人工决策', nextStep: '请白名单用户处理私聊决策卡', pendingHuman: '待处理；详细内容不在群内展示' };
+  }
+  if (record.type === 'supervisor.remote-decision') {
+    const decision = auditPayloadText(record, 'decision');
+    if (decision === 'pause') return { ...next, taskState: 'paused', supervisionState: '已暂停', latestResult: '人工已暂停当前监督', nextStep: '等待继续监督' };
+    if (decision === 'stop') return { ...next, taskState: 'stopped', supervisionState: '已停止', latestResult: '人工已停止当前监督', nextStep: '需要时重新启动监督', pendingHuman: '无' };
+    return { ...next, taskState: 'working', latestResult: '人工决策已处理', nextStep: '监督 AI 将依据处理结果继续', pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.proposal.resolved') {
+    return { ...next, taskState: 'working', latestResult: '人工决策已处理', nextStep: '监督 AI 将依据处理结果继续', pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.permission-approved') {
+    return { ...next, taskState: 'working', latestResult: '低风险权限请求已由监督 AI 确认', nextStep: '等待工作终端继续执行', pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.auto-approved') {
+    return { ...next, taskState: 'working', latestResult: reason || '低风险下一步已自动批准', nextStep: auditPayloadText(record, 'next', '等待工作终端继续执行'), pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.auto-decision-limit.resolved') {
+    return { ...next, taskState: 'reviewing', latestResult: '人工复核已完成', nextStep: '监督 AI 可以继续裁决', pendingHuman: '无' };
+  }
+  if (record.type === 'supervisor.remote-command' || record.type === 'supervisor.lane-control') {
+    if (action === 'pause' || action === 'pause-lane') return { ...next, taskState: 'paused', supervisionState: '已暂停', latestResult: '监督已暂停，现有上下文保留', nextStep: '等待继续监督' };
+    if (action === 'stop' || action === 'stop-lane') return { ...next, taskState: 'stopped', supervisionState: '已停止', latestResult: '监督已停止', nextStep: '需要时重新启动监督', pendingHuman: '无' };
+    if (action === 'resume' || action === 'resume-lane') return { ...next, supervisionState: '监督中', taskState: next.taskState === 'paused' ? 'reviewing' : next.taskState, latestResult: '监督已继续', nextStep: '监督 AI 正在读取最新终端状态' };
+    if (action === 'send-task') return { ...next, taskState: 'working', currentTask: task || next.currentTask, latestResult: '已通过飞书向终端发送任务', nextStep: '等待终端执行', pendingHuman: '无' };
+    if (action === 'start' || action === 'restart' || action === 'add') return { ...next, supervisionState: '监督中', latestResult: '飞书已启动或更新监督', nextStep: '等待监督 AI 读取终端状态' };
+  }
+  return next;
+}
+
+function statusCardTemplate(state: FeishuAuditTaskState): 'blue' | 'orange' | 'green' | 'red' | 'grey' {
+  if (state === 'completed') return 'green';
+  if (state === 'failed') return 'red';
+  if (state === 'blocked' || state === 'awaiting-human' || state === 'paused' || state === 'reviewing') return 'orange';
+  if (state === 'stopped') return 'grey';
+  return 'blue';
+}
+
+function auditPlainTextBlock(title: string, content: string): object {
+  return {
+    tag: 'div',
+    text: { tag: 'plain_text', content: `${title}\n${content || '无'}`.slice(0, 1000) },
+  };
+}
+
+/** Build the single reusable group card representing one terminal's latest state. */
+export function buildFeishuAuditStatusCard(status: FeishuAuditTerminalStatus): object {
+  const location = status.workspaceTitle ? `${status.terminalLabel} · ${status.workspaceTitle}` : status.terminalLabel;
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: `当前状态 · ${location}`.slice(0, 100) }, template: statusCardTemplate(status.taskState) },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `**任务状态：${AUDIT_TASK_STATE_TEXT[status.taskState]}**  ·  监督状态：${status.supervisionState}` },
+        auditPlainTextBlock('当前任务', status.currentTask),
+        auditPlainTextBlock('最近情况', status.latestResult),
+        auditPlainTextBlock('下一步', status.nextStep),
+        ...(status.pendingHuman !== '无' ? [auditPlainTextBlock('待人工事项', status.pendingHuman)] : []),
+        { tag: 'div', text: { tag: 'plain_text', content: `更新时间：${new Date(status.updatedAt).toLocaleString('zh-CN', { hour12: false })}`, text_size: 'notation', text_color: 'grey' } },
+      ],
+    },
+  };
+}
+
+/** Important state changes get a new group alert in addition to updating the status card. */
+export function buildFeishuAuditAlertCard(
+  record: SupervisorRecord,
+  status: FeishuAuditTerminalStatus,
+): object | null {
+  let title = '';
+  let template: 'orange' | 'green' | 'red' = 'orange';
+  if (record.type === 'worker.blocked') title = '终端任务已阻塞';
+  else if (record.type === 'worker.lifecycle' && auditPayloadText(record, 'event') === 'StopFailure') {
+    title = '终端任务执行失败'; template = 'red';
+  } else if (record.type === 'worker.lifecycle' && auditPayloadText(record, 'event') === 'Interrupt') title = '终端任务已中断';
+  else if (record.type === 'supervisor.delivery.failed') {
+    title = '监督信息发送失败'; template = 'red';
+  } else if (record.type === 'supervisor.approval.requested') title = '任务等待人工决策';
+  else if (record.type === 'supervisor.decision' && record.payload?.requiresHuman === true) title = '任务等待人工复核';
+  else if (record.type === 'supervisor.decision'
+    && auditPayloadText(record, 'outcome') === 'complete'
+    && record.payload?.requiresHuman !== true) {
+    title = '终端任务已完成'; template = 'green';
+  }
+  if (!title) return null;
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: title }, template },
+    body: {
+      elements: [
+        auditPlainTextBlock('终端状态', `${status.terminalLabel} · ${AUDIT_TASK_STATE_TEXT[status.taskState]}`),
+        auditPlainTextBlock('当前任务', status.currentTask),
+        auditPlainTextBlock('最近情况', status.latestResult),
+        auditPlainTextBlock('下一步', status.nextStep),
+        ...(status.pendingHuman !== '无' ? [auditPlainTextBlock('待人工事项', status.pendingHuman)] : []),
+      ],
+    },
+  };
 }
 
 /** Format a durable supervisor event for its redacted Feishu destination. */
@@ -923,6 +1173,8 @@ export class FeishuSupervisorService {
   /** Only cards sent to a control chat may open routine control forms. */
   private readonly controlCards = new Map<string, string>();
   private readonly busyTaskConfirmations = new Map<string, PendingBusyTaskConfirmation>();
+  private readonly auditTerminalStatuses = new Map<string, FeishuAuditTerminalStatus>();
+  private readonly auditStatusCards = new Map<string, { messageId: string; chatId: string }>();
   /** Configured decision DM, falling back to the most recent allowlisted DM. */
   private decisionChatId: string | undefined = this.config?.decisionChatId;
   private readonly pendingDecisionMessages: PendingDecisionMessage[] = [];
@@ -973,6 +1225,7 @@ export class FeishuSupervisorService {
         ? () => this.sendApproval(record)
         : () => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record));
       void this.enqueueDecisionOperation(operation);
+      this.enqueueAuditRecord(record);
       return;
     }
     if (record.type === 'supervisor.proposal.resolved') {
@@ -980,17 +1233,20 @@ export class FeishuSupervisorService {
         ? () => this.resolveApproval(record)
         : () => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record));
       void this.enqueueDecisionOperation(operation);
+      this.enqueueAuditRecord(record);
       return;
     }
     if (record.type === 'supervisor.remote-decision') {
       // The text command or card action already replies in the same allowlisted DM.
+      this.enqueueAuditRecord(record);
       return;
     }
     if (record.type === 'supervisor.auto-decision-limit.resolved') {
       void this.enqueueDecisionOperation(() => this.sendDecisionText(formatFeishuSupervisorAuditEvent(record)));
+      this.enqueueAuditRecord(record);
       return;
     }
-    this.enqueueAuditText(formatFeishuSupervisorAuditEvent(record));
+    this.enqueueAuditRecord(record);
   }
 
   private allowed(chatId: string, openId: string, chatType: 'group' | 'p2p'): boolean {
@@ -1034,7 +1290,7 @@ export class FeishuSupervisorService {
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
     const value = resolveFeishuCardAction(event.action.value, event.action.name);
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card ignored: version=${value.wmux_card_version || 'missing'}`);
         return;
@@ -1120,15 +1376,32 @@ export class FeishuSupervisorService {
       });
       return !failedResult(result);
     }
+    if (value.wmux_action === 'create_project_manager') {
+      const result = await this.control({
+        action: 'create-task',
+        name: PROJECT_MANAGER_TERMINAL_NAME,
+        task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+        agent: PROJECT_MANAGER_TERMINAL_AGENT,
+        preset: 'project-manager',
+      }, {
+        openId: event.operator.openId,
+        source: 'card',
+      }).catch((err) => ({ error: String(err?.message || err) }));
+      await this.replaceWithCurrentControlMenu(event, {
+        text: summary(result), success: !failedResult(result),
+      });
+      return !failedResult(result);
+    }
     const form = this.cardFormValues(event);
     if (value.wmux_action === 'form_create_task') {
       const name = form.task_name || '';
       const task = form.task || '';
+      const agent = form.agent === 'kimi' || form.agent === 'grok' ? form.agent : 'codex';
       if (!name || !task) {
         await this.sendText('请填写任务名称和首条任务。', event.chatId);
         return false;
       }
-      const result = await this.control({ action: 'create-task', name, task }, {
+      const result = await this.control({ action: 'create-task', name, task, agent }, {
         openId: event.operator.openId,
         source: 'card',
       }).catch((err) => ({ error: String(err?.message || err) }));
@@ -1476,14 +1749,50 @@ export class FeishuSupervisorService {
     }
   }
 
-  private enqueueAuditText(text: string): void {
+  private enqueueAuditRecord(record: SupervisorRecord): void {
     this.auditQueue = this.auditQueue
       .catch(() => undefined)
       .then(async () => {
-        await this.sendText(text);
-        // Keep detailed events ordered and below one group's bot message limit.
+        if (!this.channel || !this.config) return;
+        const key = record.terminal.surfaceId;
+        const status = reduceFeishuAuditTerminalStatus(this.auditTerminalStatuses.get(key), record);
+        this.auditTerminalStatuses.set(key, status);
+        try {
+          const card = buildFeishuAuditStatusCard(status);
+          const existing = this.auditStatusCards.get(key);
+          let updated = false;
+          if (existing) {
+            try {
+              await this.channel.updateCard(existing.messageId, card);
+              updated = true;
+            } catch (err) {
+              console.warn('[feishu] update audit status card failed; sending a replacement', err);
+            }
+          }
+          if (!updated) {
+            const sent = await this.channel.send(this.config.chatId, { card });
+            this.auditStatusCards.set(key, { messageId: sent.messageId, chatId: this.config.chatId });
+            if (this.auditStatusCards.size > 100) {
+              const oldest = this.auditStatusCards.keys().next().value as string;
+              this.auditStatusCards.delete(oldest);
+              this.auditTerminalStatuses.delete(oldest);
+            }
+          }
+        } catch (err) {
+          console.warn('[feishu] audit status card delivery failed', err);
+        }
+        const alert = buildFeishuAuditAlertCard(record, status);
+        if (alert) {
+          try {
+            await this.channel.send(this.config.chatId, { card: alert });
+          } catch (err) {
+            console.warn('[feishu] audit alert delivery failed', err);
+          }
+        }
+        // Keep card mutations ordered and below one group's bot message limit.
         await new Promise<void>((resolve) => setTimeout(resolve, 220));
-      });
+      })
+      .catch((err) => console.warn('[feishu] audit status delivery failed', err));
   }
 
   private async sendControlCard(card: object, chatId: string): Promise<string | null> {

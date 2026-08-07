@@ -18,6 +18,9 @@ import {
   effectiveSupervisorStopWhenKind,
 } from './protocol';
 import { hasPendingTerminalInput } from './pending-input-guard';
+import { INTERACTIVE_TUI_READY_DELAY_MS, pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
+
+export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 
@@ -86,6 +89,9 @@ export type TickAction =
       text: string;
       /** Opens exactly one decision window for the reported worker state. */
       opensReview?: boolean;
+      /** Optional durable state fact for audit/status integrations. */
+      statusEvent?: 'blocked';
+      statusDetail?: string;
     }
   | {
       type: 'notify_user';
@@ -163,6 +169,7 @@ export function tickLane(opts: {
           type: 'notify_supervisor',
           laneId: lane.id,
           opensReview: true,
+          ...(rt.lastState !== 'blocked' ? { statusEvent: 'blocked' as const, statusDetail: reason } : {}),
           text: [
             `[权限/输入阻塞] 通道=${lane.label} (${lane.surfaceId})`,
             `Hook 原因: ${reason}`,
@@ -478,13 +485,8 @@ export function tickLane(opts: {
   return { actions, runtime: rt };
 }
 
-/** Give interactive AI TUIs time to finish processing a paste before Enter submits it. */
-export function pasteSubmitDelayMs(text: string): number {
-  return Math.min(3_000, Math.max(300, 300 + Math.ceil(text.length * 0.75)));
-}
-
 /** Delay before the first briefing so a freshly launched AI TUI can accept it. */
-export const SUPERVISOR_TUI_READY_DELAY_MS = 2_500;
+export const SUPERVISOR_TUI_READY_DELAY_MS = INTERACTIVE_TUI_READY_DELAY_MS;
 
 export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
   const pty = (window as any).wmux?.pty;
