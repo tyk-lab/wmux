@@ -24,6 +24,73 @@ export function resolveCodexHooksPath(homeDir = os.homedir()): string {
   return path.join(resolveCodexHome(homeDir), 'hooks.json');
 }
 
+export function resolveCodexConfigPath(homeDir = os.homedir()): string {
+  return path.join(resolveCodexHome(homeDir), 'config.toml');
+}
+
+function normalizeCodexProjectPath(projectPath: string): string {
+  return path.win32.normalize(projectPath).replace(/\//g, '\\').toLowerCase();
+}
+
+function projectPathFromTableHeader(line: string): string | undefined {
+  const match = /^\[projects\.(?:'([^']*)'|"((?:\\.|[^"])*)")\]\s*$/.exec(line.trim());
+  if (!match) return undefined;
+  if (match[1] !== undefined) return normalizeCodexProjectPath(match[1]);
+  try {
+    return normalizeCodexProjectPath(JSON.parse(`"${match[2]}"`));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Adds or updates one exact project trust entry without rewriting unrelated Codex settings. */
+export function applyCodexProjectTrust(current: string, projectPath: string): string {
+  const normalizedPath = normalizeCodexProjectPath(projectPath);
+  const newline = current.includes('\r\n') ? '\r\n' : '\n';
+  const lines = current.replace(/\r\n/g, '\n').split('\n');
+  const tableIndex = lines.findIndex((line) => projectPathFromTableHeader(line) === normalizedPath);
+
+  if (tableIndex >= 0) {
+    const nextTableIndex = lines.findIndex((line, index) => index > tableIndex && /^\s*\[/.test(line));
+    const tableEnd = nextTableIndex >= 0 ? nextTableIndex : lines.length;
+    const trustIndex = lines.findIndex((line, index) => (
+      index > tableIndex && index < tableEnd && /^\s*trust_level\s*=/.test(line)
+    ));
+    if (trustIndex >= 0) {
+      lines[trustIndex] = lines[trustIndex].replace(
+        /^(\s*trust_level\s*=\s*)(?:"[^"]*"|'[^']*')(\s*(?:#.*)?)$/,
+        '$1"trusted"$2',
+      );
+    } else {
+      lines.splice(tableIndex + 1, 0, 'trust_level = "trusted"');
+    }
+    return lines.join(newline);
+  }
+
+  const separator = current.length === 0
+    ? ''
+    : current.endsWith('\n') || current.endsWith('\r') ? newline : `${newline}${newline}`;
+  const header = `[projects.${JSON.stringify(normalizedPath)}]`;
+  return `${current}${separator}${header}${newline}trust_level = "trusted"${newline}`;
+}
+
+/** Persists trust before Codex starts so its interactive confirmation cannot swallow the initial prompt. */
+export function ensureCodexProjectTrusted(projectPath: string, configPath = resolveCodexConfigPath()): void {
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+  const next = applyCodexProjectTrust(current, projectPath);
+  if (next === current) return;
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const temporaryPath = `${configPath}.wmux-${process.pid}-${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, next, { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(temporaryPath, configPath);
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+    throw error;
+  }
+}
+
 /** Pure merge for unit tests — returns the next hooks.json object. */
 export function applyWmuxCodexHooks(existing: any, hookScriptPosix: string): any {
   const base = existing && typeof existing === 'object' ? existing : {};

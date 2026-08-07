@@ -17,7 +17,7 @@ import { initUpdateChecker, getLatestUpdate } from './update-checker';
 import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { ensureKimiHooks } from './kimi-context';
-import { ensureCodexHooks } from './codex-context';
+import { ensureCodexHooks, ensureCodexProjectTrusted } from './codex-context';
 import { ensureGrokHooks } from './grok-context';
 import { ensurePiHooks } from './pi-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
@@ -96,6 +96,7 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
       try {
         const directory = createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
         preservedDirectory = directory.displayPath;
+        if (agent === 'codex') ensureCodexProjectTrusted(directory.cwd);
         forwardedCommand = {
           ...command,
           name: directory.taskName,
@@ -104,8 +105,14 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
           cwd: directory.cwd,
           displayPath: directory.displayPath,
         };
-      } catch {
-        return { ok: false, error: '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。' };
+      } catch (error) {
+        console.warn('[feishu] failed to prepare direct task directory', error);
+        return {
+          ok: false,
+          error: preservedDirectory
+            ? `任务目录已创建，但无法写入 Codex 信任配置；已保留目录：${preservedDirectory}`
+            : '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。',
+        };
       }
     }
   }
