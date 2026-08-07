@@ -1,7 +1,72 @@
 import { describe, expect, it, vi } from 'vitest';
-import { deliverStartupInput, pasteSubmitDelayMs } from '../../src/renderer/utils/terminal-input-delivery';
+import {
+  confirmStartupTrustPrompt,
+  deliverStartupInput,
+  isKimiInteractiveInputReady,
+  isStartupTrustPromptReady,
+  pasteSubmitDelayMs,
+} from '../../src/renderer/utils/terminal-input-delivery';
 
 describe('terminal startup input delivery', () => {
+  it('识别 Codex 和 Kimi 的目录信任页，且不误判普通欢迎页', () => {
+    expect(isStartupTrustPromptReady('codex', 'Do you trust the contents of this directory? 1. Yes, continue')).toBe(true);
+    expect(isStartupTrustPromptReady('codex', '1. Yes, continue\n2. No, quit')).toBe(true);
+    expect(isStartupTrustPromptReady('kimi', "Trust this folder? Trust this folder Don't trust")).toBe(true);
+    expect(isStartupTrustPromptReady('kimi', 'Welcome to Kimi Code!')).toBe(false);
+  });
+
+  it('信任页就绪后只发送一次 Enter，并在 PTY 忙时重试', async () => {
+    const writeChecked = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-trust', {
+      readyDelayMs: 0,
+      retryDelayMs: 0,
+      maxAttempts: 3,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-trust', '\r'],
+      ['surf-trust', '\r'],
+    ]);
+  });
+
+  it('只在 Kimi 的首条消息输入界面出现后判定为就绪', () => {
+    expect(isKimiInteractiveInputReady('Welcome to Kimi Code!')).toBe(false);
+    expect(isKimiInteractiveInputReady('No session yet — one will be created on your first message.')).toBe(true);
+  });
+
+  it('等待交互界面的可观测就绪标记后才写入', async () => {
+    let readyChecks = 0;
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(deliverStartupInput({ write: vi.fn(), writeChecked }, 'surf-kimi', '执行首条任务', {
+      readyWhen: () => ++readyChecks >= 3,
+      readyDelayMs: 0,
+      readyPollMs: 1,
+      readyTimeoutMs: 10,
+      retryDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(readyChecks).toBe(3);
+    expect(writeChecked.mock.calls[0]).toEqual(['surf-kimi', '执行首条任务']);
+  });
+
+  it('交互界面未就绪时失败且不提前写入', async () => {
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(deliverStartupInput({ write: vi.fn(), writeChecked }, 'surf-kimi', '不要抢先发送', {
+      readyWhen: () => false,
+      readyDelayMs: 0,
+      readyPollMs: 1,
+      readyTimeoutMs: 2,
+      wait: async () => undefined,
+    })).resolves.toBe(false);
+
+    expect(writeChecked).not.toHaveBeenCalled();
+  });
+
   it('等待 PTY 可写后再发送任务，并且只提交一次', async () => {
     const writeChecked = vi.fn()
       .mockResolvedValueOnce(false)

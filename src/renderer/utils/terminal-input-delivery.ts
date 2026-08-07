@@ -1,6 +1,8 @@
 export const INTERACTIVE_TUI_READY_DELAY_MS = 2_500;
 export const STARTUP_INPUT_RETRY_DELAY_MS = 500;
 export const STARTUP_INPUT_MAX_ATTEMPTS = 20;
+export const STARTUP_INPUT_READY_TIMEOUT_MS = 30_000;
+export const STARTUP_INPUT_READY_POLL_MS = 100;
 
 export function pasteSubmitDelayMs(text: string): number {
   return Math.min(3_000, Math.max(300, 300 + Math.ceil(text.length * 0.75)));
@@ -13,9 +15,39 @@ export interface TerminalInputWriter {
 
 interface StartupInputDeliveryOptions {
   readyDelayMs?: number;
+  readyWhen?: () => boolean;
+  readyTimeoutMs?: number;
+  readyPollMs?: number;
   retryDelayMs?: number;
   maxAttempts?: number;
   wait?: (delayMs: number) => Promise<void>;
+}
+
+export type StartupTrustPromptAgent = 'codex' | 'kimi';
+
+export function isStartupTrustPromptReady(agent: StartupTrustPromptAgent, output: string): boolean {
+  if (agent === 'codex') {
+    return /Do you trust the contents of this directory\?[\s\S]{0,2000}Yes, continue/i.test(output)
+      || /Yes, continue[\s\S]{0,1000}No, quit/i.test(output);
+  }
+  return /Trust this folder\?[\s\S]{0,2000}Trust this folder/i.test(output);
+}
+
+export function isKimiInteractiveInputReady(output: string): boolean {
+  return /No session yet[\s\S]{0,2000}first message/i.test(output);
+}
+
+export async function confirmStartupTrustPrompt(
+  writer: TerminalInputWriter,
+  surfaceId: string,
+  options: Pick<StartupInputDeliveryOptions, 'readyDelayMs' | 'retryDelayMs' | 'maxAttempts' | 'wait'> = {},
+): Promise<boolean> {
+  const wait = options.wait || defaultWait;
+  const readyDelayMs = Math.max(0, options.readyDelayMs ?? 200);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
+  const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
+  await wait(readyDelayMs);
+  return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
 }
 
 function defaultWait(delayMs: number): Promise<void> {
@@ -59,10 +91,24 @@ export async function deliverStartupInput(
 ): Promise<boolean> {
   const wait = options.wait || defaultWait;
   const readyDelayMs = Math.max(0, options.readyDelayMs ?? INTERACTIVE_TUI_READY_DELAY_MS);
+  const readyTimeoutMs = Math.max(0, options.readyTimeoutMs ?? STARTUP_INPUT_READY_TIMEOUT_MS);
+  const readyPollMs = Math.max(1, options.readyPollMs ?? STARTUP_INPUT_READY_POLL_MS);
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   if (!input) return false;
 
+  if (options.readyWhen) {
+    const maxReadyAttempts = Math.max(1, Math.ceil(readyTimeoutMs / readyPollMs) + 1);
+    let ready = false;
+    for (let attempt = 0; attempt < maxReadyAttempts; attempt += 1) {
+      if (options.readyWhen()) {
+        ready = true;
+        break;
+      }
+      if (attempt + 1 < maxReadyAttempts) await wait(readyPollMs);
+    }
+    if (!ready) return false;
+  }
   await wait(readyDelayMs);
   const pasted = await writeWhenAvailable(writer, surfaceId, input, wait, retryDelayMs, maxAttempts);
   if (!pasted) return false;

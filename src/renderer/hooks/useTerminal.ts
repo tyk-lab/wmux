@@ -15,7 +15,13 @@ import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { attachVisibleRenderer, RendererHandle } from '../utils/terminal-renderer';
 import { trimTrailingWhitespace } from '../utils/copy-text';
-import { deliverStartupInput } from '../utils/terminal-input-delivery';
+import {
+  confirmStartupTrustPrompt,
+  deliverStartupInput,
+  isKimiInteractiveInputReady,
+  isStartupTrustPromptReady,
+} from '../utils/terminal-input-delivery';
+import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
 import {
   consumeTerminalBufferSnapshot,
   registerTerminalBufferSnapshotter,
@@ -763,6 +769,48 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     // ptyIdRef.current is null and the resize would be silently dropped. We
     // stash the last observed dims and flush them in attachToPty instead.
     let pendingResizeDims: { cols: number; rows: number } | null = null;
+    let startupInputOutput = '';
+    const automatedStartupAgent = detectAutomatedInteractiveAgent(
+      startupCommandsRef.current,
+      startupInputRef.current,
+    );
+    let startupTrustConfirmationScheduled = false;
+    let startupTrustConfirmed = false;
+    let startupTrustPollTimer: ReturnType<typeof setInterval> | undefined;
+    let startupTrustPollTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    const startupInputScreenText = (): string => {
+      try {
+        const buffer = terminal.buffer.active;
+        const start = Math.max(0, buffer.length - 30);
+        const lines: string[] = [];
+        for (let index = start; index < buffer.length; index += 1) {
+          lines.push(buffer.getLine(index)?.translateToString(true) || '');
+        }
+        return lines.join('\n');
+      } catch {
+        return '';
+      }
+    };
+
+    const stopStartupTrustPolling = () => {
+      if (startupTrustPollTimer) clearInterval(startupTrustPollTimer);
+      if (startupTrustPollTimeout) clearTimeout(startupTrustPollTimeout);
+      startupTrustPollTimer = undefined;
+      startupTrustPollTimeout = undefined;
+    };
+
+    const maybeConfirmStartupTrust = (id: string) => {
+      if (!automatedStartupAgent || startupTrustConfirmed || startupTrustConfirmationScheduled) return;
+      const visibleOutput = `${startupInputOutput}\n${startupInputScreenText()}`;
+      if (!isStartupTrustPromptReady(automatedStartupAgent, visibleOutput)) return;
+      startupTrustConfirmationScheduled = true;
+      void confirmStartupTrustPrompt(window.wmux.pty, id).then((confirmed) => {
+        startupTrustConfirmationScheduled = false;
+        startupTrustConfirmed = confirmed;
+        if (confirmed) stopStartupTrustPolling();
+      });
+    };
 
     const attachToPty = (id: string) => {
       ptyIdRef.current = id;
@@ -770,13 +818,15 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // Wire PTY data → xterm
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
         if (disposed) return;
+        startupInputOutput = `${startupInputOutput}${data}`.slice(-12_000);
+        maybeConfirmStartupTrust(id);
         // Track SGR/button mouse enable (?1006h, ?1000h, ?1002h, ?1003h) and disable
         // so the wheel handler can distinguish tmux from a plain shell after remount.
         // Mirror the enable pattern for disable so any of the four modes clears the flag.
         if (/\x1b\[\?100[0236]h/.test(data)) surfaceMouseEnabled.set(id, true);
         else if (/\x1b\[\?100[0236]l/.test(data)) surfaceMouseEnabled.set(id, false);
         if (bufferRestorePending) queuedPtyData.push(data);
-        else terminal.write(data);
+        else terminal.write(data, () => maybeConfirmStartupTrust(id));
       });
 
       // Wire PTY exit → inform user; also auto-heal a stuck "Running" badge
@@ -805,6 +855,12 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const deferredResizeId = scheduleDeferredRepaint(terminal);
       cleanupFnsRef.current.push(() => clearTimeout(deferredResizeId));
       scheduleBufferRestore();
+
+      if (automatedStartupAgent) {
+        startupTrustPollTimer = setInterval(() => maybeConfirmStartupTrust(id), 100);
+        startupTrustPollTimeout = setTimeout(stopStartupTrustPolling, 30_000);
+        cleanupFnsRef.current.push(stopStartupTrustPolling);
+      }
     };
 
     // Fallback path for quick-launch startup commands on shells where the main
@@ -834,7 +890,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       startupInputScheduledSurfaceIds.add(id);
       // PTYs survive workspace switches, so this delivery intentionally survives
       // the React pane unmount. It starts only after PTY create/attach succeeds.
-      void deliverStartupInput(window.wmux.pty, id, input).then((delivered) => {
+      void deliverStartupInput(window.wmux.pty, id, input, {
+        readyWhen: () => isKimiInteractiveInputReady(`${startupInputOutput}\n${startupInputScreenText()}`),
+        readyDelayMs: 300,
+      }).then((delivered) => {
         if (delivered) {
           clearStartupInputForSurface(id);
           return;
