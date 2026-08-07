@@ -41,6 +41,7 @@ import {
   supervisorTabTitle,
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
+import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
 
 export function isSupervisorDecisionAuthorised(
   lane: Pick<SupervisorLane, 'supervisorSurfaceId'>,
@@ -566,6 +567,7 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
   }
 
   const agentLabel = agent === 'kimi' ? 'Kimi' : agent === 'grok' ? 'Grok' : 'Codex';
+  const launch = buildInteractiveAgentLaunch(agent as InteractiveAgent, task);
 
   const tree = createLeaf(undefined, 'terminal', cwd);
   const surface = tree.surfaces[0];
@@ -574,8 +576,7 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
     customTitle: projectManager ? PROJECT_MANAGER_TERMINAL_NAME : `${agentLabel}直连 · ${name}`,
     shell: 'pwsh.exe',
     cwd,
-    startupCommands: [agent],
-    startupInput: task,
+    ...launch,
   };
   useStore.getState().createWorkspace({ title: name, cwd, splitTree: tree });
   return {

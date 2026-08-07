@@ -136,9 +136,9 @@ describe('supervisor decision bridge', () => {
     expect(directSurface).toMatchObject({
       customTitle: 'Codex直连 · 修复登录页',
       cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
-      startupCommands: ['codex'],
-      startupInput: '检查登录流程并补齐测试',
+      startupCommands: [expect.stringMatching(/^codex -- \(ConvertFrom-Json /)],
     });
+    expect(directSurface?.startupInput).toBeUndefined();
     expect(writes).not.toHaveBeenCalled();
 
     const listed = JSON.parse(remoteControl({ action: 'list' }).message).terminals.find(
@@ -186,11 +186,16 @@ describe('supervisor decision bridge', () => {
 
     const workspace = useStore.getState().workspaces.find((item) => item.title === `${label}任务`);
     const surface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
-    expect(surface).toMatchObject({
-      customTitle: `${label}直连 · ${label}任务`,
-      startupCommands: [agent],
-      startupInput: '执行首条任务',
-    });
+    expect(surface?.customTitle).toBe(`${label}直连 · ${label}任务`);
+    if (agent === 'kimi') {
+      expect(surface).toMatchObject({
+        startupCommands: ['kimi # wmux-automated-agent-task'],
+        startupInput: '执行首条任务',
+      });
+    } else {
+      expect(surface?.startupCommands?.[0]).toMatch(/^grok -- \(ConvertFrom-Json /);
+      expect(surface?.startupInput).toBeUndefined();
+    }
   });
 
   it('creates one fixed Grok project management terminal and invokes its progress skill first', () => {
@@ -217,9 +222,9 @@ describe('supervisor decision bridge', () => {
     expect(surface).toMatchObject({
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
-      startupCommands: ['grok'],
-      startupInput: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+      startupCommands: [expect.stringMatching(/^grok -- \(ConvertFrom-Json /)],
     });
+    expect(surface?.startupInput).toBeUndefined();
 
     expect(remoteControl(command)).toMatchObject({ ok: true, message: '项目管理终端已存在，已切换到该终端。' });
     expect(useStore.getState().workspaces.filter((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME)).toHaveLength(1);
