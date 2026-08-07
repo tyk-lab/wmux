@@ -349,7 +349,7 @@ export function clearSupervisorLaneContext(
   return {
     ...lane,
     managementSessionId: `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    supervisorSurfaceId,
+    supervisorSurfaceId: supervisorSurfaceId === lane.surfaceId ? null : supervisorSurfaceId,
     enabled: true,
     controlState: 'active',
     steps: [],
@@ -386,6 +386,21 @@ export function supervisorLaneControlState(
   return lane.controlState || (lane.enabled ? 'active' : 'stopped');
 }
 
+/** A dedicated supervisor can never be the worker terminal it controls. */
+export function dedicatedSupervisorSurfaceId(
+  lane: Pick<SupervisorLane, 'surfaceId' | 'supervisorSurfaceId'>,
+): SurfaceId | null {
+  const supervisorSurfaceId = lane.supervisorSurfaceId || null;
+  return supervisorSurfaceId && supervisorSurfaceId !== lane.surfaceId
+    ? supervisorSurfaceId
+    : null;
+}
+
+export function normalizeSupervisorLaneBinding(lane: SupervisorLane): SupervisorLane {
+  if (dedicatedSupervisorSurfaceId(lane) || !lane.supervisorSurfaceId) return lane;
+  return { ...lane, supervisorSurfaceId: null };
+}
+
 /** Paused lanes remain bound; stopped lanes are historical compatibility data only. */
 export function isSupervisorLaneBound(
   lane: Pick<SupervisorLane, 'enabled' | 'controlState'>,
@@ -415,20 +430,23 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => ({ supervisor: { ...s.supervisor, ...partial } }));
   },
   setSupervisorLanes(lanes) {
-    set((s) => ({ supervisor: { ...s.supervisor, lanes } }));
+    set((s) => ({ supervisor: { ...s.supervisor, lanes: lanes.map(normalizeSupervisorLaneBinding) } }));
   },
   startSupervisor() {
     set((s) => {
-      const lanes = s.supervisor.lanes.map((lane) => ({
-        ...lane,
-        controlState: supervisorLaneControlState(lane),
-        managementSessionId: lane.managementSessionId
-          || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        ...(s.supervisor.mode === 'unified' && supervisorLaneControlState(lane) === 'active'
-          ? { awaitingReview: true }
-          : {}),
-        resumeAfterCancelledDecision: false,
-      }));
+      const lanes = s.supervisor.lanes.map((rawLane) => {
+        const lane = normalizeSupervisorLaneBinding(rawLane);
+        return {
+          ...lane,
+          controlState: supervisorLaneControlState(lane),
+          managementSessionId: lane.managementSessionId
+            || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          ...(s.supervisor.mode === 'unified' && supervisorLaneControlState(lane) === 'active'
+            ? { awaitingReview: true }
+            : {}),
+          resumeAfterCancelledDecision: false,
+        };
+      });
       return {
         supervisor: {
           ...s.supervisor,
@@ -698,7 +716,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => ({
       supervisor: {
         ...s.supervisor,
-        lanes: s.supervisor.lanes.map((l) => (l.id === laneId ? { ...l, ...patch } : l)),
+        lanes: s.supervisor.lanes.map((l) => (
+          l.id === laneId ? normalizeSupervisorLaneBinding({ ...l, ...patch }) : l
+        )),
       },
     }));
   },

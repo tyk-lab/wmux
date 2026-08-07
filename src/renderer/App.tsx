@@ -60,12 +60,21 @@ import {
 } from './supervisor/protocol';
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
-import { canDeliverToSupervisor, enqueueSupervisorDelivery } from './supervisor/delivery';
+import {
+  canDeliverToSupervisor,
+  enqueueSupervisorDelivery,
+  supervisorWakeDeliveryKind,
+} from './supervisor/delivery';
 import { omitNonRestorableWorkspaces } from './supervisor/session-restore';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
-import { supervisorLaneControlState } from './store/supervisor-slice';
+import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from './store/supervisor-slice';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
+const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
+
+function signalSupervisorDeliveryReady(): void {
+  window.dispatchEvent(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
+}
 
 /** Per-key last lifecycle notify time — drops twin Stop floods without merging panes. */
 const lastLifecycleNotifyAt = new Map<string, number>();
@@ -489,6 +498,7 @@ function queueSupervisorDelivery(
   const store = useStore.getState();
   store.updateLane(lane.id, { pendingSupervisorDeliveries: pending });
   appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
+  signalSupervisorDeliveryReady();
 }
 
 /** Direct worker input is the human decision and keeps the supervision session running. */
@@ -515,7 +525,7 @@ function handleSupervisorHookEvent(event: any): void {
   if (!session.active || !surfaceId) return;
 
   const lane = session.lanes.find((item) => item.surfaceId === surfaceId && supervisorLaneControlState(item) === 'active');
-  if (!lane?.supervisorSurfaceId) return;
+  if (!lane || !dedicatedSupervisorSurfaceId(lane)) return;
   const lifecycle = String(event.event || '');
   const projectDir = resolveSupervisorProjectDir(lane, event.cwd);
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
@@ -538,16 +548,6 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    if (manuallyResolved || !lane.autoDecisionLimitReached) {
-      const deliveryTask = task || lane.currentTask || '（任务已开始，Hook 未提供任务说明）';
-      queueSupervisorDelivery(
-        session,
-        auditLane,
-        'task-start',
-        deliveryTask,
-        `[任务开始] ${lane.label}: ${deliveryTask}\n`,
-      );
-    }
     return;
   }
 
@@ -558,16 +558,16 @@ function handleSupervisorHookEvent(event: any): void {
     message: event.message || '',
   });
 
-  if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Interrupt') {
+  const deliveryKind = supervisorWakeDeliveryKind(lifecycle);
+  if (deliveryKind) {
     store.updateLane(lane.id, { awaitingReview: true });
     if (lane.autoDecisionLimitReached) return;
-    const interrupted = lifecycle === 'Interrupt';
     queueSupervisorDelivery(
       session,
       auditLane,
-      interrupted ? 'task-interrupted' : 'task-end',
+      deliveryKind,
       lane.currentTask || '（任务未上报）',
-      `[${interrupted ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
+      `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
     );
   }
 }
@@ -1003,6 +1003,7 @@ export default function App() {
     const unsub = window.wmux.agentState.onUpdate((data: any) => {
       if (!data?.surfaceId) return;
       setAgentStates(prev => ({ ...prev, [data.surfaceId]: data }));
+      signalSupervisorDeliveryReady();
     });
     return unsub;
   }, []);
@@ -1059,9 +1060,22 @@ export default function App() {
   useEffect(() => {
     if (!supervisorActive) return;
     let cancelled = false;
+    let retryTimer: number | null = null;
+
+    const scheduleRetry = () => {
+      if (cancelled || retryTimer != null) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void flushDeliveries();
+      }, 1200);
+    };
 
     const flushDeliveries = async () => {
-      if (cancelled || supervisorDeliveryInFlightRef.current) return;
+      if (cancelled) return;
+      if (supervisorDeliveryInFlightRef.current) {
+        scheduleRetry();
+        return;
+      }
       supervisorDeliveryInFlightRef.current = true;
       try {
         const pty = window.wmux?.pty;
@@ -1069,17 +1083,26 @@ export default function App() {
         const session = useStore.getState().supervisor;
         for (const lane of session.lanes) {
           const delivery = lane.pendingSupervisorDeliveries?.[0];
-          const supervisorSurfaceId = lane.supervisorSurfaceId;
+          const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
           if (!canDeliverToSupervisor(supervisorState)) continue;
           const exists = await pty.has(supervisorSurfaceId);
-          if (!exists) continue;
+          if (!exists) {
+            scheduleRetry();
+            continue;
+          }
           const pasted = await pty.writeChecked(supervisorSurfaceId, delivery.text);
-          if (!pasted) continue;
+          if (!pasted) {
+            scheduleRetry();
+            continue;
+          }
           await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(delivery.text)));
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
-          if (!submitted) continue;
+          if (!submitted) {
+            scheduleRetry();
+            continue;
+          }
           const store = useStore.getState();
           const current = store.supervisor.lanes.find((item) => item.id === lane.id);
           if (!current) continue;
@@ -1093,17 +1116,20 @@ export default function App() {
           store.appendSupervisorLog(lane.id, '监督通知已送达', delivery.kind === 'task-start' ? '任务开始' : delivery.kind === 'task-end' ? '任务结束' : '任务中断');
         }
       } catch {
-        // Keep the head event queued. A later poll retries transient renderer/IPC failures.
+        // Keep the head event queued and retry only while delivery work exists.
+        scheduleRetry();
       } finally {
         supervisorDeliveryInFlightRef.current = false;
       }
     };
 
     void flushDeliveries();
-    const id = window.setInterval(() => void flushDeliveries(), 1200);
+    const onDeliveryReady = () => void flushDeliveries();
+    window.addEventListener(SUPERVISOR_DELIVERY_READY_EVENT, onDeliveryReady);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      window.removeEventListener(SUPERVISOR_DELIVERY_READY_EVENT, onDeliveryReady);
+      if (retryTimer != null) window.clearTimeout(retryTimer);
     };
   }, [supervisorActive]);
 
@@ -1190,7 +1216,7 @@ export default function App() {
                 reason: action.statusDetail || '终端正在等待输入或权限处理',
               });
             }
-            const sid = lane?.supervisorSurfaceId;
+            const sid = lane ? dedicatedSupervisorSurfaceId(lane) : null;
             if (sid) {
               try {
                 sendToSurface(sid, action.text, true);
@@ -1268,7 +1294,7 @@ export default function App() {
       const state = useStore.getState();
       const activeIndex = state.workspaces.findIndex((workspace) => workspace.id === state.activeWorkspaceId);
       const supervisorSurfaceIds = state.supervisor.lanes
-        .map((lane) => lane.supervisorSurfaceId)
+        .map(dedicatedSupervisorSurfaceId)
         .filter((surfaceId): surfaceId is SurfaceId => !!surfaceId);
       const persisted = omitNonRestorableWorkspaces(state.workspaces, activeIndex, supervisorSurfaceIds);
       const data = {

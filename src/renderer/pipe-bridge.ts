@@ -24,6 +24,7 @@ import {
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   clearSupervisorLaneContext,
+  dedicatedSupervisorSurfaceId,
   isSupervisorLaneBound,
   supervisorLaneControlState,
   type SupervisorDecision,
@@ -44,10 +45,10 @@ import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
 import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
 
 export function isSupervisorDecisionAuthorised(
-  lane: Pick<SupervisorLane, 'supervisorSurfaceId'>,
+  lane: Pick<SupervisorLane, 'surfaceId' | 'supervisorSurfaceId'>,
   supervisorSurfaceId: string,
 ): boolean {
-  return !!supervisorSurfaceId && lane.supervisorSurfaceId === supervisorSurfaceId;
+  return !!supervisorSurfaceId && dedicatedSupervisorSurfaceId(lane) === supervisorSurfaceId;
 }
 
 export function isRemoteSshControlledLane(
@@ -538,7 +539,7 @@ function remoteTerminalList(): Array<{
   const store = useStore.getState();
   const terminals: ReturnType<typeof remoteTerminalList> = [];
   for (const workspace of store.workspaces) collectRemoteTerminals(workspace.splitTree, workspace, terminals);
-  const supervisorIds = new Set(store.supervisor.lanes.map((lane) => lane.supervisorSurfaceId).filter(Boolean));
+  const supervisorIds = new Set(store.supervisor.lanes.map(dedicatedSupervisorSurfaceId).filter(Boolean));
   return terminals.filter((terminal) => !supervisorIds.has(terminal.surfaceId));
 }
 
@@ -598,19 +599,20 @@ function hasLiveSurface(surfaceId: SurfaceId): boolean {
 /** A stopped session must not leave its dedicated AI tabs attached to a replacement session. */
 function closeStoppedSupervisorSurfaces(lanes: SupervisorLane[]): void {
   for (const lane of lanes) {
-    if (!lane.supervisorSurfaceId) continue;
+    const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+    if (!supervisorSurfaceId) continue;
     let location: { workspaceId: WorkspaceId; paneId: PaneId } | undefined;
     for (const workspace of useStore.getState().workspaces) {
       for (const paneId of getAllPaneIds(workspace.splitTree)) {
         const pane = findLeaf(workspace.splitTree, paneId);
-        if (pane?.surfaces.some((surface) => surface.id === lane.supervisorSurfaceId)) {
+        if (pane?.surfaces.some((surface) => surface.id === supervisorSurfaceId)) {
           location = { workspaceId: workspace.id, paneId };
           break;
         }
       }
       if (location) break;
     }
-    if (location) useStore.getState().closeSurface(location.workspaceId, location.paneId, lane.supervisorSurfaceId);
+    if (location) useStore.getState().closeSurface(location.workspaceId, location.paneId, supervisorSurfaceId);
   }
 }
 
@@ -836,7 +838,8 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
   if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
   const followUpTask = task?.trim() || '';
   if (decision === 'reject' && !followUpTask) return { ok: false, error: '按补充说明调整时需要填写具体意见。', message: '' };
-  if (decision === 'reject' && (!lane || !lane.supervisorSurfaceId)) {
+  const laneSupervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
+  if (decision === 'reject' && !laneSupervisorSurfaceId) {
     return { ok: false, error: '待决项对应的 AI 监督已不存在，无法提交调整说明。', message: '' };
   }
   const delivery = [approval.text.trim(), followUpTask].filter(Boolean).join('\n\n');
@@ -862,8 +865,8 @@ function decideRemoteSupervisor(approvalId: string, decision: 'approve' | 'rejec
       proposalKind: approval.proposalKind || 'important',
       text: decision === 'approve' ? delivery : followUpTask,
     });
-    if (decision === 'reject' && lane.supervisorSurfaceId) {
-      sendToSurface(lane.supervisorSurfaceId, `[人工决定] 当前建议需要调整。\n\n[用户补充说明]\n${followUpTask}\n\n请依据补充说明、当前任务、计划约束和终端证据重新裁决。\n`, true);
+    if (decision === 'reject' && laneSupervisorSurfaceId) {
+      sendToSurface(laneSupervisorSurfaceId, `[人工决定] 当前建议需要调整。\n\n[用户补充说明]\n${followUpTask}\n\n请依据补充说明、当前任务、计划约束和终端证据重新裁决。\n`, true);
     }
   }
   remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown', task: followUpTask || undefined });
@@ -1615,13 +1618,14 @@ export function initPipeBridge(): void {
       if (action === 'resume-lane') {
         if (laneState === 'stopped') return { ok: false, error: `${lane.label} 已停止；请重新配置后启动。`, message: '' };
         if (laneState === 'active') return { ok: true, message: `${lane.label} 已经在监督中。` };
-        if (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)) {
+        const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+        if (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId)) {
           return { ok: false, error: `${lane.label} 的专属监督终端已缺失；请在 wmux 中重新配置。`, message: '' };
         }
         remoteAudit(session, lane, 'supervisor.remote-command', { action: 'resume-lane', actor });
         useStore.getState().resumeSupervisorLane(lane.id, `由飞书继续 ${lane.label}`);
         if (session.active && !session.pendingApprovals.some((item) => item.laneId === lane.id)) {
-          sendToSurface(lane.supervisorSurfaceId, '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+          sendToSurface(supervisorSurfaceId, '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
         }
         return { ok: true, message: session.paused
           ? `${lane.label} 已设为继续；当前会话仍处于全局暂停。`
@@ -1650,18 +1654,22 @@ export function initPipeBridge(): void {
       }
       const shouldResume = action === 'resume-all' || (action === 'toggle-pause' && session.paused);
       if (shouldResume && session.paused) {
-        const missingLane = session.lanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped'
-          && (!lane.supervisorSurfaceId || !hasLiveSurface(lane.supervisorSurfaceId)));
+        const missingLane = session.lanes.find((lane) => {
+          const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+          return supervisorLaneControlState(lane) !== 'stopped'
+            && (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId));
+        });
         if (missingLane) return { ok: false, error: `专属监督终端已缺失：${missingLane.label}。请在 wmux 中停止后重新配置。`, message: '' };
         useStore.getState().resumeSupervisor();
         const resumed = useStore.getState().supervisor;
         const pendingLaneIds = new Set(resumed.pendingApprovals.map((item) => item.laneId));
         for (const lane of resumed.lanes) {
           remoteAudit(resumed, lane, 'supervisor.remote-command', { action: 'resume', actor });
+          const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active'
-            || !lane.supervisorSurfaceId
+            || !supervisorSurfaceId
             || pendingLaneIds.has(lane.id)) continue;
-          sendToSurface(lane.supervisorSurfaceId, '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+          sendToSurface(supervisorSurfaceId, '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
         }
         return { ok: true, message: '已继续原 AI 监督会话。' };
       }

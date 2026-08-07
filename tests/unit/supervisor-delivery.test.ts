@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { canDeliverToSupervisor, enqueueSupervisorDelivery } from '../../src/renderer/supervisor/delivery';
+import {
+  canDeliverToSupervisor,
+  enqueueSupervisorDelivery,
+  supervisorWakeDeliveryKind,
+} from '../../src/renderer/supervisor/delivery';
 
 const event = (id: string, kind: 'task-start' | 'task-end', task: string) => ({
   id,
@@ -25,5 +29,13 @@ describe('supervisor delivery queue', () => {
     expect(canDeliverToSupervisor('blocked')).toBe(false);
     expect(canDeliverToSupervisor('idle')).toBe(true);
     expect(canDeliverToSupervisor('unknown')).toBe(true);
+  });
+
+  it('wakes only for terminal states that require a supervisor decision', () => {
+    expect(supervisorWakeDeliveryKind('UserPromptSubmit')).toBeNull();
+    expect(supervisorWakeDeliveryKind('PostToolUse')).toBeNull();
+    expect(supervisorWakeDeliveryKind('Stop')).toBe('task-end');
+    expect(supervisorWakeDeliveryKind('StopFailure')).toBe('task-end');
+    expect(supervisorWakeDeliveryKind('Interrupt')).toBe('task-interrupted');
   });
 });

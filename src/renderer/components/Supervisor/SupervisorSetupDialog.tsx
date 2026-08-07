@@ -6,7 +6,11 @@ import type {
   SupervisorLane,
   SupervisorLaneConfig,
 } from '../../store/supervisor-slice';
-import { isSupervisorLaneBound, supervisorLaneControlState } from '../../store/supervisor-slice';
+import {
+  dedicatedSupervisorSurfaceId,
+  isSupervisorLaneBound,
+  supervisorLaneControlState,
+} from '../../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -250,7 +254,7 @@ export default function SupervisorSetupDialog() {
   const candidates = useMemo((): TerminalCandidate[] => {
     const list: TerminalCandidate[] = [];
     const supervisorSurfaceIds = new Set(
-      supervisor.lanes.map((lane) => lane.supervisorSurfaceId).filter(Boolean),
+      supervisor.lanes.map(dedicatedSupervisorSurfaceId).filter(Boolean),
     );
     for (const ws of workspaces) {
       const surfaces: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
@@ -606,7 +610,7 @@ export default function SupervisorSetupDialog() {
           || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         label: c.label,
         surfaceId: c.surfaceId,
-        supervisorSurfaceId: prev?.supervisorSurfaceId || null,
+        supervisorSurfaceId: prev ? dedicatedSupervisorSurfaceId(prev) : null,
         paneId: c.paneId,
         workspaceId: c.workspaceId,
         workspaceTitle: c.workspaceTitle,
@@ -730,8 +734,9 @@ export default function SupervisorSetupDialog() {
       paneId: PaneId;
     }>();
     const configuredLanes = lanes.map((lane) => {
-      const existingLocation = lane.supervisorSurfaceId
-        ? terminalLocations.get(lane.supervisorSurfaceId)
+      const existingSupervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+      const existingLocation = existingSupervisorSurfaceId
+        ? terminalLocations.get(existingSupervisorSurfaceId)
         : undefined;
       if (existingLocation && !replaceExisting) {
         return lane;
@@ -787,12 +792,13 @@ export default function SupervisorSetupDialog() {
         const states = (window as any).__wmux_getAgentStates?.() || {};
         for (const lane of session.lanes) {
           if (!laneIds.has(lane.id)) continue;
-          if (!lane.supervisorSurfaceId) continue;
+          const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+          if (!supervisorSurfaceId) continue;
           const text = buildSupervisorBriefing(session, {
             lane,
             state: String(states[lane.surfaceId]?.state || 'unknown'),
           });
-          sendToSurface(lane.supervisorSurfaceId, text, true);
+          sendToSurface(supervisorSurfaceId, text, true);
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);

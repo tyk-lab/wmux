@@ -35,6 +35,7 @@ import {
 } from '../../../shared/supervisor-policy';
 import {
   clearSupervisorLaneContext,
+  dedicatedSupervisorSurfaceId,
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../../store/supervisor-slice';
@@ -109,8 +110,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }
   }
   const missingDedicatedSupervisor = supervisor.lanes.some(
-    (lane) => supervisorLaneControlState(lane) !== 'stopped'
-      && (!lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId)),
+    (lane) => {
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+      return supervisorLaneControlState(lane) !== 'stopped'
+        && (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId));
+    },
   );
   let statusLabel = '已停止';
   if (supervisor.active) statusLabel = '运行中';
@@ -229,10 +233,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     const lane = item ? supervisor.lanes.find((entry) => entry.id === item.laneId) : undefined;
     const note = supervisorNotes[id]?.trim().slice(0, 4000) || '';
-    if (!item || !lane || !lane.supervisorSurfaceId || !note) return;
+    const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
+    if (!item || !lane || !supervisorSurfaceId || !note) return;
     try {
       const paused = supervisorLaneControlState(lane) === 'paused';
-      sendToSurface(lane.supervisorSurfaceId, [
+      sendToSurface(supervisorSurfaceId, [
         '[用户对当前待决项的补充意见]',
         `待决项: ${item.reason || item.text || item.laneLabel}`,
         `补充意见: ${note}`,
@@ -282,8 +287,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       resolution: 'human-reviewed',
     });
     appendSupervisorLog(lane.id, '人工已审阅', '自动判断计数已重置，可继续监督');
-    if (lane.supervisorSurfaceId) {
-      sendToSurface(lane.supervisorSurfaceId, '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n', true);
+    const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+    if (supervisorSurfaceId) {
+      sendToSurface(supervisorSurfaceId, '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n', true);
     }
   };
 
@@ -303,13 +309,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     )).map((lane) => lane.id));
     resumeSupervisor();
     for (const lane of supervisor.lanes) {
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
       if (supervisorLaneControlState(lane) !== 'active'
-        || !lane.supervisorSurfaceId
+        || !supervisorSurfaceId
         || pendingLaneIds.has(lane.id)) continue;
       const message = cancelledDecisionLaneIds.has(lane.id)
         ? '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n'
         : '[会话继续] 用户已恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n';
-      sendToSurface(lane.supervisorSurfaceId, message, true);
+      sendToSurface(supervisorSurfaceId, message, true);
     }
   };
 
@@ -319,16 +326,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const closeDedicatedSupervisor = (lane: SupervisorLane): boolean => {
-    if (!lane.supervisorSurfaceId) return true;
+    const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+    if (!supervisorSurfaceId) return true;
     for (const workspace of workspaces) {
       for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
         const pane = findLeaf(workspace.splitTree, candidatePaneId);
-        if (!pane?.surfaces.some((surface) => surface.id === lane.supervisorSurfaceId)) continue;
+        if (!pane?.surfaces.some((surface) => surface.id === supervisorSurfaceId)) continue;
         if (pane.surfaces.length === 1) {
           const replacement = addSurface(workspace.id, candidatePaneId, 'terminal', { cwd: lane.projectDir });
           if (!replacement) return false;
         }
-        closeSurface(workspace.id, candidatePaneId, lane.supervisorSurfaceId);
+        closeSurface(workspace.id, candidatePaneId, supervisorSurfaceId);
         return true;
       }
     }
@@ -341,14 +349,15 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const resumeLane = (lane: SupervisorLane) => {
-    if (!lane.supervisorSurfaceId || !liveSurfaceIds.has(lane.supervisorSurfaceId)) {
+    const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+    if (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId)) {
       openSupervisorSetup();
       return;
     }
     resumeSupervisorLane(lane.id, `用户继续 ${lane.label}；其他监督通道状态不变`);
     appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'resume' });
     if (supervisor.active && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)) {
-      sendToSurface(lane.supervisorSurfaceId, '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+      sendToSurface(supervisorSurfaceId, '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
     }
   };
 
@@ -371,12 +380,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       appendSupervisorRecord(supervisor, lane, 'session.abandoned', {
         reason: '用户选择重头再来',
       });
-      if (lane.supervisorSurfaceId) {
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+      if (supervisorSurfaceId) {
         let location: { workspaceId: WorkspaceId; paneId: PaneId; surfaceCount: number } | null = null;
         for (const workspace of workspaces) {
           for (const paneId of getAllPaneIds(workspace.splitTree)) {
             const pane = findLeaf(workspace.splitTree, paneId);
-            if (pane?.surfaces.some((surface) => surface.id === lane.supervisorSurfaceId)) {
+            if (pane?.surfaces.some((surface) => surface.id === supervisorSurfaceId)) {
               location = { workspaceId: workspace.id, paneId, surfaceCount: pane.surfaces.length };
               break;
             }
@@ -390,7 +400,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           });
           if (!replacement) continue;
         }
-        closeSurface(location.workspaceId, location.paneId, lane.supervisorSurfaceId);
+        closeSurface(location.workspaceId, location.paneId, supervisorSurfaceId);
       }
     }
     resetSupervisorSession();
@@ -408,10 +418,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       }
     }
 
-    const lanesToRestart = supervisor.lanes.map((lane) => ({
-      lane,
-      location: lane.supervisorSurfaceId ? supervisorLocations.get(lane.supervisorSurfaceId) : undefined,
-    }));
+    const lanesToRestart = supervisor.lanes.map((lane) => {
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+      return {
+        lane,
+        supervisorSurfaceId,
+        location: supervisorSurfaceId ? supervisorLocations.get(supervisorSurfaceId) : undefined,
+      };
+    });
     if (lanesToRestart.some(({ location }) => !location)) {
       openSupervisorSetup();
       return;
@@ -436,7 +450,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       paneId: PaneId;
     }> = [];
 
-    for (const { lane, location } of lanesToRestart) {
+    for (const { lane, supervisorSurfaceId, location } of lanesToRestart) {
       const newSurfaceId = addSurface(location!.workspaceId, location!.paneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
         shell: 'pwsh.exe',
@@ -444,7 +458,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         startupCommands,
         transientSupervisor: true,
       });
-      if (!newSurfaceId || !lane.supervisorSurfaceId) {
+      if (!newSurfaceId || !supervisorSurfaceId) {
         for (const replacement of replacements) {
           closeSurface(replacement.workspaceId, replacement.paneId, replacement.newSurfaceId);
         }
@@ -454,7 +468,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       }
       replacements.push({
         lane,
-        oldSurfaceId: lane.supervisorSurfaceId,
+        oldSurfaceId: supervisorSurfaceId,
         newSurfaceId,
         workspaceId: location!.workspaceId,
         paneId: location!.paneId,
@@ -509,12 +523,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       if (!session.active || session.sessionId !== sessionId) return;
       const states = (window as any).__wmux_getAgentStates?.() || {};
       for (const lane of session.lanes) {
-        if (!lane.supervisorSurfaceId) continue;
+        const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+        if (!supervisorSurfaceId) continue;
         const text = buildSupervisorBriefing(session, {
           lane,
           state: String(states[lane.surfaceId]?.state || 'unknown'),
         });
-        sendToSurface(lane.supervisorSurfaceId, text, true);
+        sendToSurface(supervisorSurfaceId, text, true);
       }
     }, SUPERVISOR_TUI_READY_DELAY_MS);
   };
@@ -680,7 +695,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     </div>
                   )}
                   <div className="sup-panel__lane-supervisor">
-                    专属监督: {lane.supervisorSurfaceId ? '已连接' : '未启动'}
+                    专属监督: {dedicatedSupervisorSurfaceId(lane) ? '已连接' : '未启动'}
                     {lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}
                   </div>
                   <div className="sup-panel__lane-supervisor">
