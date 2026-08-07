@@ -15,6 +15,7 @@ import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { attachVisibleRenderer, RendererHandle } from '../utils/terminal-renderer';
 import { trimTrailingWhitespace } from '../utils/copy-text';
+import { deliverStartupInput } from '../utils/terminal-input-delivery';
 import {
   consumeTerminalBufferSnapshot,
   registerTerminalBufferSnapshotter,
@@ -106,6 +107,15 @@ function setResolvedShellForSurface(surfaceId: string | undefined, resolvedShell
   const location = findSurfaceLocation(workspace.splitTree, surfaceId);
   if (!location) return;
   state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, { shell: resolvedShell });
+}
+
+function clearStartupInputForSurface(surfaceId: string): void {
+  const state = useStore.getState();
+  const workspace = state.workspaces.find((item) => treeHasSurface(item.splitTree, surfaceId));
+  if (!workspace) return;
+  const location = findSurfaceLocation(workspace.splitTree, surfaceId);
+  if (!location) return;
+  state.updateSurface(workspace.id, location.paneId as any, surfaceId as any, { startupInput: undefined });
 }
 
 /**
@@ -822,9 +832,17 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const input = startupInputRef.current;
       if (!input || startupInputScheduledSurfaceIds.has(id)) return;
       startupInputScheduledSurfaceIds.add(id);
-      // PTYs survive workspace switches, so this timer intentionally survives
-      // the React pane unmount and delivers the prompt to the still-live TUI.
-      setTimeout(() => window.wmux.pty.write(id, input + '\r'), 2_500);
+      // PTYs survive workspace switches, so this delivery intentionally survives
+      // the React pane unmount. It starts only after PTY create/attach succeeds.
+      void deliverStartupInput(window.wmux.pty, id, input).then((delivered) => {
+        if (delivered) {
+          clearStartupInputForSurface(id);
+          return;
+        }
+        startupInputScheduledSurfaceIds.delete(id);
+        terminal.writeln('\r\n\x1b[31m[首条任务发送失败：终端暂不可写，请稍后重新发送]\x1b[0m');
+        console.warn(`[terminal] startup input delivery failed for ${id}`);
+      });
     };
 
     // Resolve effective shell: explicit (workspace) > user default preference > main-process fallback.
