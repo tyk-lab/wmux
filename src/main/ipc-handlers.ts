@@ -43,7 +43,6 @@ import {
 } from './ssh-manager';
 import { SshCredentialStore } from './ssh-credential-store';
 import {
-  nextAvailableLocalPath,
   SshTransferCache,
   validateLocalUploadFiles,
   validateRemoteTransferFiles,
@@ -75,6 +74,42 @@ function credentialEndpoint(profile: SshConnectionProfile): SshPasswordEndpoint 
 }
 
 export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstance?: CDPProxy): void {
+  const confirmSshUploadOverwrite = async (
+    event: Electron.IpcMainInvokeEvent,
+    workspaceId: string,
+    targets: Array<{ path: string; name: string }>,
+  ): Promise<boolean> => {
+    const conflicts = new Set<string>();
+    const uniqueTargets = new Map<string, { path: string; name: string }>();
+    for (const target of targets) {
+      if (uniqueTargets.has(target.path)) conflicts.add(target.name);
+      else uniqueTargets.set(target.path, target);
+    }
+    const existence = await Promise.all([...uniqueTargets.values()].map(async (target) => ({
+      target,
+      exists: await sshManager.pathExists(workspaceId, target.path),
+    })));
+    existence.forEach(({ target, exists }) => { if (exists) conflicts.add(target.name); });
+    if (conflicts.size === 0) return true;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const conflictNames = [...conflicts];
+    const shownNames = conflictNames.slice(0, 20);
+    const options = {
+      type: 'warning' as const,
+      title: '确认覆盖远程项目',
+      message: '远程目录中已有同名项目，是否继续？',
+      detail: `${shownNames.join('\n')}${conflictNames.length > shownNames.length ? `\n…以及其他 ${conflictNames.length - shownNames.length} 项` : ''}\n\n目录将合并，同名文件将被覆盖。`,
+      buttons: ['继续上传', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const confirmation = win
+      ? await dialog.showMessageBox(win, options)
+      : await dialog.showMessageBox(options);
+    return confirmation.response === 0;
+  };
+
   // Toggle DevTools for the renderer window
   ipcMain.on('toggle-devtools', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -345,22 +380,42 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       properties: ['openFile', 'multiSelections'],
     });
     if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    const targets = result.filePaths.map((localPath) => ({
+      path: path.posix.join(remoteDirectory || '.', path.basename(localPath)),
+      name: path.basename(localPath),
+    }));
+    if (!await confirmSshUploadOverwrite(event, workspaceId, targets)) return { canceled: true };
     for (const localPath of result.filePaths) {
-      await sshManager.upload(workspaceId, localPath, path.posix.join(remoteDirectory || '.', path.basename(localPath)));
+      await sshManager.uploadEntry(
+        workspaceId,
+        localPath,
+        path.posix.join(remoteDirectory || '.', path.basename(localPath)),
+        'file',
+      );
     }
     return { ok: true };
   });
   ipcMain.handle(IPC_CHANNELS.SSH_UPLOAD_PATHS, async (
-    _event,
+    event,
     workspaceId: string,
     remoteDirectory: string,
     localPaths: unknown,
   ) => {
-    const { files, rejected } = validateLocalUploadFiles(localPaths);
-    for (const localPath of files) {
-      await sshManager.upload(workspaceId, localPath, path.posix.join(remoteDirectory || '.', path.basename(localPath)));
+    const { entries, rejected } = validateLocalUploadFiles(localPaths);
+    const targets = entries.map((entry) => ({
+      path: path.posix.join(remoteDirectory || '.', entry.name),
+      name: entry.name,
+    }));
+    if (!await confirmSshUploadOverwrite(event, workspaceId, targets)) return { canceled: true, rejected };
+    for (const entry of entries) {
+      await sshManager.uploadEntry(
+        workspaceId,
+        entry.path,
+        path.posix.join(remoteDirectory || '.', entry.name),
+        entry.type,
+      );
     }
-    return { ok: true, uploaded: files.length, rejected };
+    return { ok: true, uploaded: entries.length, rejected };
   });
   ipcMain.handle(IPC_CHANNELS.SSH_DOWNLOAD, async (event, workspaceId: string, remotePath: string) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
@@ -375,20 +430,21 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
   ipcMain.handle(IPC_CHANNELS.SSH_DOWNLOAD_MANY, async (event, workspaceId: string, remoteFiles: unknown) => {
     const files = validateRemoteTransferFiles(remoteFiles);
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const result = await dialog.showOpenDialog(win as BrowserWindow, {
-      title: '选择下载目录',
-      properties: ['openDirectory', 'createDirectory'],
+    const defaultName = files.length === 1 && files[0].type === 'directory'
+      ? `${files[0].name}.tar.gz`
+      : `wmux-download-${files.length}-items.tar.gz`;
+    const result = await dialog.showSaveDialog(win as BrowserWindow, {
+      title: '下载远程压缩包',
+      defaultPath: defaultName,
+      filters: [{ name: 'Tar GZip 压缩包', extensions: ['gz', 'tgz'] }],
     });
-    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
-    const directory = result.filePaths[0];
-    for (const file of files) {
-      await sshManager.download(workspaceId, file.path, nextAvailableLocalPath(directory, file.name));
-    }
-    return { ok: true, downloaded: files.length };
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await sshManager.downloadArchive(workspaceId, files.map((file) => file.path), result.filePath);
+    return { ok: true, downloaded: files.length, filePath: result.filePath };
   });
   ipcMain.handle(IPC_CHANNELS.SSH_PREPARE_DRAG, async (event, workspaceId: string, remoteFiles: unknown) => {
-    const prepared = await sshTransferCache.prepare(remoteFiles, (remotePath, localPath) =>
-      sshManager.download(workspaceId, remotePath, localPath), String(event.sender.id));
+    const prepared = await sshTransferCache.prepare(remoteFiles, (remotePath, localPath, type) =>
+      sshManager.downloadEntry(workspaceId, remotePath, localPath, type), String(event.sender.id));
     return { ok: true, token: prepared.token };
   });
   ipcMain.on(IPC_CHANNELS.SSH_START_DRAG, (event, token: string) => {

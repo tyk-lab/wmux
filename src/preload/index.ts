@@ -277,9 +277,9 @@ contextBridge.exposeInMainWorld('wmux', {
       return ipcRenderer.invoke(IPC_CHANNELS.SSH_UPLOAD_PATHS, workspaceId, remoteDirectory, localPaths);
     },
     download: (workspaceId: string, remotePath: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DOWNLOAD, workspaceId, remotePath),
-    downloadMany: (workspaceId: string, files: Array<{ path: string; name: string }>) =>
+    downloadMany: (workspaceId: string, files: Array<{ path: string; name: string; type: 'file' | 'directory' }>) =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_DOWNLOAD_MANY, workspaceId, files),
-    prepareDrag: (workspaceId: string, files: Array<{ path: string; name: string }>) =>
+    prepareDrag: (workspaceId: string, files: Array<{ path: string; name: string; type: 'file' | 'directory' }>) =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_PREPARE_DRAG, workspaceId, files),
     startDrag: (token: string) => ipcRenderer.send(IPC_CHANNELS.SSH_START_DRAG, token),
     rename: (workspaceId: string, remotePath: string, newName: string) =>

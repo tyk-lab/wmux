@@ -8,6 +8,13 @@ const MAX_TRANSFER_FILES = 100;
 export interface RemoteTransferFile {
   path: string;
   name: string;
+  type: 'file' | 'directory';
+}
+
+export interface LocalTransferEntry {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
 }
 
 export interface PreparedDrag {
@@ -15,7 +22,7 @@ export interface PreparedDrag {
   files: string[];
 }
 
-function safeLocalName(name: string, index: number): string {
+export function safeLocalName(name: string, index: number): string {
   const base = [...path.posix.basename(name)]
     .map((character) => character.charCodeAt(0) < 32 || /[<>:"/\\|?*]/.test(character) ? '_' : character)
     .join('')
@@ -35,27 +42,36 @@ function uniqueLocalName(name: string, usedNames: ReadonlySet<string>): string {
   }
 }
 
-export function validateLocalUploadFiles(localPaths: unknown): { files: string[]; rejected: string[] } {
-  if (!Array.isArray(localPaths) || localPaths.length > MAX_TRANSFER_FILES) {
-    throw new Error(`一次最多传输 ${MAX_TRANSFER_FILES} 个文件`);
+export function validateLocalUploadFiles(localPaths: unknown): { entries: LocalTransferEntry[]; rejected: string[] } {
+  if (!Array.isArray(localPaths) || localPaths.length === 0 || localPaths.length > MAX_TRANSFER_FILES) {
+    throw new Error(`请选择 1-${MAX_TRANSFER_FILES} 个本地文件或目录`);
   }
-  const files: string[] = [];
+  const entries: LocalTransferEntry[] = [];
   const rejected: string[] = [];
+  const seenPaths = new Set<string>();
   for (const value of localPaths) {
     if (typeof value !== 'string' || !path.isAbsolute(value)) continue;
     try {
-      if (fs.statSync(value).isFile()) files.push(value);
-      else rejected.push(path.basename(value));
+      const stats = fs.lstatSync(value);
+      const type = stats.isFile() ? 'file' : stats.isDirectory() ? 'directory' : undefined;
+      const normalizedPath = path.resolve(value);
+      const pathKey = normalizedPath.toLowerCase();
+      if (!type || seenPaths.has(pathKey)) {
+        if (!type) rejected.push(path.basename(value));
+        continue;
+      }
+      seenPaths.add(pathKey);
+      entries.push({ path: normalizedPath, name: path.basename(normalizedPath), type });
     } catch {
       rejected.push(path.basename(value));
     }
   }
-  return { files: [...new Set(files)], rejected };
+  return { entries, rejected };
 }
 
 export function validateRemoteTransferFiles(files: unknown): RemoteTransferFile[] {
   if (!Array.isArray(files) || files.length === 0 || files.length > MAX_TRANSFER_FILES) {
-    throw new Error(`请选择 1-${MAX_TRANSFER_FILES} 个远程文件`);
+    throw new Error(`请选择 1-${MAX_TRANSFER_FILES} 个远程文件或目录`);
   }
   return files.map((value, index) => {
     const candidate = value as Partial<RemoteTransferFile>;
@@ -65,16 +81,21 @@ export function validateRemoteTransferFiles(files: unknown): RemoteTransferFile[
       || typeof candidate.name !== 'string'
       || !candidate.path
       || candidate.path.includes('\0')
+      || (candidate.type !== 'file' && candidate.type !== 'directory')
     ) {
       throw new Error('远程文件信息无效');
     }
-    return { path: candidate.path, name: safeLocalName(candidate.name, index) };
+    return { path: candidate.path, name: safeLocalName(candidate.name, index), type: candidate.type };
   });
 }
 
-export function nextAvailableLocalPath(directory: string, name: string): string {
+export function nextAvailableLocalPath(
+  directory: string,
+  name: string,
+  type: 'file' | 'directory' = 'file',
+): string {
   const safeName = safeLocalName(name, 0);
-  const extension = path.extname(safeName);
+  const extension = type === 'file' ? path.extname(safeName) : '';
   const stem = path.basename(safeName, extension);
   let candidate = path.join(directory, safeName);
   for (let suffix = 1; fs.existsSync(candidate); suffix++) {
@@ -94,7 +115,7 @@ export class SshTransferCache {
 
   async prepare(
     remoteFiles: unknown,
-    download: (remotePath: string, localPath: string) => Promise<void>,
+    download: (remotePath: string, localPath: string, type: 'file' | 'directory') => Promise<void>,
     owner = 'default',
   ): Promise<PreparedDrag> {
     const files = validateRemoteTransferFiles(remoteFiles);
@@ -107,6 +128,7 @@ export class SshTransferCache {
     const token = randomUUID();
     const directory = path.join(this.root, token);
     fs.mkdirSync(directory, { recursive: true });
+    this.ownerTokens.set(owner, token);
     const localFiles: string[] = [];
     const usedNames = new Set<string>();
     try {
@@ -114,14 +136,17 @@ export class SshTransferCache {
         const localName = uniqueLocalName(file.name, usedNames);
         usedNames.add(localName.toLowerCase());
         const localPath = path.join(directory, localName);
-        await download(file.path, localPath);
+        await download(file.path, localPath, file.type);
         localFiles.push(localPath);
       }
+      if (this.ownerTokens.get(owner) !== token) {
+        throw new Error('拖拽准备已被新的操作替换');
+      }
       this.prepared.set(token, localFiles);
-      this.ownerTokens.set(owner, token);
       return { token, files: localFiles };
     } catch (error) {
       fs.rmSync(directory, { recursive: true, force: true });
+      if (this.ownerTokens.get(owner) === token) this.ownerTokens.delete(owner);
       throw error;
     }
   }

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { TextDecoder } from 'util';
 import {
   Client,
@@ -20,6 +20,7 @@ import {
   SshTextFileResult,
   SshTextFileWriteResult,
 } from '../shared/types';
+import { nextAvailableLocalPath } from './ssh-transfer-cache';
 
 type SshSession = { client: Client; sftp: SFTPWrapper };
 
@@ -371,6 +372,34 @@ function validateSshFilePath(remotePath: string): string {
   return cleanPath;
 }
 
+function quotePosixShellArgument(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+export function buildSshArchiveCommand(remotePaths: string[], archivePath: string): string {
+  if (!Array.isArray(remotePaths) || remotePaths.length === 0) throw new Error('没有可压缩的远程项目');
+  const cleanPaths = remotePaths.map((remotePath) => path.posix.normalize(validateSshFilePath(remotePath)));
+  if (cleanPaths.some((remotePath) => !remotePath.startsWith('/'))) throw new Error('远程项目必须使用绝对路径');
+  const parent = path.posix.dirname(cleanPaths[0]);
+  if (cleanPaths.some((remotePath) => path.posix.dirname(remotePath) !== parent)) {
+    throw new Error('只能压缩同一远程目录下的项目');
+  }
+  const names = cleanPaths.map((remotePath) => {
+    const name = path.posix.basename(remotePath);
+    if (name === '.' || name === '..') throw new Error('远程项目路径无效');
+    return quotePosixShellArgument(`./${name}`);
+  });
+  const cleanArchivePath = path.posix.normalize(validateSshFilePath(archivePath));
+  if (!cleanArchivePath.startsWith('/')) throw new Error('远程压缩包路径无效');
+  const relativeArchivePath = path.posix.relative(parent, cleanArchivePath);
+  const excludeArchive = relativeArchivePath
+    && relativeArchivePath !== '..'
+    && !relativeArchivePath.startsWith('../')
+    ? `${quotePosixShellArgument(`--exclude=./${relativeArchivePath}`)} `
+    : '';
+  return `tar -czf ${quotePosixShellArgument(cleanArchivePath)} ${excludeArchive}-C ${quotePosixShellArgument(parent)} ${names.join(' ')}`;
+}
+
 function remoteMtimeMs(mtime: number | undefined): number {
   return (mtime || 0) * 1000;
 }
@@ -618,10 +647,189 @@ export class SshManager {
       error ? reject(new Error(error.message || '上传失败')) : resolve()));
   }
 
+  async pathExists(workspaceId: string, remotePath: string): Promise<boolean> {
+    return sftpPathExists(this.getSftp(workspaceId), validateSshFilePath(remotePath));
+  }
+
+  async uploadEntry(
+    workspaceId: string,
+    localPath: string,
+    remotePath: string,
+    type: 'file' | 'directory',
+  ): Promise<void> {
+    const cleanRemotePath = validateSshFilePath(remotePath);
+    const sftp = this.getSftp(workspaceId);
+    if (type === 'file') {
+      await this.upload(workspaceId, localPath, cleanRemotePath);
+      return;
+    }
+    await this.uploadDirectory(sftp, localPath, cleanRemotePath);
+  }
+
   async download(workspaceId: string, remotePath: string, localPath: string): Promise<void> {
     const sftp = this.getSftp(workspaceId);
-    await new Promise<void>((resolve, reject) => sftp.fastGet(remotePath, localPath, (error) =>
-      error ? reject(new Error(error.message || '下载失败')) : resolve()));
+    const cleanRemotePath = validateSshFilePath(remotePath);
+    const directory = path.dirname(localPath);
+    const partialPath = path.join(directory, `.wmux-part-${randomUUID()}`);
+    try {
+      await new Promise<void>((resolve, reject) => sftp.fastGet(cleanRemotePath, partialPath, (error) =>
+        error ? reject(new Error(error.message || '下载失败')) : resolve()));
+      if (fs.existsSync(localPath)) {
+        await fs.promises.copyFile(partialPath, localPath);
+        await fs.promises.rm(partialPath, { force: true });
+      } else {
+        await fs.promises.rename(partialPath, localPath);
+      }
+    } catch (error) {
+      await fs.promises.rm(partialPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async downloadEntry(
+    workspaceId: string,
+    remotePath: string,
+    localPath: string,
+    type: 'file' | 'directory',
+  ): Promise<void> {
+    if (type === 'file') {
+      await this.download(workspaceId, remotePath, localPath);
+      return;
+    }
+    if (fs.existsSync(localPath)) throw new Error(`本地目标“${path.basename(localPath)}”已存在`);
+    try {
+      await this.downloadDirectory(this.getSftp(workspaceId), validateSshFilePath(remotePath), localPath);
+    } catch (error) {
+      await fs.promises.rm(localPath, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async downloadArchive(workspaceId: string, remotePaths: string[], localPath: string): Promise<void> {
+    const session = this.sessions.get(workspaceId);
+    if (!session) throw new Error('SSH 文件连接未建立，请重新连接');
+    const remoteArchivePath = `/tmp/wmux-download-${randomUUID()}.tar.gz`;
+    let operationError: unknown;
+    try {
+      await this.executeRemoteCommand(session.client, buildSshArchiveCommand(remotePaths, remoteArchivePath));
+      await this.download(workspaceId, remoteArchivePath, localPath);
+    } catch (error) {
+      operationError = error;
+    }
+
+    let cleanupError: unknown;
+    try {
+      await this.removeRemoteFile(session.sftp, remoteArchivePath);
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (operationError && cleanupError) {
+      throw new Error(
+        `${operationError instanceof Error ? operationError.message : String(operationError)}；远程临时压缩包清理失败`,
+        { cause: operationError },
+      );
+    }
+    if (operationError) throw operationError;
+    if (cleanupError) throw new Error('压缩包已下载，但远程临时压缩包清理失败', { cause: cleanupError });
+  }
+
+  private async uploadDirectory(sftp: SFTPWrapper, localDirectory: string, remoteDirectory: string): Promise<void> {
+    const localStats = await fs.promises.lstat(localDirectory);
+    if (!localStats.isDirectory()) throw new Error('本地上传项目不是目录');
+    await new Promise<void>((resolve, reject) => {
+      sftp.lstat(remoteDirectory, (statError, attributes) => {
+        if (!statError && attributes) {
+          if ((attributes.mode & 0o170000) !== 0o040000) reject(new Error('远程同名项目不是目录'));
+          else resolve();
+          return;
+        }
+        const code = (statError as Error & { code?: number | string } | undefined)?.code;
+        if (code !== 2 && code !== 'ENOENT') {
+          reject(new Error(statError?.message || '无法检查远程目录'));
+          return;
+        }
+        sftp.mkdir(remoteDirectory, (mkdirError) => mkdirError
+          ? reject(new Error(mkdirError.message || '创建远程目录失败'))
+          : resolve());
+      });
+    });
+    const children = await fs.promises.readdir(localDirectory, { withFileTypes: true });
+    for (const child of children) {
+      const localChild = path.join(localDirectory, child.name);
+      const remoteChild = path.posix.join(remoteDirectory, child.name);
+      if (child.isDirectory()) await this.uploadDirectory(sftp, localChild, remoteChild);
+      else if (child.isFile()) {
+        await new Promise<void>((resolve, reject) => sftp.fastPut(localChild, remoteChild, (error) =>
+          error ? reject(new Error(error.message || '上传失败')) : resolve()));
+      } else {
+        throw new Error(`目录包含不支持的项目：${child.name}`);
+      }
+    }
+  }
+
+  private async downloadDirectory(sftp: SFTPWrapper, remoteDirectory: string, localDirectory: string): Promise<void> {
+    await fs.promises.mkdir(localDirectory, { recursive: false });
+    const entries = await new Promise<Parameters<Parameters<SFTPWrapper['readdir']>[1]>[1]>((resolve, reject) => {
+      sftp.readdir(remoteDirectory, (error, value) => error
+        ? reject(new Error(error.message || '读取远程目录失败'))
+        : resolve(value));
+    });
+    for (const entry of entries) {
+      if (entry.filename === '.' || entry.filename === '..') continue;
+      const remoteChild = path.posix.join(remoteDirectory, entry.filename);
+      const mode = entry.attrs.mode & 0o170000;
+      if (mode !== 0o100000 && mode !== 0o040000) {
+        throw new Error(`远程目录包含不支持的项目：${entry.filename}`);
+      }
+      const type = mode === 0o040000 ? 'directory' : 'file';
+      const localChild = nextAvailableLocalPath(localDirectory, entry.filename, type);
+      if (type === 'directory') await this.downloadDirectory(sftp, remoteChild, localChild);
+      else {
+        const partialPath = path.join(localDirectory, `.wmux-part-${randomUUID()}`);
+        try {
+          await new Promise<void>((resolve, reject) => sftp.fastGet(remoteChild, partialPath, (error) =>
+            error ? reject(new Error(error.message || '下载失败')) : resolve()));
+          await fs.promises.rename(partialPath, localChild);
+        } catch (error) {
+          await fs.promises.rm(partialPath, { force: true }).catch(() => undefined);
+          throw error;
+        }
+      }
+    }
+  }
+
+  private async executeRemoteCommand(client: Client, command: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      client.exec(command, (execError, stream) => {
+        if (execError || !stream) {
+          reject(new Error(execError?.message || '无法启动远程压缩命令', { cause: execError }));
+          return;
+        }
+        let stderr = '';
+        stream.stderr.on('data', (chunk) => {
+          if (stderr.length < 8192) stderr += String(chunk).slice(0, 8192 - stderr.length);
+        });
+        stream.on('error', (error: Error) => reject(new Error(error.message || '远程压缩失败', { cause: error })));
+        stream.on('close', (code?: number, signal?: string) => {
+          if (code === 0) resolve();
+          else reject(new Error(stderr.trim() || `远程压缩失败（退出码 ${code ?? '未知'}${signal ? `，信号 ${signal}` : ''}）`));
+        });
+      });
+    });
+  }
+
+  private async removeRemoteFile(sftp: SFTPWrapper, remotePath: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      sftp.unlink(remotePath, (error) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const code = (error as Error & { code?: number | string }).code;
+        if (code === 2 || code === 'ENOENT') resolve();
+        else reject(new Error(error.message || '删除远程临时文件失败', { cause: error }));
+      });
+    });
   }
 
   private getSftp(workspaceId: string): SFTPWrapper {

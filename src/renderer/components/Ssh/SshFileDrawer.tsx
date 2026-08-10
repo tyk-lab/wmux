@@ -94,11 +94,13 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const pendingDirectoriesRef = useRef(new Map<string, Promise<DirectoryResult>>());
   const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activeWorkspaceIdRef = useRef(workspaceId);
+  const dragPreparationGenerationRef = useRef(0);
   const resizeCleanupRef = useRef<(() => void) | undefined>(undefined);
   activeWorkspaceIdRef.current = workspaceId;
 
-  const selectedFiles = useMemo(
-    () => entries.filter((entry) => entry.type === 'file' && selectedPaths.has(entry.path)),
+  const selectedTransferEntries = useMemo(
+    () => entries.filter((entry) =>
+      (entry.type === 'file' || entry.type === 'directory') && selectedPaths.has(entry.path)),
     [entries, selectedPaths],
   );
   const selectedEntries = useMemo(
@@ -106,8 +108,10 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     [entries, selectedPaths],
   );
   const canDownloadSelection = selectedEntries.length > 0
-    && selectedEntries.every((entry) => entry.type === 'file');
-  const selectionSignature = selectedFiles.map((entry) => entry.path).sort().join('\n');
+    && selectedEntries.every((entry) => entry.type === 'file' || entry.type === 'directory');
+  const selectionSignature = selectedTransferEntries.map((entry) => entry.path).sort().join('\n');
+  const selectionSignatureRef = useRef(selectionSignature);
+  selectionSignatureRef.current = selectionSignature;
 
   const requestDirectory = useCallback((remotePath: string, force = false): Promise<DirectoryResult> => {
     const cached = directoryCacheRef.current.get(remotePath);
@@ -178,6 +182,7 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   }, [currentPath, requestDirectory, state, workspaceId]);
 
   useEffect(() => {
+    dragPreparationGenerationRef.current += 1;
     lastValidPathRef.current = '.';
     setCurrentPath('.');
     setPathDraft('.');
@@ -276,8 +281,11 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
 
   const upload = async () => {
     setTransferStatus('');
+    setError('');
     try {
-      const result = await window.wmux?.ssh?.upload?.(workspaceId, currentPath);
+      const uploadFiles = window.wmux?.ssh?.upload;
+      if (!uploadFiles) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+      const result = await uploadFiles(workspaceId, currentPath);
       if (!result?.canceled) {
         setTransferStatus('上传完成');
         invalidateCurrentDirectory();
@@ -297,24 +305,20 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       .map((file) => window.wmux?.shell?.getPathForFile?.(file) || '')
       .filter(Boolean);
     if (!localPaths.length) return;
-    const existingNames = new Set(entries.map((entry) => entry.name.toLowerCase()));
-    const droppedNameCounts = new Map<string, number>();
-    droppedFiles.forEach((file) => {
-      const name = file.name.toLowerCase();
-      droppedNameCounts.set(name, (droppedNameCounts.get(name) || 0) + 1);
-    });
-    const conflicts = [...new Set(droppedFiles
-      .filter((file) => existingNames.has(file.name.toLowerCase()) || (droppedNameCounts.get(file.name.toLowerCase()) || 0) > 1)
-      .map((file) => file.name))];
-    if (conflicts.length && !window.confirm(`以下文件已存在，继续将覆盖远程文件：\n${conflicts.join('\n')}`)) return;
     setTransferStatus(`正在上传 ${localPaths.length} 项…`);
     setError('');
     try {
-      const result = await window.wmux?.ssh?.uploadPaths?.(workspaceId, currentPath, localPaths);
+      const uploadPaths = window.wmux?.ssh?.uploadPaths;
+      if (!uploadPaths) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+      const result = await uploadPaths(workspaceId, currentPath, localPaths);
+      if (result?.canceled) {
+        setTransferStatus('');
+        return;
+      }
       const rejected = result?.rejected || [];
       setTransferStatus(rejected.length
-        ? `已上传 ${result?.uploaded || 0} 个文件；已忽略目录或无效项：${rejected.join('、')}`
-        : `已上传 ${result?.uploaded || localPaths.length} 个文件`);
+        ? `已上传 ${result?.uploaded || 0} 项；已忽略不支持或无效项：${rejected.join('、')}`
+        : `已上传 ${result?.uploaded || localPaths.length} 项`);
       invalidateCurrentDirectory();
       await refresh(true);
     } catch (reason) {
@@ -324,15 +328,26 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   };
 
   const downloadSelected = async () => {
-    if (!selectedFiles.length) return;
-    setTransferStatus(`正在下载 ${selectedFiles.length} 个文件…`);
+    if (!selectedTransferEntries.length) return;
+    const downloadsAsArchive = selectedTransferEntries.length > 1
+      || selectedTransferEntries[0]?.type === 'directory';
+    setTransferStatus(downloadsAsArchive
+      ? `正在压缩并下载 ${selectedTransferEntries.length} 项…`
+      : '正在下载文件…');
     setError('');
     try {
-      const files = selectedFiles.map((entry) => ({ path: entry.path, name: entry.name }));
-      const result = files.length === 1
-        ? await window.wmux?.ssh?.download?.(workspaceId, files[0].path)
-        : await window.wmux?.ssh?.downloadMany?.(workspaceId, files);
-      setTransferStatus(result?.canceled ? '' : `已下载 ${files.length} 个文件`);
+      const files = selectedTransferEntries.map((entry) => ({ path: entry.path, name: entry.name, type: entry.type }));
+      let result;
+      if (files.length === 1 && files[0].type === 'file') {
+        const download = window.wmux?.ssh?.download;
+        if (!download) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+        result = await download(workspaceId, files[0].path);
+      } else {
+        const downloadMany = window.wmux?.ssh?.downloadMany;
+        if (!downloadMany) throw new Error('SSH 文件接口未更新，请重启应用后重试');
+        result = await downloadMany(workspaceId, files);
+      }
+      setTransferStatus(result?.canceled ? '' : downloadsAsArchive ? '压缩包下载完成' : '文件下载完成');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setTransferStatus('');
@@ -491,28 +506,53 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   };
 
   const beginRemoteDrag = (event: React.DragEvent, entry: SshFileEntry) => {
-    if (entry.type !== 'file') return;
+    if (entry.type !== 'file' && entry.type !== 'directory') return;
     event.dataTransfer.effectAllowed = 'copy';
     event.dataTransfer.setData(REMOTE_DRAG_TYPE, '1');
-    const files = selectedPaths.has(entry.path) && selectedFiles.length > 0 ? selectedFiles : [entry];
+    const files = selectedPaths.has(entry.path) && selectedTransferEntries.length > 0
+      ? selectedTransferEntries
+      : [entry];
     const signature = files.map((file) => file.path).sort().join('\n');
     if (preparedSelection?.signature === signature) {
       event.preventDefault();
-      window.wmux?.ssh?.startDrag?.(preparedSelection.token);
+      const startDrag = window.wmux?.ssh?.startDrag;
+      if (!startDrag) {
+        setError('SSH 文件接口未更新，请重启应用后重试');
+        setTransferStatus('');
+        return;
+      }
+      startDrag(preparedSelection.token);
       return;
     }
     event.preventDefault();
     setSelectedPaths(new Set(files.map((file) => file.path)));
-    setTransferStatus(`正在准备 ${files.length} 个文件，完成后请再次拖动…`);
+    setTransferStatus(`正在准备 ${files.length} 项，完成后请再次拖动…`);
     setError('');
-    void window.wmux?.ssh?.prepareDrag?.(
+    const prepareDrag = window.wmux?.ssh?.prepareDrag;
+    if (!prepareDrag) {
+      setError('SSH 文件接口未更新，请重启应用后重试');
+      setTransferStatus('');
+      return;
+    }
+    const generation = ++dragPreparationGenerationRef.current;
+    void prepareDrag(
       workspaceId,
-      files.map((file) => ({ path: file.path, name: file.name })),
+      files.map((file) => ({ path: file.path, name: file.name, type: file.type })),
     ).then((result: { ok?: boolean; token?: string; error?: string } | undefined) => {
       if (!result?.ok || !result.token) throw new Error(result?.error || '准备拖出文件失败');
+      if (
+        dragPreparationGenerationRef.current !== generation
+        || activeWorkspaceIdRef.current !== workspaceId
+        || selectionSignatureRef.current !== signature
+      ) return;
       setPreparedSelection({ signature, token: result.token });
-      setTransferStatus(`已准备 ${files.length} 个文件，请再次拖动到资源管理器`);
+      setTransferStatus(`已准备 ${files.length} 项，请再次拖动到资源管理器`);
     }).catch((reason: unknown) => {
+      if (
+        dragPreparationGenerationRef.current !== generation
+        || activeWorkspaceIdRef.current !== workspaceId
+        || selectionSignatureRef.current !== signature
+      ) return;
       setError(reason instanceof Error ? reason.message : String(reason));
       setTransferStatus('');
     });
@@ -559,7 +599,7 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
         key={entry.path}
         className={`ssh-file-entry ${selectedPaths.has(entry.path) ? 'ssh-file-entry--selected' : ''}`}
         aria-pressed={entry.type === 'file' || entry.type === 'directory' ? selectedPaths.has(entry.path) : undefined}
-        draggable={entry.type === 'file'}
+        draggable={entry.type === 'file' || entry.type === 'directory'}
         onContextMenu={(event) => openEntryContextMenu(event, entry, index)}
         onMouseEnter={() => scheduleDirectoryPrefetch(entry)}
         onMouseLeave={() => { if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current); }}

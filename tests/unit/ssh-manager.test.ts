@@ -1,12 +1,14 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { EventEmitter } from 'events';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Client, SFTPWrapper } from 'ssh2';
 import {
   buildAgentAuthMethods,
   buildSshConnectConfig,
   buildSshChildPath,
+  buildSshArchiveCommand,
   buildSshRenameTarget,
   findOpenSshIdentityFiles,
   formatSshPermissions,
@@ -343,5 +345,180 @@ describe('SFTP mutations', () => {
     await manager.deleteEntry('workspace-a', '/home/pi/empty');
 
     expect(removed).toEqual(['file:/home/pi/file.txt', 'directory:/home/pi/empty']);
+  });
+
+  it('uploads local directories recursively and merges existing remote directories', async () => {
+    const manager = new SshManager();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-upload-'));
+    temporaryDirectories.push(root);
+    const source = path.join(root, 'source');
+    fs.mkdirSync(path.join(source, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(source, 'root.txt'), 'root');
+    fs.writeFileSync(path.join(source, 'nested', 'child.txt'), 'child');
+    const directories = new Set(['/remote/source']);
+    const uploaded: string[] = [];
+    const sftp = {
+      lstat: (remotePath: string, callback: (error: Error | undefined, attrs?: { mode: number }) => void) => {
+        if (directories.has(remotePath)) callback(undefined, { mode: 0o040755 });
+        else callback(Object.assign(new Error('missing'), { code: 2 }));
+      },
+      mkdir: (remotePath: string, callback: (error?: Error) => void) => {
+        directories.add(remotePath);
+        callback();
+      },
+      fastPut: (localPath: string, remotePath: string, callback: (error?: Error) => void) => {
+        uploaded.push(`${path.relative(source, localPath).replaceAll('\\', '/')}->${remotePath}`);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await manager.uploadEntry('workspace-a', source, '/remote/source', 'directory');
+
+    expect(directories).toContain('/remote/source/nested');
+    expect(uploaded.sort()).toEqual([
+      'nested/child.txt->/remote/source/nested/child.txt',
+      'root.txt->/remote/source/root.txt',
+    ]);
+  });
+
+  it('downloads remote directories recursively and sanitizes Windows file names', async () => {
+    const manager = new SshManager();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-download-'));
+    temporaryDirectories.push(root);
+    const target = path.join(root, 'downloaded');
+    const tree = new Map<string, Array<{ filename: string; attrs: { mode: number } }>>([
+      ['/remote/source', [
+        { filename: 'nested', attrs: { mode: 0o040755 } },
+        { filename: 'bad:name?.txt', attrs: { mode: 0o100644 } },
+      ]],
+      ['/remote/source/nested', [{ filename: 'child.txt', attrs: { mode: 0o100644 } }]],
+    ]);
+    const sftp = {
+      readdir: (remotePath: string, callback: (error: Error | undefined, entries: unknown[]) => void) => {
+        callback(undefined, tree.get(remotePath) || []);
+      },
+      fastGet: (remotePath: string, localPath: string, callback: (error?: Error) => void) => {
+        fs.writeFileSync(localPath, remotePath);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await manager.downloadEntry('workspace-a', '/remote/source', target, 'directory');
+
+    expect(fs.readFileSync(path.join(target, 'bad_name_.txt'), 'utf8')).toBe('/remote/source/bad:name?.txt');
+    expect(fs.readFileSync(path.join(target, 'nested', 'child.txt'), 'utf8')).toBe('/remote/source/nested/child.txt');
+  });
+
+  it('keeps an existing local file intact when a download fails', async () => {
+    const manager = new SshManager();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-download-'));
+    temporaryDirectories.push(root);
+    const target = path.join(root, 'existing.txt');
+    fs.writeFileSync(target, 'original');
+    const sftp = {
+      fastGet: (_remotePath: string, localPath: string, callback: (error?: Error) => void) => {
+        fs.writeFileSync(localPath, 'partial');
+        callback(new Error('connection lost'));
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.download('workspace-a', '/remote/file.txt', target)).rejects.toThrow('connection lost');
+
+    expect(fs.readFileSync(target, 'utf8')).toBe('original');
+    expect(fs.readdirSync(root)).toEqual(['existing.txt']);
+  });
+
+  it('builds a shell-safe tar command for selected siblings', () => {
+    expect(buildSshArchiveCommand(
+      ['/home/pi/project dir', "/home/pi/it's.txt"],
+      '/tmp/wmux-test.tar.gz',
+    )).toBe("tar -czf '/tmp/wmux-test.tar.gz' -C '/home/pi' './project dir' './it'\"'\"'s.txt'");
+    expect(buildSshArchiveCommand(['/tmp'], '/tmp/wmux-test.tar.gz'))
+      .toContain("'--exclude=./tmp/wmux-test.tar.gz' -C '/' './tmp'");
+    expect(() => buildSshArchiveCommand(['/home/pi/a', '/var/log/b'], '/tmp/a.tar.gz'))
+      .toThrow('同一远程目录');
+  });
+
+  it('downloads a remote archive and deletes it after success', async () => {
+    const manager = new SshManager();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-archive-'));
+    temporaryDirectories.push(root);
+    const target = path.join(root, 'bundle.tar.gz');
+    const commands: string[] = [];
+    const removed: string[] = [];
+    const client = {
+      exec: (command: string, callback: (error: Error | undefined, stream: unknown) => void) => {
+        commands.push(command);
+        const stream = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
+        stream.stderr = new EventEmitter();
+        callback(undefined, stream);
+        queueMicrotask(() => stream.emit('close', 0));
+      },
+      end: () => undefined,
+    } as unknown as Client;
+    const sftp = {
+      fastGet: (remotePath: string, localPath: string, callback: (error?: Error) => void) => {
+        fs.writeFileSync(localPath, remotePath);
+        callback();
+      },
+      unlink: (remotePath: string, callback: (error?: Error) => void) => {
+        removed.push(remotePath);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client, sftp });
+
+    await manager.downloadArchive('workspace-a', ['/home/pi/folder', '/home/pi/file.txt'], target);
+
+    expect(commands[0]).toMatch(/^tar -czf '\/tmp\/wmux-download-[a-f0-9-]+\.tar\.gz' -C '\/home\/pi'/);
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatch(/^\/tmp\/wmux-download-[a-f0-9-]+\.tar\.gz$/);
+    expect(fs.readFileSync(target, 'utf8')).toBe(removed[0]);
+  });
+
+  it('deletes the remote temporary archive when downloading fails', async () => {
+    const manager = new SshManager();
+    const removed: string[] = [];
+    const client = {
+      exec: (_command: string, callback: (error: Error | undefined, stream: unknown) => void) => {
+        const stream = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
+        stream.stderr = new EventEmitter();
+        callback(undefined, stream);
+        queueMicrotask(() => stream.emit('close', 0));
+      },
+      end: () => undefined,
+    } as unknown as Client;
+    const sftp = {
+      fastGet: (_remotePath: string, _localPath: string, callback: (error?: Error) => void) => {
+        callback(new Error('connection lost'));
+      },
+      unlink: (remotePath: string, callback: (error?: Error) => void) => {
+        removed.push(remotePath);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client, sftp });
+
+    await expect(manager.downloadArchive('workspace-a', ['/home/pi/folder'], path.join(os.tmpdir(), 'unused.tar.gz')))
+      .rejects.toThrow('connection lost');
+    expect(removed).toHaveLength(1);
   });
 });
