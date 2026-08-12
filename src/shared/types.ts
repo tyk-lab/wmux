@@ -332,6 +332,7 @@ export const IPC_CHANNELS = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
   PTY_WRITE_CHECKED: 'pty:write-checked',
+  PTY_WRITE_RELIABLE: 'pty:write-reliable',
   PTY_RESIZE: 'pty:resize',
   PTY_KILL: 'pty:kill',
   PTY_HAS: 'pty:has',

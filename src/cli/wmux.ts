@@ -93,7 +93,8 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
       client.write(request + '\n');
     });
     let data = '';
-    const timer = setTimeout(() => { client.end(); reject(new Error('timeout')); }, 5000);
+    const timeoutMs = method === 'supervisor.decide' ? 10_000 : 5_000;
+    const timer = setTimeout(() => { client.end(); reject(new Error('timeout')); }, timeoutMs);
     client.on('data', (chunk) => {
       data += chunk.toString();
       if (data.includes('\n')) {
@@ -174,8 +175,9 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     permissionResponse: getFlag(args, '--permission-response') || '',
   });
   // The supervision protocol runs in AI terminals. Remain silent on success so
-  // a checkpoint does not pollute the terminal transcript or distract the agent.
-  if (args.includes('--verbose')) print(result);
+  // a checkpoint does not pollute the terminal transcript. Delivery failures
+  // are always visible so an agent cannot mistake a rejected write for success.
+  if (args.includes('--verbose') || result?.ok === false) print(result);
 }
 
 function agentSpawn(args: string[]): Promise<any> {

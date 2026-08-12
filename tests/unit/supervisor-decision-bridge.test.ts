@@ -416,6 +416,48 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledTimes(1);
   });
 
+  it('waits for a long next step and Enter, then confirms task-terminal activity', async () => {
+    const next = '继续检查当前实现并分段运行相关测试。'.repeat(120);
+    const writeReliable = vi.fn(async (surfaceId: string, data: string) => {
+      writes(surfaceId, data);
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      else screenText = data;
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({ next })).resolves.toMatchObject({
+      ok: true,
+      outcome: 'continue',
+      delivery: { confirmed: true, agentState: 'working' },
+    });
+    expect(writeReliable.mock.calls).toEqual([
+      ['worker-a', next],
+      ['worker-a', '\r'],
+    ]);
+    expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(false);
+  });
+
+  it('keeps review open when PTY accepts input but terminal state and screen do not change', async () => {
+    const writeReliable = vi.fn(async () => true);
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({ next: '运行相关单元测试' })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('agent-state'),
+      delivery: { confirmed: false, agentState: 'idle', screenChanged: false },
+    });
+    expect(writeReliable).toHaveBeenCalledWith('worker-a', '运行相关单元测试');
+    expect(writeReliable).toHaveBeenCalledWith('worker-a', '\r');
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      autoDecisionsUsed: 0,
+      decisions: [],
+    });
+  });
+
   it('records that a decision needs human review when the automatic limit is reached', () => {
     const appendRecord = vi.fn(async () => undefined);
     (globalThis.window as any).wmux.supervisor = { appendRecord };

@@ -121,6 +121,17 @@ describe('PtyManager', () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
+  it('reliably acknowledges a large payload only after the chunked queue drains', async () => {
+    const manager = makeManager();
+    const { id } = manager.create({
+      shell: TEST_SHELL,
+      cwd: process.env.USERPROFILE || 'C:\\',
+      env: TEST_ENV,
+    });
+    await expect(manager.writeReliable(id, 'x'.repeat(8 * 1024))).resolves.toBe(true);
+    await expect(manager.writeReliable('missing' as SurfaceId, 'text')).resolves.toBe(false);
+  });
+
   it('resize does not throw', async () => {
     const manager = makeManager();
     const { id } = manager.create({

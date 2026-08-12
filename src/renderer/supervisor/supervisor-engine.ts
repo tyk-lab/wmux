@@ -531,8 +531,7 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
   attachAutomatedTerminalSubmitTimer(token, timer);
 }
 
-/** Send a new task without ever appending it to an existing user draft. */
-export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+function assertTaskTerminalInputAvailable(surfaceId: string): void {
   const terminal = surfaceTerminalRegistry.get(surfaceId);
   if (!terminal?.buffer.active) {
     throw new Error('任务终端输入状态不可用；为避免覆盖未知输入，已取消本次发送。请等待终端恢复后重试。');
@@ -540,7 +539,60 @@ export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: 
   if (hasPendingTerminalInput(terminal.buffer.active)) {
     throw new Error('任务终端输入框已有未提交内容；为避免与 AI 裁决粘连，已取消本次发送。请先提交或清空原输入后重试。');
   }
+}
+
+/** Send a new task without ever appending it to an existing user draft. */
+export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+  assertTaskTerminalInputAvailable(surfaceId);
   sendToSurface(surfaceId, text, submitEnter);
+}
+
+/**
+ * Deliver a supervisor decision through the acknowledged main-process queue.
+ * Older preload bridges fall back to the legacy synchronous path so a renderer
+ * update never strands an already-running window during development.
+ */
+export function sendTaskToSurfaceReliably(
+  surfaceId: string,
+  text: string,
+  submitEnter: boolean,
+  captureBeforeSubmit?: () => string,
+): Promise<{ beforeSubmitScreen?: string }> | void {
+  assertTaskTerminalInputAvailable(surfaceId);
+  const pty = (window as any).wmux?.pty;
+  if (!pty?.writeReliable) {
+    sendToSurface(surfaceId, text, submitEnter);
+    return;
+  }
+
+  const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
+  return (async () => {
+    if (!submitEnter) {
+      if (!await pty.writeReliable(surfaceId, input)) {
+        throw new Error('任务终端未接受下一步正文');
+      }
+      return { beforeSubmitScreen: captureBeforeSubmit?.() };
+    }
+
+    const token = beginAutomatedTerminalSubmit(surfaceId, () => {
+      void pty.writeReliable(surfaceId, '\x03');
+    });
+    if (!await pty.writeReliable(surfaceId, input)) {
+      cancelPendingAutomatedTerminalSubmit(surfaceId, false);
+      throw new Error('任务终端未完整接受下一步正文');
+    }
+
+    await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(input)));
+    if (!consumeAutomatedTerminalSubmit(token)) {
+      throw new Error('正文投递期间检测到用户输入，已取消自动提交');
+    }
+    const beforeSubmitScreen = captureBeforeSubmit?.();
+    if (!await pty.writeReliable(surfaceId, '\r')) {
+      void pty.writeReliable(surfaceId, '\x03');
+      throw new Error('任务终端未接受提交键；已尝试清理未提交正文');
+    }
+    return { beforeSubmitScreen };
+  })();
 }
 
 /** Build a pending goal-chase decision step (id unique enough for UI). */

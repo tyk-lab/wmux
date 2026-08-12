@@ -15,7 +15,12 @@ import {
   type SupervisorWorkScope,
 } from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
-import { sendTaskToSurface, sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from './supervisor/supervisor-engine';
+import {
+  sendTaskToSurface,
+  sendTaskToSurfaceReliably,
+  sendToSurface,
+  SUPERVISOR_TUI_READY_DELAY_MS,
+} from './supervisor/supervisor-engine';
 import { handleSupervisorUserSubmit } from './supervisor/user-input-precedence';
 import { prepareForUserTerminalInput } from './utils/terminal-user-submit';
 import {
@@ -438,6 +443,41 @@ function requiredAutonomyPermissions(opts: {
 
 function terminalScreenTail(surfaceId: string, lines = 24): string {
   return readTerminalScreen(surfaceId, lines).text?.trim() || '';
+}
+
+interface SupervisorDeliveryObservation {
+  confirmed: boolean;
+  agentState: string;
+  screenChanged: boolean;
+}
+
+async function observeSupervisorDelivery(
+  surfaceId: string,
+  beforeScreen: string,
+  beforeAgentState: SupervisorAgentStateView | undefined,
+  timeoutMs = 2_000,
+): Promise<SupervisorDeliveryObservation> {
+  let agentState = 'unknown';
+  let screenChanged = false;
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 100));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const currentState = ((window as any).__wmux_getAgentStates?.() || {})[surfaceId] as SupervisorAgentStateView | undefined;
+    agentState = String(currentState?.state || 'unknown');
+    screenChanged = terminalScreenTail(surfaceId) !== beforeScreen;
+    const blockedStateChanged = agentState === 'blocked' && (
+      beforeAgentState?.state !== 'blocked'
+      || currentState?.updatedAt !== beforeAgentState.updatedAt
+      || currentState?.blockedVersion !== beforeAgentState.blockedVersion
+      || currentState?.blockedRequestId !== beforeAgentState.blockedRequestId
+    );
+    if (agentState === 'working' || blockedStateChanged || screenChanged) {
+      return { confirmed: true, agentState, screenChanged };
+    }
+    if (attempt + 1 < attempts) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    }
+  }
+  return { confirmed: false, agentState, screenChanged };
 }
 
 function normalizedEvidenceText(value: string): string {
@@ -1658,29 +1698,66 @@ export function initPipeBridge(): void {
       return { ok: true, outcome };
     }
 
+    const finishDecision = (delivery?: SupervisorDeliveryObservation) => {
+      store.updateLane(lane.id, {
+        awaitingReview: false,
+        ...(isQuestionBlockedState(agentState) ? {
+          lastBlockedResponseVersion: agentState.blockedVersion,
+          lastBlockedResponseId: agentState.blockedRequestId || undefined,
+        } : {}),
+      });
+      return { ok: true, outcome, ...(delivery ? { delivery } : {}) };
+    };
+    const failDelivery = (error: string, delivery?: SupervisorDeliveryObservation) => {
+      store.updateLane(lane.id, {
+        awaitingReview: true,
+        autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
+        decisions: lane.decisions || [],
+      });
+      appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', {
+        kind: 'next',
+        error,
+        ...(delivery ? { delivery } : {}),
+      });
+      store.appendSupervisorLog(lane.id, '下一步发送失败', error);
+      return { ok: false, error: `下一步发送失败：${error}`, ...(delivery ? { delivery } : {}) };
+    };
+
     if (next) {
+      const beforeScreen = terminalScreenTail(lane.surfaceId);
       try {
-        sendTaskToSurface(lane.surfaceId, next, session.submitEnter);
+        const pendingDelivery = sendTaskToSurfaceReliably(
+          lane.surfaceId,
+          next,
+          session.submitEnter,
+          () => terminalScreenTail(lane.surfaceId),
+        );
+        if (pendingDelivery) {
+          return pendingDelivery
+            .then((receipt) => session.submitEnter
+              ? observeSupervisorDelivery(
+                lane.surfaceId,
+                receipt.beforeSubmitScreen ?? beforeScreen,
+                agentState,
+              )
+              : {
+                confirmed: true,
+                agentState: String(((window as any).__wmux_getAgentStates?.() || {})[lane.surfaceId]?.state || 'unknown'),
+                screenChanged: terminalScreenTail(lane.surfaceId) !== beforeScreen,
+              })
+            .then((delivery) => delivery.confirmed
+              ? finishDecision(delivery)
+              : failDelivery(
+                `PTY 已接受输入，但任务终端仍为 ${delivery.agentState} 且屏幕没有变化；请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后改用短指令重试`,
+                delivery,
+              ))
+            .catch((err) => failDelivery(String((err as Error)?.message || err)));
+        }
       } catch (err) {
-        const error = String((err as Error)?.message || err);
-        store.updateLane(lane.id, {
-          awaitingReview: true,
-          autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
-          decisions: lane.decisions || [],
-        });
-        appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', { kind: 'next', error });
-        store.appendSupervisorLog(lane.id, '下一步发送失败', error);
-        return { ok: false, error: `下一步发送失败：${error}` };
+        return failDelivery(String((err as Error)?.message || err));
       }
     }
-    store.updateLane(lane.id, {
-      awaitingReview: false,
-      ...(isQuestionBlockedState(agentState) ? {
-        lastBlockedResponseVersion: agentState.blockedVersion,
-        lastBlockedResponseId: agentState.blockedRequestId || undefined,
-      } : {}),
-    });
-    return { ok: true, outcome };
+    return finishDecision();
   };
 
   // The Feishu main-process gateway authenticates the caller; this renderer

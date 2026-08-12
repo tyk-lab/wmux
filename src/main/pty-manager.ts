@@ -511,6 +511,7 @@ export class PtyManager {
     entry.pendingChunks++;
     entry.writeChain = entry.writeChain
       .then(() => this.writeChunked(entry, data))
+      .then(() => undefined)
       .finally(() => {
         entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
       });
@@ -530,20 +531,38 @@ export class PtyManager {
     }
   }
 
-  private writeChunked(entry: PtyEntry, data: string): Promise<void> {
-    return new Promise<void>((resolve) => {
+  /** Queue a complete paste and resolve only after every chunk reaches the live PTY. */
+  writeReliable(id: SurfaceId, data: string): Promise<boolean> {
+    const entry = this.ptys.get(id);
+    if (!entry || !entry.alive || data.length === 0) return Promise.resolve(false);
+
+    entry.pendingChunks++;
+    const delivery = entry.writeChain.then(() => this.writeChunked(entry, data));
+    entry.writeChain = delivery
+      .then(() => undefined, () => undefined)
+      .finally(() => {
+        entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
+      });
+    return delivery;
+  }
+
+  private writeChunked(entry: PtyEntry, data: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
       let offset = 0;
       const writeNext = () => {
-        if (!entry.alive || offset >= data.length) {
-          resolve();
+        if (!entry.alive) {
+          resolve(false);
+          return;
+        }
+        if (offset >= data.length) {
+          resolve(true);
           return;
         }
         const end = Math.min(offset + PtyManager.CHUNK_SIZE, data.length);
         try {
           entry.pty.write(data.slice(offset, end));
         } catch {
-          // pty disposed mid-paste — abandon the rest silently
-          resolve();
+          resolve(false);
           return;
         }
         offset = end;
