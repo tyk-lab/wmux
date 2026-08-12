@@ -16,7 +16,10 @@ export function enqueueSupervisorDelivery(
 ): SupervisorDelivery[] {
   const current = pending || [];
   const previous = current[current.length - 1];
-  if (previous?.kind === delivery.kind && previous.task === delivery.task) {
+  const sameTurn = previous?.turnId !== undefined && delivery.turnId !== undefined
+    ? previous.turnId === delivery.turnId
+    : previous?.task === delivery.task;
+  if (previous?.kind === delivery.kind && sameTurn) {
     return current;
   }
   return [...current, delivery];

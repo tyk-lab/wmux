@@ -4,7 +4,11 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
-import { hookToAgentReport, applyHookToAgentState } from '../../src/main/agent-hook-bridge';
+import {
+  hookToAgentReport,
+  applyHookToAgentState,
+  isAgentHookTerminalEvent,
+} from '../../src/main/agent-hook-bridge';
 import { getAgentState, resetAgentState } from '../../src/main/agent-state';
 import { SurfaceId } from '../../src/shared/types';
 
@@ -55,6 +59,14 @@ describe('hookToAgentReport', () => {
   it('StopFailure and Interrupt end the turn like Stop', () => {
     expect(hookToAgentReport('StopFailure', null)).toEqual({ awaitingHuman: false, runDepth: 0 });
     expect(hookToAgentReport('Interrupt', null)).toEqual({ awaitingHuman: false, runDepth: 0 });
+  });
+
+  it('classifies every whole-turn terminal hook for legacy lifecycle cleanup', () => {
+    expect(isAgentHookTerminalEvent('Stop')).toBe(true);
+    expect(isAgentHookTerminalEvent('StopFailure')).toBe(true);
+    expect(isAgentHookTerminalEvent('Interrupt')).toBe(true);
+    expect(isAgentHookTerminalEvent('SubagentStop')).toBe(false);
+    expect(isAgentHookTerminalEvent('Notification')).toBe(false);
   });
 });
 

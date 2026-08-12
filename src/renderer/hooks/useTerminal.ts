@@ -21,6 +21,7 @@ import {
   isKimiInteractiveInputReady,
   isStartupTrustPromptReady,
 } from '../utils/terminal-input-delivery';
+import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/terminal-user-submit';
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
 import {
   consumeTerminalBufferSnapshot,
@@ -993,11 +994,18 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         // A selected Ctrl+C never reaches onData, so copy behaviour is unchanged.
         const shouldBroadcast = shouldBroadcastTerminalInput(data, st.broadcastInputActive);
         if (ws && shouldBroadcast) {
-          for (const id of collectActiveTerminalSurfaceIds(ws.splitTree)) {
+          const targetIds = collectActiveTerminalSurfaceIds(ws.splitTree);
+          for (const id of targetIds) {
+            if (prepareForUserTerminalInput(id, data).shouldSubmit) signalTerminalUserSubmit(id);
+          }
+          for (const id of targetIds) {
             window.wmux.pty.write(id, data);
           }
           return;
         }
+      }
+      if (prepareForUserTerminalInput(ptyIdRef.current, data).shouldSubmit) {
+        signalTerminalUserSubmit(ptyIdRef.current);
       }
       window.wmux.pty.write(ptyIdRef.current, data);
     });

@@ -66,6 +66,11 @@ import {
   supervisorWakeDeliveryKind,
 } from './supervisor/delivery';
 import { omitNonRestorableWorkspaces } from './supervisor/session-restore';
+import {
+  handleSupervisorUserSubmit,
+  resolvePendingApprovalsForManualTask,
+} from './supervisor/user-input-precedence';
+import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from './store/supervisor-slice';
 
@@ -492,30 +497,21 @@ function queueSupervisorDelivery(
   task: string,
   text: string,
 ): void {
-  const delivery = { id: uuid(), kind, task, text, createdAt: Date.now() };
+  const delivery = {
+    id: uuid(),
+    kind,
+    task,
+    text,
+    createdAt: Date.now(),
+    turnId: lane.workerTurnId,
+    stage: 'pending' as const,
+  };
   const pending = enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery);
   if (pending === lane.pendingSupervisorDeliveries) return;
   const store = useStore.getState();
   store.updateLane(lane.id, { pendingSupervisorDeliveries: pending });
   appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
   signalSupervisorDeliveryReady();
-}
-
-/** Direct worker input is the human decision and keeps the supervision session running. */
-function resolvePendingApprovalsForManualTask(session: SupervisorSession, lane: SupervisorLane, task: string): boolean {
-  const store = useStore.getState();
-  const resolved = store.resolvePendingWithManualTask(lane.id, task);
-  for (const item of resolved) {
-    if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
-      appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
-        approvalId: item.id,
-        resolution: 'handled-manually',
-        proposalKind: item.proposalKind || 'important',
-        text: task,
-      });
-    }
-  }
-  return resolved.length > 0;
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -543,6 +539,7 @@ function handleSupervisorHookEvent(event: any): void {
       } : {}),
       ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
+      workerTurnId: (lane.workerTurnId || 0) + 1,
     });
     appendSupervisorRecord(session, auditLane, 'worker.task', {
       task: event.task || '',
@@ -1082,24 +1079,74 @@ export default function App() {
         if (!pty?.has || !pty.writeChecked) return;
         const session = useStore.getState().supervisor;
         for (const lane of session.lanes) {
-          const delivery = lane.pendingSupervisorDeliveries?.[0];
+          let delivery = lane.pendingSupervisorDeliveries?.[0];
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
           if (!canDeliverToSupervisor(supervisorState)) continue;
           const exists = await pty.has(supervisorSurfaceId);
           if (!exists) {
+            if (delivery.stage === 'pasted') {
+              const store = useStore.getState();
+              const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+              if (current) {
+                store.updateLane(lane.id, {
+                  pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
+                    item.id === delivery!.id ? { ...item, stage: 'pending' as const } : item
+                  )),
+                });
+              }
+            }
             scheduleRetry();
             continue;
           }
-          const pasted = await pty.writeChecked(supervisorSurfaceId, delivery.text);
-          if (!pasted) {
-            scheduleRetry();
+
+          if (delivery.stage !== 'pasted') {
+            const input = delivery.text.replace(/[\r\n]+$/u, '');
+            const pasted = await pty.writeChecked(supervisorSurfaceId, input);
+            if (!pasted) {
+              scheduleRetry();
+              continue;
+            }
+            const store = useStore.getState();
+            const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+            const stillPending = current?.pendingSupervisorDeliveries?.some((item) => item.id === delivery!.id);
+            if (!current || !stillPending) {
+              // User input cancelled this review while the paste IPC was in flight.
+              // The dedicated supervisor has not received Enter, so clear only
+              // the automated draft that was just inserted.
+              await pty.writeChecked(supervisorSurfaceId, '\x03');
+              continue;
+            }
+            store.updateLane(lane.id, {
+              pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
+                item.id === delivery!.id ? { ...item, stage: 'pasted' as const } : item
+              )),
+            });
+            delivery = { ...delivery, text: input, stage: 'pasted' };
+            await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(input)));
+          }
+
+          const beforeSubmit = useStore.getState().supervisor.lanes
+            .find((item) => item.id === lane.id)
+            ?.pendingSupervisorDeliveries?.find((item) => item.id === delivery!.id);
+          if (!beforeSubmit) {
+            await pty.writeChecked(supervisorSurfaceId, '\x03');
             continue;
           }
-          await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(delivery.text)));
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
           if (!submitted) {
+            if (!await pty.has(supervisorSurfaceId)) {
+              const store = useStore.getState();
+              const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+              if (current) {
+                store.updateLane(lane.id, {
+                  pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
+                    item.id === delivery!.id ? { ...item, stage: 'pending' as const } : item
+                  )),
+                });
+              }
+            }
             scheduleRetry();
             continue;
           }
@@ -1348,6 +1395,18 @@ export default function App() {
 
   const handlePaneFocus = useCallback((paneId: PaneId) => {
     setFocusedPaneId(paneId);
+  }, []);
+
+  // A local user Enter outranks an in-flight AI review immediately. The agent's
+  // UserPromptSubmit hook remains useful task metadata, but is no longer the
+  // safety boundary because hook delivery can lag behind terminal input.
+  useEffect(() => {
+    const onUserSubmit = (event: Event) => {
+      const surfaceId = String((event as CustomEvent<{ surfaceId?: string }>).detail?.surfaceId || '');
+      handleSupervisorUserSubmit(surfaceId);
+    };
+    window.addEventListener(TERMINAL_USER_SUBMIT_EVENT, onUserSubmit);
+    return () => window.removeEventListener(TERMINAL_USER_SUBMIT_EVENT, onUserSubmit);
   }, []);
 
   const handleOpenSshFile = useCallback(async (entry: SshFileEntry) => {

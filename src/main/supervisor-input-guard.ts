@@ -12,6 +12,11 @@ interface GuardResult {
   reason?: string;
 }
 
+export interface SupervisorTerminalInputResult {
+  handled: boolean;
+  clearAutomatedDraft: boolean;
+}
+
 const RENDERER_GUARD_TIMEOUT_MS = 500;
 
 function withGuardTimeout(value: Promise<unknown>): Promise<unknown> {
@@ -56,4 +61,32 @@ export async function supervisorGenericInputBlockReason(
     }
   }
   return null;
+}
+
+/** Feed trusted CLI/remote terminal bytes into renderer input arbitration. */
+export async function notifySupervisorTerminalInput(
+  targetSurfaceId: string,
+  data: string,
+  windows: GuardWindow[] = BrowserWindow.getAllWindows(),
+): Promise<SupervisorTerminalInputResult> {
+  const fallback = { handled: false, clearAutomatedDraft: false };
+  if (!targetSurfaceId || !data) return fallback;
+
+  for (const win of windows) {
+    if (win.isDestroyed()) continue;
+    try {
+      const result = await withGuardTimeout(win.webContents.executeJavaScript(
+        `window.__wmux_handleTerminalUserInput?.(${JSON.stringify(targetSurfaceId)}, ${JSON.stringify(data)})`,
+      )) as Partial<SupervisorTerminalInputResult> | undefined;
+      if (result?.handled || result?.clearAutomatedDraft) {
+        return {
+          handled: result.handled === true,
+          clearAutomatedDraft: result.clearAutomatedDraft === true,
+        };
+      }
+    } catch {
+      // The target surface may be mounted in a different renderer window.
+    }
+  }
+  return fallback;
 }

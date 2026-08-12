@@ -5,7 +5,10 @@ vi.mock('electron', () => ({
 }));
 
 import { withSurfaceCaller } from '../../src/cli/surface-caller';
-import { supervisorGenericInputBlockReason } from '../../src/main/supervisor-input-guard';
+import {
+  notifySupervisorTerminalInput,
+  supervisorGenericInputBlockReason,
+} from '../../src/main/supervisor-input-guard';
 import { evaluateSupervisorGenericInput } from '../../src/renderer/supervisor/generic-input-guard';
 import type { SupervisorSession } from '../../src/renderer/store/supervisor-slice';
 
@@ -97,5 +100,19 @@ describe('supervisor generic input guard', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('notifies the renderer before a trusted send-key Enter is written', async () => {
+    const executeJavaScript = vi.fn().mockResolvedValue({ handled: true, clearAutomatedDraft: false });
+    const handled = await notifySupervisorTerminalInput('worker-a', '\r', [{
+      isDestroyed: () => false,
+      webContents: { executeJavaScript },
+    }]);
+
+    expect(handled).toEqual({ handled: true, clearAutomatedDraft: false });
+    expect(executeJavaScript).toHaveBeenCalledWith(
+      expect.stringContaining('__wmux_handleTerminalUserInput'),
+    );
+    expect(executeJavaScript).toHaveBeenCalledWith(expect.stringContaining('worker-a'));
   });
 });

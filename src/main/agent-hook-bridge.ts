@@ -54,6 +54,10 @@ const KNOWN_EVENTS: readonly AgentHookEvent[] = [
   'SubagentStop',
 ];
 
+export function isAgentHookTerminalEvent(event: unknown): boolean {
+  return event === 'Stop' || event === 'StopFailure' || event === 'Interrupt';
+}
+
 /**
  * Map one lifecycle hook event to a report_agent payload, or null to ignore it.
  */

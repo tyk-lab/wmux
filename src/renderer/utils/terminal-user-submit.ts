@@ -1,0 +1,144 @@
+export const TERMINAL_USER_SUBMIT_EVENT = 'wmux:terminal-user-submit';
+
+const pendingUserInput = new Set<string>();
+
+interface AutomatedSubmitToken {
+  surfaceId: string;
+  timer?: number;
+  clearDraft: () => void;
+}
+
+const pendingAutomatedSubmits = new Map<string, AutomatedSubmitToken>();
+
+function stripBracketedPasteMarkers(data: string): string {
+  return data
+    .split('\x1b[200~').join('')
+    .split('\x1b[201~').join('');
+}
+
+function hasUserContent(data: string): boolean {
+  for (const char of data) {
+    const code = char.codePointAt(0) || 0;
+    if (code === 10 || (code > 31 && code !== 127)) return true;
+  }
+  return false;
+}
+
+function isControlSequenceOnly(data: string): boolean {
+  if (!data.startsWith('\x1b[')) return false;
+  return /^[0-9;?]*[A-Za-z~]$/u.test(data.slice(2));
+}
+
+/** Shift+Enter and bracketed paste may contain CR without submitting a turn. */
+export function isTerminalUserSubmit(data: string): boolean {
+  return data === '\r' || data === '\n';
+}
+
+/**
+ * Track user-originated terminal bytes without inspecting agent-specific UI.
+ * Returns true only when a submit key follows actual text. Ctrl+C/Ctrl+U clear
+ * the draft; navigation and other control-only sequences do not create one.
+ */
+export function trackTerminalUserInput(surfaceId: string, data: string): boolean {
+  if (!surfaceId) return false;
+  if (isTerminalUserSubmit(data)) {
+    const shouldSubmit = pendingUserInput.has(surfaceId);
+    pendingUserInput.delete(surfaceId);
+    return shouldSubmit;
+  }
+  if (data === '\x03' || data === '\x15') {
+    pendingUserInput.delete(surfaceId);
+    return false;
+  }
+
+  const visible = stripBracketedPasteMarkers(data).split('\x1b\r').join('\n');
+  if (hasUserContent(visible)) {
+    pendingUserInput.add(surfaceId);
+  }
+  return false;
+}
+
+export function beginAutomatedTerminalSubmit(
+  surfaceId: string,
+  clearDraft: () => void,
+): AutomatedSubmitToken {
+  cancelPendingAutomatedTerminalSubmit(surfaceId, true);
+  const token = { surfaceId, clearDraft };
+  pendingAutomatedSubmits.set(surfaceId, token);
+  return token;
+}
+
+export function attachAutomatedTerminalSubmitTimer(
+  token: AutomatedSubmitToken,
+  timer: number,
+): void {
+  token.timer = timer;
+}
+
+export function consumeAutomatedTerminalSubmit(token: AutomatedSubmitToken): boolean {
+  if (pendingAutomatedSubmits.get(token.surfaceId) !== token) return false;
+  pendingAutomatedSubmits.delete(token.surfaceId);
+  return true;
+}
+
+export function cancelPendingAutomatedTerminalSubmit(
+  surfaceId: string,
+  clearDraft: boolean,
+): boolean {
+  const token = pendingAutomatedSubmits.get(surfaceId);
+  if (!token) return false;
+  pendingAutomatedSubmits.delete(surfaceId);
+  if (token.timer !== undefined) globalThis.clearTimeout(token.timer);
+  if (clearDraft) token.clearDraft();
+  return true;
+}
+
+export interface TerminalUserInputPreparation {
+  shouldSubmit: boolean;
+  clearAutomatedDraft: boolean;
+}
+
+/** Cancel a pending AI Enter before forwarding user-originated terminal bytes. */
+export function prepareForUserTerminalInput(
+  surfaceId: string,
+  data: string,
+  clearDraftLocally = true,
+): TerminalUserInputPreparation {
+  let clearAutomatedDraft = false;
+  if (isTerminalUserSubmit(data)) {
+    // The user's Enter submits whatever is currently visible; suppress only the
+    // later automated Enter so it cannot create a second blank turn.
+    cancelPendingAutomatedTerminalSubmit(surfaceId, false);
+  } else if (data === '\x03' || data === '\x15') {
+    // The user's own clear/cancel byte will remove the draft.
+    cancelPendingAutomatedTerminalSubmit(surfaceId, false);
+  } else if (
+    data === '\x1b\r'
+    || data === '\x7f'
+    || (!isControlSequenceOnly(data) && hasUserContent(stripBracketedPasteMarkers(data)))
+  ) {
+    // User content must start from a clean composer, never after AI text.
+    const cancelled = cancelPendingAutomatedTerminalSubmit(surfaceId, clearDraftLocally);
+    clearAutomatedDraft = cancelled && !clearDraftLocally;
+  }
+  return {
+    shouldSubmit: trackTerminalUserInput(surfaceId, data),
+    clearAutomatedDraft,
+  };
+}
+
+export function resetTerminalUserInputTracking(): void {
+  pendingUserInput.clear();
+  for (const token of pendingAutomatedSubmits.values()) {
+    if (token.timer !== undefined) globalThis.clearTimeout(token.timer);
+  }
+  pendingAutomatedSubmits.clear();
+}
+
+/** Notify supervision before the user's Enter is forwarded to the PTY. */
+export function signalTerminalUserSubmit(surfaceId: string): void {
+  if (!surfaceId) return;
+  window.dispatchEvent(new CustomEvent(TERMINAL_USER_SUBMIT_EVENT, {
+    detail: { surfaceId },
+  }));
+}

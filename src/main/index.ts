@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding, sshManager, sshTransferCache } from './ipc-handlers';
-import { supervisorGenericInputBlockReason } from './supervisor-input-guard';
+import { notifySupervisorTerminalInput, supervisorGenericInputBlockReason } from './supervisor-input-guard';
 import { handleBrowserV2 } from './v2-browser';
 import { handleBridgeV2 } from './v2-bridge';
 import { distributeAgents } from './agent-manager';
@@ -22,7 +22,7 @@ import { ensureGrokHooks } from './grok-context';
 import { ensurePiHooks } from './pi-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
 import { handleAgentStateV2 } from './agent-state-rpc';
-import { applyHookToAgentState } from './agent-hook-bridge';
+import { applyHookToAgentState, isAgentHookTerminalEvent } from './agent-hook-bridge';
 import {
   appendSupervisorRecord,
   listSupervisorRestoreCandidates,
@@ -56,7 +56,7 @@ import path from 'path';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
-async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, actor: { openId: string; source: 'text' | 'card' }): Promise<unknown> {
+async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, actor: { openId: string; source: 'text' | 'card' | 'system' }): Promise<unknown> {
   if (command.action === 'start') {
     if (command.planFile && (!path.isAbsolute(command.planFile) || !fs.existsSync(command.planFile) || !fs.statSync(command.planFile).isFile())) {
       return { ok: false, error: 'plan_file 必须是当前电脑上存在的绝对路径。' };
@@ -502,7 +502,9 @@ function applyHookLifecycle(params: any): void {
   const sid = params?.surfaceId as SurfaceId | undefined;
   if (!sid) return;
   if (params.event === 'SubagentStop') markSubagentStop(sid);
-  else if (params.event === 'Stop') markAllAgentsDone(sid);
+  else if (isAgentHookTerminalEvent(params.event)) {
+    markAllAgentsDone(sid);
+  }
 }
 
 /** Edit/Write hooks refresh the diff view; delays let the DiffPane mount first. */
@@ -847,7 +849,12 @@ app.whenReady().then(() => {
               surfaceId.id,
             );
             if (blockReason) { respondError(-32003, blockReason); return; }
-            ptyManager.write(surfaceId.id, request.params?.text || '');
+            const text = String(request.params?.text || '');
+            const arbitration = text
+              ? await notifySupervisorTerminalInput(surfaceId.id, text)
+              : { clearAutomatedDraft: false };
+            if (arbitration.clearAutomatedDraft) ptyManager.write(surfaceId.id, '\x03');
+            ptyManager.write(surfaceId.id, text);
             respond({ ok: true });
           } catch (err: any) { respondError(-32000, err.message); }
         })();
@@ -885,6 +892,8 @@ app.whenReady().then(() => {
               surfaceId.id,
             );
             if (blockReason) { respondError(-32003, blockReason); return; }
+            const arbitration = await notifySupervisorTerminalInput(surfaceId.id, key);
+            if (arbitration.clearAutomatedDraft) ptyManager.write(surfaceId.id, '\x03');
             ptyManager.write(surfaceId.id, key);
             respond({ ok: true });
           } catch (err: any) { respondError(-32000, err.message); }

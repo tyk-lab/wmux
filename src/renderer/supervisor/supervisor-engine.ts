@@ -18,6 +18,12 @@ import {
   effectiveSupervisorStopWhenKind,
 } from './protocol';
 import { hasPendingTerminalInput } from './pending-input-guard';
+import {
+  attachAutomatedTerminalSubmitTimer,
+  beginAutomatedTerminalSubmit,
+  cancelPendingAutomatedTerminalSubmit,
+  consumeAutomatedTerminalSubmit,
+} from '../utils/terminal-user-submit';
 import { INTERACTIVE_TUI_READY_DELAY_MS, pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 
 export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
@@ -493,16 +499,36 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
   if (!pty?.write) {
     throw new Error('wmux.pty.write unavailable');
   }
-  pty.write(surfaceId, text);
-  if (submitEnter) {
-    window.setTimeout(() => {
-      try {
-        pty.write(surfaceId, '\r');
-      } catch {
-        /* ignore */
-      }
-    }, pasteSubmitDelayMs(text));
+  // A trailing LF is itself a submit key in several TUIs. Normalize only the
+  // trailing line break and send one explicit CR after the paste delay.
+  const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
+  if (!submitEnter) {
+    pty.write(surfaceId, input);
+    return;
   }
+
+  const token = beginAutomatedTerminalSubmit(surfaceId, () => {
+    try {
+      pty.write(surfaceId, '\x03');
+    } catch {
+      /* ignore */
+    }
+  });
+  try {
+    pty.write(surfaceId, input);
+  } catch (error) {
+    cancelPendingAutomatedTerminalSubmit(surfaceId, false);
+    throw error;
+  }
+  const timer = window.setTimeout(() => {
+    if (!consumeAutomatedTerminalSubmit(token)) return;
+    try {
+      pty.write(surfaceId, '\r');
+    } catch {
+      /* ignore */
+    }
+  }, pasteSubmitDelayMs(input));
+  attachAutomatedTerminalSubmitTimer(token, timer);
 }
 
 /** Send a new task without ever appending it to an existing user draft. */

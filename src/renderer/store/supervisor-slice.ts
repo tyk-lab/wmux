@@ -47,6 +47,10 @@ export interface SupervisorDelivery {
   text: string;
   task: string;
   createdAt: number;
+  /** Worker turn generation; separates repeated tasks from duplicate hooks. */
+  turnId?: number;
+  /** Paste succeeded; only Enter remains, so retries must not duplicate text. */
+  stage?: 'pending' | 'pasted';
 }
 
 /** Explicitly chosen historical terminal whose audit context may be restored. */
@@ -111,6 +115,8 @@ export interface SupervisorLane {
   autoDecisionsUsed?: number;
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
+  /** Monotonic worker turn generation advanced by UserPromptSubmit hooks. */
+  workerTurnId?: number;
   /** Independent task configuration for this terminal and its dedicated supervisor. */
   config?: SupervisorLaneConfig;
   /** Optional per-terminal override; undefined inherits the session defaults. */

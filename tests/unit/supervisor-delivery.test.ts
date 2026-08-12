@@ -5,23 +5,31 @@ import {
   supervisorWakeDeliveryKind,
 } from '../../src/renderer/supervisor/delivery';
 
-const event = (id: string, kind: 'task-start' | 'task-end', task: string) => ({
+const event = (id: string, kind: 'task-start' | 'task-end', task: string, turnId?: number) => ({
   id,
   kind,
   task,
   text: task,
   createdAt: 1,
+  turnId,
 });
 
 describe('supervisor delivery queue', () => {
   it('deduplicates an unconsumed lifecycle fact but preserves turn order', () => {
-    const start = event('start', 'task-start', '运行测试');
+    const start = event('start', 'task-start', '运行测试', 1);
     const once = enqueueSupervisorDelivery([], start);
     const duplicate = enqueueSupervisorDelivery(once, { ...start, id: 'duplicate' });
-    const complete = enqueueSupervisorDelivery(duplicate, event('end', 'task-end', '运行测试'));
+    const complete = enqueueSupervisorDelivery(duplicate, event('end', 'task-end', '运行测试', 1));
 
     expect(duplicate).toBe(once);
     expect(complete.map((item) => item.id)).toEqual(['start', 'end']);
+  });
+
+  it('preserves repeated task text from different worker turns', () => {
+    const first = event('end-1', 'task-end', '运行测试', 1);
+    const second = event('end-2', 'task-end', '运行测试', 2);
+    expect(enqueueSupervisorDelivery([first], second).map((item) => item.id))
+      .toEqual(['end-1', 'end-2']);
   });
 
   it('waits while the dedicated supervisor is working or blocked', () => {
