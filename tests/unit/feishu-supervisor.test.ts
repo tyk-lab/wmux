@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -38,20 +38,29 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('只允许明确的人为决策动作', () => {
-    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: approve\ntask: 按当前路线继续并补齐测试')).toEqual({
-      action: 'decide', approvalId: 'appr-1', decision: 'approve', task: '按当前路线继续并补齐测试',
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: approve\nselection: 方案 A')).toEqual({
+      action: 'decide', approvalId: 'appr-1', decision: 'approve', selection: '方案 A', task: undefined,
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: approve')).toEqual({
-      action: 'decide', approvalId: 'appr-1', decision: 'approve', task: undefined,
+      action: 'decide', approvalId: 'appr-1', decision: 'approve', selection: undefined, task: undefined,
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: reject')).toEqual({
-      action: 'decide', approvalId: 'appr-1', decision: 'reject', task: undefined,
+      error: 'DECIDE 需要 approval_id 和 action: approve|direct|pause|stop。',
+    });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: approve\ntask: 自定义修改意见')).toEqual({
+      error: 'DECIDE 的 task 仅支持 action: direct。',
+    });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: direct\ntask: 保持现有 API，先补充测试')).toEqual({
+      action: 'decide', approvalId: 'appr-1', decision: 'direct', selection: undefined, task: '保持现有 API，先补充测试',
+    });
+    expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: direct')).toEqual({
+      error: 'DECIDE 的 action: direct 需要 task。',
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: shell')).toEqual({
-      error: 'DECIDE 需要 approval_id 和 action: approve|reject|pause|stop。',
+      error: 'DECIDE 需要 approval_id 和 action: approve|direct|pause|stop。',
     });
     expect(parseFeishuSupervisorCommand('WMUX SUPERVISOR DECIDE\napproval_id: appr-1\naction: pause')).toEqual({
-      action: 'decide', approvalId: 'appr-1', decision: 'pause', task: undefined,
+      action: 'decide', approvalId: 'appr-1', decision: 'pause', selection: undefined, task: undefined,
     });
   });
 
@@ -165,6 +174,37 @@ supervisor_model: k3`)).toEqual({
     expect(JSON.stringify(buildFeishuAuditAlertCard(record, status))).toContain('任务等待人工复核');
   });
 
+  it('群内人工决策卡只说明目标、待决事项和原因，方案与推荐留在单聊', () => {
+    const record = {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.approval.requested' as const,
+      terminal: { surfaceId: 'surf-1', label: 'codex' },
+      payload: {
+        approvalId: 'approval-public-context',
+        taskGoal: '完成 NUCLEO 固件修复并验证 SPI_FAIL 是否消除',
+        reason: '需要用户确认测试板物理位置并决定是否安排现场复测',
+        impact: 'AI 无法确认实体设备位置，也不能代替用户执行现场接线和授权操作',
+        alternatives: '方案 A：通过 COM10 烧录；方案 B：现场断开 NUCLEO',
+        recommendation: '推荐方案 A',
+      },
+    };
+    const status = reduceFeishuAuditTerminalStatus(undefined, record);
+    const statusCard = JSON.stringify(buildFeishuAuditStatusCard(status));
+    const alertCard = JSON.stringify(buildFeishuAuditAlertCard(record, status));
+
+    for (const card of [statusCard, alertCard]) {
+      expect(card).toContain('当前任务目标');
+      expect(card).toContain('完成 NUCLEO 固件修复并验证 SPI_FAIL 是否消除');
+      expect(card).toContain('需要用户决定');
+      expect(card).toContain('确认测试板物理位置');
+      expect(card).toContain('为什么需要决定');
+      expect(card).toContain('AI 无法确认实体设备位置');
+      expect(card).toContain('方案选择、AI 推荐和决策操作仅在机器人单聊中提供');
+      expect(card).not.toContain('方案 A');
+      expect(card).not.toContain('方案 B');
+      expect(card).not.toContain('推荐方案 A');
+    }
+  });
+
   it('人工从飞书暂停监督时保留待决状态，停止时清空待决状态', () => {
     const awaiting = reduceFeishuAuditTerminalStatus(undefined, {
       sessionId: 'sup-1', projectDir: '', type: 'supervisor.approval.requested',
@@ -178,9 +218,21 @@ supervisor_model: k3`)).toEqual({
       sessionId: 'sup-1', projectDir: '', type: 'supervisor.remote-decision',
       terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { decision: 'stop' },
     });
+    const direct = reduceFeishuAuditTerminalStatus(awaiting, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.remote-decision',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { decision: 'direct', inputLength: 12 },
+    });
 
-    expect(paused).toMatchObject({ taskState: 'paused', supervisionState: '已暂停', pendingHuman: '待处理；详细内容不在群内展示' });
+    expect(paused).toMatchObject({
+      taskState: 'paused', supervisionState: '已暂停',
+      pendingHuman: '方案选择、AI 推荐和决策操作仅在机器人单聊中提供',
+    });
     expect(stopped).toMatchObject({ taskState: 'stopped', supervisionState: '已停止', pendingHuman: '无' });
+    expect(direct).toMatchObject({
+      taskState: 'working',
+      latestResult: '用户决策已直接发送到任务终端',
+      pendingHuman: '无',
+    });
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
@@ -258,11 +310,16 @@ supervisor_model: k3`)).toEqual({
     }
   });
 
-  it('将人工审批渲染为包含方案选择、输入和操作按钮的表单', () => {
+  it('将人工审批渲染为可采用 AI 方案或直接发送用户输入的表单', () => {
     const cardObject = buildApprovalCard({
       sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
       terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
-      payload: { approvalId: 'appr-1', alternatives: '用户选择方案 A；用户选择方案 B。' },
+      payload: {
+        approvalId: 'appr-1',
+        recommendation: '采用兼容层完成迁移',
+        terminalScreen: 'PS E:\\test> npm test\nTests 2 failed',
+        alternatives: '方案 A：保留现有接口；方案 B：切换到新接口。',
+      },
     }) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const card = JSON.stringify(cardObject);
 
@@ -270,17 +327,39 @@ supervisor_model: k3`)).toEqual({
     expect(cardObject.body?.elements).toBeInstanceOf(Array);
     expect(cardObject.elements).toBeUndefined();
     expect(card).toContain('select_static');
-    expect(card).toContain('选择方案 A');
-    expect(card).toContain('选择方案 B');
-    expect(card).toContain('follow_up_task');
-    expect(card).toContain('批准并继续');
-    expect(card).toContain('按补充说明调整');
-    expect(card).toContain('调整时必填，批准时可选');
+    expect(card).toContain('方案 A：保留现有接口');
+    expect(card).toContain('方案 B：切换到新接口');
+    expect(card).toContain('选择 AI 方案（采用 AI 方案时必选）');
+    expect(card).toContain('AI 建议');
+    expect(card).toContain('采用兼容层完成迁移');
+    expect(card).toContain('任务终端最新界面（原文）');
+    expect(card).toContain('PS E:\\\\test> npm test\\nTests 2 failed');
+    expect(card).toContain('decision_input');
+    expect(card).toContain('用户决策信息（可选）');
+    expect(card).toContain('确认并采用 AI 方案');
+    expect(card).toContain('直接发送用户输入');
+    expect(card).toContain('AI 监督会结合当前终端信息整理为完整指令');
+    expect(card).toContain('不经过 AI 监督整理');
     expect(card).toContain('处理当前决策');
     expect(card).toContain('监督控制');
     expect(card).toContain('暂停此监督');
-    expect(card).toContain('"decision":"reject"');
+    expect(card).not.toContain('"decision":"reject"');
     expect(card).toContain('停止此监督');
+  });
+
+  it('AI 未提供多个明确方案时不显示方案下拉框', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        approvalId: 'appr-single',
+        recommendation: '继续使用现有实现',
+        alternatives: '方案 A：继续使用现有实现',
+      },
+    }));
+
+    expect(card).not.toContain('decision_choice');
+    expect(card).toContain('采用 AI 当前方案');
   });
 
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
@@ -322,6 +401,10 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('添加终端任务');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('发送任务');
+    expect(menu).toContain('查看终端界面');
+    expect(JSON.stringify(buildSupervisorControlMenuCard({
+      active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
+    }, undefined, false))).not.toContain('查看终端界面');
     expect(activeMenu).toContain('管理监督');
     expect(menu).not.toContain('停止全部');
     expect(activeMenu).toContain('添加监督终端');
@@ -385,6 +468,32 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
     expect(laneControl).toContain('stop-lane');
+  });
+
+  it('将任务终端选择和最新界面渲染为可刷新卡片', () => {
+    const terminal = {
+      surfaceId: 'surf-a', label: 'Codex worker', workspace: '代码工作区', supervised: false,
+      activityState: 'working' as const, activityUpdatedAt: Date.now(),
+    };
+    const selectCard = JSON.stringify(buildTerminalScreenSelectCard([terminal]));
+    const screenCard = JSON.stringify(buildTerminalScreenCard({
+      terminal,
+      text: 'PS E:\\repo> npm test\nTests 1 failed',
+      lines: 2,
+      capturedAt: Date.now(),
+    }));
+
+    expect(selectCard).toContain('查看任务终端界面');
+    expect(selectCard).toContain('select_static');
+    expect(selectCard).toContain('wmux_form_terminal_screen');
+    expect(selectCard).toContain('surf-a');
+    expect(selectCard).toContain('只允许白名单用户在单聊中查看');
+    expect(screenCard).toContain('任务终端最新界面');
+    expect(screenCard).toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
+    expect(screenCard).toContain('刷新当前界面');
+    expect(screenCard).toContain('选择其他终端');
+    expect(screenCard).toContain('返回控制首页');
+    expect(screenCard).toContain('terminal_screen');
   });
 
   it('将监督状态和最近日志渲染为适合移动端的只读卡片并脱敏', () => {
@@ -494,6 +603,7 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_screen')).toEqual({ wmux_action: 'form_terminal_screen' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_create_task')).toEqual({ wmux_action: 'form_create_task' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
@@ -502,9 +612,11 @@ supervisor_model: k3`)).toEqual({
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_pause')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'pause',
     });
-    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_reject')).toEqual({
-      approval_id: 'appr-1', wmux_action: 'decide', decision: 'reject',
+    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_direct')).toEqual({
+      approval_id: 'appr-1', wmux_action: 'decide', decision: 'direct',
     });
+    expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_reject'))
+      .toEqual({ approval_id: 'appr-1' });
   });
 
   it('使用 JSON 2.0 更新已处理卡片', () => {

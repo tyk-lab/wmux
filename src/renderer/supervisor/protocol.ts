@@ -232,7 +232,7 @@ export function humanDecisionBoundary(
     ...autonomyPermissionBoundary(permissions),
     '只有重大任务方向/范围变化、不可逆或高影响操作（安全、关键数据、生产、发布或对外提交）、需求/业务取舍，或缺少用户独有信息、凭据或授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
-    '使用 needs-human 时附 --proposal-kind route-change 或 important；--reason 写清问题与判断依据，并附 --impact、--alternatives。只有确属用户偏好/授权的多个方案才等待用户填写后续任务。',
+    '使用 needs-human 时附 --proposal-kind route-change 或 important；--reason 只写清需要用户决定什么，--impact 写清为什么必须由用户决定，方案和推荐不要混入这两个字段；具体方案统一写入 --alternatives。只有确属用户偏好/授权的多个方案才等待用户选择；多个方案的 --alternatives 必须按“方案 A：...；方案 B：...”格式列出，供单聊决策卡生成选择框。',
     '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',
     '不得使用通用 wmux send / send-key 绕过裁决桥；所有工作终端输入必须由 wmux supervisor decide 按已选权限和范围校验。',
     'read-screen 发现任务终端输入框已有未提交文字时，禁止携带 --next；只记录裁决并等待用户先提交或清空草稿，绝不能把新指令追加到原输入。',

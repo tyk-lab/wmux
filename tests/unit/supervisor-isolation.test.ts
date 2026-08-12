@@ -143,6 +143,7 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('不可逆或高影响操作');
     expect(boundary).toContain('方案 A / B');
     expect(boundary).toContain('技术方案选择');
+    expect(boundary).toContain('方案 A：...；方案 B：...');
     expect(boundary).toContain('route-adjustment');
     expect(boundary).toContain('低风险、可逆');
     expect(boundary).toContain('输入框已有未提交文字时，禁止携带 --next');
