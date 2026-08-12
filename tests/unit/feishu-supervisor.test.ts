@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -377,6 +377,9 @@ supervisor_model: k3`)).toEqual({
     }));
     const startObject = buildSupervisorStartCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const sendObject = buildSupervisorSendTaskCard(terminals) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
+    const supervisorMessage = JSON.stringify(buildSupervisorMessageCard([
+      { ...terminals[0], supervised: true, supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now() },
+    ]));
     const createTaskObject = buildDirectTerminalTaskCard() as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
     const createTask = JSON.stringify(createTaskObject);
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
@@ -406,6 +409,8 @@ supervisor_model: k3`)).toEqual({
       active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
     }, undefined, false))).not.toContain('查看终端界面');
     expect(activeMenu).toContain('管理监督');
+    expect(activeMenu).toContain('发送监督信息');
+    expect(pausedMenu).not.toContain('发送监督信息');
     expect(menu).not.toContain('停止全部');
     expect(activeMenu).toContain('添加监督终端');
     expect(activeMenu).toContain('监督通道 1 个');
@@ -447,6 +452,10 @@ supervisor_model: k3`)).toEqual({
     expect(send).toContain('task');
     expect(send).toContain('form_send');
     expect(send).toContain('multiline_text');
+    expect(supervisorMessage).toContain('向 AI 监督终端（管家）发送信息');
+    expect(supervisorMessage).toContain('AI监督终端（管家） · 负责：pwsh.exe · 监督中 · 任务端：执行中');
+    expect(supervisorMessage).toContain('不会作为新任务直接发送到工作终端');
+    expect(supervisorMessage).toContain('form_send_supervisor');
     expect(createTask).toContain('添加 AI 终端任务');
     expect(createTask).toContain('Codex（默认）');
     expect(createTask).toContain('Kimi');
@@ -566,6 +575,7 @@ supervisor_model: k3`)).toEqual({
     ];
 
     const sendCard = JSON.stringify(buildSupervisorSendTaskCard(terminals));
+    const supervisorCard = JSON.stringify(buildSupervisorMessageCard(terminals));
     const managementCard = JSON.stringify(buildSupervisorManagementCard(terminals, { active: true, paused: false }));
 
     for (const card of [sendCard, managementCard]) {
@@ -575,6 +585,9 @@ supervisor_model: k3`)).toEqual({
       expect(card).toContain('未知');
       expect(card).toContain('刚刚');
     }
+    expect(sendCard.indexOf('Codex（监督中）')).toBeLessThan(sendCard.indexOf('空闲'));
+    expect(supervisorCard).toContain('AI监督终端（管家） · 负责：Codex · 监督中 · 任务端：空闲');
+    expect(managementCard).toContain('AI监督终端（管家） · 负责：Codex');
   });
 
   it('忙碌确认卡不携带任务正文', () => {
@@ -603,6 +616,7 @@ supervisor_model: k3`)).toEqual({
     });
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_send_supervisor')).toEqual({ wmux_action: 'form_send_supervisor' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_screen')).toEqual({ wmux_action: 'form_terminal_screen' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_create_task')).toEqual({ wmux_action: 'form_create_task' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });

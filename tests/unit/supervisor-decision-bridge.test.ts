@@ -87,6 +87,7 @@ describe('supervisor decision bridge', () => {
     useStore.getState().resetSupervisorSession();
     useStore.getState().replaceAllWorkspaces([]);
     surfaceTerminalRegistry.delete('worker-a');
+    surfaceTerminalRegistry.delete('supervisor-a');
     Reflect.deleteProperty(globalThis, 'window');
   });
 
@@ -116,6 +117,51 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '确认后继续执行', actor: 'ou-user', force: true }))
       .toMatchObject({ ok: true });
     expect(writes).toHaveBeenCalledWith('worker-a', '确认后继续执行');
+  });
+
+  it('sends Feishu direction information only to the active dedicated supervisor terminal', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'Work',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-control' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'Codex worker' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi', customTitle: 'AI 监督 · Codex worker' },
+        ],
+      },
+    }]);
+    surfaceTerminalRegistry.set('supervisor-a', {
+      buffer: {
+        active: {
+          baseY: 0,
+          cursorX: 0,
+          cursorY: 0,
+          length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'send-supervisor-message', terminal: 'worker-a', message: '先读取项目进度，再给任务终端建议', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('AI 监督终端（管家）') });
+    expect(writes).toHaveBeenCalledWith(
+      'supervisor-a',
+      '[用户调整监督方向]\n先读取项目进度，再给任务终端建议',
+    );
+    expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      laneId: 'lane-a', action: '用户调整监督方向', detail: '先读取项目进度，再给任务终端建议',
+    });
+
+    useStore.getState().pauseSupervisor('测试暂停');
+    writes.mockClear();
+    expect(remoteControl({
+      action: 'send-supervisor-message', terminal: 'worker-a', message: '暂停时不应发送', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('当前未运行') });
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('returns recent supervision logs with lane labels for Feishu', () => {

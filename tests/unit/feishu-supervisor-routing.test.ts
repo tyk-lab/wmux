@@ -785,6 +785,52 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('已强制发送任务。');
   });
 
+  it('通过独立表单向运行中的 AI 监督终端发送方向信息', async () => {
+    const listMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'surf-supervised', label: 'TMC6460', workspace: 'motor-control', supervised: true,
+        supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
+      }],
+      session: { sessionId: 'sup-1', stopWhen: '完成粗定位验证', autonomous: false },
+      pendingApprovals: [],
+    });
+    const control = vi.fn(async (command: { action: string }) => command.action === 'send-supervisor-message'
+      ? { ok: true, message: '已向 AI 监督终端（管家）发送监督方向信息。' }
+      : { ok: true, message: listMessage });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-supervisor-message', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'send-supervisor', nonce: 'open-supervisor-message' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const formCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(formCard).toContain('AI监督终端（管家） · 负责：TMC6460');
+    expect(formCard).toContain('监督方向信息');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_send_supervisor', value: currentControlValue({ wmux_action: 'form_send_supervisor', nonce: 'submit-supervisor-message' }) },
+      raw: { action: { form_value: { terminal: 'surf-supervised', message: '先核对项目动态和最新进度，再调整发布方向' } } },
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'send-supervisor-message')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'send-supervisor-message')?.[0]).toEqual({
+      action: 'send-supervisor-message',
+      terminal: 'surf-supervised',
+      message: '先核对项目动态和最新进度，再调整发布方向',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已向 AI 监督终端（管家）发送监督方向信息');
+  });
+
   it('在白名单单聊中选择任务终端并刷新最新界面', async () => {
     const listMessage = JSON.stringify({
       active: false,

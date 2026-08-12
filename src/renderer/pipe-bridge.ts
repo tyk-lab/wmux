@@ -485,6 +485,13 @@ interface RemoteTerminalTask {
   force?: boolean;
 }
 
+interface RemoteSupervisorMessage {
+  action: 'send-supervisor-message';
+  terminal: string;
+  message: string;
+  actor?: string;
+}
+
 interface RemoteDirectTerminalTask {
   action: 'create-task';
   name: string;
@@ -834,6 +841,33 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
   return { ok: true, message: manuallyResolved
     ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
     : `已向 ${terminal.label} 发送任务。` };
+}
+
+function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boolean; message: string; error?: string } {
+  const session = useStore.getState().supervisor;
+  const lane = session.lanes.find((item) => item.surfaceId === params.terminal || item.managementSessionId === params.terminal);
+  if (!session.active || !lane || supervisorLaneControlState(lane) !== 'active') {
+    return { ok: false, error: '目标 AI 监督终端（管家）当前未运行；请先启动或恢复该监督。', message: '' };
+  }
+  const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+  if (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId)) {
+    return { ok: false, error: `${lane.label} 的 AI 监督终端（管家）已缺失；请在 wmux 中重新配置。`, message: '' };
+  }
+  const message = params.message.trim();
+  if (!message) return { ok: false, error: '监督方向信息不能为空。', message: '' };
+
+  try {
+    sendTaskToSurface(supervisorSurfaceId, `[用户调整监督方向]\n${message}`, true);
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message || err), message: '' };
+  }
+  remoteAudit(session, lane, 'supervisor.remote-command', {
+    action: 'send-supervisor-message',
+    actor: params.actor || 'unknown',
+    message,
+  });
+  useStore.getState().appendSupervisorLog(lane.id, '用户调整监督方向', message);
+  return { ok: true, message: `已向 AI 监督终端（管家）“${lane.label}”发送监督方向信息。` };
 }
 
 function decideRemoteSupervisor(
@@ -1751,6 +1785,7 @@ export function initPipeBridge(): void {
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'create-task') return createRemoteDirectTerminalTask(params as RemoteDirectTerminalTask);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
+    if (action === 'send-supervisor-message') return sendRemoteSupervisorMessage(params as RemoteSupervisorMessage);
     if (action === 'pause-lane' || action === 'resume-lane' || action === 'stop-lane') {
       const session = useStore.getState().supervisor;
       const actor = String(params?.actor || 'unknown');
