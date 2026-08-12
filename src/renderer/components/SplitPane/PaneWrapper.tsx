@@ -615,6 +615,8 @@ export default function PaneWrapper({
       <SurfaceTabBar
         paneId={paneId}
         workspaceShell={workspace?.shell}
+        workspaceCwd={workspace?.cwd}
+        workspaceIsSsh={!!workspace?.sshProfileId}
         surfaces={surfaces}
         activeSurfaceIndex={activeSurfaceIndex}
         onSelect={handleSelectSurface}

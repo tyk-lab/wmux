@@ -522,6 +522,14 @@
   background: rgba(var(--ui-overlay-rgb), 0.1);
 }
 
+.ctx-menu__item--disabled,
+.ctx-menu__item--disabled:hover {
+  color: var(--ui-text-muted);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .ctx-menu__item--danger {
   color: #ff6b6b;
 }

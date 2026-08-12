@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld('wmux', {
     getShells: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_SHELLS),
     getFonts: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_FONTS) as Promise<string[]>,
     openExternal: (url: string) => ipcRenderer.send(IPC_CHANNELS.SYSTEM_OPEN_EXTERNAL, url),
+    openDirectoryInExplorer: (directoryPath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_OPEN_DIRECTORY_IN_EXPLORER, directoryPath) as Promise<{
+        ok: boolean; error?: string;
+      }>,
     getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_VERSION),
     toggleDevTools: () => ipcRenderer.send('toggle-devtools'),
     pickFolder: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_PICK_FOLDER),

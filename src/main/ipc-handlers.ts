@@ -200,6 +200,22 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_OPEN_DIRECTORY_IN_EXPLORER, async (_event, directoryPath: unknown) => {
+    if (typeof directoryPath !== 'string') return { ok: false, error: '目录路径无效。' };
+    const candidate = directoryPath.trim();
+    if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(candidate)) {
+      return { ok: false, error: '只能在资源管理器中打开 Windows 本地目录。' };
+    }
+    try {
+      const normalized = path.win32.normalize(candidate);
+      if (!fs.statSync(normalized).isDirectory()) return { ok: false, error: '当前路径不是可打开的目录。' };
+      const error = await shell.openPath(normalized);
+      return error ? { ok: false, error } : { ok: true };
+    } catch {
+      return { ok: false, error: '当前目录不存在或无法访问。' };
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_VERSION, () => app.getVersion());
 
   // App UI theme (issue #67): report the Windows light/dark setting so the

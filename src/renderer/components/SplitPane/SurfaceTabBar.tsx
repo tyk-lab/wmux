@@ -12,6 +12,8 @@ import { isSurfaceSupervised } from '../../store/supervisor-slice';
 interface SurfaceTabBarProps {
   paneId: PaneId;
   workspaceShell?: string;
+  workspaceCwd?: string;
+  workspaceIsSsh?: boolean;
   surfaces: SurfaceRef[];
   activeSurfaceIndex: number;
   onSelect: (index: number) => void;
@@ -56,9 +58,25 @@ function surfaceIcon(type: string, isAgent: boolean): string {
   }
 }
 
+export function terminalContextPath(surface: SurfaceRef | undefined, workspaceCwd?: string): string {
+  if (surface?.type !== 'terminal') return '';
+  return surface.currentCwd?.trim() || surface.cwd?.trim() || workspaceCwd?.trim() || '';
+}
+
+export function canOpenTerminalPathInExplorer(
+  surface: SurfaceRef | undefined,
+  currentPath: string,
+  workspaceIsSsh = false,
+): boolean {
+  if (!surface || surface.type !== 'terminal' || workspaceIsSsh || surface.sshRemote || surface.sshProfileId) return false;
+  return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(currentPath.trim());
+}
+
 export default function SurfaceTabBar({
   paneId,
   workspaceShell,
+  workspaceCwd,
+  workspaceIsSsh,
   surfaces,
   activeSurfaceIndex,
   onSelect,
@@ -259,11 +277,37 @@ export default function SurfaceTabBar({
     else onSplitDown?.();
   }, [onSplitRight, onSplitDown]);
 
+  const copyContextValue = useCallback(async (surfaceId: SurfaceId, value: string, label: string) => {
+    setCtxMenu(null);
+    if (!value) return;
+    try {
+      await window.wmux?.clipboard?.writeText?.(value);
+    } catch {
+      window.wmux?.notification?.fire?.({ surfaceId, title: 'wmux', text: `${label}复制失败。` });
+    }
+  }, []);
+
+  const openContextPath = useCallback(async (surfaceId: SurfaceId, currentPath: string) => {
+    setCtxMenu(null);
+    const result = await window.wmux?.system?.openDirectoryInExplorer?.(currentPath);
+    if (result?.ok === false) {
+      window.wmux?.notification?.fire?.({
+        surfaceId,
+        title: 'wmux',
+        text: result.error || '无法在资源管理器中打开当前路径。',
+      });
+    }
+  }, []);
+
   const requestCenterPreview = useCallback(() => {
     if (surfaceDrag?.sourcePaneId !== paneId) {
       onSurfaceDragPreviewTarget?.(paneId, 'center');
     }
   }, [onSurfaceDragPreviewTarget, paneId, surfaceDrag]);
+
+  const contextSurface = ctxMenu ? surfaces.find((surface) => surface.id === ctxMenu.surfaceId) : undefined;
+  const contextPath = terminalContextPath(contextSurface, workspaceCwd);
+  const canOpenContextPath = canOpenTerminalPathInExplorer(contextSurface, contextPath, workspaceIsSsh);
 
   // Always show tab bar (even for 1 surface — like browser tabs)
   return (
@@ -571,8 +615,8 @@ export default function SurfaceTabBar({
           className="ctx-menu"
           role="menu"
           style={{
-            left: Math.min(ctxMenu.x, window.innerWidth - 200),
-            top: Math.min(ctxMenu.y, window.innerHeight - 120),
+            left: Math.max(4, Math.min(ctxMenu.x, window.innerWidth - 230)),
+            top: Math.max(4, Math.min(ctxMenu.y, window.innerHeight - 260)),
           }}
         >
           <div
@@ -582,6 +626,41 @@ export default function SurfaceTabBar({
           >
             Rename
           </div>
+          {contextSurface?.type === 'terminal' && (
+            <>
+              <div className="ctx-menu__separator" />
+              <div
+                className={`ctx-menu__item${canOpenContextPath ? '' : ' ctx-menu__item--disabled'}`}
+                role="menuitem"
+                aria-disabled={!canOpenContextPath}
+                title={canOpenContextPath ? contextPath : 'Only local Windows paths can be opened in File Explorer'}
+                onClick={() => {
+                  if (canOpenContextPath) void openContextPath(ctxMenu.surfaceId, contextPath);
+                }}
+              >
+                Open current path in Explorer
+              </div>
+              <div
+                className={`ctx-menu__item${contextPath ? '' : ' ctx-menu__item--disabled'}`}
+                role="menuitem"
+                aria-disabled={!contextPath}
+                title={contextPath || 'Current path is unavailable'}
+                onClick={() => {
+                  if (contextPath) void copyContextValue(ctxMenu.surfaceId, contextPath, '当前路径');
+                }}
+              >
+                Copy current path
+              </div>
+              <div
+                className="ctx-menu__item"
+                role="menuitem"
+                title={ctxMenu.surfaceId}
+                onClick={() => void copyContextValue(ctxMenu.surfaceId, ctxMenu.surfaceId, 'Surface ID')}
+              >
+                Copy wmux Surface ID
+              </div>
+            </>
+          )}
           <div className="ctx-menu__separator" />
           <div
             className="ctx-menu__item ctx-menu__item--danger"

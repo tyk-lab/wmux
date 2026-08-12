@@ -392,6 +392,7 @@ export const IPC_CHANNELS = {
   SYSTEM_GET_SHELLS: 'system:getShells',
   SYSTEM_GET_FONTS: 'system:getFonts',
   SYSTEM_OPEN_EXTERNAL: 'system:openExternal',
+  SYSTEM_OPEN_DIRECTORY_IN_EXPLORER: 'system:openDirectoryInExplorer',
   SYSTEM_GET_VERSION: 'system:getVersion',
   SYSTEM_PICK_FOLDER: 'system:pickFolder',
   SYSTEM_GET_CONTEXT_MENU: 'system:getContextMenu',
