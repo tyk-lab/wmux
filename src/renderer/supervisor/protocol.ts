@@ -14,6 +14,11 @@ import {
   type SupervisorForbiddenAction,
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
+import {
+  normalizeTaskChildThreadResponsibilities,
+  normalizeTaskThreadResponsibility,
+  normalizeTaskWorkMode,
+} from '../../shared/supervisor-work-mode';
 
 export function modeLabel(mode: SupervisorMode): string {
   if (mode === 'unified') return '统一监督';
@@ -94,6 +99,9 @@ export function effectiveSupervisorLaneConfig(
   lane: SupervisorLane,
 ): SupervisorLaneConfig {
   if (lane.config) {
+    const hasTaskWorkModeConfig = lane.config.taskWorkMode !== undefined
+      || lane.config.mainThreadResponsibility !== undefined
+      || lane.config.childThreadResponsibilities !== undefined;
     return {
       taskGoal: lane.config.taskGoal || '',
       taskDescription: lane.config.taskDescription || '',
@@ -101,6 +109,13 @@ export function effectiveSupervisorLaneConfig(
       stopWhen: lane.config.stopWhen || '',
       stopWhenKind: lane.config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
       planFilePath: lane.config.planFilePath || '',
+      ...(hasTaskWorkModeConfig ? {
+        taskWorkMode: normalizeTaskWorkMode(lane.config.taskWorkMode),
+        mainThreadResponsibility: normalizeTaskThreadResponsibility(lane.config.mainThreadResponsibility),
+        childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
+          lane.config.childThreadResponsibilities,
+        ),
+      } : {}),
     };
   }
   return {
@@ -171,9 +186,27 @@ export function supervisorLaneBriefingChanged(
 
   const previousConfig = effectiveSupervisorLaneConfig(previousSession, previousLane);
   const nextConfig = effectiveSupervisorLaneConfig(nextSession, nextLane);
-  const configChanged = (Object.keys(previousConfig) as Array<keyof SupervisorLaneConfig>)
+  const textFields = [
+    'taskGoal',
+    'taskDescription',
+    'preconditions',
+    'stopWhen',
+    'planFilePath',
+  ] as const;
+  const configChanged = textFields
     .some((key) => previousConfig[key].trim() !== nextConfig[key].trim());
-  if (configChanged) return true;
+  if (configChanged
+    || previousConfig.stopWhenKind !== nextConfig.stopWhenKind
+    || normalizeTaskWorkMode(previousConfig.taskWorkMode)
+      !== normalizeTaskWorkMode(nextConfig.taskWorkMode)
+    || normalizeTaskThreadResponsibility(previousConfig.mainThreadResponsibility).trim()
+      !== normalizeTaskThreadResponsibility(nextConfig.mainThreadResponsibility).trim()
+    || !sameStringList(
+      normalizeTaskChildThreadResponsibilities(previousConfig.childThreadResponsibilities)
+        .map((item) => item.trim()),
+      normalizeTaskChildThreadResponsibilities(nextConfig.childThreadResponsibilities)
+        .map((item) => item.trim()),
+    )) return true;
 
   return previousSession.mode !== nextSession.mode
     || effectiveSupervisorAutonomous(previousSession, previousLane)
@@ -408,6 +441,32 @@ export function buildSupervisorBriefing(
       : '自主推进只能围绕上述目标、当前任务或计划文件，不得自行扩展任务。',
     '',
   ];
+  const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
+  const mainThreadResponsibility = normalizeTaskThreadResponsibility(
+    laneConfig.mainThreadResponsibility,
+  ).trim();
+  const childThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
+    laneConfig.childThreadResponsibilities,
+  ).map((item) => item.trim());
+  const taskWorkModeBlock = taskWorkMode === 'multi-thread'
+    ? [
+        '## 任务终端 AI 工作模式',
+        '模式: 多线程工程',
+        `主线程职责: ${mainThreadResponsibility || '（未设置）'}`,
+        ...childThreadResponsibilities.map((responsibility, index) => (
+          `子线程 ${index + 1} 职责: ${responsibility || '（未设置）'}`
+        )),
+        '',
+        '这是用户为被监督的任务终端 AI 约定的内部工作分工，不是监督 AI 的工作模式。你仍只负责监督、读取证据和裁决，不要把自己当作主线程或子线程，也不要创建额外 wmux 终端。',
+        '后续通过 --next 指导任务终端 AI 时，应把这份分工作为执行约定明确传达并保持一致，由任务终端 AI 自行组织其内部主线程和子线程。wmux 不检查或强制它是否实际创建子线程，最终以终端证据为准。',
+        '',
+      ]
+    : [
+        '## 任务终端 AI 工作模式',
+        '模式: 单线程工作',
+        '这是被监督的任务终端 AI 的工作方式，不是监督 AI 的工作模式。按单一执行线程监督，不要求任务终端 AI 拆分主线程和子线程。',
+        '',
+      ];
   const policyBlock = structuredPolicyBlock(session, lane);
   const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions)
@@ -424,6 +483,7 @@ export function buildSupervisorBriefing(
         : '本终端启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给用户。',
       '',
       ...taskContextBlock,
+      ...taskWorkModeBlock,
       ...stopContextBlock,
       ...preconditionsBlock,
       ...planBlock,
@@ -473,6 +533,7 @@ export function buildSupervisorBriefing(
       stopWhenJudgmentGuide(kind, effectiveStopWhen),
       '',
       ...taskContextBlock,
+      ...taskWorkModeBlock,
       ...stopContextBlock,
       ...preconditionsBlock,
       ...planBlock,
@@ -509,6 +570,7 @@ export function buildSupervisorBriefing(
     '你只负责管理下列一个工作终端：每轮终端任务结束后，先读取证据，再结合目标和完成参考决定继续、返工、完成或交给人工。',
     '',
     ...taskContextBlock,
+    ...taskWorkModeBlock,
     '## 目标',
     session.goal.trim() || '（未设置）',
     '',

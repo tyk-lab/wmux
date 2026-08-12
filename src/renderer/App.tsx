@@ -73,6 +73,11 @@ import {
 import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from './store/supervisor-slice';
+import {
+  normalizeTaskChildThreadResponsibilities,
+  normalizeTaskThreadResponsibility,
+  normalizeTaskWorkMode,
+} from '../shared/supervisor-work-mode';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
 const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
@@ -1042,6 +1047,11 @@ export default function App() {
         stopWhen: laneConfig.stopWhen,
         stopWhenKind: laneConfig.stopWhenKind,
         planFilePath: laneConfig.planFilePath,
+        taskWorkMode: normalizeTaskWorkMode(laneConfig.taskWorkMode),
+        mainThreadResponsibility: normalizeTaskThreadResponsibility(laneConfig.mainThreadResponsibility),
+        childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
+          laneConfig.childThreadResponsibilities,
+        ),
         autonomous: effectiveSupervisorAutonomous(session, lane),
         autonomyPermissions: effectiveSupervisorAutonomyPermissions(session, lane),
         workScope: session.workScope,

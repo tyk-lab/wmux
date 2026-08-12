@@ -639,6 +639,44 @@ describe('supervisor isolation', () => {
     expect(docsBriefing).not.toContain('认证测试全部通过');
   });
 
+  it('briefs the supervisor about the task terminal AI multi-thread assignment', () => {
+    const session = createDefaultSupervisorSession();
+    const multiThreadLane = lane({
+      config: {
+        taskGoal: '完成认证模块改造',
+        taskDescription: '',
+        preconditions: '',
+        stopWhen: '认证测试全部通过',
+        stopWhenKind: 'concrete',
+        planFilePath: '',
+        taskWorkMode: 'multi-thread',
+        mainThreadResponsibility: '统筹方案、整合结果并完成最终验证',
+        childThreadResponsibilities: ['实现认证逻辑', '补充回归测试'],
+      },
+    });
+
+    const briefing = buildSupervisorBriefing(session, { lane: multiThreadLane, state: 'idle' });
+
+    expect(briefing).toContain('## 任务终端 AI 工作模式');
+    expect(briefing).toContain('模式: 多线程工程');
+    expect(briefing).toContain('主线程职责: 统筹方案、整合结果并完成最终验证');
+    expect(briefing).toContain('子线程 1 职责: 实现认证逻辑');
+    expect(briefing).toContain('子线程 2 职责: 补充回归测试');
+    expect(briefing).toContain('不是监督 AI 的工作模式');
+    expect(briefing).toContain('不要创建额外 wmux 终端');
+    expect(briefing).toContain('wmux 不检查或强制它是否实际创建子线程');
+  });
+
+  it('defaults legacy task terminals to single-thread work', () => {
+    const briefing = buildSupervisorBriefing(createDefaultSupervisorSession(), {
+      lane: lane(),
+      state: 'idle',
+    });
+
+    expect(briefing).toContain('模式: 单线程工作');
+    expect(briefing).toContain('不要求任务终端 AI 拆分主线程和子线程');
+  });
+
   it('preserves an existing lane management session when supervision starts', () => {
     const store = makeStore();
     store.getState().setSupervisorLanes([
@@ -752,6 +790,38 @@ describe('supervisor isolation', () => {
       previousLane,
       nextSession,
       lane({ config: { ...migratedLane.config!, stopWhen: '认证与集成测试通过' } }),
+    )).toBe(true);
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      migratedLane,
+      nextSession,
+      lane({
+        config: {
+          ...migratedLane.config!,
+          taskWorkMode: 'multi-thread',
+          mainThreadResponsibility: '统筹实现',
+          childThreadResponsibilities: ['补充测试'],
+        },
+      }),
+    )).toBe(true);
+    const previousMultiThreadLane = lane({
+      config: {
+        ...migratedLane.config!,
+        taskWorkMode: 'multi-thread',
+        mainThreadResponsibility: '统筹实现',
+        childThreadResponsibilities: ['补充测试'],
+      },
+    });
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      previousMultiThreadLane,
+      nextSession,
+      lane({
+        config: {
+          ...previousMultiThreadLane.config!,
+          childThreadResponsibilities: ['补充测试并检查回归'],
+        },
+      }),
     )).toBe(true);
     expect(supervisorLaneBriefingChanged(
       previousSession,

@@ -7,9 +7,15 @@ import {
   type SupervisorForbiddenAction,
   type SupervisorWorkScope,
 } from '../shared/supervisor-policy';
+import {
+  normalizeTaskChildThreadResponsibilities,
+  normalizeTaskThreadResponsibility,
+  normalizeTaskWorkMode,
+  type TaskWorkMode,
+} from '../shared/supervisor-work-mode';
 
 export const SUPERVISOR_CONFIG_FILE_KIND = 'wmux-ai-supervisor-config';
-export const SUPERVISOR_CONFIG_FILE_VERSION = 2;
+export const SUPERVISOR_CONFIG_FILE_VERSION = 3;
 
 export interface SupervisorConfigFileData {
   taskGoal: string;
@@ -18,6 +24,9 @@ export interface SupervisorConfigFileData {
   stopWhen: string;
   stopWhenKind: 'direction' | 'concrete';
   planFilePath: string;
+  taskWorkMode: TaskWorkMode;
+  mainThreadResponsibility: string;
+  childThreadResponsibilities: string[];
   supervisorLaunchCmd: string;
   supervisorModel: string;
   supervisorReasoningEffort: string;
@@ -59,6 +68,11 @@ export function normalizeSupervisorConfig(
     stopWhen: text(config.stopWhen),
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     planFilePath: text(config.planFilePath),
+    taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
+    mainThreadResponsibility: normalizeTaskThreadResponsibility(config.mainThreadResponsibility),
+    childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
+      config.childThreadResponsibilities,
+    ),
     supervisorLaunchCmd: text(config.supervisorLaunchCmd, 'pi'),
     supervisorModel: text(config.supervisorModel),
     supervisorReasoningEffort: text(config.supervisorReasoningEffort),
@@ -91,11 +105,14 @@ export function parseSupervisorConfig(content: string): SupervisorConfigFileData
       version?: number;
       config?: unknown;
     };
-    const supportedVersion = file.version === 1 || file.version === SUPERVISOR_CONFIG_FILE_VERSION;
+    const supportedVersion = file.version === 1
+      || file.version === 2
+      || file.version === SUPERVISOR_CONFIG_FILE_VERSION;
     if (file.kind !== SUPERVISOR_CONFIG_FILE_KIND || !supportedVersion) {
       return { error: '不是受支持的 AI 监督配置文件' };
     }
-    if (file.version === SUPERVISOR_CONFIG_FILE_VERSION && (!file.config || typeof file.config !== 'object')) {
+    if ((file.version === 2 || file.version === SUPERVISOR_CONFIG_FILE_VERSION)
+      && (!file.config || typeof file.config !== 'object')) {
       return { error: 'AI 监督配置缺少有效的 config 对象' };
     }
     return normalizeSupervisorConfig(file.config, file.version === 1);

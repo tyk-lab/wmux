@@ -19,4 +19,15 @@ describe('supervisor setup dialog feedback', () => {
       /if \(!sessionRetained\) startSupervisor\(\);\s*else closeSupervisorSetup\(\);/,
     );
   });
+
+  it('configures task-terminal work mode with one to three child threads', () => {
+    expect(dialogSource).toContain('任务终端 AI 工作模式');
+    expect(dialogSource).toContain("['single-thread', '单线程工作'");
+    expect(dialogSource).toContain("['multi-thread', '多线程工程'");
+    expect(dialogSource).toContain('<option value={1}>1 个</option>');
+    expect(dialogSource).toContain('<option value={3}>3 个</option>');
+    expect(dialogSource).toContain('主线程职责');
+    expect(dialogSource).toContain('子线程 ${index + 1} 职责');
+    expect(dialogSource).toContain('不是监督 AI');
+  });
 });

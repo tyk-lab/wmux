@@ -8,6 +8,7 @@ import {
   type SupervisorForbiddenAction,
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
+import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
 
 /** Legacy values remain readable for saved sessions; new sessions are unified. */
 export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
@@ -68,6 +69,10 @@ export interface SupervisorLaneConfig {
   stopWhen: string;
   stopWhenKind: StopWhenKind;
   planFilePath: string;
+  /** Work arrangement for the AI running inside the monitored task terminal. */
+  taskWorkMode?: TaskWorkMode;
+  mainThreadResponsibility?: string;
+  childThreadResponsibilities?: string[];
 }
 
 export interface SupervisorLane {

@@ -13,6 +13,9 @@ describe('supervisor config file', () => {
       stopWhen: '测试记录完整',
       stopWhenKind: 'direction',
       planFilePath: 'D:\\plans\\speed.md',
+      taskWorkMode: 'multi-thread',
+      mainThreadResponsibility: '统筹实现并整合结果',
+      childThreadResponsibilities: ['实现驱动', '补充测试'],
       supervisorLaunchCmd: 'codex',
       supervisorModel: 'gpt-5.6-sol',
       supervisorReasoningEffort: 'high',
@@ -31,6 +34,9 @@ describe('supervisor config file', () => {
       stopWhen: '测试记录完整',
       stopWhenKind: 'direction',
       planFilePath: 'D:\\plans\\speed.md',
+      taskWorkMode: 'multi-thread',
+      mainThreadResponsibility: '统筹实现并整合结果',
+      childThreadResponsibilities: ['实现驱动', '补充测试'],
       supervisorLaunchCmd: 'codex',
       supervisorModel: 'gpt-5.6-sol',
       supervisorReasoningEffort: 'high',
@@ -51,7 +57,19 @@ describe('supervisor config file', () => {
       .toMatchObject({ maxAutoDecisions: 1 });
   });
 
-  it('uses fail-closed defaults for version 2 and filters unknown selections', () => {
+  it('limits imported task-thread assignments to three bounded text entries', () => {
+    expect(parseSupervisorConfig(serializeSupervisorConfig({
+      taskWorkMode: 'multi-thread',
+      mainThreadResponsibility: 123,
+      childThreadResponsibilities: ['实现', '测试', '审查', '不得保留'],
+    }))).toMatchObject({
+      taskWorkMode: 'multi-thread',
+      mainThreadResponsibility: '',
+      childThreadResponsibilities: ['实现', '测试', '审查'],
+    });
+  });
+
+  it('uses fail-closed defaults for the current version and filters unknown selections', () => {
     expect(parseSupervisorConfig(serializeSupervisorConfig({}))).toMatchObject({
       autonomyPermissions: [],
       workScope: 'task-files',
@@ -116,7 +134,7 @@ describe('supervisor config file', () => {
     });
   });
 
-  it('imports version 1 files with safe defaults while exporting version 2', () => {
+  it('imports legacy files with a single-thread default while exporting version 3', () => {
     const legacy = JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
       version: 1,
@@ -125,6 +143,9 @@ describe('supervisor config file', () => {
 
     expect(parseSupervisorConfig(legacy)).toMatchObject({
       stopWhen: '旧版停止条件',
+      taskWorkMode: 'single-thread',
+      mainThreadResponsibility: '',
+      childThreadResponsibilities: [],
       autonomyPermissions: [
         'same-route-next',
         'technical-choice',
@@ -133,7 +154,17 @@ describe('supervisor config file', () => {
       ],
       workScope: 'project',
     });
-    expect(JSON.parse(serializeSupervisorConfig({}))).toMatchObject({ version: 2 });
+    expect(JSON.parse(serializeSupervisorConfig({}))).toMatchObject({ version: 3 });
+
+    expect(parseSupervisorConfig(JSON.stringify({
+      kind: 'wmux-ai-supervisor-config',
+      version: 2,
+      config: { stopWhen: '旧版 V2 停止条件' },
+    }))).toMatchObject({
+      stopWhen: '旧版 V2 停止条件',
+      taskWorkMode: 'single-thread',
+      childThreadResponsibilities: [],
+    });
   });
 
   it('rejects null v2 config and keeps missing v2 policy fields restrictive', () => {

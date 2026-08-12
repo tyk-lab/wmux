@@ -26,6 +26,13 @@ import {
   type SupervisorWorkScope,
 } from '../../../shared/supervisor-policy';
 import {
+  MAX_TASK_THREAD_RESPONSIBILITY_LENGTH,
+  normalizeTaskChildThreadResponsibilities,
+  normalizeTaskThreadResponsibility,
+  normalizeTaskWorkMode,
+  type TaskWorkMode,
+} from '../../../shared/supervisor-work-mode';
+import {
   buildSupervisorBriefing,
   effectiveSupervisorLaneConfig,
   stopWhenKindHint,
@@ -193,7 +200,20 @@ function emptyLaneConfig(): SupervisorLaneConfig {
     stopWhen: '',
     stopWhenKind: 'concrete',
     planFilePath: '',
+    taskWorkMode: 'single-thread',
+    mainThreadResponsibility: '',
+    childThreadResponsibilities: [],
   };
+}
+
+function hasIncompleteMultiThreadAssignment(config: SupervisorLaneConfig | undefined): boolean {
+  if (!config || normalizeTaskWorkMode(config.taskWorkMode) !== 'multi-thread') return false;
+  const childResponsibilities = normalizeTaskChildThreadResponsibilities(
+    config.childThreadResponsibilities,
+  );
+  return !normalizeTaskThreadResponsibility(config.mainThreadResponsibility).trim()
+    || childResponsibilities.length === 0
+    || childResponsibilities.some((responsibility) => !responsibility.trim());
 }
 
 function collectTerminals(
@@ -559,6 +579,11 @@ export default function SupervisorSetupDialog() {
           stopWhen: config.stopWhen || '',
           stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
           planFilePath: loadedPlanFilePath,
+          taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
+          mainThreadResponsibility: normalizeTaskThreadResponsibility(config.mainThreadResponsibility),
+          childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
+            config.childThreadResponsibilities,
+          ),
         };
       }
       return next;
@@ -642,6 +667,13 @@ export default function SupervisorSetupDialog() {
           stopWhen: config.stopWhen.trim(),
           stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
           planFilePath: config.planFilePath.trim(),
+          taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
+          mainThreadResponsibility: normalizeTaskThreadResponsibility(
+            config.mainThreadResponsibility,
+          ).trim(),
+          childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
+            config.childThreadResponsibilities,
+          ).map((responsibility) => responsibility.trim()),
         },
         ...(Array.isArray(lanePermissionOverrides[c.surfaceId])
           ? { autonomyPermissionsOverride: [...lanePermissionOverrides[c.surfaceId]] }
@@ -821,6 +853,16 @@ export default function SupervisorSetupDialog() {
       });
       return;
     }
+    const incompleteThreadAssignments = lanes.filter((lane) => (
+      hasIncompleteMultiThreadAssignment(lane.config)
+    ));
+    if (incompleteThreadAssignments.length > 0) {
+      setDialogNotice({
+        kind: 'error',
+        message: `请完整填写以下终端的主线程和已启用子线程职责：${incompleteThreadAssignments.map((lane) => lane.label).join('、')}`,
+      });
+      return;
+    }
     if (workScope === 'plan-defined' && lanes.some((lane) => !lane.config?.planFilePath.trim())) {
       setDialogNotice({ kind: 'error', message: '工作范围选择“按计划文件定义”时，每个被监督终端都必须选择自己的计划文件。' });
       return;
@@ -872,6 +914,16 @@ export default function SupervisorSetupDialog() {
       setDialogNotice({
         kind: 'error',
         message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
+      });
+      return;
+    }
+    const incompleteThreadAssignments = lanes.filter((lane) => (
+      hasIncompleteMultiThreadAssignment(lane.config)
+    ));
+    if (incompleteThreadAssignments.length > 0) {
+      setDialogNotice({
+        kind: 'error',
+        message: `请完整填写以下终端的主线程和已启用子线程职责：${incompleteThreadAssignments.map((lane) => lane.label).join('、')}`,
       });
       return;
     }
@@ -961,6 +1013,14 @@ export default function SupervisorSetupDialog() {
                     lane.surfaceId === candidate.surfaceId && isSupervisorLaneBound(lane)
                   ));
                 const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? true;
+                const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
+                const configuredChildThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
+                  laneConfig.childThreadResponsibilities,
+                );
+                const childThreadResponsibilities = taskWorkMode === 'multi-thread'
+                  && configuredChildThreadResponsibilities.length === 0
+                  ? ['']
+                  : configuredChildThreadResponsibilities;
                 return (
                   <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
                     <label className="supervisor-dialog__row">
@@ -1007,6 +1067,95 @@ export default function SupervisorSetupDialog() {
                             onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
                             placeholder="例如：修复此终端负责的认证模块并保持现有行为"
                           />
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">任务终端 AI 工作模式</div>
+                          <div className="supervisor-dialog__freedom">
+                            {([
+                              ['single-thread', '单线程工作', '任务终端 AI 在一个执行线程内完成任务'],
+                              ['multi-thread', '多线程工程', '任务终端 AI 按约定自行拆分主线程和子线程'],
+                            ] as Array<[TaskWorkMode, string, string]>).map(([mode, label, description]) => (
+                              <label key={mode} className="supervisor-dialog__radio" data-active={taskWorkMode === mode}>
+                                <input
+                                  type="radio"
+                                  name={`taskWorkMode-${candidate.surfaceId}`}
+                                  checked={taskWorkMode === mode}
+                                  onChange={() => updateLaneConfig(candidate.surfaceId, {
+                                    taskWorkMode: mode,
+                                    ...(mode === 'multi-thread' && childThreadResponsibilities.length === 0
+                                      ? { childThreadResponsibilities: [''] }
+                                      : {}),
+                                  })}
+                                />
+                                <span><strong>{label}</strong> — {description}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div className="supervisor-dialog__hint">
+                            这里约定的是任务终端里的 AI，不是监督 AI；wmux 记录并传达分工，不创建额外终端。
+                          </div>
+                          {taskWorkMode === 'multi-thread' && (
+                            <div className="supervisor-dialog__thread-config">
+                              <label className="supervisor-dialog__thread-count">
+                                <span>子线程数量</span>
+                                <select
+                                  className="supervisor-dialog__input"
+                                  aria-label={`${candidate.label} 的子线程数量`}
+                                  value={Math.max(1, childThreadResponsibilities.length)}
+                                  onChange={(event) => {
+                                    const count = Number(event.target.value);
+                                    updateLaneConfig(candidate.surfaceId, {
+                                      childThreadResponsibilities: Array.from(
+                                        { length: count },
+                                        (_, index) => childThreadResponsibilities[index] || '',
+                                      ),
+                                    });
+                                  }}
+                                >
+                                  <option value={1}>1 个</option>
+                                  <option value={2}>2 个</option>
+                                  <option value={3}>3 个</option>
+                                </select>
+                              </label>
+                              <label className="supervisor-dialog__thread-role">
+                                <span>主线程职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
+                                <textarea
+                                  className="supervisor-dialog__textarea"
+                                  aria-label={`${candidate.label} 的主线程职责`}
+                                  rows={2}
+                                  maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
+                                  value={normalizeTaskThreadResponsibility(laneConfig.mainThreadResponsibility)}
+                                  onChange={(event) => updateLaneConfig(candidate.surfaceId, {
+                                    mainThreadResponsibility: event.target.value,
+                                  })}
+                                  placeholder="例如：统筹任务、整合子线程结果、执行最终验证"
+                                />
+                              </label>
+                              {childThreadResponsibilities.map((responsibility, index) => (
+                                <label key={index} className="supervisor-dialog__thread-role">
+                                  <span>子线程 {index + 1} 职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
+                                  <textarea
+                                    className="supervisor-dialog__textarea"
+                                    aria-label={`${candidate.label} 的子线程 ${index + 1} 职责`}
+                                    rows={2}
+                                    maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
+                                    value={responsibility}
+                                    onChange={(event) => {
+                                      const nextResponsibilities = [...childThreadResponsibilities];
+                                      nextResponsibilities[index] = event.target.value;
+                                      updateLaneConfig(candidate.surfaceId, {
+                                        childThreadResponsibilities: nextResponsibilities,
+                                      });
+                                    }}
+                                    placeholder={`例如：负责${index === 0 ? '代码实现' : index === 1 ? '测试与验证' : '独立审查与风险检查'}`}
+                                  />
+                                </label>
+                              ))}
+                              <div className="supervisor-dialog__hint">
+                                保存后立即更新对应监督 AI，从下一次裁决开始传达；不会打断任务终端当前工作。
+                              </div>
+                            </div>
+                          )}
                         </div>
                         <div className="supervisor-dialog__section">
                           <div className="supervisor-dialog__label">停止条件类型</div>
