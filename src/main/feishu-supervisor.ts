@@ -362,10 +362,17 @@ function terminalActivityText(terminal: FeishuListTerminal): string {
 }
 
 function terminalOptions(terminals: FeishuListTerminal[], showActivity = false): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
-  return terminals.map((terminal) => ({
-    text: { tag: 'plain_text', content: `${terminal.workspace}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''} · ${terminal.label}${terminal.supervisionState === 'paused' ? '（已暂停）' : terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
-    value: terminal.surfaceId,
-  }));
+  return terminals.map((terminal) => {
+    const supervisorContext = terminal.supervisionState === 'paused'
+      ? '（AI管家已暂停）'
+      : terminal.supervised
+        ? '（AI管家监督中）'
+        : terminal.restartable ? '（AI管家已停止，可重新监督）' : '';
+    return {
+      text: { tag: 'plain_text', content: `${terminal.workspace}${supervisorContext}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''} · ${terminal.label}`.slice(0, 100) },
+      value: terminal.surfaceId,
+    };
+  });
 }
 
 function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {

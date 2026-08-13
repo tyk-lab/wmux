@@ -585,7 +585,7 @@ supervisor_model: k3`)).toEqual({
       expect(card).toContain('未知');
       expect(card).toContain('刚刚');
     }
-    expect(sendCard).toContain('代码 · 空闲 · 刚刚 · Codex（监督中）');
+    expect(sendCard).toContain('代码（AI管家监督中） · 空闲 · 刚刚 · Codex');
     expect(supervisorCard).toContain('AI监督终端（管家） · 负责：Codex · 监督中 · 任务端：空闲');
     expect(managementCard).toContain('AI监督终端（管家） · 负责：Codex');
   });
