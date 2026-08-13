@@ -35,10 +35,13 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('不是监督 AI');
   });
 
-  it('configures context recovery per selected task terminal and picks the latest audit candidate', () => {
+  it('configures context recovery per terminal, defaults to latest, and allows another source', () => {
     expect(dialogSource).toContain('恢复任务终端上下文');
-    expect(dialogSource).toContain('自动选择最新上下文');
+    expect(dialogSource).toContain('恢复上下文（默认最新）');
     expect(dialogSource).toContain('restoreOptions[0]');
+    expect(dialogSource).toContain('value={restoreSourceIdFor(candidate.surfaceId)}');
+    expect(dialogSource).toContain('selectRestoreSource(candidate.surfaceId, event.target.value)');
+    expect(dialogSource).toContain("{index === 0 ? '（最新）' : ''}");
     expect(dialogSource).toContain('restoreTaskContext: restoreEnabled.has(surfaceId)');
     expect(dialogSource).toContain('if (config.restoreTaskContext) next.add(surfaceId)');
     expect(dialogSource).toContain('监督 AI 拟定恢复指令，需你确认后才发送');

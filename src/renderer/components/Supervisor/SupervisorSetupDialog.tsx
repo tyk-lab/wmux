@@ -571,6 +571,11 @@ export default function SupervisorSetupDialog() {
     restoreSources[surfaceId] || restoreCandidates[surfaceId]?.[0]?.surfaceId || ''
   );
 
+  const selectRestoreSource = (surfaceId: string, restoreSurfaceId: string) => {
+    setDialogNotice(null);
+    setRestoreSources((current) => ({ ...current, [surfaceId]: restoreSurfaceId }));
+  };
+
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
     setDialogNotice(null);
     setLaneConfigs((current) => ({
@@ -1200,15 +1205,30 @@ export default function SupervisorSetupDialog() {
                           </label>
                           {restoreContextEnabled && (
                             <div className="supervisor-dialog__restore-row">
-                              <div className="supervisor-dialog__row-label">自动选择最新上下文</div>
+                              <div className="supervisor-dialog__row-label">恢复上下文（默认最新）</div>
                               {!restoreCandidatesReady ? (
                                 <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
                               ) : selectedRestoreSource ? (
-                                <div className="supervisor-dialog__hint">
-                                  {selectedRestoreSource.label} · {new Date(selectedRestoreSource.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
-                                  {selectedRestoreSource.currentTask ? ` · ${selectedRestoreSource.currentTask.slice(0, 80)}` : ''}
-                                  {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
-                                </div>
+                                <>
+                                  <select
+                                    className="supervisor-dialog__input"
+                                    aria-label={`${candidate.label} 的恢复上下文`}
+                                    value={restoreSourceIdFor(candidate.surfaceId)}
+                                    disabled={isExistingLane}
+                                    onChange={(event) => selectRestoreSource(candidate.surfaceId, event.target.value)}
+                                  >
+                                    {restoreOptions.map((option, index) => (
+                                      <option key={`${option.surfaceId}-${option.sessionId}`} value={option.surfaceId}>
+                                        {index === 0 ? '（最新）' : ''}{option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
+                                        {option.currentTask ? ` · ${option.currentTask.slice(0, 50)}` : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="supervisor-dialog__hint">
+                                    {selectedRestoreSource.currentTask ? `当前任务：${selectedRestoreSource.currentTask.slice(0, 80)}` : '当前任务：未记录'}
+                                    {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
+                                  </div>
+                                </>
                               ) : (
                                 <div className="supervisor-dialog__warning">此工程没有可恢复的监督历史，无法启用上下文恢复。</div>
                               )}
