@@ -309,8 +309,9 @@ export default function SupervisorSetupDialog() {
   const [lanePermissionOverrides, setLanePermissionOverrides] = useState<
     Record<string, SupervisorAutonomyPermission[]>
   >({});
-  const [restoreAuditHistory, setRestoreAuditHistory] = useState(supervisor.restoreAuditHistory);
+  const [restoreEnabled, setRestoreEnabled] = useState<Set<string>>(new Set());
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
+  const [restoreCandidatesLoaded, setRestoreCandidatesLoaded] = useState<Set<string>>(new Set());
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
   const [supervisorModel, setSupervisorModel] = useState(supervisor.supervisorModel || '');
@@ -340,7 +341,9 @@ export default function SupervisorSetupDialog() {
   useEffect(() => {
     if (!setupOpen) return;
     setDialogNotice(null);
-    setRestoreAuditHistory(supervisor.restoreAuditHistory === true);
+    setRestoreEnabled(new Set(
+      supervisor.lanes.flatMap((lane) => lane.restoreSource ? [lane.surfaceId] : []),
+    ));
     setRestoreSources(Object.fromEntries(
       supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
     ));
@@ -483,8 +486,9 @@ export default function SupervisorSetupDialog() {
   };
 
   useEffect(() => {
-    if (!setupOpen || !restoreAuditHistory) {
+    if (!setupOpen) {
       setRestoreCandidates({});
+      setRestoreCandidatesLoaded(new Set());
       return;
     }
     let cancelled = false;
@@ -493,10 +497,34 @@ export default function SupervisorSetupDialog() {
       candidate.surfaceId,
       candidate.projectDir ? await listSupervisorRestoreCandidates(candidate.projectDir) : [],
     ] as const)).then((entries) => {
-      if (!cancelled) setRestoreCandidates(Object.fromEntries(entries));
+      if (cancelled) return;
+      setRestoreCandidates(Object.fromEntries(entries));
+      setRestoreCandidatesLoaded(new Set(entries.map(([surfaceId]) => surfaceId)));
     });
     return () => { cancelled = true; };
-  }, [setupOpen, restoreAuditHistory, selected, candidates]);
+  }, [setupOpen, selected, candidates]);
+
+  useEffect(() => {
+    setRestoreSources((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const surfaceId of Object.keys(next)) {
+        if (restoreEnabled.has(surfaceId)) continue;
+        delete next[surfaceId];
+        changed = true;
+      }
+      for (const surfaceId of restoreEnabled) {
+        const options = restoreCandidates[surfaceId] || [];
+        const currentStillExists = options.some((candidate) => candidate.surfaceId === next[surfaceId]);
+        const latestSurfaceId = options[0]?.surfaceId;
+        if (!currentStillExists && latestSurfaceId && next[surfaceId] !== latestSurfaceId) {
+          next[surfaceId] = latestSurfaceId;
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [restoreEnabled, restoreCandidates]);
 
   if (!setupOpen) return null;
 
@@ -529,6 +557,20 @@ export default function SupervisorSetupDialog() {
       : { ...current, [surfaceId]: expanded });
   };
 
+  const toggleRestoreContext = (surfaceId: string, enabled: boolean) => {
+    setDialogNotice(null);
+    setRestoreEnabled((current) => {
+      const next = new Set(current);
+      if (enabled) next.add(surfaceId);
+      else next.delete(surfaceId);
+      return next;
+    });
+  };
+
+  const restoreSourceIdFor = (surfaceId: string): string => (
+    restoreSources[surfaceId] || restoreCandidates[surfaceId]?.[0]?.surfaceId || ''
+  );
+
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
     setDialogNotice(null);
     setLaneConfigs((current) => ({
@@ -556,6 +598,7 @@ export default function SupervisorSetupDialog() {
     const laneConfig = laneConfigs[surfaceId] || emptyLaneConfig();
     return {
       ...laneConfig,
+      restoreTaskContext: restoreEnabled.has(surfaceId),
       supervisorLaunchCmd: launchCmd,
       supervisorModel,
       supervisorReasoningEffort: reasoningEffort,
@@ -608,6 +651,14 @@ export default function SupervisorSetupDialog() {
     const loadedLauncherKind = detectSupervisorLauncher(loadedLaunchCommand);
     const loadedPlanFilePath = config.planFilePath || '';
     const loadedWorkScope = normalizeSupervisorWorkScope(config.workScope);
+    setRestoreEnabled((current) => {
+      const next = new Set(current);
+      for (const surfaceId of selectedSurfaceIds) {
+        if (config.restoreTaskContext) next.add(surfaceId);
+        else next.delete(surfaceId);
+      }
+      return next;
+    });
     setLaneConfigs((current) => {
       const next = { ...current };
       for (const surfaceId of selectedSurfaceIds) {
@@ -652,8 +703,8 @@ export default function SupervisorSetupDialog() {
       const prev = supervisor.lanes.find((l) => (
         l.surfaceId === c.surfaceId && isSupervisorLaneBound(l)
       ));
-      const selectedSourceId = restoreSources[c.surfaceId];
-      const selectedSource = restoreAuditHistory
+      const selectedSourceId = restoreSourceIdFor(c.surfaceId);
+      const selectedSource = restoreEnabled.has(c.surfaceId)
         ? restoreCandidates[c.surfaceId]?.find((candidate) => candidate.surfaceId === selectedSourceId)
         : undefined;
       const keepsRestoredContext = !!selectedSource
@@ -665,7 +716,12 @@ export default function SupervisorSetupDialog() {
             label: selectedSource.label,
             sessionId: selectedSource.sessionId,
           }
-        : keepsCurrentContext ? prev?.restoreSource : undefined;
+        : undefined;
+      const contextRecoveryStatus = restoreSource
+        ? keepsRestoredContext && prev?.contextRecoveryStatus
+          ? prev.contextRecoveryStatus
+          : 'draft-pending' as const
+        : undefined;
       const config = laneConfigs[c.surfaceId]
         || (prev ? effectiveSupervisorLaneConfig(supervisor, prev) : emptyLaneConfig());
       lanes.push({
@@ -724,8 +780,9 @@ export default function SupervisorSetupDialog() {
           ? { forbiddenActionsOverride: [...laneForbiddenActionOverrides[c.surfaceId]] }
           : {}),
         ...(restoreSource ? { restoreSource } : {}),
-        ...(keepsCurrentContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
-        ...(keepsCurrentContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
+        ...(contextRecoveryStatus ? { contextRecoveryStatus } : {}),
+        ...(keepsRestoredContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
+        ...(keepsRestoredContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
       });
     }
     return lanes;
@@ -749,7 +806,7 @@ export default function SupervisorSetupDialog() {
       stopWhenKind: legacyConfig.stopWhenKind,
       planFilePath: legacyConfig.planFilePath,
       planFileContent: '',
-      restoreAuditHistory,
+      restoreAuditHistory: lanes.some((lane) => !!lane.restoreSource),
       supervisorLaunchCmd: launchCmd,
       supervisorModel: launcherKind === 'other' ? '' : supervisorModel,
       supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' || launcherKind === 'pi'
@@ -851,15 +908,13 @@ export default function SupervisorSetupDialog() {
     window.setTimeout(() => void (async () => {
       try {
         let session = useStore.getState().supervisor;
-        if (session.restoreAuditHistory) {
-          for (const lane of session.lanes) {
-            if (!laneIds.has(lane.id)) continue;
-            if (!lane.restoreSource || lane.restoredFromSessionId || (lane.decisions?.length ?? 0) > 0) continue;
-            const restored = await restoreSelectedLaneHistory(lane, lane.restoreSource);
-            if (restored) useStore.getState().updateLane(lane.id, restored);
-          }
-          session = useStore.getState().supervisor;
+        for (const lane of session.lanes) {
+          if (!laneIds.has(lane.id)) continue;
+          if (!lane.restoreSource || lane.restoredFromSessionId || (lane.decisions?.length ?? 0) > 0) continue;
+          const restored = await restoreSelectedLaneHistory(lane, lane.restoreSource);
+          if (restored) useStore.getState().updateLane(lane.id, restored);
         }
+        session = useStore.getState().supervisor;
         const states = (window as any).__wmux_getAgentStates?.() || {};
         for (const lane of session.lanes) {
           if (!laneIds.has(lane.id)) continue;
@@ -879,6 +934,18 @@ export default function SupervisorSetupDialog() {
 
   const applyConfig = (andStart: boolean) => {
     setDialogNotice(null);
+    const missingRestoreSource = candidates.filter((candidate) => (
+      selected.has(candidate.surfaceId)
+      && restoreEnabled.has(candidate.surfaceId)
+      && !restoreSourceIdFor(candidate.surfaceId)
+    ));
+    if (missingRestoreSource.length > 0) {
+      setDialogNotice({
+        kind: 'error',
+        message: `以下终端没有可恢复的审计上下文：${missingRestoreSource.map((candidate) => candidate.label).join('、')}`,
+      });
+      return;
+    }
     const lanes = buildLanes(!andStart || sessionRetained);
     if (lanes.length === 0) {
       setDialogNotice({ kind: 'error', message: '请至少选择一个要监控的终端。' });
@@ -943,6 +1010,18 @@ export default function SupervisorSetupDialog() {
 
   const openAiSession = () => {
     setDialogNotice(null);
+    const missingRestoreSource = candidates.filter((candidate) => (
+      selected.has(candidate.surfaceId)
+      && restoreEnabled.has(candidate.surfaceId)
+      && !restoreSourceIdFor(candidate.surfaceId)
+    ));
+    if (missingRestoreSource.length > 0) {
+      setDialogNotice({
+        kind: 'error',
+        message: `以下终端没有可恢复的审计上下文：${missingRestoreSource.map((candidate) => candidate.label).join('、')}`,
+      });
+      return;
+    }
     const lanes = buildLanes(sessionRetained);
     if (lanes.length === 0) {
       setDialogNotice({ kind: 'error', message: '请先至少选择一个要监控的终端。' });
@@ -1060,6 +1139,12 @@ export default function SupervisorSetupDialog() {
                   && configuredChildThreadResponsibilities.length === 0
                   ? ['']
                   : configuredChildThreadResponsibilities;
+                const restoreContextEnabled = restoreEnabled.has(candidate.surfaceId);
+                const restoreOptions = restoreCandidates[candidate.surfaceId] || [];
+                const selectedRestoreSource = restoreOptions.find((option) => (
+                  option.surfaceId === restoreSources[candidate.surfaceId]
+                )) || restoreOptions[0];
+                const restoreCandidatesReady = restoreCandidatesLoaded.has(candidate.surfaceId);
                 return (
                   <div key={candidate.key} className="supervisor-dialog__terminal" data-selected={isSelected}>
                     <label className="supervisor-dialog__row">
@@ -1096,6 +1181,40 @@ export default function SupervisorSetupDialog() {
                             {isConfigExpanded ? '折叠' : '展开'}
                           </span>
                         </summary>
+                        <div className="supervisor-dialog__section">
+                          <label className="supervisor-dialog__row">
+                            <input
+                              type="checkbox"
+                              checked={restoreContextEnabled}
+                              disabled={isExistingLane}
+                              onChange={(event) => toggleRestoreContext(candidate.surfaceId, event.target.checked)}
+                            />
+                            <span className="supervisor-dialog__row-main">
+                              <span className="supervisor-dialog__row-label">恢复任务终端上下文</span>
+                              <span className="supervisor-dialog__row-meta">
+                                {isExistingLane
+                                  ? '运行中的监督会话不能切换恢复来源；停止后重新配置即可更改。'
+                                  : '勾选后自动恢复最新审计历史；监督 AI 拟定恢复指令，需你确认后才发送。'}
+                              </span>
+                            </span>
+                          </label>
+                          {restoreContextEnabled && (
+                            <div className="supervisor-dialog__restore-row">
+                              <div className="supervisor-dialog__row-label">自动选择最新上下文</div>
+                              {!restoreCandidatesReady ? (
+                                <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
+                              ) : selectedRestoreSource ? (
+                                <div className="supervisor-dialog__hint">
+                                  {selectedRestoreSource.label} · {new Date(selectedRestoreSource.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
+                                  {selectedRestoreSource.currentTask ? ` · ${selectedRestoreSource.currentTask.slice(0, 80)}` : ''}
+                                  {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
+                                </div>
+                              ) : (
+                                <div className="supervisor-dialog__warning">此工程没有可恢复的监督历史，无法启用上下文恢复。</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <div className="supervisor-dialog__section">
                           <div className="supervisor-dialog__label">任务目标（可选）</div>
                           <textarea
@@ -1676,48 +1795,6 @@ export default function SupervisorSetupDialog() {
                   <div className="supervisor-dialog__hint">推理强度由会话内 `/effort` 设置，不传入其他启动器的参数。</div>
                 </section>
               )}
-
-              <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
-                <label className="supervisor-dialog__row">
-                  <input
-                    type="checkbox"
-                    checked={restoreAuditHistory}
-                    onChange={(event) => setRestoreAuditHistory(event.target.checked)}
-                  />
-                  <span className="supervisor-dialog__row-main">
-                    <span className="supervisor-dialog__row-label">恢复审计上下文（手动选择来源）</span>
-                    <span className="supervisor-dialog__row-meta">默认关闭；只恢复任务、终端事件和监督裁决摘要。</span>
-                  </span>
-                </label>
-                {restoreAuditHistory && selectedCandidates.map((candidate) => {
-                  const options = restoreCandidates[candidate.surfaceId] || [];
-                  return (
-                    <div key={candidate.surfaceId} className="supervisor-dialog__restore-row">
-                      <div className="supervisor-dialog__row-label">恢复到：{candidate.label}</div>
-                      <select
-                        className="supervisor-dialog__input"
-                        value={restoreSources[candidate.surfaceId] || ''}
-                        onChange={(event) => setRestoreSources((current) => ({
-                          ...current,
-                          [candidate.surfaceId]: event.target.value,
-                        }))}
-                      >
-                        <option value="">不恢复上下文</option>
-                        {options.map((option) => (
-                          <option key={option.surfaceId} value={option.surfaceId}>
-                            {option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
-                            {option.currentTask ? ` · ${option.currentTask.slice(0, 36)}` : ''}
-                            {option.lastDecision ? ` · ${option.lastDecision}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {options.length === 0 && (
-                        <div className="supervisor-dialog__hint">此项目没有可恢复的历史终端。</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </section>
 
               <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
                 <div className="supervisor-dialog__label">配置文件</div>

@@ -193,8 +193,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     try {
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
+      const isContextRecovery = item.source === 'supervisor-context-recovery';
       let adoptedPlan = '';
-      if (isHumanProposal) {
+      if (isContextRecovery) {
+        if (!lane || supervisorLaneControlState(lane) !== 'active' || !item.text.trim()) return;
+        sendTaskToSurface(item.surfaceId, item.text, supervisor.submitEnter);
+      } else if (isHumanProposal) {
         const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
         const choices = supervisorDecisionOptions(item.alternatives, item.text);
         const selected = choices.find((choice) => choice.value === proposalSelections[id]);
@@ -222,7 +226,21 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         delete next[id];
         return next;
       });
-      if (isHumanProposal && lane) {
+      if (isContextRecovery && lane) {
+        updateLane(lane.id, {
+          contextRecoveryStatus: 'sent',
+          awaitingReview: false,
+          currentTask: item.text.trim(),
+          autoDecisionLimitReached: false,
+          autoDecisionsUsed: 0,
+        });
+        appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+          approvalId: item.id,
+          resolution: 'approved',
+          proposalKind: 'context-recovery',
+          text: item.text.trim(),
+        });
+      } else if (isHumanProposal && lane) {
         updateLane(lane.id, {
           awaitingReview: true,
           autoDecisionLimitReached: false,
@@ -240,7 +258,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           updateStep(item.laneId, step.id, { status: 'in_progress', dispatchedAt: Date.now() });
         }
       }
-      appendSupervisorLog(item.laneId, isHumanProposal ? '已采用 AI 方案' : '已批准发送', `${item.laneLabel} → ${item.surfaceId}`);
+      appendSupervisorLog(
+        item.laneId,
+        isContextRecovery ? '已确认并发送上下文恢复指令' : isHumanProposal ? '已采用 AI 方案' : '已批准发送',
+        `${item.laneLabel} → ${item.surfaceId}`,
+      );
     } catch (err: any) {
       appendSupervisorLog(item.laneId, '发送失败', String(err?.message || err));
     }
@@ -819,7 +841,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               {supervisor.pendingApprovals.map((a) => {
                 const lane = supervisor.lanes.find((entry) => entry.id === a.laneId);
                 const laneControlState = lane ? supervisorLaneControlState(lane) : 'stopped';
-                const decisionOptions = a.proposalKind
+                const isContextRecovery = a.source === 'supervisor-context-recovery';
+                const decisionOptions = a.proposalKind && !isContextRecovery
                   ? supervisorDecisionOptions(a.alternatives, a.text)
                   : [];
                 const selectedOption = proposalSelections[a.id] || '';
@@ -828,10 +851,51 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 return (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">
-                    <strong>{a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
+                    <strong>{isContextRecovery ? '上下文恢复指令' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
                     {a.proposalKind && <span>{a.laneLabel}</span>}
                   </div>
-                  {a.proposalKind ? (
+                  {isContextRecovery ? (
+                    <div className="sup-panel__proposal">
+                      <section className="sup-panel__decision-section">
+                        <h4>AI 监督拟定的任务恢复指令</h4>
+                        <p>确认后将把以下原文直接发送到任务终端；确认前不会改动任务终端。</p>
+                        <textarea
+                          className="sup-panel__proposal-input"
+                          value={a.text}
+                          rows={12}
+                          readOnly
+                          aria-label={`${a.laneLabel} 的上下文恢复指令`}
+                        />
+                      </section>
+                      <div className="sup-panel__approval-actions sup-panel__decision-actions">
+                        {laneControlState === 'paused' ? (
+                          <button
+                            type="button"
+                            onClick={() => lane && resumeLane(lane)}
+                            disabled={!supervisor.active || !lane}
+                          >
+                            继续此监督
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onPause(a.id)}
+                            disabled={!supervisor.active || laneControlState === 'stopped'}
+                          >
+                            暂不发送
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="sup-panel__btn-primary"
+                          onClick={() => onApprove(a.id)}
+                          disabled={!supervisor.active || laneControlState !== 'active' || !a.text.trim()}
+                        >
+                          确认并发送到任务终端
+                        </button>
+                      </div>
+                    </div>
+                  ) : a.proposalKind ? (
                     <div className="sup-panel__proposal">
                       <section className="sup-panel__decision-section">
                         <h4>决策背景</h4>
