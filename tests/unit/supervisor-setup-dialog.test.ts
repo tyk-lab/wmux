@@ -24,6 +24,21 @@ describe('supervisor setup dialog feedback', () => {
     );
   });
 
+  it('saves retained-session settings and exports all currently selected terminals', () => {
+    expect(dialogSource).toContain('if (andStart || sessionRetained)');
+    expect(dialogSource).toContain('terminals: candidates.filter((candidate) => selected.has(candidate.surfaceId)).map');
+    expect(dialogSource).toContain('导出当前终端配置…');
+    expect(dialogSource).not.toContain('disabled={sessionRetained}\n            title=');
+    expect(dialogSource).not.toContain('导出任务配置时请只选择一个终端');
+  });
+
+  it('keeps retained supervision lanes selected while importing only matched terminal configs', () => {
+    expect(dialogSource).toContain('planSupervisorTerminalConfigImport(');
+    expect(dialogSource).toContain('supervisor.lanes.filter(isSupervisorLaneBound)');
+    expect(dialogSource).toContain('setSelected(new Set(importPlan.selectedSurfaceIds))');
+    expect(dialogSource).toContain('for (const surfaceId of importedSurfaceIds)');
+  });
+
   it('configures task-terminal work mode with one to three child threads', () => {
     expect(dialogSource).toContain('任务终端 AI 工作模式');
     expect(dialogSource).toContain("['single-thread', '单线程工作'");
@@ -43,11 +58,20 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('selectRestoreSource(candidate.surfaceId, event.target.value)');
     expect(dialogSource).toContain("{index === 0 ? '（最新）' : ''}");
     expect(dialogSource).toContain('restoreTaskContext: restoreEnabled.has(surfaceId)');
-    expect(dialogSource).toContain('if (config.restoreTaskContext) next.add(surfaceId)');
+    expect(dialogSource).toContain('if (terminalConfig.restoreTaskContext) next.add(surfaceId)');
     expect(dialogSource).toContain('监督 AI 拟定恢复指令，需你确认后才发送');
     expect(dialogSource).not.toContain('恢复审计上下文（手动选择来源）');
     expect(panelSource).toContain('AI 监督拟定的任务恢复指令');
     expect(panelSource).toContain('确认并发送到任务终端');
     expect(panelSource).toContain('确认前不会改动任务终端');
+  });
+
+  it('collapses lanes that have reached their stop condition and lets users expand them', () => {
+    expect(panelSource).toContain('const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;');
+    expect(panelSource).toMatch(/const laneStatusLabel = lane\.stopConfirmed\s+\? '已达停止条件'/);
+    expect(panelSource).toContain('aria-expanded={stoppedLaneExpanded}');
+    expect(panelSource).toContain("title={stoppedLaneExpanded ? '折叠监督详情' : '展开监督详情'}");
+    expect(panelSource).toContain('{!laneDetailsCollapsed && (');
+    expect(panelSource).toContain('supervisor.lanes.filter((lane) => lane.stopConfirmed)');
   });
 });

@@ -108,6 +108,7 @@ export function effectiveSupervisorLaneConfig(
       preconditions: lane.config.preconditions || '',
       stopWhen: lane.config.stopWhen || '',
       stopWhenKind: lane.config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+      waitForNextDirection: lane.config.waitForNextDirection === true,
       planFilePath: lane.config.planFilePath || '',
       ...(hasTaskWorkModeConfig ? {
         taskWorkMode: normalizeTaskWorkMode(lane.config.taskWorkMode),
@@ -124,6 +125,7 @@ export function effectiveSupervisorLaneConfig(
     preconditions: session.preconditions || '',
     stopWhen: lane.stopWhenOverride?.trim() || session.stopWhen || '',
     stopWhenKind: session.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+    waitForNextDirection: false,
     planFilePath: session.planFilePath || '',
   };
 }
@@ -197,6 +199,7 @@ export function supervisorLaneBriefingChanged(
     .some((key) => previousConfig[key].trim() !== nextConfig[key].trim());
   if (configChanged
     || previousConfig.stopWhenKind !== nextConfig.stopWhenKind
+    || previousConfig.waitForNextDirection !== nextConfig.waitForNextDirection
     || normalizeTaskWorkMode(previousConfig.taskWorkMode)
       !== normalizeTaskWorkMode(nextConfig.taskWorkMode)
     || normalizeTaskThreadResponsibility(previousConfig.mainThreadResponsibility).trim()
@@ -383,6 +386,9 @@ export function buildSupervisorBriefing(
   const currentTask = lane.currentTask?.trim() || '';
   const laneConfig = effectiveSupervisorLaneConfig(session, lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
+  const completionBehavior = laneConfig.waitForNextDirection
+    ? '达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待用户的新指令或方向。'
+    : '达到停止条件后提交 complete；wmux 会把本通道正式停止。';
   const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
   const autonomous = effectiveSupervisorAutonomous(session, lane);
   const laneAutonomyPermissions = lane.remoteSshControl
@@ -509,6 +515,7 @@ export function buildSupervisorBriefing(
       ...contextRecoveryBlock,
       '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, effectiveStopWhen),
+      completionBehavior,
       '',
       '## 自动判断上限',
       autonomous
@@ -549,6 +556,7 @@ export function buildSupervisorBriefing(
       '',
       '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, effectiveStopWhen),
+      completionBehavior,
       '',
       ...taskContextBlock,
       ...taskWorkModeBlock,

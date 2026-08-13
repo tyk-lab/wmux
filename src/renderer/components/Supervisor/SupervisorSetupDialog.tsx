@@ -48,6 +48,7 @@ import {
   restoreSelectedLaneHistory,
   type SupervisorRestoreCandidate,
 } from '../../supervisor/recording';
+import { planSupervisorTerminalConfigImport } from '../../supervisor/config-file';
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
@@ -193,6 +194,7 @@ function emptyLaneConfig(): SupervisorLaneConfig {
     preconditions: '',
     stopWhen: '',
     stopWhenKind: 'concrete',
+    waitForNextDirection: false,
     planFilePath: '',
     taskWorkMode: 'single-thread',
     mainThreadResponsibility: '',
@@ -599,11 +601,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const configFileData = () => {
-    const surfaceId = Array.from(selected)[0];
-    const laneConfig = laneConfigs[surfaceId] || emptyLaneConfig();
     return {
-      ...laneConfig,
-      restoreTaskContext: restoreEnabled.has(surfaceId),
       supervisorLaunchCmd: launchCmd,
       supervisorModel,
       supervisorReasoningEffort: reasoningEffort,
@@ -611,6 +609,27 @@ export default function SupervisorSetupDialog() {
       autonomyPermissions,
       workScope,
       forbiddenActions,
+      terminals: candidates.filter((candidate) => selected.has(candidate.surfaceId)).map((candidate) => {
+        const surfaceId = candidate.surfaceId;
+        const previousLane = supervisor.lanes.find((lane) => lane.surfaceId === surfaceId);
+        const laneConfig = laneConfigs[surfaceId]
+          || (previousLane ? effectiveSupervisorLaneConfig(supervisor, previousLane) : emptyLaneConfig());
+        return {
+          surfaceId,
+          label: candidate.label,
+          ...laneConfig,
+          restoreTaskContext: restoreEnabled.has(surfaceId),
+          ...(Array.isArray(lanePermissionOverrides[surfaceId])
+            ? { autonomyPermissionsOverride: lanePermissionOverrides[surfaceId] }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, surfaceId)
+            ? { autonomousOverride: laneAutonomousOverrides[surfaceId] }
+            : {}),
+          ...(Array.isArray(laneForbiddenActionOverrides[surfaceId])
+            ? { forbiddenActionsOverride: laneForbiddenActionOverrides[surfaceId] }
+            : {}),
+        };
+      }),
     };
   };
 
@@ -623,12 +642,13 @@ export default function SupervisorSetupDialog() {
   };
 
   const saveConfigFile = async () => {
-    if (selected.size !== 1) {
-      setDialogNotice({ kind: 'error', message: '导出任务配置时请只选择一个终端。' });
+    const config = configFileData();
+    if (config.terminals.length === 0) {
+      setDialogNotice({ kind: 'error', message: '请先选择要导出的终端。' });
       return;
     }
     const result = await (window as any).wmux?.supervisor?.saveConfig?.(
-      configFileData(),
+      config,
       configFileDefaultPath(),
     );
     if (!result || result.canceled) return;
@@ -647,39 +667,102 @@ export default function SupervisorSetupDialog() {
       return;
     }
     const config = result.config;
-    const selectedSurfaceIds = Array.from(selected);
-    if (selectedSurfaceIds.length === 0) {
-      setDialogNotice({ kind: 'error', message: '请先选择要应用配置的终端。' });
+    const importedTerminals = Array.isArray(config.terminals) ? config.terminals : [];
+    const retainedSurfaceIds = sessionRetained
+      ? supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)
+      : [];
+    const importPlan = planSupervisorTerminalConfigImport(
+      importedTerminals,
+      candidates.map((candidate) => candidate.surfaceId),
+      retainedSurfaceIds,
+    );
+    const isMultiTerminalConfig = importedTerminals.length > 0;
+    const importedSurfaceIds = isMultiTerminalConfig
+      ? importPlan.configs.map((terminal) => terminal.surfaceId)
+      : Array.from(selected);
+    if (importedSurfaceIds.length === 0) {
+      setDialogNotice({
+        kind: 'error',
+        message: isMultiTerminalConfig
+          ? `配置中的 ${importPlan.skipped} 个终端均已不存在，未导入终端配置。`
+          : '请先选择要应用配置的终端。',
+      });
       return;
+    }
+    const configBySurfaceId = new Map(
+      importPlan.configs.map((terminal) => [terminal.surfaceId, terminal]),
+    );
+    if (isMultiTerminalConfig) {
+      setSelected(new Set(importPlan.selectedSurfaceIds));
+      setTerminalConfigExpansion((current) => ({
+        ...current,
+        ...Object.fromEntries(importedSurfaceIds.map((surfaceId) => [surfaceId, true])),
+      }));
     }
     const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'pi';
     const loadedLauncherKind = detectSupervisorLauncher(loadedLaunchCommand);
-    const loadedPlanFilePath = config.planFilePath || '';
     const loadedWorkScope = normalizeSupervisorWorkScope(config.workScope);
     setRestoreEnabled((current) => {
       const next = new Set(current);
-      for (const surfaceId of selectedSurfaceIds) {
-        if (config.restoreTaskContext) next.add(surfaceId);
+      for (const surfaceId of importedSurfaceIds) {
+        const terminalConfig = configBySurfaceId.get(surfaceId) || config;
+        if (terminalConfig.restoreTaskContext) next.add(surfaceId);
         else next.delete(surfaceId);
       }
       return next;
     });
     setLaneConfigs((current) => {
       const next = { ...current };
-      for (const surfaceId of selectedSurfaceIds) {
+      for (const surfaceId of importedSurfaceIds) {
+        const terminalConfig = configBySurfaceId.get(surfaceId) || config;
         next[surfaceId] = {
-          taskGoal: config.taskGoal || '',
-          taskDescription: config.taskDescription || '',
-          preconditions: config.preconditions || '',
-          stopWhen: config.stopWhen || '',
-          stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
-          planFilePath: loadedPlanFilePath,
-          taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
-          mainThreadResponsibility: normalizeTaskThreadResponsibility(config.mainThreadResponsibility),
+          taskGoal: terminalConfig.taskGoal || '',
+          taskDescription: terminalConfig.taskDescription || '',
+          preconditions: terminalConfig.preconditions || '',
+          stopWhen: terminalConfig.stopWhen || '',
+          stopWhenKind: terminalConfig.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+          waitForNextDirection: terminalConfig.waitForNextDirection === true,
+          planFilePath: terminalConfig.planFilePath || '',
+          taskWorkMode: normalizeTaskWorkMode(terminalConfig.taskWorkMode),
+          mainThreadResponsibility: normalizeTaskThreadResponsibility(terminalConfig.mainThreadResponsibility),
           childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
-            config.childThreadResponsibilities,
+            terminalConfig.childThreadResponsibilities,
           ),
         };
+      }
+      return next;
+    });
+    setLanePermissionOverrides((current) => {
+      const next = { ...current };
+      for (const surfaceId of importedSurfaceIds) {
+        const terminalConfig = configBySurfaceId.get(surfaceId);
+        if (Array.isArray(terminalConfig?.autonomyPermissionsOverride)) {
+          next[surfaceId] = normalizeSupervisorAutonomyPermissions(
+            terminalConfig.autonomyPermissionsOverride,
+          );
+        } else if (isMultiTerminalConfig) delete next[surfaceId];
+      }
+      return next;
+    });
+    setLaneAutonomousOverrides((current) => {
+      const next = { ...current };
+      for (const surfaceId of importedSurfaceIds) {
+        const terminalConfig = configBySurfaceId.get(surfaceId);
+        if (typeof terminalConfig?.autonomousOverride === 'boolean') {
+          next[surfaceId] = terminalConfig.autonomousOverride;
+        } else if (isMultiTerminalConfig) delete next[surfaceId];
+      }
+      return next;
+    });
+    setLaneForbiddenActionOverrides((current) => {
+      const next = { ...current };
+      for (const surfaceId of importedSurfaceIds) {
+        const terminalConfig = configBySurfaceId.get(surfaceId);
+        if (Array.isArray(terminalConfig?.forbiddenActionsOverride)) {
+          next[surfaceId] = normalizeSupervisorForbiddenActions(
+            terminalConfig.forbiddenActionsOverride,
+          );
+        } else if (isMultiTerminalConfig) delete next[surfaceId];
       }
       return next;
     });
@@ -693,12 +776,21 @@ export default function SupervisorSetupDialog() {
       setReasoningEffort(config.supervisorReasoningEffort || '');
       setMaxAutoDecisions(config.maxAutoDecisions ? String(config.maxAutoDecisions) : '');
       setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(config.autonomyPermissions));
-      setWorkScope(loadedWorkScope === 'plan-defined' && !loadedPlanFilePath
+      const missingPlanFile = importedSurfaceIds.some((surfaceId) => !(
+        configBySurfaceId.get(surfaceId)?.planFilePath || config.planFilePath || ''
+      ));
+      setWorkScope(loadedWorkScope === 'plan-defined' && missingPlanFile
         ? 'task-files'
         : loadedWorkScope);
       setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
     }
-    setDialogNotice({ kind: 'success', message: `已将配置导入 ${selectedSurfaceIds.length} 个终端。` });
+    const skippedNotice = isMultiTerminalConfig && importPlan.skipped > 0
+      ? `，跳过 ${importPlan.skipped} 个已不存在的终端`
+      : '';
+    setDialogNotice({
+      kind: 'success',
+      message: `已导入 ${importedSurfaceIds.length} 个终端配置${skippedNotice}。`,
+    });
   };
 
   const buildLanes = (preserveCurrentContext: boolean): SupervisorLane[] => {
@@ -729,6 +821,9 @@ export default function SupervisorSetupDialog() {
         : undefined;
       const config = laneConfigs[c.surfaceId]
         || (prev ? effectiveSupervisorLaneConfig(supervisor, prev) : emptyLaneConfig());
+      const finalizesWaiting = !!prev
+        && supervisorLaneControlState(prev) === 'waiting'
+        && config.waitForNextDirection !== true;
       lanes.push({
         id: prev?.id || `lane-${c.surfaceId}`,
         managementSessionId: prev?.managementSessionId
@@ -742,10 +837,12 @@ export default function SupervisorSetupDialog() {
         remoteSshControl: c.remoteSshControl,
         projectDir: c.projectDir,
         scopeRoot: sessionRetained ? prev?.scopeRoot || c.projectDir : c.projectDir,
-        enabled: keepsCurrentContext ? prev?.enabled ?? true : true,
-        controlState: keepsCurrentContext && prev
-          ? supervisorLaneControlState(prev)
-          : 'active',
+        enabled: finalizesWaiting ? false : keepsCurrentContext ? prev?.enabled ?? true : true,
+        controlState: finalizesWaiting
+          ? 'stopped'
+          : keepsCurrentContext && prev
+            ? supervisorLaneControlState(prev)
+            : 'active',
         steps: keepsCurrentContext ? prev?.steps || [] : [],
         maxAutoSteps: keepsCurrentContext ? prev?.maxAutoSteps || 0 : 0,
         autoStepsUsed: keepsCurrentContext ? prev?.autoStepsUsed || 0 : 0,
@@ -766,6 +863,7 @@ export default function SupervisorSetupDialog() {
           preconditions: config.preconditions.trim(),
           stopWhen: config.stopWhen.trim(),
           stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+          waitForNextDirection: config.waitForNextDirection === true,
           planFilePath: config.planFilePath.trim(),
           taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
           mainThreadResponsibility: normalizeTaskThreadResponsibility(
@@ -778,7 +876,7 @@ export default function SupervisorSetupDialog() {
         ...(Array.isArray(lanePermissionOverrides[c.surfaceId])
           ? { autonomyPermissionsOverride: [...lanePermissionOverrides[c.surfaceId]] }
           : {}),
-        ...(Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, c.surfaceId)
+        ...(!finalizesWaiting && Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, c.surfaceId)
           ? { autonomousOverride: laneAutonomousOverrides[c.surfaceId] }
           : {}),
         ...(Array.isArray(laneForbiddenActionOverrides[c.surfaceId])
@@ -983,7 +1081,7 @@ export default function SupervisorSetupDialog() {
       return;
     }
 
-    if (andStart) {
+    if (andStart || sessionRetained) {
       const result = ensureDedicatedSupervisors(lanes, !sessionRetained);
       if (!result.ok) {
         setDialogNotice({ kind: 'error', message: '无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。' });
@@ -995,16 +1093,51 @@ export default function SupervisorSetupDialog() {
       else closeSupervisorSetup();
       const nextSession = useStore.getState().supervisor;
       const previousBySurfaceId = new Map(supervisor.lanes.map((lane) => [lane.surfaceId, lane]));
-      const briefingLaneIds = new Set(nextSession.lanes
-        .filter((lane) => supervisorLaneBriefingChanged(
+      const changedLanes = nextSession.lanes.filter((lane) => supervisorLaneBriefingChanged(
           supervisor,
           previousBySurfaceId.get(lane.surfaceId),
           nextSession,
           lane,
-        ))
+        ));
+      for (const lane of changedLanes) {
+        const previousLane = previousBySurfaceId.get(lane.surfaceId);
+        if (supervisorLaneControlState(lane) !== 'waiting'
+          || !previousLane
+          || supervisorLaneControlState(previousLane) !== 'waiting') continue;
+        useStore.getState().updateLane(lane.id, {
+          enabled: true,
+          controlState: 'active',
+          awaitingStopCheck: false,
+          stopConfirmed: false,
+          awaitingReview: true,
+          autoDecisionLimitReached: false,
+          autoDecisionsUsed: 0,
+          pendingSupervisorDeliveries: [],
+          lastBlockedResponseVersion: undefined,
+          lastBlockedResponseId: undefined,
+        });
+        useStore.getState().appendSupervisorLog(
+          lane.id,
+          '配置更新，待续恢复',
+          '任务配置或监督边界已更新；完成标记和自动裁决计数已重置，继续监督',
+        );
+      }
+      const appliedSession = useStore.getState().supervisor;
+      const hasRetainedLane = appliedSession.lanes.some(
+        (lane) => supervisorLaneControlState(lane) !== 'stopped',
+      );
+      if (sessionRetained && !hasRetainedLane) {
+        stopSupervisor('所有待续通道均已取消“完成后待续”，本轮正式完成');
+      }
+      const briefingLaneIds = new Set(changedLanes
+        .filter((lane) => supervisorLaneControlState(
+          useStore.getState().supervisor.lanes.find((item) => item.id === lane.id) || lane,
+        ) !== 'stopped')
         .map((lane) => lane.id));
-      const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
-      if (workspaceId) selectWorkspace(workspaceId);
+      if (andStart) {
+        const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
+        if (workspaceId) selectWorkspace(workspaceId);
+      }
       sendDedicatedBriefings(briefingLaneIds);
     } else {
       persistFields(lanes, false);
@@ -1131,10 +1264,15 @@ export default function SupervisorSetupDialog() {
                   || Array.isArray(laneForbiddenActionOverrides[candidate.surfaceId]);
                 const laneAutonomous = laneAutonomousOverrides[candidate.surfaceId] ?? autonomous;
                 const laneForbiddenActions = laneForbiddenActionOverrides[candidate.surfaceId] || forbiddenActions;
-                const isExistingLane = sessionRetained
-                  && supervisor.lanes.some((lane) => (
+                const existingLane = sessionRetained
+                  ? supervisor.lanes.find((lane) => (
                     lane.surfaceId === candidate.surfaceId && isSupervisorLaneBound(lane)
-                  ));
+                  ))
+                  : undefined;
+                const isExistingLane = !!existingLane;
+                const laneWaitingForDirection = existingLane
+                  ? supervisorLaneControlState(existingLane) === 'waiting'
+                  : false;
                 const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? true;
                 const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
                 const configuredChildThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
@@ -1367,6 +1505,26 @@ export default function SupervisorSetupDialog() {
                               : '例如：认证模块单测全部通过'}
                           />
                           <div className="supervisor-dialog__hint">只用于此终端的继续、返工、完成或人工接管裁决。</div>
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <label className="supervisor-dialog__row">
+                            <input
+                              type="checkbox"
+                              aria-label={`${candidate.label} 完成后待续`}
+                              checked={laneConfig.waitForNextDirection === true}
+                              onChange={(event) => updateLaneConfig(candidate.surfaceId, {
+                                waitForNextDirection: event.target.checked,
+                              })}
+                            />
+                            <span className="supervisor-dialog__row-main">
+                              <span className="supervisor-dialog__row-label">完成后待续（可选）</span>
+                              <span className="supervisor-dialog__row-meta">
+                                {laneWaitingForDirection
+                                  ? '当前通道正在待续；取消勾选并应用后，本轮将正式完成并停止。'
+                                  : '达到停止条件后保留监督通道与上下文，等待你提供下一步指示或方向。'}
+                              </span>
+                            </span>
+                          </label>
                         </div>
                         <div className="supervisor-dialog__section">
                           <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
@@ -1820,13 +1978,13 @@ export default function SupervisorSetupDialog() {
                 <div className="supervisor-dialog__label">配置文件</div>
                 <div className="supervisor-dialog__config-actions">
                   <button type="button" className="confirm-dialog__btn" onClick={() => void loadConfigFile()}>
-                    导入到已选终端…
+                    导入终端配置…
                   </button>
                   <button type="button" className="confirm-dialog__btn" onClick={() => void saveConfigFile()}>
-                    导出单个终端配置…
+                    导出当前终端配置…
                   </button>
                 </div>
-                <div className="supervisor-dialog__hint">导入会把任务字段复制到当前已选终端，之后仍分别保存；导出时请只选择一个终端。</div>
+                <div className="supervisor-dialog__hint">导出包含当前选中的全部终端配置；导入按终端恢复，原终端已不存在时自动跳过。旧版单终端配置仍会应用到当前已选终端。</div>
               </section>
 
               <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
@@ -1875,8 +2033,6 @@ export default function SupervisorSetupDialog() {
             type="button"
             className="confirm-dialog__btn"
             onClick={() => applyConfig(false)}
-            disabled={sessionRetained}
-            title={sessionRetained ? '当前会话仍在保留；请先继续或停止该会话。' : undefined}
           >
             保存设置
           </button>

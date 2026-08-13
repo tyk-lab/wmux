@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import {
   buildSupervisorBriefing,
@@ -91,9 +91,20 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const workspaces = useStore((s) => s.workspaces);
   const [collapsed, setCollapsed] = useState(false);
+  const [expandedStoppedLaneIds, setExpandedStoppedLaneIds] = useState<Set<string>>(() => new Set());
   const [loadingRecordLaneId, setLoadingRecordLaneId] = useState<string | null>(null);
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const stoppedLaneIds = new Set(
+      supervisor.lanes.filter((lane) => lane.stopConfirmed).map((lane) => lane.id),
+    );
+    setExpandedStoppedLaneIds((current) => {
+      const retained = new Set([...current].filter((laneId) => stoppedLaneIds.has(laneId)));
+      return retained.size === current.size ? current : retained;
+    });
+  }, [supervisor.lanes]);
 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
@@ -699,15 +710,50 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
               );
+              const stoppedLaneExpanded = expandedStoppedLaneIds.has(lane.id);
+              const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;
+              const laneStatusLabel = lane.stopConfirmed
+                ? '已达停止条件'
+                : laneControlState === 'active'
+                  ? '监督中'
+                  : laneControlState === 'paused'
+                    ? '已暂停'
+                    : '已停止';
+              const laneHeader = (
+                <>
+                  <span className="sup-panel__lane-label">{lane.label}</span>
+                  <span className="sup-panel__lane-progress">
+                    {laneStatusLabel}
+                    {' · '}{(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
+                  </span>
+                </>
+              );
               return (
-                <div key={lane.id} className="sup-panel__lane">
-                  <div className="sup-panel__lane-head">
-                    <span className="sup-panel__lane-label">{lane.label}</span>
-                    <span className="sup-panel__lane-progress">
-                      {laneControlState === 'active' ? '监督中' : laneControlState === 'paused' ? '已暂停' : '已停止'}
-                      {' · '}{(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
-                    </span>
-                  </div>
+                <div
+                  key={lane.id}
+                  className="sup-panel__lane"
+                  data-details-collapsed={laneDetailsCollapsed ? '1' : '0'}
+                >
+                  {lane.stopConfirmed ? (
+                    <button
+                      type="button"
+                      className="sup-panel__lane-head sup-panel__lane-toggle"
+                      aria-expanded={stoppedLaneExpanded}
+                      onClick={() => setExpandedStoppedLaneIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(lane.id)) next.delete(lane.id);
+                        else next.add(lane.id);
+                        return next;
+                      })}
+                      title={stoppedLaneExpanded ? '折叠监督详情' : '展开监督详情'}
+                    >
+                      {laneHeader}
+                    </button>
+                  ) : (
+                    <div className="sup-panel__lane-head">{laneHeader}</div>
+                  )}
+                  {!laneDetailsCollapsed && (
+                    <>
                   <div className="sup-panel__lane-detail">
                     {lane.workspaceTitle ? `${lane.workspaceTitle} · ` : ''}
                     {lane.surfaceId.slice(0, 14)}…
@@ -829,6 +875,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         我已人工审阅，继续监督
                       </button>
                     </div>
+                  )}
+                    </>
                   )}
                 </div>
               );

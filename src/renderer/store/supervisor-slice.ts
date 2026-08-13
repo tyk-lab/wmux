@@ -21,7 +21,7 @@ export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
 export type StopWhenKind = 'direction' | 'concrete';
 
 export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
-export type SupervisorLaneControlState = 'active' | 'paused' | 'stopped';
+export type SupervisorLaneControlState = 'active' | 'paused' | 'waiting' | 'stopped';
 
 export interface SupervisorStep {
   id: string;
@@ -68,6 +68,8 @@ export interface SupervisorLaneConfig {
   preconditions: string;
   stopWhen: string;
   stopWhenKind: StopWhenKind;
+  /** Keep the lane bound after completion and wait for a new user direction. */
+  waitForNextDirection?: boolean;
   planFilePath: string;
   /** Work arrangement for the AI running inside the monitored task terminal. */
   taskWorkMode?: TaskWorkMode;
@@ -787,35 +789,40 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     }));
   },
   confirmStopCondition(laneId) {
-    set((s) => ({
-      supervisor: {
-        ...s.supervisor,
-        lanes: s.supervisor.lanes.map((l) =>
-          l.id === laneId
-            ? {
-                ...l,
-                awaitingStopCheck: false,
-                stopConfirmed: true,
-                enabled: false,
-                controlState: 'stopped' as const,
-                autonomousOverride: undefined,
-              }
-            : l,
-        ),
-        log: [
-          {
-            ts: Date.now(),
-            laneId,
-            action: '停止条件确认',
-            detail: s.supervisor.lanes.find((lane) => lane.id === laneId)?.config?.stopWhen?.trim()
-              || s.supervisor.lanes.find((lane) => lane.id === laneId)?.stopWhenOverride?.trim()
-              || s.supervisor.stopWhen.trim()
-              || '已确认达到结束条件，停止注入',
-          },
-          ...s.supervisor.log,
-        ].slice(0, MAX_LOG),
-      },
-    }));
+    set((s) => {
+      const target = s.supervisor.lanes.find((lane) => lane.id === laneId);
+      const waitForNextDirection = target?.config?.waitForNextDirection === true;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes: s.supervisor.lanes.map((lane) =>
+            lane.id === laneId
+              ? {
+                  ...lane,
+                  awaitingStopCheck: false,
+                  stopConfirmed: true,
+                  autoDecisionLimitReached: false,
+                  enabled: waitForNextDirection,
+                  controlState: waitForNextDirection ? 'waiting' as const : 'stopped' as const,
+                  ...(waitForNextDirection ? { awaitingReview: false } : { autonomousOverride: undefined }),
+                }
+              : lane,
+          ),
+          log: [
+            {
+              ts: Date.now(),
+              laneId,
+              action: waitForNextDirection ? '停止条件确认，进入待续' : '停止条件确认',
+              detail: target?.config?.stopWhen?.trim()
+                || target?.stopWhenOverride?.trim()
+                || s.supervisor.stopWhen.trim()
+                || (waitForNextDirection ? '已确认达到结束条件，等待下一步方向' : '已确认达到结束条件，停止注入'),
+            },
+            ...s.supervisor.log,
+          ].slice(0, MAX_LOG),
+        },
+      };
+    });
     const remaining = get().supervisor.lanes.filter(
       (lane) => supervisorLaneControlState(lane) !== 'stopped',
     );
