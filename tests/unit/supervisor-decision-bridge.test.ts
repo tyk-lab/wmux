@@ -764,6 +764,68 @@ describe('supervisor decision bridge', () => {
     expect(writes).not.toHaveBeenCalled();
   });
 
+  it('queues a context recovery draft for user confirmation without writing to the worker', () => {
+    useStore.getState().updateLane('lane-a', {
+      contextRecoveryStatus: 'draft-pending',
+      restoreSource: { surfaceId: 'worker-old', label: '旧任务', sessionId: 'sup-old' },
+      restoredHistory: '已完成基础实现，下一步恢复测试',
+      restoredFromSessionId: 'sup-old',
+    });
+    const recoveryText = '请恢复当前任务，并按主线程统筹、子线程执行测试的分工继续。';
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'context-recovery',
+      reason: '请确认恢复指令',
+      next: recoveryText,
+    })).toMatchObject({ ok: true, outcome: 'needs-human' });
+
+    expect(writes).not.toHaveBeenCalled();
+    expect(useStore.getState().supervisor.pendingApprovals[0]).toMatchObject({
+      source: 'supervisor-context-recovery',
+      proposalKind: 'context-recovery',
+      text: recoveryText,
+    });
+    expect(useStore.getState().supervisor.lanes[0].contextRecoveryStatus).toBe('awaiting-confirmation');
+  });
+
+  it('sends the exact context recovery draft only after user approval', () => {
+    useStore.getState().updateLane('lane-a', {
+      contextRecoveryStatus: 'draft-pending',
+      restoreSource: { surfaceId: 'worker-old', label: '旧任务', sessionId: 'sup-old' },
+      restoredHistory: '已完成基础实现，下一步恢复测试',
+      restoredFromSessionId: 'sup-old',
+    });
+    const recoveryText = '请恢复当前任务，并按主线程统筹、子线程执行测试的分工继续。';
+    expect(decide({
+      outcome: 'needs-human', proposalKind: 'context-recovery',
+      reason: '请确认恢复指令', next: recoveryText,
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: '已确认上下文恢复指令并发送到 worker。' });
+    expect(writes).toHaveBeenCalledWith('worker-a', recoveryText);
+    expect(writes).toHaveBeenCalledWith('worker-a', '\r');
+    expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      contextRecoveryStatus: 'sent', awaitingReview: false, currentTask: recoveryText,
+    });
+  });
+
+  it('rejects a context recovery proposal when the lane did not request recovery', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'context-recovery',
+      reason: '请确认恢复指令',
+      next: '恢复旧任务',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('没有等待拟定') });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   it('keeps the review window open when task delivery fails', () => {
     writes.mockImplementationOnce(() => { throw new Error('pty closed'); });
 

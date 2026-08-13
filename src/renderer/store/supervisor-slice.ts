@@ -36,7 +36,7 @@ export interface SupervisorDecision {
   ts: number;
   task: string;
   outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
-  proposalKind?: 'route-adjustment' | 'route-change' | 'important';
+  proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery';
   reason: string;
   next: string;
 }
@@ -143,6 +143,8 @@ export interface SupervisorLane {
   restoredFromSessionId?: string;
   /** User-selected historical terminal; intentionally independent of this lane's surfaceId. */
   restoreSource?: SupervisorRestoreSource;
+  /** User-gated bootstrap that rebuilds a task terminal from restored audit context. */
+  contextRecoveryStatus?: 'draft-pending' | 'awaiting-confirmation' | 'sent';
 }
 
 export type ApprovalSource =
@@ -151,7 +153,8 @@ export type ApprovalSource =
   | 'idle-hint'
   | 'goal-chase'
   | 'supervisor-route'
-  | 'supervisor-important';
+  | 'supervisor-important'
+  | 'supervisor-context-recovery';
 
 export interface PendingApproval {
   id: string;
@@ -161,7 +164,7 @@ export interface PendingApproval {
   text: string;
   source: ApprovalSource;
   /** A supervisor proposal that must be decided by the user before injection. */
-  proposalKind?: 'route-change' | 'important';
+  proposalKind?: 'route-change' | 'important' | 'context-recovery';
   reason?: string;
   impact?: string;
   alternatives?: string;
@@ -398,6 +401,7 @@ export function clearSupervisorLaneContext(
     restoredHistory: undefined,
     restoredFromSessionId: undefined,
     restoreSource: undefined,
+    contextRecoveryStatus: undefined,
   };
 }
 

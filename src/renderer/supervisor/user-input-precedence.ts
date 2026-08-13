@@ -12,7 +12,9 @@ export function resolvePendingApprovalsForManualTask(
   const store = useStore.getState();
   const resolved = store.resolvePendingWithManualTask(lane.id, task);
   for (const item of resolved) {
-    if (item.source === 'supervisor-route' || item.source === 'supervisor-important') {
+    if (item.source === 'supervisor-route'
+      || item.source === 'supervisor-important'
+      || item.source === 'supervisor-context-recovery') {
       appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
         approvalId: item.id,
         resolution: 'handled-manually',
@@ -20,6 +22,9 @@ export function resolvePendingApprovalsForManualTask(
         text: task,
       });
     }
+  }
+  if (resolved.some((item) => item.source === 'supervisor-context-recovery')) {
+    store.updateLane(lane.id, { contextRecoveryStatus: 'sent' });
   }
   return resolved.length > 0;
 }

@@ -976,6 +976,29 @@ describe('supervisor isolation', () => {
     expect(briefingB).not.toContain('修复登录');
   });
 
+  it('requires the supervisor to draft a user-confirmed task-terminal recovery instruction', () => {
+    const session = { ...createDefaultSupervisorSession(), active: true };
+    const briefing = buildSupervisorBriefing(session, {
+      lane: lane({
+        restoreSource: { surfaceId: 'worker-old', label: 'pwsh.exe', sessionId: 'sup-old' },
+        restoredFromSessionId: 'sup-old',
+        restoredHistory: '[2026/8/13 12:27:14] 收到任务：继续多线程工程',
+        contextRecoveryStatus: 'draft-pending',
+        config: {
+          taskGoal: '恢复项目工作', taskDescription: '', preconditions: '', stopWhen: '测试通过',
+          stopWhenKind: 'concrete', planFilePath: '', taskWorkMode: 'multi-thread',
+          mainThreadResponsibility: '统筹任务', childThreadResponsibilities: ['更新文档', '执行测试'],
+        },
+      }),
+      state: 'idle',
+    });
+
+    expect(briefing).toContain('首次任务终端上下文恢复（必须先处理）');
+    expect(briefing).toContain('--proposal-kind context-recovery');
+    expect(briefing).toContain('主线程和各子线程职责');
+    expect(briefing).toContain('用户确认后 wmux 才会把这段原文发送到任务终端');
+  });
+
   it('restores the latest task and decisions into the matching lane timeline', () => {
     const restored = summarizeRestoredHistory({
       sessionId: 'sup-old',

@@ -66,6 +66,7 @@ function proposalTitle(proposalKind: string): string {
     case 'route-adjustment': return '小范围路线调整';
     case 'route-change': return '路线变更';
     case 'important': return '重要建议';
+    case 'context-recovery': return '上下文恢复指令';
     default: return '';
   }
 }
@@ -114,7 +115,12 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
     if (resolutionValue === 'approved') resolution = '已批准';
     else if (resolutionValue === 'cancelled') resolution = '已取消（用户已通过其他方式发送信息）';
     else if (resolutionValue === 'handled-manually') resolution = '已由用户自行处理';
-    const kind = payloadText(payload, 'proposalKind') === 'route-change' ? '路线变更' : '重要建议';
+    const proposalKind = payloadText(payload, 'proposalKind');
+    const kind = proposalKind === 'route-change'
+      ? '路线变更'
+      : proposalKind === 'context-recovery'
+        ? '上下文恢复指令'
+        : '重要建议';
     const text = payloadText(payload, 'text');
     return [
       `#### 【人工裁决】${resolution} · ${kind}`,

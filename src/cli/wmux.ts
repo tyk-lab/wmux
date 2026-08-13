@@ -857,7 +857,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
-                          [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important>]
+                          [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important|context-recovery>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)

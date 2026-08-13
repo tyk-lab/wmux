@@ -27,6 +27,7 @@ export interface SupervisorConfigFileData {
   taskWorkMode: TaskWorkMode;
   mainThreadResponsibility: string;
   childThreadResponsibilities: string[];
+  restoreTaskContext: boolean;
   supervisorLaunchCmd: string;
   supervisorModel: string;
   supervisorReasoningEffort: string;
@@ -73,6 +74,7 @@ export function normalizeSupervisorConfig(
     childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
       config.childThreadResponsibilities,
     ),
+    restoreTaskContext: config.restoreTaskContext === true,
     supervisorLaunchCmd: text(config.supervisorLaunchCmd, 'pi'),
     supervisorModel: text(config.supervisorModel),
     supervisorReasoningEffort: text(config.supervisorReasoningEffort),

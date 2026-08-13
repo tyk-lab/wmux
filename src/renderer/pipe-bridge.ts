@@ -97,7 +97,9 @@ export function isRemoteSshControlledLane(
 export function isSupervisorProposalAllowed(outcome: string, proposalKind: string): boolean {
   if (!proposalKind) return true;
   if (proposalKind === 'route-adjustment') return outcome === 'continue' || outcome === 'rework';
-  return (proposalKind === 'route-change' || proposalKind === 'important') && outcome === 'needs-human';
+  return (proposalKind === 'route-change'
+    || proposalKind === 'important'
+    || proposalKind === 'context-recovery') && outcome === 'needs-human';
 }
 
 /** A supervisor may advance work only from a continuation/rework or a human proposal. */
@@ -870,7 +872,9 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
     const resolved = store.resolvePendingWithManualTask(lane.id, task);
     manuallyResolved = resolved.length > 0;
     for (const approval of resolved) {
-      if (approval.source !== 'supervisor-route' && approval.source !== 'supervisor-important') continue;
+      if (approval.source !== 'supervisor-route'
+        && approval.source !== 'supervisor-important'
+        && approval.source !== 'supervisor-context-recovery') continue;
       remoteAudit(session, lane, 'supervisor.proposal.resolved', {
         approvalId: approval.id,
         resolution: 'handled-manually',
@@ -879,7 +883,12 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
         actor: params.actor || 'unknown',
       });
     }
-    store.updateLane(lane.id, { currentTask: task });
+    store.updateLane(lane.id, {
+      currentTask: task,
+      ...(resolved.some((approval) => approval.source === 'supervisor-context-recovery')
+        ? { contextRecoveryStatus: 'sent' as const }
+        : {}),
+    });
   }
   remoteAudit(session, lane, 'supervisor.remote-command', { action: 'send-task', terminal: terminal.surfaceId, actor: params.actor || 'unknown', task });
   return { ok: true, message: manuallyResolved
@@ -963,9 +972,18 @@ function decideRemoteSupervisor(
       return { ok: false, error: String((err as Error)?.message || err), message: '' };
     }
     const resolved = store.resolvePendingWithManualTask(lane.id, directTask);
-    store.updateLane(lane.id, { pendingSupervisorDeliveries: [] });
+    store.updateLane(lane.id, {
+      pendingSupervisorDeliveries: [],
+      ...(approval.source === 'supervisor-context-recovery' ? {
+        contextRecoveryStatus: 'sent' as const,
+        awaitingReview: false,
+        currentTask: directTask,
+      } : {}),
+    });
     for (const item of resolved) {
-      if (item.source !== 'supervisor-route' && item.source !== 'supervisor-important') continue;
+      if (item.source !== 'supervisor-route'
+        && item.source !== 'supervisor-important'
+        && item.source !== 'supervisor-context-recovery') continue;
       remoteAudit(session, lane, 'supervisor.proposal.resolved', {
         approvalId: item.id,
         resolution: 'handled-manually',
@@ -982,6 +1000,38 @@ function decideRemoteSupervisor(
       inputLength: directTask.length,
     });
     return { ok: true, message: `已将用户决策直接发送到 ${lane.label}，并记录为人工裁决。` };
+  }
+  if (decision === 'approve' && approval.source === 'supervisor-context-recovery') {
+    const recoveryInstruction = approval.text.trim();
+    if (!recoveryInstruction) {
+      return { ok: false, error: 'AI 监督没有提供可发送的上下文恢复指令。', message: '' };
+    }
+    try {
+      sendTaskToSurface(approval.surfaceId, recoveryInstruction, true);
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message || err), message: '' };
+    }
+    store.approvePending(approvalId);
+    store.updateLane(lane.id, {
+      contextRecoveryStatus: 'sent',
+      awaitingReview: false,
+      currentTask: recoveryInstruction,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+    });
+    remoteAudit(session, lane, 'supervisor.proposal.resolved', {
+      approvalId,
+      resolution: 'approved',
+      proposalKind: 'context-recovery',
+      text: recoveryInstruction,
+      actor: actor || 'unknown',
+    });
+    remoteAudit(session, lane, 'supervisor.remote-decision', {
+      approvalId,
+      decision,
+      actor: actor || 'unknown',
+    });
+    return { ok: true, message: `已确认上下文恢复指令并发送到 ${lane.label}。` };
   }
   const laneSupervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
   if (!laneSupervisorSurfaceId) {
@@ -1410,7 +1460,7 @@ export function initPipeBridge(): void {
     const permissionCommand = String(params?.permissionCommand || '').trim().slice(0, 2000);
     const permissionResponse = String(params?.permissionResponse || '').trim().slice(0, 16);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
-    const proposalKinds = new Set(['route-change', 'important']);
+    const proposalKinds = new Set(['route-change', 'important', 'context-recovery']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
     const laneState = supervisorLaneControlState(lane);
@@ -1427,6 +1477,14 @@ export function initPipeBridge(): void {
     // an auto-continue decision. Such proposals always stop for user consent.
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
       return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；重大路线变更或重要建议必须使用 needs-human' };
+    }
+    if (proposalKind === 'context-recovery') {
+      if (lane.contextRecoveryStatus !== 'draft-pending') {
+        return { ok: false, error: '当前通道没有等待拟定的上下文恢复指令' };
+      }
+      if (!next) {
+        return { ok: false, error: '上下文恢复提案必须通过 --next 提供可直接发送的完整恢复指令' };
+      }
     }
     if (proposalKind === 'route-adjustment' && !next) {
       return { ok: false, error: 'route-adjustment 必须携带明确的低风险 --next' };
@@ -1719,13 +1777,19 @@ export function initPipeBridge(): void {
 
     if (outcome === 'needs-human') {
       store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
-      const kind = proposalKinds.has(proposalKind) ? proposalKind as 'route-change' | 'important' : 'important';
+      const kind = proposalKinds.has(proposalKind)
+        ? proposalKind as 'route-change' | 'important' | 'context-recovery'
+        : 'important';
       const approval = {
         laneId: lane.id,
         surfaceId: lane.surfaceId,
         laneLabel: lane.label,
         text: next,
-        source: kind === 'route-change' ? 'supervisor-route' as const : 'supervisor-important' as const,
+        source: kind === 'route-change'
+          ? 'supervisor-route' as const
+          : kind === 'context-recovery'
+            ? 'supervisor-context-recovery' as const
+            : 'supervisor-important' as const,
         proposalKind: kind,
         reason: reason || `${lane.label} 需要人工决策`,
         impact,
@@ -1733,6 +1797,9 @@ export function initPipeBridge(): void {
         task: lane.currentTask || '（任务未上报）',
       };
       store.enqueueApproval(approval);
+      if (kind === 'context-recovery') {
+        store.updateLane(lane.id, { contextRecoveryStatus: 'awaiting-confirmation' });
+      }
       const pending = useStore.getState().supervisor.pendingApprovals[0];
       if (pending) {
         appendSupervisorRecord(useStore.getState().supervisor, lane, 'supervisor.approval.requested', {
@@ -1744,7 +1811,12 @@ export function initPipeBridge(): void {
           proposalKind: approval.proposalKind,
         });
       }
-      const text = `${kind === 'route-change' ? '路线变更' : '重要建议'}待你决定：${reason || lane.label}`;
+      const proposalLabel = kind === 'route-change'
+        ? '路线变更'
+        : kind === 'context-recovery'
+          ? '上下文恢复指令'
+          : '重要建议';
+      const text = `${proposalLabel}待你决定：${reason || lane.label}`;
       const workspaceId = lane.workspaceId || store.activeWorkspaceId;
       if (workspaceId) {
         store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });

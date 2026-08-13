@@ -227,6 +227,7 @@ export function supervisorLaneBriefingChanged(
     || previousLane.projectDir !== nextLane.projectDir
     || previousLane.restoreSource?.surfaceId !== nextLane.restoreSource?.surfaceId
     || previousLane.restoreSource?.sessionId !== nextLane.restoreSource?.sessionId
+    || previousLane.contextRecoveryStatus !== nextLane.contextRecoveryStatus
     || previousLane.restoredHistory !== nextLane.restoredHistory
     || previousLane.restoredFromSessionId !== nextLane.restoredFromSessionId;
 }
@@ -430,6 +431,20 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
+  const contextRecoveryBlock = session.active
+    && lane.restoreSource
+    && lane.contextRecoveryStatus === 'draft-pending'
+    ? [
+        '## 首次任务终端上下文恢复（必须先处理）',
+        `用户已要求从“${lane.restoreSource.label}”的最新审计上下文恢复任务终端。当前任务终端可能是没有旧对话的全新 AI 会话。`,
+        '',
+        `先 read-screen --surface ${lane.surfaceId} 核对当前界面，再综合任务目标、计划文件、已确认前置条件、已恢复审计摘要、当前工程证据和任务终端工作模式，拟定一段可直接发送给任务终端的完整恢复指令。`,
+        '恢复指令必须交代：为什么需要恢复、可信的当前任务和进度、下一步动作、验收边界；多线程模式还必须逐项写明主线程和各子线程职责，要求任务终端重新建立并保持该分工。不得把不确定的历史状态写成已确认事实。',
+        '',
+        `不要直接推进任务，也不要使用普通 continue/rework。请使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome needs-human --proposal-kind context-recovery --reason "请确认恢复指令" --next "<完整恢复指令>" --verbose 提交草稿。用户确认后 wmux 才会把这段原文发送到任务终端；提交成功后立即停止本回合并等待。`,
+        '',
+      ]
+    : [];
   const taskContextBlock = [
     '## 本终端任务目标与当前任务',
     `配置任务目标: ${taskGoal || '（未设置）'}`,
@@ -491,6 +506,7 @@ export function buildSupervisorBriefing(
       ...planBlock,
       ...policyBlock,
       ...restoredHistoryBlock,
+      ...contextRecoveryBlock,
       '## 停止条件参考（用于裁决，不是机械开关）',
       stopWhenJudgmentGuide(kind, effectiveStopWhen),
       '',
@@ -541,6 +557,7 @@ export function buildSupervisorBriefing(
       ...planBlock,
       ...policyBlock,
       ...restoredHistoryBlock,
+      ...contextRecoveryBlock,
       '## 用户指令队列（已/将注入，勿改写内容）',
       session.directInstructions.trim() || '（见各通道步骤）',
       '',
@@ -581,6 +598,7 @@ export function buildSupervisorBriefing(
     ...planBlock,
     ...policyBlock,
     ...restoredHistoryBlock,
+    ...contextRecoveryBlock,
     '## 完成/停止条件参考（用于裁决，不是机械开关）',
     stopWhenJudgmentGuide(kind, session.doneWhen),
     '',

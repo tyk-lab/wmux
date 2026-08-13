@@ -16,6 +16,7 @@ describe('supervisor config file', () => {
       taskWorkMode: 'multi-thread',
       mainThreadResponsibility: '统筹实现并整合结果',
       childThreadResponsibilities: ['实现驱动', '补充测试'],
+      restoreTaskContext: true,
       supervisorLaunchCmd: 'codex',
       supervisorModel: 'gpt-5.6-sol',
       supervisorReasoningEffort: 'high',
@@ -37,6 +38,7 @@ describe('supervisor config file', () => {
       taskWorkMode: 'multi-thread',
       mainThreadResponsibility: '统筹实现并整合结果',
       childThreadResponsibilities: ['实现驱动', '补充测试'],
+      restoreTaskContext: true,
       supervisorLaunchCmd: 'codex',
       supervisorModel: 'gpt-5.6-sol',
       supervisorReasoningEffort: 'high',
@@ -66,6 +68,7 @@ describe('supervisor config file', () => {
       taskWorkMode: 'multi-thread',
       mainThreadResponsibility: '',
       childThreadResponsibilities: ['实现', '测试', '审查'],
+      restoreTaskContext: false,
     });
   });
 
@@ -146,6 +149,7 @@ describe('supervisor config file', () => {
       taskWorkMode: 'single-thread',
       mainThreadResponsibility: '',
       childThreadResponsibilities: [],
+      restoreTaskContext: false,
       autonomyPermissions: [
         'same-route-next',
         'technical-choice',
@@ -164,6 +168,7 @@ describe('supervisor config file', () => {
       stopWhen: '旧版 V2 停止条件',
       taskWorkMode: 'single-thread',
       childThreadResponsibilities: [],
+      restoreTaskContext: false,
     });
   });
 
