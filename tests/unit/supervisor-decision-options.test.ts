@@ -33,6 +33,35 @@ describe('supervisor decision options', () => {
     ]);
   });
 
+  it('keeps compatibility with bare semicolon-separated proposal labels', () => {
+    expect(supervisorDecisionOptions('方案 A；方案 B', '建议选择其一').map((option) => option.value)).toEqual([
+      '方案 A',
+      '方案 B',
+    ]);
+  });
+
+  it('extracts Markdown numbered recommendations into stable choices', () => {
+    expect(supervisorDecisionOptions(
+      undefined,
+      '请你选下一步\n1. 收官（推荐）：整理结果\n2. 试宽量级：继续测试\n3. 换策略：调整算法',
+    )).toEqual([
+      { value: '选项 1', title: '选项 1', detail: '收官（推荐）：整理结果' },
+      { value: '选项 2', title: '选项 2', detail: '试宽量级：继续测试' },
+      { value: '选项 3', title: '选项 3', detail: '换策略：调整算法' },
+    ]);
+  });
+
+  it('does not treat an ordinary numbered procedure as user choices', () => {
+    expect(supervisorDecisionOptions(
+      undefined,
+      '继续当前路线：\n1. 更新实现\n2. 运行测试\n3. 整理结果',
+    )).toEqual([{
+      value: '采用 AI 当前建议',
+      title: '采用 AI 当前建议',
+      detail: '继续当前路线：\n1. 更新实现\n2. 运行测试\n3. 整理结果',
+    }]);
+  });
+
   it('offers the current recommendation when AI provides no structured alternatives', () => {
     expect(supervisorDecisionOptions(undefined, '继续当前路线')).toEqual([{
       value: '采用 AI 当前建议',

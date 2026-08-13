@@ -1,34 +1,9 @@
-export interface SupervisorDecisionOption {
-  value: string;
-  title: string;
-  detail: string;
-}
+import type { SupervisorDecisionOption } from '../../shared/supervisor-decision-options';
 
-/** Extract A/B-style AI alternatives into stable choices for desktop decisions. */
-export function supervisorDecisionOptions(
-  alternatives: string | undefined,
-  recommendation: string,
-): SupervisorDecisionOption[] {
-  const source = alternatives?.trim() || recommendation.trim();
-  const matches = [...source.matchAll(/(?:^|[；;\n])\s*(?:方案\s*)?([A-F])\s*(?:[）):：、.]|\s+-)\s*/giu)];
-  if (matches.length >= 2) {
-    return matches.slice(0, 6).map((match, index) => {
-      const key = match[1].toUpperCase();
-      const start = (match.index || 0) + match[0].length;
-      const end = matches[index + 1]?.index ?? source.length;
-      return {
-        value: `方案 ${key}`,
-        title: `方案 ${key}`,
-        detail: source.slice(start, end).replace(/[；;\s]+$/u, '').trim() || '未提供方案说明',
-      };
-    });
-  }
-  return [{
-    value: '采用 AI 当前建议',
-    title: '采用 AI 当前建议',
-    detail: recommendation.trim() || 'AI 未提供具体下一步，请选择后由 AI 监督结合终端状态整理。',
-  }];
-}
+export {
+  supervisorDecisionOptions,
+  type SupervisorDecisionOption,
+} from '../../shared/supervisor-decision-options';
 
 export function buildAdoptedPlanBriefing(options: {
   surfaceId: string;
