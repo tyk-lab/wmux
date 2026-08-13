@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`src/main/` contains Electron main-process services (PTYs, IPC, named pipe, hooks, persistence). `src/renderer/` is the Vite/React UI: components, Zustand slices, terminal hooks, styles, and the AI supervisor. `src/preload/` exposes the typed `window.wmux` bridge; `src/cli/` implements the `wmux` command. Shared IPC and branded IDs live in `src/shared/`. Unit tests belong in `tests/unit/`; runtime assets are in `resources/`, and the static site is in `site/`.
+`src/main/` contains Electron main-process services (PTYs, IPC, named pipe, hooks, persistence). `src/renderer/` is the Vite/React UI: components, Zustand slices, terminal hooks, styles, and the AI supervisor. `src/renderer/supervisor/` implements the AI supervisor engine (decision bridge, delivery, protocol); `src/main/feishu-supervisor.ts` and `feishu-direct-task.ts` implement the Feishu remote-control gateway. `src/preload/` exposes the typed `window.wmux` bridge; `src/cli/` implements the `wmux` command. Shared IPC and branded IDs live in `src/shared/`. Unit tests belong in `tests/unit/`; runtime assets are in `resources/`, and the static site is in `site/`.
 
 ## Build, Test, and Development Commands
 
