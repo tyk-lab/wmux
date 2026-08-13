@@ -171,6 +171,31 @@ function readAuditSessions(projectDir: string): Array<SupervisorAuditSession & {
   }
 }
 
+/** Keep only events recorded after the most recent explicit context reset. */
+function eventsAfterLastAbandonment(events: SupervisorAuditEvent[]): SupervisorAuditEvent[] {
+  let startIndex = 0;
+  for (let index = 0; index < events.length; index += 1) {
+    if (events[index].type === 'session.abandoned') startIndex = index + 1;
+  }
+  return events.slice(startIndex);
+}
+
+function latestRestorableHistory(
+  sessions: Array<SupervisorAuditSession & { directory: string }>,
+  matches: (event: SupervisorAuditEvent) => boolean,
+): SupervisorHistory {
+  for (const session of sessions) {
+    const matching = session.events.filter(matches);
+    if (matching.length === 0) continue;
+    const usable = eventsAfterLastAbandonment(matching);
+    if (usable.some((event) => RESTORABLE_EVENT_TYPES.has(event.type))) {
+      return { sessionId: session.sessionId, events: usable.slice(-MAX_HISTORY_EVENTS) };
+    }
+    if (usable.length !== matching.length) return emptyHistory();
+  }
+  return emptyHistory();
+}
+
 /**
  * Return all durable audit sessions belonging to exactly one terminal task.
  * Unlike context recovery, reset tombstones remain visible here so users can
@@ -233,11 +258,12 @@ export function listSupervisorRestoreCandidates(projectDir: string): SupervisorR
     }
   }
   return [...grouped.entries()].flatMap(([surfaceId, events]) => {
-    const last = events[events.length - 1];
-    if (!last || events.some((event) => event.type === 'session.abandoned')) return [];
+    const usable = eventsAfterLastAbandonment(events);
+    const last = usable[usable.length - 1];
+    if (!last || !usable.some((event) => RESTORABLE_EVENT_TYPES.has(event.type))) return [];
     let currentTask = '';
     let lastDecision = '';
-    for (const event of events) {
+    for (const event of usable) {
       if (event.type === 'worker.task' && typeof event.payload.task === 'string') currentTask = event.payload.task;
       if (event.type === 'supervisor.decision' && typeof event.payload.outcome === 'string') {
         lastDecision = event.payload.outcome;
@@ -268,13 +294,11 @@ export function readLatestSupervisorHistory(
   const sessionEvents = readAuditSessions(projectDir);
   if (sessionEvents.length === 0) return emptyHistory();
 
-  for (const session of sessionEvents) {
-    const matching = session.events.filter((event) => event.terminal.surfaceId === terminal.surfaceId);
-    if (matching.length === 0) continue;
-    if (matching.some((event) => event.type === 'session.abandoned')) return emptyHistory();
-    if (!matching.some((event) => RESTORABLE_EVENT_TYPES.has(event.type))) continue;
-    return { sessionId: session.sessionId, events: matching.slice(-MAX_HISTORY_EVENTS) };
-  }
+  const exact = latestRestorableHistory(
+    sessionEvents,
+    (event) => event.terminal.surfaceId === terminal.surfaceId,
+  );
+  if (exact.sessionId) return exact;
 
   const labelMatches = sessionEvents.map((session) => ({
     ...session,
@@ -291,7 +315,5 @@ export function readLatestSupervisorHistory(
     labelMatches.flatMap((session) => session.events.map((event) => event.terminal.surfaceId)),
   );
   if (historicalSurfaceIds.size !== 1) return emptyHistory();
-  const latest = labelMatches.find((session) => session.events.some((event) => RESTORABLE_EVENT_TYPES.has(event.type)));
-  if (!latest || latest.events.some((event) => event.type === 'session.abandoned')) return emptyHistory();
-  return { sessionId: latest.sessionId, events: latest.events.slice(-MAX_HISTORY_EVENTS) };
+  return latestRestorableHistory(labelMatches, () => true);
 }

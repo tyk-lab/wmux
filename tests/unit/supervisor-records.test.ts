@@ -86,6 +86,60 @@ describe('supervisor records', () => {
       .toEqual({ sessionId: null, events: [] });
   });
 
+  it('lists and restores new context recorded after the latest start-over boundary', () => {
+    const project = projectDir();
+    const terminal = { surfaceId: 'surf-a', label: 'Codex' };
+    appendSupervisorRecord({
+      sessionId: 'sup-old', projectDir: project, type: 'worker.task', ts: 100,
+      terminal, payload: { task: '废除前任务' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reset', projectDir: project, type: 'session.abandoned', ts: 200,
+      terminal, payload: { reason: '用户选择重头再来' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-new', projectDir: project, type: 'worker.task', ts: 300,
+      terminal, payload: { task: '废除后新任务' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-new', projectDir: project, type: 'supervisor.decision', ts: 310,
+      terminal, payload: { outcome: 'continue', reason: '继续新任务' },
+    });
+
+    expect(listSupervisorRestoreCandidates(project)).toEqual([{
+      surfaceId: 'surf-a',
+      label: 'Codex',
+      sessionId: 'sup-new',
+      lastEventAt: 310,
+      currentTask: '废除后新任务',
+      lastDecision: 'continue',
+    }]);
+    const restored = readLatestSupervisorHistory(project, terminal);
+    expect(restored.sessionId).toBe('sup-new');
+    expect(restored.events.map((event) => event.payload.task).filter(Boolean)).toEqual(['废除后新任务']);
+  });
+
+  it('restores only events after a start-over marker within the same audit session', () => {
+    const project = projectDir();
+    const terminal = { surfaceId: 'surf-a', label: 'Codex' };
+    appendSupervisorRecord({
+      sessionId: 'sup-reused', projectDir: project, type: 'worker.task', ts: 100,
+      terminal, payload: { task: '旧任务' },
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reused', projectDir: project, type: 'session.abandoned', ts: 200,
+      terminal, payload: {},
+    });
+    appendSupervisorRecord({
+      sessionId: 'sup-reused', projectDir: project, type: 'worker.task', ts: 300,
+      terminal, payload: { task: '新任务' },
+    });
+
+    const restored = readLatestSupervisorHistory(project, terminal);
+    expect(restored.sessionId).toBe('sup-reused');
+    expect(restored.events.map((event) => event.payload.task).filter(Boolean)).toEqual(['新任务']);
+  });
+
   it('lists every matching audit session without mixing terminals that share a label', () => {
     const project = projectDir();
     appendSupervisorRecord({
