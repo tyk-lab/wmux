@@ -494,14 +494,34 @@ export function tickLane(opts: {
 /** Delay before the first briefing so a freshly launched AI TUI can accept it. */
 export const SUPERVISOR_TUI_READY_DELAY_MS = INTERACTIVE_TUI_READY_DELAY_MS;
 
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+/** Keep multi-line AI text inside one terminal draft instead of submitting its first line. */
+export function prepareTerminalPasteInput(
+  text: string,
+  bracketedPasteMode: boolean,
+): string {
+  if (!/[\r\n]/u.test(text)) return text;
+  const normalized = text.replace(/\r\n|\n|\r/gu, '\r');
+  if (bracketedPasteMode) {
+    return `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`;
+  }
+  return normalized.replace(/\r+/gu, ' ');
+}
+
+function terminalPasteInput(surfaceId: string, text: string, submitEnter: boolean): string {
+  const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
+  const bracketedPasteMode = surfaceTerminalRegistry.get(surfaceId)?.modes?.bracketedPasteMode === true;
+  return prepareTerminalPasteInput(input, bracketedPasteMode);
+}
+
 export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
   const pty = (window as any).wmux?.pty;
   if (!pty?.write) {
     throw new Error('wmux.pty.write unavailable');
   }
-  // A trailing LF is itself a submit key in several TUIs. Normalize only the
-  // trailing line break and send one explicit CR after the paste delay.
-  const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
+  const input = terminalPasteInput(surfaceId, text, submitEnter);
   if (!submitEnter) {
     pty.write(surfaceId, input);
     return;
@@ -549,23 +569,57 @@ export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: 
 
 /**
  * Deliver a supervisor decision through the acknowledged main-process queue.
- * Older preload bridges fall back to the legacy synchronous path so a renderer
- * update never strands an already-running window during development.
+ * Older preload bridges keep the same awaited body/Enter sequence, without the
+ * main-process acknowledgement, so their in-flight lock is still preserved.
  */
-export function sendTaskToSurfaceReliably(
+function sendSurfaceInputReliably(
   surfaceId: string,
   text: string,
   submitEnter: boolean,
   captureBeforeSubmit?: () => string,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
-  assertTaskTerminalInputAvailable(surfaceId);
   const pty = (window as any).wmux?.pty;
   if (!pty?.writeReliable) {
-    sendToSurface(surfaceId, text, submitEnter);
-    return;
+    if (!submitEnter) {
+      sendToSurface(surfaceId, text, false);
+      return;
+    }
+    if (!pty?.write) {
+      throw new Error('wmux.pty.write unavailable');
+    }
+    const input = terminalPasteInput(surfaceId, text, true);
+    return new Promise<{ beforeSubmitScreen?: string }>((resolve, reject) => {
+      const token = beginAutomatedTerminalSubmit(surfaceId, () => {
+        try {
+          pty.write(surfaceId, '\x03');
+        } catch {
+          /* ignore */
+        }
+      });
+      try {
+        pty.write(surfaceId, input);
+      } catch (error) {
+        cancelPendingAutomatedTerminalSubmit(surfaceId, false);
+        reject(error);
+        return;
+      }
+      window.setTimeout(() => {
+        if (!consumeAutomatedTerminalSubmit(token)) {
+          reject(new Error('正文投递期间检测到用户输入，已取消自动提交'));
+          return;
+        }
+        const beforeSubmitScreen = captureBeforeSubmit?.();
+        try {
+          pty.write(surfaceId, '\r');
+          resolve({ beforeSubmitScreen });
+        } catch (error) {
+          reject(error);
+        }
+      }, pasteSubmitDelayMs(input));
+    });
   }
 
-  const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
+  const input = terminalPasteInput(surfaceId, text, submitEnter);
   return (async () => {
     if (!submitEnter) {
       if (!await pty.writeReliable(surfaceId, input)) {
@@ -593,6 +647,25 @@ export function sendTaskToSurfaceReliably(
     }
     return { beforeSubmitScreen };
   })();
+}
+
+export function sendTaskToSurfaceReliably(
+  surfaceId: string,
+  text: string,
+  submitEnter: boolean,
+  captureBeforeSubmit?: () => string,
+): Promise<{ beforeSubmitScreen?: string }> | void {
+  assertTaskTerminalInputAvailable(surfaceId);
+  return sendSurfaceInputReliably(surfaceId, text, submitEnter, captureBeforeSubmit);
+}
+
+/** Permission prompts are the current terminal input, so they intentionally bypass the empty-draft guard. */
+export function sendPermissionResponseReliably(
+  surfaceId: string,
+  response: string,
+  captureBeforeSubmit?: () => string,
+): Promise<{ beforeSubmitScreen?: string }> | void {
+  return sendSurfaceInputReliably(surfaceId, response, true, captureBeforeSubmit);
 }
 
 /** Build a pending goal-chase decision step (id unique enough for UI). */

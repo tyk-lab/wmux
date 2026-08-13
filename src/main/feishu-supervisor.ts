@@ -363,7 +363,7 @@ function terminalActivityText(terminal: FeishuListTerminal): string {
 
 function terminalOptions(terminals: FeishuListTerminal[], showActivity = false): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
-    text: { tag: 'plain_text', content: `${terminal.label}${terminal.supervisionState === 'paused' ? '（已暂停）' : terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''} · ${terminal.workspace}`.slice(0, 100) },
+    text: { tag: 'plain_text', content: `${terminal.workspace}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''} · ${terminal.label}${terminal.supervisionState === 'paused' ? '（已暂停）' : terminal.supervised ? '（监督中）' : terminal.restartable ? '（已停止，可重新监督）' : ''}`.slice(0, 100) },
     value: terminal.surfaceId,
   }));
 }

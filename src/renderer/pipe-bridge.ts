@@ -16,6 +16,7 @@ import {
 } from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
 import {
+  sendPermissionResponseReliably,
   sendTaskToSurface,
   sendTaskToSurfaceReliably,
   sendToSurface,
@@ -451,6 +452,8 @@ interface SupervisorDeliveryObservation {
   screenChanged: boolean;
 }
 
+const supervisorDeliveriesInFlight = new Set<string>();
+
 async function observeSupervisorDelivery(
   surfaceId: string,
   beforeScreen: string,
@@ -466,11 +469,12 @@ async function observeSupervisorDelivery(
     screenChanged = terminalScreenTail(surfaceId) !== beforeScreen;
     const blockedStateChanged = agentState === 'blocked' && (
       beforeAgentState?.state !== 'blocked'
-      || currentState?.updatedAt !== beforeAgentState.updatedAt
       || currentState?.blockedVersion !== beforeAgentState.blockedVersion
       || currentState?.blockedRequestId !== beforeAgentState.blockedRequestId
     );
-    if (agentState === 'working' || blockedStateChanged || screenChanged) {
+    // Screen repaint alone is not an acknowledgement: delayed body echo and
+    // unrelated terminal output can both change it before the task is accepted.
+    if (agentState === 'working' || blockedStateChanged) {
       return { confirmed: true, agentState, screenChanged };
     }
     if (attempt + 1 < attempts) {
@@ -1590,6 +1594,10 @@ export function initPipeBridge(): void {
       return { ok: true, outcome, duplicate: true };
     }
 
+    if ((next || permissionResponse) && supervisorDeliveriesInFlight.has(lane.id)) {
+      return { ok: false, error: '当前通道已有裁决正在投递；请等待本次投递确认后再裁决' };
+    }
+
     const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
     const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
@@ -1635,31 +1643,78 @@ export function initPipeBridge(): void {
       return { ok: true, outcome };
     }
 
-    if (permissionResponse) {
-      try {
-        sendToSurface(lane.surfaceId, permissionResponse, true);
-      } catch (err) {
-        const error = String((err as Error)?.message || err);
-        store.updateLane(lane.id, {
-          awaitingReview: true,
-          autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
-          decisions: lane.decisions || [],
-        });
-        appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', { kind: 'permission', error });
-        store.appendSupervisorLog(lane.id, '权限响应发送失败', error);
-        return { ok: false, error: `权限响应发送失败：${error}` };
-      }
-      appendSupervisorRecord(session, lane, 'supervisor.permission-approved', {
-        command: permissionCommand,
-        response: permissionResponse,
-      });
-      store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
+    const failDelivery = (
+      kind: 'next' | 'permission',
+      label: string,
+      error: string,
+      delivery?: SupervisorDeliveryObservation,
+    ) => {
       store.updateLane(lane.id, {
-        awaitingReview: false,
-        lastBlockedResponseVersion: agentState!.blockedVersion,
-        lastBlockedResponseId: agentState!.blockedRequestId || undefined,
+        awaitingReview: true,
+        autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
+        decisions: lane.decisions || [],
       });
-      return { ok: true, outcome, autoAuthorized: true };
+      appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', {
+        kind,
+        error,
+        ...(delivery ? { delivery } : {}),
+      });
+      store.appendSupervisorLog(lane.id, `${label}失败`, error);
+      return { ok: false, error: `${label}失败：${error}`, ...(delivery ? { delivery } : {}) };
+    };
+
+    if (permissionResponse) {
+      const beforeScreen = terminalScreenTail(lane.surfaceId);
+      const finishPermission = (delivery?: SupervisorDeliveryObservation) => {
+        appendSupervisorRecord(session, lane, 'supervisor.permission-approved', {
+          command: permissionCommand,
+          response: permissionResponse,
+        });
+        store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
+        store.updateLane(lane.id, {
+          awaitingReview: false,
+          lastBlockedResponseVersion: agentState!.blockedVersion,
+          lastBlockedResponseId: agentState!.blockedRequestId || undefined,
+        });
+        return { ok: true, outcome, autoAuthorized: true, ...(delivery ? { delivery } : {}) };
+      };
+      supervisorDeliveriesInFlight.add(lane.id);
+      try {
+        const pendingDelivery = sendPermissionResponseReliably(
+          lane.surfaceId,
+          permissionResponse,
+          () => terminalScreenTail(lane.surfaceId),
+        );
+        if (pendingDelivery) {
+          return pendingDelivery
+            .then((receipt) => observeSupervisorDelivery(
+              lane.surfaceId,
+              receipt.beforeSubmitScreen ?? beforeScreen,
+              agentState,
+            ))
+            .then((delivery) => delivery.confirmed
+              ? finishPermission(delivery)
+              : failDelivery(
+                'permission',
+                '权限响应发送',
+                `PTY 已接受输入，但未观察到新的任务状态（当前 ${delivery.agentState}${delivery.screenChanged ? '，仅检测到屏幕变化' : ''}）；请核验权限提示后再重试`,
+                delivery,
+              ))
+            .catch((err) => failDelivery(
+              'permission',
+              '权限响应发送',
+              String((err as Error)?.message || err),
+            ))
+            .finally(() => supervisorDeliveriesInFlight.delete(lane.id));
+        }
+        const result = finishPermission();
+        supervisorDeliveriesInFlight.delete(lane.id);
+        return result;
+      } catch (err) {
+        supervisorDeliveriesInFlight.delete(lane.id);
+        const error = String((err as Error)?.message || err);
+        return failDelivery('permission', '权限响应发送', error);
+      }
     }
 
     if (outcome === 'needs-human') {
@@ -1708,23 +1763,10 @@ export function initPipeBridge(): void {
       });
       return { ok: true, outcome, ...(delivery ? { delivery } : {}) };
     };
-    const failDelivery = (error: string, delivery?: SupervisorDeliveryObservation) => {
-      store.updateLane(lane.id, {
-        awaitingReview: true,
-        autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
-        decisions: lane.decisions || [],
-      });
-      appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', {
-        kind: 'next',
-        error,
-        ...(delivery ? { delivery } : {}),
-      });
-      store.appendSupervisorLog(lane.id, '下一步发送失败', error);
-      return { ok: false, error: `下一步发送失败：${error}`, ...(delivery ? { delivery } : {}) };
-    };
 
     if (next) {
       const beforeScreen = terminalScreenTail(lane.surfaceId);
+      supervisorDeliveriesInFlight.add(lane.id);
       try {
         const pendingDelivery = sendTaskToSurfaceReliably(
           lane.surfaceId,
@@ -1748,14 +1790,23 @@ export function initPipeBridge(): void {
             .then((delivery) => delivery.confirmed
               ? finishDecision(delivery)
               : failDelivery(
-                `PTY 已接受输入，但任务终端仍为 ${delivery.agentState} 且屏幕没有变化；请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后改用短指令重试`,
+                'next',
+                '下一步发送',
+                `PTY 已接受输入，但未观察到新的任务状态（当前 ${delivery.agentState}${delivery.screenChanged ? '，仅检测到屏幕变化' : ''}）；请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后改用短指令重试`,
                 delivery,
               ))
-            .catch((err) => failDelivery(String((err as Error)?.message || err)));
+            .catch((err) => failDelivery(
+              'next',
+              '下一步发送',
+              String((err as Error)?.message || err),
+            ))
+            .finally(() => supervisorDeliveriesInFlight.delete(lane.id));
         }
       } catch (err) {
-        return failDelivery(String((err as Error)?.message || err));
+        supervisorDeliveriesInFlight.delete(lane.id);
+        return failDelivery('next', '下一步发送', String((err as Error)?.message || err));
       }
+      supervisorDeliveriesInFlight.delete(lane.id);
     }
     return finishDecision();
   };

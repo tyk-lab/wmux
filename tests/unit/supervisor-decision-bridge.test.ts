@@ -149,7 +149,7 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true, message: expect.stringContaining('AI 监督终端（管家）') });
     expect(writes).toHaveBeenCalledWith(
       'supervisor-a',
-      '[用户调整监督方向]\n先读取项目进度，再给任务终端建议',
+      '[用户调整监督方向] 先读取项目进度，再给任务终端建议',
     );
     expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
     expect(useStore.getState().supervisor.log[0]).toMatchObject({
@@ -439,6 +439,37 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(false);
   });
 
+  it('uses bracketed paste for a multi-line next step when the task terminal supports it', async () => {
+    (surfaceTerminalRegistry.get('worker-a') as any).modes = { bracketedPasteMode: true };
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({ next: '先检查实现\n再运行测试' })).resolves.toMatchObject({ ok: true });
+    expect(writeReliable.mock.calls).toEqual([
+      ['worker-a', '\x1b[200~先检查实现\r再运行测试\x1b[201~'],
+      ['worker-a', '\r'],
+    ]);
+  });
+
+  it('flattens a multi-line next step when bracketed paste is unavailable', async () => {
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({ next: '先检查实现\n再运行测试' })).resolves.toMatchObject({ ok: true });
+    expect(writeReliable.mock.calls).toEqual([
+      ['worker-a', '先检查实现 再运行测试'],
+      ['worker-a', '\r'],
+    ]);
+  });
+
   it('keeps review open when PTY accepts input but terminal state and screen do not change', async () => {
     const writeReliable = vi.fn(async () => true);
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
@@ -456,6 +487,47 @@ describe('supervisor decision bridge', () => {
       autoDecisionsUsed: 0,
       decisions: [],
     });
+  });
+
+  it('does not treat an unrelated screen repaint as delivery confirmation', async () => {
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '\r') screenText = '后台日志刷新，但任务状态未变化';
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({ next: '运行相关单元测试' })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('仅检测到屏幕变化'),
+      delivery: { confirmed: false, agentState: 'idle', screenChanged: true },
+    });
+    expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(true);
+  });
+
+  it('serializes decisions while one delivery is still in flight', async () => {
+    let acceptBody: ((accepted: boolean) => void) | undefined;
+    const writeReliable = vi.fn((_surfaceId: string, data: string) => {
+      if (data === '第一条裁决') {
+        return new Promise<boolean>((resolve) => { acceptBody = resolve; });
+      }
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      return Promise.resolve(true);
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    const first = decide({ next: '第一条裁决' });
+    expect(decide({ next: '并发的第二条裁决' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已有裁决正在投递'),
+    });
+    acceptBody?.(true);
+    await expect(first).resolves.toMatchObject({ ok: true });
+    expect(writeReliable.mock.calls).toEqual([
+      ['worker-a', '第一条裁决'],
+      ['worker-a', '\r'],
+    ]);
   });
 
   it('records that a decision needs human review when the automatic limit is reached', () => {
@@ -703,7 +775,7 @@ describe('supervisor decision bridge', () => {
     });
   });
 
-  it('confirms a low-risk permission without consuming a judgment slot', () => {
+  it('confirms a low-risk permission without consuming a judgment slot', async () => {
     screenText = 'Command: npm test\nContinue? [y/N]';
     agentState = {
       state: 'blocked',
@@ -712,14 +784,48 @@ describe('supervisor decision bridge', () => {
       blockedRequestId: 'request-1',
       updatedAt: 2,
     };
-    expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' }))
-      .toMatchObject({ ok: true, autoAuthorized: true });
+    writes.mockImplementation((_surfaceId: string, data: string) => {
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 3 };
+    });
+    await expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' }))
+      .resolves.toMatchObject({ ok: true, autoAuthorized: true });
     expect(writes).toHaveBeenNthCalledWith(1, 'worker-a', 'y');
     expect(useStore.getState().supervisor.lanes[0].autoDecisionsUsed).toBe(0);
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
-    agentState = { ...agentState, updatedAt: 99 };
+    agentState = { ...agentState, state: 'blocked', updatedAt: 99 };
     expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(2);
+  });
+
+  it('confirms a permission response through the reliable queue and task-state observation', async () => {
+    screenText = 'Command: npm test\nContinue? [y/N]';
+    agentState = {
+      state: 'blocked',
+      blockedReason: 'permission: npm test',
+      blockedVersion: 1,
+      blockedRequestId: 'request-reliable',
+      updatedAt: 2,
+    };
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 3 };
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+
+    await expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).resolves.toMatchObject({
+      ok: true,
+      autoAuthorized: true,
+      delivery: { confirmed: true, agentState: 'working' },
+    });
+    expect(writeReliable.mock.calls).toEqual([
+      ['worker-a', 'y'],
+      ['worker-a', '\r'],
+    ]);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: false,
+      autoDecisionsUsed: 0,
+      lastBlockedResponseId: 'request-reliable',
+    });
   });
 
   it('always sends an SSH-controlling terminal permission request to a human', () => {

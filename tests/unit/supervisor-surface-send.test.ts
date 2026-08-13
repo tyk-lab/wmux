@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sendToSurface } from '../../src/renderer/supervisor/supervisor-engine';
+import {
+  sendPermissionResponseReliably,
+  sendToSurface,
+} from '../../src/renderer/supervisor/supervisor-engine';
 import { prepareForUserTerminalInput, resetTerminalUserInputTracking } from '../../src/renderer/utils/terminal-user-submit';
 
 describe('supervisor surface input delivery', () => {
@@ -49,6 +52,31 @@ describe('supervisor surface input delivery', () => {
 
     expect(write.mock.calls).toEqual([
       ['worker-a', 'AI 审核意见'],
+      ['worker-a', '\x03'],
+    ]);
+  });
+
+  it('settles an awaited legacy delivery after user input cancels its Enter', async () => {
+    const write = vi.fn();
+    let submit: (() => void) | undefined;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        wmux: { pty: { write } },
+        setTimeout: (callback: () => void) => {
+          submit = callback;
+          return 9;
+        },
+      },
+    });
+
+    const delivery = sendPermissionResponseReliably('worker-a', 'y');
+    expect(prepareForUserTerminalInput('worker-a', '用户输入').clearAutomatedDraft).toBe(false);
+    submit?.();
+
+    await expect(delivery).rejects.toThrow('检测到用户输入');
+    expect(write.mock.calls).toEqual([
+      ['worker-a', 'y'],
       ['worker-a', '\x03'],
     ]);
   });
