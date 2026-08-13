@@ -16,3 +16,4 @@ build-icons.log
 
 # Sensitive credentials - never commit
 docs/env.txt
+.wmux/supervisor/
