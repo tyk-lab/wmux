@@ -70,4 +70,27 @@ describe('supervisor user input precedence', () => {
     expect(handleSupervisorUserSubmit('other-worker')).toBe(false);
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
   });
+
+  it('resumes a waiting lane and resets completion state when the user submits a new direction', () => {
+    const store = useStore.getState();
+    store.updateLane('lane-user', {
+      enabled: true,
+      controlState: 'waiting',
+      stopConfirmed: true,
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 5,
+    });
+
+    expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: true,
+      controlState: 'active',
+      stopConfirmed: false,
+      awaitingStopCheck: false,
+      awaitingReview: false,
+      autoDecisionsUsed: 0,
+    });
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({ action: '待续恢复' });
+  });
 });

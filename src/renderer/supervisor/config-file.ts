@@ -16,6 +16,19 @@ export interface SupervisorTerminalConfigImportPlan<T extends SurfaceBoundSuperv
   selectedSurfaceIds: string[];
 }
 
+export type SupervisorWaitingConfigAction = 'retain' | 'resume' | 'finalize';
+
+/** Resolve how applying terminal config affects a lane that already completed into waiting. */
+export function supervisorWaitingConfigAction(
+  previousControlState: string | undefined,
+  waitForNextDirection: boolean,
+  briefingChanged: boolean,
+): SupervisorWaitingConfigAction {
+  if (previousControlState !== 'waiting') return 'retain';
+  if (!waitForNextDirection) return 'finalize';
+  return briefingChanged ? 'resume' : 'retain';
+}
+
 /** Import only terminal presets whose original terminal still exists. */
 export function matchExistingSupervisorTerminalConfigs<T extends SurfaceBoundSupervisorConfig>(
   configs: readonly T[],

@@ -68,10 +68,19 @@ describe('supervisor setup dialog feedback', () => {
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {
     expect(panelSource).toContain('const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;');
-    expect(panelSource).toMatch(/const laneStatusLabel = lane\.stopConfirmed\s+\? '已达停止条件'/);
+    expect(panelSource).toMatch(/const laneStatusLabel = laneControlState === 'waiting'[\s\S]+lane\.stopConfirmed[\s\S]+\? '已达停止条件'/);
     expect(panelSource).toContain('aria-expanded={stoppedLaneExpanded}');
     expect(panelSource).toContain("title={stoppedLaneExpanded ? '折叠监督详情' : '展开监督详情'}");
     expect(panelSource).toContain('{!laneDetailsCollapsed && (');
     expect(panelSource).toContain('supervisor.lanes.filter((lane) => lane.stopConfirmed)');
+  });
+
+  it('configures optional waiting after completion per terminal', () => {
+    expect(dialogSource).toContain('完成后待续（可选）');
+    expect(dialogSource).toContain('waitForNextDirection: event.target.checked');
+    expect(dialogSource).toContain("supervisorLaneControlState(prev) === 'waiting'");
+    expect(dialogSource).toContain("? 'stopped'");
+    expect(panelSource).toContain("laneControlState === 'waiting'");
+    expect(panelSource).toContain('等待下一步方向');
   });
 });

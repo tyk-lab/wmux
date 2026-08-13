@@ -48,7 +48,10 @@ import {
   restoreSelectedLaneHistory,
   type SupervisorRestoreCandidate,
 } from '../../supervisor/recording';
-import { planSupervisorTerminalConfigImport } from '../../supervisor/config-file';
+import {
+  planSupervisorTerminalConfigImport,
+  supervisorWaitingConfigAction,
+} from '../../supervisor/config-file';
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
@@ -821,9 +824,11 @@ export default function SupervisorSetupDialog() {
         : undefined;
       const config = laneConfigs[c.surfaceId]
         || (prev ? effectiveSupervisorLaneConfig(supervisor, prev) : emptyLaneConfig());
-      const finalizesWaiting = !!prev
-        && supervisorLaneControlState(prev) === 'waiting'
-        && config.waitForNextDirection !== true;
+      const finalizesWaiting = supervisorWaitingConfigAction(
+        prev ? supervisorLaneControlState(prev) : undefined,
+        config.waitForNextDirection === true,
+        false,
+      ) === 'finalize';
       lanes.push({
         id: prev?.id || `lane-${c.surfaceId}`,
         managementSessionId: prev?.managementSessionId
@@ -1101,9 +1106,11 @@ export default function SupervisorSetupDialog() {
         ));
       for (const lane of changedLanes) {
         const previousLane = previousBySurfaceId.get(lane.surfaceId);
-        if (supervisorLaneControlState(lane) !== 'waiting'
-          || !previousLane
-          || supervisorLaneControlState(previousLane) !== 'waiting') continue;
+        if (!previousLane || supervisorWaitingConfigAction(
+          supervisorLaneControlState(previousLane),
+          lane.config?.waitForNextDirection === true,
+          true,
+        ) !== 'resume') continue;
         useStore.getState().updateLane(lane.id, {
           enabled: true,
           controlState: 'active',

@@ -423,6 +423,61 @@ describe('supervisor isolation', () => {
     });
   });
 
+  it('keeps a completed lane waiting when it is configured for another direction', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane({
+      config: {
+        taskGoal: '完成当前任务',
+        taskDescription: '',
+        preconditions: '',
+        stopWhen: '当前目标完成',
+        stopWhenKind: 'concrete',
+        waitForNextDirection: true,
+        planFilePath: '',
+      },
+      awaitingReview: true,
+      autoDecisionLimitReached: true,
+    })]);
+    store.getState().startSupervisor();
+
+    store.getState().confirmStopCondition('lane-a');
+
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: true,
+      controlState: 'waiting',
+      stopConfirmed: true,
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+    });
+    expect(store.getState().supervisor.log[0].action).toBe('停止条件确认，进入待续');
+  });
+
+  it('stops a completed lane when waiting for another direction is disabled', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([lane({
+      config: {
+        taskGoal: '完成当前任务',
+        taskDescription: '',
+        preconditions: '',
+        stopWhen: '当前目标完成',
+        stopWhenKind: 'concrete',
+        waitForNextDirection: false,
+        planFilePath: '',
+      },
+    })]);
+    store.getState().startSupervisor();
+
+    store.getState().confirmStopCondition('lane-a');
+
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: false,
+      controlState: 'stopped',
+      stopConfirmed: true,
+    });
+  });
+
   it('resumes only the lane whose decision was cancelled by alternate input', () => {
     const store = makeStore();
     store.getState().setSupervisorLanes([
@@ -467,6 +522,27 @@ describe('supervisor isolation', () => {
     session.taskDescription = '登录成功后保留现有错误提示。';
     expect(buildSupervisorBriefing(session, { lane: lane(), state: 'idle' }))
       .toContain('## 停止条件补充说明（可选）\n登录成功后保留现有错误提示。');
+  });
+
+  it('briefs the dedicated supervisor about the configured completion behavior', () => {
+    const session = createDefaultSupervisorSession();
+    const waitingText = buildSupervisorBriefing(session, {
+      lane: lane({
+        config: {
+          taskGoal: '',
+          taskDescription: '',
+          preconditions: '',
+          stopWhen: '测试通过',
+          stopWhenKind: 'concrete',
+          waitForNextDirection: true,
+          planFilePath: '',
+        },
+      }),
+      state: 'idle',
+    });
+
+    expect(waitingText).toContain('wmux 会把通道转为“待续”');
+    expect(waitingText).toContain('等待用户的新指令或方向');
   });
 
   it('clears supervisor context but retains monitored-terminal facts on restart', () => {
@@ -640,6 +716,7 @@ describe('supervisor isolation', () => {
         preconditions: '认证测试环境已登录',
         stopWhen: '认证测试全部通过',
         stopWhenKind: 'concrete',
+        waitForNextDirection: false,
         planFilePath: 'D:\\plans\\auth.md',
       },
     });
@@ -653,6 +730,7 @@ describe('supervisor isolation', () => {
         preconditions: '文档术语表已确认',
         stopWhen: '文档方向符合术语表',
         stopWhenKind: 'direction',
+        waitForNextDirection: false,
         planFilePath: 'D:\\plans\\docs.md',
       },
     });

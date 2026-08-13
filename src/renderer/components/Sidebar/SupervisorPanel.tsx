@@ -109,6 +109,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
   const enabled = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
+  const waiting = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
   const pendingCount = supervisor.pendingApprovals.length;
   const mode = supervisor.mode || 'unified';
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
@@ -136,7 +137,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     },
   );
   let statusLabel = '已停止';
-  if (supervisor.active) statusLabel = '运行中';
+  if (supervisor.active) statusLabel = enabled.length === 0 && waiting.length > 0 ? '待续' : '运行中';
   else if (supervisor.paused) statusLabel = '已暂停';
 
   const openSupervisorSession = () => {
@@ -666,7 +667,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         <span className="sup-panel__title">AI 监督</span>
         <span className="sup-panel__status">{statusLabel}</span>
         <span className="sup-panel__meta-right">
-          {modeLabel(mode)} · {enabled.length} 通道{supervisor.autonomous ? ' · 全自动' : ''}
+          {modeLabel(mode)} · {enabled.length} 通道{waiting.length > 0 ? ` · ${waiting.length} 待续` : ''}{supervisor.autonomous ? ' · 全自动' : ''}
           {pendingCount > 0 ? ` · ${pendingCount} 待批` : ''}
         </span>
       </button>
@@ -712,9 +713,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               );
               const stoppedLaneExpanded = expandedStoppedLaneIds.has(lane.id);
               const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;
-              const laneStatusLabel = lane.stopConfirmed
-                ? '已达停止条件'
-                : laneControlState === 'active'
+              const laneStatusLabel = laneControlState === 'waiting'
+                ? '待续'
+                : lane.stopConfirmed
+                  ? '已达停止条件'
+                  : laneControlState === 'active'
                   ? '监督中'
                   : laneControlState === 'paused'
                     ? '已暂停'
@@ -757,8 +760,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-detail">
                     {lane.workspaceTitle ? `${lane.workspaceTitle} · ` : ''}
                     {lane.surfaceId.slice(0, 14)}…
-                    {lane.stopConfirmed
-                      ? ' · 已达停止条件'
+                    {laneControlState === 'waiting'
+                      ? ' · 已达停止条件，等待下一步方向'
+                      : lane.stopConfirmed
+                        ? ' · 已达停止条件'
                       : lane.awaitingStopCheck
                         ? ' · 待核对停止条件'
                         : open
@@ -786,6 +791,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   <div className="sup-panel__lane-task" title={laneConfig.stopWhen}>
                     停止({stopWhenKindLabel(laneConfig.stopWhenKind)}): {laneConfig.stopWhen}
                   </div>
+                  {laneConfig.waitForNextDirection && (
+                    <div className="sup-panel__lane-task">
+                      完成后: 待续，等待下一步方向
+                    </div>
+                  )}
                   {laneConfig.taskDescription && (
                     <div className="sup-panel__lane-task" title={laneConfig.taskDescription}>
                       停止补充: {laneConfig.taskDescription}
@@ -848,6 +858,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                       {loadingRecordLaneId === lane.id ? '读取记录…' : '查看/刷新记录'}
                     </button>
                   </div>
+                  {laneControlState === 'waiting' && (
+                    <div className="sup-panel__lane-supervisor">
+                      待续中：向任务终端发送新方向可自动恢复；取消配置中的“完成后待续”则正式停止。
+                    </div>
+                  )}
                   {lane.awaitingStopCheck && !lane.stopConfirmed && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
                       <button type="button" onClick={() => rejectStopCondition(lane.id)} disabled={!supervisor.active}>

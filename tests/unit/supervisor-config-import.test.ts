@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   matchExistingSupervisorTerminalConfigs,
   planSupervisorTerminalConfigImport,
+  supervisorWaitingConfigAction,
 } from '../../src/renderer/supervisor/config-file';
 
 describe('supervisor terminal config import', () => {
@@ -40,5 +41,21 @@ describe('supervisor terminal config import', () => {
       skipped: 1,
       selectedSurfaceIds: ['surf-retained'],
     });
+  });
+});
+
+describe('supervisor waiting config action', () => {
+  it('finalizes a waiting completion when the option is unchecked', () => {
+    expect(supervisorWaitingConfigAction('waiting', false, true)).toBe('finalize');
+  });
+
+  it('resumes a waiting lane when retained config changes', () => {
+    expect(supervisorWaitingConfigAction('waiting', true, true)).toBe('resume');
+  });
+
+  it('keeps non-completed and unchanged waiting lanes in their current state', () => {
+    expect(supervisorWaitingConfigAction('active', false, true)).toBe('retain');
+    expect(supervisorWaitingConfigAction('paused', false, true)).toBe('retain');
+    expect(supervisorWaitingConfigAction('waiting', true, false)).toBe('retain');
   });
 });

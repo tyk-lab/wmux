@@ -861,6 +861,8 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
     };
   }
 
+  handleSupervisorUserSubmit(terminal.surfaceId);
+
   try {
     sendTaskToSurface(terminal.surfaceId, task, true);
   } catch (err) {
@@ -898,9 +900,10 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
 }
 
 function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boolean; message: string; error?: string } {
-  const session = useStore.getState().supervisor;
+  let session = useStore.getState().supervisor;
   const lane = session.lanes.find((item) => item.surfaceId === params.terminal || item.managementSessionId === params.terminal);
-  if (!session.active || !lane || supervisorLaneControlState(lane) !== 'active') {
+  if (!session.active || !lane || (supervisorLaneControlState(lane) !== 'active'
+    && supervisorLaneControlState(lane) !== 'waiting')) {
     return { ok: false, error: '目标 AI 监督终端（管家）当前未运行；请先启动或恢复该监督。', message: '' };
   }
   const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
@@ -909,6 +912,23 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   }
   const message = params.message.trim();
   if (!message) return { ok: false, error: '监督方向信息不能为空。', message: '' };
+
+  if (supervisorLaneControlState(lane) === 'waiting') {
+    useStore.getState().updateLane(lane.id, {
+      enabled: true,
+      controlState: 'active',
+      awaitingStopCheck: false,
+      stopConfirmed: false,
+      awaitingReview: true,
+      autoDecisionLimitReached: false,
+      autoDecisionsUsed: 0,
+      pendingSupervisorDeliveries: [],
+      lastBlockedResponseVersion: undefined,
+      lastBlockedResponseId: undefined,
+    });
+    useStore.getState().appendSupervisorLog(lane.id, '待续恢复', '用户已提供新的监督方向，继续监督');
+    session = useStore.getState().supervisor;
+  }
 
   try {
     sendTaskToSurface(supervisorSurfaceId, `[用户调整监督方向]\n${message}`, true);
