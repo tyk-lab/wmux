@@ -301,7 +301,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'pi',
-    supervisorModel: 'kimi-coding/k3-256k',
+    supervisorModel: 'xai/grok-4.5',
     supervisorReasoningEffort: 'medium',
     pendingApprovals: [],
     log: [],
@@ -320,7 +320,7 @@ export function supervisorDefaultsForAgent(agent: DefaultSupervisorAgent): Pick<
   if (agent === 'pi') {
     return {
       supervisorLaunchCmd: 'pi',
-      supervisorModel: 'kimi-coding/k3-256k',
+      supervisorModel: 'xai/grok-4.5',
       supervisorReasoningEffort: 'medium',
     };
   }

@@ -510,9 +510,9 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('pi');
   });
 
-  it('uses Kimi K3 256k with medium thinking as the default Pi settings', () => {
+  it('uses Grok 4.5 with medium thinking as the default Pi settings', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.supervisorModel).toBe('kimi-coding/k3-256k');
+    expect(session.supervisorModel).toBe('xai/grok-4.5');
     expect(session.supervisorReasoningEffort).toBe('medium');
   });
 
@@ -535,7 +535,11 @@ describe('supervisor isolation', () => {
   });
 
   it('provides launcher-compatible defaults for every configurable supervisor Agent', () => {
-    expect(supervisorDefaultsForAgent('pi')).toMatchObject({ supervisorLaunchCmd: 'pi', supervisorModel: 'kimi-coding/k3-256k' });
+    expect(supervisorDefaultsForAgent('pi')).toMatchObject({
+      supervisorLaunchCmd: 'pi',
+      supervisorModel: 'xai/grok-4.5',
+      supervisorReasoningEffort: 'medium',
+    });
     expect(supervisorDefaultsForAgent('codex')).toMatchObject({ supervisorLaunchCmd: 'codex', supervisorModel: 'gpt-5.6-terra' });
     expect(supervisorDefaultsForAgent('claude')).toMatchObject({ supervisorLaunchCmd: 'claude', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('kimi')).toMatchObject({ supervisorLaunchCmd: 'kimi', supervisorModel: 'k3-256k' });
