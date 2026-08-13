@@ -313,42 +313,62 @@ export function createDefaultSupervisorSession(): SupervisorSession {
   };
 }
 
-export function supervisorDefaultsForAgent(agent: DefaultSupervisorAgent): Pick<
+export interface SupervisorDefaultPreferences {
+  defaultSupervisorModels?: Partial<Record<DefaultSupervisorAgent, string>>;
+  defaultSupervisorReasoningEfforts?: Partial<Record<DefaultSupervisorAgent, string>>;
+}
+
+export function supervisorDefaultsForAgent(
+  agent: DefaultSupervisorAgent,
+  preferences?: SupervisorDefaultPreferences,
+): Pick<
   SupervisorSession,
   'supervisorLaunchCmd' | 'supervisorModel' | 'supervisorReasoningEffort'
 > {
+  let defaults: Pick<
+    SupervisorSession,
+    'supervisorLaunchCmd' | 'supervisorModel' | 'supervisorReasoningEffort'
+  >;
   if (agent === 'pi') {
-    return {
+    defaults = {
       supervisorLaunchCmd: 'pi',
       supervisorModel: 'xai/grok-4.5',
       supervisorReasoningEffort: 'medium',
     };
-  }
-  if (agent === 'codex') {
-    return {
+  } else if (agent === 'codex') {
+    defaults = {
       supervisorLaunchCmd: 'codex',
       supervisorModel: 'gpt-5.6-terra',
       supervisorReasoningEffort: 'medium',
     };
-  }
-  if (agent === 'kimi') {
-    return {
+  } else if (agent === 'kimi') {
+    defaults = {
       supervisorLaunchCmd: 'kimi',
       supervisorModel: 'k3-256k',
       supervisorReasoningEffort: 'on',
     };
-  }
-  if (agent === 'grok') {
-    return {
+  } else if (agent === 'grok') {
+    defaults = {
       supervisorLaunchCmd: 'grok',
       supervisorModel: 'grok-build',
       supervisorReasoningEffort: '',
     };
+  } else {
+    defaults = {
+      supervisorLaunchCmd: agent === 'none' ? '' : agent,
+      supervisorModel: '',
+      supervisorReasoningEffort: '',
+    };
   }
+
+  const savedModel = preferences?.defaultSupervisorModels?.[agent];
+  const savedReasoningEffort = preferences?.defaultSupervisorReasoningEfforts?.[agent];
   return {
-    supervisorLaunchCmd: agent === 'none' ? '' : agent,
-    supervisorModel: '',
-    supervisorReasoningEffort: '',
+    ...defaults,
+    supervisorModel: typeof savedModel === 'string' ? savedModel : defaults.supervisorModel,
+    supervisorReasoningEffort: typeof savedReasoningEffort === 'string'
+      ? savedReasoningEffort
+      : defaults.supervisorReasoningEffort,
   };
 }
 
@@ -428,9 +448,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         return { supervisor: { ...s.supervisor, setupOpen: true } };
       }
       const workspacePrefs = (s as unknown as {
-        workspacePrefs?: { defaultSupervisorAgent?: DefaultSupervisorAgent };
+        workspacePrefs?: SupervisorDefaultPreferences & {
+          defaultSupervisorAgent?: DefaultSupervisorAgent;
+        };
       }).workspacePrefs;
-      const defaults = supervisorDefaultsForAgent(workspacePrefs?.defaultSupervisorAgent || 'pi');
+      const defaults = supervisorDefaultsForAgent(
+        workspacePrefs?.defaultSupervisorAgent || 'pi',
+        workspacePrefs,
+      );
       return { supervisor: { ...s.supervisor, ...defaults, setupOpen: true } };
     });
   },

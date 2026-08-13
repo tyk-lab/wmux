@@ -26,7 +26,7 @@ import {
   type SupervisorSlice,
 } from '../../src/renderer/store/supervisor-slice';
 import type { DefaultSupervisorAgent } from '../../src/shared/types';
-import { DEFAULT_WORKSPACE_PREFS } from '../../src/renderer/store/settings-slice';
+import { DEFAULT_WORKSPACE_PREFS, type WorkspacePrefs } from '../../src/renderer/store/settings-slice';
 import {
   autonomousDecisionBoundary,
   buildInjectedPrompt,
@@ -58,12 +58,23 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
 }
 
 type SupervisorTestStore = SupervisorSlice & {
-  workspacePrefs: { defaultSupervisorAgent: DefaultSupervisorAgent };
+  workspacePrefs: Pick<
+    WorkspacePrefs,
+    'defaultSupervisorAgent' | 'defaultSupervisorModels' | 'defaultSupervisorReasoningEfforts'
+  >;
 };
 
-function makeStore(defaultSupervisorAgent: DefaultSupervisorAgent = 'pi') {
+function makeStore(
+  defaultSupervisorAgent: DefaultSupervisorAgent = 'pi',
+  defaultSupervisorModels: WorkspacePrefs['defaultSupervisorModels'] = {},
+  defaultSupervisorReasoningEfforts: WorkspacePrefs['defaultSupervisorReasoningEfforts'] = {},
+) {
   return create<SupervisorTestStore>()((set, get, api) => ({
-    workspacePrefs: { defaultSupervisorAgent },
+    workspacePrefs: {
+      defaultSupervisorAgent,
+      defaultSupervisorModels,
+      defaultSupervisorReasoningEfforts,
+    },
     ...createSupervisorSlice(set as never, get as never, api as never),
   }));
 }
@@ -534,6 +545,22 @@ describe('supervisor isolation', () => {
     expect(store.getState().supervisor.supervisorLaunchCmd).toBe('kimi');
   });
 
+  it('applies the saved model and reasoning defaults for the selected Agent', () => {
+    const store = makeStore(
+      'codex',
+      { codex: 'gpt-5.6-sol', pi: 'xai/grok-4.5' },
+      { codex: 'high', pi: 'medium' },
+    );
+
+    store.getState().openSupervisorSetup();
+
+    expect(store.getState().supervisor).toMatchObject({
+      supervisorLaunchCmd: 'codex',
+      supervisorModel: 'gpt-5.6-sol',
+      supervisorReasoningEffort: 'high',
+    });
+  });
+
   it('provides launcher-compatible defaults for every configurable supervisor Agent', () => {
     expect(supervisorDefaultsForAgent('pi')).toMatchObject({
       supervisorLaunchCmd: 'pi',
@@ -550,6 +577,8 @@ describe('supervisor isolation', () => {
 
   it('keeps backward-compatible defaults for existing settings files', () => {
     expect(DEFAULT_WORKSPACE_PREFS.defaultSupervisorAgent).toBe('pi');
+    expect(DEFAULT_WORKSPACE_PREFS.defaultSupervisorModels).toEqual({});
+    expect(DEFAULT_WORKSPACE_PREFS.defaultSupervisorReasoningEfforts).toEqual({});
     expect(DEFAULT_WORKSPACE_PREFS.defaultSshAgent).toBe('codex');
   });
 

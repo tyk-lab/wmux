@@ -9,6 +9,7 @@ import type {
 import {
   dedicatedSupervisorSurfaceId,
   isSupervisorLaneBound,
+  supervisorDefaultsForAgent,
   supervisorLaneControlState,
 } from '../../store/supervisor-slice';
 import {
@@ -154,13 +155,6 @@ function modelChoiceFor(launcher: SupervisorLauncherKind, model: string): string
   return model ? knownOptionValue(model, options) : DEFAULT_MODEL_OPTION;
 }
 
-function reasoningOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: string; label: string }> {
-  if (launcher === 'codex') return REASONING_EFFORT_OPTIONS;
-  if (launcher === 'kimi') return KIMI_THINKING_OPTIONS;
-  if (launcher === 'pi') return PI_THINKING_OPTIONS;
-  return [];
-}
-
 function customModelOptionLabel(launcher: SupervisorLauncherKind): string {
   if (launcher === 'grok') return '自定义模型别名';
   if (launcher === 'pi') return '自定义模型（provider/model）';
@@ -247,6 +241,10 @@ export default function SupervisorSetupDialog() {
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
   const startSupervisor = useStore((s) => s.startSupervisor);
   const defaultSupervisorAgent = useStore((s) => s.workspacePrefs.defaultSupervisorAgent);
+  const defaultSupervisorModels = useStore((s) => s.workspacePrefs.defaultSupervisorModels);
+  const defaultSupervisorReasoningEfforts = useStore(
+    (s) => s.workspacePrefs.defaultSupervisorReasoningEfforts,
+  );
   const setWorkspacePrefs = useStore((s) => s.setWorkspacePrefs);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const addSurface = useStore((s) => s.addSurface);
@@ -431,16 +429,57 @@ export default function SupervisorSetupDialog() {
     : SUPERVISOR_LAUNCH_OPTIONS.some((option) => option.value === launchChoice)
       ? launchChoice as DefaultSupervisorAgent
       : null;
+  const selectedAgentDefaults = selectedDefaultAgent
+    ? supervisorDefaultsForAgent(selectedDefaultAgent, {
+        defaultSupervisorModels,
+        defaultSupervisorReasoningEfforts,
+      })
+    : null;
+  const modelIsDefault = !!selectedAgentDefaults
+    && supervisorModel === selectedAgentDefaults.supervisorModel;
+  const reasoningIsDefault = !!selectedAgentDefaults
+    && reasoningEffort === selectedAgentDefaults.supervisorReasoningEffort;
+
+  const saveCurrentModelAsDefault = () => {
+    if (!selectedDefaultAgent) return;
+    setWorkspacePrefs({
+      defaultSupervisorModels: {
+        ...defaultSupervisorModels,
+        [selectedDefaultAgent]: supervisorModel,
+      },
+    });
+  };
+
+  const saveCurrentReasoningAsDefault = () => {
+    if (!selectedDefaultAgent) return;
+    setWorkspacePrefs({
+      defaultSupervisorReasoningEfforts: {
+        ...defaultSupervisorReasoningEfforts,
+        [selectedDefaultAgent]: reasoningEffort,
+      },
+    });
+  };
 
   const changeLauncher = (choice: string) => {
     setLaunchChoice(choice);
     if (choice === CUSTOM_OPTION) return;
     setLaunchCmd(choice);
     const nextLauncher = detectSupervisorLauncher(choice);
-    setSupervisorModel('');
-    setModelChoice(DEFAULT_MODEL_OPTION);
-    const reasoningOptions = reasoningOptionsFor(nextLauncher);
-    setReasoningEffort(reasoningOptions.some((option) => option.value === reasoningEffort) ? reasoningEffort : '');
+    const nextAgent = choice === ''
+      ? 'none'
+      : SUPERVISOR_LAUNCH_OPTIONS.some((option) => option.value === choice)
+        ? choice as DefaultSupervisorAgent
+        : null;
+    const nextDefaults = nextAgent
+      ? supervisorDefaultsForAgent(nextAgent, {
+          defaultSupervisorModels,
+          defaultSupervisorReasoningEfforts,
+        })
+      : null;
+    const nextModel = nextDefaults?.supervisorModel || '';
+    setSupervisorModel(nextModel);
+    setModelChoice(modelChoiceFor(nextLauncher, nextModel));
+    setReasoningEffort(nextDefaults?.supervisorReasoningEffort || '');
   };
 
   useEffect(() => {
@@ -1489,23 +1528,45 @@ export default function SupervisorSetupDialog() {
               {(launcherModelOptions.length > 0 || launcherKind === 'pi') && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
-                  <select
-                    className="supervisor-dialog__input"
-                    value={modelChoice}
-                    disabled={sessionRetained}
-                    onChange={(event) => {
-                      const choice = event.target.value;
-                      setModelChoice(choice);
-                      if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
-                      else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
-                    }}
-                  >
-                    <option value={DEFAULT_MODEL_OPTION}>使用 {supervisorLauncherDisplayName(launcherKind)} 默认模型</option>
-                    {launcherModelOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                    <option value={CUSTOM_OPTION}>{customModelOptionLabel(launcherKind)}</option>
-                  </select>
+                  <div className="supervisor-dialog__default-agent-row">
+                    <select
+                      className="supervisor-dialog__input"
+                      value={modelChoice}
+                      disabled={sessionRetained}
+                      onChange={(event) => {
+                        const choice = event.target.value;
+                        setModelChoice(choice);
+                        if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
+                        else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
+                      }}
+                    >
+                      <option value={DEFAULT_MODEL_OPTION}>
+                        使用 {supervisorLauncherDisplayName(launcherKind)} 默认模型
+                        {selectedAgentDefaults?.supervisorModel === '' ? '（当前默认）' : ''}
+                      </option>
+                      {launcherModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}{selectedAgentDefaults?.supervisorModel === option.value ? '（当前默认）' : ''}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_OPTION}>
+                        {customModelOptionLabel(launcherKind)}
+                        {selectedAgentDefaults
+                          && modelChoiceFor(launcherKind, selectedAgentDefaults.supervisorModel) === CUSTOM_OPTION
+                          ? '（当前默认）'
+                          : ''}
+                      </option>
+                    </select>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={sessionRetained || !selectedDefaultAgent || modelIsDefault}
+                      onClick={saveCurrentModelAsDefault}
+                      title="将当前模型用作此监督 Agent 以后新建会话的默认选择"
+                    >
+                      {modelIsDefault ? '已为默认' : '设为默认'}
+                    </button>
+                  </div>
                   {modelChoice === CUSTOM_OPTION && (
                     <input
                       className="supervisor-dialog__input supervisor-dialog__stacked-input"
@@ -1520,48 +1581,93 @@ export default function SupervisorSetupDialog() {
               {launcherKind === 'codex' && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">Codex 推理程度</div>
-                  <select
-                    className="supervisor-dialog__input"
-                    value={reasoningEffort}
-                    disabled={sessionRetained}
-                    onChange={(event) => setReasoningEffort(event.target.value)}
-                  >
-                    <option value="">使用 Codex 默认推理程度</option>
-                    {REASONING_EFFORT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                  <div className="supervisor-dialog__default-agent-row">
+                    <select
+                      className="supervisor-dialog__input"
+                      value={reasoningEffort}
+                      disabled={sessionRetained}
+                      onChange={(event) => setReasoningEffort(event.target.value)}
+                    >
+                      <option value="">
+                        使用 Codex 默认推理程度
+                        {selectedAgentDefaults?.supervisorReasoningEffort === '' ? '（当前默认）' : ''}
+                      </option>
+                      {REASONING_EFFORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}{selectedAgentDefaults?.supervisorReasoningEffort === option.value ? '（当前默认）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={sessionRetained || !selectedDefaultAgent || reasoningIsDefault}
+                      onClick={saveCurrentReasoningAsDefault}
+                      title="将当前推理程度用作 Codex 以后新建监督会话的默认选择"
+                    >
+                      {reasoningIsDefault ? '已为默认' : '设为默认'}
+                    </button>
+                  </div>
                 </section>
               )}
               {launcherKind === 'kimi' && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">Kimi Thinking</div>
-                  <select
-                    className="supervisor-dialog__input"
-                    value={reasoningEffort}
-                    disabled={sessionRetained}
-                    onChange={(event) => setReasoningEffort(event.target.value)}
-                  >
-                    {KIMI_THINKING_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                  <div className="supervisor-dialog__default-agent-row">
+                    <select
+                      className="supervisor-dialog__input"
+                      value={reasoningEffort}
+                      disabled={sessionRetained}
+                      onChange={(event) => setReasoningEffort(event.target.value)}
+                    >
+                      {KIMI_THINKING_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}{selectedAgentDefaults?.supervisorReasoningEffort === option.value ? '（当前默认）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={sessionRetained || !selectedDefaultAgent || reasoningIsDefault}
+                      onClick={saveCurrentReasoningAsDefault}
+                      title="将当前 Thinking 设置用作 Kimi 以后新建监督会话的默认选择"
+                    >
+                      {reasoningIsDefault ? '已为默认' : '设为默认'}
+                    </button>
+                  </div>
                 </section>
               )}
               {launcherKind === 'pi' && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">Pi Thinking</div>
-                  <select
-                    className="supervisor-dialog__input"
-                    value={reasoningEffort}
-                    disabled={sessionRetained}
-                    onChange={(event) => setReasoningEffort(event.target.value)}
-                  >
-                    <option value="">使用 Pi 默认 Thinking 设置</option>
-                    {PI_THINKING_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                  <div className="supervisor-dialog__default-agent-row">
+                    <select
+                      className="supervisor-dialog__input"
+                      value={reasoningEffort}
+                      disabled={sessionRetained}
+                      onChange={(event) => setReasoningEffort(event.target.value)}
+                    >
+                      <option value="">
+                        使用 Pi 默认 Thinking 设置
+                        {selectedAgentDefaults?.supervisorReasoningEffort === '' ? '（当前默认）' : ''}
+                      </option>
+                      {PI_THINKING_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}{selectedAgentDefaults?.supervisorReasoningEffort === option.value ? '（当前默认）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={sessionRetained || !selectedDefaultAgent || reasoningIsDefault}
+                      onClick={saveCurrentReasoningAsDefault}
+                      title="将当前 Thinking 设置用作 Pi 以后新建监督会话的默认选择"
+                    >
+                      {reasoningIsDefault ? '已为默认' : '设为默认'}
+                    </button>
+                  </div>
                 </section>
               )}
               {launcherKind === 'grok' && (

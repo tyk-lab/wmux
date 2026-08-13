@@ -288,6 +288,10 @@ export interface WorkspacePrefs {
   confirmWorkspaceClose: boolean;
   /** Launcher selected when creating a fresh AI-supervision session. */
   defaultSupervisorAgent: DefaultSupervisorAgent;
+  /** Per-launcher model selected when creating a fresh AI-supervision session. */
+  defaultSupervisorModels: Partial<Record<DefaultSupervisorAgent, string>>;
+  /** Per-launcher reasoning/Thinking selected for a fresh AI-supervision session. */
+  defaultSupervisorReasoningEfforts: Partial<Record<DefaultSupervisorAgent, string>>;
   /** Companion selected when creating an SSH workspace. */
   defaultSshAgent: SshCompanionAgent;
 }
@@ -302,6 +306,8 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   // Accidental × / Ctrl+Shift+W kills every PTY in the session; ask first for agents.
   confirmWorkspaceClose: true,
   defaultSupervisorAgent: 'pi',
+  defaultSupervisorModels: {},
+  defaultSupervisorReasoningEfforts: {},
   defaultSshAgent: 'codex',
 };
 
