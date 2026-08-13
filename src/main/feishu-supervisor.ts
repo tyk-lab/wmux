@@ -15,9 +15,10 @@ export type FeishuSupervisorCommand =
   | { action: 'logs' }
   | { action: 'terminal-screen'; terminal: string; lines?: number }
   | { action: 'decision-context'; approvalId: string; terminal: string; lines?: number }
-  | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string }
+  | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string; anchorTerminal?: string }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string; force?: boolean }
+  | { action: 'close-terminal'; terminal: string }
   | { action: 'send-supervisor-message'; terminal: string; message: string }
   | { action: 'pause-lane'; terminal: string }
   | { action: 'resume-lane'; terminal: string }
@@ -388,7 +389,7 @@ function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ tex
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '7';
+export const FEISHU_CONTROL_CARD_VERSION = '8';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -504,16 +505,21 @@ interface PendingBusyTaskConfirmation {
 function isReusableControlAction(value: ResolvedCardAction): boolean {
   if (value.wmux_action === 'stop_lane_confirm' || value.wmux_action === 'terminal_screen') return true;
   return value.wmux_action === 'menu'
-    && ['create-task', 'start', 'send', 'send-supervisor', 'terminal-screen', 'manage', 'status', 'detail-status', 'logs', 'stop-confirm'].includes(value.flow || '');
+    && ['create-task', 'start', 'send', 'send-supervisor', 'terminal-screen', 'terminal-control', 'close-terminal', 'manage', 'status', 'detail-status', 'logs', 'stop-confirm'].includes(value.flow || '');
 }
 
 export function resolveFeishuCardAction(value: unknown, name?: string): ResolvedCardAction {
   const rawValue = isObject(value) ? value : {};
   if (name === 'wmux_form_create_task') return { ...rawValue, wmux_action: 'form_create_task' };
+  if (name === 'wmux_form_create_project_manager') return { ...rawValue, wmux_action: 'form_create_project_manager' };
   if (name === 'wmux_form_start') return { ...rawValue, wmux_action: 'form_start' };
   if (name === 'wmux_form_send') return { ...rawValue, wmux_action: 'form_send' };
   if (name === 'wmux_form_send_supervisor') return { ...rawValue, wmux_action: 'form_send_supervisor' };
   if (name === 'wmux_form_terminal_screen') return { ...rawValue, wmux_action: 'form_terminal_screen' };
+  if (name === 'wmux_form_terminal_control') return { ...rawValue, wmux_action: 'form_terminal_control' };
+  if (name === 'wmux_form_terminal_refresh') return { ...rawValue, wmux_action: 'form_terminal_refresh' };
+  if (name === 'wmux_form_terminal_send') return { ...rawValue, wmux_action: 'form_terminal_send' };
+  if (name === 'wmux_form_close_terminal') return { ...rawValue, wmux_action: 'form_close_terminal' };
   if (name === 'wmux_form_lane_control') return { ...rawValue, wmux_action: 'form_lane_control' };
   const decision = /^wmux_decide_(approve|direct|pause|stop)$/.exec(name || '')?.[1];
   return decision ? { ...rawValue, wmux_action: 'decide', decision } : rawValue;
@@ -548,10 +554,10 @@ export function buildSupervisorControlMenuCard(
     cardButton({ wmux_action: 'menu', flow: 'create-task' }, '添加终端任务', 'primary'),
     ...(state?.totalTerminals !== 0
       ? [
-          cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务'),
           ...(allowTerminalScreen
-            ? [cardButton({ wmux_action: 'menu', flow: 'terminal-screen' }, '查看终端界面')]
-            : []),
+            ? [cardButton({ wmux_action: 'menu', flow: 'terminal-control' }, '终端控制')]
+            : [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')]),
+          cardButton({ wmux_action: 'menu', flow: 'close-terminal' }, '关闭终端', 'danger'),
         ]
       : []),
   ];
@@ -606,7 +612,22 @@ export function buildSupervisorControlMenuCard(
 }
 
 /** Form displayed after selecting “添加终端任务”. */
-export function buildDirectTerminalTaskCard(): object {
+export function buildDirectTerminalTaskCard(supervisedTerminals: FeishuListTerminal[] = []): object {
+  const managerElements = supervisedTerminals.length === 1
+    ? [{
+        tag: 'column_set', flex_mode: 'none', columns: [{
+          tag: 'column', width: 'auto',
+          elements: [cardButton({ wmux_action: 'create_project_manager', terminal: supervisedTerminals[0].surfaceId }, '创建项目管理终端', 'primary')],
+        }],
+      }]
+    : supervisedTerminals.length > 1
+      ? [{
+          tag: 'form', name: 'wmux_project_manager_anchor_form', elements: [
+            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择项目管理终端所在窗格' }, options: terminalOptions(supervisedTerminals) },
+            formButton('wmux_form_create_project_manager', '在所选窗格创建', 'primary', { wmux_action: 'form_create_project_manager' }),
+          ],
+        }]
+      : [{ tag: 'markdown', content: '当前没有被监督的任务终端；请先启动至少一条监督通道，再创建项目管理终端。' }];
   return buildFormCard(
     'wmux · 添加 AI 终端任务',
     'blue',
@@ -625,13 +646,8 @@ export function buildDirectTerminalTaskCard(): object {
     ],
     controlHomeFooter(),
     [
-      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在固定 Release 目录打开 Grok，并首先运行 `/inspect-project-progress` 读取项目进度技能。' },
-      {
-        tag: 'column_set', flex_mode: 'none', columns: [{
-          tag: 'column', width: 'auto',
-          elements: [cardButton({ wmux_action: 'create_project_manager' }, '创建项目管理终端', 'primary')],
-        }],
-      },
+      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在被监督任务终端所在窗格打开 Grok，并首先运行 `/inspect-project-progress`。' },
+      ...managerElements,
       { tag: 'hr' },
       { tag: 'markdown', content: '**普通终端任务**' },
     ],
@@ -706,47 +722,81 @@ export function buildSupervisorMessageCard(terminals: FeishuListTerminal[]): obj
   );
 }
 
-/** Private-chat form for selecting which task terminal screen to inspect. */
+/** Private-chat form for selecting a task terminal to inspect and control. */
 export function buildTerminalScreenSelectCard(terminals: FeishuListTerminal[]): object {
   return buildFormCard(
-    'wmux · 查看任务终端界面',
+    'wmux · 终端控制',
     'blue',
-    '选择一个任务终端，读取其当前缓冲区末尾 40 行。界面内容可能包含敏感信息，因此只允许白名单用户在单聊中查看。',
-    'wmux_terminal_screen_form',
+    '选择一个任务终端，在同一张卡中查看核心输出、刷新界面或发送多行任务。界面内容可能包含敏感信息，因此只允许白名单用户在单聊中使用。',
+    'wmux_terminal_control_select_form',
     [
       { tag: 'markdown', content: '**任务终端**' },
-      { tag: 'select_static', element_id: 'screen_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要查看的终端' }, options: terminalOptions(terminals, true) },
-      formButton('wmux_form_terminal_screen', '查看最新界面', 'primary', { wmux_action: 'form_terminal_screen' }),
+      { tag: 'select_static', element_id: 'control_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要控制的终端' }, options: terminalOptions(terminals, true) },
+      formButton('wmux_form_terminal_control', '打开终端控制', 'primary', { wmux_action: 'form_terminal_control' }),
     ],
     controlHomeFooter(),
   );
 }
 
-/** Read-only terminal snapshot with explicit refresh navigation. */
-export function buildTerminalScreenCard(result: FeishuTerminalScreenResult): object {
+/** Terminal snapshot, refresh, and send controls share one form. */
+export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draft = '', notice = ''): object {
   const capturedAt = new Date(result.capturedAt).toLocaleString('zh-CN', { hour12: false });
   const screenText = result.text || '（终端当前没有可见内容）';
+  return buildFormCard(
+    'wmux · 终端控制',
+    'blue',
+    `${notice ? `${notice}\n\n` : ''}**${result.terminal.label}**\n工作区：${result.terminal.workspace}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
+    'wmux_terminal_control_form',
+    [
+      { tag: 'markdown', content: '**最新核心文本**' },
+      { tag: 'div', text: { tag: 'plain_text', content: screenText } },
+      { tag: 'hr' },
+      {
+        tag: 'input', element_id: 'terminal_control_task', name: 'task', input_type: 'multiline_text', rows: 5, max_length: 1000,
+        label: { tag: 'plain_text', content: '发送内容（可选）' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' },
+        ...(draft ? { default_value: draft } : {}),
+      },
+      {
+        tag: 'column_set', flex_mode: 'none', columns: [
+          { tag: 'column', width: 'weighted', weight: 1, elements: [formButton('wmux_form_terminal_refresh', '刷新界面', 'default', { wmux_action: 'form_terminal_refresh', terminal: result.terminal.surfaceId })] },
+          { tag: 'column', width: 'weighted', weight: 1, elements: [formButton('wmux_form_terminal_send', '发送内容', 'primary', { wmux_action: 'form_terminal_send', terminal: result.terminal.surfaceId })] },
+        ],
+      },
+    ],
+    [
+      ...responsiveButtonRows([
+        cardButton({ wmux_action: 'menu', flow: 'terminal-control' }, '选择其他终端'),
+        cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页'),
+      ]),
+    ],
+  );
+}
+
+export function buildCloseTerminalSelectCard(terminals: FeishuListTerminal[]): object {
+  return buildFormCard(
+    'wmux · 关闭任务终端',
+    'orange',
+    '选择要关闭的任务终端。下一步会展示当前状态和影响，并要求二次确认。不会删除任务目录或历史审计记录。',
+    'wmux_close_terminal_select_form',
+    [
+      { tag: 'select_static', element_id: 'close_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要关闭的终端' }, options: terminalOptions(terminals, true) },
+      formButton('wmux_form_close_terminal', '查看关闭影响', 'danger', { wmux_action: 'form_close_terminal' }),
+    ],
+    controlHomeFooter(),
+  );
+}
+
+export function buildCloseTerminalConfirmationCard(terminal: FeishuListTerminal): object {
+  const supervised = terminal.supervised;
   return {
     schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux · 任务终端最新界面' }, template: 'blue' },
+    header: { title: { tag: 'plain_text', content: 'wmux · 确认关闭任务终端' }, template: 'orange' },
     body: {
       elements: [
-        {
-          tag: 'div',
-          text: {
-            tag: 'plain_text',
-            content: `${result.terminal.label}\n工作区：${result.terminal.workspace}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
-          },
-        },
-        { tag: 'hr' },
-        { tag: 'markdown', content: '**终端最新界面**' },
-        { tag: 'div', text: { tag: 'plain_text', content: screenText } },
-        { tag: 'hr' },
+        { tag: 'markdown', content: `即将关闭 **${terminal.label}**\n\n工作区：${terminal.workspace}\n状态：${terminalActivityText(terminal)}${supervised ? '\n\n⚠️ 该终端正在被监督，关闭时会同时停止对应监督通道并关闭专属监督 AI 终端。' : ''}\n\n任务目录和历史审计记录不会删除。` },
         ...responsiveButtonRows([
-          cardButton({ wmux_action: 'terminal_screen', terminal: result.terminal.surfaceId }, '刷新当前界面', 'primary'),
-          cardButton({ wmux_action: 'menu', flow: 'terminal-screen' }, '选择其他终端'),
-          cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页'),
+          cardButton({ wmux_action: 'confirm_close_terminal', terminal: terminal.surfaceId }, '确认关闭', 'danger'),
+          cardButton({ wmux_action: 'menu', flow: 'close-terminal' }, '取消'),
         ]),
       ],
     },
@@ -998,7 +1048,7 @@ function controlStateFromList(list: FeishuListResult): FeishuControlState {
     paused: list.paused,
     totalTerminals: list.terminals.length,
     availableTerminals: list.terminals.filter(isStartableSupervisorTerminal).length,
-    supervisedTerminals: list.terminals.filter((terminal) => terminal.supervisionState === 'active' || terminal.supervisionState === 'paused').length,
+    supervisedTerminals: list.terminals.filter((terminal) => terminal.supervised).length,
     pendingApprovals: list.pendingApprovals.length,
   };
 }
@@ -1678,7 +1728,7 @@ export class FeishuSupervisorService {
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
     const value = resolveFeishuCardAction(event.action.value, event.action.name);
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card ignored: version=${value.wmux_card_version || 'missing'}`);
         return;
@@ -1768,13 +1818,20 @@ export class FeishuSupervisorService {
       });
       return !failedResult(result);
     }
-    if (value.wmux_action === 'create_project_manager') {
+    const form = this.cardFormValues(event);
+    if (value.wmux_action === 'create_project_manager' || value.wmux_action === 'form_create_project_manager') {
+      const anchorTerminal = value.terminal || form.terminal || '';
+      if (!anchorTerminal) {
+        await this.sendText('请先选择项目管理终端所在的被监督任务终端。', event.chatId);
+        return false;
+      }
       const result = await this.control({
         action: 'create-task',
         name: PROJECT_MANAGER_TERMINAL_NAME,
         task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
         agent: PROJECT_MANAGER_TERMINAL_AGENT,
         preset: 'project-manager',
+        anchorTerminal,
       }, {
         openId: event.operator.openId,
         source: 'card',
@@ -1787,7 +1844,43 @@ export class FeishuSupervisorService {
     if (value.wmux_action === 'terminal_screen') {
       return this.showTerminalScreen(event, value.terminal || '');
     }
-    const form = this.cardFormValues(event);
+    if (value.wmux_action === 'form_terminal_control') {
+      return this.showTerminalScreen(event, form.terminal || '');
+    }
+    if (value.wmux_action === 'form_terminal_refresh') {
+      return this.showTerminalScreen(event, value.terminal || '', form.task || '');
+    }
+    if (value.wmux_action === 'form_terminal_send') {
+      return this.sendTaskFromControlCard(event, value.terminal || '', form.task || '');
+    }
+    if (value.wmux_action === 'form_close_terminal') {
+      const terminal = form.terminal || '';
+      const listResult = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
+        .catch(() => null);
+      const terminalInfo = parseListResult(listResult)?.terminals.find((item) => item.surfaceId === terminal);
+      if (!terminalInfo) {
+        await this.replaceWithCurrentControlMenu(event, {
+          text: '该任务终端已不存在或不可关闭，请刷新后重试。', success: false,
+        });
+        return false;
+      }
+      await this.replaceControlCard(event, buildCloseTerminalConfirmationCard(terminalInfo));
+      return true;
+    }
+    if (value.wmux_action === 'confirm_close_terminal') {
+      if (!value.terminal) {
+        await this.sendText('缺少要关闭的任务终端，请重新选择。', event.chatId);
+        return false;
+      }
+      const result = await this.control({ action: 'close-terminal', terminal: value.terminal }, {
+        openId: event.operator.openId,
+        source: 'card',
+      }).catch((err) => ({ error: String(err?.message || err) }));
+      await this.replaceWithCurrentControlMenu(event, {
+        text: summary(result), success: !failedResult(result),
+      });
+      return !failedResult(result);
+    }
     if (value.wmux_action === 'form_create_task') {
       const name = form.task_name || '';
       const task = form.task || '';
@@ -1829,48 +1922,7 @@ export class FeishuSupervisorService {
     if (value.wmux_action === 'form_send') {
       const terminal = form.terminal || '';
       const task = form.task || '';
-      if (!terminal || !task) {
-        await this.sendText('请先选择目标终端并填写任务内容。', event.chatId);
-        return false;
-      }
-      const result = await this.control({ action: 'send', terminal, task }, { openId: event.operator.openId, source: 'card' })
-        .catch((err) => ({ error: String(err?.message || err) }));
-      const busyTerminal = busyTerminalFromResult(result);
-      if (busyTerminal) {
-        const confirmationId = nextControlActionNonce();
-        this.clearBusyTaskConfirmationsForMessage(event.messageId);
-        const pendingConfirmation: PendingBusyTaskConfirmation = {
-          messageId: event.messageId,
-          chatId: event.chatId,
-          terminal: busyTerminal,
-          task,
-          expiresAt: Date.now() + 5 * 60 * 1000,
-        };
-        this.busyTaskConfirmations.set(confirmationId, pendingConfirmation);
-        const expiryTimer = setTimeout(() => {
-          if (this.busyTaskConfirmations.get(confirmationId) === pendingConfirmation) {
-            this.busyTaskConfirmations.delete(confirmationId);
-          }
-        }, 5 * 60 * 1000);
-        expiryTimer.unref?.();
-        if (this.busyTaskConfirmations.size > 50) {
-          this.busyTaskConfirmations.delete(this.busyTaskConfirmations.keys().next().value as string);
-        }
-        const confirmationMessageId = await this.replaceControlCard(
-          event,
-          buildBusyTaskConfirmationCard(busyTerminal, confirmationId),
-        );
-        if (!confirmationMessageId) {
-          this.busyTaskConfirmations.delete(confirmationId);
-          return false;
-        }
-        pendingConfirmation.messageId = confirmationMessageId;
-        return true;
-      }
-      await this.replaceWithCurrentControlMenu(event, {
-        text: summary(result), success: !failedResult(result),
-      });
-      return !failedResult(result);
+      return this.sendTaskFromControlCard(event, terminal, task);
     }
     if (value.wmux_action === 'form_send_supervisor') {
       const terminal = form.terminal || '';
@@ -1962,7 +2014,60 @@ export class FeishuSupervisorService {
     return true;
   }
 
-  private async showTerminalScreen(event: Lark.CardActionEvent, terminal: string): Promise<boolean> {
+  private async sendTaskFromControlCard(
+    event: Lark.CardActionEvent,
+    terminal: string,
+    task: string,
+  ): Promise<boolean> {
+    if (!terminal || !task) {
+      await this.sendText('请先选择目标终端并填写任务内容。', event.chatId);
+      return false;
+    }
+    const result = await this.control({ action: 'send', terminal, task }, {
+      openId: event.operator.openId,
+      source: 'card',
+    }).catch((err) => ({ error: String(err?.message || err) }));
+    const busyTerminal = busyTerminalFromResult(result);
+    if (busyTerminal) {
+      const confirmationId = nextControlActionNonce();
+      this.clearBusyTaskConfirmationsForMessage(event.messageId);
+      const pendingConfirmation: PendingBusyTaskConfirmation = {
+        messageId: event.messageId,
+        chatId: event.chatId,
+        terminal: busyTerminal,
+        task,
+        expiresAt: Date.now() + 5 * 60 * 1000,
+      };
+      this.busyTaskConfirmations.set(confirmationId, pendingConfirmation);
+      const expiryTimer = setTimeout(() => {
+        if (this.busyTaskConfirmations.get(confirmationId) === pendingConfirmation) {
+          this.busyTaskConfirmations.delete(confirmationId);
+        }
+      }, 5 * 60 * 1000);
+      expiryTimer.unref?.();
+      if (this.busyTaskConfirmations.size > 50) {
+        this.busyTaskConfirmations.delete(this.busyTaskConfirmations.keys().next().value as string);
+      }
+      const confirmationMessageId = await this.replaceControlCard(
+        event,
+        buildBusyTaskConfirmationCard(busyTerminal, confirmationId),
+      );
+      if (!confirmationMessageId) {
+        this.busyTaskConfirmations.delete(confirmationId);
+        return false;
+      }
+      pendingConfirmation.messageId = confirmationMessageId;
+      return true;
+    }
+    if (failedResult(result)) {
+      await this.replaceWithCurrentControlMenu(event, { text: summary(result), success: false });
+      return false;
+    }
+    await this.showTerminalScreen(event, terminal, '', `✅ ${summary(result)}`);
+    return true;
+  }
+
+  private async showTerminalScreen(event: Lark.CardActionEvent, terminal: string, draft = '', notice = ''): Promise<boolean> {
     if (!this.allowsTerminalScreen(event.chatId)) {
       await this.sendText('任务终端界面可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
       return false;
@@ -1980,8 +2085,7 @@ export class FeishuSupervisorService {
       await this.sendText(`终端界面读取失败：${summary(result)}`, event.chatId);
       return false;
     }
-    await this.replaceControlCard(event, buildTerminalScreenCard(screen));
-    return true;
+    return !!await this.replaceControlCard(event, buildTerminalScreenCard(screen, draft, notice));
   }
 
   private clearBusyTaskConfirmationsForMessage(messageId: string): void {
@@ -2009,7 +2113,11 @@ export class FeishuSupervisorService {
 
   private async handleControlMenu(event: Lark.CardActionEvent, flow: string): Promise<void> {
     if (flow === 'create-task') {
-      await this.replaceControlCard(event, buildDirectTerminalTaskCard());
+      const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
+        .catch(() => null);
+      const list = parseListResult(result);
+      const supervised = list?.terminals.filter((terminal) => terminal.supervised) || [];
+      await this.replaceControlCard(event, buildDirectTerminalTaskCard(supervised));
       return;
     }
     if (flow === 'pause-all' || flow === 'resume-all') {
@@ -2042,7 +2150,7 @@ export class FeishuSupervisorService {
         : this.buildControlMenuCard(event.chatId, undefined, { text: summary(result), success: false }));
       return;
     }
-    if (flow === 'terminal-screen' && !this.allowsTerminalScreen(event.chatId)) {
+    if ((flow === 'terminal-screen' || flow === 'terminal-control') && !this.allowsTerminalScreen(event.chatId)) {
       await this.sendText('任务终端界面可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
       return;
     }
@@ -2087,7 +2195,7 @@ export class FeishuSupervisorService {
       await this.replaceControlCard(event, buildSupervisorMessageCard(candidates));
       return;
     }
-    if (flow === 'terminal-screen') {
+    if (flow === 'terminal-screen' || flow === 'terminal-control') {
       if (list.terminals.length === 0) {
         await this.replaceControlCard(event, this.buildControlMenuCard(event.chatId, controlStateFromList(list), {
           text: '暂无可查看的任务终端。请先在 wmux 中创建工作终端。', success: false,
@@ -2095,6 +2203,16 @@ export class FeishuSupervisorService {
         return;
       }
       await this.replaceControlCard(event, buildTerminalScreenSelectCard(list.terminals));
+      return;
+    }
+    if (flow === 'close-terminal') {
+      if (list.terminals.length === 0) {
+        await this.replaceControlCard(event, this.buildControlMenuCard(event.chatId, controlStateFromList(list), {
+          text: '暂无可关闭的任务终端。', success: false,
+        }));
+        return;
+      }
+      await this.replaceControlCard(event, buildCloseTerminalSelectCard(list.terminals));
       return;
     }
     if (flow === 'manage') {

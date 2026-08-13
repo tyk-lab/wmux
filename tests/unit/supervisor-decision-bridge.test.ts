@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initPipeBridge, terminalScreenExcerpt } from '../../src/renderer/pipe-bridge';
+import { initPipeBridge, readTerminalScreen, terminalScreenExcerpt } from '../../src/renderer/pipe-bridge';
 import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
@@ -202,7 +202,7 @@ describe('supervisor decision bridge', () => {
       capturedAt: expect.any(Number),
     });
     expect(remoteControl({ action: 'terminal-screen', terminal: 'supervisor-a', lines: 40 }))
-      .toMatchObject({ ok: false, error: expect.stringContaining('不是可远程查看的任务终端') });
+      .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
     expect(remoteControl({ action: 'terminal-screen', terminal: 'missing', lines: 40 }))
       .toMatchObject({ ok: false });
   });
@@ -284,6 +284,35 @@ describe('supervisor decision bridge', () => {
     expect(excerpt).toHaveLength(20);
     expect(excerpt.startsWith('…\n')).toBe(true);
     expect(excerpt).toContain('最新错误：测试失败');
+  });
+
+  it('joins Grok wrapped wide-character lines and collapses repeated TUI repaint frames', () => {
+    const lines = [
+      { text: '┌─ Grok 项目检查', wrapped: false },
+      { text: '：发现中文错误', wrapped: true },
+      { text: '结果：测试失败', wrapped: false },
+      { text: '提示：修复后重试', wrapped: false },
+      { text: '┌─ Grok 项目检查：发现中文错误', wrapped: false },
+      { text: '结果：测试失败', wrapped: false },
+      { text: '提示：修复后重试', wrapped: false },
+    ];
+    surfaceTerminalRegistry.set('worker-a', {
+      buffer: {
+        active: {
+          length: lines.length,
+          getLine: (index: number) => ({
+            isWrapped: lines[index].wrapped,
+            translateToString: () => lines[index].text,
+          }),
+        },
+      },
+    } as any);
+
+    const screen = readTerminalScreen('worker-a', 40);
+    expect(screen.text).toContain('┌─ Grok 项目检查：发现中文错误');
+    expect(terminalScreenExcerpt(screen.text || '')).toBe(
+      '┌─ Grok 项目检查：发现中文错误\n结果：测试失败\n提示：修复后重试',
+    );
   });
 
   it('creates an unsupervised Codex direct terminal that remains sendable and supervisable', () => {
@@ -368,6 +397,17 @@ describe('supervisor decision bridge', () => {
 
   it('creates one fixed Grok project management terminal and invokes its progress skill first', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    useStore.getState().replaceAllWorkspaces([{
+      title: '被监督项目',
+      cwd: 'E:\\repo',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-anchor' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '被监督任务' },
+          { id: 'worker-neighbor' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '相邻任务' },
+        ],
+      },
+    }]);
     const command = {
       action: 'create-task',
       name: PROJECT_MANAGER_TERMINAL_NAME,
@@ -375,27 +415,74 @@ describe('supervisor decision bridge', () => {
       agent: 'grok',
       preset: 'project-manager',
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
+      anchorTerminal: 'worker-a',
     };
 
     expect(remoteControl({ ...command, cwd: 'E:\\wrong-project' })).toMatchObject({
       ok: false,
       error: '项目管理终端启动配置无效。',
     });
-    expect(useStore.getState().workspaces.some((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME)).toBe(false);
+    expect(useStore.getState().workspaces).toHaveLength(1);
+    expect(remoteControl({ ...command, anchorTerminal: 'worker-neighbor' })).toMatchObject({
+      ok: false,
+      error: '项目管理终端锚点必须是当前被监督的任务终端。',
+    });
 
     expect(remoteControl(command)).toMatchObject({ ok: true, message: expect.stringContaining('项目管理终端') });
-    const workspace = useStore.getState().workspaces.find((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME);
-    const surface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
-    expect(workspace?.cwd).toBe(PROJECT_MANAGER_TERMINAL_CWD);
+    const workspace = useStore.getState().workspaces[0];
+    const leaf = workspace.splitTree.type === 'leaf' ? workspace.splitTree : undefined;
+    const surface = leaf?.surfaces.find((item) => item.customTitle === PROJECT_MANAGER_TERMINAL_NAME);
+    expect(workspace.title).toBe('被监督项目');
     expect(surface).toMatchObject({
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
       startupCommands: [expect.stringMatching(/^grok -- \(ConvertFrom-Json /)],
     });
     expect(surface?.startupInput).toBeUndefined();
+    expect(leaf?.activeSurfaceIndex).toBe(2);
+    expect(useStore.getState().activeWorkspaceId).toBe(workspace.id);
 
     expect(remoteControl(command)).toMatchObject({ ok: true, message: '项目管理终端已存在，已切换到该终端。' });
-    expect(useStore.getState().workspaces.filter((item) => item.title === PROJECT_MANAGER_TERMINAL_NAME)).toHaveLength(1);
+    const after = useStore.getState().workspaces[0].splitTree;
+    expect(after.type === 'leaf' ? after.surfaces.filter((item) => item.customTitle === PROJECT_MANAGER_TERMINAL_NAME) : []).toHaveLength(1);
+  });
+
+  it('closes an ordinary task terminal and cleans up its last-tab workspace', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      title: '临时任务',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-close' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'worker-close' as any, type: 'terminal', customTitle: '普通任务' }],
+      },
+    }]);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({ action: 'close-terminal', terminal: 'worker-close', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: expect.stringContaining('已关闭 普通任务') });
+    expect(useStore.getState().workspaces).toHaveLength(0);
+    expect(remoteControl({ action: 'close-terminal', terminal: 'worker-close', actor: 'ou-user' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('已关闭') });
+  });
+
+  it('stops supervision and closes its dedicated AI before closing a supervised task terminal', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      title: '监督任务',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-close-supervised' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', customTitle: '被监督任务' },
+          { id: 'supervisor-a' as any, type: 'terminal', customTitle: 'AI 监督 · 被监督任务', transientSupervisor: true },
+        ],
+      },
+    }]);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({ action: 'close-terminal', terminal: 'supervisor-a', actor: 'ou-user' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
+    expect(remoteControl({ action: 'close-terminal', terminal: 'worker-a', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: expect.stringContaining('停止对应 AI 监督通道') });
+    expect(useStore.getState().supervisor.lanes).toHaveLength(0);
+    expect(useStore.getState().workspaces).toHaveLength(0);
   });
 
   function decide(params: Record<string, unknown>): any {

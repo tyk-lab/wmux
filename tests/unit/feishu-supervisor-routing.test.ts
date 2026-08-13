@@ -638,7 +638,7 @@ describe('飞书人工决策单聊路由', () => {
     const createCard = JSON.stringify(updateCard.mock.calls[0][1]);
     expect(createCard).toContain('添加 AI 终端任务');
     expect(createCard).toContain('Codex（默认）');
-    expect(control).toHaveBeenCalledTimes(1);
+    expect(control).toHaveBeenCalledTimes(2);
 
     const formNonce = /"wmux_action":"form_create_task"[^}]*"nonce":"([^"]+)"/.exec(createCard)?.[1];
     handlers.cardAction({
@@ -677,7 +677,10 @@ describe('飞书人工决策单聊路由', () => {
 
   it('无需填写普通任务表单即可创建项目管理终端', async () => {
     const listMessage = JSON.stringify({
-      active: false, paused: false, terminals: [], session: null, pendingApprovals: [],
+      active: true, paused: false, terminals: [{
+        surfaceId: 'surf-anchor', label: '被监督任务', workspace: 'workspace-a', supervised: true,
+        supervisionState: 'active', activityState: 'idle', activityUpdatedAt: Date.now(),
+      }], session: { sessionId: 'sup-1', stopWhen: '完成任务', autonomous: false }, pendingApprovals: [],
     });
     const control = vi.fn(async (command: { action: string }) => command.action === 'create-task'
       ? { ok: true, message: '已创建 Grok 直连终端“项目管理终端”。' }
@@ -700,7 +703,7 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({ wmux_action: 'create_project_manager', nonce: managerNonce }) }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'create_project_manager', terminal: 'surf-anchor', nonce: managerNonce }) }, raw: {},
     });
 
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'create-task')).toBe(true));
@@ -710,6 +713,7 @@ describe('飞书人工决策单聊路由', () => {
       task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
       agent: PROJECT_MANAGER_TERMINAL_AGENT,
       preset: 'project-manager',
+      anchorTerminal: 'surf-anchor',
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已创建 Grok 直连终端');
@@ -831,7 +835,7 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已向 AI 监督终端（管家）发送监督方向信息');
   });
 
-  it('在白名单单聊中选择任务终端并刷新最新界面', async () => {
+  it('在白名单单聊的统一卡片中选择、刷新并发送任务', async () => {
     const listMessage = JSON.stringify({
       active: false,
       paused: false,
@@ -843,7 +847,7 @@ describe('飞书人工决策单聊路由', () => {
       pendingApprovals: [],
     });
     let screenVersion = 0;
-    const control = vi.fn(async (command: { action: string; terminal?: string; lines?: number }) => {
+    const control = vi.fn(async (command: { action: string; terminal?: string; lines?: number; task?: string }) => {
       if (command.action === 'terminal-screen') {
         screenVersion += 1;
         return {
@@ -857,6 +861,7 @@ describe('飞书人工决策单聊路由', () => {
           capturedAt: Date.now(),
         };
       }
+      if (command.action === 'send') return { ok: true, message: '已向 Codex worker 发送任务。' };
       return { ok: true, message: listMessage };
     });
     const service = new FeishuSupervisorService(control);
@@ -865,18 +870,18 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-screen', content: '帮助', chatType: 'p2p',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).toContain('查看终端界面');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('终端控制');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'terminal-screen', nonce: 'open-screen' }) }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'terminal-control', nonce: 'open-screen' }) }, raw: {},
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('wmux_form_terminal_screen');
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('wmux_form_terminal_control');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { name: 'wmux_form_terminal_screen', value: currentControlValue({ wmux_action: 'form_terminal_screen', nonce: 'submit-screen' }) },
+      action: { name: 'wmux_form_terminal_control', value: currentControlValue({ wmux_action: 'form_terminal_control', nonce: 'submit-screen' }) },
       raw: { action: { form_value: { terminal: 'surf-screen' } } },
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
@@ -888,10 +893,73 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({ wmux_action: 'terminal_screen', terminal: 'surf-screen', nonce: 'refresh-screen' }) }, raw: {},
+      action: { name: 'wmux_form_terminal_refresh', value: currentControlValue({ wmux_action: 'form_terminal_refresh', terminal: 'surf-screen', nonce: 'refresh-screen' }) },
+      raw: { action: { form_value: { task: '尚未发送的草稿' } } },
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
     expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('latest-2');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('尚未发送的草稿');
+    expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(0);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_send', value: currentControlValue({ wmux_action: 'form_terminal_send', terminal: 'surf-screen', nonce: 'send-screen' }) },
+      raw: { action: { form_value: { task: '运行相关测试并汇报结果' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(1));
+    expect(control.mock.calls.find(([command]) => command.action === 'send')?.[0]).toEqual({
+      action: 'send', terminal: 'surf-screen', task: '运行相关测试并汇报结果',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('已向 Codex worker 发送任务');
+  });
+
+  it('关闭被监督终端前展示影响并阻止重复确认', async () => {
+    const listMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'surf-close', label: 'Codex worker', workspace: 'workspace-a', supervised: true,
+        supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
+      }],
+      session: { sessionId: 'sup-1', stopWhen: '完成任务', autonomous: false },
+      pendingApprovals: [],
+    });
+    const control = vi.fn(async (command: { action: string }) => command.action === 'close-terminal'
+      ? { ok: true, message: '已关闭 Codex worker，并停止对应 AI 监督通道。' }
+      : { ok: true, message: listMessage });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-close', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'close-terminal', nonce: 'open-close' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('查看关闭影响');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_close_terminal', value: currentControlValue({ wmux_action: 'form_close_terminal', nonce: 'inspect-close' }) },
+      raw: { action: { form_value: { terminal: 'surf-close' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    const confirmation = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(confirmation).toContain('同时停止对应监督通道');
+
+    const confirmEvent = {
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'confirm_close_terminal', terminal: 'surf-close', nonce: 'confirm-close' }) }, raw: {},
+    };
+    handlers.cardAction(confirmEvent);
+    handlers.cardAction(confirmEvent);
+    await vi.waitFor(() => expect(control.mock.calls.filter(([command]) => command.action === 'close-terminal')).toHaveLength(1));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('已关闭 Codex worker');
   });
 
   it('控制群不显示也不能调用任务终端界面', async () => {
@@ -910,11 +978,11 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-control', senderId: 'ou-allowed', messageId: 'om-group-screen', content: '帮助', chatType: 'group',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).not.toContain('查看终端界面');
+    expect(JSON.stringify(send.mock.calls[0][1])).not.toContain('终端控制');
 
     handlers.cardAction({
       chatId: 'oc-control', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'terminal-screen', nonce: 'forged-screen' }) }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'terminal-control', nonce: 'forged-screen' }) }, raw: {},
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     expect(send.mock.calls[1]).toEqual([

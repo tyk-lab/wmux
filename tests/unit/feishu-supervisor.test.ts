@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -415,7 +415,9 @@ supervisor_model: k3`)).toEqual({
     const supervisorMessage = JSON.stringify(buildSupervisorMessageCard([
       { ...terminals[0], supervised: true, supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now() },
     ]));
-    const createTaskObject = buildDirectTerminalTaskCard() as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
+    const createTaskObject = buildDirectTerminalTaskCard([{
+      ...terminals[0], supervised: true, supervisionState: 'active',
+    }]) as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
     const createTask = JSON.stringify(createTaskObject);
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
       { ...terminals[0], supervised: true, supervisionState: 'active' },
@@ -438,11 +440,11 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('查看监督日志');
     expect(menu).toContain('添加终端任务');
     expect(menu).toContain('启动监督');
-    expect(menu).toContain('发送任务');
-    expect(menu).toContain('查看终端界面');
+    expect(menu).toContain('终端控制');
+    expect(menu).toContain('关闭终端');
     expect(JSON.stringify(buildSupervisorControlMenuCard({
       active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
-    }, undefined, false))).not.toContain('查看终端界面');
+    }, undefined, false))).not.toContain('终端控制');
     expect(activeMenu).toContain('管理监督');
     expect(activeMenu).toContain('发送监督信息');
     expect(pausedMenu).not.toContain('发送监督信息');
@@ -514,7 +516,7 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('stop-lane');
   });
 
-  it('将任务终端选择和最新界面渲染为可刷新卡片', () => {
+  it('将任务终端选择、最新界面和发送输入渲染为统一控制卡片', () => {
     const terminal = {
       surfaceId: 'surf-a', label: 'Codex worker', workspace: '代码工作区', supervised: false,
       activityState: 'working' as const, activityUpdatedAt: Date.now(),
@@ -525,19 +527,50 @@ supervisor_model: k3`)).toEqual({
       text: 'PS E:\\repo> npm test\nTests 1 failed',
       lines: 2,
       capturedAt: Date.now(),
-    }));
+    }, '尚未发送的草稿'));
 
-    expect(selectCard).toContain('查看任务终端界面');
+    expect(selectCard).toContain('终端控制');
     expect(selectCard).toContain('select_static');
-    expect(selectCard).toContain('wmux_form_terminal_screen');
+    expect(selectCard).toContain('wmux_form_terminal_control');
     expect(selectCard).toContain('surf-a');
-    expect(selectCard).toContain('只允许白名单用户在单聊中查看');
-    expect(screenCard).toContain('任务终端最新界面');
+    expect(selectCard).toContain('只允许白名单用户在单聊中使用');
+    expect(screenCard).toContain('最新核心文本');
     expect(screenCard).toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
-    expect(screenCard).toContain('刷新当前界面');
+    expect(screenCard).toContain('刷新界面');
+    expect(screenCard).toContain('发送内容');
+    expect(screenCard).toContain('尚未发送的草稿');
+    expect(screenCard).toContain('default_value');
     expect(screenCard).toContain('选择其他终端');
     expect(screenCard).toContain('返回控制首页');
-    expect(screenCard).toContain('terminal_screen');
+    expect(screenCard).toContain('form_terminal_refresh');
+    expect(screenCard).toContain('form_terminal_send');
+  });
+
+  it('为关闭普通终端和被监督终端渲染选择与确认卡片', () => {
+    const terminal = {
+      surfaceId: 'surf-a', label: 'Codex worker', workspace: '代码工作区', supervised: true,
+      supervisionState: 'active' as const, activityState: 'working' as const, activityUpdatedAt: Date.now(),
+    };
+    const selectCard = JSON.stringify(buildCloseTerminalSelectCard([terminal]));
+    const confirmationCard = JSON.stringify(buildCloseTerminalConfirmationCard(terminal));
+
+    expect(selectCard).toContain('查看关闭影响');
+    expect(selectCard).toContain('form_close_terminal');
+    expect(confirmationCard).toContain('同时停止对应监督通道');
+    expect(confirmationCard).toContain('任务目录和历史审计记录不会删除');
+    expect(confirmationCard).toContain('confirm_close_terminal');
+  });
+
+  it('多条监督通道时要求选择项目管理终端锚点', () => {
+    const card = JSON.stringify(buildDirectTerminalTaskCard([
+      { surfaceId: 'surf-a', label: '任务 A', workspace: '项目', supervised: true, supervisionState: 'active' },
+      { surfaceId: 'surf-b', label: '任务 B', workspace: '项目', supervised: true, supervisionState: 'paused' },
+    ]));
+
+    expect(card).toContain('project_manager_anchor');
+    expect(card).toContain('wmux_form_create_project_manager');
+    expect(card).toContain('surf-a');
+    expect(card).toContain('surf-b');
   });
 
   it('将监督状态和最近日志渲染为适合移动端的只读卡片并脱敏', () => {

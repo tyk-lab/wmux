@@ -5,7 +5,7 @@
 import { useStore } from './store';
 import { splitNode, getAllPaneIds, findLeaf, buildGridLayout, createLeaf } from './store/split-utils';
 import { surfaceTerminalRegistry } from './hooks/useTerminal';
-import { PaneId, SurfaceId, WorkspaceId, SurfaceType, SplitNode } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, SurfaceType, SplitNode, SurfaceRef } from '../shared/types';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -61,7 +61,8 @@ export function isSupervisorDecisionAuthorised(
   return !!supervisorSurfaceId && dedicatedSupervisorSurfaceId(lane) === supervisorSurfaceId;
 }
 
-const FEISHU_TERMINAL_SCREEN_MAX_CHARS = 1_200;
+const FEISHU_TERMINAL_SCREEN_MAX_CHARS = 1_500;
+const FEISHU_TERMINAL_SCREEN_MAX_LINES = 18;
 
 export function readTerminalScreen(surfaceId: string, lines = 50): { text?: string; lines?: number; surfaceId?: string; error?: string } {
   const terminal = surfaceTerminalRegistry.get(surfaceId);
@@ -72,14 +73,42 @@ export function readTerminalScreen(surfaceId: string, lines = 50): { text?: stri
   const count = Math.min(Math.max(Math.floor(lines), 1), 10000);
   const output: string[] = [];
   for (let i = Math.max(0, buffer.length - count); i < buffer.length; i++) {
-    output.push(buffer.getLine(i)?.translateToString(true) ?? '');
+    const line = buffer.getLine(i);
+    const text = line?.translateToString(true) ?? '';
+    if (line?.isWrapped && output.length > 0) output[output.length - 1] += text;
+    else output.push(text);
   }
   while (output.length && output[output.length - 1] === '') output.pop();
   return { text: output.join('\n'), lines: output.length, surfaceId };
 }
 
 export function terminalScreenExcerpt(text: string, maxChars = FEISHU_TERMINAL_SCREEN_MAX_CHARS): string {
-  const normalized = text.replace(/\r\n?/g, '\n').trimEnd();
+  const normalizedLines = text.replace(/\r\n?/g, '\n').split('\n');
+  const compacted: string[] = [];
+  for (const line of normalizedLines) {
+    if (!line.trim()) {
+      if (compacted.length > 0 && compacted[compacted.length - 1] !== '') compacted.push('');
+      continue;
+    }
+    if (line === compacted[compacted.length - 1]) continue;
+    compacted.push(line);
+  }
+  while (compacted[compacted.length - 1] === '') compacted.pop();
+
+  // Full-screen TUIs can leave two or more identical repaint frames in the
+  // scrollback. Keep only the newest repeated suffix frame.
+  for (let size = Math.floor(compacted.length / 2); size >= 3; size--) {
+    const latest = compacted.slice(-size);
+    const previous = compacted.slice(-(size * 2), -size);
+    if (latest.every((line, index) => line === previous[index])) {
+      compacted.splice(-(size * 2), size);
+      break;
+    }
+  }
+
+  const limitedLines = compacted.slice(-FEISHU_TERMINAL_SCREEN_MAX_LINES);
+  let normalized = limitedLines.join('\n');
+  if (compacted.length > limitedLines.length) normalized = `…\n${normalized}`;
   if (normalized.length <= maxChars) return normalized;
   if (maxChars <= 1) return '…'.slice(0, maxChars);
   return `…\n${normalized.slice(-(maxChars - 2))}`;
@@ -547,7 +576,19 @@ interface RemoteDirectTerminalTask {
   preset?: 'project-manager';
   cwd: string;
   displayPath?: string;
+  anchorTerminal?: string;
   actor?: string;
+}
+
+interface RemoteTaskTerminalLocation {
+  surfaceId: SurfaceId;
+  paneId: PaneId;
+  workspaceId: WorkspaceId;
+  workspaceTitle: string;
+  projectDir?: string;
+  label: string;
+  remoteSshControl: boolean;
+  surface: SurfaceRef;
 }
 
 type RemoteTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
@@ -596,9 +637,7 @@ function remoteTerminalActivity(surfaceId: SurfaceId): {
   return { activityState: state, activityUpdatedAt: updatedAt };
 }
 
-function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; title: string; cwd?: string; sshProfileId?: string }, out: Array<{
-  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string; remoteSshControl: boolean;
-}>): void {
+function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; title: string; cwd?: string; sshProfileId?: string }, out: RemoteTaskTerminalLocation[]): void {
   if (tree.type !== 'leaf') {
     collectRemoteTerminals(tree.children[0], workspace, out);
     collectRemoteTerminals(tree.children[1], workspace, out);
@@ -616,18 +655,43 @@ function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; t
       projectDir: workspace.cwd || surface.currentCwd || surface.cwd,
       label,
       remoteSshControl: !!workspace.sshProfileId,
+      surface,
     });
   }
 }
 
-function remoteTerminalList(): Array<{
-  surfaceId: SurfaceId; paneId: PaneId; workspaceId: WorkspaceId; workspaceTitle: string; projectDir?: string; label: string; remoteSshControl: boolean;
-}> {
+function remoteTerminalList(): RemoteTaskTerminalLocation[] {
   const store = useStore.getState();
   const terminals: ReturnType<typeof remoteTerminalList> = [];
   for (const workspace of store.workspaces) collectRemoteTerminals(workspace.splitTree, workspace, terminals);
   const supervisorIds = new Set(store.supervisor.lanes.map(dedicatedSupervisorSurfaceId).filter(Boolean));
   return terminals.filter((terminal) => !supervisorIds.has(terminal.surfaceId));
+}
+
+function locateRemoteTaskTerminal(surfaceId: string): { terminal?: RemoteTaskTerminalLocation; error?: string } {
+  if (!surfaceId) return { error: '缺少任务终端 ID。' };
+  const terminal = remoteTerminalList().find((item) => item.surfaceId === surfaceId);
+  if (terminal) return { terminal };
+
+  const store = useStore.getState();
+  for (const workspace of store.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      const surface = findLeaf(workspace.splitTree, paneId)?.surfaces.find((item) => item.id === surfaceId);
+      if (!surface) continue;
+      if (surface.type !== 'terminal') return { error: '目标不是任务终端。' };
+      return { error: '目标是专属监督 AI 终端，不能通过任务终端控制入口操作。' };
+    }
+  }
+  return { error: '目标任务终端不存在、已关闭或属于其他窗口；请刷新终端列表。' };
+}
+
+function focusRemoteTerminal(terminal: RemoteTaskTerminalLocation): void {
+  const store = useStore.getState();
+  store.selectWorkspace(terminal.workspaceId);
+  const workspace = useStore.getState().workspaces.find((item) => item.id === terminal.workspaceId);
+  const leaf = workspace && findLeaf(workspace.splitTree, terminal.paneId);
+  const index = leaf?.surfaces.findIndex((surface) => surface.id === terminal.surfaceId) ?? -1;
+  if (index >= 0) store.selectSurface(terminal.workspaceId, terminal.paneId, index);
 }
 
 function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok: boolean; message: string; error?: string } {
@@ -646,12 +710,34 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
     }
     const existing = remoteTerminalList().find((terminal) => (
       terminal.label === PROJECT_MANAGER_TERMINAL_NAME
-      && terminal.projectDir?.toLowerCase() === PROJECT_MANAGER_TERMINAL_CWD.toLowerCase()
+      && terminal.surface.cwd?.toLowerCase() === PROJECT_MANAGER_TERMINAL_CWD.toLowerCase()
     ));
     if (existing) {
-      useStore.getState().selectWorkspace(existing.workspaceId);
+      focusRemoteTerminal(existing);
       return { ok: true, message: '项目管理终端已存在，已切换到该终端。' };
     }
+
+    const anchor = locateRemoteTaskTerminal(String(params.anchorTerminal || ''));
+    if (!anchor.terminal) return { ok: false, error: `无法定位项目管理终端锚点：${anchor.error}`, message: '' };
+    const supervisor = useStore.getState().supervisor;
+    const anchorLane = supervisor.lanes.find((lane) => lane.surfaceId === anchor.terminal?.surfaceId);
+    if (!anchorLane || supervisorLaneControlState(anchorLane) === 'stopped' || (!supervisor.active && !supervisor.paused)) {
+      return { ok: false, error: '项目管理终端锚点必须是当前被监督的任务终端。', message: '' };
+    }
+    const launch = buildInteractiveAgentLaunch('grok', task);
+    const surfaceId = useStore.getState().addSurface(anchor.terminal.workspaceId, anchor.terminal.paneId, 'terminal', {
+      customTitle: PROJECT_MANAGER_TERMINAL_NAME,
+      shell: 'pwsh.exe',
+      cwd,
+      ...launch,
+    });
+    if (!surfaceId) return { ok: false, error: '无法在锚点窗格创建项目管理终端。', message: '' };
+    const created = locateRemoteTaskTerminal(surfaceId);
+    if (created.terminal) focusRemoteTerminal(created.terminal);
+    return {
+      ok: true,
+      message: `已在 ${anchor.terminal.label} 所在窗格创建项目管理终端，并自动选中。`,
+    };
   }
 
   const agentLabel = agent === 'kimi' ? 'Kimi' : agent === 'grok' ? 'Grok' : 'Codex';
@@ -840,8 +926,9 @@ function startRemoteSupervisor(params: RemoteSupervisorStart): { ok: boolean; me
 
 function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskResult {
   const store = useStore.getState();
-  const terminal = remoteTerminalList().find((item) => item.surfaceId === params.terminal);
-  if (!terminal) return { ok: false, error: '终端不存在或不可发送任务；请先执行 LIST 获取最新终端。', message: '' };
+  const located = locateRemoteTaskTerminal(params.terminal);
+  const terminal = located.terminal;
+  if (!terminal) return { ok: false, error: located.error || '终端不存在或不可发送任务。', message: '' };
   const task = params.task.trim();
   if (!task) return { ok: false, error: '任务内容不能为空。', message: '' };
 
@@ -896,6 +983,39 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
   return { ok: true, message: manuallyResolved
     ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
     : `已向 ${terminal.label} 发送任务。` };
+}
+
+function closeRemoteTerminal(params: { terminal: string; actor?: string }): { ok: boolean; message: string; error?: string } {
+  const located = locateRemoteTaskTerminal(params.terminal);
+  const terminal = located.terminal;
+  if (!terminal) return { ok: false, error: located.error || '终端不存在或不可关闭。', message: '' };
+
+  const store = useStore.getState();
+  const session = store.supervisor;
+  const lane = session.lanes.find((item) => item.surfaceId === terminal.surfaceId);
+  const laneWasSupervised = !!lane && supervisorLaneControlState(lane) !== 'stopped';
+  if (lane) {
+    remoteAudit(session, lane, 'supervisor.remote-command', {
+      action: 'close-terminal',
+      terminal: terminal.surfaceId,
+      actor: params.actor || 'unknown',
+    });
+    if (laneWasSupervised) {
+      store.stopSupervisorLane(lane.id, `由飞书关闭任务终端 ${lane.label} 并解除监督绑定`);
+    } else {
+      store.setSupervisorLanes(store.supervisor.lanes.filter((item) => item.id !== lane.id));
+    }
+    closeStoppedSupervisorSurfaces([lane]);
+  }
+
+  // Reuse the store's PTY reaping and last-tab workspace cleanup path.
+  store.closeSurface(terminal.workspaceId, terminal.paneId, terminal.surfaceId);
+  return {
+    ok: true,
+    message: laneWasSupervised
+      ? `已关闭 ${terminal.label}，并停止对应 AI 监督通道。任务目录和审计记录均已保留。`
+      : `已关闭 ${terminal.label}。任务目录和审计记录均已保留。`,
+  };
 }
 
 function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boolean; message: string; error?: string } {
@@ -1964,9 +2084,10 @@ export function initPipeBridge(): void {
     }
     if (action === 'terminal-screen') {
       const terminalId = String(params?.terminal || '');
-      const terminal = remoteTerminalList().find((item) => item.surfaceId === terminalId);
+      const located = locateRemoteTaskTerminal(terminalId);
+      const terminal = located.terminal;
       if (!terminal) {
-        return { ok: false, error: '目标任务终端不存在、已关闭或不是可远程查看的任务终端。' };
+        return { ok: false, error: located.error };
       }
       const requestedLines = Number(params?.lines);
       const lines = Number.isFinite(requestedLines)
@@ -2004,6 +2125,7 @@ export function initPipeBridge(): void {
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'create-task') return createRemoteDirectTerminalTask(params as RemoteDirectTerminalTask);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
+    if (action === 'close-terminal') return closeRemoteTerminal(params);
     if (action === 'send-supervisor-message') return sendRemoteSupervisorMessage(params as RemoteSupervisorMessage);
     if (action === 'pause-lane' || action === 'resume-lane' || action === 'stop-lane') {
       const session = useStore.getState().supervisor;
