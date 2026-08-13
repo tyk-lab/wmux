@@ -78,7 +78,8 @@ describe('supervisor setup dialog feedback', () => {
   it('configures optional waiting after completion per terminal', () => {
     expect(dialogSource).toContain('完成后待续（可选）');
     expect(dialogSource).toContain('waitForNextDirection: event.target.checked');
-    expect(dialogSource).toContain("supervisorLaneControlState(prev) === 'waiting'");
+    expect(dialogSource).toContain('supervisorWaitingConfigAction(');
+    expect(dialogSource).toContain("=== 'finalize'");
     expect(dialogSource).toContain("? 'stopped'");
     expect(panelSource).toContain("laneControlState === 'waiting'");
     expect(panelSource).toContain('等待下一步方向');
