@@ -52,6 +52,7 @@ import {
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
 import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
+import { supervisorDecisionOptions } from '../shared/supervisor-decision-options';
 
 export function isSupervisorDecisionAuthorised(
   lane: Pick<SupervisorLane, 'surfaceId' | 'supervisorSurfaceId'>,
@@ -1038,10 +1039,10 @@ function decideRemoteSupervisor(
     return { ok: false, error: '待决项对应的 AI 监督已不存在，无法整理所选方案。', message: '' };
   }
   const selectedOption = selection?.trim().replace(/^用户选择\s*/u, '').slice(0, 200) || '';
-  const offeredOptions = new Set(
-    (approval.alternatives?.match(/方案\s*[A-Za-z0-9一二三四五六七八九十]+/g) || [])
-      .map((option) => option.replace(/\s+/g, ' ').trim()),
-  );
+  const parsedOptions = supervisorDecisionOptions(approval.alternatives, approval.text);
+  const offeredOptions = new Set(parsedOptions.length >= 2
+    ? parsedOptions.map((option) => option.value)
+    : []);
   if (offeredOptions.size >= 2 && !selectedOption) {
     return { ok: false, error: 'AI 监督提供了多个方案，请先选择其中一个方案。', message: '' };
   }

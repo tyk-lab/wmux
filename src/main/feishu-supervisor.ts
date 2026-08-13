@@ -8,6 +8,7 @@ import {
   PROJECT_MANAGER_TERMINAL_NAME,
   PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
 } from '../shared/project-manager-terminal';
+import { supervisorDecisionOptions } from '../shared/supervisor-decision-options';
 
 export type FeishuSupervisorCommand =
   | { action: 'list' }
@@ -1469,22 +1470,14 @@ export function formatFeishuSupervisorAuditEvent(record: SupervisorRecord): stri
   return [title, `终端：${auditValue('terminal', record.terminal.label)}`, ...(details.length > 0 ? ['详情：', ...details] : [])].join('\n');
 }
 
-function decisionOptions(alternatives: string): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
-  const matches = [...alternatives.matchAll(/方案\s*[A-Za-z0-9一二三四五六七八九十]+/g)].slice(0, 6);
-  const seen = new Set<string>();
-  return matches.flatMap((match, index) => {
-    const choice = match[0].replace(/\s+/g, ' ').trim();
-    if (seen.has(choice)) return [];
-    seen.add(choice);
-    const start = match.index ?? 0;
-    const end = matches[index + 1]?.index ?? alternatives.length;
-    const summary = alternatives.slice(start, end)
-      .replace(/[；;。\s]+$/u, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 100);
-    return [{ text: { tag: 'plain_text', content: summary || choice }, value: choice }];
-  });
+function decisionOptions(
+  alternatives: string | undefined,
+  recommendation: string,
+): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  return supervisorDecisionOptions(alternatives, recommendation).map((option) => ({
+    text: { tag: 'plain_text', content: `${option.title}：${option.detail}`.slice(0, 100) },
+    value: option.value,
+  }));
 }
 
 /** JSON 2.0 is required for form inputs; legacy cards silently drop these controls. */
@@ -1492,16 +1485,18 @@ export function buildApprovalCard(record: SupervisorRecord): object {
   const payload = record.payload || {};
   const reason = String(payload.reason || '需要人工决策').slice(0, 800);
   const impact = String(payload.impact || '未提供').slice(0, 500);
-  const alternatives = String(payload.alternatives || '未提供').slice(0, 500);
+  const rawAlternatives = String(payload.alternatives || '').slice(0, 500);
+  const alternatives = rawAlternatives || '未提供';
   const recommendation = String(payload.recommendation || '未提供').slice(0, 1200);
+  const isContextRecovery = payload.proposalKind === 'context-recovery';
   const rawTerminalScreen = String(payload.terminalScreen || '');
   const terminalScreen = rawTerminalScreen.length > 1200
     ? `…\n${rawTerminalScreen.slice(-1198)}`
     : rawTerminalScreen;
-  const choices = decisionOptions(alternatives);
+  const choices = isContextRecovery ? [] : decisionOptions(rawAlternatives, recommendation);
   const hasMultipleChoices = choices.length >= 2;
   const formElements: object[] = [
-    { tag: 'markdown', content: '**AI 建议**' },
+    { tag: 'markdown', content: isContextRecovery ? '**AI 监督拟定的任务恢复指令**' : '**AI 建议**' },
     { tag: 'div', text: { tag: 'plain_text', content: recommendation } },
     { tag: 'markdown', content: '**任务终端最新界面（原文）**' },
     { tag: 'div', text: { tag: 'plain_text', content: terminalScreen || '（当前终端界面没有可显示的文本）' } },
@@ -1511,21 +1506,24 @@ export function buildApprovalCard(record: SupervisorRecord): object {
       tag: 'select_static', element_id: 'decision_choice', name: 'decision_choice',
       placeholder: { tag: 'plain_text', content: '请选择一个 AI 方案' }, options: choices,
     }] : []),
-    { tag: 'div', text: { tag: 'plain_text', content: hasMultipleChoices
-      ? '确认所选方案后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。'
-      : '采用后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。' } },
-    {
+    { tag: 'div', text: { tag: 'plain_text', content: isContextRecovery
+      ? '确认后将把上述原文直接发送到任务终端；确认前不会改动任务终端。'
+      : hasMultipleChoices
+        ? '确认所选方案后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。'
+        : '采用后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。' } },
+    ...(!isContextRecovery ? [{
       tag: 'input', element_id: 'decision_input', name: 'decision_input', input_type: 'multiline_text',
       rows: 4, max_length: 1000,
       label: { tag: 'plain_text', content: '用户决策信息（可选）' },
       placeholder: { tag: 'plain_text', content: '填写要直接发送给任务终端的信息' },
-    },
-    { tag: 'div', text: { tag: 'plain_text', content: '填写后点击“直接发送用户输入”；内容会直接提交到任务终端，不经过 AI 监督整理。' } },
+    }, {
+      tag: 'div', text: { tag: 'plain_text', content: '填写后点击“直接发送用户输入”；内容会直接提交到任务终端，不经过 AI 监督整理。' },
+    }] : []),
     { tag: 'markdown', content: '**处理当前决策**' },
     {
       tag: 'column_set', flex_mode: 'none', columns: [
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', hasMultipleChoices ? '确认并采用 AI 方案' : '采用 AI 当前方案', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_direct', '直接发送用户输入', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'direct' })] },
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', isContextRecovery ? '确认并发送到任务终端' : hasMultipleChoices ? '确认并采用 AI 方案' : '采用 AI 当前方案', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
+        ...(!isContextRecovery ? [{ tag: 'column', width: 'auto', elements: [formButton('wmux_decide_direct', '直接发送用户输入', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'direct' })] }] : []),
       ],
     },
     { tag: 'markdown', content: '**监督控制**' },
@@ -1539,7 +1537,9 @@ export function buildApprovalCard(record: SupervisorRecord): object {
   return buildFormCard(
     'wmux AI 监督：待人工决策',
     'orange',
-    `**终端**：${record.terminal.label}\n**原因**：${reason}\n**影响**：${impact}\n**备选**：${alternatives}`,
+    isContextRecovery
+      ? `**终端**：${record.terminal.label}\n**原因**：${reason}`
+      : `**终端**：${record.terminal.label}\n**原因**：${reason}\n**影响**：${impact}\n**备选**：${alternatives}`,
     'wmux_decision_form',
     formElements,
   );

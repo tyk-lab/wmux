@@ -362,6 +362,41 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('采用 AI 当前方案');
   });
 
+  it('AI 把编号候选项写在建议正文时仍显示飞书方案下拉框', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        approvalId: 'appr-numbered',
+        recommendation: '请你选下一步\n1. 收官（推荐）\n2. 试宽量级\n3. 换策略\n4. 其他',
+      },
+    }));
+
+    expect(card).toContain('select_static');
+    expect(card).toContain('选项 1：收官（推荐）');
+    expect(card).toContain('选项 4：其他');
+    expect(card).toContain('确认并采用 AI 方案');
+  });
+
+  it('上下文恢复指令在飞书仅提供原文确认发送', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        approvalId: 'appr-recovery',
+        proposalKind: 'context-recovery',
+        recommendation: '恢复任务：\n1. 主线程统筹\n2. 子线程运行测试',
+      },
+    }));
+
+    expect(card).toContain('AI 监督拟定的任务恢复指令');
+    expect(card).toContain('确认并发送到任务终端');
+    expect(card).toContain('确认前不会改动任务终端');
+    expect(card).not.toContain('select_static');
+    expect(card).not.toContain('decision_input');
+    expect(card).not.toContain('直接发送用户输入');
+  });
+
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
     const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
     const menuObject = buildSupervisorControlMenuCard() as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };

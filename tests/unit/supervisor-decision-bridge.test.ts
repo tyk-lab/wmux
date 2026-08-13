@@ -1079,6 +1079,22 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
+  it('accepts a numbered option parsed from the AI recommendation', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '请你选下一步\n1. 收官（推荐）\n2. 试宽量级\n3. 换策略',
+      reason: '需要用户选择调整方向',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve', selection: '选项 2', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: '已选择 选项 2；AI 监督将整理后发送到任务终端。' });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[用户选择] 选项 2'));
+  });
+
   it('sends user-entered decision information directly to the worker terminal', () => {
     const appendRecord = vi.fn(async () => undefined);
     (globalThis.window as any).wmux.supervisor = { appendRecord };
