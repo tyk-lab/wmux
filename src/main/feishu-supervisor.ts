@@ -307,6 +307,9 @@ interface FeishuListResult {
 interface FeishuTerminalScreenResult {
   terminal: Pick<FeishuListTerminal, 'surfaceId' | 'label' | 'workspace' | 'activityState' | 'activityUpdatedAt'>;
   text: string;
+  question?: string;
+  answer?: string;
+  answerPending?: boolean;
   lines: number;
   capturedAt: number;
 }
@@ -800,17 +803,26 @@ export function buildTerminalScreenSelectCard(terminals: FeishuListTerminal[]): 
 export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draft = '', notice = ''): object {
   const capturedAt = new Date(result.capturedAt).toLocaleString('zh-CN', { hour12: false });
   const screenText = result.text || '（终端当前没有可见内容）';
+  const taskInputId = nextControlElementIdentity('input').elementId;
+  const coreElements = result.question ? [
+    { tag: 'markdown', content: '**你的提问**' },
+    { tag: 'div', text: { tag: 'plain_text', content: result.question } },
+    { tag: 'markdown', content: '**Agent 回复**' },
+    { tag: 'div', text: { tag: 'plain_text', content: result.answer || (result.answerPending ? '（回复生成中）' : '（尚未识别到最终回复）') } },
+  ] : [
+    { tag: 'markdown', content: '**最新核心文本**' },
+    { tag: 'div', text: { tag: 'plain_text', content: screenText } },
+  ];
   return buildFormCard(
     'wmux · 终端控制',
     'blue',
     `${notice ? `${notice}\n\n` : ''}**${result.terminal.label}**\n工作区：${result.terminal.workspace}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
     'wmux_terminal_control_form',
     [
-      { tag: 'markdown', content: '**最新核心文本**' },
-      { tag: 'div', text: { tag: 'plain_text', content: screenText } },
+      ...coreElements,
       { tag: 'hr' },
       {
-        tag: 'input', element_id: 'terminal_control_task', name: 'task', input_type: 'multiline_text', rows: 5, max_length: 1000,
+        tag: 'input', element_id: taskInputId, name: 'task', input_type: 'multiline_text', rows: 5, max_length: 1000,
         label: { tag: 'plain_text', content: '发送内容（可选）' }, placeholder: { tag: 'plain_text', content: '填写要发送给终端的完整任务' },
         ...(draft ? { default_value: draft } : {}),
       },
@@ -1202,6 +1214,9 @@ function parseTerminalScreenResult(value: unknown): FeishuTerminalScreenResult |
         : undefined,
     },
     text: value.text.slice(0, 1_200),
+    question: typeof value.question === 'string' && value.question.trim() ? value.question.slice(0, 350) : undefined,
+    answer: typeof value.answer === 'string' && value.answer.trim() ? value.answer.slice(0, 850) : undefined,
+    answerPending: value.answerPending === true,
     lines: Math.max(0, Math.floor(value.lines)),
     capturedAt: value.capturedAt,
   };

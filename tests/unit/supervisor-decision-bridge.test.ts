@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initPipeBridge, readTerminalScreen, terminalScreenExcerpt } from '../../src/renderer/pipe-bridge';
+import { initPipeBridge, readTerminalScreen, terminalConversationExcerpt, terminalScreenExcerpt } from '../../src/renderer/pipe-bridge';
 import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
@@ -315,6 +315,135 @@ describe('supervisor decision bridge', () => {
     );
   });
 
+  it('reads the complete Grok alternate screen and removes composer chrome', () => {
+    const lines = [
+      'Grok 正在检查项目',
+      '结论：类型检查通过，仍有一个测试失败',
+      '建议：先修复 terminal screen 用例',
+      '',
+      '╭────────────────────────────────────────────────────────────╮',
+      '│',
+      '│  >',
+      '╰────────────────────────────────────────────────────────────╯',
+      '────────────────── Grok 4.6 (high) · always-approve ─────────╯',
+      'Shift+Tab:mode  |  Esc:cancel  |  Ctrl+X:shortcuts',
+    ];
+    surfaceTerminalRegistry.set('worker-a', {
+      buffer: {
+        active: {
+          type: 'alternate',
+          length: lines.length,
+          getLine: (index: number) => ({
+            isWrapped: false,
+            translateToString: () => lines[index],
+          }),
+        },
+      },
+    } as any);
+
+    const screen = readTerminalScreen('worker-a', 4);
+    expect(screen.lines).toBe(lines.length);
+    expect(terminalScreenExcerpt(screen.text || '')).toBe([
+      'Grok 正在检查项目',
+      '结论：类型检查通过，仍有一个测试失败',
+      '建议：先修复 terminal screen 用例',
+    ].join('\n'));
+  });
+
+  it('extracts the latest Grok question and answer without TUI noise', () => {
+    const conversation = terminalConversationExcerpt([
+      '〉 你是什么模型                                      11:03 PM',
+      '◆user_prompt_submit   [hooks: 1/1]',
+      '◆Thought for 0.1s',
+      '',
+      '我是 Grok 4.6，由 xAI 开发。',
+      '11:04 PM',
+      'Worked for 5.8s',
+      'stop  [hooks: 1/1]',
+      'Help improve Grok',
+      '[Opt out] [Opt in]',
+      'Read Terms and Privacy Policy.',
+      '〉',
+    ].join('\n'), 'Grok直连 · sd');
+
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我是 Grok 4.6，由 xAI 开发。',
+    });
+    expect(conversation.answer).not.toContain('Thought');
+    expect(conversation.answer).not.toContain('Help improve');
+  });
+
+  it('extracts the latest Kimi question and final response instead of its reasoning', () => {
+    const conversation = terminalConversationExcerpt([
+      '✦ asdf',
+      '● User typed “asdf” — meaningless input. Reply briefly asking what they need.',
+      '● 看起来像是误输入。需要我做什么？',
+      '✦ 你是什么模型',
+      '● The user asks what model I am. Answer candidly in Chinese.',
+      '● 我是 Kimi Code CLI 的 AI 助手，由 Moonshot AI 的模型驱动。',
+      'yolo  K3-256k thinking: high  C:\\repo',
+      '/compact compresses context when it gets long',
+      'context: 10% (25k/256k)',
+    ].join('\n'), 'Kimi直连 · sd');
+
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我是 Kimi Code CLI 的 AI 助手，由 Moonshot AI 的模型驱动。',
+    });
+    expect(conversation.answer).not.toContain('The user asks');
+  });
+
+  it('shows only the Codex question while tools are still running', () => {
+    const conversation = terminalConversationExcerpt([
+      'OpenAI Codex (v0.147.0)',
+      'model: gpt-5.6-sol high fast',
+      'directory: E:\\work\\wmux',
+      'permissions: YOLO mode',
+      'Tip: Type / to open the command popup',
+      'MCP startup interrupted. The following servers were not initialized: fetch',
+      '› 你是什么模型',
+      '• 我的理解是：你想确认当前对话中我的模型身份。',
+      '• Ran Get-Content -Raw -LiteralPath SKILL.md',
+      '  └ name: openai-docs',
+      '• Searching the web',
+      '• Searched the web for Codex models',
+      '• Working (12s • esc to interrupt)',
+      '› Improve documentation in @filename',
+      'gpt-5.6-sol high fast · E:\\work\\wmux',
+    ].join('\n'), 'Codex直连 · sd', 'working');
+
+    expect(conversation).toMatchObject({ question: '你是什么模型', answerPending: true });
+    expect(conversation.answer).toBeUndefined();
+    expect(terminalConversationExcerpt(conversation.text, 'Codex直连 · sd', 'unknown')).toMatchObject({
+      question: '你是什么模型', answerPending: true,
+    });
+  });
+
+  it('keeps the final Codex response and removes commentary and tool activity', () => {
+    const conversation = terminalConversationExcerpt([
+      '› 你是什么模型',
+      '• 我先检查当前环境和官方说明。',
+      '• Ran Get-Content SKILL.md',
+      '  └ 43 lines',
+      '• Searching the web',
+      '• Working (4s • esc to interrupt)',
+      '• 我是 Codex，当前会话使用 GPT-5.6 系列模型。',
+      '',
+      '  具体运行配置以终端顶部显示为准。',
+      '› Improve documentation in @filename',
+      'gpt-5.6-sol high fast · E:\\work\\wmux',
+    ].join('\n'), 'Codex直连 · sd', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我是 Codex，当前会话使用 GPT-5.6 系列模型。\n\n  具体运行配置以终端顶部显示为准。',
+    });
+    expect(conversation.answer).not.toContain('Searching');
+    expect(conversation.answer).not.toContain('我先检查');
+    expect(conversation.answer).not.toContain('Improve documentation');
+  });
+
   it('creates an unsupervised Codex direct terminal that remains sendable and supervisable', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
     const result = remoteControl({
@@ -344,6 +473,7 @@ describe('supervisor decision bridge', () => {
     expect(listed).toMatchObject({
       label: 'Codex直连 · 修复登录页',
       workspace: '修复登录页',
+      cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
       supervised: false,
       supervisionState: 'none',
     });

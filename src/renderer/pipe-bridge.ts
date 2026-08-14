@@ -72,7 +72,12 @@ export function readTerminalScreen(surfaceId: string, lines = 50): { text?: stri
   const buffer = terminal.buffer.active;
   const count = Math.min(Math.max(Math.floor(lines), 1), 10000);
   const output: string[] = [];
-  for (let i = Math.max(0, buffer.length - count); i < buffer.length; i++) {
+  // Alternate-screen TUIs use the entire viewport as one repaint frame. Taking
+  // only its bottom N rows drops the conversation at the top and keeps mostly
+  // the composer/footer (notably in Grok). Normal shells still use the newest
+  // requested scrollback rows.
+  const start = buffer.type === 'alternate' ? 0 : Math.max(0, buffer.length - count);
+  for (let i = start; i < buffer.length; i++) {
     const line = buffer.getLine(i);
     const text = line?.translateToString(true) ?? '';
     if (line?.isWrapped && output.length > 0) output[output.length - 1] += text;
@@ -82,10 +87,22 @@ export function readTerminalScreen(surfaceId: string, lines = 50): { text?: stri
   return { text: output.join('\n'), lines: output.length, surfaceId };
 }
 
+function isTerminalTuiChromeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^[\s\u2500-\u257f_=~-]+$/u.test(trimmed)) return true;
+  if (/^[\s│┃╎╏┆┇┊┋`'|\\]*[>❯›]\s*$/u.test(trimmed)) return true;
+  if (/^[\s│┃╎╏┆┇┊┋`'|\\]+$/u.test(trimmed)) return true;
+  if (/\bShift\+Tab\s*:\s*mode\b.*\bEsc\s*:\s*cancel\b/i.test(trimmed)) return true;
+  if (/\bGrok\s+\d+(?:\.\d+)+(?:\s*\([^)]*\))?.*\b(?:always|auto)[- ]approve\b/i.test(trimmed)) return true;
+  return false;
+}
+
 export function terminalScreenExcerpt(text: string, maxChars = FEISHU_TERMINAL_SCREEN_MAX_CHARS): string {
   const normalizedLines = text.replace(/\r\n?/g, '\n').split('\n');
   const compacted: string[] = [];
   for (const line of normalizedLines) {
+    if (isTerminalTuiChromeLine(line)) continue;
     if (!line.trim()) {
       if (compacted.length > 0 && compacted[compacted.length - 1] !== '') compacted.push('');
       continue;
@@ -112,6 +129,147 @@ export function terminalScreenExcerpt(text: string, maxChars = FEISHU_TERMINAL_S
   if (normalized.length <= maxChars) return normalized;
   if (maxChars <= 1) return '…'.slice(0, maxChars);
   return `…\n${normalized.slice(-(maxChars - 2))}`;
+}
+
+export interface TerminalConversationExcerpt {
+  question?: string;
+  answer?: string;
+  answerPending?: boolean;
+  text: string;
+}
+
+type TerminalConversationAgent = 'codex' | 'kimi' | 'grok' | 'generic';
+
+function terminalConversationAgent(label: string): TerminalConversationAgent {
+  const normalized = label.toLowerCase();
+  if (normalized.includes('grok')) return 'grok';
+  if (normalized.includes('kimi')) return 'kimi';
+  if (normalized.includes('codex')) return 'codex';
+  return 'generic';
+}
+
+function terminalQuestionText(line: string, agent: TerminalConversationAgent): string | null {
+  const trimmed = line.trim();
+  const match = agent === 'kimi'
+    ? /^[✦✧✨]\s*(.+)$/u.exec(trimmed)
+    : /^(?:[│┃]\s*)?[>❯›〉]\s+(.+)$/u.exec(trimmed);
+  if (!match?.[1]) return null;
+  const question = match[1].replace(/\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s*$/iu, '').trim();
+  if (!question || (agent === 'kimi' && /^Use Kimi\b/iu.test(question))) return null;
+  if (agent === 'codex' && /^(?:Improve documentation in @filename|Ask Codex\b)/iu.test(question)) return null;
+  return question;
+}
+
+function isTerminalConversationFooter(line: string, agent: TerminalConversationAgent): boolean {
+  const trimmed = line.trim();
+  if (agent === 'grok' && /^(?:Help improve Grok|Off by default\.|Change anytime via settings\.|Read Terms and Privacy Policy\.)/iu.test(trimmed)) return true;
+  if (agent === 'kimi' && /^(?:yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(trimmed)) return true;
+  if (agent === 'codex' && /^(?:gpt-[\w.-]+\b|model:|directory:|permissions:|Tip:|MCP startup interrupted)/iu.test(trimmed)) return true;
+  return false;
+}
+
+function isTerminalConversationNoise(line: string, agent: TerminalConversationAgent): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || isTerminalTuiChromeLine(line)) return true;
+  if (/^\d{1,2}:\d{2}\s*(?:AM|PM)$/iu.test(trimmed)) return true;
+  if (/^[◆◇]\s*(?:user_prompt_submit|Thought\b)/iu.test(trimmed)) return true;
+  if (/^(?:Worked for\b|stop\s+\[hooks:)/iu.test(trimmed)) return true;
+  if (agent === 'grok' && /^(?:\[Opt out\]|\[Opt in\])/iu.test(trimmed)) return true;
+  if (agent === 'kimi' && /^(?:Run \/model\b|No session yet\b)/iu.test(trimmed)) return true;
+  return false;
+}
+
+function limitConversationText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const headLength = Math.floor((maxChars - 3) * 0.6);
+  return `${value.slice(0, headLength)}\n…\n${value.slice(-(maxChars - headLength - 3))}`;
+}
+
+function isCodexActivityBlock(value: string): boolean {
+  return /^(?:Ran|Running|Read|Explored|Searched?|Searching|Working|Called|Viewed|Edited|Updated|Added|Deleted|Reconnecting)\b/iu.test(value)
+    || /^You have\s+\d+/iu.test(value);
+}
+
+function codexFinalAnswer(lines: string[]): string {
+  const blocks: string[][] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (/^\s*[>❯›]\s+/u.test(line)) {
+      current = null;
+      continue;
+    }
+    const bullet = /^\s*[•●]\s+(.+)$/u.exec(line);
+    if (bullet) {
+      current = [bullet[1].trimEnd()];
+      blocks.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (/^\s*[└╰]/u.test(line) || isTerminalTuiChromeLine(line)) continue;
+    current.push(line.trimEnd());
+  }
+  const candidate = [...blocks].reverse().find((block) => !isCodexActivityBlock(block[0] || ''));
+  if (!candidate) return '';
+  while (candidate[candidate.length - 1] === '') candidate.pop();
+  return candidate.join('\n').trim();
+}
+
+/** Extract the newest submitted user prompt and final agent response from supported AI TUIs. */
+export function terminalConversationExcerpt(
+  text: string,
+  terminalLabel: string,
+  activityState: RemoteTerminalActivityState = 'unknown',
+): TerminalConversationExcerpt {
+  const fallback = terminalScreenExcerpt(text);
+  const agent = terminalConversationAgent(terminalLabel);
+  if (agent === 'generic') return { text: fallback };
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let questionIndex = -1;
+  let question = '';
+  for (let index = 0; index < lines.length; index++) {
+    const candidate = terminalQuestionText(lines[index], agent);
+    if (!candidate) continue;
+    questionIndex = index;
+    question = candidate;
+  }
+  if (questionIndex < 0) return { text: fallback };
+
+  let answerLines = lines.slice(questionIndex + 1);
+  const footerIndex = answerLines.findIndex((line) => isTerminalConversationFooter(line, agent));
+  if (footerIndex >= 0) answerLines = answerLines.slice(0, footerIndex);
+  if (agent === 'codex') {
+    const latestBullet = [...answerLines].reverse().map((line) => /^\s*[•●]\s+(.+)$/u.exec(line)?.[1] || '').find(Boolean) || '';
+    const answerPending = activityState === 'working'
+      || /^Working\b/iu.test(latestBullet);
+    const answer = answerPending ? '' : codexFinalAnswer(answerLines);
+    return {
+      question: limitConversationText(question, 350),
+      ...(answer ? { answer: limitConversationText(answer, 850) } : {}),
+      ...(answerPending ? { answerPending: true } : {}),
+      text: fallback,
+    };
+  }
+  if (agent === 'kimi') {
+    const answerStart = answerLines.reduce((latest, line, index) => /^\s*[●•]\s+\S/u.test(line) ? index : latest, -1);
+    answerLines = answerStart >= 0 ? answerLines.slice(answerStart) : [];
+  }
+  const cleanedAnswerLines: string[] = [];
+  for (const line of answerLines) {
+    if (!line.trim()) {
+      if (cleanedAnswerLines.length > 0 && cleanedAnswerLines[cleanedAnswerLines.length - 1] !== '') cleanedAnswerLines.push('');
+      continue;
+    }
+    if (isTerminalConversationNoise(line, agent)) continue;
+    cleanedAnswerLines.push(line.trimEnd());
+  }
+  while (cleanedAnswerLines[cleanedAnswerLines.length - 1] === '') cleanedAnswerLines.pop();
+  if (cleanedAnswerLines.length > 0) cleanedAnswerLines[0] = cleanedAnswerLines[0].replace(/^\s*[●•]\s+/u, '');
+  const answer = cleanedAnswerLines.join('\n').trim();
+  return {
+    question: limitConversationText(question, 350),
+    ...(answer ? { answer: limitConversationText(answer, 850) } : {}),
+    text: fallback,
+  };
 }
 
 export function isRemoteSshControlledLane(
@@ -2098,15 +2256,17 @@ export function initPipeBridge(): void {
         : 40;
       const screen = readTerminalScreen(terminal.surfaceId, lines);
       if (screen.error) return { ok: false, error: screen.error };
+      const activity = remoteTerminalActivity(terminal.surfaceId);
+      const conversation = terminalConversationExcerpt(screen.text || '', terminal.label, activity.activityState);
       return {
         ok: true,
         terminal: {
           surfaceId: terminal.surfaceId,
           label: terminal.label,
           workspace: terminal.workspaceTitle,
-          ...remoteTerminalActivity(terminal.surfaceId),
+          ...activity,
         },
-        text: terminalScreenExcerpt(screen.text || ''),
+        ...conversation,
         lines: screen.lines || 0,
         capturedAt: Date.now(),
       };

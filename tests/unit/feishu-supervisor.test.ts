@@ -575,6 +575,32 @@ supervisor_model: k3`)).toEqual({
     expect(screenCard).toContain('返回控制首页');
     expect(screenCard).toContain('form_terminal_refresh');
     expect(screenCard).toContain('form_terminal_send');
+    expect(screenCard).toContain('wmux_form_terminal_home');
+    expect(taskInput.element_id).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,19}$/u);
+    expect(clearedTaskInput.element_id).not.toBe(taskInput.element_id);
+    expect(clearedTaskInput.default_value).toBeUndefined();
+    expect(conversationCard).toContain('你的提问');
+    expect(conversationCard).toContain('你是什么模型');
+    expect(conversationCard).toContain('Agent 回复');
+    expect(conversationCard).toContain('我是 Codex。');
+    expect(conversationCard).not.toContain('终端原始文本');
+    expect(pendingConversationCard).toContain('回复生成中');
+    expect(pendingConversationCard).not.toContain('Codex 工具执行日志');
+  });
+
+  it('为控制首页按钮生成唯一且合规的 Card JSON 2.0 element_id', () => {
+    const card = buildSupervisorControlMenuCard({
+      active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
+    }) as any;
+    const buttonIds = card.body.elements.flatMap((element: any) => (
+      element.tag === 'column_set'
+        ? element.columns.flatMap((column: any) => column.elements.filter((child: any) => child.tag === 'button').map((button: any) => button.element_id))
+        : []
+    ));
+
+    expect(buttonIds.length).toBeGreaterThan(0);
+    expect(new Set(buttonIds).size).toBe(buttonIds.length);
+    expect(buttonIds.every((id: string) => /^[A-Za-z][A-Za-z0-9_]{0,19}$/u.test(id))).toBe(true);
   });
 
   it('为关闭普通终端和被监督终端渲染选择与确认卡片', () => {

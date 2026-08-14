@@ -942,7 +942,11 @@ describe('飞书人工决策单聊路由', () => {
       { action: 'terminal-screen', terminal: 'surf-screen', lines: 40 },
       { openId: 'ou-allowed', source: 'card' },
     );
-    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('latest-1');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('你的提问');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('question-1');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent 回复');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('answer-1');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('raw-1');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
@@ -950,7 +954,8 @@ describe('飞书人工决策单聊路由', () => {
       raw: { action: { form_value: { task: '尚未发送的草稿' } } },
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
-    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('latest-2');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('question-2');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('answer-2');
     expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('尚未发送的草稿');
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(0);
 
@@ -965,6 +970,39 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
     expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('已向 Codex worker 发送任务');
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('AI 回复可能尚未生成');
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).not.toContain('default_value');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_home', value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'terminal-home' }) },
+      raw: { action: { form_value: { task: '不会被发送的残留文本' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
+    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('任务与监督控制');
+    expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(1);
+  });
+
+  it('未知会话中的旧版控制卡不执行操作且只提示重新打开', async () => {
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: JSON.stringify({
+        active: false, paused: false, terminals: [], session: null, pendingApprovals: [],
+      }),
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-obsolete', operator: { openId: 'ou-allowed' },
+      action: { value: { wmux_action: 'terminal_screen', terminal: 'surf-old', wmux_card_version: '7' } },
+      raw: {},
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(control).not.toHaveBeenCalled();
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('发送“帮助”打开新版控制卡');
+    expect(updateCard).not.toHaveBeenCalled();
   });
 
   it('关闭被监督终端前展示影响并阻止重复确认', async () => {
