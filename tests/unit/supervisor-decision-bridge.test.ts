@@ -754,6 +754,7 @@ describe('supervisor decision bridge', () => {
     );
     expect(listed).toMatchObject({
       label: 'Codex直连 · 修复登录页',
+      workspaceId: workspace?.id,
       workspace: '修复登录页',
       cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
       supervised: false,
@@ -778,6 +779,43 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true });
     expect(useStore.getState().supervisor.lanes.some((item) => item.surfaceId === directSurface?.id)).toBe(true);
     surfaceTerminalRegistry.delete(directSurface!.id);
+  });
+
+  it('adds a direct task terminal to an existing session while keeping the selected task directory', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-existing' as any,
+      title: '现有会话',
+      cwd: 'E:\\existing',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-existing' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', cwd: 'E:\\existing' }],
+      },
+    }]);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    const existingWorkspaceId = useStore.getState().workspaces[0].id;
+
+    expect(remoteControl({
+      action: 'create-task',
+      name: '新增检查',
+      task: '执行新增检查',
+      agent: 'kimi',
+      cwd: 'E:\\Desktop\\wmux任务\\新增检查-20260814-120000',
+      displayPath: '桌面\\wmux任务\\新增检查-20260814-120000',
+      anchorWorkspace: existingWorkspaceId,
+    })).toMatchObject({ ok: true, message: expect.stringContaining('已在会话“现有会话”添加 Kimi 直连终端') });
+
+    expect(useStore.getState().workspaces).toHaveLength(1);
+    const workspace = useStore.getState().workspaces[0];
+    const leaf = workspace.splitTree.type === 'leaf' ? workspace.splitTree : undefined;
+    expect(leaf?.surfaces).toHaveLength(2);
+    expect(leaf?.activeSurfaceIndex).toBe(1);
+    expect(leaf?.surfaces[1]).toMatchObject({
+      customTitle: 'Kimi直连 · 新增检查',
+      cwd: 'E:\\Desktop\\wmux任务\\新增检查-20260814-120000',
+      startupCommands: ['kimi # wmux-automated-agent-task'],
+      startupInput: '执行新增检查',
+    });
+    expect(useStore.getState().activeWorkspaceId).toBe(workspace.id);
   });
 
   it.each([
@@ -810,6 +848,7 @@ describe('supervisor decision bridge', () => {
   it('creates one fixed Grok project management terminal beside an unsupervised task terminal', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
     useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-project' as any,
       title: '被监督项目',
       cwd: 'E:\\repo',
       splitTree: {
@@ -827,7 +866,7 @@ describe('supervisor decision bridge', () => {
       agent: 'grok',
       preset: 'project-manager',
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
-      anchorTerminal: 'worker-neighbor',
+      anchorWorkspace: useStore.getState().workspaces[0].id,
     };
 
     expect(remoteControl({ ...command, cwd: 'E:\\wrong-project' })).toMatchObject({

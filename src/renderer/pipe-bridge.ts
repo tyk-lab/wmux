@@ -862,6 +862,7 @@ interface RemoteDirectTerminalTask {
   preset?: 'project-manager';
   cwd: string;
   displayPath?: string;
+  anchorWorkspace?: string;
   anchorTerminal?: string;
   actor?: string;
 }
@@ -973,6 +974,16 @@ function locateRemoteTaskTerminal(surfaceId: string): { terminal?: RemoteTaskTer
   return { error: '目标任务终端不存在、已关闭或属于其他窗口；请刷新终端列表。' };
 }
 
+function locateRemoteTaskSession(params: Pick<RemoteDirectTerminalTask, 'anchorWorkspace' | 'anchorTerminal'>): { terminal?: RemoteTaskTerminalLocation; error?: string } {
+  if (params.anchorWorkspace) {
+    const terminal = remoteTerminalList().find((item) => item.workspaceId === params.anchorWorkspace);
+    return terminal
+      ? { terminal }
+      : { error: '目标会话不存在、已关闭或当前没有可用任务终端。' };
+  }
+  return locateRemoteTaskTerminal(String(params.anchorTerminal || ''));
+}
+
 function focusRemoteTerminal(terminal: RemoteTaskTerminalLocation): void {
   const store = useStore.getState();
   store.selectWorkspace(terminal.workspaceId);
@@ -1005,7 +1016,7 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
       return { ok: true, message: '项目管理终端已存在，已切换到该终端。' };
     }
 
-    const anchor = locateRemoteTaskTerminal(String(params.anchorTerminal || ''));
+    const anchor = locateRemoteTaskSession(params);
     if (!anchor.terminal) return { ok: false, error: `无法定位项目管理终端锚点：${anchor.error}`, message: '' };
     const launch = buildInteractiveAgentLaunch('grok', task);
     const surfaceId = useStore.getState().addSurface(anchor.terminal.workspaceId, anchor.terminal.paneId, 'terminal', {
@@ -1019,21 +1030,42 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
     if (created.terminal) focusRemoteTerminal(created.terminal);
     return {
       ok: true,
-      message: `已在 ${anchor.terminal.label} 所在窗格创建项目管理终端，并自动选中。`,
+      message: `已在会话“${anchor.terminal.workspaceTitle}”创建项目管理终端，并自动选中。`,
     };
   }
 
   const agentLabel = agent === 'kimi' ? 'Kimi' : agent === 'grok' ? 'Grok' : 'Codex';
   const launch = buildInteractiveAgentLaunch(agent as InteractiveAgent, task);
+  const surfaceOptions = {
+    customTitle: `${agentLabel}直连 · ${name}`,
+    shell: 'pwsh.exe',
+    cwd,
+    ...launch,
+  };
+
+  if (params.anchorWorkspace || params.anchorTerminal) {
+    const anchor = locateRemoteTaskSession(params);
+    if (!anchor.terminal) return { ok: false, error: `无法定位目标会话：${anchor.error}`, message: '' };
+    const surfaceId = useStore.getState().addSurface(
+      anchor.terminal.workspaceId,
+      anchor.terminal.paneId,
+      'terminal',
+      surfaceOptions,
+    );
+    if (!surfaceId) return { ok: false, error: '无法在所选会话创建任务终端。', message: '' };
+    const created = locateRemoteTaskTerminal(surfaceId);
+    if (created.terminal) focusRemoteTerminal(created.terminal);
+    return {
+      ok: true,
+      message: `已在会话“${anchor.terminal.workspaceTitle}”添加 ${agentLabel} 直连终端“${name}”；首条任务将在终端就绪后自动发送。目录：${params.displayPath || cwd}`,
+    };
+  }
 
   const tree = createLeaf(undefined, 'terminal', cwd);
   const surface = tree.surfaces[0];
   tree.surfaces[0] = {
     ...surface,
-    customTitle: projectManager ? PROJECT_MANAGER_TERMINAL_NAME : `${agentLabel}直连 · ${name}`,
-    shell: 'pwsh.exe',
-    cwd,
-    ...launch,
+    ...surfaceOptions,
   };
   useStore.getState().createWorkspace({ title: name, cwd, splitTree: tree });
   return {
@@ -2337,6 +2369,7 @@ export function initPipeBridge(): void {
             })(),
             surfaceId: terminal.surfaceId,
             label: terminal.label,
+            workspaceId: terminal.workspaceId,
             workspace: terminal.workspaceTitle,
             cwd: terminal.cwd,
             ...remoteTerminalActivity(terminal.surfaceId),

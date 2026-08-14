@@ -431,7 +431,7 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
-    const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', cwd: 'E:\\repo', supervised: false }];
+    const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspaceId: 'ws-a', workspace: '飞书管理', cwd: 'E:\\repo', supervised: false }];
     const menuObject = buildSupervisorControlMenuCard() as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const menu = JSON.stringify(menuObject);
     const activeMenu = JSON.stringify(buildSupervisorControlMenuCard({
@@ -536,16 +536,24 @@ supervisor_model: k3`)).toEqual({
     expect(createTask).toContain('task_name');
     expect(createTask).toContain('form_create_task');
     expect(createTask).toContain('返回控制首页');
+    expect(createTask.indexOf('项目管理终端（可选）')).toBeLessThan(createTask.indexOf('普通终端任务'));
     const createTaskForm = createTaskObject.body?.elements?.find((element) => element.tag === 'form');
     const createTaskInputs = createTaskForm?.elements?.filter((element) => element.tag === 'input') || [];
     const createTaskSelects = createTaskForm?.elements?.filter((element) => element.tag === 'select_static') || [];
     expect(createTaskInputs).toHaveLength(2);
-    expect(createTaskSelects).toHaveLength(2);
-    expect(createTaskSelects[0]).toMatchObject({ name: 'agent' });
+    expect(createTaskSelects).toHaveLength(3);
+    expect(createTaskSelects[0]).toMatchObject({
+      name: 'session_target',
+      options: [
+        { text: { content: '新建独立会话（默认）' }, value: 'new' },
+        { text: { content: '已有会话：飞书管理' }, value: 'workspace:ws-a' },
+      ],
+    });
     expect(createTaskSelects[1]).toMatchObject({
       name: 'path_terminal',
       options: [{ text: { content: 'E:\\repo' }, value: 'surf-a' }],
     });
+    expect(createTaskSelects[2]).toMatchObject({ name: 'agent' });
     expect(createTaskInputs.every((input) => Number(input.max_length) >= 1 && Number(input.max_length) <= 1000)).toBe(true);
     expect(start).toContain('surf-a');
     expect(laneControl).toContain('pause-lane');
@@ -664,16 +672,26 @@ supervisor_model: k3`)).toEqual({
     expect(confirmationCard).toContain('confirm_close_terminal');
   });
 
-  it('多条任务终端时允许从未监督终端中选择项目管理终端锚点', () => {
-    const card = JSON.stringify(buildDirectTerminalTaskCard([
-      { surfaceId: 'surf-a', label: '任务 A', workspace: '项目', supervised: true, supervisionState: 'active' },
-      { surfaceId: 'surf-b', label: '任务 B', workspace: '项目', supervised: false },
-    ]));
+  it('按会话而不是按终端选择项目管理终端创建位置', () => {
+    const cardObject = buildDirectTerminalTaskCard([
+      { surfaceId: 'surf-a', label: '任务 A', workspaceId: 'ws-a', workspace: '项目 A', supervised: true, supervisionState: 'active' },
+      { surfaceId: 'surf-a-2', label: '任务 A2', workspaceId: 'ws-a', workspace: '项目 A', supervised: false },
+      { surfaceId: 'surf-b', label: '任务 B', workspaceId: 'ws-b', workspace: '项目 B', supervised: false },
+    ]) as any;
+    const card = JSON.stringify(cardObject);
+    const managerForm = cardObject.body.elements.find((element: any) => element.name === 'wmux_project_manager_anchor_form');
+    const managerSelect = managerForm.elements.find((element: any) => element.name === 'project_manager_session');
+    const taskForm = cardObject.body.elements.find((element: any) => element.name === 'wmux_create_task_form');
+    const taskSessionSelect = taskForm.elements.find((element: any) => element.name === 'session_target');
 
     expect(card).toContain('project_manager_anchor');
     expect(card).toContain('wmux_form_create_project_manager');
-    expect(card).toContain('surf-a');
-    expect(card).toContain('surf-b');
+    expect(managerSelect.options).toEqual([
+      { text: { tag: 'plain_text', content: '项目 A' }, value: 'workspace:ws-a' },
+      { text: { tag: 'plain_text', content: '项目 B' }, value: 'workspace:ws-b' },
+    ]);
+    expect(JSON.stringify(managerSelect.options)).not.toContain('surf-a-2');
+    expect(managerSelect.name).not.toBe(taskSessionSelect.name);
   });
 
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {

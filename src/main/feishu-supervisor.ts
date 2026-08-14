@@ -15,7 +15,7 @@ export type FeishuSupervisorCommand =
   | { action: 'logs' }
   | { action: 'terminal-screen'; terminal: string; lines?: number }
   | { action: 'decision-context'; approvalId: string; terminal: string; lines?: number }
-  | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string; anchorTerminal?: string }
+  | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string; anchorWorkspace?: string; anchorTerminal?: string }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string; force?: boolean }
   | { action: 'close-terminal'; terminal: string }
@@ -295,6 +295,7 @@ type FeishuTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
 interface FeishuListTerminal {
   surfaceId: string;
   label: string;
+  workspaceId?: string;
   workspace: string;
   cwd?: string;
   supervised: boolean;
@@ -466,6 +467,45 @@ function terminalPathOptions(terminals: FeishuListTerminal[]): Array<{ text: { t
   });
 }
 
+function existingTerminalSessionOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const seen = new Set<string>();
+  const sessions = terminals.flatMap((terminal) => {
+    const key = terminal.workspaceId || terminal.workspace;
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    return [{
+      label: terminal.workspace || terminal.label,
+      value: terminal.workspaceId ? `workspace:${terminal.workspaceId}` : `terminal:${terminal.surfaceId}`,
+    }];
+  });
+  const labelCounts = new Map<string, number>();
+  for (const session of sessions) {
+    const key = session.label.toLocaleLowerCase();
+    labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
+  }
+  const labelOrdinals = new Map<string, number>();
+  return sessions.map((session) => {
+    const key = session.label.toLocaleLowerCase();
+    const ordinal = (labelOrdinals.get(key) || 0) + 1;
+    labelOrdinals.set(key, ordinal);
+    const suffix = (labelCounts.get(key) || 0) > 1 ? ` #${ordinal}` : '';
+    return {
+      text: { tag: 'plain_text' as const, content: `${session.label}${suffix}`.slice(0, 100) },
+      value: session.value,
+    };
+  });
+}
+
+function terminalSessionOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  return [
+    { text: { tag: 'plain_text', content: '新建独立会话（默认）' }, value: 'new' },
+    ...existingTerminalSessionOptions(terminals).map((session) => ({
+      text: { tag: 'plain_text' as const, content: `已有会话：${session.text.content}`.slice(0, 100) },
+      value: session.value,
+    })),
+  ];
+}
+
 function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
     text: {
@@ -478,7 +518,7 @@ function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ tex
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '13';
+export const FEISHU_CONTROL_CARD_VERSION = '14';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -586,6 +626,7 @@ interface ResolvedCardAction {
   decision?: string;
   flow?: string;
   terminal?: string;
+  session_target?: string;
   nonce?: string;
   wmux_card_version?: string;
   confirmation_id?: string;
@@ -718,45 +759,52 @@ export function buildSupervisorControlMenuCard(
 /** Form displayed after selecting “添加终端任务”. */
 export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []): object {
   const pathOptions = terminalPathOptions(terminals);
-  const managerElements = terminals.length === 1
+  const sessionOptions = terminalSessionOptions(terminals);
+  const managerSessionOptions = existingTerminalSessionOptions(terminals);
+  const managerElements = managerSessionOptions.length === 1
     ? [{
         tag: 'column_set', flex_mode: 'none', columns: [{
           tag: 'column', width: 'auto',
-          elements: [cardButton({ wmux_action: 'create_project_manager', terminal: terminals[0].surfaceId }, '创建项目管理终端', 'primary')],
+          elements: [cardButton({ wmux_action: 'create_project_manager', session_target: managerSessionOptions[0].value }, '在该会话创建项目管理终端', 'primary')],
         }],
       }]
-    : terminals.length > 1
+    : managerSessionOptions.length > 1
       ? [{
           tag: 'form', name: 'wmux_project_manager_anchor_form', elements: [
-            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择项目管理终端所在窗格' }, options: terminalOptions(terminals) },
-            formButton('wmux_form_create_project_manager', '在所选窗格创建', 'primary', { wmux_action: 'form_create_project_manager' }),
+            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'project_manager_session', required: true, placeholder: { tag: 'plain_text', content: '选择要创建到的会话' }, options: managerSessionOptions },
+            formButton('wmux_form_create_project_manager', '在所选会话创建', 'primary', { wmux_action: 'form_create_project_manager' }),
           ],
         }]
       : [{ tag: 'markdown', content: '当前没有任务终端；请先在 wmux 中创建一个终端，再创建项目管理终端。' }];
   return buildFormCard(
     'wmux · 添加 AI 终端任务',
     'blue',
-    '默认仍在桌面“wmux任务”目录中新建独立任务文件夹；也可选择当前已有终端的路径，直接在该目录打开新终端。终端就绪后会自动发送首条任务，默认使用 Codex，且默认不受监督。',
+    '创建位置与任务目录相互独立；默认新建会话，并在桌面“wmux任务”中创建任务目录。',
     'wmux_create_task_form',
     [
       { tag: 'input', element_id: 'create_task_name', name: 'task_name', required: true, max_length: 100, label: { tag: 'plain_text', content: '任务名称' }, placeholder: { tag: 'plain_text', content: '例如：修复登录页问题' } },
+      { tag: 'markdown', content: '**创建位置（默认新建会话）**' },
+      {
+        tag: 'select_static', element_id: 'create_task_session', name: 'session_target',
+        placeholder: { tag: 'plain_text', content: '新建独立会话（默认）' }, options: sessionOptions,
+      },
+      { tag: 'markdown', content: '**终端路径（可选）**' },
+      ...(pathOptions.length > 0 ? [{
+        tag: 'select_static', element_id: 'create_task_path', name: 'path_terminal',
+        placeholder: { tag: 'plain_text', content: '不选择：按原规则新建任务目录' }, options: pathOptions,
+      }] : [{ tag: 'markdown', content: '当前没有可复用的终端路径；将按原规则新建任务目录。' }]),
       { tag: 'markdown', content: '**AI 终端类型（默认 Codex）**' },
       { tag: 'select_static', element_id: 'create_task_agent', name: 'agent', placeholder: { tag: 'plain_text', content: 'Codex（默认）' }, options: [
         { text: { tag: 'plain_text', content: 'Codex（默认）' }, value: 'codex' },
         { text: { tag: 'plain_text', content: 'Kimi' }, value: 'kimi' },
         { text: { tag: 'plain_text', content: 'Grok' }, value: 'grok' },
       ] },
-      { tag: 'markdown', content: '**终端路径（可选）**' },
-      ...(pathOptions.length > 0 ? [{
-        tag: 'select_static', element_id: 'create_task_path', name: 'path_terminal',
-        placeholder: { tag: 'plain_text', content: '不选择：按原规则新建任务目录' }, options: pathOptions,
-      }] : [{ tag: 'markdown', content: '当前没有可复用的终端路径；将按原规则新建任务目录。' }]),
       { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 1000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 AI 终端的完整任务' } },
-      formButton('wmux_form_create_task', '创建并发送', 'primary', { wmux_action: 'form_create_task' }),
+      formButton('wmux_form_create_task', '创建任务终端', 'primary', { wmux_action: 'form_create_task' }),
     ],
     controlHomeFooter(),
     [
-      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在所选任务终端所在窗格打开 Grok，并首先运行 `/inspect-project-progress`。' },
+      { tag: 'markdown', content: '**项目管理终端（可选）**\n固定使用 Grok，在所选会话中运行 `/inspect-project-progress`。' },
       ...managerElements,
       { tag: 'hr' },
       { tag: 'markdown', content: '**普通终端任务**' },
@@ -1222,6 +1270,9 @@ function parseListResult(value: unknown): FeishuListResult | null {
       return [{
         surfaceId: terminal.surfaceId,
         label: asText(terminal.label),
+        workspaceId: typeof terminal.workspaceId === 'string' && terminal.workspaceId.trim()
+          ? terminal.workspaceId.trim()
+          : undefined,
         workspace: asText(terminal.workspace),
         cwd: typeof terminal.cwd === 'string' && terminal.cwd.trim() ? terminal.cwd.trim() : undefined,
         supervised: terminal.supervised === true,
@@ -1905,7 +1956,7 @@ export class FeishuSupervisorService {
       }
       if (this.controlCards.get(event.messageId) !== event.chatId) return;
       const startedAt = Date.now();
-      const dedupeKey = `${event.messageId}:${value.wmux_action}:${value.flow || ''}:${value.terminal || ''}:${value.nonce || ''}`;
+      const dedupeKey = `${event.messageId}:${value.wmux_action}:${value.flow || ''}:${value.terminal || value.session_target || ''}:${value.nonce || ''}`;
       if (this.seen.has(dedupeKey)) return;
       this.remember(dedupeKey);
       let accepted = false;
@@ -1961,7 +2012,7 @@ export class FeishuSupervisorService {
 
   private async handleControlCardAction(
     event: Lark.CardActionEvent,
-    value: { wmux_action?: string; flow?: string; terminal?: string; nonce?: string; wmux_card_version?: string; confirmation_id?: string },
+    value: ResolvedCardAction,
   ): Promise<boolean> {
     if (value.wmux_action === 'menu') {
       this.clearBusyTaskConfirmationsForMessage(event.messageId);
@@ -1990,9 +2041,9 @@ export class FeishuSupervisorService {
     }
     const form = this.cardFormValues(event);
     if (value.wmux_action === 'create_project_manager' || value.wmux_action === 'form_create_project_manager') {
-      const anchorTerminal = value.terminal || form.terminal || '';
-      if (!anchorTerminal) {
-        await this.sendText('请先选择项目管理终端所在的任务终端。', event.chatId);
+      const sessionTarget = value.session_target || form.project_manager_session || '';
+      if (!sessionTarget || (!sessionTarget.startsWith('workspace:') && !sessionTarget.startsWith('terminal:'))) {
+        await this.sendText('请先选择项目管理终端要创建到的会话。', event.chatId);
         return false;
       }
       const result = await this.control({
@@ -2001,7 +2052,9 @@ export class FeishuSupervisorService {
         task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
         agent: PROJECT_MANAGER_TERMINAL_AGENT,
         preset: 'project-manager',
-        anchorTerminal,
+        ...(sessionTarget.startsWith('workspace:')
+          ? { anchorWorkspace: sessionTarget.slice('workspace:'.length) }
+          : { anchorTerminal: sessionTarget.slice('terminal:'.length) }),
       }, {
         openId: event.operator.openId,
         source: 'card',
@@ -2061,23 +2114,51 @@ export class FeishuSupervisorService {
       const name = form.task_name || '';
       const task = form.task || '';
       const agent = form.agent === 'kimi' || form.agent === 'grok' ? form.agent : 'codex';
+      const sessionTarget = form.session_target || 'new';
       if (!name || !task) {
         await this.sendText('请填写任务名称和首条任务。', event.chatId);
         return false;
       }
+      if (sessionTarget !== 'new' && !sessionTarget.startsWith('workspace:') && !sessionTarget.startsWith('terminal:')) {
+        await this.sendText('创建位置无效，请刷新添加终端任务卡片后重试。', event.chatId);
+        return false;
+      }
       let cwd: string | undefined;
-      if (form.path_terminal) {
+      let anchorWorkspace: string | undefined;
+      let anchorTerminal: string | undefined;
+      if (form.path_terminal || sessionTarget !== 'new') {
         const listResult = await this.control({ action: 'list' }, {
           openId: event.operator.openId,
           source: 'card',
         }).catch(() => null);
-        cwd = parseListResult(listResult)?.terminals.find((terminal) => terminal.surfaceId === form.path_terminal)?.cwd;
-        if (!cwd) {
+        const currentTerminals = parseListResult(listResult)?.terminals || [];
+        if (form.path_terminal) {
+          cwd = currentTerminals.find((terminal) => terminal.surfaceId === form.path_terminal)?.cwd;
+        }
+        if (form.path_terminal && !cwd) {
           await this.sendText('所选终端已关闭或路径不可用，请刷新添加终端任务卡片后重试。', event.chatId);
           return false;
         }
+        if (sessionTarget !== 'new') {
+          if (sessionTarget.startsWith('workspace:')) {
+            const selectedWorkspace = sessionTarget.slice('workspace:'.length);
+            anchorWorkspace = currentTerminals.find((terminal) => terminal.workspaceId === selectedWorkspace)?.workspaceId;
+          } else {
+            const selectedAnchor = sessionTarget.slice('terminal:'.length);
+            anchorTerminal = currentTerminals.find((terminal) => terminal.surfaceId === selectedAnchor)?.surfaceId;
+          }
+          if (!anchorWorkspace && !anchorTerminal) {
+            await this.sendText('所选会话已关闭或不可用，请刷新添加终端任务卡片后重试。', event.chatId);
+            return false;
+          }
+        }
       }
-      const result = await this.control({ action: 'create-task', name, task, agent, ...(cwd ? { cwd } : {}) }, {
+      const result = await this.control({
+        action: 'create-task', name, task, agent,
+        ...(cwd ? { cwd } : {}),
+        ...(anchorWorkspace ? { anchorWorkspace } : {}),
+        ...(anchorTerminal ? { anchorTerminal } : {}),
+      }, {
         openId: event.operator.openId,
         source: 'card',
       }).catch((err) => ({ error: String(err?.message || err) }));
