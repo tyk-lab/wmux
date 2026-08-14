@@ -22,13 +22,20 @@ import {
   sendToSurface,
   SUPERVISOR_TUI_READY_DELAY_MS,
 } from './supervisor/supervisor-engine';
-import { handleSupervisorUserSubmit } from './supervisor/user-input-precedence';
+import {
+  handleSupervisorUserSubmit,
+  resumeWaitingLaneFromSupervisorInput,
+} from './supervisor/user-input-precedence';
 import { prepareForUserTerminalInput } from './utils/terminal-user-submit';
 import {
   PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
   PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
 } from '../shared/project-manager-terminal';
+import {
+  SUPERVISOR_NO_DECISION_OPTION,
+  supervisorDecisionOptions,
+} from '../shared/supervisor-decision-options';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   clearSupervisorLaneContext,
@@ -52,7 +59,7 @@ import {
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
 import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
-import { supervisorDecisionOptions } from '../shared/supervisor-decision-options';
+import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 
 export function isSupervisorDecisionAuthorised(
   lane: Pick<SupervisorLane, 'surfaceId' | 'supervisorSurfaceId'>,
@@ -174,6 +181,7 @@ function terminalConversationAgent(label: string, text: string): TerminalConvers
     || (/\bWorked for\s+\d/iu.test(text) && /\bstop\s+\[hooks:/iu.test(text))) return 'grok';
   if (/^\s*[✦✧✨]\s+\S/mu.test(text)
     && /(?:^|\n)\s*(?:auto\b.*\bK\d|yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(text)) return 'kimi';
+  if (/\(kimi-coding\).*\bkimi-for-coding\b/iu.test(text)) return 'kimi';
   if (/\bOpenAI Codex\b/iu.test(text)
     || (/^\s*[>❯›]\s+\S/mu.test(text) && /(?:^|\n)\s*gpt-[\w.-]+\b/iu.test(text))) return 'codex';
   return 'generic';
@@ -202,6 +210,7 @@ function remoteTerminalLabel(surface: SurfaceRef): string {
 function isCodexComposerSuggestion(question: string): boolean {
   return /^Ask Codex\b/iu.test(question)
     || /^(?:Find and fix a bug in|Improve documentation in)\s+@filename$/iu.test(question)
+    || /^Run \/review on my current changes$/iu.test(question)
     || /^Implement\s+\{[^{}]+\}$/u.test(question);
 }
 
@@ -239,10 +248,17 @@ function terminalQuestionText(line: string, agent: TerminalConversationAgent): s
   return question;
 }
 
+function isKimiRuntimeFooter(line: string): boolean {
+  const trimmed = line.trim();
+  return /^(?:(?:auto|yolo)\b.*\bK\d|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(trimmed)
+    || /\bK\d(?:\.\d+)?\s+Coding\s+thinking\b.*\bcontext:\s*\d/iu.test(trimmed)
+    || /\(kimi-coding\).*\bkimi-for-coding\b/iu.test(trimmed);
+}
+
 function isTerminalConversationFooter(line: string, agent: TerminalConversationAgent): boolean {
   const trimmed = line.trim();
   if (agent === 'grok' && /^(?:Help improve Grok|Off by default\.|Change anytime via settings\.|Read Terms and Privacy Policy\.)/iu.test(trimmed)) return true;
-  if (agent === 'kimi' && /^(?:(?:auto|yolo)\b.*\bK\d|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(trimmed)) return true;
+  if (agent === 'kimi' && isKimiRuntimeFooter(line)) return true;
   if (agent === 'codex' && /^(?:gpt-[\w.-]+\b|model:|directory:|permissions:|Tip:|MCP startup interrupted)/iu.test(trimmed)) return true;
   return false;
 }
@@ -293,6 +309,148 @@ function codexFinalAnswer(lines: string[]): string {
   if (!candidate) return '';
   while (candidate[candidate.length - 1] === '') candidate.pop();
   return candidate.join('\n').trim();
+}
+
+function isSupervisorCoreActivity(value: string): boolean {
+  const normalized = value.replace(/^\s*[•●◆◇◈◊◦]\s*/u, '').trim();
+  return isCodexActivityBlock(normalized)
+    || /^(?:Bash|Read|Edit|Write|Glob|Grep|Search|Task|WebFetch|WebSearch|TodoWrite)\s*\(/iu.test(normalized)
+    || /^(?:Thought\b|Responding\b|Worked for\b|stop\s+\[hooks:)/iu.test(normalized)
+    || /^(?:\+|…\s*\+?)\d+\s+lines?\b/iu.test(normalized)
+    || /^\$\s+\S/u.test(normalized)
+    || /^(?:PS\s+[A-Za-z]:[\\/][^>]*>|[A-Za-z]:[\\/][^>]*>)\s*\S*/iu.test(normalized)
+    || /^(?:\(no output\)|Took\s+\d+(?:\.\d+)?s|(?:已|被)?成功提交[。.]*?)$/iu.test(normalized);
+}
+
+function isSupervisorCoreChrome(value: string): boolean {
+  const trimmed = value.trim();
+  return !trimmed
+    || isTerminalTuiChromeLine(value)
+    || /^\s*(?:[>❯›〉]|[✦✧✨])\s+\S/u.test(value)
+    || /^\s*[└╰⎿]\s*/u.test(value)
+    || /^(?:gpt-[\w.-]+\b|model:|directory:|permissions:|Tip:|MCP startup interrupted)/iu.test(trimmed)
+    || isKimiRuntimeFooter(value)
+    || /^[A-Za-z]:[\\/][^\r\n]*$/u.test(trimmed)
+    || /\bR\d+(?:\.\d+)?k?\b.*\bCH\d+(?:\.\d+)?%/iu.test(trimmed)
+    || /^(?:Help improve Grok|Off by default\.|Change anytime via settings\.|Read Terms and Privacy Policy\.)/iu.test(trimmed)
+    || /^\d+(?:\.\d+)?s\s+.*\[stop\]\s*$/iu.test(trimmed)
+    || /^(?:\[Opt out\]|\[Opt in\])/iu.test(trimmed);
+}
+
+function supervisorVisibleCoreInformation(lines: string[]): string {
+  const candidates: string[][] = [];
+  let current: string[] | null = null;
+  let skippingActivity = false;
+  const finishCurrent = (): void => {
+    if (!current) return;
+    while (current[current.length - 1] === '') current.pop();
+    if (current.some((line) => /[\p{L}\p{N}]/u.test(line))) candidates.push(current);
+    current = null;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (current && current[current.length - 1] !== '') current.push('');
+      skippingActivity = false;
+      continue;
+    }
+    if (isSupervisorCoreActivity(line)) {
+      finishCurrent();
+      skippingActivity = true;
+      continue;
+    }
+    if (isSupervisorCoreChrome(line)) {
+      finishCurrent();
+      continue;
+    }
+
+    const bullet = /^\s*[•●]\s+(.+)$/u.exec(line);
+    if (bullet?.[1]) {
+      finishCurrent();
+      skippingActivity = false;
+      current = [bullet[1].trimEnd()];
+      continue;
+    }
+    if (skippingActivity) continue;
+    if (!current) current = [];
+    current.push(line.trimEnd());
+  }
+  finishCurrent();
+
+  const candidate = candidates[candidates.length - 1];
+  return candidate ? candidate.join('\n').trim() : '';
+}
+
+function kimiVisibleCoreInformation(lines: string[]): string {
+  const footerIndex = lines.findIndex(isKimiRuntimeFooter);
+  let visibleLines = footerIndex >= 0 ? lines.slice(0, footerIndex) : lines;
+  const finalAnswerStart = visibleLines.reduce((latest, line, index) => (
+    /^\s*●\s+\S/u.test(line) ? index : latest
+  ), -1);
+  if (finalAnswerStart >= 0) visibleLines = visibleLines.slice(finalAnswerStart);
+
+  const candidates: string[][] = [];
+  let current: string[] = [];
+  let skippingActivity = false;
+  const finishCurrent = (): void => {
+    while (current[current.length - 1] === '') current.pop();
+    if (current.some((line) => /[\p{L}\p{N}]/u.test(line))) candidates.push(current);
+    current = [];
+  };
+
+  for (const line of visibleLines) {
+    if (!line.trim()) {
+      if (current.length > 0 && current[current.length - 1] !== '') current.push('');
+      skippingActivity = false;
+      continue;
+    }
+    if (isSupervisorCoreActivity(line)) {
+      finishCurrent();
+      skippingActivity = true;
+      continue;
+    }
+    const isTableBorder = /^[\s\u2500-\u257f]*[┌┐└┘├┤┬┴┼╭╮╰╯][\s\u2500-\u257f]*$/u.test(line);
+    if (!isTableBorder && isSupervisorCoreChrome(line)) {
+      finishCurrent();
+      skippingActivity = false;
+      continue;
+    }
+    if (skippingActivity || (!isTableBorder && isTerminalConversationNoise(line, 'kimi'))) continue;
+    current.push(line.trimEnd());
+  }
+  finishCurrent();
+
+  const candidate = candidates[candidates.length - 1];
+  if (!candidate) return '';
+  candidate[0] = candidate[0].replace(
+    candidate.length === 1 ? /^\s*[●•]\s+/u : /^\s*●\s+/u,
+    '',
+  );
+  return candidate.join('\n').trim();
+}
+
+/** Preserve useful supervisor prose when a long-running TUI has scrolled its original prompt away. */
+export function terminalSupervisorCoreExcerpt(
+  text: string,
+  terminalLabel: string,
+  activityState: RemoteTerminalActivityState = 'unknown',
+): TerminalConversationExcerpt {
+  const conversation = terminalConversationExcerpt(text, terminalLabel, activityState);
+  if (conversation.answer) return conversation;
+
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map(sanitizeTerminalTextLine);
+  const agent = terminalConversationAgent(terminalLabel, text);
+  const coreInformation = agent === 'codex'
+    ? codexFinalAnswer(lines) || supervisorVisibleCoreInformation(lines)
+    : agent === 'kimi'
+      ? kimiVisibleCoreInformation(lines)
+      : supervisorVisibleCoreInformation(lines);
+  return {
+    ...(coreInformation ? { answer: limitConversationText(coreInformation, FEISHU_TERMINAL_ANSWER_MAX_CHARS) } : {}),
+    ...(activityState === 'working' ? { answerPending: true } : {}),
+    text: conversation.text,
+  };
 }
 
 function codexConversationQuestion(
@@ -357,7 +515,7 @@ export function terminalConversationExcerpt(
     const latestBullet = [...answerLines].reverse().map((line) => /^\s*[•●]\s+(.+)$/u.exec(line)?.[1] || '').find(Boolean) || '';
     const answerPending = activityState === 'working'
       || /^Working\b/iu.test(latestBullet);
-    const answer = answerPending ? '' : codexFinalAnswer(answerLines);
+    const answer = codexFinalAnswer(answerLines);
     return {
       question: limitConversationText(question, FEISHU_TERMINAL_QUESTION_MAX_CHARS),
       ...(answer ? { answer: limitConversationText(answer, FEISHU_TERMINAL_ANSWER_MAX_CHARS) } : {}),
@@ -393,9 +551,11 @@ export function terminalConversationExcerpt(
     cleanedAnswerLines[0] = cleanedAnswerLines[0].replace(/^\s*[●•]\s+/u, '');
   }
   const answer = cleanedAnswerLines.join('\n').trim();
+  const answerPending = activityState === 'working';
   return {
     question: limitConversationText(question, FEISHU_TERMINAL_QUESTION_MAX_CHARS),
     ...(answer ? { answer: limitConversationText(answer, FEISHU_TERMINAL_ANSWER_MAX_CHARS) } : {}),
+    ...(answerPending ? { answerPending: true } : {}),
     text: fallback,
   };
 }
@@ -854,6 +1014,14 @@ interface RemoteSupervisorMessage {
   actor?: string;
 }
 
+interface RemoteWaitingDecision {
+  action: 'waiting-decision';
+  terminal: string;
+  decision: 'keep' | 'resume' | 'submit' | 'stop';
+  message?: string;
+  actor?: string;
+}
+
 interface RemoteDirectTerminalTask {
   action: 'create-task';
   name: string;
@@ -952,7 +1120,12 @@ function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; t
 function remoteTerminalList(): RemoteTaskTerminalLocation[] {
   const store = useStore.getState();
   const terminals: ReturnType<typeof remoteTerminalList> = [];
-  for (const workspace of store.workspaces) collectRemoteTerminals(workspace.splitTree, workspace, terminals);
+  for (const workspace of store.workspaces) {
+    const dedicatedSupervisorWorkspace = workspace.transientSupervisorWorkspace === true
+      || workspace.title.replace(/\s+/gu, '') === SUPERVISOR_WORKSPACE_TITLE.replace(/\s+/gu, '');
+    if (dedicatedSupervisorWorkspace) continue;
+    collectRemoteTerminals(workspace.splitTree, workspace, terminals);
+  }
   const supervisorIds = new Set(store.supervisor.lanes.map(dedicatedSupervisorSurfaceId).filter(Boolean));
   return terminals.filter((terminal) => !supervisorIds.has(terminal.surfaceId));
 }
@@ -972,6 +1145,34 @@ function locateRemoteTaskTerminal(surfaceId: string): { terminal?: RemoteTaskTer
     }
   }
   return { error: '目标任务终端不存在、已关闭或属于其他窗口；请刷新终端列表。' };
+}
+
+function locateRemoteSupervisorTerminal(identifier: string): {
+  lane?: SupervisorLane;
+  supervisorSurfaceId?: SurfaceId;
+  workspaceTitle?: string;
+  error?: string;
+} {
+  if (!identifier) return { error: '缺少 AI 监督终端 ID。' };
+  const store = useStore.getState();
+  const lane = store.supervisor.lanes.find((item) => (
+    item.surfaceId === identifier
+    || item.managementSessionId === identifier
+    || dedicatedSupervisorSurfaceId(item) === identifier
+  ));
+  if (!lane) return { error: '没有找到对应的 AI 监督通道；请刷新监督终端列表。' };
+  const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+  if (!supervisorSurfaceId) return { error: `${lane.label} 没有可查看的专属监督 AI 终端。` };
+
+  for (const workspace of store.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      const surface = findLeaf(workspace.splitTree, paneId)?.surfaces.find((item) => item.id === supervisorSurfaceId);
+      if (surface?.type === 'terminal') {
+        return { lane, supervisorSurfaceId, workspaceTitle: workspace.title };
+      }
+    }
+  }
+  return { error: `${lane.label} 的 AI 监督终端（管家）已缺失；请在 wmux 中重新配置。` };
 }
 
 function locateRemoteTaskSession(params: Pick<RemoteDirectTerminalTask, 'anchorWorkspace' | 'anchorTerminal'>): { terminal?: RemoteTaskTerminalLocation; error?: string } {
@@ -1353,19 +1554,7 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
   if (supervisorLaneControlState(lane) === 'waiting') {
-    useStore.getState().updateLane(lane.id, {
-      enabled: true,
-      controlState: 'active',
-      awaitingStopCheck: false,
-      stopConfirmed: false,
-      awaitingReview: true,
-      autoDecisionLimitReached: false,
-      autoDecisionsUsed: 0,
-      pendingSupervisorDeliveries: [],
-      lastBlockedResponseVersion: undefined,
-      lastBlockedResponseId: undefined,
-    });
-    useStore.getState().appendSupervisorLog(lane.id, '待续恢复', '用户已提供新的监督方向，继续监督');
+    resumeWaitingLaneFromSupervisorInput(session, lane, 'remote-supervisor-message');
     session = useStore.getState().supervisor;
   }
   remoteAudit(session, lane, 'supervisor.remote-command', {
@@ -1375,6 +1564,52 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   });
   useStore.getState().appendSupervisorLog(lane.id, '用户调整监督方向', message);
   return { ok: true, message: `已向 AI 监督终端（管家）“${lane.label}”发送监督方向信息。` };
+}
+
+function decideRemoteWaiting(params: RemoteWaitingDecision): { ok: boolean; message: string; error?: string } {
+  const session = useStore.getState().supervisor;
+  const lane = session.lanes.find((item) => item.surfaceId === params.terminal || item.managementSessionId === params.terminal);
+  if (!lane || supervisorLaneControlState(lane) !== 'waiting') {
+    return { ok: false, error: '该 AI 监督通道已不处于待续状态，请刷新后查看当前状态。', message: '' };
+  }
+  if (params.decision === 'keep') {
+    return { ok: true, message: `${lane.label} 保持待续；之后仍可从原卡片提交新方案或恢复监督。` };
+  }
+  if (params.decision === 'stop') {
+    remoteAudit(session, lane, 'supervisor.remote-command', {
+      action: 'waiting-stop',
+      actor: params.actor || 'unknown',
+    });
+    closeStoppedSupervisorSurfaces([lane]);
+    useStore.getState().stopSupervisorLane(lane.id, `由飞书停止待续通道 ${lane.label} 并解除终端绑定`);
+    return { ok: true, message: `已停止 ${lane.label} 的 AI 监督并解除终端绑定；其他通道不受影响。` };
+  }
+  if (!session.active) {
+    return {
+      ok: false,
+      error: session.paused
+        ? '当前监督会话处于全局暂停；请先继续全部监督，再恢复此待续通道。'
+        : '当前监督会话已停止，不能恢复该待续通道。',
+      message: '',
+    };
+  }
+  const message = params.decision === 'resume'
+    ? '按原任务目标和既有停止条件继续监督；先读取任务终端最新状态，再继续推进。'
+    : String(params.message || '').trim();
+  if (!message) return { ok: false, error: '新方案或下一步方向不能为空。', message: '' };
+  const result = sendRemoteSupervisorMessage({
+    action: 'send-supervisor-message',
+    terminal: params.terminal,
+    message,
+    actor: params.actor,
+  });
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    message: params.decision === 'resume'
+      ? `已按原目标恢复 ${lane.label} 的 AI 监督。`
+      : `已将新方案发送给 ${lane.label} 的 AI 监督终端，并恢复监督。`,
+  };
 }
 
 function decideRemoteSupervisor(
@@ -1417,8 +1652,9 @@ function decideRemoteSupervisor(
   if (session.paused) return { ok: false, error: '当前监督会话已暂停；请先在 wmux 中继续会话。', message: '' };
   if (!session.active) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
   if (!lane) return { ok: false, error: '待决项对应的监督通道不存在。', message: '' };
+  const decisionInput = task?.trim().slice(0, 4000) || '';
   if (decision === 'direct') {
-    const directTask = task?.trim().slice(0, 4000) || '';
+    const directTask = decisionInput;
     if (!directTask) return { ok: false, error: '请填写要直接发送到任务终端的决策信息。', message: '' };
     try {
       sendTaskToSurface(approval.surfaceId, directTask, true);
@@ -1491,29 +1727,39 @@ function decideRemoteSupervisor(
   if (!laneSupervisorSurfaceId) {
     return { ok: false, error: '待决项对应的 AI 监督已不存在，无法整理所选方案。', message: '' };
   }
-  const selectedOption = selection?.trim().replace(/^用户选择\s*/u, '').slice(0, 200) || '';
+  const rawSelection = selection?.trim().replace(/^用户选择\s*/u, '').slice(0, 200) || '';
+  const selectedNone = rawSelection === SUPERVISOR_NO_DECISION_OPTION;
+  const selectedOption = selectedNone ? '' : rawSelection;
   const parsedOptions = supervisorDecisionOptions(approval.alternatives, approval.text);
   const offeredOptions = new Set(parsedOptions.length >= 2
     ? parsedOptions.map((option) => option.value)
     : []);
-  if (offeredOptions.size >= 2 && !selectedOption) {
+  if (offeredOptions.size >= 2 && !selectedOption && !selectedNone) {
     return { ok: false, error: 'AI 监督提供了多个方案，请先选择其中一个方案。', message: '' };
+  }
+  if (selectedNone && !decisionInput) {
+    return { ok: false, error: '选择“无”时，请填写用户决策或补充信息。', message: '' };
   }
   if (selectedOption && !offeredOptions.has(selectedOption)) {
     return { ok: false, error: '所选方案不属于 AI 监督当前提供的备选项，请刷新决策卡后重试。', message: '' };
   }
   if (decision === 'approve') {
-    const chosenPlan = selectedOption || approval.text.trim() || '采用 AI 监督当前建议';
+    const chosenPlan = selectedNone ? '' : selectedOption || approval.text.trim();
     const briefing = [
-      '[人工决定] 用户已选择采用 AI 监督提出的方案。',
-      `[用户选择] ${chosenPlan}`,
+      decisionInput
+        ? chosenPlan
+          ? '[人工决定] 用户已采用 AI 监督提出的方案，并提供了补充决策信息。'
+          : '[人工决定] 用户提供了人工决策信息，请由 AI 监督整理处理。'
+        : '[人工决定] 用户已选择采用 AI 监督提出的方案。',
+      chosenPlan ? `[用户选择] ${chosenPlan}` : '',
+      decisionInput ? `[用户补充信息] ${decisionInput}` : '',
       approval.text.trim() ? `[AI 原建议] ${approval.text.trim()}` : '',
       approval.reason?.trim() ? `[原判断依据] ${approval.reason.trim()}` : '',
       approval.impact?.trim() ? `[影响] ${approval.impact.trim()}` : '',
       approval.alternatives?.trim() ? `[AI 备选方案] ${approval.alternatives.trim()}` : '',
       '',
       '请先 read-screen 获取任务终端最新状态，再基于用户选择、当前任务、计划约束和终端证据，整理成完整、明确、可执行的下一步。',
-      `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework，并通过 --next 提交最终指令到任务终端；不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
+      `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
     try {
       sendToSurface(laneSupervisorSurfaceId, briefing, true);
@@ -1532,7 +1778,9 @@ function decideRemoteSupervisor(
       approvalId,
       resolution: 'approved',
       proposalKind: approval.proposalKind || 'important',
-      text: selectedOption || approval.text || '采用 AI 监督当前建议',
+      text: selectedNone
+        ? '用户未采用 AI 方案，已提供补充决策信息'
+        : selectedOption || approval.text || (decisionInput ? '用户提供补充决策信息' : '采用 AI 监督当前建议'),
     });
   }
   remoteAudit(session, lane, 'supervisor.remote-decision', {
@@ -1540,10 +1788,14 @@ function decideRemoteSupervisor(
     decision,
     actor: actor || 'unknown',
     selection: selectedOption || undefined,
+    inputLength: decision === 'approve' ? decisionInput.length || undefined : undefined,
   });
+  const hasUserInput = decision === 'approve' && !!decisionInput;
   return { ok: true, message: selectedOption
-    ? `已选择 ${selectedOption}；AI 监督将整理后发送到任务终端。`
-    : '已采用 AI 监督当前方案；AI 监督将整理后发送到任务终端。' };
+    ? `已选择 ${selectedOption}${hasUserInput ? '并附加用户补充信息' : ''}；AI 监督将整理后发送到任务终端。`
+    : hasUserInput
+      ? '已将用户决策信息交给 AI 监督；AI 监督将整理后发送到任务终端。'
+      : '已采用 AI 监督当前方案；AI 监督将整理后发送到任务终端。' };
 }
 
 export function normalizedMaxAutoDecisions(value: unknown): number | null {
@@ -2152,6 +2404,7 @@ export function initPipeBridge(): void {
 
     if (outcome === 'complete') {
       store.confirmStopCondition(lane.id);
+      announceSupervisorWaitingForDirection(lane, reason || '监督 AI 已确认达到停止条件');
       return { ok: true, outcome };
     }
 
@@ -2413,13 +2666,41 @@ export function initPipeBridge(): void {
       const screen = readTerminalScreen(terminal.surfaceId, lines);
       if (screen.error) return { ok: false, error: screen.error };
       const activity = remoteTerminalActivity(terminal.surfaceId);
-      const conversation = terminalConversationExcerpt(screen.text || '', terminal.label, activity.activityState);
+      const conversation = terminalSupervisorCoreExcerpt(screen.text || '', terminal.label, activity.activityState);
       return {
         ok: true,
         terminal: {
           surfaceId: terminal.surfaceId,
           label: terminal.label,
           workspace: terminal.workspaceTitle,
+          ...activity,
+        },
+        ...conversation,
+        lines: screen.lines || 0,
+        capturedAt: Date.now(),
+      };
+    }
+    if (action === 'supervisor-screen') {
+      const located = locateRemoteSupervisorTerminal(String(params?.terminal || ''));
+      if (!located.lane || !located.supervisorSurfaceId) {
+        return { ok: false, error: located.error };
+      }
+      const requestedLines = Number(params?.lines);
+      const lines = Number.isFinite(requestedLines)
+        ? Math.min(Math.max(Math.floor(requestedLines), 1), 100)
+        : 40;
+      const screen = readTerminalScreen(located.supervisorSurfaceId, lines);
+      if (screen.error) return { ok: false, error: screen.error };
+      const activity = remoteTerminalActivity(located.supervisorSurfaceId);
+      const conversation = terminalSupervisorCoreExcerpt(screen.text || '', located.lane.label, activity.activityState);
+      return {
+        ok: true,
+        terminal: {
+          // Keep the public lane terminal ID so refresh/send actions never expose
+          // the dedicated supervisor surface through the task-terminal endpoint.
+          surfaceId: located.lane.surfaceId,
+          label: located.lane.label,
+          workspace: located.workspaceTitle || '',
           ...activity,
         },
         ...conversation,
@@ -2435,10 +2716,16 @@ export function initPipeBridge(): void {
         return { ok: false, error: '该待决项不存在、已过期或与任务终端不匹配。' };
       }
       const screen = readTerminalScreen(terminal, Number(params?.lines) || 40);
+      const activity = remoteTerminalActivity(approval.surfaceId);
+      const coreInformation = terminalSupervisorCoreExcerpt(
+        screen.text || '',
+        approval.laneLabel,
+        activity.activityState,
+      ).answer || '';
       return {
         ok: true,
         recommendation: approval.text || '',
-        terminalScreen: screen.text ? terminalScreenExcerpt(screen.text) : '',
+        terminalScreen: coreInformation,
       };
     }
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
@@ -2446,6 +2733,7 @@ export function initPipeBridge(): void {
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
     if (action === 'close-terminal') return closeRemoteTerminal(params);
     if (action === 'send-supervisor-message') return sendRemoteSupervisorMessage(params as RemoteSupervisorMessage);
+    if (action === 'waiting-decision') return decideRemoteWaiting(params as RemoteWaitingDecision);
     if (action === 'pause-lane' || action === 'resume-lane' || action === 'stop-lane') {
       const session = useStore.getState().supervisor;
       const actor = String(params?.actor || 'unknown');

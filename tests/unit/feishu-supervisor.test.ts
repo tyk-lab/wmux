@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -172,6 +172,63 @@ supervisor_model: k3`)).toEqual({
 
     expect(status.taskState).toBe('awaiting-human');
     expect(JSON.stringify(buildFeishuAuditAlertCard(record, status))).toContain('任务等待人工复核');
+  });
+
+  it('监督模型限流时将群内状态标记为阻塞并发出红色告警', () => {
+    const record = {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.provider-limit' as const,
+      terminal: { surfaceId: 'surf-1', label: 'codex' },
+      payload: { summary: 'Error: request failed with status code 429', supervisorModel: 'gpt-limited' },
+    };
+    const status = reduceFeishuAuditTerminalStatus(undefined, record);
+    const alert = JSON.stringify(buildFeishuAuditAlertCard(record, status));
+
+    expect(status).toMatchObject({
+      taskState: 'blocked',
+      latestResult: 'AI 监督模型请求受限：Error: request failed with status code 429',
+      pendingHuman: '需要用户处理模型额度或等待限流解除',
+    });
+    expect(alert).toContain('AI 监督模型请求受限');
+    expect(alert).toContain('red');
+  });
+
+  it('待续事件会把群内状态恢复为等待用户方向', () => {
+    const completed = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.decision',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { outcome: 'complete' },
+    });
+    const record = {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.waiting-for-direction' as const,
+      terminal: { surfaceId: 'surf-1', label: 'codex' },
+      payload: { reason: '当前阶段测试已通过', taskGoal: '完成当前阶段测试' },
+    };
+    const waiting = reduceFeishuAuditTerminalStatus(completed, record);
+
+    expect(waiting).toMatchObject({
+      taskState: 'awaiting-human',
+      currentTask: '完成当前阶段测试',
+      latestResult: '当前阶段测试已通过',
+      pendingHuman: '等待用户提供新的监督方向后继续',
+    });
+    expect(JSON.stringify(buildFeishuAuditAlertCard(record, waiting))).toContain('AI 监督通道待续');
+  });
+
+  it('用户向 AI 监督终端提供新方向后会解除群内待续状态', () => {
+    const waiting = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.waiting-for-direction',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: {},
+    });
+    const resumed = reduceFeishuAuditTerminalStatus(waiting, {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.waiting-resumed',
+      terminal: { surfaceId: 'surf-1', label: 'codex' }, payload: { source: 'supervisor-terminal' },
+    });
+
+    expect(resumed).toMatchObject({
+      taskState: 'reviewing',
+      latestResult: '用户已提供新的监督方向，待续状态已解除',
+      nextStep: '监督 AI 正在处理新方向并继续推进',
+      pendingHuman: '无',
+    });
   });
 
   it('群内人工决策卡只说明目标、待决事项和原因，方案与推荐留在单聊', () => {
@@ -350,7 +407,7 @@ supervisor_model: k3`)).toEqual({
       payload: {
         approvalId: 'appr-1',
         recommendation: '采用兼容层完成迁移',
-        terminalScreen: 'PS E:\\test> npm test\nTests 2 failed',
+        terminalScreen: '核心结论：兼容层测试仍有 2 项失败。',
         alternatives: '方案 A：保留现有接口；方案 B：切换到新接口。',
       },
     }) as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
@@ -362,16 +419,20 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('select_static');
     expect(card).toContain('方案 A：保留现有接口');
     expect(card).toContain('方案 B：切换到新接口');
-    expect(card).toContain('选择 AI 方案（采用 AI 方案时必选）');
+    expect(card).toContain('选择 AI 方案（也可选择“无”）');
+    expect(card).toContain('"content":"无"');
+    expect(card).toContain('选择“无”时必须填写这里的信息');
     expect(card).toContain('AI 建议');
     expect(card).toContain('采用兼容层完成迁移');
-    expect(card).toContain('任务终端最新界面（原文）');
-    expect(card).toContain('PS E:\\\\test> npm test\\nTests 2 failed');
+    expect(card).toContain('任务终端核心信息');
+    expect(card).toContain('核心结论：兼容层测试仍有 2 项失败。');
+    expect(card).not.toContain('任务终端最新界面（原文）');
     expect(card).toContain('decision_input');
-    expect(card).toContain('用户决策信息（可选）');
+    expect(card).toContain('用户决策或补充信息（可选）');
     expect(card).toContain('确认并采用 AI 方案');
     expect(card).toContain('直接发送用户输入');
     expect(card).toContain('AI 监督会结合当前终端信息整理为完整指令');
+    expect(card).toContain('把所选方案和这里的信息交给 AI 监督整理');
     expect(card).toContain('不经过 AI 监督整理');
     expect(card).toContain('处理当前决策');
     expect(card).toContain('监督控制');
@@ -393,6 +454,44 @@ supervisor_model: k3`)).toEqual({
 
     expect(card).not.toContain('decision_choice');
     expect(card).toContain('采用 AI 当前方案');
+  });
+
+  it('任务终端核心信息过长时同时保留开头结论和末尾信息', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        approvalId: 'appr-long-core',
+        recommendation: '等待人工确认',
+        terminalScreen: `开头核心结论：类型检查通过。${'中间正文'.repeat(400)}末尾信息：仍有一项测试待处理。`,
+      },
+    }));
+
+    expect(card).toContain('开头核心结论：类型检查通过。');
+    expect(card).toContain('末尾信息：仍有一项测试待处理。');
+    expect(card).toContain('\\n…\\n');
+  });
+
+  it('将待续通知渲染为只展示 AI 监督核心信息的决策表单', () => {
+    const card = JSON.stringify(buildWaitingDecisionCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.waiting-for-direction',
+      terminal: { surfaceId: 'surf-1', label: '测试任务终端' },
+      payload: {
+        reason: '当前阶段测试已经通过',
+        taskGoal: '完成当前阶段测试',
+        stopWhen: '当前阶段测试通过',
+      },
+    }, 'AI 监督结论：当前阶段已完成，等待后续方向。'));
+
+    expect(card).toContain('AI 监督终端（管家）');
+    expect(card).toContain('AI 监督终端核心信息');
+    expect(card).toContain('AI 监督结论：当前阶段已完成');
+    expect(card).toContain('waiting_direction');
+    expect(card).toContain('保持待续');
+    expect(card).toContain('按原目标继续监督');
+    expect(card).toContain('提交新方案并继续');
+    expect(card).toContain('停止此监督');
+    expect(card).not.toContain('任务终端最新界面（原文）');
   });
 
   it('AI 把编号候选项写在建议正文时仍显示飞书方案下拉框', () => {
@@ -525,7 +624,13 @@ supervisor_model: k3`)).toEqual({
     expect(supervisorMessage).toContain('向 AI 监督终端（管家）发送信息');
     expect(supervisorMessage).toContain('AI监督终端（管家） · 负责：pwsh.exe · 监督中 · 任务端：执行中');
     expect(supervisorMessage).toContain('不会作为新任务直接发送到工作终端');
+    expect(supervisorMessage).toContain('查看终端信息');
+    expect(supervisorMessage).toContain('form_supervisor_screen');
     expect(supervisorMessage).toContain('form_send_supervisor');
+    expect(JSON.stringify(buildSupervisorMessageCard([{
+      surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: true,
+      supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
+    }], false))).not.toContain('查看终端信息');
     expect(createTask).toContain('添加 AI 终端任务');
     expect(createTask).toContain('Codex（默认）');
     expect(createTask).toContain('Kimi');
@@ -595,6 +700,23 @@ supervisor_model: k3`)).toEqual({
       lines: 20,
       capturedAt: Date.now(),
     }));
+    const streamingConversationCard = JSON.stringify(buildTerminalScreenCard({
+      terminal,
+      text: 'Codex 工具执行日志',
+      question: '请说明当前进度',
+      answer: '已完成类型检查，正在核对单元测试。',
+      answerPending: true,
+      lines: 20,
+      capturedAt: Date.now(),
+    }));
+    const supervisorCoreCard = JSON.stringify(buildSupervisorTerminalScreenCard({
+      terminal,
+      text: 'Codex 工具执行日志',
+      answer: '当前核心结论：类型检查通过。',
+      answerPending: true,
+      lines: 100,
+      capturedAt: Date.now(),
+    }));
     const longAnswer = `${'开头'.repeat(500)}仅展开时可见${'结尾'.repeat(500)}`;
     const collapsedConversationCard = JSON.stringify(buildTerminalScreenCard({
       terminal, text: '', question: '长回复', answer: longAnswer, lines: 100, capturedAt: Date.now(),
@@ -613,8 +735,9 @@ supervisor_model: k3`)).toEqual({
     expect(selectCard).toContain('wmux_form_terminal_control');
     expect(selectCard).toContain('surf-a');
     expect(selectCard).toContain('只允许白名单用户在单聊中使用');
-    expect(screenCard).toContain('最新核心文本');
-    expect(screenCard).toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
+    expect(screenCard).toContain('Agent 回复');
+    expect(screenCard).toContain('尚未识别到 Agent 回复正文');
+    expect(screenCard).not.toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
     expect(screenCard).toContain('刷新界面');
     expect(screenCard).toContain('发送内容');
     expect(screenCard).toContain('尚未发送的草稿');
@@ -627,13 +750,33 @@ supervisor_model: k3`)).toEqual({
     expect(taskInput.element_id).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,19}$/u);
     expect(clearedTaskInput.element_id).not.toBe(taskInput.element_id);
     expect(clearedTaskInput.default_value).toBeUndefined();
-    expect(conversationCard).toContain('你的提问');
-    expect(conversationCard).toContain('你是什么模型');
+    expect(conversationCard).not.toContain('你的提问');
+    expect(conversationCard).not.toContain('你是什么模型');
     expect(conversationCard).toContain('Agent 回复');
     expect(conversationCard).toContain('我是 Codex。');
     expect(conversationCard).not.toContain('终端原始文本');
     expect(pendingConversationCard).toContain('回复生成中');
     expect(pendingConversationCard).not.toContain('Codex 工具执行日志');
+    expect(streamingConversationCard).toContain('Agent 回复（生成中）');
+    expect(streamingConversationCard).toContain('已完成类型检查，正在核对单元测试。');
+    expect(supervisorCoreCard).toContain('Agent 回复（生成中）');
+    expect(supervisorCoreCard).toContain('当前核心结论：类型检查通过。');
+    expect(supervisorCoreCard).not.toContain('Codex 工具执行日志');
+
+    const supervisorScreenCard = JSON.stringify(buildSupervisorTerminalScreenCard({
+      terminal,
+      text: '正在核对任务终端的最新证据',
+      lines: 1,
+      capturedAt: Date.now(),
+    }, '先检查测试结果'));
+    expect(supervisorScreenCard).toContain('AI 监督终端（管家）');
+    expect(supervisorScreenCard).toContain('AI监督终端（管家） · 负责：Codex worker');
+    expect(supervisorScreenCard).not.toContain('正在核对任务终端的最新证据');
+    expect(supervisorScreenCard).toContain('尚未识别到 Agent 回复正文');
+    expect(supervisorScreenCard).toContain('先检查测试结果');
+    expect(supervisorScreenCard).toContain('form_supervisor_refresh');
+    expect(supervisorScreenCard).toContain('form_supervisor_send');
+    expect(supervisorScreenCard).toContain('选择其他监督终端');
     expect(collapsedConversationCard).toContain('展开完整回复');
     expect(collapsedConversationCard).not.toContain('仅展开时可见');
     expect(expandedConversationCard).toContain('仅展开时可见');
@@ -839,11 +982,17 @@ supervisor_model: k3`)).toEqual({
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send_supervisor')).toEqual({ wmux_action: 'form_send_supervisor' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_supervisor_screen')).toEqual({ wmux_action: 'form_supervisor_screen' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_supervisor_refresh')).toEqual({ wmux_action: 'form_supervisor_refresh' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_supervisor_send')).toEqual({ wmux_action: 'form_supervisor_send' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_screen')).toEqual({ wmux_action: 'form_terminal_screen' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_expand')).toEqual({ wmux_action: 'form_terminal_expand' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_collapse')).toEqual({ wmux_action: 'form_terminal_collapse' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_create_task')).toEqual({ wmux_action: 'form_create_task' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });
+    expect(resolveFeishuCardAction({ terminal: 'surf-1' }, 'wmux_waiting_submit')).toEqual({
+      terminal: 'surf-1', wmux_action: 'waiting_decision', decision: 'submit',
+    });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({
       approval_id: 'appr-1', wmux_action: 'decide', decision: 'approve',
     });

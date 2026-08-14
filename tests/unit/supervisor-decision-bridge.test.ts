@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initPipeBridge, readTerminalScreen, terminalConversationExcerpt, terminalScreenExcerpt } from '../../src/renderer/pipe-bridge';
+import { initPipeBridge, readTerminalScreen, terminalConversationExcerpt, terminalScreenExcerpt, terminalSupervisorCoreExcerpt } from '../../src/renderer/pipe-bridge';
 import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
@@ -8,6 +8,7 @@ import {
   PROJECT_MANAGER_TERMINAL_NAME,
   PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
 } from '../../src/shared/project-manager-terminal';
+import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 
 function lane(): SupervisorLane {
   return {
@@ -136,6 +137,31 @@ describe('supervisor decision bridge', () => {
     expect(listed).toMatchObject({ label: 'Codex', workspace: 'sdf' });
   });
 
+  it('excludes every terminal in the dedicated AI supervisor workspace from task controls', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-task' as any,
+      title: '任务工作区',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-task' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'Codex worker' }],
+      },
+    }, {
+      id: 'ws-orphan-supervisor' as any,
+      title: 'AI 监督',
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-supervisor' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'orphan-supervisor' as any, type: 'terminal', shell: 'pwsh.exe' }],
+      },
+    }]);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    const listed = JSON.parse(remoteControl({ action: 'list' }).message).terminals;
+    expect(listed.map((terminal: any) => terminal.surfaceId)).toEqual(['worker-a']);
+    expect(remoteControl({ action: 'terminal-screen', terminal: 'orphan-supervisor', lines: 40 }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
+  });
+
   it('sends Feishu direction information only to the active dedicated supervisor terminal', () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-control' as any,
@@ -173,12 +199,94 @@ describe('supervisor decision bridge', () => {
       laneId: 'lane-a', action: '用户调整监督方向', detail: '先读取项目进度，再给任务终端建议',
     });
 
+    useStore.getState().updateLane('lane-a', {
+      controlState: 'waiting', stopConfirmed: true, awaitingReview: false, autoDecisionsUsed: 4,
+    });
+    writes.mockClear();
+    expect(remoteControl({
+      action: 'send-supervisor-message', terminal: 'worker-a', message: '采用新的验证方案继续', actor: 'ou-user',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active', stopConfirmed: false, awaitingReview: true, autoDecisionsUsed: 0,
+    });
+    expect(useStore.getState().supervisor.log[1]).toMatchObject({
+      laneId: 'lane-a', action: '待续恢复', detail: '用户已远程向 AI 监督终端提供新方向，继续监督',
+    });
+
     useStore.getState().pauseSupervisor('测试暂停');
     writes.mockClear();
     expect(remoteControl({
       action: 'send-supervisor-message', terminal: 'worker-a', message: '暂停时不应发送', actor: 'ou-user',
     })).toMatchObject({ ok: false, error: expect.stringContaining('当前未运行') });
     expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('handles every waiting decision only while the AI supervisor lane is waiting', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'Work',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-control' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'Codex worker' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi', customTitle: 'AI 监督 · Codex worker' },
+        ],
+      },
+    }]);
+    surfaceTerminalRegistry.set('supervisor-a', {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    useStore.getState().updateLane('lane-a', {
+      controlState: 'waiting', stopConfirmed: true, awaitingReview: false, autoDecisionsUsed: 3,
+    });
+
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'keep', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('保持待续') });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'waiting' });
+    expect(writes).not.toHaveBeenCalled();
+
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'submit', message: '  ', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能为空') });
+
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'submit', message: '先补齐回归测试再发布', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('恢复监督') });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', '[用户调整监督方向] 先补齐回归测试再发布');
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active', stopConfirmed: false, awaitingReview: true, autoDecisionsUsed: 0,
+    });
+
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'resume', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('已不处于待续状态') });
+
+    useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
+    writes.mockClear();
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'resume', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('按原目标恢复') });
+    expect(writes).toHaveBeenCalledWith(
+      'supervisor-a',
+      expect.stringContaining('按原任务目标和既有停止条件继续监督'),
+    );
+
+    useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
+    useStore.getState().pauseSupervisor('测试全局暂停');
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'resume', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('全局暂停') });
+    expect(remoteControl({
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'stop', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('其他通道不受影响') });
+    expect(useStore.getState().supervisor.lanes).toHaveLength(0);
   });
 
   it('returns recent supervision logs with lane labels for Feishu', () => {
@@ -207,6 +315,7 @@ describe('supervisor decision bridge', () => {
       },
     }]);
     screenText = 'PS E:\\repo> npm test\nTests 1 failed';
+    surfaceTerminalRegistry.set('supervisor-a', surfaceTerminalRegistry.get('worker-a')!);
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
 
     expect(remoteControl({ action: 'terminal-screen', terminal: 'worker-a', lines: 40 })).toMatchObject({
@@ -220,12 +329,42 @@ describe('supervisor decision bridge', () => {
     });
     expect(remoteControl({ action: 'terminal-screen', terminal: 'supervisor-a', lines: 40 }))
       .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
+    const supervisorScreen = remoteControl({ action: 'supervisor-screen', terminal: 'worker-a', lines: 40 });
+    expect(supervisorScreen).toMatchObject({
+      ok: true,
+      terminal: {
+        surfaceId: 'worker-a', label: 'worker', workspace: 'Screen Work', activityState: 'unknown',
+      },
+      text: screenText,
+      lines: 1,
+      capturedAt: expect.any(Number),
+    });
+    expect(supervisorScreen.answer).toBeUndefined();
+    screenText = [
+      '• 当前正文：类型检查通过，接下来运行针对性测试。',
+      '• Ran npm test -- --run focused.test.ts',
+      '  └ Tests still running',
+      '◦ Working (8s)',
+      '› Run /review on my current changes',
+      'gpt-5.6-sol high · E:\\repo',
+    ].join('\n');
+    expect(remoteControl({ action: 'terminal-screen', terminal: 'worker-a', lines: 40 })).toMatchObject({
+      ok: true,
+      answer: '当前正文：类型检查通过，接下来运行针对性测试。',
+    });
     expect(remoteControl({ action: 'terminal-screen', terminal: 'missing', lines: 40 }))
       .toMatchObject({ ok: false });
   });
 
   it('returns the live worker screen and current AI recommendation for a Feishu decision card', () => {
-    screenText = 'PS E:\\repo> npm test\nTests 1 failed\nPS E:\\repo>';
+    screenText = [
+      '• 核心结论：类型检查通过，仍有 1 项测试失败。',
+      '• Ran npm test -- --run focused.test.ts',
+      '  └ Tests 1 failed',
+      '◦ Working (8s)',
+      '› Run /review on my current changes',
+      'gpt-5.6-sol high · E:\\repo',
+    ].join('\n');
     expect(decide({
       outcome: 'needs-human', proposalKind: 'important', next: '保留接口并补齐适配层',
     })).toMatchObject({ ok: true });
@@ -237,7 +376,7 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({
       ok: true,
       recommendation: '保留接口并补齐适配层',
-      terminalScreen: screenText,
+      terminalScreen: '核心结论：类型检查通过，仍有 1 项测试失败。',
     });
     expect(remoteControl({
       action: 'decision-context', approvalId: approval.id, terminal: 'other-worker', lines: 40,
@@ -614,7 +753,7 @@ describe('supervisor decision bridge', () => {
     expect(conversation.answer).not.toContain('context:');
   });
 
-  it('shows only the Codex question while tools are still running', () => {
+  it('keeps visible Codex正文 while tools are still running', () => {
     const conversation = terminalConversationExcerpt([
       'OpenAI Codex (v0.147.0)',
       'model: gpt-5.6-sol high fast',
@@ -633,8 +772,11 @@ describe('supervisor decision bridge', () => {
       'gpt-5.6-sol high fast · E:\\work\\wmux',
     ].join('\n'), 'Codex直连 · sd', 'working');
 
-    expect(conversation).toMatchObject({ question: '你是什么模型', answerPending: true });
-    expect(conversation.answer).toBeUndefined();
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我的理解是：你想确认当前对话中我的模型身份。',
+      answerPending: true,
+    });
     expect(terminalConversationExcerpt(conversation.text, 'Codex直连 · sd', 'unknown')).toMatchObject({
       question: '你是什么模型', answerPending: true,
     });
@@ -667,9 +809,155 @@ describe('supervisor decision bridge', () => {
   });
 
   it.each([
+    {
+      agent: 'Kimi',
+      screen: [
+        '✦ 请说明当前进度',
+        '● 正在整理检查结果。',
+        '● 已完成类型检查，接下来核对单元测试。',
+      ].join('\n'),
+      answer: '已完成类型检查，接下来核对单元测试。',
+    },
+    {
+      agent: 'Grok',
+      screen: [
+        '❯ 请说明当前进度',
+        '◆ user_prompt_submit   [hooks: 1/1]',
+        '已经完成类型检查，正在核对单元测试。',
+        '∷ Responding (12s)',
+      ].join('\n'),
+      answer: '已经完成类型检查，正在核对单元测试。',
+    },
+  ])('keeps visible $agent正文 while the reply is still generating', ({ agent, screen, answer }) => {
+    expect(terminalConversationExcerpt(screen, `${agent}直连`, 'working')).toMatchObject({
+      question: '请说明当前进度',
+      answer,
+      answerPending: true,
+    });
+  });
+
+  it('keeps Codex supervisor core information after the original prompt scrolls away', () => {
+    const conversation = terminalSupervisorCoreExcerpt([
+      '• 我的理解是：本轮仅检查 T1 收口齐备、反向软件资格 PASS、反向锁 0.100 A 阈门阻断。',
+      '',
+      "• Ran $p='.agents/skills/project-progress/SKILL.md'; Get-Content -LiteralPath $p",
+      '  └ name: project-progress',
+      '    +158 lines (ctrl+t to view transcript)',
+      '',
+      "• Ran Get-Content -LiteralPath '.agents/skills/project-index/SKILL.md'",
+      '  └ 当前文件加载完毕',
+      '◦ Working (45s • esc to interrupt)',
+      '› Run /review on my current changes',
+      'gpt-5.6-sol high · D:\\repo · Main [default]',
+    ].join('\n'), '任务通道 TMC6460', 'working');
+
+    expect(conversation).toMatchObject({
+      answer: '我的理解是：本轮仅检查 T1 收口齐备、反向软件资格 PASS、反向锁 0.100 A 阈门阻断。',
+      answerPending: true,
+    });
+    expect(conversation.question).toBeUndefined();
+    expect(conversation.answer).not.toContain('Get-Content');
+    expect(conversation.answer).not.toContain('/review');
+  });
+
+  it.each(['Codex', 'Claude Code', 'Kimi Code', 'Grok Build', 'Pi Agent', 'OpenCode'])(
+    'uses the shared supervisor core fallback for %s',
+    (agent) => {
+      const conversation = terminalSupervisorCoreExcerpt([
+        '• 当前核心结论：类型检查通过，仍需核对一个单元测试。',
+        '• Ran npm test -- --run focused.test.ts',
+        '  └ Tests still running',
+        '◦ Working (8s)',
+      ].join('\n'), agent, 'working');
+
+      expect(conversation).toMatchObject({
+        answer: '当前核心结论：类型检查通过，仍需核对一个单元测试。',
+        answerPending: true,
+      });
+    },
+  );
+
+  it('keeps Kimi supervisor正文 and removes shell output plus the runtime footer', () => {
+    const conversation = terminalSupervisorCoreExcerpt([
+      '$ wmux supervisor decide --surface surf-a --outcome needs-human',
+      '  --reason "用户希望由监督 AI 提取可选方案" --alternatives "方案 A；方案 B"',
+      '  保证修改前先阅读 README，并说明本次变化。',
+      '',
+      '(no output)',
+      'Took 0.2s',
+      '',
+      '被成功提交。',
+      '',
+      '已提交 needs-human 裁决，并向用户提供 4 个可选方案：',
+      '',
+      '- 方案 A：结束当前会话并判定任务完成',
+      '- 方案 B：完善项目文档（补充 README 等）',
+      '- 方案 C：只读检查 config.toml 与配置差异',
+      '- 方案 D：以 whatif 预览同步脚本效果',
+      '',
+      '等待用户选择后推进。',
+      '────────────────────────────────────────',
+      'E:\\work\\project (chore/agent-skills-sync)',
+      '↑8.8k ↓2.5k R76k CH92.3% $0.033 (sub) 3.6%/262k (auto) (kimi-coding) kimi-for-coding • medium',
+    ].join('\n'), 'pwsh.exe', 'idle');
+
+    expect(conversation.answer).toBe([
+      '已提交 needs-human 裁决，并向用户提供 4 个可选方案：',
+      '',
+      '- 方案 A：结束当前会话并判定任务完成',
+      '- 方案 B：完善项目文档（补充 README 等）',
+      '- 方案 C：只读检查 config.toml 与配置差异',
+      '- 方案 D：以 whatif 预览同步脚本效果',
+      '',
+      '等待用户选择后推进。',
+    ].join('\n'));
+    expect(conversation.answer).not.toContain('wmux supervisor decide');
+    expect(conversation.answer).not.toContain('chore/agent-skills-sync');
+    expect(conversation.answer).not.toContain('CH92.3%');
+    expect(conversation.answer).not.toContain('kimi-for-coding');
+  });
+
+  it('keeps the complete visible Kimi answer when its question and answer marker have scrolled away', () => {
+    const conversation = terminalSupervisorCoreExcerpt([
+      '• 支持 -WhatIf 预演，不会误写。',
+      '• 使用 ShouldProcess，符合 PowerShell 最佳实践。',
+      '• 有 Set-StrictMode 和 $ErrorActionPreference = "Stop"。',
+      '',
+      '总体评价',
+      '┌──────────┬────────────────────────────┐',
+      '│ 维度     │ 评价                       │',
+      '├──────────┼────────────────────────────┤',
+      '│ 脚本质量 │ 合格，幂等、可预演           │',
+      '└──────────┴────────────────────────────┘',
+      '',
+      '建议',
+      '1. 确认模型名是否正确。',
+      '2. 收紧权限：把 sandbox_mode 改为 default 或 read-only。',
+      '3. 加一条 README 说明。',
+      '4. 检查 .env 是否已由 .gitignore 排除。',
+      '',
+      '如果你愿意，我可以直接帮你调整为更安全的版本。',
+      '────────────────────────────────────────────────',
+      'yolo  K2.7 Coding thinking  E:\\work\\project',
+      'context: 11%',
+      '(26.6k/256k)',
+    ].join('\n'), 'Kimi直连 · 配置检查', 'idle');
+
+    expect(conversation.answer).toContain('• 支持 -WhatIf 预演，不会误写。');
+    expect(conversation.answer).toContain('总体评价');
+    expect(conversation.answer).toContain('│ 脚本质量 │ 合格，幂等、可预演');
+    expect(conversation.answer).toContain('1. 确认模型名是否正确。');
+    expect(conversation.answer).toContain('如果你愿意，我可以直接帮你调整为更安全的版本。');
+    expect(conversation.answer).not.toContain('K2.7 Coding thinking');
+    expect(conversation.answer).not.toContain('context:');
+    expect(conversation.answer).not.toContain('26.6k/256k');
+  });
+
+  it.each([
     'Find and fix a bug in @filename',
     'Improve documentation in @filename',
     'Ask Codex to do anything',
+    'Run /review on my current changes',
     'Implement {feature}',
   ])('ignores the Codex composer suggestion %s', (suggestion) => {
     const conversation = terminalConversationExcerpt([
@@ -1078,6 +1366,34 @@ describe('supervisor decision bridge', () => {
       type: 'supervisor.decision',
       payload: expect.objectContaining({ requiresHuman: true }),
     }));
+  });
+
+  it('notifies the user when a completed lane enters waiting for a new direction', () => {
+    const appendRecord = vi.fn(async () => undefined);
+    (globalThis.window as any).wmux.supervisor = { appendRecord };
+    useStore.getState().updateLane('lane-a', {
+      config: { waitForNextDirection: true, stopWhen: '当前阶段测试通过' },
+    });
+
+    expect(decide({ outcome: 'complete', next: '', reason: '当前阶段测试已经通过' }))
+      .toMatchObject({ ok: true, outcome: 'complete' });
+
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: true,
+      controlState: 'waiting',
+    });
+    expect(appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'supervisor.waiting-for-direction',
+      payload: expect.objectContaining({
+        reason: '当前阶段测试已经通过',
+        stopWhen: '当前阶段测试通过',
+      }),
+    }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith({
+      surfaceId: 'worker-a',
+      title: 'AI 监督待续',
+      text: 'AI 监督通道“worker”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。',
+    });
   });
 
   it('does not append a supervisor next step to an unsubmitted user draft', () => {
@@ -1538,6 +1854,33 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(true);
   });
 
+  it('returns user-entered guidance to the AI supervisor with the adopted proposal', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      reason: '需要用户补充明确的处理方向',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'decide',
+      approvalId: approval.id,
+      decision: 'approve',
+      task: '保持现有 API，先补充回归测试',
+      actor: 'ou-user',
+    })).toMatchObject({
+      ok: true,
+      message: '已将用户决策信息交给 AI 监督；AI 监督将整理后发送到任务终端。',
+    });
+    expect(writes).toHaveBeenCalledWith(
+      'supervisor-a',
+      expect.stringContaining('[用户补充信息] 保持现有 API，先补充回归测试'),
+    );
+    expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[用户选择]'));
+    expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
+  });
+
   it('keeps the pending approval when delivery to the AI supervisor fails', () => {
     expect(decide({
       outcome: 'needs-human',
@@ -1609,6 +1952,39 @@ describe('supervisor decision bridge', () => {
       'supervisor-a',
       expect.stringContaining('[用户选择] 方案 A'),
     );
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
+  it('uses user guidance instead of an AI option when the user selects none', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '改用新框架重写当前模块',
+      reason: '需要用户选择调整方向',
+      alternatives: '方案 A：保留现有框架；方案 B：改用新框架',
+    })).toMatchObject({ ok: true });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve',
+      selection: SUPERVISOR_NO_DECISION_OPTION, actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: '选择“无”时，请填写用户决策或补充信息。' });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve',
+      selection: SUPERVISOR_NO_DECISION_OPTION,
+      task: '保留现有 API，只补充回归测试', actor: 'ou-user',
+    })).toMatchObject({
+      ok: true,
+      message: '已将用户决策信息交给 AI 监督；AI 监督将整理后发送到任务终端。',
+    });
+    expect(writes).toHaveBeenCalledWith(
+      'supervisor-a',
+      expect.stringContaining('[用户补充信息] 保留现有 API，只补充回归测试'),
+    );
+    expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[用户选择]'));
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 

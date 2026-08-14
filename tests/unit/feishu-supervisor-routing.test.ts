@@ -48,6 +48,34 @@ function approvalRecord(approvalId: string): SupervisorRecord {
   };
 }
 
+function waitingRecord(): SupervisorRecord {
+  return {
+    sessionId: 'sup-1',
+    projectDir: 'E:\\test',
+    type: 'supervisor.waiting-for-direction',
+    terminal: { surfaceId: 'surf-1', label: '测试终端' },
+    payload: {
+      reason: '当前阶段测试已经通过',
+      taskGoal: '完成当前阶段测试',
+      stopWhen: '当前阶段测试通过',
+    },
+  };
+}
+
+function providerLimitRecord(): SupervisorRecord {
+  return {
+    sessionId: 'sup-1',
+    projectDir: 'E:\\test',
+    type: 'supervisor.provider-limit',
+    terminal: { surfaceId: 'surf-1', label: '测试终端' },
+    payload: {
+      category: 'rate-limit',
+      summary: 'Error: request failed with status code 429',
+      supervisorModel: 'gpt-limited',
+    },
+  };
+}
+
 describe('飞书人工决策单聊路由', () => {
   let handlers: ChannelHandlers;
   let send: ReturnType<typeof vi.fn>;
@@ -113,10 +141,146 @@ describe('飞书人工决策单聊路由', () => {
     expect(send.mock.calls.filter(([chatId]) => chatId === 'oc-audit')).toHaveLength(2);
   });
 
-  it('发送决策卡前读取任务终端原文和 AI 原建议', async () => {
+  it('待续通道主动发送包含 AI 监督核心信息的决策卡，并可提交新方案继续', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async (command: { action: string }) => {
+      if (command.action === 'supervisor-screen') {
+        return {
+          ok: true,
+          answer: 'AI 监督核心结论：当前阶段已完成，等待用户确定下一步。',
+          text: 'Ran Get-Content\n工具调用噪声\n任务终端原始结构',
+        };
+      }
+      return { ok: true, message: '已将新方案发送给 AI 监督终端，并恢复监督。' };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+
+    service.onRecord(waitingRecord());
+
+    await vi.waitFor(() => {
+      const waitingCall = send.mock.calls.find(([chatId, payload]) => (
+        chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+      ));
+      expect(waitingCall?.[0]).toBe('oc-dm-configured');
+      const card = JSON.stringify(waitingCall?.[1]);
+      expect(card).toContain('当前阶段测试已经通过');
+      expect(card).toContain('AI 监督核心结论：当前阶段已完成');
+      expect(card).toContain('保持待续');
+      expect(card).toContain('按原目标继续监督');
+      expect(card).toContain('提交新方案并继续');
+      expect(card).toContain('停止此监督');
+      expect(card).not.toContain('工具调用噪声');
+      expect(card).not.toContain('任务终端原始结构');
+    });
+    expect(control).toHaveBeenCalledWith({
+      action: 'supervisor-screen', terminal: 'surf-1', lines: 100,
+    }, { openId: 'wmux-system', source: 'system' });
+    await vi.waitFor(() => expect(send.mock.calls.filter(([chatId]) => chatId === 'oc-audit')).toHaveLength(2));
+
+    const waitingCallIndex = send.mock.calls.findIndex(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ));
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId: `om-${waitingCallIndex + 1}`,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_waiting_submit',
+        value: { wmux_action: 'waiting_decision', terminal: 'surf-1', decision: 'submit' },
+      },
+      raw: { action: { form_value: { waiting_direction: '  ' } } },
+    });
+    await vi.waitFor(() => expect(send.mock.calls.some(([, payload]) => (
+      JSON.stringify(payload).includes('请先填写新方案或下一步方向')
+    ))).toBe(true));
+    expect(control.mock.calls.some(([command]) => command.action === 'waiting-decision')).toBe(false);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId: `om-${waitingCallIndex + 1}`,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_waiting_submit',
+        value: { wmux_action: 'waiting_decision', terminal: 'surf-1', decision: 'submit' },
+      },
+      raw: { action: { form_value: { waiting_direction: ' 改为先补齐回归测试，再检查发布条件 ' } } },
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'waiting-decision')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'waiting-decision')?.[0]).toEqual({
+      action: 'waiting-decision',
+      terminal: 'surf-1',
+      decision: 'submit',
+      message: '改为先补齐回归测试，再检查发布条件',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+  });
+
+  it('通道从其他入口恢复后使旧待续卡失效，并明确提示重放点击', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async (command: { action: string }) => command.action === 'supervisor-screen'
+      ? { ok: true, answer: '当前阶段已完成，等待下一步。' }
+      : { ok: true });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    service.onRecord(waitingRecord());
+
+    await vi.waitFor(() => expect(send.mock.calls.some(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ))).toBe(true));
+    const waitingCallIndex = send.mock.calls.findIndex(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ));
+    const waitingMessageId = `om-${waitingCallIndex + 1}`;
+
+    service.onRecord({
+      ...waitingRecord(),
+      type: 'supervisor.waiting-resumed',
+      payload: { source: 'supervisor-terminal' },
+    });
+    await vi.waitFor(() => expect(updateCard.mock.calls.some(([messageId, card]) => (
+      messageId === waitingMessageId && JSON.stringify(card).includes('待续卡已失效')
+    ))).toBe(true));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId: waitingMessageId,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_waiting_resume',
+        value: { wmux_action: 'waiting_decision', terminal: 'surf-1', decision: 'resume' },
+      },
+      raw: {},
+    });
+    await vi.waitFor(() => expect(send.mock.calls.some(([, payload]) => (
+      JSON.stringify(payload).includes('待续卡已过期或 wmux 已重启')
+    ))).toBe(true));
+    expect(control.mock.calls.some(([command]) => command.action === 'waiting-decision')).toBe(false);
+  });
+
+  it('监督模型限流时通过人工决策单聊主动告警', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+
+    service.onRecord(providerLimitRecord());
+
+    await vi.waitFor(() => {
+      const alertCall = send.mock.calls.find(([chatId, payload]) => (
+        chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('模型请求受限')
+      ));
+      expect(alertCall?.[0]).toBe('oc-dm-configured');
+      expect(JSON.stringify(alertCall?.[1])).toContain('status code 429');
+      expect(JSON.stringify(alertCall?.[1])).toContain('gpt-limited');
+    });
+    await vi.waitFor(() => expect(send.mock.calls.filter(([chatId]) => chatId === 'oc-audit')).toHaveLength(2));
+  });
+
+  it('发送决策卡前读取任务终端核心信息和 AI 原建议', async () => {
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
     const control = vi.fn(async (command: { action: string }) => command.action === 'decision-context'
-      ? { ok: true, recommendation: '保留现有接口并补齐适配层', terminalScreen: 'PS E:\\repo> npm test\nTests 1 failed' }
+      ? { ok: true, recommendation: '保留现有接口并补齐适配层', terminalScreen: '核心结论：测试仍有 1 项失败。' }
       : { ok: true });
     const service = new FeishuSupervisorService(control);
     service.start();
@@ -126,14 +290,15 @@ describe('飞书人工决策单聊路由', () => {
       const approvalCall = send.mock.calls.find(([, payload]) => JSON.stringify(payload).includes('采用 AI 方案'));
       const card = JSON.stringify(approvalCall?.[1]);
       expect(card).toContain('保留现有接口并补齐适配层');
-      expect(card).toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
+      expect(card).toContain('任务终端核心信息');
+      expect(card).toContain('核心结论：测试仍有 1 项失败。');
     });
     expect(control).toHaveBeenCalledWith({
-      action: 'decision-context', approvalId: 'appr-context', terminal: 'surf-1', lines: 40,
+      action: 'decision-context', approvalId: 'appr-context', terminal: 'surf-1', lines: 100,
     }, { openId: 'wmux-system', source: 'system' });
     expect(send.mock.calls
       .filter(([chatId]) => chatId === 'oc-audit')
-      .some(([, payload]) => JSON.stringify(payload).includes('Tests 1 failed'))).toBe(false);
+      .some(([, payload]) => JSON.stringify(payload).includes('核心结论：测试仍有 1 项失败。'))).toBe(false);
   });
 
   it('暂停审批会保留原卡和待决项供继续后处理', async () => {
@@ -193,6 +358,40 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'decide')).toBe(true));
     expect(control.mock.calls.find(([command]) => command.action === 'decide')?.[0]).toEqual({
       action: 'decide', approvalId: 'appr-select', decision: 'approve', selection: '方案 B',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+  });
+
+  it('采用 AI 当前方案时将飞书填写的信息交给监督端整理', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async () => ({
+      ok: true,
+      message: '已将用户决策信息交给 AI 监督；AI 监督将整理后发送到任务终端。',
+    }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    const record = approvalRecord('appr-guidance');
+    service.onRecord({ ...record, payload: { ...record.payload, alternatives: '', recommendation: '' } });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    const approvalCallIndex = send.mock.calls.findIndex(([, payload]) => JSON.stringify(payload).includes('采用 AI 当前方案'));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId: `om-${approvalCallIndex + 1}`,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_decide_approve',
+        value: { wmux_action: 'decide', approval_id: 'appr-guidance', decision: 'approve' },
+      },
+      raw: { action: { form_value: { decision_input: ' 保持现有 API，先补充回归测试 ' } } },
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'decide')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'decide')?.[0]).toEqual({
+      action: 'decide',
+      approvalId: 'appr-guidance',
+      decision: 'approve',
+      task: '保持现有 API，先补充回归测试',
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
   });
@@ -907,9 +1106,27 @@ describe('飞书人工决策单聊路由', () => {
       session: { sessionId: 'sup-1', stopWhen: '完成粗定位验证', autonomous: false },
       pendingApprovals: [],
     });
-    const control = vi.fn(async (command: { action: string }) => command.action === 'send-supervisor-message'
-      ? { ok: true, message: '已向 AI 监督终端（管家）发送监督方向信息。' }
-      : { ok: true, message: listMessage });
+    let supervisorScreenVersion = 0;
+    const control = vi.fn(async (command: { action: string }) => {
+      if (command.action === 'send-supervisor-message') {
+        return { ok: true, message: '已向 AI 监督终端（管家）发送监督方向信息。' };
+      }
+      if (command.action === 'supervisor-screen') {
+        supervisorScreenVersion += 1;
+        return {
+          ok: true,
+          terminal: {
+            surfaceId: 'surf-supervised', label: 'TMC6460', workspace: 'motor-control',
+            activityState: 'working', activityUpdatedAt: Date.now(),
+          },
+          text: `监督终端原始辅助信息-${supervisorScreenVersion}`,
+          answer: `监督终端进度-${supervisorScreenVersion}`,
+          lines: 1,
+          capturedAt: Date.now(),
+        };
+      }
+      return { ok: true, message: listMessage };
+    });
     const service = new FeishuSupervisorService(control);
     service.start();
     handlers.message({
@@ -925,21 +1142,47 @@ describe('飞书人工决策单聊路由', () => {
     const formCard = JSON.stringify(updateCard.mock.calls[0][1]);
     expect(formCard).toContain('AI监督终端（管家） · 负责：TMC6460');
     expect(formCard).toContain('监督方向信息');
+    expect(formCard).toContain('查看终端信息');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { name: 'wmux_form_send_supervisor', value: currentControlValue({ wmux_action: 'form_send_supervisor', nonce: 'submit-supervisor-message' }) },
+      action: { name: 'wmux_form_supervisor_screen', value: currentControlValue({ wmux_action: 'form_supervisor_screen', nonce: 'open-supervisor-screen' }) },
       raw: { action: { form_value: { terminal: 'surf-supervised', message: '先核对项目动态和最新进度，再调整发布方向' } } },
     });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'supervisor-screen', terminal: 'surf-supervised', lines: 100 },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+    const screenCard = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(screenCard).toContain('监督终端进度-1');
+    expect(screenCard).toContain('先核对项目动态和最新进度，再调整发布方向');
+    expect(screenCard).toContain('刷新界面');
+    expect(screenCard).toContain('发送监督信息');
 
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_supervisor_refresh', value: currentControlValue({ wmux_action: 'form_supervisor_refresh', terminal: 'surf-supervised', nonce: 'refresh-supervisor-screen' }) },
+      raw: { action: { form_value: { message: '刷新时保留的草稿' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('监督终端进度-2');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('刷新时保留的草稿');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_supervisor_send', value: currentControlValue({ wmux_action: 'form_supervisor_send', terminal: 'surf-supervised', nonce: 'send-supervisor-message' }) },
+      raw: { action: { form_value: { message: '先核对项目动态和最新进度，再调整发布方向' } } },
+    });
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'send-supervisor-message')).toBe(true));
     expect(control.mock.calls.find(([command]) => command.action === 'send-supervisor-message')?.[0]).toEqual({
       action: 'send-supervisor-message',
       terminal: 'surf-supervised',
       message: '先核对项目动态和最新进度，再调整发布方向',
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
-    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已向 AI 监督终端（管家）发送监督方向信息');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('已向 AI 监督终端（管家）发送监督方向信息');
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('监督终端进度-3');
   });
 
   it('在白名单单聊的统一卡片中选择、刷新并发送任务', async () => {
@@ -999,8 +1242,8 @@ describe('飞书人工决策单聊路由', () => {
       { action: 'terminal-screen', terminal: 'surf-screen', lines: 100 },
       { openId: 'ou-allowed', source: 'card' },
     );
-    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('你的提问');
-    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('question-1');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('你的提问');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('question-1');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent 回复');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('answer-1');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent回复末尾');
@@ -1033,7 +1276,7 @@ describe('飞书人工决策单聊路由', () => {
       raw: { action: { form_value: { task: '尚未发送的草稿' } } },
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
-    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('question-4');
+    expect(JSON.stringify(updateCard.mock.calls[4][1])).not.toContain('question-4');
     expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('answer-4');
     expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('尚未发送的草稿');
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(0);

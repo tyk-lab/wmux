@@ -87,6 +87,9 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('[用户选择] 方案 B：切换到备选实现');
     expect(briefing).toContain('请先 read-screen 获取任务终端最新状态');
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
+    expect(briefing).toContain('.wmux/tmp/<唯一文件名>.txt');
+    expect(briefing).toContain('--next-file');
+    expect(briefing).toContain('禁止在项目根目录创建监督草稿');
     expect(briefing).toContain('不要把本消息原样转发');
   });
 });

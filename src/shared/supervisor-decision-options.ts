@@ -4,6 +4,8 @@ export interface SupervisorDecisionOption {
   detail: string;
 }
 
+export const SUPERVISOR_NO_DECISION_OPTION = '__wmux_no_decision_option__';
+
 interface DecisionMarker {
   index: number;
   end: number;
