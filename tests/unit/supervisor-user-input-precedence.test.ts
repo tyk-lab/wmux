@@ -93,4 +93,37 @@ describe('supervisor user input precedence', () => {
     });
     expect(useStore.getState().supervisor.log[0]).toMatchObject({ action: '待续恢复' });
   });
+
+  it('resumes a waiting lane when the user submits a new direction in its AI supervisor terminal', () => {
+    const store = useStore.getState();
+    store.rejectPending(store.supervisor.pendingApprovals[0].id);
+    store.updateLane('lane-user', {
+      enabled: true,
+      controlState: 'waiting',
+      stopConfirmed: true,
+      awaitingReview: false,
+      autoDecisionsUsed: 5,
+    });
+
+    expect(handleSupervisorUserSubmit('supervisor-user')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: true,
+      controlState: 'active',
+      stopConfirmed: false,
+      awaitingStopCheck: false,
+      awaitingReview: true,
+      autoDecisionsUsed: 0,
+    });
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '待续恢复',
+      detail: '用户已直接向 AI 监督终端提供新方向，继续监督',
+    });
+  });
+
+  it('does not alter an active lane for ordinary input in its AI supervisor terminal', () => {
+    const before = useStore.getState().supervisor.lanes[0];
+
+    expect(handleSupervisorUserSubmit('supervisor-user')).toBe(false);
+    expect(useStore.getState().supervisor.lanes[0]).toEqual(before);
+  });
 });

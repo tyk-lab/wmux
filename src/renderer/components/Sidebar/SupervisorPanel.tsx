@@ -25,6 +25,7 @@ import {
   formatSupervisorAuditTrail,
   readSupervisorAuditTrail,
 } from '../../supervisor/recording';
+import { announceSupervisorWaitingForDirection } from '../../supervisor/waiting-notification';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
 import {
@@ -860,7 +861,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   </div>
                   {laneControlState === 'waiting' && (
                     <div className="sup-panel__lane-supervisor">
-                      待续中：向任务终端发送新方向可自动恢复；取消配置中的“完成后待续”则正式停止。
+                      待续中：直接在对应 AI 监督终端说明新方案或下一步方向即可自动恢复；向任务终端发送新任务也可恢复，无需重新配置监督。
                     </div>
                   )}
                   {lane.awaitingStopCheck && !lane.stopConfirmed && (
@@ -871,7 +872,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                       <button
                         type="button"
                         className="sup-panel__btn-primary"
-                        onClick={() => confirmStopCondition(lane.id)}
+                        onClick={() => {
+                          confirmStopCondition(lane.id);
+                          announceSupervisorWaitingForDirection(lane, '用户已确认达到停止条件');
+                        }}
                         disabled={!supervisor.active}
                       >
                         已达停止条件

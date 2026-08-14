@@ -158,6 +158,9 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('route-adjustment');
     expect(boundary).toContain('低风险、可逆');
     expect(boundary).toContain('输入框已有未提交文字时，禁止携带 --next');
+    expect(boundary).toContain('.wmux/tmp/<唯一文件名>.txt');
+    expect(boundary).toContain('--next-file');
+    expect(boundary).toContain('禁止在项目根目录');
     expect(boundary).toContain('立即结束当前回合并返回输入提示符');
     expect(boundary).toContain('禁止调用 sleep/wait');
   });
@@ -1073,6 +1076,8 @@ describe('supervisor isolation', () => {
 
     expect(briefing).toContain('首次任务终端上下文恢复（必须先处理）');
     expect(briefing).toContain('--proposal-kind context-recovery');
+    expect(briefing).toContain('--next-file .wmux/tmp/context-recovery-<唯一名>.txt');
+    expect(briefing).not.toContain('--next "<完整恢复指令>"');
     expect(briefing).toContain('主线程和各子线程职责');
     expect(briefing).toContain('用户确认后 wmux 才会把这段原文发送到任务终端');
   });

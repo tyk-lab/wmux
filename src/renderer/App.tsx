@@ -22,7 +22,7 @@ import SupervisorSetupDialog from './components/Supervisor/SupervisorSetupDialog
 import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
-import { initPipeBridge } from './pipe-bridge';
+import { initPipeBridge, readTerminalScreen } from './pipe-bridge';
 import { initSupervisorGenericInputGuard } from './supervisor/generic-input-guard';
 import { useUiTheme } from './hooks/useUiTheme';
 import { useUiMode } from './hooks/useUiMode';
@@ -71,6 +71,10 @@ import {
   resolvePendingApprovalsForManualTask,
 } from './supervisor/user-input-precedence';
 import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
+import {
+  clearSupervisorProviderLimitAlert,
+  reportSupervisorProviderLimit,
+} from './supervisor/provider-limit';
 import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from './store/supervisor-slice';
 import {
@@ -525,9 +529,22 @@ function handleSupervisorHookEvent(event: any): void {
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
   if (!session.active || !surfaceId) return;
 
+  const lifecycle = String(event.event || '');
+  const supervisorLane = session.lanes.find((item) => (
+    dedicatedSupervisorSurfaceId(item) === surfaceId
+    && (supervisorLaneControlState(item) === 'active' || supervisorLaneControlState(item) === 'waiting')
+  ));
+  if (supervisorLane) {
+    if (lifecycle === 'UserPromptSubmit') {
+      clearSupervisorProviderLimitAlert(session, supervisorLane);
+    } else if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Notification') {
+      reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
+    }
+    return;
+  }
+
   const lane = session.lanes.find((item) => item.surfaceId === surfaceId && supervisorLaneControlState(item) === 'active');
   if (!lane || !dedicatedSupervisorSurfaceId(lane)) return;
-  const lifecycle = String(event.event || '');
   const projectDir = resolveSupervisorProjectDir(lane, event.cwd);
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
@@ -1206,6 +1223,12 @@ export default function App() {
           supervisorRuntimeRef.current[lane.id] = blankRuntime();
         }
         const runtime = supervisorRuntimeRef.current[lane.id];
+        const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+        const supervisorState = supervisorSurfaceId ? states[supervisorSurfaceId]?.state || 'unknown' : 'unknown';
+        if (supervisorSurfaceId && supervisorState !== 'working') {
+          const screen = readTerminalScreen(supervisorSurfaceId, 30);
+          if (screen.text) reportSupervisorProviderLimit(session, lane, screen.text);
+        }
         const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
         const hasPending = session.pendingApprovals.some((a) => a.laneId === lane.id);
         const { actions, runtime: nextRt } = tickLane({
