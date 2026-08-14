@@ -81,6 +81,8 @@ const LEGACY_DOT_ENV_KEY_MAP: Record<string, FeishuEnvKey> = {
 };
 
 type FeishuEnvKey = typeof FEISHU_ENV_KEYS[number];
+type FeishuEnvFilePointer = { WMUX_ENV_FILE?: string; WMUX_FEISHU_ENV_FILE?: string };
+export type FeishuDotEnvValues = Partial<Record<FeishuEnvKey, string>> & FeishuEnvFilePointer;
 
 function applyFeishuEnv(target: NodeJS.ProcessEnv, values: Partial<Record<FeishuEnvKey, string>>): void {
   for (const key of FEISHU_ENV_KEYS) {
@@ -88,16 +90,37 @@ function applyFeishuEnv(target: NodeJS.ProcessEnv, values: Partial<Record<Feishu
   }
 }
 
-export function parseFeishuDotEnv(content: string): Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } {
-  const values: Partial<Record<FeishuEnvKey, string>> & { WMUX_FEISHU_ENV_FILE?: string } = {};
+export function resolveFeishuEnvFilePointer(
+  values: FeishuEnvFilePointer = {},
+  env: NodeJS.ProcessEnv = {},
+): string | undefined {
+  return env.WMUX_ENV_FILE?.trim()
+    || env.WMUX_FEISHU_ENV_FILE?.trim()
+    || values.WMUX_ENV_FILE?.trim()
+    || values.WMUX_FEISHU_ENV_FILE?.trim()
+    || undefined;
+}
+
+export function parseFeishuDotEnv(content: string): FeishuDotEnvValues {
+  const values: FeishuDotEnvValues = {};
   for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*(WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE)|FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|GROUP_CHAT_ID|USER_OPEN_ID))\s*=\s*(.*?)\s*$/.exec(rawLine);
+    const match = /^\s*(WMUX_ENV_FILE|WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE)|FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|GROUP_CHAT_ID|USER_OPEN_ID))\s*=\s*(.*?)\s*$/.exec(rawLine);
     if (!match) continue;
     const value = match[2].replace(/^(['"])(.*)\1$/, '$2').trim();
-    const key = LEGACY_DOT_ENV_KEY_MAP[match[1]] || match[1] as FeishuEnvKey | 'WMUX_FEISHU_ENV_FILE';
+    const key = LEGACY_DOT_ENV_KEY_MAP[match[1]] || match[1] as FeishuEnvKey | keyof FeishuEnvFilePointer;
     if (value) values[key] = value;
   }
   return values;
+}
+
+/** Load a pointed-to profile: standard dotenv first, then the label/value scratch format. */
+export function parseReferencedFeishuEnv(content: string): Partial<Record<FeishuEnvKey, string>> {
+  const dotenv = parseFeishuDotEnv(content);
+  const values: Partial<Record<FeishuEnvKey, string>> = {};
+  for (const key of FEISHU_ENV_KEYS) {
+    if (dotenv[key]) values[key] = dotenv[key];
+  }
+  return Object.keys(values).length > 0 ? values : parseLegacyFeishuEnv(content);
 }
 
 /** Supports the label/value scratch file used during the first Feishu setup. */
@@ -146,22 +169,24 @@ export function loadFeishuEnvironment(
     path.join(executableDir, '.env'),
     path.join(appDataDir, '.env'),
   ])];
-  let legacyFile: string | undefined = env.WMUX_FEISHU_ENV_FILE?.trim();
-  let legacyBaseDir = cwd;
+  let referencedFile = resolveFeishuEnvFilePointer({}, env);
+  let referencedBaseDir = cwd;
   for (const envPath of envPaths) {
     const content = readText(envPath);
     if (!content) continue;
     const values = parseFeishuDotEnv(content);
     applyFeishuEnv(env, values);
-    if (!legacyFile && values.WMUX_FEISHU_ENV_FILE) {
-      legacyFile = values.WMUX_FEISHU_ENV_FILE;
-      legacyBaseDir = path.dirname(envPath);
+    if (!referencedFile) {
+      referencedFile = resolveFeishuEnvFilePointer(values);
+      if (referencedFile) referencedBaseDir = path.dirname(envPath);
     }
   }
-  if (!legacyFile) return;
-  const legacyPath = path.isAbsolute(legacyFile) ? legacyFile : path.resolve(legacyBaseDir, legacyFile);
-  const legacyContent = readText(legacyPath);
-  if (legacyContent) applyFeishuEnv(env, parseLegacyFeishuEnv(legacyContent));
+  if (!referencedFile) return;
+  const referencedPath = path.isAbsolute(referencedFile)
+    ? referencedFile
+    : path.resolve(referencedBaseDir, referencedFile);
+  const referencedContent = readText(referencedPath);
+  if (referencedContent) applyFeishuEnv(env, parseReferencedFeishuEnv(referencedContent));
 }
 
 function envConfig(env = process.env): FeishuConfig | null {

@@ -170,7 +170,7 @@ npm run package:exe    # Package only, reuses existing dist/ → release/wmux-<v
 - Pipeline: `scripts/build-package.mjs` wraps `electron-builder-safe.mjs` (clears stale win-unpacked locks before/after compile); config in `electron-builder.json` (`asarUnpack` covers node-pty prebuilds).
 - Output lands in `release/` (setup.exe + blockmap + latest.yml); electron-updater clients consume `latest.yml`.
 - winget manifests live in `winget/` — bump them when shipping a new setup.exe.
-- The builder also persists allowlisted `WMUX_FEISHU_*` values from `.env` for the locally installed app (`syncLocalFeishuConfig()`).
+- The builder also persists allowlisted `WMUX_FEISHU_*` values from the env file selected by `WMUX_ENV_FILE` in `.env` for the locally installed app (`syncLocalFeishuConfig()`).
 
 ---
 

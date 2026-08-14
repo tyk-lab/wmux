@@ -63,11 +63,18 @@ wmux 本地                 → 实际创建监督会话和监督终端
 
 ### 自动读取项目 `.env`（推荐）
 
-wmux 启动时会自动读取项目工作目录、`wmux.exe` 同目录或 `%APPDATA%\wmux\.env`，且不会覆盖启动器已设置的同名环境变量。当前项目根目录已提供一个本机 `.env`，它指向你已填写的 `docs/env.txt`（`App ID`、`App Secret`、`群聊会话 ID`、`用户 ID`）。因此从该项目运行 `npm run dev` 时，无需再手动设置飞书变量。
+wmux 启动时会自动读取项目工作目录、`wmux.exe` 同目录或 `%APPDATA%\wmux\.env`，且不会覆盖启动器已设置的同名环境变量。项目根目录的 `.env` 只负责选择当前生效的配置文件，例如：
 
-执行 `npm run build` 时，会将当前项目 `.env` 中允许的飞书配置项同步到 `%APPDATA%\wmux\.env`，供同一台电脑上的安装版读取；App Secret 不会被打进安装包或 EXE。若把安装包复制到另一台电脑，仍需在目标电脑设置用户环境变量或创建该用户级 `.env`。
+```dotenv
+# 改成 .env.tyk 或 .env.company 后保存；dev 需重启，打包会按该文件同步
+WMUX_ENV_FILE=.env.tyk
+```
 
-这些配置文件都只应保存在本机，且已被 Git 忽略。若改为标准 `.env` 写法，可移除 `WMUX_FEISHU_ENV_FILE` 并填写：
+被选中的文件使用标准 `KEY=VALUE` 写法（也兼容旧的 `FEISHU_*` 键名和 `docs/env.txt` 标签值格式）。因此从该项目运行 `npm run dev` 时，无需再手动设置飞书变量。
+
+执行 `npm run build` 时，会按 `.env` 指定的文件读取允许的飞书配置项，并同步到 `%APPDATA%\wmux\.env`，供同一台电脑上的安装版读取；App Secret 不会被打进安装包或 EXE。若把安装包复制到另一台电脑，仍需在目标电脑设置用户环境变量或创建该用户级 `.env`。
+
+这些配置文件都只应保存在本机，且已被 Git 忽略。若把凭据直接写进根目录 `.env`，可移除 `WMUX_ENV_FILE` 并填写：
 
 ```dotenv
 WMUX_FEISHU_APP_ID=cli_xxx
@@ -79,7 +86,7 @@ WMUX_FEISHU_DECISION_CHAT_ID=oc_xxx
 WMUX_FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy
 ```
 
-修改 `.env` 或 `docs/env.txt` 后，必须完全退出并重新启动 wmux。
+修改 `.env`、被选中的配置文件或 `docs/env.txt` 后，必须完全退出并重新启动 wmux。
 
 ### 当前 PowerShell 会话（推荐用于首次测试）
 

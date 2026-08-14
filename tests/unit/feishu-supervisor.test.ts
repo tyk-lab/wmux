@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
@@ -236,8 +236,14 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
-    expect(parseFeishuDotEnv("WMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_CONTROL_CHAT_ID=oc-control\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
-      WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_CONTROL_CHAT_ID: 'oc-control', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
+    expect(parseFeishuDotEnv("WMUX_ENV_FILE=.env.tyk\nWMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_CONTROL_CHAT_ID=oc-control\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
+      WMUX_ENV_FILE: '.env.tyk', WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_CONTROL_CHAT_ID: 'oc-control', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
+    });
+    expect(resolveFeishuEnvFilePointer({ WMUX_ENV_FILE: '.env.tyk', WMUX_FEISHU_ENV_FILE: 'docs/env.txt' })).toBe('.env.tyk');
+    expect(resolveFeishuEnvFilePointer({ WMUX_FEISHU_ENV_FILE: 'docs/env.txt' })).toBe('docs/env.txt');
+    expect(parseReferencedFeishuEnv('FEISHU_APP_ID=cli-from-dotenv\nFEISHU_APP_SECRET=secret-from-dotenv\nFEISHU_CHAT_ID=oc-direct\nFEISHU_GROUP_CHAT_ID=oc-audit\nFEISHU_USER_OPEN_ID=ou-allowed')).toEqual({
+      WMUX_FEISHU_APP_ID: 'cli-from-dotenv', WMUX_FEISHU_APP_SECRET: 'secret-from-dotenv',
+      WMUX_FEISHU_DECISION_CHAT_ID: 'oc-direct', WMUX_FEISHU_CHAT_ID: 'oc-audit', WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
     });
     expect(parseFeishuDotEnv('FEISHU_APP_ID=cli-test\nFEISHU_APP_SECRET=secret-test\nFEISHU_CHAT_ID=oc-direct\nFEISHU_GROUP_CHAT_ID=oc-audit\nFEISHU_USER_OPEN_ID=ou-allowed')).toEqual({
       WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_APP_SECRET: 'secret-test',
@@ -261,6 +267,33 @@ supervisor_model: k3`)).toEqual({
       expect(env).toMatchObject({
         WMUX_FEISHU_APP_ID: 'cli-from-launcher', WMUX_FEISHU_APP_SECRET: 'secret-from-file',
         WMUX_FEISHU_CHAT_ID: 'oc-audit', WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
+      });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('从 .env 指定的标准 dotenv 配置文件加载飞书值', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-feishu-env-file-'));
+    try {
+      fs.writeFileSync(path.join(directory, '.env'), 'WMUX_ENV_FILE=.env.tyk\n', 'utf8');
+      fs.writeFileSync(path.join(directory, '.env.tyk'), [
+        'FEISHU_APP_ID=cli-from-profile',
+        'FEISHU_APP_SECRET=secret-from-profile',
+        'FEISHU_CHAT_ID=oc-direct',
+        'FEISHU_GROUP_CHAT_ID=oc-audit',
+        'FEISHU_USER_OPEN_ID=ou-allowed',
+      ].join('\n'), 'utf8');
+      const env: NodeJS.ProcessEnv = {};
+
+      loadFeishuEnvironment(env, directory, path.join(directory, 'wmux.exe'), path.join(directory, 'appdata'));
+
+      expect(env).toMatchObject({
+        WMUX_FEISHU_APP_ID: 'cli-from-profile',
+        WMUX_FEISHU_APP_SECRET: 'secret-from-profile',
+        WMUX_FEISHU_DECISION_CHAT_ID: 'oc-direct',
+        WMUX_FEISHU_CHAT_ID: 'oc-audit',
+        WMUX_FEISHU_ALLOWED_OPEN_IDS: 'ou-allowed',
       });
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

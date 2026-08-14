@@ -5,6 +5,8 @@ release-build/
 .vite/
 *.log
 .env
+.env.*
+!.env.example
 *.asar
 
 # Local Netlify folder

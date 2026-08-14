@@ -44,18 +44,24 @@ function syncLocalFeishuConfig() {
     return;
   }
 
-  const { parseFeishuDotEnv, parseLegacyFeishuEnv } = require(path.join(projectRoot, 'dist', 'main', 'feishu-supervisor.js'));
+  const {
+    parseFeishuDotEnv,
+    parseReferencedFeishuEnv,
+    resolveFeishuEnvFilePointer,
+  } = require(path.join(projectRoot, 'dist', 'main', 'feishu-supervisor.js'));
   const parsed = parseFeishuDotEnv(content);
   const values = Object.fromEntries(feishuEnvKeys.flatMap((key) => parsed[key] ? [[key, parsed[key]]] : []));
-  if (parsed.WMUX_FEISHU_ENV_FILE) {
-    const referencedPath = path.isAbsolute(parsed.WMUX_FEISHU_ENV_FILE)
-      ? parsed.WMUX_FEISHU_ENV_FILE
-      : path.resolve(projectRoot, parsed.WMUX_FEISHU_ENV_FILE);
+  const referencedFile = resolveFeishuEnvFilePointer(parsed, process.env);
+  if (referencedFile) {
+    const referencedPath = path.isAbsolute(referencedFile)
+      ? referencedFile
+      : path.resolve(projectRoot, referencedFile);
     try {
-      const legacyValues = parseLegacyFeishuEnv(fs.readFileSync(referencedPath, 'utf8'));
-      for (const [key, value] of Object.entries(legacyValues)) {
+      const referencedValues = parseReferencedFeishuEnv(fs.readFileSync(referencedPath, 'utf8'));
+      for (const [key, value] of Object.entries(referencedValues)) {
         if (!values[key]) values[key] = value;
       }
+      console.log(`[build-package] Using Feishu env file: ${referencedPath}`);
     } catch {
       console.warn(`[build-package] Feishu config reference is unavailable: ${referencedPath}`);
     }
