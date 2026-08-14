@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createFeishuDirectTaskDirectory,
+  resolveExistingFeishuDirectTaskDirectory,
   sanitizeFeishuDirectTaskName,
 } from '../../src/main/feishu-direct-task';
 
@@ -36,5 +37,19 @@ describe('飞书直连终端任务目录', () => {
     expect(first.displayPath).toBe('桌面\\wmux任务\\修复登录页-20260806-090807');
     expect(fs.statSync(first.cwd).isDirectory()).toBe(true);
     expect(fs.statSync(second.cwd).isDirectory()).toBe(true);
+  });
+
+  it('复用已存在的绝对目录且不创建任务子目录', () => {
+    const existing = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-existing-'));
+    temporaryDirectories.push(existing);
+
+    expect(resolveExistingFeishuDirectTaskDirectory(existing, '登录页:修复')).toEqual({
+      cwd: path.resolve(existing),
+      folderName: path.basename(existing),
+      taskName: '登录页-修复',
+      displayPath: path.resolve(existing),
+    });
+    expect(() => resolveExistingFeishuDirectTaskDirectory('relative-path', '任务')).toThrow('绝对路径');
+    expect(() => resolveExistingFeishuDirectTaskDirectory(path.join(existing, 'missing'), '任务')).toThrow();
   });
 });

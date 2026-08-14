@@ -30,7 +30,7 @@ import {
   readSupervisorAuditTrail,
 } from './supervisor-records';
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
-import { createFeishuDirectTaskDirectory } from './feishu-direct-task';
+import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
   PROJECT_MANAGER_TERMINAL_AGENT,
   PROJECT_MANAGER_TERMINAL_CWD,
@@ -93,9 +93,23 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
         displayPath: PROJECT_MANAGER_TERMINAL_CWD,
       };
     } else {
+      const selectedCwd = command.cwd?.trim();
+      let directory: ReturnType<typeof createFeishuDirectTaskDirectory>;
       try {
-        const directory = createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
-        preservedDirectory = directory.displayPath;
+        directory = selectedCwd
+          ? resolveExistingFeishuDirectTaskDirectory(selectedCwd, name)
+          : createFeishuDirectTaskDirectory(app.getPath('desktop'), name);
+        if (!selectedCwd) preservedDirectory = directory.displayPath;
+      } catch (error) {
+        console.warn('[feishu] failed to prepare direct task directory', error);
+        return {
+          ok: false,
+          error: selectedCwd
+            ? '所选终端路径不存在或不是有效的绝对目录，请刷新卡片后重试。'
+            : '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。',
+        };
+      }
+      try {
         if (agent === 'codex') ensureCodexProjectTrusted(directory.cwd);
         forwardedCommand = {
           ...command,
@@ -106,12 +120,12 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
           displayPath: directory.displayPath,
         };
       } catch (error) {
-        console.warn('[feishu] failed to prepare direct task directory', error);
+        console.warn('[feishu] failed to trust direct task directory', error);
         return {
           ok: false,
-          error: preservedDirectory
-            ? `任务目录已创建，但无法写入 Codex 信任配置；已保留目录：${preservedDirectory}`
-            : '无法在桌面创建 wmux 任务目录，请检查目录权限后重试。',
+          error: selectedCwd
+            ? '所选终端路径可用，但无法写入 Codex 信任配置，请检查配置文件权限后重试。'
+            : `任务目录已创建，但无法写入 Codex 信任配置；已保留目录：${preservedDirectory}`,
         };
       }
     }

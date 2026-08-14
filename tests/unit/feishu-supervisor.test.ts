@@ -398,7 +398,7 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
-    const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', supervised: false }];
+    const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspace: '飞书管理', cwd: 'E:\\repo', supervised: false }];
     const menuObject = buildSupervisorControlMenuCard() as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };
     const menu = JSON.stringify(menuObject);
     const activeMenu = JSON.stringify(buildSupervisorControlMenuCard({
@@ -507,8 +507,12 @@ supervisor_model: k3`)).toEqual({
     const createTaskInputs = createTaskForm?.elements?.filter((element) => element.tag === 'input') || [];
     const createTaskSelects = createTaskForm?.elements?.filter((element) => element.tag === 'select_static') || [];
     expect(createTaskInputs).toHaveLength(2);
-    expect(createTaskSelects).toHaveLength(1);
+    expect(createTaskSelects).toHaveLength(2);
     expect(createTaskSelects[0]).toMatchObject({ name: 'agent' });
+    expect(createTaskSelects[1]).toMatchObject({
+      name: 'path_terminal',
+      options: [{ text: { content: 'E:\\repo' }, value: 'surf-a' }],
+    });
     expect(createTaskInputs.every((input) => Number(input.max_length) >= 1 && Number(input.max_length) <= 1000)).toBe(true);
     expect(start).toContain('surf-a');
     expect(laneControl).toContain('pause-lane');
@@ -522,12 +526,39 @@ supervisor_model: k3`)).toEqual({
       activityState: 'working' as const, activityUpdatedAt: Date.now(),
     };
     const selectCard = JSON.stringify(buildTerminalScreenSelectCard([terminal]));
-    const screenCard = JSON.stringify(buildTerminalScreenCard({
+    const screenCardObject = buildTerminalScreenCard({
       terminal,
       text: 'PS E:\\repo> npm test\nTests 1 failed',
       lines: 2,
       capturedAt: Date.now(),
-    }, '尚未发送的草稿'));
+    }, '尚未发送的草稿') as any;
+    const clearedScreenCardObject = buildTerminalScreenCard({
+      terminal,
+      text: 'PS E:\\repo> npm test\nTests 1 failed',
+      lines: 2,
+      capturedAt: Date.now(),
+    }) as any;
+    const conversationCard = JSON.stringify(buildTerminalScreenCard({
+      terminal,
+      text: '终端原始文本',
+      question: '你是什么模型',
+      answer: '我是 Codex。',
+      lines: 8,
+      capturedAt: Date.now(),
+    }));
+    const pendingConversationCard = JSON.stringify(buildTerminalScreenCard({
+      terminal,
+      text: 'Codex 工具执行日志',
+      question: '你是什么模型',
+      answerPending: true,
+      lines: 20,
+      capturedAt: Date.now(),
+    }));
+    const screenCard = JSON.stringify(screenCardObject);
+    const form = screenCardObject.body.elements.find((element: any) => element.tag === 'form');
+    const clearedForm = clearedScreenCardObject.body.elements.find((element: any) => element.tag === 'form');
+    const taskInput = form.elements.find((element: any) => element.name === 'task');
+    const clearedTaskInput = clearedForm.elements.find((element: any) => element.name === 'task');
 
     expect(selectCard).toContain('终端控制');
     expect(selectCard).toContain('select_static');
@@ -555,7 +586,9 @@ supervisor_model: k3`)).toEqual({
     const confirmationCard = JSON.stringify(buildCloseTerminalConfirmationCard(terminal));
 
     expect(selectCard).toContain('查看关闭影响');
-    expect(selectCard).toContain('form_close_terminal');
+    expect(selectCard).toContain('inspect_close_terminal');
+    expect(selectCard).toContain('surf-a');
+    expect(selectCard).not.toContain('select_static');
     expect(confirmationCard).toContain('同时停止对应监督通道');
     expect(confirmationCard).toContain('任务目录和历史审计记录不会删除');
     expect(confirmationCard).toContain('confirm_close_terminal');
@@ -571,6 +604,22 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('wmux_form_create_project_manager');
     expect(card).toContain('surf-a');
     expect(card).toContain('surf-b');
+  });
+
+  it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {
+    const card = JSON.stringify(buildDirectTerminalTaskCard([
+      { surfaceId: 'surf-a', label: '任务 A', workspace: '项目 A', cwd: 'E:\\repo\\', supervised: false },
+      { surfaceId: 'surf-duplicate', label: '任务 A2', workspace: '项目 A2', cwd: 'e:/repo', supervised: false },
+      { surfaceId: 'surf-b', label: '任务 B', workspace: '项目 B', cwd: 'D:\\other', supervised: false },
+      { surfaceId: 'surf-long', label: '任务 C', workspace: '项目 C', cwd: 'C:\\Users\\tyk\\Desktop\\wmux任务\\sd-20260813-222929', supervised: false },
+    ]));
+
+    expect(card).toContain('终端路径（可选）');
+    expect(card).toContain('E:\\\\repo');
+    expect(card).toContain('D:\\\\other');
+    expect(card).toContain('C:\\\\…\\\\sd-20260813-222929');
+    expect(card).not.toContain('Users\\\\tyk\\\\Desktop');
+    expect(card).not.toContain('surf-duplicate');
   });
 
   it('将监督状态和最近日志渲染为适合移动端的只读卡片并脱敏', () => {

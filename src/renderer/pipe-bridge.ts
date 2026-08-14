@@ -586,6 +586,7 @@ interface RemoteTaskTerminalLocation {
   workspaceId: WorkspaceId;
   workspaceTitle: string;
   projectDir?: string;
+  cwd?: string;
   label: string;
   remoteSshControl: boolean;
   surface: SurfaceRef;
@@ -653,6 +654,7 @@ function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; t
       workspaceId: workspace.id,
       workspaceTitle: workspace.title,
       projectDir: workspace.cwd || surface.currentCwd || surface.cwd,
+      cwd: surface.currentCwd || surface.cwd || workspace.cwd,
       label,
       remoteSshControl: !!workspace.sshProfileId,
       surface,
@@ -2055,6 +2057,7 @@ export function initPipeBridge(): void {
             surfaceId: terminal.surfaceId,
             label: terminal.label,
             workspace: terminal.workspaceTitle,
+            cwd: terminal.cwd,
             ...remoteTerminalActivity(terminal.surfaceId),
           })),
           session: state.active || state.paused

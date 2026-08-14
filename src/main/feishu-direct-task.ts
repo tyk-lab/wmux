@@ -60,3 +60,18 @@ export function createFeishuDirectTaskDirectory(
   }
   throw new Error('同名任务目录过多，请稍后重试。');
 }
+
+export function resolveExistingFeishuDirectTaskDirectory(
+  selectedDirectory: string,
+  requestedName: string,
+): FeishuDirectTaskDirectory {
+  if (!path.isAbsolute(selectedDirectory)) throw new Error('所选终端路径不是绝对路径。');
+  const cwd = path.resolve(selectedDirectory);
+  if (!fs.statSync(cwd).isDirectory()) throw new Error('所选终端路径不是目录。');
+  return {
+    cwd,
+    folderName: path.basename(cwd),
+    taskName: sanitizeFeishuDirectTaskName(requestedName),
+    displayPath: cwd,
+  };
+}

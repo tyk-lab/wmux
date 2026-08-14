@@ -271,6 +271,7 @@ interface FeishuListTerminal {
   surfaceId: string;
   label: string;
   workspace: string;
+  cwd?: string;
   supervised: boolean;
   restartable?: boolean;
   supervisionState?: 'active' | 'paused' | 'stopped' | 'none';
@@ -377,6 +378,43 @@ function terminalOptions(terminals: FeishuListTerminal[], showActivity = false):
   });
 }
 
+function compactTerminalPath(cwd: string): string {
+  if (cwd.length <= 32) return cwd;
+  const parsed = path.win32.parse(cwd);
+  const uncServer = /^\\\\([^\\]+)\\/u.exec(parsed.root)?.[1];
+  const root = uncServer ? `\\\\${uncServer}\\` : parsed.root;
+  const leaf = path.win32.basename(cwd);
+  const compactLeaf = leaf.length > 24 ? `${leaf.slice(0, 11)}…${leaf.slice(-12)}` : leaf;
+  return `${root}…\\${compactLeaf}`;
+}
+
+function terminalPathOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const seen = new Set<string>();
+  const candidates = terminals.flatMap((terminal) => {
+    const rawCwd = terminal.cwd?.trim();
+    if (!rawCwd || !path.win32.isAbsolute(rawCwd)) return [];
+    let cwd = path.win32.normalize(rawCwd);
+    if (cwd.length > path.win32.parse(cwd).root.length) cwd = cwd.replace(/\\+$/u, '');
+    const key = cwd.toLowerCase();
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ label: compactTerminalPath(cwd), value: terminal.surfaceId }];
+  });
+  const labelCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const key = candidate.label.toLowerCase();
+    labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
+  }
+  const labelIndexes = new Map<string, number>();
+  return candidates.map((candidate) => {
+    const key = candidate.label.toLowerCase();
+    const index = (labelIndexes.get(key) || 0) + 1;
+    labelIndexes.set(key, index);
+    const label = labelCounts.get(key) === 1 ? candidate.label : `${candidate.label} (${index})`;
+    return { text: { tag: 'plain_text', content: label }, value: candidate.value };
+  });
+}
+
 function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
   return terminals.map((terminal) => ({
     text: {
@@ -389,17 +427,29 @@ function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ tex
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '8';
+export const FEISHU_CONTROL_CARD_VERSION = '12';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
   return `${Date.now().toString(36)}-${controlActionSequence.toString(36)}`;
 }
 
-function cardButton(value: Record<string, string>, text: string, type: 'primary' | 'default' | 'danger' = 'default'): object {
+function nextControlElementIdentity(prefix: string): { elementId: string; nonce: string } {
+  const nonce = nextControlActionNonce();
   return {
-    tag: 'button', text: { tag: 'plain_text', content: text }, type,
-    value: { ...value, wmux_card_version: FEISHU_CONTROL_CARD_VERSION, nonce: nextControlActionNonce() },
+    // Card JSON 2.0 requires a card-unique identifier of at most 20 characters,
+    // containing only letters, digits, and underscores, starting with a letter.
+    elementId: `${prefix}_${nonce.replace(/[^a-z0-9]/giu, '_')}`.slice(0, 20),
+    nonce,
+  };
+}
+
+function cardButton(value: Record<string, string>, text: string, type: 'primary' | 'default' | 'danger' = 'default'): object {
+  const identity = nextControlElementIdentity('btn');
+  return {
+    tag: 'button', element_id: identity.elementId,
+    text: { tag: 'plain_text', content: text }, type,
+    value: { ...value, wmux_card_version: FEISHU_CONTROL_CARD_VERSION, nonce: identity.nonce },
   };
 }
 
@@ -427,13 +477,14 @@ function formButton(
   type: 'primary' | 'default' | 'danger' = 'default',
   value?: Record<string, string>,
 ): object {
+  const identity = nextControlElementIdentity('btn');
   return {
-    tag: 'button', element_id: name, name,
+    tag: 'button', element_id: identity.elementId, name,
     text: { tag: 'plain_text', content: text }, type, action_type: 'form_submit',
     ...(value ? { value: {
       ...value,
       ...(value.wmux_action === 'decide' ? {} : { wmux_card_version: FEISHU_CONTROL_CARD_VERSION }),
-      nonce: nextControlActionNonce(),
+      nonce: identity.nonce,
     } } : {}),
   };
 }
@@ -612,7 +663,9 @@ export function buildSupervisorControlMenuCard(
 }
 
 /** Form displayed after selecting “添加终端任务”. */
-export function buildDirectTerminalTaskCard(supervisedTerminals: FeishuListTerminal[] = []): object {
+export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []): object {
+  const supervisedTerminals = terminals.filter((terminal) => terminal.supervised);
+  const pathOptions = terminalPathOptions(terminals);
   const managerElements = supervisedTerminals.length === 1
     ? [{
         tag: 'column_set', flex_mode: 'none', columns: [{
@@ -631,7 +684,7 @@ export function buildDirectTerminalTaskCard(supervisedTerminals: FeishuListTermi
   return buildFormCard(
     'wmux · 添加 AI 终端任务',
     'blue',
-    '将在桌面“wmux任务”目录中新建独立任务文件夹，打开一个直连 AI 终端，并在终端就绪后自动发送首条任务。默认使用 Codex；该终端默认不受监督，可稍后添加监督。',
+    '默认仍在桌面“wmux任务”目录中新建独立任务文件夹；也可选择当前已有终端的路径，直接在该目录打开新终端。终端就绪后会自动发送首条任务，默认使用 Codex，且默认不受监督。',
     'wmux_create_task_form',
     [
       { tag: 'input', element_id: 'create_task_name', name: 'task_name', required: true, max_length: 100, label: { tag: 'plain_text', content: '任务名称' }, placeholder: { tag: 'plain_text', content: '例如：修复登录页问题' } },
@@ -641,6 +694,11 @@ export function buildDirectTerminalTaskCard(supervisedTerminals: FeishuListTermi
         { text: { tag: 'plain_text', content: 'Kimi' }, value: 'kimi' },
         { text: { tag: 'plain_text', content: 'Grok' }, value: 'grok' },
       ] },
+      { tag: 'markdown', content: '**终端路径（可选）**' },
+      ...(pathOptions.length > 0 ? [{
+        tag: 'select_static', element_id: 'create_task_path', name: 'path_terminal',
+        placeholder: { tag: 'plain_text', content: '不选择：按原规则新建任务目录' }, options: pathOptions,
+      }] : [{ tag: 'markdown', content: '当前没有可复用的终端路径；将按原规则新建任务目录。' }]),
       { tag: 'input', element_id: 'create_task_content', name: 'task', required: true, input_type: 'multiline_text', rows: 6, max_length: 1000, label: { tag: 'plain_text', content: '首条任务' }, placeholder: { tag: 'plain_text', content: '填写要直接发送给 AI 终端的完整任务' } },
       formButton('wmux_form_create_task', '创建并发送', 'primary', { wmux_action: 'form_create_task' }),
     ],
@@ -762,28 +820,43 @@ export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draf
           { tag: 'column', width: 'weighted', weight: 1, elements: [formButton('wmux_form_terminal_send', '发送内容', 'primary', { wmux_action: 'form_terminal_send', terminal: result.terminal.surfaceId })] },
         ],
       },
-    ],
-    [
       ...responsiveButtonRows([
-        cardButton({ wmux_action: 'menu', flow: 'terminal-control' }, '选择其他终端'),
-        cardButton({ wmux_action: 'menu', flow: 'status' }, '返回控制首页'),
+        formButton('wmux_form_terminal_other', '选择其他终端', 'default', { wmux_action: 'menu', flow: 'terminal-control' }),
+        formButton('wmux_form_terminal_home', '返回控制首页', 'default', { wmux_action: 'menu', flow: 'status' }),
       ]),
     ],
   );
 }
 
 export function buildCloseTerminalSelectCard(terminals: FeishuListTerminal[]): object {
-  return buildFormCard(
-    'wmux · 关闭任务终端',
-    'orange',
-    '选择要关闭的任务终端。下一步会展示当前状态和影响，并要求二次确认。不会删除任务目录或历史审计记录。',
-    'wmux_close_terminal_select_form',
-    [
-      { tag: 'select_static', element_id: 'close_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要关闭的终端' }, options: terminalOptions(terminals, true) },
-      formButton('wmux_form_close_terminal', '查看关闭影响', 'danger', { wmux_action: 'form_close_terminal' }),
-    ],
-    controlHomeFooter(),
-  );
+  const visibleTerminals = terminals.slice(0, 10);
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: 'wmux · 关闭任务终端' }, template: 'orange' },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '选择要关闭的任务终端。下一步会展示当前状态和影响，并要求二次确认。不会删除任务目录或历史审计记录。' },
+        ...visibleTerminals.flatMap((terminal, index) => [
+          {
+            tag: 'div',
+            text: {
+              tag: 'plain_text',
+              content: `${terminal.label}\n工作区：${terminal.workspace}\n状态：${terminalActivityText(terminal)}`,
+            },
+          },
+          ...responsiveButtonRows([
+            cardButton({ wmux_action: 'inspect_close_terminal', terminal: terminal.surfaceId }, '查看关闭影响', 'danger'),
+          ]),
+          ...(index < visibleTerminals.length - 1 ? [{ tag: 'hr' }] : []),
+        ]),
+        ...(terminals.length > visibleTerminals.length
+          ? [{ tag: 'div', text: { tag: 'plain_text', content: `另有 ${terminals.length - visibleTerminals.length} 个终端，请先关闭部分终端后刷新。` } }]
+          : []),
+        { tag: 'hr' },
+        ...controlHomeFooter(),
+      ],
+    },
+  };
 }
 
 export function buildCloseTerminalConfirmationCard(terminal: FeishuListTerminal): object {
@@ -1072,6 +1145,7 @@ function parseListResult(value: unknown): FeishuListResult | null {
         surfaceId: terminal.surfaceId,
         label: asText(terminal.label),
         workspace: asText(terminal.workspace),
+        cwd: typeof terminal.cwd === 'string' && terminal.cwd.trim() ? terminal.cwd.trim() : undefined,
         supervised: terminal.supervised === true,
         restartable: terminal.restartable === true,
         supervisionState: ['active', 'paused', 'stopped', 'none'].includes(String(terminal.supervisionState))
@@ -1728,9 +1802,20 @@ export class FeishuSupervisorService {
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
     const value = resolveFeishuCardAction(event.action.value, event.action.name);
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
-        console.info(`[feishu] obsolete control card ignored: version=${value.wmux_card_version || 'missing'}`);
+        console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
+        // Never execute an action from an old schema. Only issue a new control
+        // card in a chat already known to this service; otherwise an allowlisted
+        // user could forward an old card and bootstrap controls in another group.
+        const knownControlChat = this.controlCards.get(event.messageId) === event.chatId
+          || event.chatId === this.config.controlChatId
+          || event.chatId === this.decisionChatId;
+        if (knownControlChat) {
+          await this.sendCurrentControlMenu(event.chatId, event.operator.openId, 'card');
+        } else if (event.chatId !== this.config.chatId) {
+          await this.sendText('该控制卡版本已过期，请在白名单单聊中发送“帮助”打开新版控制卡。', event.chatId);
+        }
         return;
       }
       if (this.controlCards.get(event.messageId) !== event.chatId) return;
@@ -1853,8 +1938,8 @@ export class FeishuSupervisorService {
     if (value.wmux_action === 'form_terminal_send') {
       return this.sendTaskFromControlCard(event, value.terminal || '', form.task || '');
     }
-    if (value.wmux_action === 'form_close_terminal') {
-      const terminal = form.terminal || '';
+    if (value.wmux_action === 'inspect_close_terminal' || value.wmux_action === 'form_close_terminal') {
+      const terminal = value.terminal || form.terminal || '';
       const listResult = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
         .catch(() => null);
       const terminalInfo = parseListResult(listResult)?.terminals.find((item) => item.surfaceId === terminal);
@@ -1889,7 +1974,19 @@ export class FeishuSupervisorService {
         await this.sendText('请填写任务名称和首条任务。', event.chatId);
         return false;
       }
-      const result = await this.control({ action: 'create-task', name, task, agent }, {
+      let cwd: string | undefined;
+      if (form.path_terminal) {
+        const listResult = await this.control({ action: 'list' }, {
+          openId: event.operator.openId,
+          source: 'card',
+        }).catch(() => null);
+        cwd = parseListResult(listResult)?.terminals.find((terminal) => terminal.surfaceId === form.path_terminal)?.cwd;
+        if (!cwd) {
+          await this.sendText('所选终端已关闭或路径不可用，请刷新添加终端任务卡片后重试。', event.chatId);
+          return false;
+        }
+      }
+      const result = await this.control({ action: 'create-task', name, task, agent, ...(cwd ? { cwd } : {}) }, {
         openId: event.operator.openId,
         source: 'card',
       }).catch((err) => ({ error: String(err?.message || err) }));
@@ -2063,7 +2160,12 @@ export class FeishuSupervisorService {
       await this.replaceWithCurrentControlMenu(event, { text: summary(result), success: false });
       return false;
     }
-    await this.showTerminalScreen(event, terminal, '', `✅ ${summary(result)}`);
+    await this.showTerminalScreen(
+      event,
+      terminal,
+      '',
+      `✅ ${summary(result)} AI 回复可能尚未生成，请稍后点击“刷新界面”。`,
+    );
     return true;
   }
 
@@ -2116,8 +2218,7 @@ export class FeishuSupervisorService {
       const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
         .catch(() => null);
       const list = parseListResult(result);
-      const supervised = list?.terminals.filter((terminal) => terminal.supervised) || [];
-      await this.replaceControlCard(event, buildDirectTerminalTaskCard(supervised));
+      await this.replaceControlCard(event, buildDirectTerminalTaskCard(list?.terminals || []));
       return;
     }
     if (flow === 'pause-all' || flow === 'resume-all') {
