@@ -478,6 +478,32 @@ describe('supervisor decision bridge', () => {
     expect(conversation.answer).not.toContain('Worked for');
   });
 
+  it('removes inline terminal glyph artifacts without damaging Grok list formatting', () => {
+    const conversation = terminalConversationExcerpt([
+      '❯ 你有哪些技能',
+      '• commit-gatekeeper：提交、暂存、提交前检查',
+      '文档与办公文件',
+      '• drawio-diagram：仅在你明确说“用画图技能”时画 █ draw.io 图',
+      '■',
+      '• json-canvas / obsidian-markdown：Obsidian 画布、数据库视图 \uFFFC Markdown',
+      '• image：文字图/改图时的提示词与用法 \uE001',
+      '直接说你想做什么，我可以按对应流程做。',
+      'Worked for 23s',
+      'stop  [hooks: 1/1]',
+    ].join('\n'), 'Grok直连 · glyphs', 'idle');
+
+    expect(conversation.answer).toBe([
+      '• commit-gatekeeper：提交、暂存、提交前检查',
+      '文档与办公文件',
+      '• drawio-diagram：仅在你明确说“用画图技能”时画   draw.io 图',
+      '',
+      '• json-canvas / obsidian-markdown：Obsidian 画布、数据库视图   Markdown',
+      '• image：文字图/改图时的提示词与用法',
+      '直接说你想做什么，我可以按对应流程做。',
+    ].join('\n'));
+    expect(conversation.answer).not.toMatch(/[█■\uFFFC\uE001]/u);
+  });
+
   it('keeps the submitted Grok prompt instead of the empty composer and extracts the final reply', () => {
     const conversation = terminalConversationExcerpt([
       '❯ af',
@@ -526,6 +552,49 @@ describe('supervisor decision bridge', () => {
       answer: '我是 Kimi Code CLI 的 AI 助手，由 Moonshot AI 的模型驱动。',
     });
     expect(conversation.answer).not.toContain('The user asks');
+  });
+
+  it('keeps the complete Kimi answer block and removes its auto status bar', () => {
+    const conversation = terminalConversationExcerpt([
+      'Use Kimi K3 with High thinking effort',
+      '✨ 你有哪些技能',
+      '● 用户询问技能列表，需要按系统提示回答。',
+      '... (9 more lines, ctrl+o to expand)',
+      '● 我当前可用的技能分为三个范围：',
+      '',
+      '项目级（Project）',
+      '• coding-standards-provisioner：代码规范配置生成',
+      '• project-progress：维护项目进度文档',
+      '',
+      '内置（Built-in）',
+      '• check-kimi-code-docs：Kimi Code 产品文档问答',
+      '• write-goal：辅助编写 /goal 目标',
+      '',
+      '需要我调用其中某个技能吗？',
+      '> █',
+      'auto  K2.7 Coding thinking  D:\\repo  main [+1487]',
+      'context: 11% (28.1k/256k)',
+    ].join('\n'), 'pwsh.exe', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你有哪些技能',
+      answer: [
+        '我当前可用的技能分为三个范围：',
+        '',
+        '项目级（Project）',
+        '• coding-standards-provisioner：代码规范配置生成',
+        '• project-progress：维护项目进度文档',
+        '',
+        '内置（Built-in）',
+        '• check-kimi-code-docs：Kimi Code 产品文档问答',
+        '• write-goal：辅助编写 /goal 目标',
+        '',
+        '需要我调用其中某个技能吗？',
+      ].join('\n'),
+    });
+    expect(conversation.answer).not.toContain('用户询问');
+    expect(conversation.answer).not.toContain('auto  K2.7');
+    expect(conversation.answer).not.toContain('context:');
   });
 
   it('shows only the Codex question while tools are still running', () => {
@@ -598,6 +667,24 @@ describe('supervisor decision bridge', () => {
       question: '你有哪些技能',
       answer: '我可以协助代码开发、测试、审查和文档处理。',
     });
+  });
+
+  it('uses the latest answered Codex turn instead of an unknown composer suggestion', () => {
+    const conversation = terminalConversationExcerpt([
+      'OpenAI Codex (v0.147.0)',
+      'model: gpt-5.3-codex-spark high',
+      '› 你是什么模型',
+      '⚠ Skill descriptions were shortened to fit the skills context budget.',
+      '• 我是 GPT-5 系列的 Codex（面向代码协作的助手模型）。',
+      '› Run /review on my current changes',
+      'gpt-5.3-codex-spark high · D:\\repo',
+    ].join('\n'), 'Codex直连 · sdf', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我是 GPT-5 系列的 Codex（面向代码协作的助手模型）。',
+    });
+    expect(conversation.answer).not.toContain('/review');
   });
 
   it('keeps long final replies from Codex and Kimi', () => {

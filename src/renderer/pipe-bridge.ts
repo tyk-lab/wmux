@@ -66,6 +66,24 @@ const FEISHU_TERMINAL_SCREEN_MAX_LINES = 18;
 const FEISHU_TERMINAL_QUESTION_MAX_CHARS = 1_000;
 const FEISHU_TERMINAL_ANSWER_MAX_CHARS = 4_000;
 
+function sanitizeTerminalTextLine(line: string): string {
+  return Array.from(line, (character) => {
+    const codePoint = character.codePointAt(0) || 0;
+    const isControl = codePoint <= 0x08
+      || (codePoint >= 0x0b && codePoint <= 0x0c)
+      || (codePoint >= 0x0e && codePoint <= 0x1f)
+      || (codePoint >= 0x7f && codePoint <= 0x9f);
+    const isTerminalGlyph = (codePoint >= 0x2580 && codePoint <= 0x259f)
+      || (codePoint >= 0x25a0 && codePoint <= 0x25a3)
+      || codePoint === 0x25ae
+      || codePoint === 0x25af
+      || codePoint === 0xfffc
+      || codePoint === 0xfffd
+      || (codePoint >= 0xe000 && codePoint <= 0xf8ff);
+    return isControl || isTerminalGlyph ? ' ' : character;
+  }).join('');
+}
+
 export function readTerminalScreen(surfaceId: string, lines = 50): { text?: string; lines?: number; surfaceId?: string; error?: string } {
   const terminal = surfaceTerminalRegistry.get(surfaceId);
   if (!terminal) {
@@ -104,7 +122,7 @@ function isTerminalTuiChromeLine(line: string): boolean {
 }
 
 export function terminalScreenExcerpt(text: string, maxChars = FEISHU_TERMINAL_SCREEN_MAX_CHARS): string {
-  const normalizedLines = text.replace(/\r\n?/g, '\n').split('\n');
+  const normalizedLines = text.replace(/\r\n?/g, '\n').split('\n').map(sanitizeTerminalTextLine);
   const compacted: string[] = [];
   for (const line of normalizedLines) {
     if (isTerminalTuiChromeLine(line)) continue;
@@ -155,7 +173,7 @@ function terminalConversationAgent(label: string, text: string): TerminalConvers
       && /(?:Thought for\b|Worked for\b)/iu.test(text))
     || (/\bWorked for\s+\d/iu.test(text) && /\bstop\s+\[hooks:/iu.test(text))) return 'grok';
   if (/^\s*[✦✧✨]\s+\S/mu.test(text)
-    && /(?:^|\n)\s*(?:yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(text)) return 'kimi';
+    && /(?:^|\n)\s*(?:auto\b.*\bK\d|yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(text)) return 'kimi';
   if (/\bOpenAI Codex\b/iu.test(text)
     || (/^\s*[>❯›]\s+\S/mu.test(text) && /(?:^|\n)\s*gpt-[\w.-]+\b/iu.test(text))) return 'codex';
   return 'generic';
@@ -204,7 +222,7 @@ function terminalQuestionText(line: string, agent: TerminalConversationAgent): s
 function isTerminalConversationFooter(line: string, agent: TerminalConversationAgent): boolean {
   const trimmed = line.trim();
   if (agent === 'grok' && /^(?:Help improve Grok|Off by default\.|Change anytime via settings\.|Read Terms and Privacy Policy\.)/iu.test(trimmed)) return true;
-  if (agent === 'kimi' && /^(?:yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(trimmed)) return true;
+  if (agent === 'kimi' && /^(?:(?:auto|yolo)\b.*\bK\d|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(trimmed)) return true;
   if (agent === 'codex' && /^(?:gpt-[\w.-]+\b|model:|directory:|permissions:|Tip:|MCP startup interrupted)/iu.test(trimmed)) return true;
   return false;
 }
@@ -257,6 +275,32 @@ function codexFinalAnswer(lines: string[]): string {
   return candidate.join('\n').trim();
 }
 
+function codexConversationQuestion(
+  lines: string[],
+  activityState: RemoteTerminalActivityState,
+): { index: number; question: string } | null {
+  const rawPromptIndexes = lines.flatMap((line, index) => (
+    /^\s*[>❯›〉]\s+\S/u.test(line) ? [index] : []
+  ));
+  const candidates = rawPromptIndexes.flatMap((index) => {
+    const question = terminalQuestionText(lines[index], 'codex');
+    return question ? [{ index, question }] : [];
+  });
+  for (let candidateIndex = candidates.length - 1; candidateIndex >= 0; candidateIndex--) {
+    const candidate = candidates[candidateIndex];
+    const nextPromptIndex = rawPromptIndexes.find((index) => index > candidate.index) ?? lines.length;
+    const turnLines = lines.slice(candidate.index + 1, nextPromptIndex);
+    const bulletTexts = turnLines.flatMap((line) => {
+      const bullet = /^\s*[•●]\s+(.+)$/u.exec(line);
+      return bullet?.[1] ? [bullet[1]] : [];
+    });
+    const hasPendingActivity = bulletTexts.some((bullet) => /^Working\b/iu.test(bullet))
+      || (activityState === 'working' && bulletTexts.some(isCodexActivityBlock));
+    if (hasPendingActivity || codexFinalAnswer(turnLines)) return candidate;
+  }
+  return candidates[0] || null;
+}
+
 /** Extract the newest submitted user prompt and final agent response from supported AI TUIs. */
 export function terminalConversationExcerpt(
   text: string,
@@ -266,15 +310,23 @@ export function terminalConversationExcerpt(
   const fallback = terminalScreenExcerpt(text);
   const agent = terminalConversationAgent(terminalLabel, text);
   if (agent === 'generic') return { text: fallback };
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map(sanitizeTerminalTextLine);
   let questionIndex = -1;
   let question = '';
-  const questionSearchEnd = agent === 'grok' ? grokQuestionSearchEnd(lines) : lines.length;
-  for (let index = 0; index < questionSearchEnd; index++) {
-    const candidate = terminalQuestionText(lines[index], agent);
-    if (!candidate) continue;
-    questionIndex = index;
-    question = candidate;
+  if (agent === 'codex') {
+    const candidate = codexConversationQuestion(lines, activityState);
+    if (candidate) {
+      questionIndex = candidate.index;
+      question = candidate.question;
+    }
+  } else {
+    const questionSearchEnd = agent === 'grok' ? grokQuestionSearchEnd(lines) : lines.length;
+    for (let index = 0; index < questionSearchEnd; index++) {
+      const candidate = terminalQuestionText(lines[index], agent);
+      if (!candidate) continue;
+      questionIndex = index;
+      question = candidate;
+    }
   }
   if (questionIndex < 0) return { text: fallback };
 
@@ -304,7 +356,7 @@ export function terminalConversationExcerpt(
     if (latestActivity >= 0) answerLines = answerLines.slice(latestActivity + 1);
   }
   if (agent === 'kimi') {
-    const answerStart = answerLines.reduce((latest, line, index) => /^\s*[●•]\s+\S/u.test(line) ? index : latest, -1);
+    const answerStart = answerLines.reduce((latest, line, index) => /^\s*●\s+\S/u.test(line) ? index : latest, -1);
     answerLines = answerStart >= 0 ? answerLines.slice(answerStart) : [];
   }
   const cleanedAnswerLines: string[] = [];
