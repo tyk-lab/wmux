@@ -39,7 +39,10 @@ describe('supervisor records', () => {
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(records.map((record) => record.terminal.surfaceId)).toEqual(['surf-a', 'surf-b']);
-    expect(fs.readFileSync(path.join(project, '.gitignore'), 'utf8')).toContain('.wmux/supervisor/');
+    const gitIgnore = fs.readFileSync(path.join(project, '.gitignore'), 'utf8');
+    expect(gitIgnore).toContain('.wmux/supervisor/');
+    expect(gitIgnore).toContain('.wmux/tmp/');
+    expect(fs.existsSync(path.join(project, '.wmux', 'tmp'))).toBe(true);
     expect(fs.existsSync(path.join(project, '.wmux', 'supervisor', 'sup-123', 'session.json'))).toBe(true);
   });
 

@@ -7,7 +7,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
-import { isSupervisorDecideHelp, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
+import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -161,19 +161,21 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
   if (!surfaceId || !outcome) throw new Error('--surface and --outcome are required');
+  const nextInput = resolveSupervisorNextInput(args);
 
   const result = await sendV2('supervisor.decide', {
     surfaceId,
     supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
     outcome,
     reason: getFlag(args, '--reason') || '',
-    next: getFlag(args, '--next') || '',
+    next: nextInput.text,
     proposalKind: getFlag(args, '--proposal-kind') || '',
     impact: getFlag(args, '--impact') || '',
     alternatives: getFlag(args, '--alternatives') || '',
     permissionCommand: getFlag(args, '--permission-command') || '',
     permissionResponse: getFlag(args, '--permission-response') || '',
   });
+  cleanupSupervisorNextInput(nextInput, result?.ok !== false);
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
   // are always visible so an agent cannot mistake a rejected write for success.
@@ -857,7 +859,8 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
-                          [--reason <text>] [--next <text>] [--proposal-kind <route-adjustment|route-change|important|context-recovery>]
+                          [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
+                          [--proposal-kind <route-adjustment|route-change|important|context-recovery>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)

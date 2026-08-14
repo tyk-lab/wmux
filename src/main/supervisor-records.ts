@@ -49,7 +49,7 @@ export interface SupervisorRestoreCandidate {
 }
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
-const IGNORE_ENTRY = '.wmux/supervisor/';
+const IGNORE_ENTRIES = ['.wmux/supervisor/', '.wmux/tmp/'] as const;
 const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY_EVENTS = 200;
 const MAX_HISTORY_SESSIONS = 50;
@@ -58,10 +58,12 @@ const RESTORABLE_EVENT_TYPES = new Set(['worker.task', 'worker.lifecycle', 'supe
 function ensureGitIgnore(projectDir: string): void {
   const gitIgnorePath = path.join(projectDir, '.gitignore');
   const current = fs.existsSync(gitIgnorePath) ? fs.readFileSync(gitIgnorePath, 'utf8') : '';
-  if (current.split(/\r?\n/).some((line) => line.trim() === IGNORE_ENTRY)) return;
+  const existing = new Set(current.split(/\r?\n/).map((line) => line.trim()));
+  const missing = IGNORE_ENTRIES.filter((entry) => !existing.has(entry));
+  if (missing.length === 0) return;
 
   const prefix = current && !current.endsWith('\n') ? '\n' : '';
-  fs.writeFileSync(gitIgnorePath, `${current}${prefix}${IGNORE_ENTRY}\n`, 'utf8');
+  fs.writeFileSync(gitIgnorePath, `${current}${prefix}${missing.join('\n')}\n`, 'utf8');
 }
 
 /** Append a compact, line-delimited audit entry to the monitored project. */
@@ -71,6 +73,7 @@ export function appendSupervisorRecord(record: SupervisorRecord): { path: string
   if (!record.terminal.surfaceId) throw new Error('surfaceId is required');
 
   ensureGitIgnore(record.projectDir);
+  fs.mkdirSync(path.join(record.projectDir, '.wmux', 'tmp'), { recursive: true });
   const directory = path.join(record.projectDir, '.wmux', 'supervisor', record.sessionId);
   fs.mkdirSync(directory, { recursive: true });
 
