@@ -119,6 +119,23 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledWith('worker-a', '确认后继续执行');
   });
 
+  it('identifies a manually created agent terminal from its screen content', () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-control' as any,
+      title: 'sdf',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-control' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe' }],
+      },
+    }]);
+    screenText = '> OpenAI Codex (v0.147.0)\n> 你是什么模型\n• 我是 Codex。';
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    const result = remoteControl({ action: 'list' });
+    const listed = JSON.parse(result.message).terminals[0];
+    expect(listed).toMatchObject({ label: 'Codex', workspace: 'sdf' });
+  });
+
   it('sends Feishu direction information only to the active dedicated supervisor terminal', () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-control' as any,
@@ -790,7 +807,7 @@ describe('supervisor decision bridge', () => {
     }
   });
 
-  it('creates one fixed Grok project management terminal and invokes its progress skill first', () => {
+  it('creates one fixed Grok project management terminal beside an unsupervised task terminal', () => {
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
     useStore.getState().replaceAllWorkspaces([{
       title: '被监督项目',
@@ -810,7 +827,7 @@ describe('supervisor decision bridge', () => {
       agent: 'grok',
       preset: 'project-manager',
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
-      anchorTerminal: 'worker-a',
+      anchorTerminal: 'worker-neighbor',
     };
 
     expect(remoteControl({ ...command, cwd: 'E:\\wrong-project' })).toMatchObject({
@@ -818,11 +835,6 @@ describe('supervisor decision bridge', () => {
       error: '项目管理终端启动配置无效。',
     });
     expect(useStore.getState().workspaces).toHaveLength(1);
-    expect(remoteControl({ ...command, anchorTerminal: 'worker-neighbor' })).toMatchObject({
-      ok: false,
-      error: '项目管理终端锚点必须是当前被监督的任务终端。',
-    });
-
     expect(remoteControl(command)).toMatchObject({ ok: true, message: expect.stringContaining('项目管理终端') });
     const workspace = useStore.getState().workspaces[0];
     const leaf = workspace.splitTree.type === 'leaf' ? workspace.splitTree : undefined;

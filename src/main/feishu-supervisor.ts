@@ -398,14 +398,32 @@ function terminalActivityText(terminal: FeishuListTerminal): string {
 }
 
 function terminalOptions(terminals: FeishuListTerminal[], showActivity = false): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const labelCounts = new Map<string, number>();
+  for (const terminal of terminals) {
+    const key = `${terminal.workspace}\0${terminal.label}`;
+    labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
+  }
+  const labelOrdinals = new Map<string, number>();
+
   return terminals.map((terminal) => {
+    const key = `${terminal.workspace}\0${terminal.label}`;
+    const ordinal = (labelOrdinals.get(key) || 0) + 1;
+    labelOrdinals.set(key, ordinal);
+    const duplicateSuffix = (labelCounts.get(key) || 0) > 1 ? ` #${ordinal}` : '';
     const supervisorContext = terminal.supervisionState === 'paused'
       ? '（AI管家已暂停）'
       : terminal.supervised
         ? '（AI管家监督中）'
         : terminal.restartable ? '（AI管家已停止，可重新监督）' : '';
+    const workspaceSuffix = terminal.workspace
+      && !terminal.label.toLocaleLowerCase().endsWith(` · ${terminal.workspace}`.toLocaleLowerCase())
+      ? ` · ${terminal.workspace}`
+      : '';
     return {
-      text: { tag: 'plain_text', content: `${terminal.workspace}${supervisorContext}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''} · ${terminal.label}`.slice(0, 100) },
+      text: {
+        tag: 'plain_text',
+        content: `${terminal.label}${duplicateSuffix}${supervisorContext}${workspaceSuffix}${showActivity ? ` · ${terminalActivityText(terminal)}` : ''}`.slice(0, 100),
+      },
       value: terminal.surfaceId,
     };
   });
@@ -699,23 +717,22 @@ export function buildSupervisorControlMenuCard(
 
 /** Form displayed after selecting “添加终端任务”. */
 export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []): object {
-  const supervisedTerminals = terminals.filter((terminal) => terminal.supervised);
   const pathOptions = terminalPathOptions(terminals);
-  const managerElements = supervisedTerminals.length === 1
+  const managerElements = terminals.length === 1
     ? [{
         tag: 'column_set', flex_mode: 'none', columns: [{
           tag: 'column', width: 'auto',
-          elements: [cardButton({ wmux_action: 'create_project_manager', terminal: supervisedTerminals[0].surfaceId }, '创建项目管理终端', 'primary')],
+          elements: [cardButton({ wmux_action: 'create_project_manager', terminal: terminals[0].surfaceId }, '创建项目管理终端', 'primary')],
         }],
       }]
-    : supervisedTerminals.length > 1
+    : terminals.length > 1
       ? [{
           tag: 'form', name: 'wmux_project_manager_anchor_form', elements: [
-            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择项目管理终端所在窗格' }, options: terminalOptions(supervisedTerminals) },
+            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择项目管理终端所在窗格' }, options: terminalOptions(terminals) },
             formButton('wmux_form_create_project_manager', '在所选窗格创建', 'primary', { wmux_action: 'form_create_project_manager' }),
           ],
         }]
-      : [{ tag: 'markdown', content: '当前没有被监督的任务终端；请先启动至少一条监督通道，再创建项目管理终端。' }];
+      : [{ tag: 'markdown', content: '当前没有任务终端；请先在 wmux 中创建一个终端，再创建项目管理终端。' }];
   return buildFormCard(
     'wmux · 添加 AI 终端任务',
     'blue',
@@ -739,7 +756,7 @@ export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []
     ],
     controlHomeFooter(),
     [
-      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在被监督任务终端所在窗格打开 Grok，并首先运行 `/inspect-project-progress`。' },
+      { tag: 'markdown', content: '**特殊终端**\n项目管理终端将在所选任务终端所在窗格打开 Grok，并首先运行 `/inspect-project-progress`。' },
       ...managerElements,
       { tag: 'hr' },
       { tag: 'markdown', content: '**普通终端任务**' },
@@ -1975,7 +1992,7 @@ export class FeishuSupervisorService {
     if (value.wmux_action === 'create_project_manager' || value.wmux_action === 'form_create_project_manager') {
       const anchorTerminal = value.terminal || form.terminal || '';
       if (!anchorTerminal) {
-        await this.sendText('请先选择项目管理终端所在的被监督任务终端。', event.chatId);
+        await this.sendText('请先选择项目管理终端所在的任务终端。', event.chatId);
         return false;
       }
       const result = await this.control({

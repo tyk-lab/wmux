@@ -664,10 +664,10 @@ supervisor_model: k3`)).toEqual({
     expect(confirmationCard).toContain('confirm_close_terminal');
   });
 
-  it('多条监督通道时要求选择项目管理终端锚点', () => {
+  it('多条任务终端时允许从未监督终端中选择项目管理终端锚点', () => {
     const card = JSON.stringify(buildDirectTerminalTaskCard([
       { surfaceId: 'surf-a', label: '任务 A', workspace: '项目', supervised: true, supervisionState: 'active' },
-      { surfaceId: 'surf-b', label: '任务 B', workspace: '项目', supervised: true, supervisionState: 'paused' },
+      { surfaceId: 'surf-b', label: '任务 B', workspace: '项目', supervised: false },
     ]));
 
     expect(card).toContain('project_manager_anchor');
@@ -677,19 +677,23 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {
-    const card = JSON.stringify(buildDirectTerminalTaskCard([
+    const cardObject = buildDirectTerminalTaskCard([
       { surfaceId: 'surf-a', label: '任务 A', workspace: '项目 A', cwd: 'E:\\repo\\', supervised: false },
       { surfaceId: 'surf-duplicate', label: '任务 A2', workspace: '项目 A2', cwd: 'e:/repo', supervised: false },
       { surfaceId: 'surf-b', label: '任务 B', workspace: '项目 B', cwd: 'D:\\other', supervised: false },
       { surfaceId: 'surf-long', label: '任务 C', workspace: '项目 C', cwd: 'C:\\Users\\tyk\\Desktop\\wmux任务\\sd-20260813-222929', supervised: false },
-    ]));
+    ]) as any;
+    const card = JSON.stringify(cardObject);
+    const taskForm = cardObject.body.elements.find((element: any) => element.name === 'wmux_create_task_form');
+    const pathSelect = taskForm.elements.find((element: any) => element.name === 'path_terminal');
+    const serializedPathOptions = JSON.stringify(pathSelect.options);
 
     expect(card).toContain('终端路径（可选）');
-    expect(card).toContain('E:\\\\repo');
-    expect(card).toContain('D:\\\\other');
-    expect(card).toContain('C:\\\\…\\\\sd-20260813-222929');
-    expect(card).not.toContain('Users\\\\tyk\\\\Desktop');
-    expect(card).not.toContain('surf-duplicate');
+    expect(serializedPathOptions).toContain('E:\\\\repo');
+    expect(serializedPathOptions).toContain('D:\\\\other');
+    expect(serializedPathOptions).toContain('C:\\\\…\\\\sd-20260813-222929');
+    expect(serializedPathOptions).not.toContain('Users\\\\tyk\\\\Desktop');
+    expect(serializedPathOptions).not.toContain('surf-duplicate');
   });
 
   it('将监督状态和最近日志渲染为适合移动端的只读卡片并脱敏', () => {
@@ -772,9 +776,22 @@ supervisor_model: k3`)).toEqual({
       expect(card).toContain('未知');
       expect(card).toContain('刚刚');
     }
-    expect(sendCard).toContain('代码（AI管家监督中） · 空闲 · 刚刚 · Codex');
+    expect(sendCard).toContain('Codex（AI管家监督中） · 代码 · 空闲 · 刚刚');
     expect(supervisorCard).toContain('AI监督终端（管家） · 负责：Codex · 监督中 · 任务端：空闲');
     expect(managementCard).toContain('AI监督终端（管家） · 负责：Codex');
+  });
+
+  it('优先显示终端名并为同一工作区的同名终端编号', () => {
+    const card = JSON.stringify(buildTerminalScreenSelectCard([
+      { surfaceId: 'surf-a', label: 'pwsh.exe', workspace: 'sdf', supervised: false, activityState: 'idle' as const },
+      { surfaceId: 'surf-b', label: 'pwsh.exe', workspace: 'sdf', supervised: false, activityState: 'idle' as const },
+      { surfaceId: 'surf-c', label: 'Codex直连 · sdf', workspace: 'sdf', supervised: false, activityState: 'idle' as const },
+    ]));
+
+    expect(card).toContain('pwsh.exe #1 · sdf · 空闲');
+    expect(card).toContain('pwsh.exe #2 · sdf · 空闲');
+    expect(card).toContain('Codex直连 · sdf · 空闲');
+    expect(card).not.toContain('Codex直连 · sdf · sdf');
   });
 
   it('忙碌确认卡不携带任务正文', () => {

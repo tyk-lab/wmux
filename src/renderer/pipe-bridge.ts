@@ -179,6 +179,26 @@ function terminalConversationAgent(label: string, text: string): TerminalConvers
   return 'generic';
 }
 
+const REMOTE_TERMINAL_AGENT_LABELS: Record<Exclude<TerminalConversationAgent, 'generic'>, string> = {
+  codex: 'Codex',
+  kimi: 'Kimi',
+  grok: 'Grok',
+};
+
+function remoteTerminalLabel(surface: SurfaceRef): string {
+  const customTitle = surface.customTitle?.trim();
+  if (customTitle) return customTitle;
+
+  const agentLabel = useStore.getState().agentMeta.get(surface.id)?.label?.trim();
+  if (agentLabel) return agentLabel;
+
+  const screen = readTerminalScreen(surface.id, 40).text || '';
+  const agent = terminalConversationAgent(surface.shell || '', screen);
+  if (agent !== 'generic') return REMOTE_TERMINAL_AGENT_LABELS[agent];
+
+  return surface.shell || 'terminal';
+}
+
 function isCodexComposerSuggestion(question: string): boolean {
   return /^Ask Codex\b/iu.test(question)
     || /^(?:Find and fix a bug in|Improve documentation in)\s+@filename$/iu.test(question)
@@ -912,7 +932,7 @@ function collectRemoteTerminals(tree: SplitNode, workspace: { id: WorkspaceId; t
   }
   for (const surface of tree.surfaces) {
     if (surface.type !== 'terminal') continue;
-    const label = surface.customTitle?.trim() || surface.shell || 'terminal';
+    const label = remoteTerminalLabel(surface);
     if (label.startsWith(SUPERVISOR_TAB_TITLE) || label === 'AI Supervisor') continue;
     out.push({
       surfaceId: surface.id,
@@ -987,11 +1007,6 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
 
     const anchor = locateRemoteTaskTerminal(String(params.anchorTerminal || ''));
     if (!anchor.terminal) return { ok: false, error: `无法定位项目管理终端锚点：${anchor.error}`, message: '' };
-    const supervisor = useStore.getState().supervisor;
-    const anchorLane = supervisor.lanes.find((lane) => lane.surfaceId === anchor.terminal?.surfaceId);
-    if (!anchorLane || supervisorLaneControlState(anchorLane) === 'stopped' || (!supervisor.active && !supervisor.paused)) {
-      return { ok: false, error: '项目管理终端锚点必须是当前被监督的任务终端。', message: '' };
-    }
     const launch = buildInteractiveAgentLaunch('grok', task);
     const surfaceId = useStore.getState().addSurface(anchor.terminal.workspaceId, anchor.terminal.paneId, 'terminal', {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,

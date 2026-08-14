@@ -641,12 +641,16 @@ describe('飞书人工决策单聊路由', () => {
       action: { value: currentControlValue({ wmux_action: 'menu', flow: 'create-task', nonce: 'open-create' }) }, raw: {},
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
-    const createCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    const createCardObject = updateCard.mock.calls[0][1] as any;
+    const createCard = JSON.stringify(createCardObject);
+    const taskForm = createCardObject.body.elements.find((element: any) => element.name === 'wmux_create_task_form');
+    const pathSelect = taskForm.elements.find((element: any) => element.name === 'path_terminal');
+    const serializedPathOptions = JSON.stringify(pathSelect.options);
     expect(createCard).toContain('添加 AI 终端任务');
     expect(createCard).toContain('Codex（默认）');
-    expect(createCard).toContain('E:\\\\repo');
-    expect(createCard).toContain('D:\\\\other');
-    expect(createCard).not.toContain('surf-duplicate');
+    expect(serializedPathOptions).toContain('E:\\\\repo');
+    expect(serializedPathOptions).toContain('D:\\\\other');
+    expect(serializedPathOptions).not.toContain('surf-duplicate');
     expect(control).toHaveBeenCalledTimes(2);
 
     const formNonce = /"wmux_action":"form_create_task"[^}]*"nonce":"([^"]+)"/.exec(createCard)?.[1];
