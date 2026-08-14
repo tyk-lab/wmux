@@ -58,37 +58,19 @@ import {
   supervisorLauncherDisplayName,
   type SupervisorLauncherKind,
 } from '../../supervisor/launch-command';
+import {
+  addCustomSupervisorModel,
+  hiddenBuiltinModelOptions,
+  modelOptionsFor,
+  removeSupervisorModel,
+  restoreBuiltinSupervisorModel,
+  supervisorModelCatalogScope,
+  type SupervisorModelCatalog,
+} from '../../supervisor/model-catalog';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
-const CODEX_MODEL_OPTIONS = [
-  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
-  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
-  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
-];
-const KIMI_MODEL_OPTIONS = [
-  { value: 'k3', label: 'Kimi K3（长上下文）' },
-  { value: 'k3-256k', label: 'Kimi K3 · 256k' },
-  { value: 'kimi-for-coding', label: 'Kimi K2.7 Code' },
-  { value: 'kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
-];
-const GROK_MODEL_OPTIONS = [
-  { value: 'grok-build', label: 'Grok Build（推荐）' },
-  { value: 'grok-4.5', label: 'Grok 4.5' },
-];
-const PI_MODEL_OPTIONS = [
-  { value: 'openai-codex/gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
-  { value: 'openai-codex/gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
-  { value: 'openai-codex/gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
-  { value: 'kimi-coding/k3', label: 'Kimi K3（长上下文）' },
-  { value: 'kimi-coding/k3-256k', label: 'Kimi K3 · 256k' },
-  { value: 'kimi-coding/kimi-for-coding', label: 'Kimi K2.7 Code' },
-  { value: 'kimi-coding/kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
-  { value: 'xai/grok-4.3', label: 'Grok 4.3' },
-  { value: 'xai/grok-4.5', label: 'Grok 4.5' },
-  { value: 'xai/grok-build-0.1', label: 'Grok Build 0.1' },
-];
 const SUPERVISOR_LAUNCH_OPTIONS = [
   { value: 'pi', label: 'Pi Agent（推荐）' },
   { value: 'codex', label: 'Codex' },
@@ -146,16 +128,12 @@ function knownOptionValue(value: string, options: Array<{ value: string }>, fall
   return options.some((option) => option.value === value.trim()) ? value.trim() : fallback;
 }
 
-function modelOptionsFor(launcher: SupervisorLauncherKind): Array<{ value: string; label: string }> {
-  if (launcher === 'codex') return CODEX_MODEL_OPTIONS;
-  if (launcher === 'kimi') return KIMI_MODEL_OPTIONS;
-  if (launcher === 'grok') return GROK_MODEL_OPTIONS;
-  if (launcher === 'pi') return PI_MODEL_OPTIONS;
-  return [];
-}
-
-function modelChoiceFor(launcher: SupervisorLauncherKind, model: string): string {
-  const options = modelOptionsFor(launcher);
+function modelChoiceFor(
+  launcher: SupervisorLauncherKind,
+  model: string,
+  catalog?: SupervisorModelCatalog,
+): string {
+  const options = modelOptionsFor(launcher, catalog);
   return model ? knownOptionValue(model, options) : DEFAULT_MODEL_OPTION;
 }
 
@@ -240,6 +218,7 @@ export default function SupervisorSetupDialog() {
   const setupOpen = useStore((s) => s.supervisor.setupOpen);
   const supervisor = useStore((s) => s.supervisor);
   const workspaces = useStore((s) => s.workspaces);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const agentMeta = useStore((s) => s.agentMeta);
   const closeSupervisorSetup = useStore((s) => s.closeSupervisorSetup);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
@@ -250,6 +229,7 @@ export default function SupervisorSetupDialog() {
   const defaultSupervisorReasoningEfforts = useStore(
     (s) => s.workspacePrefs.defaultSupervisorReasoningEfforts,
   );
+  const supervisorModelCatalogs = useStore((s) => s.workspacePrefs.supervisorModelCatalogs);
   const setWorkspacePrefs = useStore((s) => s.setWorkspacePrefs);
   const stopSupervisor = useStore((s) => s.stopSupervisor);
   const addSurface = useStore((s) => s.addSurface);
@@ -258,7 +238,12 @@ export default function SupervisorSetupDialog() {
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const dialogRef = useRef<HTMLDivElement>(null);
   const lastFocusedFieldRef = useRef<HTMLElement | null>(null);
+  const modelValidationRequestRef = useRef(0);
+  const modelDiscoveryRequestRef = useRef(0);
   const sessionRetained = supervisor.active || supervisor.paused;
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
+  const modelCatalogScope = supervisorModelCatalogScope(activeWorkspace?.cwd, activeWorkspaceId || undefined);
+  const modelCatalog = supervisorModelCatalogs[modelCatalogScope] || {};
   let primaryActionLabel = '启动 AI 监督';
   if (supervisor.active) primaryActionLabel = '应用并继续监督';
   else if (supervisor.paused) primaryActionLabel = '应用并返回监督会话';
@@ -324,8 +309,26 @@ export default function SupervisorSetupDialog() {
     knownOptionValue(supervisor.supervisorLaunchCmd, SUPERVISOR_LAUNCH_OPTIONS),
   );
   const [modelChoice, setModelChoice] = useState(
-    modelChoiceFor(detectSupervisorLauncher(supervisor.supervisorLaunchCmd), supervisor.supervisorModel),
+    modelChoiceFor(
+      detectSupervisorLauncher(supervisor.supervisorLaunchCmd),
+      supervisor.supervisorModel,
+      modelCatalog,
+    ),
   );
+  const [modelManagerOpen, setModelManagerOpen] = useState(false);
+  const [newModelId, setNewModelId] = useState('');
+  const [modelValidation, setModelValidation] = useState<{
+    state: 'idle' | 'validating' | 'success' | 'error';
+    model: string;
+    message: string;
+  }>({ state: 'idle', model: '', message: '' });
+  const [modelDiscovery, setModelDiscovery] = useState<{
+    state: 'idle' | 'loading' | 'success' | 'error';
+    models: string[];
+    source: string;
+    limited: boolean;
+    message: string;
+  }>({ state: 'idle', models: [], source: '', limited: false, message: '' });
   const [reasoningEffort, setReasoningEffort] = useState(supervisor.supervisorReasoningEffort || '');
   const [maxAutoDecisions, setMaxAutoDecisions] = useState(
     supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '',
@@ -358,7 +361,14 @@ export default function SupervisorSetupDialog() {
     setModelChoice(modelChoiceFor(
       detectSupervisorLauncher(supervisor.supervisorLaunchCmd),
       supervisor.supervisorModel,
+      modelCatalog,
     ));
+    setModelManagerOpen(false);
+    setNewModelId('');
+    modelValidationRequestRef.current += 1;
+    modelDiscoveryRequestRef.current += 1;
+    setModelValidation({ state: 'idle', model: '', message: '' });
+    setModelDiscovery({ state: 'idle', models: [], source: '', limited: false, message: '' });
     setReasoningEffort(supervisor.supervisorReasoningEffort || '');
     setMaxAutoDecisions(supervisor.maxAutoDecisions ? String(supervisor.maxAutoDecisions) : '');
     setAutonomous(supervisor.autonomous === true);
@@ -431,7 +441,9 @@ export default function SupervisorSetupDialog() {
   const launcherKind = useMemo(() => detectSupervisorLauncher(
     launchChoice === CUSTOM_OPTION ? launchCmd : launchChoice,
   ), [launchChoice, launchCmd]);
-  const launcherModelOptions = modelOptionsFor(launcherKind);
+  const launcherModelOptions = modelOptionsFor(launcherKind, modelCatalog);
+  const hiddenModelOptions = hiddenBuiltinModelOptions(launcherKind, modelCatalog);
+  const modelValidationPending = modelValidation.state === 'validating';
   const selectedDefaultAgent = launchChoice === ''
     ? 'none'
     : SUPERVISOR_LAUNCH_OPTIONS.some((option) => option.value === launchChoice)
@@ -468,7 +480,115 @@ export default function SupervisorSetupDialog() {
     });
   };
 
+  const saveModelCatalog = (nextCatalog: SupervisorModelCatalog) => {
+    setWorkspacePrefs({
+      supervisorModelCatalogs: {
+        ...supervisorModelCatalogs,
+        [modelCatalogScope]: nextCatalog,
+      },
+    });
+  };
+
+  const discoverModels = async () => {
+    if (launcherKind === 'other') return;
+    const requestId = ++modelDiscoveryRequestRef.current;
+    setModelDiscovery({ state: 'loading', models: [], source: '', limited: false, message: '正在获取模型目录…' });
+    try {
+      const result = await window.wmux.supervisor.listModels({
+        launcher: launcherKind,
+        cwd: activeWorkspace?.cwd,
+      });
+      if (requestId !== modelDiscoveryRequestRef.current) return;
+      if (!result?.ok || !Array.isArray(result.models) || result.models.length === 0) {
+        setModelDiscovery({
+          state: 'error', models: [], source: '', limited: false,
+          message: result?.error || '没有获取到支持的模型。',
+        });
+        return;
+      }
+      setModelDiscovery({
+        state: 'success',
+        models: result.models,
+        source: result.source || 'Agent 模型目录',
+        limited: result.limited === true,
+        message: '',
+      });
+      setNewModelId(result.models.find((model: string) => (
+        !launcherModelOptions.some((option) => option.value === model)
+      )) || result.models[0]);
+    } catch (error: any) {
+      if (requestId !== modelDiscoveryRequestRef.current) return;
+      setModelDiscovery({
+        state: 'error', models: [], source: '', limited: false,
+        message: error?.message || '获取模型目录失败。',
+      });
+    }
+  };
+
+  const validateModel = async (model: string): Promise<boolean> => {
+    if (launcherKind === 'other') {
+      setModelValidation({ state: 'error', model, message: '该启动器暂不支持自动验证。' });
+      return false;
+    }
+    const requestId = ++modelValidationRequestRef.current;
+    const displayModel = model.trim() || `${supervisorLauncherDisplayName(launcherKind)} 默认模型`;
+    setModelValidation({ state: 'validating', model, message: `正在验证 ${displayModel}…` });
+    try {
+      const result = await window.wmux.supervisor.validateModel({
+        launcher: launcherKind,
+        model: model.trim(),
+        cwd: activeWorkspace?.cwd,
+      });
+      if (requestId !== modelValidationRequestRef.current) return false;
+      if (result?.ok) {
+        setModelValidation({ state: 'success', model, message: `${displayModel} 验证通过。` });
+        return true;
+      }
+      setModelValidation({ state: 'error', model, message: result?.error || '模型验证失败。' });
+      return false;
+    } catch (error: any) {
+      if (requestId !== modelValidationRequestRef.current) return false;
+      setModelValidation({ state: 'error', model, message: error?.message || '模型验证失败。' });
+      return false;
+    }
+  };
+
+  const addModel = async () => {
+    const model = newModelId.trim();
+    if (!model) {
+      setModelValidation({ state: 'error', model: '', message: '请先填写模型 ID。' });
+      return;
+    }
+    if (launcherKind === 'other' || !(await validateModel(model))) return;
+    saveModelCatalog(addCustomSupervisorModel(modelCatalog, launcherKind, model));
+    setNewModelId('');
+    setSupervisorModel(model);
+    setModelChoice(model);
+  };
+
+  const removeModel = (model: string) => {
+    if (launcherKind === 'other') return;
+    saveModelCatalog(removeSupervisorModel(modelCatalog, launcherKind, model));
+    if (selectedDefaultAgent && defaultSupervisorModels[selectedDefaultAgent] === model) {
+      setWorkspacePrefs({
+        defaultSupervisorModels: { ...defaultSupervisorModels, [selectedDefaultAgent]: '' },
+      });
+    }
+    if (!sessionRetained && supervisorModel === model) {
+      setSupervisorModel('');
+      setModelChoice(DEFAULT_MODEL_OPTION);
+    }
+    setModelValidation({ state: 'idle', model: '', message: '' });
+  };
+
+  const restoreModel = (model: string) => {
+    if (launcherKind === 'other') return;
+    saveModelCatalog(restoreBuiltinSupervisorModel(modelCatalog, launcherKind, model));
+  };
+
   const changeLauncher = (choice: string) => {
+    modelValidationRequestRef.current += 1;
+    modelDiscoveryRequestRef.current += 1;
     setLaunchChoice(choice);
     if (choice === CUSTOM_OPTION) return;
     setLaunchCmd(choice);
@@ -486,8 +606,12 @@ export default function SupervisorSetupDialog() {
       : null;
     const nextModel = nextDefaults?.supervisorModel || '';
     setSupervisorModel(nextModel);
-    setModelChoice(modelChoiceFor(nextLauncher, nextModel));
+    setModelChoice(modelChoiceFor(nextLauncher, nextModel, modelCatalog));
     setReasoningEffort(nextDefaults?.supervisorReasoningEffort || '');
+    setModelManagerOpen(false);
+    setNewModelId('');
+    setModelValidation({ state: 'idle', model: '', message: '' });
+    setModelDiscovery({ state: 'idle', models: [], source: '', limited: false, message: '' });
   };
 
   useEffect(() => {
@@ -1829,7 +1953,7 @@ export default function SupervisorSetupDialog() {
                     : '每个工作终端独立启动一个监督上下文；默认设置仅影响以后新建的监督。'}
                 </div>
               </section>
-              {(launcherModelOptions.length > 0 || launcherKind === 'pi') && (
+              {launcherKind !== 'other' && (
                 <section className="supervisor-dialog__section">
                   <div className="supervisor-dialog__label">{supervisorLauncherDisplayName(launcherKind)} 监督模型</div>
                   <div className="supervisor-dialog__default-agent-row">
@@ -1842,6 +1966,7 @@ export default function SupervisorSetupDialog() {
                         setModelChoice(choice);
                         if (choice === DEFAULT_MODEL_OPTION) setSupervisorModel('');
                         else if (choice !== CUSTOM_OPTION) setSupervisorModel(choice);
+                        setModelValidation({ state: 'idle', model: '', message: '' });
                       }}
                     >
                       <option value={DEFAULT_MODEL_OPTION}>
@@ -1856,7 +1981,7 @@ export default function SupervisorSetupDialog() {
                       <option value={CUSTOM_OPTION}>
                         {customModelOptionLabel(launcherKind)}
                         {selectedAgentDefaults
-                          && modelChoiceFor(launcherKind, selectedAgentDefaults.supervisorModel) === CUSTOM_OPTION
+                          && modelChoiceFor(launcherKind, selectedAgentDefaults.supervisorModel, modelCatalog) === CUSTOM_OPTION
                           ? '（当前默认）'
                           : ''}
                       </option>
@@ -1879,6 +2004,133 @@ export default function SupervisorSetupDialog() {
                       onChange={(event) => setSupervisorModel(event.target.value)}
                       placeholder={customModelPlaceholder(launcherKind)}
                     />
+                  )}
+                  <div className="supervisor-dialog__model-actions">
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={modelValidationPending}
+                      onClick={() => void validateModel(supervisorModel)}
+                    >
+                      {modelValidationPending && modelValidation.model === supervisorModel ? '验证中…' : '验证当前模型'}
+                    </button>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      onClick={() => setModelManagerOpen((open) => !open)}
+                    >
+                      {modelManagerOpen ? '收起模型管理' : '管理模型列表'}
+                    </button>
+                  </div>
+                  {modelValidation.message && (
+                    <div
+                      className="supervisor-dialog__model-validation"
+                      data-kind={modelValidation.state}
+                    >
+                      {modelValidation.message}
+                    </div>
+                  )}
+                  {modelManagerOpen && (
+                    <div className="supervisor-dialog__model-manager">
+                      <div className="supervisor-dialog__model-discovery">
+                        <button
+                          type="button"
+                          className="confirm-dialog__btn"
+                          disabled={modelDiscovery.state === 'loading' || modelValidationPending}
+                          onClick={() => void discoverModels()}
+                        >
+                          {modelDiscovery.state === 'loading' ? '获取中…' : '获取支持模型'}
+                        </button>
+                        {modelDiscovery.state === 'success' && (
+                          <span>
+                            {modelDiscovery.source} · {modelDiscovery.models.length} 个
+                            {modelDiscovery.limited ? '（仅本地配置）' : ''}
+                          </span>
+                        )}
+                      </div>
+                      {modelDiscovery.state === 'success' && (
+                        <select
+                          className="supervisor-dialog__input supervisor-dialog__model-discovery-select"
+                          value={modelDiscovery.models.includes(newModelId) ? newModelId : ''}
+                          onChange={(event) => setNewModelId(event.target.value)}
+                        >
+                          <option value="">选择要添加的模型</option>
+                          {modelDiscovery.models.map((model) => {
+                            const alreadyAdded = launcherModelOptions.some((option) => option.value === model);
+                            return (
+                              <option key={model} value={model} disabled={alreadyAdded}>
+                                {model}{alreadyAdded ? '（已在列表）' : ''}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      )}
+                      {modelDiscovery.state === 'error' && (
+                        <div className="supervisor-dialog__model-validation" data-kind="error">
+                          {modelDiscovery.message}
+                        </div>
+                      )}
+                      <div className="supervisor-dialog__model-add">
+                        <input
+                          className="supervisor-dialog__input"
+                          value={newModelId}
+                          maxLength={200}
+                          onChange={(event) => setNewModelId(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              void addModel();
+                            }
+                          }}
+                          placeholder={customModelPlaceholder(launcherKind)}
+                        />
+                        <button
+                          type="button"
+                          className="confirm-dialog__btn"
+                          disabled={modelValidationPending || !newModelId.trim()}
+                          onClick={() => void addModel()}
+                        >
+                          验证并添加
+                        </button>
+                      </div>
+                      <div className="supervisor-dialog__hint">
+                        验证会实际发送一次最小请求，可能产生少量 token；只有验证成功才会加入列表。
+                      </div>
+                      <div className="supervisor-dialog__model-list">
+                        {launcherModelOptions.map((option) => (
+                          <div className="supervisor-dialog__model-row" key={option.value}>
+                            <span title={option.value}>{option.label}</span>
+                            <button
+                              type="button"
+                              className="confirm-dialog__btn"
+                              disabled={modelValidationPending}
+                              onClick={() => void validateModel(option.value)}
+                            >
+                              验证
+                            </button>
+                            <button
+                              type="button"
+                              className="confirm-dialog__btn"
+                              onClick={() => removeModel(option.value)}
+                            >
+                              移除
+                            </button>
+                          </div>
+                        ))}
+                        {hiddenModelOptions.map((option) => (
+                          <div className="supervisor-dialog__model-row supervisor-dialog__model-row--hidden" key={option.value}>
+                            <span title={option.value}>{option.label}（已移除）</span>
+                            <button
+                              type="button"
+                              className="confirm-dialog__btn"
+                              onClick={() => restoreModel(option.value)}
+                            >
+                              恢复
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </section>
               )}

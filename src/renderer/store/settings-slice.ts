@@ -1,6 +1,7 @@
 import { StateCreator } from 'zustand';
 import { DefaultSupervisorAgent, QuickLaunchProfile, SshCompanionAgent, SshConnectionProfile } from '../../shared/types';
 import { Language, detectDefaultLanguage, isLanguage } from '../i18n/core';
+import type { SupervisorModelCatalog } from '../supervisor/model-catalog';
 
 // ─── Persistence helpers (issue #12 + issue #15 + issue #19) ─────────────────
 // Zustand has no persistence middleware here, so any pref that lives only in
@@ -292,6 +293,8 @@ export interface WorkspacePrefs {
   defaultSupervisorModels: Partial<Record<DefaultSupervisorAgent, string>>;
   /** Per-launcher reasoning/Thinking selected for a fresh AI-supervision session. */
   defaultSupervisorReasoningEfforts: Partial<Record<DefaultSupervisorAgent, string>>;
+  /** Editable model catalogs scoped by the active workspace directory. */
+  supervisorModelCatalogs: Record<string, SupervisorModelCatalog>;
   /** Companion selected when creating an SSH workspace. */
   defaultSshAgent: SshCompanionAgent;
 }
@@ -308,6 +311,7 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   defaultSupervisorAgent: 'pi',
   defaultSupervisorModels: {},
   defaultSupervisorReasoningEfforts: {},
+  supervisorModelCatalogs: {},
   defaultSshAgent: 'codex',
 };
 

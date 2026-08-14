@@ -306,7 +306,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'pi',
-    supervisorModel: 'xai/grok-4.5',
+    supervisorModel: '',
     supervisorReasoningEffort: 'medium',
     pendingApprovals: [],
     log: [],
@@ -337,25 +337,25 @@ export function supervisorDefaultsForAgent(
   if (agent === 'pi') {
     defaults = {
       supervisorLaunchCmd: 'pi',
-      supervisorModel: 'xai/grok-4.5',
+      supervisorModel: '',
       supervisorReasoningEffort: 'medium',
     };
   } else if (agent === 'codex') {
     defaults = {
       supervisorLaunchCmd: 'codex',
-      supervisorModel: 'gpt-5.6-terra',
+      supervisorModel: '',
       supervisorReasoningEffort: 'medium',
     };
   } else if (agent === 'kimi') {
     defaults = {
       supervisorLaunchCmd: 'kimi',
-      supervisorModel: 'k3-256k',
+      supervisorModel: '',
       supervisorReasoningEffort: 'on',
     };
   } else if (agent === 'grok') {
     defaults = {
       supervisorLaunchCmd: 'grok',
-      supervisorModel: 'grok-build',
+      supervisorModel: '',
       supervisorReasoningEffort: '',
     };
   } else {

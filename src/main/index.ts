@@ -42,6 +42,7 @@ import {
   parseSupervisorConfig,
   serializeSupervisorConfig,
 } from './supervisor-config-file';
+import { listSupervisorModels, validateSupervisorModel } from './supervisor-model-validation';
 import { startOrchestrationWatcher } from './orchestration-watcher';
 import { readMarkdownFile } from './markdown-file';
 import { grantMarkdownPath, clearMarkdownGrants } from './markdown-grants';
@@ -591,6 +592,27 @@ app.whenReady().then(() => {
   ipcMain.handle('supervisor:list-restore-candidates', (_event, projectDir) =>
     listSupervisorRestoreCandidates(String(projectDir || '')),
   );
+  ipcMain.handle('supervisor:validate-model', (_event, request) => {
+    const launcher = String(request?.launcher || '');
+    if (!['pi', 'codex', 'kimi', 'grok'].includes(launcher)) {
+      return { ok: false, error: '该监督启动器暂不支持模型验证。' };
+    }
+    return validateSupervisorModel({
+      launcher: launcher as 'pi' | 'codex' | 'kimi' | 'grok',
+      model: String(request?.model || ''),
+      cwd: typeof request?.cwd === 'string' ? request.cwd : undefined,
+    });
+  });
+  ipcMain.handle('supervisor:list-models', (_event, request) => {
+    const launcher = String(request?.launcher || '');
+    if (!['pi', 'codex', 'kimi', 'grok'].includes(launcher)) {
+      return { ok: false, error: '该监督启动器暂不支持模型目录查询。' };
+    }
+    return listSupervisorModels({
+      launcher: launcher as 'pi' | 'codex' | 'kimi' | 'grok',
+      cwd: typeof request?.cwd === 'string' ? request.cwd : undefined,
+    });
+  });
   ipcMain.handle('supervisor:load-config', async (event, defaultPath) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const result = await dialog.showOpenDialog(win as BrowserWindow, {

@@ -597,9 +597,9 @@ describe('supervisor isolation', () => {
     expect(createDefaultSupervisorSession().supervisorLaunchCmd).toBe('pi');
   });
 
-  it('uses Grok 4.5 with medium thinking as the default Pi settings', () => {
+  it('follows the Pi Agent default model with medium thinking by default', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.supervisorModel).toBe('xai/grok-4.5');
+    expect(session.supervisorModel).toBe('');
     expect(session.supervisorReasoningEffort).toBe('medium');
   });
 
@@ -608,7 +608,7 @@ describe('supervisor isolation', () => {
     store.getState().openSupervisorSetup();
     expect(store.getState().supervisor).toMatchObject({
       supervisorLaunchCmd: 'codex',
-      supervisorModel: 'gpt-5.6-terra',
+      supervisorModel: '',
       supervisorReasoningEffort: 'medium',
     });
 
@@ -640,13 +640,13 @@ describe('supervisor isolation', () => {
   it('provides launcher-compatible defaults for every configurable supervisor Agent', () => {
     expect(supervisorDefaultsForAgent('pi')).toMatchObject({
       supervisorLaunchCmd: 'pi',
-      supervisorModel: 'xai/grok-4.5',
+      supervisorModel: '',
       supervisorReasoningEffort: 'medium',
     });
-    expect(supervisorDefaultsForAgent('codex')).toMatchObject({ supervisorLaunchCmd: 'codex', supervisorModel: 'gpt-5.6-terra' });
+    expect(supervisorDefaultsForAgent('codex')).toMatchObject({ supervisorLaunchCmd: 'codex', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('claude')).toMatchObject({ supervisorLaunchCmd: 'claude', supervisorModel: '' });
-    expect(supervisorDefaultsForAgent('kimi')).toMatchObject({ supervisorLaunchCmd: 'kimi', supervisorModel: 'k3-256k' });
-    expect(supervisorDefaultsForAgent('grok')).toMatchObject({ supervisorLaunchCmd: 'grok', supervisorModel: 'grok-build' });
+    expect(supervisorDefaultsForAgent('kimi')).toMatchObject({ supervisorLaunchCmd: 'kimi', supervisorModel: '' });
+    expect(supervisorDefaultsForAgent('grok')).toMatchObject({ supervisorLaunchCmd: 'grok', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('opencode')).toMatchObject({ supervisorLaunchCmd: 'opencode', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('none').supervisorLaunchCmd).toBe('');
   });

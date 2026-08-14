@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld('wmux', {
     readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
     listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),
+    validateModel: (request: { launcher: string; model: string; cwd?: string }) =>
+      ipcRenderer.invoke('supervisor:validate-model', request) as Promise<{ ok: boolean; message?: string; error?: string }>,
+    listModels: (request: { launcher: string; cwd?: string }) =>
+      ipcRenderer.invoke('supervisor:list-models', request) as Promise<{
+        ok: boolean; models?: string[]; source?: string; limited?: boolean; error?: string;
+      }>,
     loadConfig: (defaultPath?: string) => ipcRenderer.invoke('supervisor:load-config', defaultPath),
     saveConfig: (config: any, defaultPath?: string) => ipcRenderer.invoke('supervisor:save-config', config, defaultPath),
   },
