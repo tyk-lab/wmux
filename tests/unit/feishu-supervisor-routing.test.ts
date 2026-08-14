@@ -898,6 +898,7 @@ describe('飞书人工决策单聊路由', () => {
       pendingApprovals: [],
     });
     let screenVersion = 0;
+    const longAnswerTail = `${'前'.repeat(1_000)}仅展开可见${'后'.repeat(1_000)}-Agent回复末尾`;
     const control = vi.fn(async (command: { action: string; terminal?: string; lines?: number; task?: string }) => {
       if (command.action === 'terminal-screen') {
         screenVersion += 1;
@@ -909,7 +910,7 @@ describe('飞书人工决策单聊路由', () => {
           },
           text: `PS E:\\repo> raw-${screenVersion}`,
           question: `question-${screenVersion}`,
-          answer: `answer-${screenVersion}`,
+          answer: `answer-${screenVersion}-${longAnswerTail}`,
           lines: 1,
           capturedAt: Date.now(),
         };
@@ -939,24 +940,46 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
     expect(control).toHaveBeenCalledWith(
-      { action: 'terminal-screen', terminal: 'surf-screen', lines: 40 },
+      { action: 'terminal-screen', terminal: 'surf-screen', lines: 100 },
       { openId: 'ou-allowed', source: 'card' },
     );
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('你的提问');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('question-1');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent 回复');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('answer-1');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent回复末尾');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('展开完整回复');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('仅展开可见');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('raw-1');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_expand', value: currentControlValue({ wmux_action: 'form_terminal_expand', terminal: 'surf-screen', nonce: 'expand-screen' }) },
+      raw: { action: { form_value: { task: '尚未发送的草稿' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('仅展开可见');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('收起回复');
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('尚未发送的草稿');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_collapse', value: currentControlValue({ wmux_action: 'form_terminal_collapse', terminal: 'surf-screen', nonce: 'collapse-screen' }) },
+      raw: { action: { form_value: { task: '尚未发送的草稿' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('展开完整回复');
+    expect(JSON.stringify(updateCard.mock.calls[3][1])).not.toContain('仅展开可见');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { name: 'wmux_form_terminal_refresh', value: currentControlValue({ wmux_action: 'form_terminal_refresh', terminal: 'surf-screen', nonce: 'refresh-screen' }) },
       raw: { action: { form_value: { task: '尚未发送的草稿' } } },
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
-    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('question-2');
-    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('answer-2');
-    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('尚未发送的草稿');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
+    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('question-4');
+    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('answer-4');
+    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('尚未发送的草稿');
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(0);
 
     handlers.cardAction({
@@ -968,18 +991,18 @@ describe('飞书人工决策单聊路由', () => {
     expect(control.mock.calls.find(([command]) => command.action === 'send')?.[0]).toEqual({
       action: 'send', terminal: 'surf-screen', task: '运行相关测试并汇报结果',
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
-    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('已向 Codex worker 发送任务');
-    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('AI 回复可能尚未生成');
-    expect(JSON.stringify(updateCard.mock.calls[3][1])).not.toContain('default_value');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(6));
+    expect(JSON.stringify(updateCard.mock.calls[5][1])).toContain('已向 Codex worker 发送任务');
+    expect(JSON.stringify(updateCard.mock.calls[5][1])).toContain('AI 回复可能尚未生成');
+    expect(JSON.stringify(updateCard.mock.calls[5][1])).not.toContain('default_value');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { name: 'wmux_form_terminal_home', value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'terminal-home' }) },
       raw: { action: { form_value: { task: '不会被发送的残留文本' } } },
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
-    expect(JSON.stringify(updateCard.mock.calls[4][1])).toContain('任务与监督控制');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(7));
+    expect(JSON.stringify(updateCard.mock.calls[6][1])).toContain('任务与监督控制');
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(1);
   });
 

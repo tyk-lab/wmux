@@ -339,6 +339,11 @@ interface FeishuTerminalScreenResult {
   capturedAt: number;
 }
 
+const FEISHU_TERMINAL_QUESTION_MAX_CHARS = 1_000;
+const FEISHU_TERMINAL_ANSWER_MAX_CHARS = 4_000;
+const FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS = 1_500;
+const FEISHU_TERMINAL_CAPTURE_LINES = 100;
+
 interface FeishuControlState {
   active: boolean;
   paused: boolean;
@@ -455,7 +460,7 @@ function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ tex
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '12';
+export const FEISHU_CONTROL_CARD_VERSION = '13';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -597,6 +602,8 @@ export function resolveFeishuCardAction(value: unknown, name?: string): Resolved
   if (name === 'wmux_form_terminal_screen') return { ...rawValue, wmux_action: 'form_terminal_screen' };
   if (name === 'wmux_form_terminal_control') return { ...rawValue, wmux_action: 'form_terminal_control' };
   if (name === 'wmux_form_terminal_refresh') return { ...rawValue, wmux_action: 'form_terminal_refresh' };
+  if (name === 'wmux_form_terminal_expand') return { ...rawValue, wmux_action: 'form_terminal_expand' };
+  if (name === 'wmux_form_terminal_collapse') return { ...rawValue, wmux_action: 'form_terminal_collapse' };
   if (name === 'wmux_form_terminal_send') return { ...rawValue, wmux_action: 'form_terminal_send' };
   if (name === 'wmux_form_close_terminal') return { ...rawValue, wmux_action: 'form_close_terminal' };
   if (name === 'wmux_form_lane_control') return { ...rawValue, wmux_action: 'form_lane_control' };
@@ -824,16 +831,33 @@ export function buildTerminalScreenSelectCard(terminals: FeishuListTerminal[]): 
   );
 }
 
+function collapsedTerminalAnswer(answer: string): string {
+  if (answer.length <= FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS) return answer;
+  const headLength = Math.floor((FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS - 3) * 0.6);
+  return `${answer.slice(0, headLength)}\n…\n${answer.slice(-(FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS - headLength - 3))}`;
+}
+
 /** Terminal snapshot, refresh, and send controls share one form. */
-export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draft = '', notice = ''): object {
+export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draft = '', notice = '', expanded = false): object {
   const capturedAt = new Date(result.capturedAt).toLocaleString('zh-CN', { hour12: false });
   const screenText = result.text || '（终端当前没有可见内容）';
   const taskInputId = nextControlElementIdentity('input').elementId;
+  const answer = result.answer || (result.answerPending ? '（回复生成中）' : '（尚未识别到最终回复）');
+  const answerCanExpand = !!result.answer && result.answer.length > FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS;
+  const displayedAnswer = !expanded && result.answer ? collapsedTerminalAnswer(result.answer) : answer;
   const coreElements = result.question ? [
     { tag: 'markdown', content: '**你的提问**' },
     { tag: 'div', text: { tag: 'plain_text', content: result.question } },
     { tag: 'markdown', content: '**Agent 回复**' },
-    { tag: 'div', text: { tag: 'plain_text', content: result.answer || (result.answerPending ? '（回复生成中）' : '（尚未识别到最终回复）') } },
+    { tag: 'div', text: { tag: 'plain_text', content: displayedAnswer } },
+    ...(answerCanExpand ? responsiveButtonRows([
+      formButton(
+        expanded ? 'wmux_form_terminal_collapse' : 'wmux_form_terminal_expand',
+        expanded ? '收起回复' : '展开完整回复',
+        'default',
+        { wmux_action: expanded ? 'form_terminal_collapse' : 'form_terminal_expand', terminal: result.terminal.surfaceId },
+      ),
+    ]) : []),
   ] : [
     { tag: 'markdown', content: '**最新核心文本**' },
     { tag: 'div', text: { tag: 'plain_text', content: screenText } },
@@ -1239,8 +1263,12 @@ function parseTerminalScreenResult(value: unknown): FeishuTerminalScreenResult |
         : undefined,
     },
     text: value.text.slice(0, 1_200),
-    question: typeof value.question === 'string' && value.question.trim() ? value.question.slice(0, 350) : undefined,
-    answer: typeof value.answer === 'string' && value.answer.trim() ? value.answer.slice(0, 850) : undefined,
+    question: typeof value.question === 'string' && value.question.trim()
+      ? value.question.slice(0, FEISHU_TERMINAL_QUESTION_MAX_CHARS)
+      : undefined,
+    answer: typeof value.answer === 'string' && value.answer.trim()
+      ? value.answer.slice(0, FEISHU_TERMINAL_ANSWER_MAX_CHARS)
+      : undefined,
     answerPending: value.answerPending === true,
     lines: Math.max(0, Math.floor(value.lines)),
     capturedAt: value.capturedAt,
@@ -1842,7 +1870,7 @@ export class FeishuSupervisorService {
   private async handleCardAction(event: Lark.CardActionEvent): Promise<void> {
     if (!this.config?.allowedOpenIds.has(event.operator.openId)) return;
     const value = resolveFeishuCardAction(event.action.value, event.action.name);
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
         // Never execute an action from an old schema. Only issue a new control
@@ -1973,6 +2001,12 @@ export class FeishuSupervisorService {
       return this.showTerminalScreen(event, form.terminal || '');
     }
     if (value.wmux_action === 'form_terminal_refresh') {
+      return this.showTerminalScreen(event, value.terminal || '', form.task || '');
+    }
+    if (value.wmux_action === 'form_terminal_expand') {
+      return this.showTerminalScreen(event, value.terminal || '', form.task || '', '', true);
+    }
+    if (value.wmux_action === 'form_terminal_collapse') {
       return this.showTerminalScreen(event, value.terminal || '', form.task || '');
     }
     if (value.wmux_action === 'form_terminal_send') {
@@ -2209,7 +2243,7 @@ export class FeishuSupervisorService {
     return true;
   }
 
-  private async showTerminalScreen(event: Lark.CardActionEvent, terminal: string, draft = '', notice = ''): Promise<boolean> {
+  private async showTerminalScreen(event: Lark.CardActionEvent, terminal: string, draft = '', notice = '', expanded = false): Promise<boolean> {
     if (!this.allowsTerminalScreen(event.chatId)) {
       await this.sendText('任务终端界面可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
       return false;
@@ -2218,7 +2252,7 @@ export class FeishuSupervisorService {
       await this.sendText('请先选择要查看的任务终端。', event.chatId);
       return false;
     }
-    const result = await this.control({ action: 'terminal-screen', terminal, lines: 40 }, {
+    const result = await this.control({ action: 'terminal-screen', terminal, lines: FEISHU_TERMINAL_CAPTURE_LINES }, {
       openId: event.operator.openId,
       source: 'card',
     }).catch((err) => ({ error: String(err?.message || err) }));
@@ -2227,7 +2261,7 @@ export class FeishuSupervisorService {
       await this.sendText(`终端界面读取失败：${summary(result)}`, event.chatId);
       return false;
     }
-    return !!await this.replaceControlCard(event, buildTerminalScreenCard(screen, draft, notice));
+    return !!await this.replaceControlCard(event, buildTerminalScreenCard(screen, draft, notice, expanded));
   }
 
   private clearBusyTaskConfirmationsForMessage(messageId: string): void {

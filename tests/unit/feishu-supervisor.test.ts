@@ -587,6 +587,13 @@ supervisor_model: k3`)).toEqual({
       lines: 20,
       capturedAt: Date.now(),
     }));
+    const longAnswer = `${'开头'.repeat(500)}仅展开时可见${'结尾'.repeat(500)}`;
+    const collapsedConversationCard = JSON.stringify(buildTerminalScreenCard({
+      terminal, text: '', question: '长回复', answer: longAnswer, lines: 100, capturedAt: Date.now(),
+    }));
+    const expandedConversationCard = JSON.stringify(buildTerminalScreenCard({
+      terminal, text: '', question: '长回复', answer: longAnswer, lines: 100, capturedAt: Date.now(),
+    }, '', '', true));
     const screenCard = JSON.stringify(screenCardObject);
     const form = screenCardObject.body.elements.find((element: any) => element.tag === 'form');
     const clearedForm = clearedScreenCardObject.body.elements.find((element: any) => element.tag === 'form');
@@ -619,6 +626,10 @@ supervisor_model: k3`)).toEqual({
     expect(conversationCard).not.toContain('终端原始文本');
     expect(pendingConversationCard).toContain('回复生成中');
     expect(pendingConversationCard).not.toContain('Codex 工具执行日志');
+    expect(collapsedConversationCard).toContain('展开完整回复');
+    expect(collapsedConversationCard).not.toContain('仅展开时可见');
+    expect(expandedConversationCard).toContain('仅展开时可见');
+    expect(expandedConversationCard).toContain('收起回复');
   });
 
   it('为控制首页按钮生成唯一且合规的 Card JSON 2.0 element_id', () => {
@@ -794,6 +805,8 @@ supervisor_model: k3`)).toEqual({
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send_supervisor')).toEqual({ wmux_action: 'form_send_supervisor' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_screen')).toEqual({ wmux_action: 'form_terminal_screen' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_expand')).toEqual({ wmux_action: 'form_terminal_expand' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_terminal_collapse')).toEqual({ wmux_action: 'form_terminal_collapse' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_create_task')).toEqual({ wmux_action: 'form_create_task' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_lane_control')).toEqual({ wmux_action: 'form_lane_control' });
     expect(resolveFeishuCardAction({ approval_id: 'appr-1' }, 'wmux_decide_approve')).toEqual({

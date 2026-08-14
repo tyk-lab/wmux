@@ -374,6 +374,140 @@ describe('supervisor decision bridge', () => {
     expect(conversation.answer).not.toContain('Help improve');
   });
 
+  it('detects a Grok conversation from screen content when the terminal title is generic', () => {
+    const conversation = terminalConversationExcerpt([
+      '28K / 500K',
+      '❯ 你是什么模型                                      11:02 AM',
+      '◆ user_prompt_submit   [hooks: 1/1]',
+      '◆ Thought for 0.1s',
+      '',
+      '我是 Grok 4.6，由 xAI 开发。',
+      '11:02 AM',
+      'Worked for 7.7s',
+      'stop  [hooks: 1/1]',
+      'Help improve Grok',
+      '[Opt out] [Opt in]',
+      'Off by default. Opt-in to allow SpaceXAI to retain coding data.',
+      'Change anytime via sett',
+    ].join('\n'), 'pwsh.exe', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你是什么模型',
+      answer: '我是 Grok 4.6，由 xAI 开发。',
+    });
+    expect(conversation.answer).not.toContain('hooks');
+    expect(conversation.answer).not.toContain('Help improve');
+    expect(conversation.answer).not.toContain('Opt out');
+  });
+
+  it('detects Grok from its footer after hook markers scroll out of the viewport', () => {
+    const conversation = terminalConversationExcerpt([
+      '❯ 你有哪些技能                                      11:07 AM',
+      '• requirements-clarifier：复杂需求澄清与实现前准备',
+      '• code-reviewer / review：代码审查',
+      '',
+      '通用工程',
+      '• brainstorming：方向不清时先对齐方案',
+      '• verification-before-completion：完成前检验交付物',
+      '',
+      '需要某个技能时，直接说目标即可。',
+      '█',
+      '∷ Responding... 8.4s',
+      '12s ↓29.1k [stop]',
+      'Worked for 17s',
+      'stop  [hooks: 1/1]',
+      'Help improve Grok',
+      '[Opt out] [Opt in]',
+      'Off by default. Opt-in to allow SpaceXAI to retain coding data.',
+    ].join('\n'), 'pwsh.exe', 'working');
+
+    expect(conversation).toMatchObject({
+      question: '你有哪些技能',
+      answer: [
+        '• requirements-clarifier：复杂需求澄清与实现前准备',
+        '• code-reviewer / review：代码审查',
+        '',
+        '通用工程',
+        '• brainstorming：方向不清时先对齐方案',
+        '• verification-before-completion：完成前检验交付物',
+        '',
+        '需要某个技能时，直接说目标即可。',
+      ].join('\n'),
+    });
+    expect(conversation.answer).not.toContain('Responding');
+    expect(conversation.answer).not.toContain('[stop]');
+    expect(conversation.answer).not.toContain('Help improve');
+    expect(conversation.answer).not.toContain('█');
+  });
+
+  it('extracts a completed Grok turn before the composer placeholder and shortcuts', () => {
+    const conversation = terminalConversationExcerpt([
+      '❯ 你有哪些技能                                      11:13 AM',
+      'test-driven-development    仅在你明确要求 TDD 时启用',
+      'project-progress           维护 .project-plans/ 进度与交接',
+      '',
+      'Grok 内置',
+      '通用能力，不限本仓库：',
+      '• create-skill / create-workflow：创建技能、编排工作流',
+      '• review / code-reviewer / pr-babysit：代码审查与 PR 跟进',
+      '',
+      '输入 / 可浏览全部可调用项；有命令可用 grok inspect 查看完整清单与来源。',
+      'Worked for 44s',
+      'stop  [hooks: 1/1]',
+      '❯ Build anything',
+      '│',
+      'Ctrl+e:expand thinking  |  Space:prompt  |  Ctrl+x:shortcuts',
+    ].join('\n'), 'pwsh.exe', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你有哪些技能',
+      answer: [
+        'test-driven-development    仅在你明确要求 TDD 时启用',
+        'project-progress           维护 .project-plans/ 进度与交接',
+        '',
+        'Grok 内置',
+        '通用能力，不限本仓库：',
+        '• create-skill / create-workflow：创建技能、编排工作流',
+        '• review / code-reviewer / pr-babysit：代码审查与 PR 跟进',
+        '',
+        '输入 / 可浏览全部可调用项；有命令可用 grok inspect 查看完整清单与来源。',
+      ].join('\n'),
+    });
+    expect(conversation.answer).not.toContain('Build anything');
+    expect(conversation.answer).not.toContain('Ctrl+e');
+    expect(conversation.answer).not.toContain('Worked for');
+  });
+
+  it('keeps the submitted Grok prompt instead of the empty composer and extracts the final reply', () => {
+    const conversation = terminalConversationExcerpt([
+      '❯ af',
+      '◆user_prompt_submit   [hooks: 1/1]',
+      '◆Thought for 10.6s',
+      '',
+      '我的理解是：你只发了 af，我先检查当前工作区。',
+      '◈ Searched 1 MCP tools, Listed 1 dir, Searched 1 pattern',
+      '',
+      '工作区看起来是空的。我继续查看隐藏文件。',
+      '◆ Run List hidden and parent directory files',
+      '◈ Searched 1 pattern',
+      '',
+      'af 含义不清，当前工作区也是空的，没法据此推断你要做什么。',
+      '',
+      '请补一句目标，我再继续。',
+      'Worked for 49s',
+      '❯ |',
+      'Shift+Tab:mode  |  Ctrl+x:shortcuts',
+    ].join('\n'), 'Grok直连 · dasf', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: 'af',
+      answer: 'af 含义不清，当前工作区也是空的，没法据此推断你要做什么。\n\n请补一句目标，我再继续。',
+    });
+    expect(conversation.answer).not.toContain('Thought');
+    expect(conversation.answer).not.toContain('Searched');
+    expect(conversation.answer).not.toContain('Shift+Tab');
+  });
+
   it('extracts the latest Kimi question and final response instead of its reasoning', () => {
     const conversation = terminalConversationExcerpt([
       '✦ asdf',
@@ -385,7 +519,7 @@ describe('supervisor decision bridge', () => {
       'yolo  K3-256k thinking: high  C:\\repo',
       '/compact compresses context when it gets long',
       'context: 10% (25k/256k)',
-    ].join('\n'), 'Kimi直连 · sd');
+    ].join('\n'), 'pwsh.exe');
 
     expect(conversation).toMatchObject({
       question: '你是什么模型',
@@ -409,7 +543,7 @@ describe('supervisor decision bridge', () => {
       '• Searching the web',
       '• Searched the web for Codex models',
       '• Working (12s • esc to interrupt)',
-      '› Improve documentation in @filename',
+      '› Find and fix a bug in @filename',
       'gpt-5.6-sol high fast · E:\\work\\wmux',
     ].join('\n'), 'Codex直连 · sd', 'working');
 
@@ -423,6 +557,8 @@ describe('supervisor decision bridge', () => {
   it('keeps the final Codex response and removes commentary and tool activity', () => {
     const conversation = terminalConversationExcerpt([
       '› 你是什么模型',
+      '• 我是 Codex，基于 GPT-5 的编程智能体。',
+      '› 你是什么模型',
       '• 我先检查当前环境和官方说明。',
       '• Ran Get-Content SKILL.md',
       '  └ 43 lines',
@@ -431,9 +567,9 @@ describe('supervisor decision bridge', () => {
       '• 我是 Codex，当前会话使用 GPT-5.6 系列模型。',
       '',
       '  具体运行配置以终端顶部显示为准。',
-      '› Improve documentation in @filename',
+      '› Implement {feature}',
       'gpt-5.6-sol high fast · E:\\work\\wmux',
-    ].join('\n'), 'Codex直连 · sd', 'idle');
+    ].join('\n'), 'pwsh.exe', 'idle');
 
     expect(conversation).toMatchObject({
       question: '你是什么模型',
@@ -441,7 +577,49 @@ describe('supervisor decision bridge', () => {
     });
     expect(conversation.answer).not.toContain('Searching');
     expect(conversation.answer).not.toContain('我先检查');
-    expect(conversation.answer).not.toContain('Improve documentation');
+    expect(conversation.answer).not.toContain('Implement {feature}');
+  });
+
+  it.each([
+    'Find and fix a bug in @filename',
+    'Improve documentation in @filename',
+    'Ask Codex to do anything',
+    'Implement {feature}',
+  ])('ignores the Codex composer suggestion %s', (suggestion) => {
+    const conversation = terminalConversationExcerpt([
+      'OpenAI Codex (v0.147.0)',
+      '› 你有哪些技能',
+      '• 我可以协助代码开发、测试、审查和文档处理。',
+      `› ${suggestion}`,
+      'gpt-5.6-luna medium · D:\\repo',
+    ].join('\n'), 'Codex直连 · test', 'idle');
+
+    expect(conversation).toMatchObject({
+      question: '你有哪些技能',
+      answer: '我可以协助代码开发、测试、审查和文档处理。',
+    });
+  });
+
+  it('keeps long final replies from Codex and Kimi', () => {
+    const longAnswer = `结论：已完成检查。\n\n${'这里是需要在飞书中保留的详细回复。'.repeat(100)}\n\n以上是完整结果。`;
+    const codex = terminalConversationExcerpt([
+      '› 请详细说明检查结果',
+      '• Ran npm test',
+      '  └ Tests passed',
+      `• ${longAnswer}`,
+      '› Ask Codex to do anything',
+      'gpt-5.6-sol high fast · E:\\work\\wmux',
+    ].join('\n'), 'Codex直连 · long', 'idle');
+    const kimi = terminalConversationExcerpt([
+      '✦ 请详细说明检查结果',
+      '● Summarize the completed checks for the user.',
+      `● ${longAnswer}`,
+      'yolo  K3-256k thinking: high  C:\\repo',
+    ].join('\n'), 'Kimi直连 · long', 'idle');
+
+    expect(longAnswer.length).toBeGreaterThan(850);
+    expect(codex).toMatchObject({ question: '请详细说明检查结果', answer: longAnswer });
+    expect(kimi).toMatchObject({ question: '请详细说明检查结果', answer: longAnswer });
   });
 
   it('creates an unsupervised Codex direct terminal that remains sendable and supervisable', () => {

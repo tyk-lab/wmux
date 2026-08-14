@@ -63,6 +63,8 @@ export function isSupervisorDecisionAuthorised(
 
 const FEISHU_TERMINAL_SCREEN_MAX_CHARS = 1_500;
 const FEISHU_TERMINAL_SCREEN_MAX_LINES = 18;
+const FEISHU_TERMINAL_QUESTION_MAX_CHARS = 1_000;
+const FEISHU_TERMINAL_ANSWER_MAX_CHARS = 4_000;
 
 export function readTerminalScreen(surfaceId: string, lines = 50): { text?: string; lines?: number; surfaceId?: string; error?: string } {
   const terminal = surfaceTerminalRegistry.get(surfaceId);
@@ -90,10 +92,13 @@ export function readTerminalScreen(surfaceId: string, lines = 50): { text?: stri
 function isTerminalTuiChromeLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  if (/^[\s\u2500-\u257f_=~-]+$/u.test(trimmed)) return true;
-  if (/^[\s│┃╎╏┆┇┊┋`'|\\]*[>❯›]\s*$/u.test(trimmed)) return true;
+  if (/^[\s\u2500-\u259f_=~-]+$/u.test(trimmed)) return true;
+  if (/^[\s│┃╎╏┆┇┊┋`'|\\]*[>❯›〉][\s│┃╎╏┆┇┊┋`'|\\]*$/u.test(trimmed)) return true;
   if (/^[\s│┃╎╏┆┇┊┋`'|\\]+$/u.test(trimmed)) return true;
-  if (/\bShift\+Tab\s*:\s*mode\b.*\bEsc\s*:\s*cancel\b/i.test(trimmed)) return true;
+  if (/\bShift\+Tab\s*:\s*mode\b/i.test(trimmed)
+    && /\b(?:Esc\s*:\s*cancel|Ctrl\+X\s*:\s*shortcuts)\b/i.test(trimmed)) return true;
+  if (/\bCtrl\+E\s*:\s*expand thinking\b/i.test(trimmed)
+    && /\b(?:Space\s*:\s*prompt|Ctrl\+X\s*:\s*shortcuts)\b/i.test(trimmed)) return true;
   if (/\bGrok\s+\d+(?:\.\d+)+(?:\s*\([^)]*\))?.*\b(?:always|auto)[- ]approve\b/i.test(trimmed)) return true;
   return false;
 }
@@ -140,12 +145,46 @@ export interface TerminalConversationExcerpt {
 
 type TerminalConversationAgent = 'codex' | 'kimi' | 'grok' | 'generic';
 
-function terminalConversationAgent(label: string): TerminalConversationAgent {
+function terminalConversationAgent(label: string, text: string): TerminalConversationAgent {
   const normalized = label.toLowerCase();
   if (normalized.includes('grok')) return 'grok';
   if (normalized.includes('kimi')) return 'kimi';
   if (normalized.includes('codex')) return 'codex';
+  if (/\bHelp improve Grok\b/iu.test(text)
+    || (/^\s*[◆◇◈◊]\s*user_prompt_submit\b/imu.test(text)
+      && /(?:Thought for\b|Worked for\b)/iu.test(text))
+    || (/\bWorked for\s+\d/iu.test(text) && /\bstop\s+\[hooks:/iu.test(text))) return 'grok';
+  if (/^\s*[✦✧✨]\s+\S/mu.test(text)
+    && /(?:^|\n)\s*(?:yolo\b|\/compact\b|context:\s*\d|K\d+-\d+k\b)/iu.test(text)) return 'kimi';
+  if (/\bOpenAI Codex\b/iu.test(text)
+    || (/^\s*[>❯›]\s+\S/mu.test(text) && /(?:^|\n)\s*gpt-[\w.-]+\b/iu.test(text))) return 'codex';
   return 'generic';
+}
+
+function isCodexComposerSuggestion(question: string): boolean {
+  return /^Ask Codex\b/iu.test(question)
+    || /^(?:Find and fix a bug in|Improve documentation in)\s+@filename$/iu.test(question)
+    || /^Implement\s+\{[^{}]+\}$/u.test(question);
+}
+
+function isGrokComposerSuggestion(question: string): boolean {
+  return /^(?:Build anything|Ask Grok\b.*)$/iu.test(question);
+}
+
+function lastMatchingLineIndex(lines: string[], pattern: RegExp): number {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (pattern.test(lines[index].trim())) return index;
+  }
+  return -1;
+}
+
+function grokQuestionSearchEnd(lines: string[]): number {
+  const submittedIndex = lastMatchingLineIndex(lines, /^[◆◇◈◊]\s*user_prompt_submit\b/iu);
+  if (submittedIndex >= 0) return submittedIndex;
+  const completionIndex = lastMatchingLineIndex(lines, /^(?:Worked for\b|stop\s+\[hooks:)/iu);
+  if (completionIndex >= 0) return completionIndex;
+  const respondingIndex = lastMatchingLineIndex(lines, /^(?:[∷⋮:]\s*)?Responding\b/iu);
+  return respondingIndex >= 0 ? respondingIndex : lines.length;
 }
 
 function terminalQuestionText(line: string, agent: TerminalConversationAgent): string | null {
@@ -156,7 +195,9 @@ function terminalQuestionText(line: string, agent: TerminalConversationAgent): s
   if (!match?.[1]) return null;
   const question = match[1].replace(/\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s*$/iu, '').trim();
   if (!question || (agent === 'kimi' && /^Use Kimi\b/iu.test(question))) return null;
-  if (agent === 'codex' && /^(?:Improve documentation in @filename|Ask Codex\b)/iu.test(question)) return null;
+  if (/^[\s│┃╎╏┆┇┊┋`'|\\]+$/u.test(question) || isTerminalTuiChromeLine(question)) return null;
+  if (agent === 'codex' && isCodexComposerSuggestion(question)) return null;
+  if (agent === 'grok' && isGrokComposerSuggestion(question)) return null;
   return question;
 }
 
@@ -174,6 +215,8 @@ function isTerminalConversationNoise(line: string, agent: TerminalConversationAg
   if (/^\d{1,2}:\d{2}\s*(?:AM|PM)$/iu.test(trimmed)) return true;
   if (/^[◆◇]\s*(?:user_prompt_submit|Thought\b)/iu.test(trimmed)) return true;
   if (/^(?:Worked for\b|stop\s+\[hooks:)/iu.test(trimmed)) return true;
+  if (agent === 'grok' && /^(?:[∷⋮:]\s*)?Responding\b.*$/iu.test(trimmed)) return true;
+  if (agent === 'grok' && /^\d+(?:\.\d+)?s\s+.*\[stop\]\s*$/iu.test(trimmed)) return true;
   if (agent === 'grok' && /^(?:\[Opt out\]|\[Opt in\])/iu.test(trimmed)) return true;
   if (agent === 'kimi' && /^(?:Run \/model\b|No session yet\b)/iu.test(trimmed)) return true;
   return false;
@@ -221,12 +264,13 @@ export function terminalConversationExcerpt(
   activityState: RemoteTerminalActivityState = 'unknown',
 ): TerminalConversationExcerpt {
   const fallback = terminalScreenExcerpt(text);
-  const agent = terminalConversationAgent(terminalLabel);
+  const agent = terminalConversationAgent(terminalLabel, text);
   if (agent === 'generic') return { text: fallback };
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   let questionIndex = -1;
   let question = '';
-  for (let index = 0; index < lines.length; index++) {
+  const questionSearchEnd = agent === 'grok' ? grokQuestionSearchEnd(lines) : lines.length;
+  for (let index = 0; index < questionSearchEnd; index++) {
     const candidate = terminalQuestionText(lines[index], agent);
     if (!candidate) continue;
     questionIndex = index;
@@ -243,11 +287,21 @@ export function terminalConversationExcerpt(
       || /^Working\b/iu.test(latestBullet);
     const answer = answerPending ? '' : codexFinalAnswer(answerLines);
     return {
-      question: limitConversationText(question, 350),
-      ...(answer ? { answer: limitConversationText(answer, 850) } : {}),
+      question: limitConversationText(question, FEISHU_TERMINAL_QUESTION_MAX_CHARS),
+      ...(answer ? { answer: limitConversationText(answer, FEISHU_TERMINAL_ANSWER_MAX_CHARS) } : {}),
       ...(answerPending ? { answerPending: true } : {}),
       text: fallback,
     };
+  }
+  if (agent === 'grok') {
+    const completionIndex = answerLines.findIndex((line) => /^(?:Worked for\b|stop\s+\[hooks:)/iu.test(line.trim()));
+    if (completionIndex >= 0) answerLines = answerLines.slice(0, completionIndex);
+    const respondingIndex = answerLines.findIndex((line) => /^(?:[∷⋮:]\s*)?Responding\b/iu.test(line.trim()));
+    if (respondingIndex >= 0) answerLines = answerLines.slice(0, respondingIndex);
+    const latestActivity = answerLines.reduce((latest, line, index) => (
+      /^\s*[◆◇◈◊]\s*\S/u.test(line) ? index : latest
+    ), -1);
+    if (latestActivity >= 0) answerLines = answerLines.slice(latestActivity + 1);
   }
   if (agent === 'kimi') {
     const answerStart = answerLines.reduce((latest, line, index) => /^\s*[●•]\s+\S/u.test(line) ? index : latest, -1);
@@ -263,11 +317,13 @@ export function terminalConversationExcerpt(
     cleanedAnswerLines.push(line.trimEnd());
   }
   while (cleanedAnswerLines[cleanedAnswerLines.length - 1] === '') cleanedAnswerLines.pop();
-  if (cleanedAnswerLines.length > 0) cleanedAnswerLines[0] = cleanedAnswerLines[0].replace(/^\s*[●•]\s+/u, '');
+  if (agent === 'kimi' && cleanedAnswerLines.length > 0) {
+    cleanedAnswerLines[0] = cleanedAnswerLines[0].replace(/^\s*[●•]\s+/u, '');
+  }
   const answer = cleanedAnswerLines.join('\n').trim();
   return {
-    question: limitConversationText(question, 350),
-    ...(answer ? { answer: limitConversationText(answer, 850) } : {}),
+    question: limitConversationText(question, FEISHU_TERMINAL_QUESTION_MAX_CHARS),
+    ...(answer ? { answer: limitConversationText(answer, FEISHU_TERMINAL_ANSWER_MAX_CHARS) } : {}),
     text: fallback,
   };
 }
