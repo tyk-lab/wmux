@@ -553,17 +553,18 @@ export default function SupervisorSetupDialog() {
     }
   };
 
-  const addModel = async () => {
+  const addModelDirectly = () => {
     const model = newModelId.trim();
     if (!model) {
       setModelValidation({ state: 'error', model: '', message: '请先填写模型 ID。' });
       return;
     }
-    if (launcherKind === 'other' || !(await validateModel(model))) return;
+    if (launcherKind === 'other') return;
     saveModelCatalog(addCustomSupervisorModel(modelCatalog, launcherKind, model));
     setNewModelId('');
     setSupervisorModel(model);
     setModelChoice(model);
+    setModelValidation({ state: 'success', model, message: `${model} 已直接添加（未验证）。` });
   };
 
   const removeModel = (model: string) => {
@@ -2079,7 +2080,7 @@ export default function SupervisorSetupDialog() {
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') {
                               event.preventDefault();
-                              void addModel();
+                              addModelDirectly();
                             }
                           }}
                           placeholder={customModelPlaceholder(launcherKind)}
@@ -2087,14 +2088,14 @@ export default function SupervisorSetupDialog() {
                         <button
                           type="button"
                           className="confirm-dialog__btn"
-                          disabled={modelValidationPending || !newModelId.trim()}
-                          onClick={() => void addModel()}
+                          disabled={!newModelId.trim()}
+                          onClick={addModelDirectly}
                         >
-                          验证并添加
+                          直接添加
                         </button>
                       </div>
                       <div className="supervisor-dialog__hint">
-                        验证会实际发送一次最小请求，可能产生少量 token；只有验证成功才会加入列表。
+                        直接添加不会发起验证请求；请确认模型 ID 可用。
                       </div>
                       <div className="supervisor-dialog__model-list">
                         {launcherModelOptions.map((option) => (
