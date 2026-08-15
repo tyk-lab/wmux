@@ -671,6 +671,7 @@ supervisor_model: k3`)).toEqual({
   it('将任务终端选择、最新界面和发送输入渲染为统一控制卡片', () => {
     const terminal = {
       surfaceId: 'surf-a', label: 'Codex worker', workspace: '代码工作区', supervised: false,
+      cwd: 'E:\\work\\sync_file\\work\\ai相关\\ai环境部署\\常用工具环境部署\\codex环境部署',
       activityState: 'working' as const, activityUpdatedAt: Date.now(),
     };
     const selectCard = JSON.stringify(buildTerminalScreenSelectCard([terminal]));
@@ -738,6 +739,8 @@ supervisor_model: k3`)).toEqual({
     expect(selectCard).toContain('surf-a');
     expect(selectCard).toContain('只允许白名单用户在单聊中使用');
     expect(screenCard).toContain('Agent 回复');
+    expect(screenCard).toContain('路径：E:\\\\…\\\\常用工具环境部署\\\\codex环境部署');
+    expect(screenCard).not.toContain('sync_file\\\\work\\\\ai相关');
     expect(screenCard).toContain('尚未识别到 Agent 回复正文');
     expect(screenCard).not.toContain('PS E:\\\\repo> npm test\\nTests 1 failed');
     expect(screenCard).toContain('刷新界面');

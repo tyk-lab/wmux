@@ -306,6 +306,7 @@ describe('supervisor decision bridge', () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-screen' as any,
       title: 'Screen Work',
+      cwd: 'E:\\repo',
       splitTree: {
         type: 'leaf', paneId: 'pane-screen' as any, activeSurfaceIndex: 0,
         surfaces: [
@@ -321,7 +322,7 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'terminal-screen', terminal: 'worker-a', lines: 40 })).toMatchObject({
       ok: true,
       terminal: {
-        surfaceId: 'worker-a', label: 'Codex worker', workspace: 'Screen Work', activityState: 'idle',
+        surfaceId: 'worker-a', label: 'Codex worker', workspace: 'Screen Work', cwd: 'E:\\repo', activityState: 'idle',
       },
       text: screenText,
       lines: 1,
@@ -333,7 +334,7 @@ describe('supervisor decision bridge', () => {
     expect(supervisorScreen).toMatchObject({
       ok: true,
       terminal: {
-        surfaceId: 'worker-a', label: 'worker', workspace: 'Screen Work', activityState: 'unknown',
+        surfaceId: 'worker-a', label: 'worker', workspace: 'Screen Work', cwd: 'E:\\repo', activityState: 'unknown',
       },
       text: screenText,
       lines: 1,

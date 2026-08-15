@@ -349,7 +349,7 @@ interface FeishuListResult {
 }
 
 interface FeishuTerminalScreenResult {
-  terminal: Pick<FeishuListTerminal, 'surfaceId' | 'label' | 'workspace' | 'activityState' | 'activityUpdatedAt'>;
+  terminal: Pick<FeishuListTerminal, 'surfaceId' | 'label' | 'workspace' | 'cwd' | 'activityState' | 'activityUpdatedAt'>;
   text: string;
   question?: string;
   answer?: string;
@@ -456,6 +456,27 @@ function compactTerminalPath(cwd: string): string {
   const leaf = path.win32.basename(cwd);
   const compactLeaf = leaf.length > 24 ? `${leaf.slice(0, 11)}…${leaf.slice(-12)}` : leaf;
   return `${root}…\\${compactLeaf}`;
+}
+
+function compactTerminalControlPath(cwd: string): string {
+  const maxLength = 48;
+  const raw = cwd.trim();
+  if (raw.length <= maxLength) return raw;
+  const windowsPath = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(raw);
+  const pathApi = windowsPath ? path.win32 : path.posix;
+  const normalized = pathApi.normalize(windowsPath ? raw.replace(/\//gu, '\\') : raw);
+  const parsed = pathApi.parse(normalized);
+  const separator = windowsPath ? '\\' : '/';
+  const segments = normalized.slice(parsed.root.length).split(separator).filter(Boolean);
+  const tail = segments.slice(-2).join(separator);
+  const candidate = `${parsed.root}…${separator}${tail}`;
+  if (candidate.length <= maxLength) return candidate;
+  const leaf = pathApi.basename(normalized);
+  const availableLeafLength = Math.max(12, maxLength - parsed.root.length - 2);
+  const compactLeaf = leaf.length > availableLeafLength
+    ? `${leaf.slice(0, Math.floor((availableLeafLength - 1) / 2))}…${leaf.slice(-Math.ceil((availableLeafLength - 1) / 2))}`
+    : leaf;
+  return `${parsed.root}…${separator}${compactLeaf}`;
 }
 
 function terminalPathOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
@@ -949,6 +970,9 @@ function buildTerminalControlCard(
     : '（尚未识别到 Agent 回复正文）');
   const answerCanExpand = !!result.answer && result.answer.length > FEISHU_TERMINAL_COLLAPSED_ANSWER_MAX_CHARS;
   const displayedAnswer = !expanded && result.answer ? collapsedTerminalAnswer(result.answer) : answer;
+  const pathSummary = result.terminal.cwd?.trim()
+    ? `\n路径：${compactTerminalControlPath(result.terminal.cwd)}`
+    : '';
   const coreElements = [
     {
       tag: 'markdown',
@@ -967,7 +991,7 @@ function buildTerminalControlCard(
   return buildFormCard(
     supervisorTarget ? 'wmux · AI 监督终端（管家）' : 'wmux · 终端控制',
     'blue',
-    `${notice ? `${notice}\n\n` : ''}${supervisorTarget ? `**AI监督终端（管家） · 负责：${result.terminal.label}**` : `**${result.terminal.label}**`}\n工作区：${result.terminal.workspace}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
+    `${notice ? `${notice}\n\n` : ''}${supervisorTarget ? `**AI监督终端（管家） · 负责：${result.terminal.label}**` : `**${result.terminal.label}**`}\n工作区：${result.terminal.workspace}${pathSummary}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
     supervisorTarget ? 'wmux_supervisor_terminal_control_form' : 'wmux_terminal_control_form',
     [
       ...coreElements,
@@ -1371,6 +1395,7 @@ function parseTerminalScreenResult(value: unknown): FeishuTerminalScreenResult |
       surfaceId: terminal.surfaceId,
       label: asText(terminal.label),
       workspace: asText(terminal.workspace),
+      cwd: typeof terminal.cwd === 'string' && terminal.cwd.trim() ? terminal.cwd.trim() : undefined,
       activityState: ['idle', 'working', 'blocked', 'unknown'].includes(String(terminal.activityState))
         ? terminal.activityState as FeishuTerminalActivityState
         : 'unknown',

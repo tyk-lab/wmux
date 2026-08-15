@@ -1294,6 +1294,7 @@ describe('飞书人工决策单聊路由', () => {
           ok: true,
           terminal: {
             surfaceId: 'surf-screen', label: 'Codex worker', workspace: 'workspace-a',
+            cwd: 'E:\\work\\sync_file\\work\\ai相关\\ai环境部署\\常用工具环境部署\\codex环境部署',
             activityState: 'idle', activityUpdatedAt: Date.now(),
           },
           text: `PS E:\\repo> raw-${screenVersion}`,
@@ -1334,6 +1335,8 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('你的提问');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('question-1');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent 回复');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('路径：E:\\\\…\\\\常用工具环境部署\\\\codex环境部署');
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('sync_file\\\\work\\\\ai相关');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('answer-1');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('Agent回复末尾');
     expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('展开完整回复');
