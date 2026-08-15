@@ -1,14 +1,21 @@
 import type { SplitNode, SurfaceRef } from '../../shared/types';
 
+/** Session restore is a cold-start operation; an HMR remount must keep live terminals. */
+export function shouldInitializeWorkspaceLayout(existingWorkspaceCount: number): boolean {
+  return existingWorkspaceCount === 0;
+}
+
 /** Dedicated supervisor terminals are transient: their state lives only in the active renderer session. */
 export function isTransientSupervisorSurface(surface: SurfaceRef): boolean {
   return surface.type === 'supervisor' || surface.transientSupervisor === true;
 }
 
-function stripSupervisorSurfacesFromTree(tree: SplitNode, transientSurfaceIds: ReadonlySet<string>): SplitNode | null {
+function stripTransientSurfacesFromTree(tree: SplitNode, transientSurfaceIds: ReadonlySet<string>): SplitNode | null {
   if (tree.type === 'leaf') {
     const surfaces = tree.surfaces.filter((surface) =>
-      !isTransientSupervisorSurface(surface) && !transientSurfaceIds.has(surface.id),
+      surface.type !== 'diff'
+        && !isTransientSupervisorSurface(surface)
+        && !transientSurfaceIds.has(surface.id),
     );
     if (surfaces.length === 0) return null;
 
@@ -25,8 +32,8 @@ function stripSupervisorSurfacesFromTree(tree: SplitNode, transientSurfaceIds: R
     };
   }
 
-  const left = stripSupervisorSurfacesFromTree(tree.children[0], transientSurfaceIds);
-  const right = stripSupervisorSurfacesFromTree(tree.children[1], transientSurfaceIds);
+  const left = stripTransientSurfacesFromTree(tree.children[0], transientSurfaceIds);
+  const right = stripTransientSurfacesFromTree(tree.children[1], transientSurfaceIds);
   if (!left) return right;
   if (!right) return left;
   return { ...tree, children: [left, right] };
@@ -44,8 +51,9 @@ function treeHasSshSurface(tree: SplitNode): boolean {
 }
 
 /**
- * SSH workspaces own live connections and AI supervision owns transient renderer
- * state. Neither is restart-safe, so omit them from automatic session layouts.
+ * SSH workspaces own live connections, AI supervision owns transient renderer
+ * state, and Diff is an on-demand working-tree view. Omit them from automatic
+ * session layouts so startup never opens transient UI by itself.
  */
 export function omitNonRestorableWorkspaces<T extends {
   splitTree: SplitNode;
@@ -64,7 +72,7 @@ export function omitNonRestorableWorkspaces<T extends {
   workspaces.forEach((workspace, index) => {
     if (workspace.transientSupervisorWorkspace || workspace.title?.trim() === 'AI 监督') return;
     if (workspace.sshProfileId || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '') || treeHasSshSurface(workspace.splitTree)) return;
-    const splitTree = stripSupervisorSurfacesFromTree(workspace.splitTree, transientIds);
+    const splitTree = stripTransientSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;
     if (index === activeIndex) nextActiveIndex = retained.length;
     retained.push({ ...workspace, splitTree });

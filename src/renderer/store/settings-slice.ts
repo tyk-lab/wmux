@@ -276,12 +276,6 @@ export interface WorkspacePrefs {
   /** Show the welcome/tutorial screen on first launch (issue #22). */
   showWelcomeScreen: boolean;
   /**
-   * Auto-open a diff tab in the bottom pane when an in-pane agent
-   * edits/writes files (issue #63/#66). Defaults off — multi-pane agent
-   * workflows dislike focus steals; turn on in Settings if wanted.
-   */
-  autoOpenDiffTab: boolean;
-  /**
    * Ask before closing a session (issue #90): an accidental × or
    * Ctrl+Shift+W kills every PTY in the workspace. Defaults on; CLI/agent
    * programmatic closes never prompt.
@@ -304,8 +298,6 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   autoReorderOnNotification: false,
   defaultShell: '',
   showWelcomeScreen: false,
-  // Agent edits popping a diff tab steal focus in multi-pane workflows — opt in.
-  autoOpenDiffTab: false,
   // Accidental × / Ctrl+Shift+W kills every PTY in the session; ask first for agents.
   confirmWorkspaceClose: true,
   defaultSupervisorAgent: 'pi',

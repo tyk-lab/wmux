@@ -65,7 +65,10 @@ import {
   enqueueSupervisorDelivery,
   supervisorWakeDeliveryKind,
 } from './supervisor/delivery';
-import { omitNonRestorableWorkspaces } from './supervisor/session-restore';
+import {
+  omitNonRestorableWorkspaces,
+  shouldInitializeWorkspaceLayout,
+} from './supervisor/session-restore';
 import {
   handleSupervisorUserSubmit,
   resolvePendingApprovalsForManualTask,
@@ -122,13 +125,6 @@ function applyUserConfigTerminal(state: ReturnType<typeof useStore.getState>, te
     };
   }
   if (Object.keys(patch).length) state.setTerminalPrefs(patch);
-}
-
-/** Find the bottom-most pane in the split tree (follows last child of vertical splits) */
-function findBottomPane(node: SplitNode): PaneId | null {
-  if (node.type === 'leaf') return node.paneId;
-  if (node.direction === 'vertical') return findBottomPane(node.children[1]);
-  return findBottomPane(node.children[0]);
 }
 
 // ─── Shell-integration / hook metadata handlers (issue #53) ───────────────────
@@ -214,23 +210,6 @@ function markSessionIdleOnStop(
   });
 }
 
-/**
- * Auto-open a diff tab in the workspace's BOTTOM pane when Claude edits/writes
- * files. Opt-out via Settings → Workspace (issue #66): users who find the tab
- * popping up and stealing focus disruptive can turn it off entirely.
- */
-function maybeAutoOpenDiffTab(tool: string, ownerWs: WorkspaceInfo): void {
-  const state = useStore.getState();
-  if ((tool !== 'Edit' && tool !== 'Write') || !state.workspacePrefs.autoOpenDiffTab) return;
-  const bottomPaneId = findBottomPane(ownerWs.splitTree);
-  if (!bottomPaneId) return;
-  const bottomLeaf = findLeafFromTree(ownerWs.splitTree, bottomPaneId);
-  // Only add diff tab if bottom pane doesn't already have one
-  if (bottomLeaf && !bottomLeaf.surfaces.some(s => s.type === 'diff')) {
-    state.addSurface(ownerWs.id, bottomPaneId, 'diff');
-  }
-}
-
 function handlePortsUpdate(cmd: any, updateWorkspaceMetadata: StoreAction): void {
   try {
     const portsByPid = JSON.parse(cmd.args?.[0] || '{}');
@@ -251,7 +230,7 @@ function handlePortsUpdate(cmd: any, updateWorkspaceMetadata: StoreAction): void
     for (const ws of useStore.getState().workspaces) {
       updateWorkspaceMetadata(ws.id, { ports: devPorts.length > 0 ? devPorts : undefined });
     }
-  } catch {}
+  } catch { /* Ignore malformed hook port metadata. */ }
 }
 
 /** `wmux notify <text>` — works even outside a pane (falls back to active workspace). */
@@ -790,9 +769,21 @@ export default function App() {
   // Else prefer the rolling auto-saved session, then the most recent named
   // session, then a fresh default.
   useEffect(() => {
+    let cancelled = false;
+    const canInitialize = () => (
+      !cancelled
+      && shouldInitializeWorkspaceLayout(useStore.getState().workspaces.length)
+    );
+
+    // React remounts this component during Vite HMR. Replaying a cold-start
+    // restore here would replace the live layout with the persisted layout,
+    // which deliberately excludes transient AI supervisor terminals.
+    if (!canInitialize()) return () => { cancelled = true; };
+
     (async () => {
       try {
         const launchDir = await window.wmux?.system?.consumeLaunchDirectory?.();
+        if (!canInitialize()) return;
         if (typeof launchDir === 'string' && launchDir.trim()) {
           openFolderWorkspace(launchDir);
           return;
@@ -801,6 +792,7 @@ export default function App() {
 
       try {
         const autoSaved = await window.wmux?.session?.loadAuto?.();
+        if (!canInitialize()) return;
         if (autoSaved && Array.isArray(autoSaved.workspaces) && autoSaved.workspaces.length > 0) {
           const { replaceAllWorkspaces } = useStore.getState();
           const restored = omitNonRestorableWorkspaces(autoSaved.workspaces, autoSaved.activeIndex);
@@ -810,11 +802,13 @@ export default function App() {
             return;
           }
         }
-      } catch {}
+      } catch { /* Fall through to the most recent named session. */ }
       try {
         const sessions = await window.wmux?.session?.list();
+        if (!canInitialize()) return;
         if (sessions && sessions.length > 0) {
           const session = await window.wmux?.session?.load(sessions[0].name);
+          if (!canInitialize()) return;
           if (session) {
             const { replaceAllWorkspaces } = useStore.getState();
             const restored = omitNonRestorableWorkspaces(session.workspaces);
@@ -825,15 +819,16 @@ export default function App() {
             }
           }
         }
-      } catch {}
+      } catch { /* Fall through to a fresh workspace. */ }
       // No saved session — create default workspace
-      if (useStore.getState().workspaces.length === 0) {
+      if (canInitialize()) {
         createWorkspace({
           title: 'Session 1',
           splitTree: buildDefaultSplitTree(),
         });
       }
     })();
+    return () => { cancelled = true; };
   }, [createWorkspace, openFolderWorkspace]);
 
   // Expose helpers for main process queries + pipe bridge
@@ -986,14 +981,6 @@ export default function App() {
           },
         };
       });
-
-      // Diff tab opens in the workspace that OWNS the pane (issue #63). A
-      // surfaceId that doesn't resolve here belongs to another window —
-      // opening a diff tab in whatever workspace is focused would misfire.
-      const ownerWs = event.surfaceId
-        ? workspaceForSurface(event.surfaceId)
-        : state.workspaces.find(w => w.id === state.activeWorkspaceId);
-      if (ownerWs) maybeAutoOpenDiffTab(event.tool, ownerWs);
     });
     return unsub;
   }, []);

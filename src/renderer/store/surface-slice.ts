@@ -185,8 +185,7 @@ const closedSurfaceStack: ClosedSurface[] = [];
 const MAX_CLOSED_SURFACES = 25;
 
 function pushClosedSurface(surface: SurfaceRef): void {
-  // Diff surfaces are auto-generated from hook events (issue #63) — reopening a
-  // stale one is noise, so don't track them.
+  // Diff is a derived working-tree view; reopening a stale one is noise.
   if (surface.type === 'diff') return;
   closedSurfaceStack.push({
     type: surface.type,

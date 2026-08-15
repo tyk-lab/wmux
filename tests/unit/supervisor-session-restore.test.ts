@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import type { SplitNode } from '../../src/shared/types';
-import { omitNonRestorableWorkspaces } from '../../src/renderer/supervisor/session-restore';
+import {
+  omitNonRestorableWorkspaces,
+  shouldInitializeWorkspaceLayout,
+} from '../../src/renderer/supervisor/session-restore';
 
 function leaf(surfaces: any[], activeSurfaceIndex = 0): SplitNode {
   return { type: 'leaf', paneId: 'pane-a' as any, surfaces, activeSurfaceIndex };
 }
 
 describe('supervisor session restore', () => {
+  it('restores layouts only for a cold store, not an HMR remount with live terminals', () => {
+    expect(shouldInitializeWorkspaceLayout(0)).toBe(true);
+    expect(shouldInitializeWorkspaceLayout(1)).toBe(false);
+    expect(shouldInitializeWorkspaceLayout(3)).toBe(false);
+  });
+
   it('omits dedicated supervisor terminals and the supervisor panel from restored layouts', () => {
     const result = omitNonRestorableWorkspaces([
       {
@@ -18,6 +27,23 @@ describe('supervisor session restore', () => {
         ], 2),
       },
     ]);
+
+    expect(result.workspaces).toHaveLength(1);
+    const restored = result.workspaces[0].splitTree;
+    expect(restored.type).toBe('leaf');
+    if (restored.type !== 'leaf') return;
+    expect(restored.surfaces).toEqual([{ id: 'worker', type: 'terminal' }]);
+    expect(restored.activeSurfaceIndex).toBe(0);
+  });
+
+  it('does not restore a saved Diff tab on startup', () => {
+    const result = omitNonRestorableWorkspaces([{
+      id: 'ws-work' as any,
+      splitTree: leaf([
+        { id: 'worker' as any, type: 'terminal' },
+        { id: 'working-tree-diff' as any, type: 'diff' },
+      ], 1),
+    }]);
 
     expect(result.workspaces).toHaveLength(1);
     const restored = result.workspaces[0].splitTree;

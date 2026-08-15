@@ -328,7 +328,7 @@ export function useKeyboardShortcuts(
       openMarkdownPanel: () => { if (activeWorkspaceId && focusedPaneId) addSurface(activeWorkspaceId, focusedPaneId, 'markdown'); },
       // Focus-or-create: the diff panel is a singleton view of the working tree,
       // so if the focused pane already has a diff tab, jump to it rather than
-      // stacking a duplicate (the auto-open hook in App.tsx dedups the same way).
+      // stacking a duplicate.
       openDiffPanel: () => {
         if (!activeWorkspaceId || !focusedPaneId) return;
         const st = useStore.getState();

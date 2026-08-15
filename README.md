@@ -40,6 +40,17 @@ Vite 就绪后应用窗口会自动打开。渲染进程代码修改后支持热
 
 > **开发时验证 Agent 侧栏：** 改完主进程 / CLI 后需 `npm run build:main` 并**重启** wmux；只热更渲染进程不会带上 `report-agent` / `wrap` 链路。
 
+#### 日常重新编译
+
+在仓库根目录执行：
+
+```powershell
+npm run build:main      # 重新编译主进程、preload 和 CLI
+npm run build:renderer  # 重新编译 React Renderer
+```
+
+修改主进程、preload 或 CLI 后，需要停止并重新运行 `npm run dev`；仅修改 Renderer 时，开发模式通常会自动热更新。
+
 ## 环境变量与敏感配置（必读）
 
 `docs/env.txt` 包含飞书 / Lark 等第三方服务的敏感凭据（App ID、App Secret、会话 ID 等），**仅限本地开发使用，绝不能提交到远程仓库**。该文件已加入忽略列表，如果你从其他地方复制了它，请确认：
