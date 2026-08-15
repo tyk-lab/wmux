@@ -259,6 +259,39 @@ describe('飞书人工决策单聊路由', () => {
     expect(control.mock.calls.some(([command]) => command.action === 'waiting-decision')).toBe(false);
   });
 
+  it('新方向信息不足再次待续时重新发送最新待续卡', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async (command: { action: string }) => command.action === 'supervisor-screen'
+      ? { ok: true, answer: '新方向信息不足，请补充明确目标和验收条件。' }
+      : { ok: true });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    const firstWaiting = waitingRecord();
+    service.onRecord(firstWaiting);
+
+    await vi.waitFor(() => expect(send.mock.calls.filter(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ))).toHaveLength(1));
+    service.onRecord({
+      ...firstWaiting,
+      type: 'supervisor.waiting-resumed',
+      payload: { source: 'remote-supervisor-message' },
+    });
+    service.onRecord({
+      ...firstWaiting,
+      ts: firstWaiting.ts + 2,
+      payload: { ...firstWaiting.payload, reason: '新方向信息不足，等待用户补充' },
+    });
+
+    await vi.waitFor(() => expect(send.mock.calls.filter(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ))).toHaveLength(2));
+    const waitingCards = send.mock.calls.filter(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ));
+    expect(JSON.stringify(waitingCards[1][1])).toContain('新方向信息不足，等待用户补充');
+  });
+
   it('监督模型限流时通过人工决策单聊主动告警', async () => {
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
     const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
@@ -360,6 +393,62 @@ describe('飞书人工决策单聊路由', () => {
       action: 'decide', approvalId: 'appr-select', decision: 'approve', selection: '方案 B',
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+  });
+
+  it('决策校验失败后刷新原卡并允许再次提交', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    let decisionAttempts = 0;
+    const control = vi.fn(async (command: { action: string }) => {
+      if (command.action === 'decision-context') return { ok: true };
+      if (command.action === 'decide') {
+        decisionAttempts += 1;
+        return decisionAttempts === 1
+          ? { ok: false, error: 'AI 监督提供了多个方案，请先选择其中一个方案。' }
+          : { ok: true, message: '已选择 方案 B；AI 监督将整理后发送到任务终端。' };
+      }
+      return { ok: true };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    service.onRecord(approvalRecord('appr-retry'));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    const approvalCallIndex = send.mock.calls.findIndex(([, payload]) => (
+      JSON.stringify(payload).includes('确认并采用 AI 方案')
+    ));
+    const messageId = `om-${approvalCallIndex + 1}`;
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_decide_approve',
+        value: { wmux_action: 'decide', approval_id: 'appr-retry', decision: 'approve' },
+      },
+      raw: { action: { form_value: { decision_input: '进入待续状态' } } },
+    });
+
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const refreshedCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(refreshedCard).toContain('未提交：AI 监督提供了多个方案，请先选择其中一个方案。');
+    expect(refreshedCard).toContain('确认并采用 AI 方案');
+    expect(refreshedCard).toContain('进入待续状态');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured',
+      messageId,
+      operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_decide_approve',
+        value: { wmux_action: 'decide', approval_id: 'appr-retry', decision: 'approve' },
+      },
+      raw: { action: { form_value: { decision_choice: '方案 B', decision_input: '进入待续状态' } } },
+    });
+
+    await vi.waitFor(() => expect(decisionAttempts).toBe(2));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(control.mock.calls.filter(([command]) => command.action === 'decide')).toHaveLength(2);
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('人工决策已处理');
   });
 
   it('采用 AI 当前方案时将飞书填写的信息交给监督端整理', async () => {

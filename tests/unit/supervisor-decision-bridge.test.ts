@@ -1396,6 +1396,73 @@ describe('supervisor decision bridge', () => {
     });
   });
 
+  it('returns to waiting and emits a new waiting event when resumed direction is insufficient', () => {
+    const appendRecord = vi.fn(async () => undefined);
+    (globalThis.window as any).wmux.supervisor = { appendRecord };
+    useStore.getState().updateLane('lane-a', {
+      config: { waitForNextDirection: true, stopWhen: '当前阶段测试通过' },
+      awaitingDirectionAfterWaitingResume: true,
+    });
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'direction-needed',
+      reason: '新方向只有“继续看看”，缺少明确目标和验收条件',
+    })).toMatchObject({ ok: true, outcome: 'needs-human', waiting: true });
+
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      enabled: true,
+      controlState: 'waiting',
+      stopConfirmed: true,
+      awaitingReview: false,
+      awaitingDirectionAfterWaitingResume: false,
+    });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+    expect(appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'supervisor.waiting-for-direction',
+      payload: expect.objectContaining({
+        reason: '新方向只有“继续看看”，缺少明确目标和验收条件',
+      }),
+    }));
+  });
+
+  it('keeps real human decisions as approvals after a waiting lane resumes', () => {
+    useStore.getState().updateLane('lane-a', {
+      config: { waitForNextDirection: true, stopWhen: '当前阶段测试通过' },
+      awaitingDirectionAfterWaitingResume: true,
+    });
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      reason: '需要用户决定是否发布到生产环境',
+    })).toMatchObject({ ok: true, outcome: 'needs-human' });
+
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      awaitingReview: true,
+      awaitingDirectionAfterWaitingResume: true,
+    });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+  });
+
+  it('rejects direction-needed outside a resumed waiting cycle', () => {
+    useStore.getState().updateLane('lane-a', {
+      config: { waitForNextDirection: true, stopWhen: '当前阶段测试通过' },
+      awaitingDirectionAfterWaitingResume: false,
+    });
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'direction-needed',
+      reason: '缺少下一步方向',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('仅可用于待续恢复后'),
+    });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
   it('does not append a supervisor next step to an unsubmitted user draft', () => {
     screenText = '│ > 用户尚未提交的任务草稿';
     const terminal = surfaceTerminalRegistry.get('worker-a') as any;

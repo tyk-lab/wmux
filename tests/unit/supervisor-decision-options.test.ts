@@ -51,6 +51,59 @@ describe('supervisor decision options', () => {
     ]);
   });
 
+  it('extracts bold Markdown headings and recommendation annotations', () => {
+    expect(supervisorDecisionOptions(
+      '- **方案 A（推荐）**：保持现有实现并补测试\n- **方案 B**：切换到新实现',
+      '推荐方案 A',
+    )).toEqual([
+      { value: '方案 A', title: '方案 A', detail: '保持现有实现并补测试' },
+      { value: '方案 B', title: '方案 B', detail: '切换到新实现' },
+    ]);
+  });
+
+  it('extracts Chinese-numbered and English-labelled proposals', () => {
+    expect(supervisorDecisionOptions(
+      '### 方案一：保守修复\n### 方案二：完整迁移',
+      '',
+    ).map((option) => option.value)).toEqual(['方案一', '方案二']);
+    expect(supervisorDecisionOptions(
+      'Option 1: Keep compatibility\nPlan 2: Replace the API',
+      '',
+    ).map((option) => option.value)).toEqual(['选项 1', '选项 2']);
+  });
+
+  it('extracts circled and plain bullet choices in explicit choice contexts', () => {
+    expect(supervisorDecisionOptions(
+      undefined,
+      '请选择下一步：\n① 保持当前路线\n② 切换实现',
+    ).map((option) => option.value)).toEqual(['选项 1', '选项 2']);
+    expect(supervisorDecisionOptions(
+      '- 保持当前路线\n- 切换到兼容层',
+      '',
+    ).map((option) => option.detail)).toEqual(['保持当前路线', '切换到兼容层']);
+  });
+
+  it('extracts options from a Markdown comparison table', () => {
+    expect(supervisorDecisionOptions(
+      '| 方案 | 说明 | 风险 |\n| --- | --- | --- |\n| A | 保持接口 | 低 |\n| B | 重写接口 | 高 |',
+      '',
+    )).toEqual([
+      { value: '方案 A', title: '方案 A', detail: '保持接口；低' },
+      { value: '方案 B', title: '方案 B', detail: '重写接口；高' },
+    ]);
+  });
+
+  it('does not treat generic tables or plan metadata bullets as choices', () => {
+    expect(supervisorDecisionOptions(
+      undefined,
+      '| 序号 | 测试结果 |\n| --- | --- |\n| 1 | 通过 |\n| 2 | 失败 |',
+    )).toHaveLength(1);
+    expect(supervisorDecisionOptions(
+      '当前方案：\n- 优点：改动较小\n- 风险：仍需回归测试',
+      '继续采用当前方案',
+    )).toHaveLength(1);
+  });
+
   it('does not treat an ordinary numbered procedure as user choices', () => {
     expect(supervisorDecisionOptions(
       undefined,
@@ -60,6 +113,10 @@ describe('supervisor decision options', () => {
       title: '采用 AI 当前建议',
       detail: '继续当前路线：\n1. 更新实现\n2. 运行测试\n3. 整理结果',
     }]);
+    expect(supervisorDecisionOptions(
+      undefined,
+      '执行步骤：\n- 更新实现\n- 运行测试\n- 整理结果',
+    )).toHaveLength(1);
   });
 
   it('offers the current recommendation when AI provides no structured alternatives', () => {

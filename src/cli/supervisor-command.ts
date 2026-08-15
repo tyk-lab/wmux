@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]';
+export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]';
 
 const MAX_NEXT_CHARS = 4_000;
 

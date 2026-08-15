@@ -777,6 +777,11 @@
   box-shadow: 0 0 6px rgba(217, 164, 65, 0.55);
 }
 
+.sup-panel[data-waiting='1'] .sup-panel__dot {
+  background: #e2aa4f;
+  box-shadow: 0 0 6px rgba(226, 170, 79, 0.62);
+}
+
 .sup-panel__title {
   font-weight: 600;
   text-transform: lowercase;
@@ -801,7 +806,8 @@
   line-height: 1.35;
 }
 
-.sup-panel__paused-notice {
+.sup-panel__paused-notice,
+.sup-panel__waiting-notice {
   margin: 0 8px 8px;
   padding: 7px 9px;
   border: 1px solid rgba(217, 164, 65, 0.28);
@@ -810,6 +816,12 @@
   color: rgba(255, 218, 145, 0.92);
   font-size: 11px;
   line-height: 1.4;
+}
+
+.sup-panel__waiting-notice {
+  border-color: rgba(226, 170, 79, 0.34);
+  background: rgba(226, 170, 79, 0.1);
+  color: rgba(255, 222, 157, 0.96);
 }
 
 .sup-panel__goal {
@@ -829,6 +841,11 @@
   padding: 6px 8px;
   border-radius: 5px;
   background: rgba(0, 0, 0, 0.18);
+}
+
+.sup-panel__lane[data-control-state='waiting'] {
+  box-shadow: inset 0 0 0 1px rgba(226, 170, 79, 0.38);
+  background: rgba(226, 170, 79, 0.07);
 }
 
 .sup-panel__lane-head {

@@ -112,6 +112,7 @@ describe('supervisor user input precedence', () => {
       stopConfirmed: false,
       awaitingStopCheck: false,
       awaitingReview: true,
+      awaitingDirectionAfterWaitingResume: true,
       autoDecisionsUsed: 0,
     });
     expect(useStore.getState().supervisor.log[0]).toMatchObject({

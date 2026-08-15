@@ -28,6 +28,7 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--outcome <continue|rework|complete|needs-human>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
   });
 
   it('reads long next text only from .wmux/tmp and removes it through the cleanup callback', () => {

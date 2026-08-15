@@ -138,7 +138,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     },
   );
   let statusLabel = '已停止';
-  if (supervisor.active) statusLabel = enabled.length === 0 && waiting.length > 0 ? '待续' : '运行中';
+  if (supervisor.active) {
+    statusLabel = enabled.length === 0 && waiting.length > 0
+      ? '待续'
+      : waiting.length > 0
+        ? `运行中 · ${waiting.length} 待续`
+        : '运行中';
+  }
   else if (supervisor.paused) statusLabel = '已暂停';
 
   const openSupervisorSession = () => {
@@ -656,6 +662,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       className="sup-panel"
       data-active={supervisor.active ? '1' : '0'}
       data-paused={supervisor.paused ? '1' : '0'}
+      data-waiting={waiting.length > 0 ? '1' : '0'}
       data-collapsed={collapsed ? '1' : '0'}
     >
       <button
@@ -680,6 +687,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               {missingDedicatedSupervisor
                 ? '会话已暂停，但专属监督终端已缺失；请停止后重新配置。'
                 : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续监督”即可恢复。'}
+            </div>
+          )}
+          {supervisor.active && waiting.length > 0 && (
+            <div className="sup-panel__waiting-notice" role="status">
+              当前有 {waiting.length} 个 AI 监督通道处于待续状态，正在等待用户提供新方案或下一步方向。
             </div>
           )}
           <div className="sup-panel__freedom">
@@ -736,6 +748,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 <div
                   key={lane.id}
                   className="sup-panel__lane"
+                  data-control-state={laneControlState}
                   data-details-collapsed={laneDetailsCollapsed ? '1' : '0'}
                 >
                   {lane.stopConfirmed ? (

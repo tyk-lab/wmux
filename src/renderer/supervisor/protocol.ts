@@ -1,10 +1,11 @@
-import type {
-  StopWhenKind,
-  SupervisorLane,
-  SupervisorLaneConfig,
-  SupervisorMode,
-  SupervisorSession,
-  SupervisorStep,
+import {
+  supervisorLaneControlState,
+  type StopWhenKind,
+  type SupervisorLane,
+  type SupervisorLaneConfig,
+  type SupervisorMode,
+  type SupervisorSession,
+  type SupervisorStep,
 } from '../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
@@ -271,7 +272,7 @@ export function humanDecisionBoundary(
     ...autonomyPermissionBoundary(permissions),
     '只有重大任务方向/范围变化、不可逆或高影响操作（安全、关键数据、生产、发布或对外提交）、需求/业务取舍，或缺少用户独有信息、凭据或授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
-    '使用 needs-human 时附 --proposal-kind route-change 或 important；--reason 只写清需要用户决定什么，--impact 写清为什么必须由用户决定，方案和推荐不要混入这两个字段；具体方案统一写入 --alternatives。只有确属用户偏好/授权的多个方案才等待用户选择；多个方案的 --alternatives 必须按“方案 A：...；方案 B：...”格式列出，供单聊决策卡生成选择框。',
+    '使用 needs-human 时附 --proposal-kind route-change 或 important；待续恢复后仅当用户的新方向仍不足以形成可执行下一步时，改用 --proposal-kind direction-needed。--reason 只写清需要用户决定或补充什么，--impact 写清为什么必须由用户决定，方案和推荐不要混入这两个字段；具体方案统一写入 --alternatives。只有确属用户偏好/授权的多个方案才等待用户选择；多个方案的 --alternatives 必须按“方案 A：...；方案 B：...”格式列出，供单聊决策卡生成选择框。',
     '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',
     '不得使用通用 wmux send / send-key 绕过裁决桥；所有工作终端输入必须由 wmux supervisor decide 按已选权限和范围校验。',
     LONG_NEXT_TEMP_FILE_RULE,
@@ -385,13 +386,35 @@ export function buildSupervisorBriefing(
   laneState: { lane: SupervisorLane; state: string },
 ): string {
   const { lane, state } = laneState;
-  const worker = `${lane.label} | ${lane.surfaceId} | 状态=${state}`;
+  const laneControlState = supervisorLaneControlState(lane);
+  const channelState = !session.active
+    ? (session.paused ? '已暂停' : '待启动')
+    : ({
+        active: '运行中',
+        paused: '已暂停',
+        waiting: '待续',
+        stopped: '已停止',
+      } as const)[laneControlState];
+  const taskAgentState = ({
+    working: '工作中',
+    idle: '空闲（已收到 Agent 状态）',
+    blocked: '等待人工处理',
+    unknown: '未检测到可信 Agent 状态',
+  } as const)[state as 'working' | 'idle' | 'blocked' | 'unknown']
+    || `未识别状态（${state}）`;
+  const worker = [
+    `任务终端: ${lane.label} | ${lane.surfaceId}`,
+    `监督通道状态: ${channelState}`,
+    `待裁决轮次: ${lane.awaitingReview ? '有' : '无（监听中，等待任务结束或阻塞事件）'}`,
+    `任务终端 Agent 活动状态: ${taskAgentState}${state === 'unknown' ? '（原始值 unknown）' : ''}`,
+    '状态说明: 任务终端 Agent 活动状态与监督通道状态相互独立；unknown 只表示没有可信 Agent 状态报告，不得据此断言监督通道异常或任务尚未启动，应先 read-screen 核对终端正文。',
+  ].join('\n');
   const taskGoal = effectiveSupervisorTaskGoal(session, lane);
   const currentTask = lane.currentTask?.trim() || '';
   const laneConfig = effectiveSupervisorLaneConfig(session, lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
   const completionBehavior = laneConfig.waitForNextDirection
-    ? '达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待用户的新指令或方向。'
+    ? '达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待用户的新指令或方向。待续恢复后，若用户的新方向仍不足以形成可执行下一步，使用 needs-human 并附 --proposal-kind direction-needed 说明缺少的信息；wmux 会让通道再次进入待续并重新通知用户。权限、业务取舍或路线变更仍使用原有人工决策类型，不得标记 direction-needed。'
     : '达到停止条件后提交 complete；wmux 会把本通道正式停止。';
   const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
   const autonomous = effectiveSupervisorAutonomous(session, lane);

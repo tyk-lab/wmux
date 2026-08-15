@@ -60,6 +60,12 @@ interface ApprovalCard {
   messageId: string;
   approvalId: string;
   chatId: string;
+  record: SupervisorRecord;
+}
+
+interface ApprovalCardFeedback {
+  error?: string;
+  decisionInput?: string;
 }
 
 interface WaitingDecisionCard {
@@ -1820,7 +1826,7 @@ function decisionOptions(
 }
 
 /** JSON 2.0 is required for form inputs; legacy cards silently drop these controls. */
-export function buildApprovalCard(record: SupervisorRecord): object {
+export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCardFeedback = {}): object {
   const payload = record.payload || {};
   const reason = String(payload.reason || '需要人工决策').slice(0, 800);
   const impact = String(payload.impact || '未提供').slice(0, 500);
@@ -1842,8 +1848,16 @@ export function buildApprovalCard(record: SupervisorRecord): object {
   const choices = hasMultipleChoices ? [{
     text: { tag: 'plain_text' as const, content: '无' },
     value: SUPERVISOR_NO_DECISION_OPTION,
+    selected: true,
   }, ...decisionChoices] : decisionChoices;
   const formElements: object[] = [
+    ...(feedback.error ? [{
+      tag: 'div',
+      text: {
+        tag: 'plain_text',
+        content: `未提交：${feedback.error.slice(0, 500)} 请修改后再次点击处理按钮。`,
+      },
+    }] : []),
     { tag: 'markdown', content: isContextRecovery ? '**AI 监督拟定的任务恢复指令**' : '**AI 建议**' },
     { tag: 'div', text: { tag: 'plain_text', content: recommendation } },
     { tag: 'markdown', content: '**任务终端核心信息**' },
@@ -1864,6 +1878,7 @@ export function buildApprovalCard(record: SupervisorRecord): object {
       rows: 4, max_length: 1000,
       label: { tag: 'plain_text', content: '用户决策或补充信息（可选）' },
       placeholder: { tag: 'plain_text', content: '填写后可交给 AI 监督整理，或直接发送到任务终端' },
+      ...(feedback.decisionInput ? { default_value: feedback.decisionInput.slice(0, 1000) } : {}),
     }, {
       tag: 'div', text: { tag: 'plain_text', content: '点击“采用 AI 方案”会把所选方案和这里的信息交给 AI 监督整理；选择“无”时必须填写这里的信息。点击“直接发送用户输入”则不经过 AI 监督整理，直接提交到任务终端。' },
     }] : []),
@@ -2168,9 +2183,17 @@ export class FeishuSupervisorService {
     const failed = !!(result && typeof result === 'object' && (result as { error?: string }).error);
     if (failed) {
       // Invalid decision data is correctable in the same card.
-      // Do not let the click dedupe prevent the user from submitting again.
+      // Rebuild the form because Feishu may keep the submitted form disabled
+      // even after the server-side dedupe key has been released.
       this.seen.delete(dedupeKey);
-      await this.sendText(`人工决策未执行：${summary(result)}`, event.chatId);
+      const failureMessage = summary(result);
+      if (card && this.channel) {
+        await this.channel.updateCard(card.messageId, buildApprovalCard(card.record, {
+          error: failureMessage,
+          decisionInput,
+        })).catch((err) => console.warn('[feishu] refresh rejected approval card failed', err));
+      }
+      await this.sendText(`人工决策未执行：${failureMessage}`, event.chatId);
       return;
     }
     if (value.decision === 'pause') {
@@ -2907,7 +2930,12 @@ export class FeishuSupervisorService {
         },
       };
       const sent = await this.channel.send(chatId, { card: buildApprovalCard(displayRecord) });
-      this.approvalCards.set(approvalId, { approvalId, messageId: sent.messageId, chatId });
+      this.approvalCards.set(approvalId, {
+        approvalId,
+        messageId: sent.messageId,
+        chatId,
+        record: displayRecord,
+      });
       if (this.approvalCards.size > 100) this.approvalCards.delete(this.approvalCards.keys().next().value as string);
     } catch (err) {
       console.warn('[feishu] send approval card failed', err);

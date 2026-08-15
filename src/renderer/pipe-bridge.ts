@@ -575,7 +575,8 @@ export function isSupervisorProposalAllowed(outcome: string, proposalKind: strin
   if (proposalKind === 'route-adjustment') return outcome === 'continue' || outcome === 'rework';
   return (proposalKind === 'route-change'
     || proposalKind === 'important'
-    || proposalKind === 'context-recovery') && outcome === 'needs-human';
+    || proposalKind === 'context-recovery'
+    || proposalKind === 'direction-needed') && outcome === 'needs-human';
 }
 
 /** A supervisor may advance work only from a continuation/rework or a human proposal. */
@@ -2176,13 +2177,20 @@ export function initPipeBridge(): void {
     }
     const autonomous = effectiveSupervisorAutonomous(session, lane);
     const remoteSshControl = isRemoteSshControlledLane(lane, store.workspaces);
+    const laneConfig = effectiveSupervisorLaneConfig(session, lane);
     if (lane.autoDecisionLimitReached && !autonomous) {
       return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
     }
     // A supervisor must not smuggle a declared route/important proposal through
     // an auto-continue decision. Such proposals always stop for user consent.
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
-      return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；重大路线变更或重要建议必须使用 needs-human' };
+      return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；重大路线变更、重要建议或待续方向不足必须使用对应 proposal-kind 配合 needs-human' };
+    }
+    if (proposalKind === 'direction-needed' && !(
+      lane.awaitingDirectionAfterWaitingResume
+      && laneConfig.waitForNextDirection
+    )) {
+      return { ok: false, error: 'direction-needed 仅可用于待续恢复后新方向仍不足的通道' };
     }
     if (proposalKind === 'context-recovery') {
       if (lane.contextRecoveryStatus !== 'draft-pending') {
@@ -2225,7 +2233,6 @@ export function initPipeBridge(): void {
       session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
       lane.scopeRoot || lane.projectDir,
     );
-    const laneConfig = effectiveSupervisorLaneConfig(session, lane);
     if (outcome !== 'needs-human' && scopeBlockReason) {
       return { ok: false, error: `${scopeBlockReason}；超出工作范围的动作必须使用 needs-human` };
     }
@@ -2403,6 +2410,7 @@ export function initPipeBridge(): void {
     }
 
     if (outcome === 'complete') {
+      store.updateLane(lane.id, { awaitingDirectionAfterWaitingResume: false });
       store.confirmStopCondition(lane.id);
       announceSupervisorWaitingForDirection(lane, reason || '监督 AI 已确认达到停止条件');
       return { ok: true, outcome };
@@ -2483,6 +2491,23 @@ export function initPipeBridge(): void {
     }
 
     if (outcome === 'needs-human') {
+      if (proposalKind === 'direction-needed'
+        && lane.awaitingDirectionAfterWaitingResume
+        && laneConfig.waitForNextDirection) {
+        store.updateLane(lane.id, {
+          enabled: true,
+          controlState: 'waiting',
+          awaitingStopCheck: false,
+          stopConfirmed: true,
+          awaitingReview: false,
+          awaitingDirectionAfterWaitingResume: false,
+          autoDecisionLimitReached: false,
+        });
+        const waitingReason = reason || '用户提供的新方向信息仍不足，等待补充';
+        store.appendSupervisorLog(lane.id, '新方向信息不足，返回待续', waitingReason);
+        announceSupervisorWaitingForDirection(lane, waitingReason);
+        return { ok: true, outcome, waiting: true };
+      }
       store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
       const kind = proposalKinds.has(proposalKind)
         ? proposalKind as 'route-change' | 'important' | 'context-recovery'
@@ -2535,6 +2560,7 @@ export function initPipeBridge(): void {
     const finishDecision = (delivery?: SupervisorDeliveryObservation) => {
       store.updateLane(lane.id, {
         awaitingReview: false,
+        awaitingDirectionAfterWaitingResume: false,
         ...(isQuestionBlockedState(agentState) ? {
           lastBlockedResponseVersion: agentState.blockedVersion,
           lastBlockedResponseId: agentState.blockedRequestId || undefined,

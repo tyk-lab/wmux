@@ -45,6 +45,7 @@ export function resumeWaitingLaneFromSupervisorInput(
     stopConfirmed: false,
     awaitingReview: true,
     resumeAfterCancelledDecision: false,
+    awaitingDirectionAfterWaitingResume: true,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
@@ -98,6 +99,7 @@ export function handleSupervisorUserSubmit(surfaceId: string): boolean {
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
+    ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
   appendSupervisorRecord(session, lane, 'worker.user-submit', {
     resolvedApproval,

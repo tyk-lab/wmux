@@ -12,6 +12,12 @@ const panelSource = fs.readFileSync(
 );
 
 describe('supervisor setup dialog feedback', () => {
+  it('defaults new supervision lanes to wait for the next direction after completion', () => {
+    expect(dialogSource).toMatch(
+      /function emptyLaneConfig\(\): SupervisorLaneConfig \{[\s\S]*?waitForNextDirection: true,/,
+    );
+  });
+
   it('uses non-blocking inline notices instead of native alerts', () => {
     expect(dialogSource).not.toContain('window.alert');
     expect(dialogSource).toContain('className="supervisor-dialog__notice"');
@@ -83,5 +89,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain("? 'stopped'");
     expect(panelSource).toContain("laneControlState === 'waiting'");
     expect(panelSource).toContain('等待下一步方向');
+  });
+
+  it('shows waiting state prominently in the supervisor header and lane card', () => {
+    expect(panelSource).toContain("? `运行中 · ${waiting.length} 待续`");
+    expect(panelSource).toContain('data-waiting={waiting.length > 0');
+    expect(panelSource).toContain('当前有 {waiting.length} 个 AI 监督通道处于待续状态');
+    expect(panelSource).toContain('data-control-state={laneControlState}');
   });
 });

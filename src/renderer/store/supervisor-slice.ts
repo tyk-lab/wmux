@@ -36,7 +36,7 @@ export interface SupervisorDecision {
   ts: number;
   task: string;
   outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
-  proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery';
+  proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery' | 'direction-needed';
   reason: string;
   next: string;
 }
@@ -112,6 +112,8 @@ export interface SupervisorLane {
   awaitingReview?: boolean;
   /** Marks review created by alternate input so resume clears only this lane. */
   resumeAfterCancelledDecision?: boolean;
+  /** The current review began by resuming a waiting lane and still needs an actionable direction. */
+  awaitingDirectionAfterWaitingResume?: boolean;
   /** Blocked-request generation already answered for a permission or technical question. */
   lastBlockedResponseVersion?: number;
   /** Stable blocked-request identity; unlike a counter, it cannot collide after an agent restart. */
@@ -394,6 +396,7 @@ export function clearSupervisorLaneContext(
     stopConfirmed: false,
     awaitingReview: false,
     resumeAfterCancelledDecision: false,
+    awaitingDirectionAfterWaitingResume: false,
     lastBlockedResponseVersion: undefined,
     lastBlockedResponseId: undefined,
     autoDecisionLimitReached: false,

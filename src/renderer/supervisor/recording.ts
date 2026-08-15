@@ -67,6 +67,7 @@ function proposalTitle(proposalKind: string): string {
     case 'route-change': return '路线变更';
     case 'important': return '重要建议';
     case 'context-recovery': return '上下文恢复指令';
+    case 'direction-needed': return '待续方向不足';
     default: return '';
   }
 }
