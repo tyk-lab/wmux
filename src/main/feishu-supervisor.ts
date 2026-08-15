@@ -1,6 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import fs from 'fs';
 import path from 'path';
+import { loadSettings } from './settings-store';
 import type { SupervisorRecord } from './supervisor-records';
 import { getAppDataDir } from '../shared/instance';
 import {
@@ -448,6 +449,12 @@ function terminalOptions(terminals: FeishuListTerminal[], showActivity = false):
   });
 }
 
+interface SavedTerminalPath {
+  id: string;
+  name: string;
+  cwd: string;
+}
+
 function compactTerminalPath(cwd: string): string {
   if (cwd.length <= 32) return cwd;
   const parsed = path.win32.parse(cwd);
@@ -479,7 +486,29 @@ function compactTerminalControlPath(cwd: string): string {
   return `${parsed.root}…${separator}${compactLeaf}`;
 }
 
+function savedTerminalPaths(): SavedTerminalPath[] {
+  const raw = loadSettings()['wmux-quick-launch-profiles'];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.flatMap((value) => {
+    if (!isObject(value) || value.type !== 'terminal'
+      || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.cwd !== 'string') return [];
+    const cwd = value.cwd.trim();
+    if (!cwd || !path.win32.isAbsolute(cwd) || seen.has(value.id)) return [];
+    seen.add(value.id);
+    return [{ id: value.id, name: value.name.trim() || compactTerminalPath(cwd), cwd }];
+  });
+}
+
+function savedTerminalPath(id: string): string | undefined {
+  return savedTerminalPaths().find((item) => item.id === id)?.cwd;
+}
+
 function terminalPathOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const saved = savedTerminalPaths().map((item) => ({
+    text: { tag: 'plain_text' as const, content: `${item.name} · ${compactTerminalPath(item.cwd)}`.slice(0, 100) },
+    value: `saved:${item.id}`,
+  }));
   const seen = new Set<string>();
   const candidates = terminals.flatMap((terminal) => {
     const rawCwd = terminal.cwd?.trim();
@@ -497,13 +526,13 @@ function terminalPathOptions(terminals: FeishuListTerminal[]): Array<{ text: { t
     labelCounts.set(key, (labelCounts.get(key) || 0) + 1);
   }
   const labelIndexes = new Map<string, number>();
-  return candidates.map((candidate) => {
+  return [...saved, ...candidates.map((candidate) => {
     const key = candidate.label.toLowerCase();
     const index = (labelIndexes.get(key) || 0) + 1;
     labelIndexes.set(key, index);
     const label = labelCounts.get(key) === 1 ? candidate.label : `${candidate.label} (${index})`;
-    return { text: { tag: 'plain_text', content: label }, value: candidate.value };
-  });
+    return { text: { tag: 'plain_text' as const, content: label }, value: candidate.value };
+  })];
 }
 
 function existingTerminalSessionOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
@@ -838,7 +867,7 @@ export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []
       ...(pathOptions.length > 0 ? [{
         tag: 'select_static', element_id: 'create_task_path', name: 'path_terminal',
         placeholder: { tag: 'plain_text', content: '不选择：按原规则新建任务目录' }, options: pathOptions,
-      }] : [{ tag: 'markdown', content: '当前没有可复用的终端路径；将按原规则新建任务目录。' }]),
+      }] : [{ tag: 'markdown', content: '当前没有已保存或可复用的终端路径；将按原规则新建任务目录。' }]),
       { tag: 'markdown', content: '**AI 终端类型（默认 Codex）**' },
       { tag: 'select_static', element_id: 'create_task_agent', name: 'agent', placeholder: { tag: 'plain_text', content: 'Codex（默认）' }, options: [
         { text: { tag: 'plain_text', content: 'Codex（默认）' }, value: 'codex' },
@@ -2372,10 +2401,12 @@ export class FeishuSupervisorService {
         }).catch(() => null);
         const currentTerminals = parseListResult(listResult)?.terminals || [];
         if (form.path_terminal) {
-          cwd = currentTerminals.find((terminal) => terminal.surfaceId === form.path_terminal)?.cwd;
+          cwd = form.path_terminal.startsWith('saved:')
+            ? savedTerminalPath(form.path_terminal.slice('saved:'.length))
+            : currentTerminals.find((terminal) => terminal.surfaceId === form.path_terminal)?.cwd;
         }
         if (form.path_terminal && !cwd) {
-          await this.sendText('所选终端已关闭或路径不可用，请刷新添加终端任务卡片后重试。', event.chatId);
+          await this.sendText('所选终端已关闭或路径不可用（已保存路径可能已删除）；请刷新添加终端任务卡片后重试。', event.chatId);
           return false;
         }
         if (sessionTarget !== 'new') {

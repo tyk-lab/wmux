@@ -5,7 +5,7 @@ import { QuickLaunchProfile, SurfaceType } from '../../../shared/types';
 const TYPES: SurfaceType[] = ['terminal', 'browser', 'markdown'];
 
 function blankProfile(): QuickLaunchProfile {
-  return { id: crypto.randomUUID(), name: 'New profile', type: 'terminal' };
+  return { id: crypto.randomUUID(), name: 'New profile', type: 'terminal', shell: 'pwsh.exe' };
 }
 
 export default function QuickLaunchSettings() {
@@ -30,6 +30,12 @@ export default function QuickLaunchSettings() {
     const fresh = imported.filter((p) => !existing.has(p.id));
     setProfiles([...profiles, ...fresh]);
     setImportNote(`Imported ${fresh.length} profile${fresh.length === 1 ? '' : 's'} from Windows Terminal.`);
+  };
+
+  const pickWorkingDirectory = async (id: string) => {
+    const result = await window.wmux?.system?.pickFolder?.();
+    if (!result || result.canceled || !result.path) return;
+    update(id, { cwd: result.path });
   };
 
   return (
@@ -94,6 +100,9 @@ export default function QuickLaunchSettings() {
                 placeholder="Working directory (optional)"
                 onChange={(e) => update(p.id, { cwd: e.target.value || undefined })}
               />
+              <button className="settings-button" onClick={() => void pickWorkingDirectory(p.id)}>
+                Choose directory
+              </button>
               <textarea
                 className="settings-input ql-profile__commands"
                 value={(p.startupCommands ?? []).join('\n')}

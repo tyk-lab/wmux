@@ -581,6 +581,11 @@ export default function SurfaceTabBar({
                         {profile.icon || surfaceIcon(profile.type, false)}
                       </span>
                       <span className="surface-tab-menu__profile-name">{profile.name}</span>
+                      {profile.type === 'terminal' && profile.cwd && (
+                        <span className="surface-tab-menu__badge" title={profile.cwd}>
+                          {profile.cwd.length > 28 ? `…${profile.cwd.slice(-27)}` : profile.cwd}
+                        </span>
+                      )}
                       {profile.source === 'project' && (
                         <span className="surface-tab-menu__badge">project</span>
                       )}
