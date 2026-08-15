@@ -143,7 +143,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
           window.webContents.send(IPC_CHANNELS.PTY_DATA, id, data);
         }
         // Feed Claude Code observer for sidebar activity display
-        try { observePtyData(id, data); } catch {}
+        try { observePtyData(id, data); } catch { /* Observer errors must not interrupt PTY output. */ }
       });
       const unsubExit = ptyManager.onExit(id, (code) => {
         if (window && !window.isDestroyed()) {
@@ -162,7 +162,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       return created;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to create terminal: ${msg}`);
+      throw new Error(`Failed to create terminal: ${msg}`, { cause: err });
     }
   });
 
