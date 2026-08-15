@@ -54,6 +54,7 @@ import {
 } from './shell-context-menu';
 import fs from 'fs';
 import path from 'path';
+import { initializeLoginStartup } from './login-startup';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -556,6 +557,8 @@ app.whenReady().then(() => {
   // A losing second instance is already quitting; don't run startup side effects.
   if (!gotInstanceLock) return;
   hardenWebContents();
+  const loginStartup = initializeLoginStartup(app);
+  if (!loginStartup.ok) console.warn('[wmux] Failed to apply login startup setting:', loginStartup.error);
   ensureClaudeHooks();
   ensureChromeDevtoolsConfig();
   ensureOrchestratorPlugin();

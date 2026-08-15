@@ -67,6 +67,14 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_SET_CONTEXT_MENU, enabled, label) as Promise<{
         ok: boolean; enabled: boolean; error?: string;
       }>,
+    getLoginStartup: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_LOGIN_STARTUP) as Promise<{
+        ok: boolean; enabled: boolean; error?: string;
+      }>,
+    setLoginStartup: (enabled: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_SET_LOGIN_STARTUP, enabled) as Promise<{
+        ok: boolean; enabled: boolean; error?: string;
+      }>,
     getShouldUseDarkColors: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_SHOULD_USE_DARK_COLORS) as Promise<boolean>,
     onNativeThemeUpdated: (callback: (shouldUseDarkColors: boolean) => void) => {
       const handler = (_event: any, shouldUseDarkColors: boolean) => callback(shouldUseDarkColors);

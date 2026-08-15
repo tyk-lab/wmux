@@ -398,6 +398,8 @@ export const IPC_CHANNELS = {
   SYSTEM_PICK_FOLDER: 'system:pickFolder',
   SYSTEM_GET_CONTEXT_MENU: 'system:getContextMenu',
   SYSTEM_SET_CONTEXT_MENU: 'system:setContextMenu',
+  SYSTEM_GET_LOGIN_STARTUP: 'system:getLoginStartup',
+  SYSTEM_SET_LOGIN_STARTUP: 'system:setLoginStartup',
   SYSTEM_GET_SHOULD_USE_DARK_COLORS: 'system:getShouldUseDarkColors',
   SYSTEM_NATIVE_THEME_UPDATED: 'system:nativeThemeUpdated',
   /** Cold-start folder from Explorer "Open in wmux" — one-shot consume. */

@@ -31,6 +31,12 @@ export const en = {
   'settings.general.uiTheme.light': 'Light',
   'settings.general.appearanceHint':
     'Controls the sidebar, tab bar, and window chrome. Terminal colors are set separately.',
+  // Settings — General panel — Windows startup
+  'settings.general.startupSection': 'Startup',
+  'settings.general.launchAtLogin': 'Start wmux when Windows starts',
+  'settings.general.launchAtLoginHint':
+    'Enabled by default. wmux starts after you sign in to Windows; you can turn it off here at any time.',
+  'settings.general.launchAtLoginFailed': 'Could not update the Windows startup setting.',
   // Settings — General panel — Explorer context menu
   'settings.general.shellSection': 'Windows Explorer',
   'settings.general.contextMenu': 'Add "Open in wmux" to the folder context menu',

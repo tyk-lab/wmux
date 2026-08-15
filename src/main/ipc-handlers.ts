@@ -27,6 +27,7 @@ import { saveNamedSession, loadNamedSession, listNamedSessions, deleteNamedSessi
 import { sessionWindows, toRestorePayload } from './session-windows';
 import { loadSettings, saveSetting } from './settings-store';
 import { getChangedFiles, getFileDiff } from './diff-provider';
+import { getLoginStartupEnabled, updateLoginStartup } from './login-startup';
 import {
   readMarkdownFile,
   isAllowedMarkdownPath,
@@ -842,6 +843,18 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       return { ok: false, enabled: isContextMenuInstalled(), error: (err as Error).message };
     }
   });
+
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_LOGIN_STARTUP, () => {
+    try {
+      return { ok: true, enabled: getLoginStartupEnabled(app) };
+    } catch (err) {
+      return { ok: false, enabled: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_SET_LOGIN_STARTUP, (_event, enabled: boolean) => (
+    updateLoginStartup(app, enabled === true)
+  ));
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_PICK_FOLDER, async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;

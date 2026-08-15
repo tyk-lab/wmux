@@ -47,12 +47,27 @@ export default function GeneralSettings() {
   const [contextMenu, setContextMenu] = useState(false);
   const [contextMenuBusy, setContextMenuBusy] = useState(false);
   const [contextMenuError, setContextMenuError] = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState(true);
+  const [launchAtLoginBusy, setLaunchAtLoginBusy] = useState(false);
+  const [launchAtLoginError, setLaunchAtLoginError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     window.wmux?.system?.getContextMenu?.()
       .then((on: boolean) => { if (!cancelled) setContextMenu(!!on); })
       .catch(() => { /* registry unreadable — leave the toggle showing off */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.wmux?.system?.getLoginStartup?.()
+      .then((result: { ok?: boolean; enabled?: boolean }) => {
+        if (cancelled) return;
+        if (typeof result?.enabled === 'boolean') setLaunchAtLogin(result.enabled);
+        setLaunchAtLoginError(result?.ok === false);
+      })
+      .catch(() => { if (!cancelled) setLaunchAtLoginError(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -72,6 +87,20 @@ export default function GeneralSettings() {
       setContextMenuError(true);
     } finally {
       setContextMenuBusy(false);
+    }
+  };
+
+  const applyLaunchAtLogin = async (next: boolean) => {
+    setLaunchAtLoginBusy(true);
+    setLaunchAtLoginError(false);
+    try {
+      const result = await window.wmux?.system?.setLoginStartup?.(next);
+      setLaunchAtLogin(result ? result.enabled : next);
+      setLaunchAtLoginError(!!result && !result.ok);
+    } catch {
+      setLaunchAtLoginError(true);
+    } finally {
+      setLaunchAtLoginBusy(false);
     }
   };
 
@@ -114,6 +143,23 @@ export default function GeneralSettings() {
       </div>
 
       <p className="settings-hint">{t('settings.general.appearanceHint')}</p>
+
+      <h3 className="settings-section-title">{t('settings.general.startupSection')}</h3>
+
+      <div className="settings-row">
+        <label className="settings-label">{t('settings.general.launchAtLogin')}</label>
+        <input
+          type="checkbox"
+          className="settings-toggle"
+          checked={launchAtLogin}
+          disabled={launchAtLoginBusy}
+          onChange={(e) => { applyLaunchAtLogin(e.target.checked); }}
+        />
+      </div>
+
+      <p className="settings-hint">
+        {launchAtLoginError ? t('settings.general.launchAtLoginFailed') : t('settings.general.launchAtLoginHint')}
+      </p>
 
       <h3 className="settings-section-title">{t('settings.general.shellSection')}</h3>
 
