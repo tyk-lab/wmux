@@ -38,8 +38,15 @@ describe('Windows login startup', () => {
       openAtLogin: true,
       enabled: true,
       args: [],
+    }));
+    expect(runtime.app.setLoginItemSettings).toHaveBeenCalledWith(expect.objectContaining({
+      openAtLogin: false,
       name: 'wmux',
     }));
+    const canonicalWrite = runtime.app.setLoginItemSettings.mock.calls.find(([settings]) => (
+      settings.openAtLogin === true
+    ))?.[0];
+    expect(canonicalWrite).not.toHaveProperty('name');
     expect(save).toHaveBeenCalledWith(LOGIN_STARTUP_SETTING_KEY, true);
   });
 

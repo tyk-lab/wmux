@@ -24,13 +24,11 @@ const defaultStore: LoginStartupStore = {
 
 function loginItemIdentity(app: LoginStartupApp): Electron.LoginItemSettingsOptions & {
   args: string[];
-  name: string;
   path: string;
 } {
   return {
     path: process.execPath,
     args: app.isPackaged ? [] : [`"${app.getAppPath()}"`],
-    name: 'wmux',
   };
 }
 
@@ -46,6 +44,12 @@ export function setLoginStartupEnabled(
 ): { ok: boolean; enabled: boolean; error?: string } {
   try {
     const identity = loginItemIdentity(app);
+    // Early builds used a custom Run value name. Electron's read API cannot
+    // query that name, so remove it before registering the default AppUserModelId
+    // entry that getLoginItemSettings can verify.
+    try {
+      app.setLoginItemSettings({ ...identity, name: 'wmux', openAtLogin: false });
+    } catch { /* Legacy cleanup is best-effort; the canonical write below is authoritative. */ }
     app.setLoginItemSettings({ ...identity, openAtLogin: enabled, enabled });
     const actual = getLoginStartupEnabled(app);
     return actual === enabled
