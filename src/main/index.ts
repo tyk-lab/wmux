@@ -35,7 +35,6 @@ import {
   PROJECT_MANAGER_TERMINAL_AGENT,
   PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
-  PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH,
   PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
 } from '../shared/project-manager-terminal';
 import {
@@ -55,6 +54,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { initializeLoginStartup } from './login-startup';
+import { ensureProjectManagerSkill } from './project-manager-skill';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -79,13 +79,12 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
     if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。' };
     if (!['codex', 'kimi', 'grok'].includes(agent)) return { ok: false, error: 'AI 终端类型仅允许 codex、kimi 或 grok。' };
     if (projectManager) {
-      try {
-        if (!fs.statSync(PROJECT_MANAGER_TERMINAL_CWD).isDirectory()) throw new Error('not a directory');
-        const skillPath = path.join(PROJECT_MANAGER_TERMINAL_CWD, PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH);
-        if (!fs.statSync(skillPath).isFile()) throw new Error('skill not found');
-      } catch {
-        return { ok: false, error: `项目管理终端目录或 inspect-project-progress 技能不存在：${PROJECT_MANAGER_TERMINAL_CWD}` };
-      }
+      const skill = ensureProjectManagerSkill({
+        appPath: app.getAppPath(),
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      });
+      if (!skill.ok) return { ok: false, error: skill.error };
       forwardedCommand = {
         ...command,
         name,

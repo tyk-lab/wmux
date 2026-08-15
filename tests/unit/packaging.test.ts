@@ -22,6 +22,14 @@ describe('electron-builder packaging', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli', to: 'cli', filter: ['*.js'] });
   });
 
+  it('ships the project progress inspection skill outside the asar', () => {
+    expect(extraResources).toContainEqual({ from: 'resources/skills', to: 'skills' });
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/skills/inspect-project-progress/SKILL.md',
+    ))).toBe(true);
+  });
+
   it('keeps installer-only main-process modules out of normal CLI startup', () => {
     const cliSource = fs.readFileSync(path.join(__dirname, '../../src/cli/wmux.ts'), 'utf8');
     expect(cliSource).not.toMatch(/^import[\s\S]*?from '\.\.\/main\/install-agent-hooks';/m);
