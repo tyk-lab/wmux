@@ -27,6 +27,8 @@ export interface ProjectManagerSlice {
   startProjectManager: (options: {
     projectDir: string;
     goal: string;
+    preconditions?: string[];
+    planFiles?: ProjectManagerSession['planFiles'];
     doneWhen: string[];
     managerSurfaceId?: string;
     feishuChatId?: string;
@@ -34,6 +36,7 @@ export interface ProjectManagerSlice {
   restoreProjectManager: (session: ProjectManagerSession | null) => void;
   restoreProjectManagers: (sessions: ProjectManagerSession[], selectedId?: string) => void;
   selectProjectManager: (sessionId: string) => void;
+  removeProjectManager: (sessionId: string) => void;
   applyProjectManagerAction: (action: ProjectManagerAction, sessionId?: string) => ProjectManagerMutationResult;
   appendProjectManagerEvent: (
     event: Omit<ProjectManagerEvent, 'id' | 'sessionId' | 'ts'> & { ts?: number },
@@ -99,6 +102,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       id: `pm-${uuid()}`,
       projectDir: options.projectDir,
       goal: options.goal,
+      preconditions: options.preconditions || [],
+      planFiles: options.planFiles || [],
       doneWhen: options.doneWhen,
       status: 'active',
       recoveryState: 'ready',
@@ -139,6 +144,21 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     const selected = get().projectManagers.find((session) => session.id === sessionId);
     if (selected) set({ projectManager: selected, selectedProjectManagerId: selected.id });
   },
+  removeProjectManager(sessionId) {
+    set((state) => {
+      const projectManagers = state.projectManagers.filter((session) => session.id !== sessionId);
+      const selected = state.selectedProjectManagerId === sessionId
+        ? projectManagers[0] || null
+        : projectManagers.find((session) => session.id === state.selectedProjectManagerId)
+          || projectManagers[0]
+          || null;
+      return {
+        projectManagers,
+        projectManager: selected,
+        selectedProjectManagerId: selected?.id || null,
+      };
+    });
+  },
   appendProjectManagerEvent(event, sessionId) {
     const state = get();
     const session = sessionId
@@ -163,7 +183,52 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     let next = session;
     let eventInput: Omit<ProjectManagerEvent, 'id' | 'sessionId' | 'ts'>;
 
-    if (action.type === 'create-work-item') {
+    if (action.type === 'update-project-preconditions') {
+      const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
+      if (preconditions.length === 0) {
+        return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
+      }
+      next = { ...session, preconditions };
+      eventInput = {
+        kind: 'project-preconditions-updated',
+        summary: action.reason || `更新项目前置条件：${preconditions.join('；')}`,
+        payload: { preconditions },
+      };
+    } else if (action.type === 'request-user-clarification') {
+      if (session.pendingUserQuestion) {
+        return { ok: false, error: '该项目已有待用户确认的问题，不能重复提问' };
+      }
+      next = { ...session, status: 'waiting', pendingUserQuestion: action.question };
+      eventInput = {
+        kind: 'user-clarification-requested',
+        summary: action.question.question,
+        correlationId: action.question.id,
+        payload: { question: action.question },
+      };
+    } else if (action.type === 'answer-user-clarification') {
+      const pending = session.pendingUserQuestion;
+      if (!pending || pending.id !== action.questionId) {
+        return { ok: false, error: '该用户确认问题不存在或已经处理' };
+      }
+      const answer = action.answer.trim();
+      if (!answer) return { ok: false, error: '用户答复不能为空' };
+      const resumeStatus = session.status === 'waiting'
+        ? pending.previousStatus
+        : session.status;
+      next = { ...session, status: resumeStatus, pendingUserQuestion: undefined };
+      eventInput = {
+        kind: 'user-clarification-answered',
+        summary: `用户答复：${answer}`,
+        correlationId: pending.id,
+        payload: {
+          questionId: pending.id,
+          question: pending.question,
+          answer,
+          optionId: action.optionId,
+          answeredBy: action.answeredBy,
+        },
+      };
+    } else if (action.type === 'create-work-item') {
       if (session.workItems.some((item) => item.id === action.workItem.id)) {
         return { ok: false, error: `任务 ID 已存在：${action.workItem.id}` };
       }
@@ -190,10 +255,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = updated;
       eventInput = { kind: 'supervisor-decision', workItemId: action.workItemId, summary: `记录监督决策：${action.workItemId}` };
     } else if (action.type === 'pause-project') {
-      next = { ...session, status: 'paused' };
+      next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
       eventInput = { kind: 'project-paused', summary: action.reason || '项目已暂停' };
     } else if (action.type === 'resume-project') {
-      next = { ...session, status: 'active' };
+      next = { ...session, status: 'active', pausedByPortfolio: false };
       eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
     } else if (action.type === 'complete-project') {
       const required = session.workItems.filter((item) => item.status !== 'stopped');

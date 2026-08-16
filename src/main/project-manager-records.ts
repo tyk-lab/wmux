@@ -18,6 +18,9 @@ export interface ProjectManagerRecord {
 const SESSION_ID = /^pm-[A-Za-z0-9_-]+$/;
 const MAX_SESSION_FILES = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
+// Three 1 MB text snapshots can expand under JSON escaping; leave bounded room
+// for work items and the 500-entry decision timeline without breaking recovery.
+const MAX_SESSION_BYTES = 16 * 1024 * 1024;
 const SESSION_STATUSES = new Set(['active', 'paused', 'waiting', 'completed', 'stopped']);
 const WORK_ITEM_STATUSES = new Set([
   'planned', 'waiting-dependencies', 'running', 'validating', 'waiting-decision',
@@ -37,6 +40,36 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isPlanFileSnapshot(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const file = value as Record<string, unknown>;
+  return typeof file.path === 'string' && path.isAbsolute(file.path)
+    && typeof file.name === 'string'
+    && typeof file.content === 'string'
+    && Buffer.byteLength(file.content, 'utf8') <= 1024 * 1024
+    && Number.isFinite(file.sizeBytes) && Number(file.sizeBytes) >= 0 && Number(file.sizeBytes) <= 1024 * 1024
+    && Number.isFinite(file.mtimeMs) && Number.isFinite(file.capturedAt);
+}
+
+function isPendingUserQuestion(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const question = value as Record<string, unknown>;
+  const options = question.options;
+  return typeof question.id === 'string'
+    && typeof question.question === 'string'
+    && typeof question.context === 'string'
+    && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
+    && Number.isFinite(question.createdAt)
+    && Array.isArray(options) && options.length >= 2 && options.length <= 4
+    && options.every((option) => {
+      if (!option || typeof option !== 'object') return false;
+      const candidate = option as Record<string, unknown>;
+      return typeof candidate.id === 'string' && typeof candidate.label === 'string'
+        && (candidate.description === undefined || typeof candidate.description === 'string');
+    })
+    && (question.recommendedOptionId === undefined || typeof question.recommendedOptionId === 'string');
+}
+
 function isProjectManagerSession(value: unknown): value is ProjectManagerSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
@@ -44,7 +77,12 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     typeof session.id !== 'string' || !SESSION_ID.test(session.id)
     || typeof session.projectDir !== 'string' || !path.isAbsolute(session.projectDir)
     || typeof session.goal !== 'string' || !isStringArray(session.doneWhen)
+    || (session.preconditions !== undefined && !isStringArray(session.preconditions))
+    || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
+    || (session.pendingUserQuestion !== undefined && !isPendingUserQuestion(session.pendingUserQuestion))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
+    || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
+    || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')
     || !Array.isArray(session.workItems) || !Array.isArray(session.events)
     || !Number.isFinite(session.createdAt) || !Number.isFinite(session.updatedAt)
   ) return false;
@@ -91,9 +129,11 @@ function readProjectManagerSessions(
       .map((entry) => {
         try {
           const filePath = path.join(directory, entry.name);
-          if (fs.statSync(filePath).size > MAX_RECORD_BYTES) return null;
+          if (fs.statSync(filePath).size > MAX_SESSION_BYTES) return null;
           const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { version?: unknown; session?: unknown };
-          return parsed.version === 1 && isProjectManagerSession(parsed.session) ? parsed.session : null;
+          return parsed.version === 1 && isProjectManagerSession(parsed.session)
+            ? { ...parsed.session, preconditions: parsed.session.preconditions || [], planFiles: parsed.session.planFiles || [] }
+            : null;
         } catch {
           return null;
         }
@@ -125,6 +165,27 @@ export function saveProjectManagerSession(
     fs.renameSync(temporaryPath, sessionPath);
   }
   return { path: sessionPath };
+}
+
+export function deleteProjectManagerSession(
+  sessionId: string,
+  appDataDir = getAppDataDir(),
+): { deleted: boolean } {
+  if (!SESSION_ID.test(sessionId)) throw new Error('invalid project manager session id');
+  const directory = recordsDirectory(appDataDir);
+  let deleted = false;
+  // Keep the restorable snapshot until last so an audit-file failure cannot
+  // leave the UI session alive while its durable project state is already gone.
+  for (const extension of ['.ndjson', '.json']) {
+    const filePath = path.join(directory, `${sessionId}${extension}`);
+    try {
+      fs.unlinkSync(filePath);
+      deleted = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return { deleted };
 }
 
 export function appendProjectManagerRecord(

@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendProjectManagerRecord,
+  deleteProjectManagerSession,
   readActiveProjectManagerSessions,
   readLatestProjectManagerSession,
   saveProjectManagerSession,
@@ -27,6 +28,8 @@ function session(id: string, updatedAt: number): ProjectManagerSession {
     id,
     projectDir: 'E:\\repo',
     goal: '完成项目',
+    preconditions: ['测试环境已准备'],
+    planFiles: [],
     doneWhen: ['测试通过'],
     status: 'active',
     workItems: [],
@@ -45,6 +48,48 @@ describe('project manager records', () => {
     expect(readLatestProjectManagerSession('E:\\repo', appData)?.id).toBe('pm-new');
     expect(readLatestProjectManagerSession('E:\\repo', appData)?.updatedAt).toBe(30);
     expect(readLatestProjectManagerSession('E:\\other', appData)).toBeNull();
+  });
+
+  it('restores legacy snapshots without prerequisites or plan files as empty lists', () => {
+    const appData = root();
+    const directory = path.join(appData, 'project-manager');
+    fs.mkdirSync(directory, { recursive: true });
+    const legacy = session('pm-legacy', 10) as Partial<ProjectManagerSession>;
+    delete legacy.preconditions;
+    delete legacy.planFiles;
+    fs.writeFileSync(path.join(directory, 'pm-legacy.json'), JSON.stringify({ version: 1, session: legacy }), 'utf8');
+
+    expect(readLatestProjectManagerSession('E:\\repo', appData)?.preconditions).toEqual([]);
+    expect(readLatestProjectManagerSession('E:\\repo', appData)?.planFiles).toEqual([]);
+  });
+
+  it('persists plan snapshots and a pending user clarification for recovery', () => {
+    const appData = root();
+    const pendingUserQuestion = {
+      id: 'question-1',
+      question: '是否允许覆盖现有配置？',
+      context: '目标与计划文件存在冲突。',
+      options: [{ id: 'keep', label: '保留现有配置' }, { id: 'replace', label: '允许覆盖' }],
+      recommendedOptionId: 'keep',
+      previousStatus: 'active' as const,
+      createdAt: 12,
+    };
+    const saved = {
+      ...session('pm-plan', 20),
+      status: 'waiting' as const,
+      planFiles: [{
+        path: 'E:\\requirements.md', name: 'requirements.md', content: '# 需求',
+        sizeBytes: 8, mtimeMs: 10, capturedAt: 11,
+      }],
+      pendingUserQuestion,
+    };
+
+    saveProjectManagerSession(saved, appData);
+
+    expect(readLatestProjectManagerSession('E:\\repo', appData)).toMatchObject({
+      planFiles: [{ name: 'requirements.md', content: '# 需求' }],
+      pendingUserQuestion: { id: 'question-1', previousStatus: 'active' },
+    });
   });
 
   it('restores at most three active projects with unique directories', () => {
@@ -84,5 +129,22 @@ describe('project manager records', () => {
     }, appData);
     expect(result.path.startsWith(appData)).toBe(true);
     expect(fs.readFileSync(result.path, 'utf8')).toContain('manager-reply');
+  });
+
+  it('deletes the selected project snapshot and audit trail without touching the project directory', () => {
+    const appData = root();
+    const projectDir = path.join(appData, 'project-files');
+    fs.mkdirSync(projectDir);
+    fs.writeFileSync(path.join(projectDir, 'keep.txt'), 'keep', 'utf8');
+    const project = { ...session('pm-delete', 10), projectDir };
+    const snapshot = saveProjectManagerSession(project, appData).path;
+    const audit = appendProjectManagerRecord({
+      sessionId: project.id, projectDir, type: 'manager-reply', payload: { message: '记录' },
+    }, appData).path;
+
+    expect(deleteProjectManagerSession(project.id, appData)).toEqual({ deleted: true });
+    expect(fs.existsSync(snapshot)).toBe(false);
+    expect(fs.existsSync(audit)).toBe(false);
+    expect(fs.readFileSync(path.join(projectDir, 'keep.txt'), 'utf8')).toBe('keep');
   });
 });

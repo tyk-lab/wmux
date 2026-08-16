@@ -1,5 +1,10 @@
 import { StateCreator } from 'zustand';
 import { DefaultSupervisorAgent, QuickLaunchProfile, SshCompanionAgent, SshConnectionProfile } from '../../shared/types';
+import {
+  DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
+  normalizeProjectManagementAgentConfig,
+  type ProjectManagementAgentConfig,
+} from '../../shared/project-manager-terminal';
 import { Language, detectDefaultLanguage, isLanguage } from '../i18n/core';
 import type { SupervisorModelCatalog } from '../supervisor/model-catalog';
 
@@ -289,6 +294,8 @@ export interface WorkspacePrefs {
   defaultSupervisorReasoningEfforts: Partial<Record<DefaultSupervisorAgent, string>>;
   /** Editable model catalogs scoped by the active workspace directory. */
   supervisorModelCatalogs: Record<string, SupervisorModelCatalog>;
+  /** Project-management mode launchers; deliberately separate from direct AI supervision. */
+  projectManagementAgents: ProjectManagementAgentConfig;
   /** Companion selected when creating an SSH workspace. */
   defaultSshAgent: SshCompanionAgent;
 }
@@ -304,6 +311,7 @@ export const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   defaultSupervisorModels: {},
   defaultSupervisorReasoningEfforts: {},
   supervisorModelCatalogs: {},
+  projectManagementAgents: DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
   defaultSshAgent: 'codex',
 };
 
@@ -472,11 +480,20 @@ export interface SettingsSlice {
 
 // ─── Slice creator ────────────────────────────────────────────────────────────
 
+function loadWorkspacePrefs(): WorkspacePrefs {
+  const persisted = loadPersisted<WorkspacePrefs>(STORAGE_KEYS.workspacePrefs);
+  return {
+    ...DEFAULT_WORKSPACE_PREFS,
+    ...persisted,
+    projectManagementAgents: normalizeProjectManagementAgentConfig(persisted?.projectManagementAgents),
+  };
+}
+
 export const createSettingsSlice: StateCreator<SettingsSlice> = (set) => ({
   shortcuts:         { ...DEFAULT_SHORTCUTS,         ...loadPersisted<Record<ShortcutAction, ShortcutBinding>>(STORAGE_KEYS.shortcuts) },
   sidebarVisible:    true,
   sidebarPrefs:      { ...DEFAULT_SIDEBAR_PREFS,      ...loadPersisted<SidebarPrefs>(STORAGE_KEYS.sidebarPrefs) },
-  workspacePrefs:    { ...DEFAULT_WORKSPACE_PREFS,    ...loadPersisted<WorkspacePrefs>(STORAGE_KEYS.workspacePrefs) },
+  workspacePrefs:    loadWorkspacePrefs(),
   terminalPrefs:     { ...DEFAULT_TERMINAL_PREFS,     ...loadPersisted<TerminalPrefs>(STORAGE_KEYS.terminalPrefs) },
   notificationPrefs: { ...DEFAULT_NOTIFICATION_PREFS, ...loadPersisted<NotificationPrefs>(STORAGE_KEYS.notificationPrefs) },
   browserPrefs:      { ...DEFAULT_BROWSER_PREFS,      ...loadPersisted<BrowserPrefs>(STORAGE_KEYS.browserPrefs) },

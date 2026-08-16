@@ -26,6 +26,9 @@ export interface SurfaceSlice {
       startupInput?: string;
       transientSupervisor?: boolean;
       projectManagerTerminal?: boolean;
+      projectManagerAgent?: 'codex' | 'kimi' | 'grok';
+      projectManagerModel?: string;
+      projectManagerReasoningEffort?: string;
       url?: string;
     },
   ) => SurfaceId | null;
@@ -181,6 +184,9 @@ interface ClosedSurface {
   startupInput?: string;
   transientSupervisor?: boolean;
   projectManagerTerminal?: boolean;
+  projectManagerAgent?: 'codex' | 'kimi' | 'grok';
+  projectManagerModel?: string;
+  projectManagerReasoningEffort?: string;
   url?: string;
 }
 const closedSurfaceStack: ClosedSurface[] = [];
@@ -188,7 +194,9 @@ const MAX_CLOSED_SURFACES = 25;
 
 function pushClosedSurface(surface: SurfaceRef): void {
   // Diff is a derived working-tree view; reopening a stale one is noise.
-  if (surface.type === 'diff') return;
+  // Project-manager runtimes carry caller authority. A runtime replaced after
+  // a config change must never be resurrected through Ctrl+Shift+T.
+  if (surface.type === 'diff' || surface.projectManagerTerminal) return;
   closedSurfaceStack.push({
     type: surface.type,
     colorScheme: surface.colorScheme,
@@ -199,6 +207,9 @@ function pushClosedSurface(surface: SurfaceRef): void {
     startupInput: surface.startupInput,
     transientSupervisor: surface.transientSupervisor,
     projectManagerTerminal: surface.projectManagerTerminal,
+    projectManagerAgent: surface.projectManagerAgent,
+    projectManagerModel: surface.projectManagerModel,
+    projectManagerReasoningEffort: surface.projectManagerReasoningEffort,
     url: surface.url,
   });
   if (closedSurfaceStack.length > MAX_CLOSED_SURFACES) closedSurfaceStack.shift();
@@ -228,6 +239,9 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.startupInput ? { startupInput: options.startupInput } : {}),
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
+      ...(options?.projectManagerAgent ? { projectManagerAgent: options.projectManagerAgent } : {}),
+      ...(options?.projectManagerModel !== undefined ? { projectManagerModel: options.projectManagerModel } : {}),
+      ...(options?.projectManagerReasoningEffort !== undefined ? { projectManagerReasoningEffort: options.projectManagerReasoningEffort } : {}),
       ...(options?.url ? { url: options.url } : {}),
     };
     const newSurfaces = [...leaf.surfaces, newSurface];
@@ -513,6 +527,9 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.startupInput ? { startupInput: restored.startupInput } : {}),
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
+      ...(restored.projectManagerAgent ? { projectManagerAgent: restored.projectManagerAgent } : {}),
+      ...(restored.projectManagerModel !== undefined ? { projectManagerModel: restored.projectManagerModel } : {}),
+      ...(restored.projectManagerReasoningEffort !== undefined ? { projectManagerReasoningEffort: restored.projectManagerReasoningEffort } : {}),
       ...(restored.url ? { url: restored.url } : {}),
     });
   },

@@ -23,6 +23,24 @@ describe('interactive Agent launch', () => {
     });
   });
 
+  it('passes the configured model to task Agent launch commands', () => {
+    expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-terra').startupCommands[0])
+      .toMatch(/^codex --model 'gpt-5\.6-terra' -- /);
+    expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3')).toEqual({
+      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
+      startupInput: '执行首条任务',
+    });
+  });
+
+  it('passes launcher-specific reasoning settings to interactive task Agents', () => {
+    expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-sol', 'high').startupCommands[0])
+      .toMatch(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /);
+    expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3', 'on')).toEqual({
+      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
+      startupInput: '执行首条任务',
+    });
+  });
+
   it('detects only wmux automated Codex and Kimi startup flows', () => {
     const codex = buildInteractiveAgentLaunch('codex', '执行首条任务');
     const kimi = buildInteractiveAgentLaunch('kimi', '执行首条任务');

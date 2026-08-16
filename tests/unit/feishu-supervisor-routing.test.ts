@@ -1136,15 +1136,28 @@ describe('飞书人工决策单聊路由', () => {
 
   it('项目管理 AI 对话卡可查看处理日志并暂停和恢复项目', async () => {
     let status = 'active';
+    let pausedByPortfolio = false;
     const control = vi.fn(async (command: { action: string }) => {
       if (command.action === 'project-status') {
-        return { ok: true, session: { status, goal: '完成认证功能', workItems: [] } };
+        return {
+          ok: true,
+          session: { id: 'pm-a', status, goal: '完成认证功能', workItems: [] },
+          projects: [{ id: 'pm-a', status, goal: '完成认证功能', pausedByPortfolio }],
+        };
       }
       if (command.action === 'project-logs') {
         return { ok: true, events: [{ ts: 1, kind: 'work-item-created', summary: '创建认证任务' }] };
       }
       if (command.action === 'project-pause') status = 'paused';
       if (command.action === 'project-resume') status = 'active';
+      if (command.action === 'project-pause-all') {
+        status = 'paused';
+        pausedByPortfolio = true;
+      }
+      if (command.action === 'project-resume-all') {
+        status = 'active';
+        pausedByPortfolio = false;
+      }
       return { ok: true, message: '操作成功' };
     });
     const service = new FeishuSupervisorService(control);
@@ -1190,7 +1203,27 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
     expect(control.mock.calls.some(([command]) => command.action === 'project-resume')).toBe(true);
-    expect(JSON.stringify(updateCard.mock.calls[3][1])).toContain('项目状态：运行中');
+    const resumedCard = JSON.stringify(updateCard.mock.calls[3][1]);
+    expect(resumedCard).toContain('项目状态：运行中');
+    const pauseAllNonce = /"wmux_action":"project_ai_pause_all"[^}]*"nonce":"([^"]+)"/.exec(resumedCard)?.[1];
+    expect(pauseAllNonce).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_pause_all', nonce: pauseAllNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
+    expect(control.mock.calls.some(([command]) => command.action === 'project-pause-all')).toBe(true);
+    const globallyPausedCard = JSON.stringify(updateCard.mock.calls[4][1]);
+    const resumeAllNonce = /"wmux_action":"project_ai_resume_all"[^}]*"nonce":"([^"]+)"/.exec(globallyPausedCard)?.[1];
+    expect(resumeAllNonce).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_resume_all', nonce: resumeAllNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(6));
+    expect(control.mock.calls.some(([command]) => command.action === 'project-resume-all')).toBe(true);
   });
 
   it('忙碌任务终端需二次确认且任务正文只保存在内存中', async () => {
@@ -1778,6 +1811,51 @@ describe('飞书人工决策单聊路由', () => {
 
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     expect(send.mock.calls[0]).toEqual(['oc-project', { text: '已暂停，我们先比较两个方案。' }]);
+  });
+
+  it('项目关键歧义推送到专用飞书群，飞书答复进入项目管理协议且只能处理一次', async () => {
+    vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project');
+    const control = vi.fn(async () => ({ ok: true, message: '已记录用户答复' }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-a', projectDir: 'E:\\repo', type: 'user-clarification-requested',
+      payload: {
+        question: {
+          id: 'question-1', question: '是否允许覆盖现有配置？', context: '必须先明确边界。',
+          options: [{ id: 'keep', label: '保留现有配置' }, { id: 'replace', label: '允许覆盖' }],
+          recommendedOptionId: 'keep', previousStatus: 'active', createdAt: 1,
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe('oc-project');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('保留现有配置（推荐）');
+
+    handlers.cardAction({
+      chatId: 'oc-project', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({
+        wmux_action: 'project_clarification_option', projectId: 'pm-a', questionId: 'question-1',
+        optionId: 'keep', answer: '保留现有配置',
+      }) },
+      raw: {},
+    });
+
+    await vi.waitFor(() => expect(control).toHaveBeenCalledWith({
+      action: 'project-answer', projectId: 'pm-a', questionId: 'question-1',
+      optionId: 'keep', answer: '保留现有配置',
+    }, { openId: 'ou-allowed', source: 'card' }));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('项目确认已处理');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-a', projectDir: 'E:\\repo', type: 'user-clarification-answered',
+      payload: { questionId: 'question-1', answer: '保留现有配置', answeredBy: 'feishu' },
+    });
+    await Promise.resolve();
+    expect(updateCard).toHaveBeenCalledTimes(1);
   });
 
   it('项目模式的监督事件不经过飞书服务转发，也不发送普通飞书审计卡', async () => {

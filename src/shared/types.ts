@@ -88,6 +88,10 @@ export interface SurfaceRef {
   transientSupervisor?: boolean;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
   projectManagerTerminal?: boolean;
+  /** Runtime identity used to decide whether a project-manager restart is required after configuration changes. */
+  projectManagerAgent?: 'codex' | 'kimi' | 'grok';
+  projectManagerModel?: string;
+  projectManagerReasoningEffort?: string;
   /** Remote terminal restored as an explicit disconnected surface after restart. */
   sshRemote?: boolean;
   /** Secret-free lookup key for main-process SSH password injection. */

@@ -208,6 +208,170 @@
   flex: 1;
 }
 
+.project-manager-dialog__agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.project-manager-dialog__recovery-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.project-manager-dialog__recovery-list article {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid rgba(80, 160, 255, 0.24);
+  border-radius: 7px;
+  background: rgba(80, 160, 255, 0.07);
+}
+
+.project-manager-dialog__recovery-list span,
+.project-manager-dialog__recovery-list em {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  font-style: normal;
+  opacity: 0.72;
+}
+
+.project-manager-dialog__recovery-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.project-manager-dialog__plan-files,
+.project-manager-dialog__clarification-options {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.project-manager-dialog__plan-files article,
+.project-manager-dialog__clarification-options label {
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.13);
+}
+
+.project-manager-dialog__plan-files article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-manager-dialog__plan-files span,
+.project-manager-dialog__plan-files em {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  font-style: normal;
+  opacity: 0.68;
+}
+
+.project-manager-dialog__clarification {
+  border-color: rgba(255, 166, 77, 0.42);
+  background: rgba(255, 128, 64, 0.08);
+}
+
+.project-manager-dialog__clarification-question {
+  margin: 8px 0;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.project-manager-dialog__clarification-options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.project-manager-dialog__clarification-options label[data-selected='1'] {
+  border-color: rgba(255, 166, 77, 0.72);
+  background: rgba(255, 166, 77, 0.1);
+}
+
+.project-manager-dialog__clarification-options label > span {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.project-manager-dialog__clarification-options em {
+  width: fit-content;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 166, 77, 0.18);
+  color: #ffc184;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.project-manager-dialog__clarification-options small {
+  opacity: 0.68;
+}
+
+.project-manager-dialog__clarification .supervisor-dialog__textarea {
+  margin-top: 9px;
+}
+
+.project-manager-dialog__agent-grid article {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.13);
+}
+
+.project-manager-dialog__agent-grid label {
+  display: grid;
+  gap: 4px;
+  color: rgba(var(--ui-fg-rgb, 255, 255, 255), 0.72);
+  font-size: 11px;
+}
+
+.project-manager-dialog__agent-grid select {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 7px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.18);
+  border-radius: 5px;
+  background: var(--ui-bg-2, #242424);
+  color: inherit;
+}
+
+.project-manager-dialog__agent-grid p {
+  margin: 0;
+  color: rgba(var(--ui-fg-rgb, 255, 255, 255), 0.58);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.project-manager-dialog__agent-config .supervisor-dialog__notice {
+  margin: 9px -12px -12px;
+  border-radius: 0 0 7px 7px;
+}
+
+.project-manager-dialog__preconditions .supervisor-dialog__textarea {
+  margin-top: 10px;
+}
+
+.project-manager-dialog__preconditions .supervisor-dialog__notice {
+  margin: 9px -12px -12px;
+  border-radius: 0 0 7px 7px;
+}
+
 .project-manager-dialog__project-list,
 .project-manager-dialog__managed-list,
 .project-manager-dialog__work-items {
@@ -325,21 +489,52 @@
 .project-manager-dialog__conversation {
   display: grid;
   gap: 8px;
-  max-height: 240px;
+  min-height: 132px;
+  max-height: 320px;
   margin: 8px 0 10px;
+  padding: 12px;
   overflow: auto;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.13);
 }
 
 .project-manager-dialog__message {
   max-width: 84%;
-  padding: 8px 10px;
-  border-radius: 7px;
-  background: rgba(0, 0, 0, 0.2);
+  padding: 9px 11px;
+  border: 1px solid rgba(154, 124, 255, 0.25);
+  border-radius: 5px 11px 11px 11px;
+  background: rgba(154, 124, 255, 0.1);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
 }
 
 .project-manager-dialog__message[data-role='user'] {
   justify-self: end;
-  background: rgba(80, 160, 255, 0.13);
+  border-color: rgba(80, 160, 255, 0.36);
+  border-radius: 11px 5px 11px 11px;
+  background: rgba(80, 160, 255, 0.16);
+}
+
+.project-manager-dialog__message header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.project-manager-dialog__message strong {
+  color: #c4b5ff;
+  font-size: 10px;
+}
+
+.project-manager-dialog__message[data-role='user'] strong {
+  color: #8fc4ff;
+}
+
+.project-manager-dialog__message time {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  opacity: 0.72;
 }
 
 .project-manager-dialog__message p {
@@ -347,6 +542,31 @@
   white-space: pre-wrap;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.project-manager-dialog__chat-project {
+  max-width: 48%;
+  overflow: hidden;
+  color: var(--ui-text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__reply-pending {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ui-text-muted);
+  font-size: 10px;
+}
+
+.project-manager-dialog__reply-pending i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c4b5ff;
+  box-shadow: 0 0 0 3px rgba(154, 124, 255, 0.13);
 }
 
 .project-manager-dialog__logs summary {
@@ -899,6 +1119,10 @@
   }
 
   .project-manager-dialog__project-list {
+    grid-template-columns: 1fr;
+  }
+
+  .project-manager-dialog__agent-grid {
     grid-template-columns: 1fr;
   }
 

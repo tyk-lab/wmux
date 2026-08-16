@@ -1,6 +1,8 @@
 import type { TaskWorkMode } from './supervisor-work-mode';
 
 export const MAX_ACTIVE_PROJECTS = 3;
+export const MAX_PROJECT_PLAN_FILES = 3;
+export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
@@ -26,6 +28,10 @@ export type ProjectManagerEventKind =
   | 'progress-inspection'
   | 'terminal-rotated'
   | 'recovery-restored'
+  | 'manager-runtime-restarted'
+  | 'user-clarification-requested'
+  | 'user-clarification-answered'
+  | 'project-preconditions-updated'
   | 'supervisor-decision'
   | 'guard-triggered'
   | 'project-paused'
@@ -33,6 +39,31 @@ export type ProjectManagerEventKind =
   | 'project-completed'
   | 'project-stopped'
   | 'manager-reply';
+
+export interface ProjectPlanFileSnapshot {
+  path: string;
+  name: string;
+  content: string;
+  sizeBytes: number;
+  mtimeMs: number;
+  capturedAt: number;
+}
+
+export interface ProjectManagerQuestionOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface ProjectManagerUserQuestion {
+  id: string;
+  question: string;
+  context: string;
+  options: ProjectManagerQuestionOption[];
+  recommendedOptionId?: string;
+  previousStatus: ProjectManagerSessionStatus;
+  createdAt: number;
+}
 
 export interface ProjectExecutionBudget {
   maxDecisions: number;
@@ -144,11 +175,20 @@ export interface ProjectManagerSession {
   id: string;
   projectDir: string;
   goal: string;
+  /** User-owned physical, environmental, access, or resource gates for all project work. */
+  preconditions: string[];
+  /** User-selected, size-limited text snapshots that supplement the stated requirements. */
+  planFiles: ProjectPlanFileSnapshot[];
   doneWhen: string[];
   status: ProjectManagerSessionStatus;
+  /** True only when the project was paused by the portfolio-level control. */
+  pausedByPortfolio?: boolean;
+  /** The one task terminal reserved for this project, including before supervision starts. */
+  taskTerminalSurfaceId?: string;
   managerSurfaceId?: string;
   feishuChatId?: string;
   recoveryState?: 'ready' | 'checking';
+  pendingUserQuestion?: ProjectManagerUserQuestion;
   workItems: ProjectWorkItem[];
   events: ProjectManagerEvent[];
   createdAt: number;
@@ -156,11 +196,14 @@ export interface ProjectManagerSession {
 }
 
 export type ProjectManagerAction =
+  | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
+  | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
+  | { type: 'answer-user-clarification'; questionId: string; answer: string; optionId?: string; answeredBy: 'desktop' | 'feishu' }
   | { type: 'create-work-item'; workItem: ProjectWorkItem }
   | { type: 'update-work-item'; workItemId: string; patch: Partial<ProjectWorkItem> }
   | { type: 'record-execution'; workItemId: string; record: ProjectExecutionRecord }
-  | { type: 'pause-project'; reason: string }
-  | { type: 'resume-project'; reason: string }
+  | { type: 'pause-project'; reason: string; source?: 'project' | 'portfolio' }
+  | { type: 'resume-project'; reason: string; source?: 'project' | 'portfolio' }
   | { type: 'complete-project'; evidence: string }
   | { type: 'stop-project'; reason: string; emergency?: boolean }
   | { type: 'reply'; correlationId?: string; message: string };

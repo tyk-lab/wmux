@@ -57,10 +57,12 @@ import { initializeLoginStartup } from './login-startup';
 import { ensureProjectManagerSkill } from './project-manager-skill';
 import {
   appendProjectManagerRecord,
+  deleteProjectManagerSession,
   readActiveProjectManagerSessions,
   readLatestProjectManagerSession,
   saveProjectManagerSession,
 } from './project-manager-records';
+import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './project-plan-files';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -80,8 +82,14 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
       ? 'status'
       : command.action === 'project-message'
         ? 'message'
+      : command.action === 'project-answer'
+        ? 'answer-question'
       : command.action === 'project-logs'
         ? 'logs'
+        : command.action === 'project-pause-all'
+          ? 'pause-all-projects'
+          : command.action === 'project-resume-all'
+            ? 'resume-all-projects'
         : command.action === 'project-pause'
           ? 'pause'
           : command.action === 'project-resume'
@@ -628,13 +636,30 @@ app.whenReady().then(() => {
     });
   });
   ipcMain.handle('project-manager:save-session', (_event, session) => saveProjectManagerSession(session));
-  ipcMain.handle('project-manager:ensure-skill', () => ensureProjectManagerSkill({
-    appPath: app.getAppPath(),
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-  }));
+  ipcMain.handle('project-manager:delete-session', (_event, sessionId) => deleteProjectManagerSession(String(sessionId || '')));
+  ipcMain.handle('project-manager:ensure-skill', (_event, requestedAgent) => {
+    const agent = requestedAgent === 'kimi' || requestedAgent === 'grok' ? requestedAgent : 'codex';
+    return ensureProjectManagerSkill({
+      appPath: app.getAppPath(),
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+    }, agent);
+  });
   ipcMain.handle('project-manager:read-latest-session', (_event, projectDir) => readLatestProjectManagerSession(projectDir));
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
+  ipcMain.handle('project-manager:read-plan-files', (_event, filePaths) => captureProjectPlanFiles(filePaths));
+  ipcMain.handle('project-manager:pick-plan-files', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: '选择项目计划文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '项目计划文本', extensions: PROJECT_PLAN_FILE_DIALOG_EXTENSIONS },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { ok: true, canceled: true, files: [] };
+    return captureProjectPlanFiles(result.filePaths);
+  });
   ipcMain.handle('project-manager:append-record', (_event, record) => {
     const result = appendProjectManagerRecord(record);
     feishuSupervisor?.onProjectManagerRecord?.(record);

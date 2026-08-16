@@ -46,7 +46,7 @@ describe('project manager bundled skill', () => {
   it('preserves an existing project skill', () => {
     const root = temporaryDirectory();
     const projectDir = path.join(root, 'project');
-    const targetSkill = path.join(projectDir, '.grok', 'skills', 'manage-project', 'SKILL.md');
+    const targetSkill = path.join(projectDir, '.agents', 'skills', 'manage-project', 'SKILL.md');
     fs.mkdirSync(path.dirname(targetSkill), { recursive: true });
     fs.writeFileSync(targetSkill, 'custom project skill', 'utf8');
     const runtime = createBundledSkill(root, false);
@@ -55,6 +55,18 @@ describe('project manager bundled skill', () => {
 
     expect(result).toMatchObject({ ok: true, created: false, skillPath: targetSkill });
     expect(fs.readFileSync(targetSkill, 'utf8')).toBe('custom project skill');
+  });
+
+  it('installs the Grok project skill in its own discovery directory', () => {
+    const root = temporaryDirectory();
+    const projectDir = path.join(root, 'project');
+    fs.mkdirSync(projectDir);
+    const runtime = createBundledSkill(root, false);
+
+    const result = ensureProjectManagerSkill({ ...runtime, isPackaged: false, projectDir }, 'grok');
+
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(result.skillPath).toContain(`${path.sep}.grok${path.sep}skills${path.sep}manage-project${path.sep}SKILL.md`);
   });
 
   it('reports a missing bundled skill without leaving a false success', () => {

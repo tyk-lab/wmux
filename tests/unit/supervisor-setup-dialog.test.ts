@@ -14,6 +14,10 @@ const projectManagerDialogSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/ProjectManager/ProjectManagerDialog.tsx'),
   'utf8',
 );
+const pipeBridgeSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/pipe-bridge.ts'),
+  'utf8',
+);
 
 describe('supervisor setup dialog feedback', () => {
   it('offers project management as a separate visible mode', () => {
@@ -31,6 +35,36 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('项目组合');
     expect(projectManagerDialogSource).toContain('查看项目管理 AI 处理日志');
     expect(projectManagerDialogSource).toContain('添加项目');
+    expect(projectManagerDialogSource).toContain('项目管理模式 Agent 配置');
+    expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
+    expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
+    expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
+    expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
+    expect(projectManagerDialogSource).toContain('通过会话内 /effort 调整');
+    expect(projectManagerDialogSource).toContain('项目前置条件（每行一项）');
+    expect(projectManagerDialogSource).toContain("action: 'update-preconditions'");
+    expect(projectManagerDialogSource).toContain('项目级前置条件');
+    expect(projectManagerDialogSource).toContain('删除选中项目');
+    expect(projectManagerDialogSource).toContain("action: 'delete-project'");
+    expect(projectManagerDialogSource).toContain('恢复上次项目');
+    expect(projectManagerDialogSource).toContain('本次不恢复');
+    expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
+    expect(projectManagerDialogSource).toContain("'restore-projects'");
+    expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
+    expect(projectManagerDialogSource).toContain('计划文件（可选，最多');
+    expect(projectManagerDialogSource).toContain('选择计划文件');
+    expect(projectManagerDialogSource).toContain('添加路径');
+    expect(projectManagerDialogSource).toContain('pendingUserQuestion');
+    expect(projectManagerDialogSource).toContain('项目管理 AI 需要你确认');
+    expect(projectManagerDialogSource).toContain("action: 'answer-question'");
+    expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
+    expect(projectManagerDialogSource).toContain('当前项目：{session.goal}');
+    expect(projectManagerDialogSource).toContain('项目管理 AI · 回复');
+    expect(projectManagerDialogSource).toContain('你 · 询问');
+    expect(projectManagerDialogSource).toContain('项目管理 AI 正在处理并将回复到此项目会话');
+    expect(projectManagerDialogSource).toContain('messageDrafts');
+    expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话]');
+    expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
   });
 
   it('defaults new supervision lanes to wait for the next direction after completion', () => {

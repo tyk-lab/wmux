@@ -4,6 +4,7 @@ import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
 import {
+  DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
   PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
 } from '../../src/shared/project-manager-terminal';
@@ -65,6 +66,9 @@ describe('supervisor decision bridge', () => {
           projectManager: {
             ensureSkill: vi.fn(async () => ({ ok: true })),
             saveSession: vi.fn(async () => ({ ok: true })),
+            appendRecord: vi.fn(async () => ({ ok: true })),
+            deleteSession: vi.fn(async () => ({ deleted: true })),
+            listActiveSessions: vi.fn(async () => []),
             readLatestSession: vi.fn(async () => null),
           },
         },
@@ -94,6 +98,7 @@ describe('supervisor decision bridge', () => {
     useStore.getState().resetSupervisorSession();
     useStore.getState().restoreProjectManager(null);
     useStore.getState().replaceAllWorkspaces([]);
+    useStore.getState().setWorkspacePrefs({ projectManagementAgents: DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG });
     surfaceTerminalRegistry.delete('worker-a');
     surfaceTerminalRegistry.delete('supervisor-a');
     Reflect.deleteProperty(globalThis, 'window');
@@ -1178,7 +1183,9 @@ describe('supervisor decision bridge', () => {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       cwd: PROJECT_MANAGER_TERMINAL_CWD,
       projectManagerTerminal: true,
-      startupCommands: [expect.stringMatching(/^grok -- \(ConvertFrom-Json /)],
+      projectManagerAgent: 'codex',
+      projectManagerModel: '',
+      startupCommands: [expect.stringMatching(/^codex -- \(ConvertFrom-Json /)],
     });
     expect(surface?.startupInput).toBeUndefined();
     expect(useStore.getState().activeWorkspaceId).toBe(taskWorkspace?.id);
@@ -1230,6 +1237,220 @@ describe('supervisor decision bridge', () => {
     expect(runtimes).toHaveLength(1);
   });
 
+  it('lets the project manager pause one project for clarification and accepts the first desktop or Feishu answer', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({ action: 'start', projectDir: 'E:\\question-a', goal: '项目 A', doneWhen: ['A 完成'] });
+    const first = useStore.getState().projectManager!;
+    await remote({ action: 'start', projectDir: 'E:\\question-b', goal: '项目 B', doneWhen: ['B 完成'] });
+    const second = useStore.getState().projectManager!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
+      question: '是否允许覆盖现有配置？',
+      context: '计划文件与当前配置存在冲突。',
+      options: [
+        { id: 'keep', label: '保留现有配置', description: '采用兼容性修改。' },
+        { id: 'replace', label: '允许覆盖' },
+      ],
+      recommendedOptionId: 'keep',
+    })).resolves.toMatchObject({ ok: true, question: { recommendedOptionId: 'keep' } });
+    expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({
+      status: 'waiting', pendingUserQuestion: { question: '是否允许覆盖现有配置？' },
+    });
+    expect(useStore.getState().projectManagers.find((project) => project.id === second.id)?.status).toBe('active');
+    expect(useStore.getState().projectManagerDialogOpen).toBe(true);
+
+    await expect(remote({
+      action: 'answer-question', projectId: first.id, questionId: useStore.getState().projectManagers
+        .find((project) => project.id === first.id)?.pendingUserQuestion?.id,
+      optionId: 'keep', answer: '保留现有配置', source: 'feishu',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: { id: first.id, status: 'active', pendingUserQuestion: undefined },
+      event: { kind: 'user-clarification-answered', payload: { answeredBy: 'feishu', optionId: 'keep' } },
+    });
+    await expect(remote({
+      action: 'answer-question', projectId: first.id, optionId: 'replace', answer: '改为覆盖', source: 'desktop',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('没有待用户确认') });
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'user-clarification-requested',
+      payload: expect.objectContaining({ question: expect.objectContaining({ question: '是否允许覆盖现有配置？' }) }),
+    }));
+  });
+
+  it('routes a manager reply back to the correlated project conversation', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({ action: 'start', projectDir: 'E:\\chat-a', goal: '项目 A', doneWhen: ['A 完成'] });
+    const first = useStore.getState().projectManager!;
+    await remote({ action: 'start', projectDir: 'E:\\chat-b', goal: '项目 B', doneWhen: ['B 完成'] });
+    const second = useStore.getState().projectManager!;
+
+    await expect(remote({
+      action: 'message',
+      source: 'desktop',
+      projectId: first.id,
+      messageId: 'desktop-project-a-1',
+      message: '项目 A 现在进展如何？',
+    })).resolves.toMatchObject({ ok: true });
+    useStore.getState().selectProjectManager(second.id);
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'reply',
+      callerSurfaceId: first.managerSurfaceId,
+      correlationId: 'desktop-project-a-1',
+      message: '项目 A 正在等待验证。',
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'manager-reply' } });
+
+    const projects = useStore.getState().projectManagers;
+    expect(projects.find((project) => project.id === first.id)?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'user-message', summary: '项目 A 现在进展如何？' }),
+      expect.objectContaining({ kind: 'manager-reply', summary: '项目 A 正在等待验证。' }),
+    ]));
+    expect(projects.find((project) => project.id === second.id)?.events).toEqual([]);
+  });
+
+  it('previews persisted projects without starting AI and restores them only after an explicit choice', async () => {
+    const persisted: import('../../src/shared/project-manager').ProjectManagerSession = {
+      id: 'pm-recover',
+      projectDir: 'E:\\recover-project',
+      goal: '继续上次项目',
+      preconditions: ['环境安全'],
+      planFiles: [],
+      doneWhen: ['完成'],
+      status: 'active',
+      workItems: [],
+      events: [],
+      createdAt: 10,
+      updatedAt: 20,
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([persisted]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({ action: 'status' })).resolves.toMatchObject({
+      ok: true, projects: [], recoveryChoice: 'pending',
+    });
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerTerminal)).toBe(false);
+
+    await expect(remote({ action: 'recovery-candidates' })).resolves.toMatchObject({
+      ok: true,
+      recoveryChoice: 'pending',
+      candidates: [{ id: 'pm-recover', projectDir: 'E:\\recover-project', goal: '继续上次项目' }],
+    });
+    expect(useStore.getState().projectManagers).toEqual([]);
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerTerminal)).toBe(false);
+
+    await expect(remote({ action: 'restore-projects' })).resolves.toMatchObject({
+      ok: true, restored: true, projects: [{ id: 'pm-recover' }],
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      id: 'pm-recover', managerSurfaceId: expect.any(String), recoveryState: 'checking',
+    });
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerTerminal)).toBe(true);
+  });
+
+  it('can skip persisted projects for the current run without deleting them', async () => {
+    const persisted = {
+      id: 'pm-skipped', projectDir: 'E:\\old-project', goal: '旧项目',
+      preconditions: ['环境安全'], doneWhen: ['完成'], status: 'active',
+      workItems: [], events: [], createdAt: 10, updatedAt: 20,
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([persisted]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({ action: 'skip-project-recovery' })).resolves.toMatchObject({
+      ok: true, recoveryChoice: 'skip',
+    });
+    await expect(remote({ action: 'recovery-candidates' })).resolves.toMatchObject({
+      ok: true, candidates: [], recoveryChoice: 'skip',
+    });
+    expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
+    expect(useStore.getState().projectManagers).toEqual([]);
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerTerminal)).toBe(false);
+
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\new-project', goal: '本次新项目', doneWhen: ['完成'],
+    })).resolves.toMatchObject({ ok: true, session: { projectDir: 'E:\\new-project' } });
+    expect(useStore.getState().projectManagers.map((project) => project.id)).not.toContain('pm-skipped');
+    expect(useStore.getState().projectManagers.map((project) => project.projectDir)).toEqual(['E:\\new-project']);
+    expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('safely replaces only the project-manager runtime after its project-mode launch configuration changes', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-configured-project' as any,
+      title: '配置测试项目',
+      cwd: 'E:\\configured-repo',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-configured' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'configured-worker' as any, type: 'terminal', shell: 'pwsh.exe' }],
+      },
+    }]);
+    await remote({
+      action: 'start', projectDir: 'E:\\configured-repo', goal: '验证配置换代', doneWhen: ['配置生效'],
+    });
+    const before = useStore.getState().projectManager?.managerSurfaceId;
+    useStore.getState().setWorkspacePrefs({
+      projectManagementAgents: {
+        manager: { agent: 'codex', model: 'gpt-5.6-sol', reasoningEffort: 'high' },
+        supervisor: { agent: 'pi', model: 'openai-codex/gpt-5.6-terra', reasoningEffort: 'max' },
+        task: { agent: 'kimi', model: 'k3', reasoningEffort: 'on' },
+      },
+    });
+
+    await expect(remote({ action: 'configure-agents', restartManager: true })).resolves.toMatchObject({
+      ok: true,
+      restarted: true,
+    });
+
+    const runtimes = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf'
+        ? workspace.splitTree.surfaces.filter((surface) => surface.projectManagerTerminal)
+        : []
+    ));
+    expect(runtimes).toHaveLength(1);
+    expect(runtimes[0]).toMatchObject({
+      projectManagerAgent: 'codex',
+      projectManagerModel: 'gpt-5.6-sol',
+      projectManagerReasoningEffort: 'high',
+      startupCommands: [expect.stringMatching(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /)],
+    });
+    expect(runtimes[0].id).not.toBe(before);
+    expect(useStore.getState().projectManager?.managerSurfaceId).toBe(runtimes[0].id);
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'manager-runtime-restarted' }),
+    ]));
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const created = await request({
+      action: 'terminal-create',
+      callerSurfaceId: runtimes[0].id,
+      projectId: useStore.getState().projectManager?.id,
+      name: '配置任务',
+      task: '按配置启动任务终端',
+      cwd: 'E:\\configured-repo',
+    });
+    expect(created).toMatchObject({ ok: true });
+    const taskSurface = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.id === created.surfaceId);
+    expect(taskSurface).toMatchObject({
+      customTitle: 'Kimi直连 · 配置任务',
+      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
+      startupInput: '按配置启动任务终端',
+    });
+  });
+
   it('manages at most three active projects and rejects duplicate directories', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-projects' as any,
@@ -1269,7 +1490,8 @@ describe('supervisor decision bridge', () => {
     }]);
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     await expect(remote({
-      action: 'start', projectDir: 'E:\\rotation', goal: '完成轮换项目', doneWhen: ['测试通过'],
+      action: 'start', projectDir: 'E:\\rotation', goal: '完成轮换项目',
+      preconditions: ['设备已断电并确认安全'], doneWhen: ['测试通过'],
     })).resolves.toMatchObject({ ok: true });
     const managerSurfaceId = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
@@ -1287,11 +1509,35 @@ describe('supervisor decision bridge', () => {
         },
       },
     })).resolves.toMatchObject({ ok: true });
+    useStore.getState().setWorkspacePrefs({
+      projectManagementAgents: {
+        ...DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
+        supervisor: { agent: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
+      },
+    });
     await expect(request({
       action: 'task-supervise', callerSurfaceId: managerSurfaceId, workItemId: 'rotation_task',
     })).resolves.toMatchObject({ ok: true });
     const previousLane = useStore.getState().supervisor.lanes.find((lane) => lane.projectWorkItemId === 'rotation_task');
     expect(previousLane?.surfaceId).toBe('worker-a');
+    expect(previousLane?.config?.preconditions).toContain('设备已断电并确认安全');
+    const supervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.id === previousLane?.supervisorSurfaceId);
+    expect(supervisorSurface?.startupCommands?.[0]).toMatch(
+      /^codex --model 'gpt-5\.6-terra' --config model_reasoning_effort='high'/,
+    );
+
+    await expect(remote({
+      action: 'update-preconditions',
+      projectId: useStore.getState().projectManager?.id,
+      preconditions: ['设备现已接入受控电源', '断电保护已经人工验证'],
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'project-preconditions-updated' } });
+    expect(useStore.getState().projectManager?.preconditions).toEqual([
+      '设备现已接入受控电源', '断电保护已经人工验证',
+    ]);
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === previousLane?.id)?.config?.preconditions)
+      .toContain('断电保护已经人工验证');
 
     await expect(request({
       action: 'terminal-rotate', callerSurfaceId: managerSurfaceId,
@@ -1307,6 +1553,62 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.id === 'worker-a')).toBe(false);
+  });
+
+  it('deletes only the selected project and closes its managed supervisor chain', async () => {
+    useStore.getState().resetSupervisorSession();
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-delete-worker' as any,
+      title: '待删除项目',
+      cwd: 'E:\\delete-project',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-delete-worker' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', cwd: 'E:\\delete-project' }],
+      },
+    }]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\delete-project', goal: '删除项目',
+      preconditions: ['环境安全'], doneWhen: ['完成'],
+    })).resolves.toMatchObject({ ok: true });
+    const projectId = useStore.getState().projectManager?.id;
+    const managerSurfaceId = useStore.getState().projectManager?.managerSurfaceId;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'task-create', callerSurfaceId: managerSurfaceId,
+      workItem: {
+        id: 'delete_task', title: '删除任务', status: 'planned', dependencies: [], workerSurfaceId: 'worker-a',
+        contract: {
+          objective: '验证删除', description: '', preconditions: [],
+          scope: { root: 'E:\\delete-project', allowPaths: [], denyPaths: [], forbiddenActions: [] },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false },
+          stopWhen: ['完成'], validation: ['检查'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      },
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'task-supervise', callerSurfaceId: managerSurfaceId, workItemId: 'delete_task',
+    })).resolves.toMatchObject({ ok: true });
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\keep-project', goal: '保留项目',
+      preconditions: ['环境安全'], doneWhen: ['完成'],
+    })).resolves.toMatchObject({ ok: true });
+    const remainingProjectId = useStore.getState().projectManager?.id;
+    useStore.getState().selectProjectManager(projectId!);
+
+    await expect(remote({ action: 'delete-project', projectId })).resolves.toMatchObject({
+      ok: true, deletedProjectId: projectId, selectedProjectId: remainingProjectId,
+    });
+    expect((globalThis.window as any).wmux.projectManager.deleteSession).toHaveBeenCalledWith(projectId);
+    expect(useStore.getState().projectManagers.map((project) => project.id)).toEqual([remainingProjectId]);
+    expect(useStore.getState().projectManager?.id).toBe(remainingProjectId);
+    expect(useStore.getState().supervisor.lanes).toEqual([]);
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.id === 'worker-a')).toBe(false);
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerTerminal)).toBe(true);
   });
 
   it('closes an ordinary task terminal and cleans up its last-tab workspace', () => {

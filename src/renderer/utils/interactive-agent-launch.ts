@@ -1,3 +1,5 @@
+import { buildSupervisorLaunchCommand } from '../supervisor/launch-command';
+
 export type InteractiveAgent = 'codex' | 'kimi' | 'grok';
 
 export interface InteractiveAgentLaunch {
@@ -5,7 +7,7 @@ export interface InteractiveAgentLaunch {
   startupInput?: string;
 }
 
-const AUTOMATED_KIMI_STARTUP_COMMAND = 'kimi # wmux-automated-agent-task';
+const AUTOMATED_KIMI_STARTUP_MARKER = '# wmux-automated-agent-task';
 
 function powerShellStringExpression(value: string): string {
   const json = JSON.stringify(value).replace(/'/g, "''");
@@ -17,16 +19,22 @@ function powerShellStringExpression(value: string): string {
  * TUI startup. Kimi has no interactive initial-prompt option, so it still uses
  * the checked PTY input path after its interface starts.
  */
-export function buildInteractiveAgentLaunch(agent: InteractiveAgent, prompt: string): InteractiveAgentLaunch {
+export function buildInteractiveAgentLaunch(
+  agent: InteractiveAgent,
+  prompt: string,
+  model = '',
+  reasoningEffort = '',
+): InteractiveAgentLaunch {
+  const launchCommand = buildSupervisorLaunchCommand(agent, model, reasoningEffort);
   if (agent === 'kimi') {
     return {
-      startupCommands: [AUTOMATED_KIMI_STARTUP_COMMAND],
+      startupCommands: [`${launchCommand} ${AUTOMATED_KIMI_STARTUP_MARKER}`],
       startupInput: prompt,
     };
   }
 
   return {
-    startupCommands: [`${agent} -- ${powerShellStringExpression(prompt)}`],
+    startupCommands: [`${launchCommand} -- ${powerShellStringExpression(prompt)}`],
   };
 }
 
@@ -36,6 +44,6 @@ export function detectAutomatedInteractiveAgent(
 ): 'codex' | 'kimi' | undefined {
   const command = startupCommands?.[0]?.trim().toLowerCase() || '';
   if (command.startsWith('codex ') && command.includes('convertfrom-json')) return 'codex';
-  if (command === AUTOMATED_KIMI_STARTUP_COMMAND && !!startupInput) return 'kimi';
+  if (command.startsWith('kimi ') && command.endsWith(AUTOMATED_KIMI_STARTUP_MARKER) && !!startupInput) return 'kimi';
   return undefined;
 }

@@ -278,10 +278,13 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.invoke(IPC_CHANNELS.MARKDOWN_SAVE_AS, content, suggestedName, defaultDir),
   },
   projectManager: {
-    ensureSkill: () => ipcRenderer.invoke('project-manager:ensure-skill'),
+    ensureSkill: (agent?: 'codex' | 'kimi' | 'grok') => ipcRenderer.invoke('project-manager:ensure-skill', agent),
     saveSession: (session: any) => ipcRenderer.invoke('project-manager:save-session', session),
+    deleteSession: (sessionId: string) => ipcRenderer.invoke('project-manager:delete-session', sessionId),
     readLatestSession: (projectDir: string) => ipcRenderer.invoke('project-manager:read-latest-session', projectDir),
     listActiveSessions: () => ipcRenderer.invoke('project-manager:list-active-sessions'),
+    pickPlanFiles: () => ipcRenderer.invoke('project-manager:pick-plan-files'),
+    readPlanFiles: (filePaths: string[]) => ipcRenderer.invoke('project-manager:read-plan-files', filePaths),
     appendRecord: (record: any) => ipcRenderer.invoke('project-manager:append-record', record),
   },
   ssh: {

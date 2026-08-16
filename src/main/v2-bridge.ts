@@ -148,6 +148,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-decide' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.user.question': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'user-question' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.terminal.rotate': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminal-rotate' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -160,8 +164,16 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'pause' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.pause-all': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'pause-all' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.resume': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'resume' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.resume-all': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'resume-all' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.stop': {

@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   PROJECT_MANAGER_TERMINAL_CWD,
-  PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH,
+  projectManagerSkillRelativePath,
+  type ProjectManagerRuntimeAgent,
 } from '../shared/project-manager-terminal';
 
 interface ProjectManagerSkillRuntime {
@@ -28,9 +29,10 @@ function bundledSkillDirectory(runtime: ProjectManagerSkillRuntime): string {
 
 export function ensureProjectManagerSkill(
   runtime: ProjectManagerSkillRuntime,
+  agent: ProjectManagerRuntimeAgent = 'codex',
 ): ProjectManagerSkillResult {
   const projectDir = runtime.projectDir || PROJECT_MANAGER_TERMINAL_CWD;
-  const skillPath = path.join(projectDir, PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH);
+  const skillPath = path.join(projectDir, projectManagerSkillRelativePath(agent));
   try {
     if (!fs.statSync(projectDir).isDirectory()) {
       return { ok: false, created: false, skillPath, error: `项目管理终端目录不存在：${projectDir}` };

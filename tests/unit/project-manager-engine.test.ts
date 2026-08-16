@@ -37,7 +37,7 @@ function item(id: string, status: ProjectWorkItem['status'], dependencies: strin
 
 function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['status'] = 'active'): ProjectManagerSession {
   return {
-    id: 'pm-1', projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['全部测试通过'], status,
+    id: 'pm-1', projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['环境已准备'], planFiles: [], doneWhen: ['全部测试通过'], status,
     workItems, events: [], createdAt: 1, updatedAt: 1,
   };
 }

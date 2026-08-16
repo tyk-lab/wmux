@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 
 describe('飞书 AI 监督命令', () => {
@@ -555,6 +555,7 @@ supervisor_model: k3`)).toEqual({
     const createTask = JSON.stringify(createTaskObject);
     const projectManager = JSON.stringify(buildProjectManagerConversationCard({
       status: 'active', goal: '完成认证功能', workItems: [{ status: 'running' }, { status: 'waiting-decision' }],
+      projects: [{ id: 'pm-a', status: 'active', goal: '完成认证功能' }],
       events: [{ ts: 1, kind: 'work-item-created', summary: '创建认证任务' }],
     }, undefined, true));
     const projectManagerClosedLogs = JSON.stringify(buildProjectManagerConversationCard({ status: 'active' }));
@@ -591,6 +592,7 @@ supervisor_model: k3`)).toEqual({
     expect(projectManager).toContain('创建认证任务');
     expect(projectManagerClosedLogs).toContain('project_ai_logs');
     expect(projectManager).toContain('project_ai_pause');
+    expect(projectManager).toContain('暂停全部项目');
     expect(projectManager).not.toContain('activate_project_manager_ai');
     expect(projectManager).not.toContain('项目管理终端');
     expect(projectManager).not.toContain('task_name');
@@ -856,6 +858,25 @@ supervisor_model: k3`)).toEqual({
       { text: { tag: 'plain_text', content: '已有会话：项目 A' }, value: 'workspace:ws-a' },
       { text: { tag: 'plain_text', content: '已有会话：项目 B' }, value: 'workspace:ws-b' },
     ]);
+  });
+
+  it('将项目关键歧义渲染为带推荐选项和自定义答复的飞书卡片', () => {
+    const card = JSON.stringify(buildProjectClarificationCard('pm-a', {
+      id: 'question-1',
+      question: '是否允许覆盖现有配置？',
+      context: '继续执行前必须明确这一边界。',
+      options: [
+        { id: 'keep', label: '保留现有配置', description: '仅做兼容性修改。' },
+        { id: 'replace', label: '允许覆盖' },
+      ],
+      recommendedOptionId: 'keep',
+    }));
+
+    expect(card).toContain('项目管理 AI 需要确认');
+    expect(card).toContain('其他项目继续运行');
+    expect(card).toContain('保留现有配置（推荐）');
+    expect(card).toContain('project_clarification_option');
+    expect(card).toContain('wmux_form_project_clarification');
   });
 
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {
