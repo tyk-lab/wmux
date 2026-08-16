@@ -10,7 +10,7 @@ export function withSurfaceCaller(
   callerSurfaceId: string | undefined,
 ): Record<string, any> {
   if (
-    !CALLER_AWARE_SURFACE_METHODS.has(method)
+    (!CALLER_AWARE_SURFACE_METHODS.has(method) && !method.startsWith('project.'))
     || params.callerSurfaceId !== undefined
     || !callerSurfaceId
   ) {

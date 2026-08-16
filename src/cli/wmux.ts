@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
 import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
+import { cleanupProjectJsonInput, resolveProjectJsonInput } from './project-command';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -174,12 +175,134 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     alternatives: getFlag(args, '--alternatives') || '',
     permissionCommand: getFlag(args, '--permission-command') || '',
     permissionResponse: getFlag(args, '--permission-response') || '',
+    executionAction: getFlag(args, '--execution-action') || '',
+    command: getFlag(args, '--command') || '',
+    error: getFlag(args, '--error') || '',
+    workspaceVersion: getFlag(args, '--workspace-version') || '',
+    testCommand: getFlag(args, '--test-command') || '',
+    testResult: getFlag(args, '--test-result') || '',
+    changedFiles: (getFlag(args, '--changed-files') || '').split(',').map((item) => item.trim()).filter(Boolean),
+    evidence: getFlag(args, '--evidence') || '',
+    fullSuite: args.includes('--full-suite'),
+    retry: args.includes('--retry'),
   });
   cleanupSupervisorNextInput(nextInput, result?.ok !== false);
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
   // are always visible so an agent cannot mistake a rejected write for success.
   if (args.includes('--verbose') || result?.ok === false) print(result);
+}
+
+async function cmdProject(args: string[]): Promise<void> {
+  const sub = args[1];
+  const projectId = getFlag(args, '--project') || '';
+  if (sub === 'status' || sub === 'logs' || sub === 'terminals') {
+    print(await sendV2(`project.${sub}`, { projectId }));
+    return;
+  }
+  if (sub === 'terminal-create') {
+    const input = resolveProjectJsonInput(args);
+    let success = false;
+    try {
+      const result = await sendV2('project.terminal.create', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
+  if (sub === 'start') {
+    const goal = getFlag(args, '--goal') || '';
+    const doneWhen = getFlag(args, '--done-when') || '';
+    if (!goal || !doneWhen) throw new Error('project start requires --goal and --done-when');
+    print(await sendV2('project.start', {
+      goal,
+      doneWhen: doneWhen.split(/\s*;\s*/u).filter(Boolean),
+      projectDir: getFlag(args, '--project-dir') || process.cwd(),
+    }));
+    return;
+  }
+  if (sub === 'task-create' || sub === 'task-update' || sub === 'record') {
+    const input = resolveProjectJsonInput(args);
+    const method = sub === 'task-create'
+      ? 'project.task.create'
+      : sub === 'task-update'
+        ? 'project.task.update'
+        : 'project.execution.record';
+    let success = false;
+    try {
+      const result = await sendV2(method, { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
+  if (sub === 'supervise') {
+    const workItemId = getFlag(args, '--task') || '';
+    if (!workItemId) throw new Error('project supervise requires --task');
+    print(await sendV2('project.task.supervise', { workItemId, projectId }));
+    return;
+  }
+  if (sub === 'inspect') {
+    print(await sendV2('project.supervisor.inspect', {
+      projectId,
+      reason: getFlag(args, '--reason') || '',
+    }));
+    return;
+  }
+  if (sub === 'decide') {
+    const approvalId = getFlag(args, '--approval') || '';
+    const decision = getFlag(args, '--decision') || '';
+    if (!approvalId || !decision) throw new Error('project decide requires --approval and --decision');
+    print(await sendV2('project.supervisor.decide', {
+      projectId,
+      approvalId,
+      decision,
+      selection: getFlag(args, '--selection') || '',
+      task: getFlag(args, '--task-message') || '',
+    }));
+    return;
+  }
+  if (sub === 'terminal-rotate') {
+    const input = resolveProjectJsonInput(args);
+    let success = false;
+    try {
+      const result = await sendV2('project.terminal.rotate', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
+  if (sub === 'pause' || sub === 'resume' || sub === 'stop') {
+    print(await sendV2(`project.${sub}`, {
+      reason: getFlag(args, '--reason') || '',
+      emergency: args.includes('--emergency'),
+      projectId,
+    }));
+    return;
+  }
+  if (sub === 'complete') {
+    const evidence = getFlag(args, '--evidence') || '';
+    if (!evidence) throw new Error('project complete requires --evidence');
+    print(await sendV2('project.complete', { evidence, projectId }));
+    return;
+  }
+  if (sub === 'reply') {
+    const message = getFlag(args, '--message') || '';
+    if (!message) throw new Error('project reply requires --message');
+    print(await sendV2('project.reply', {
+      message,
+      correlationId: getFlag(args, '--correlation') || '',
+      projectId,
+    }));
+    return;
+  }
+  throw new Error('Usage: wmux project <start|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|pause|resume|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -773,6 +896,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   hook: cmdHook,
   'agent-activity': cmdAgentActivity,
   supervisor: cmdSupervisor,
+  project: cmdProject,
   // Install/refresh Claude · Kimi · Codex · Grok · Pi · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
@@ -863,7 +987,13 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
+                          [--execution-action <text> --command <text> --error <text> --workspace-version <hash>]
+                          [--test-command <text> --test-result <text> --changed-files <a,b> --evidence <text>]
+                          [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
+Project:    project start --goal <text> --done-when <a;b> [--project-dir <path>]
+            project status|logs|terminals|terminal-create|task-create|task-update|record|supervise|pause|resume|complete|stop|reply
+            terminal-create/task-create/task-update/record use --json or --json-file <.wmux/tmp/file>
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

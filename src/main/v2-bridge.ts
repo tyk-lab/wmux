@@ -108,6 +108,74 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
+  'project.start': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'start' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.status': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.logs': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'logs' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.terminals': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminals' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.terminal.create': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminal-create' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.task.create': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-create' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.task.update': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-update' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.task.supervise': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-supervise' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.supervisor.inspect': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-inspect' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.supervisor.decide': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-decide' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.terminal.rotate': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminal-rotate' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.execution.record': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'record-execution' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.pause': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'pause' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.resume': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'resume' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.stop': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'stop' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.complete': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'complete' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.reply': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'reply' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
 };
 
 function runBridge(spec: BridgeSpec, params: any, respond: Respond, respondError: RespondError): void {
