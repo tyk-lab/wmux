@@ -19,6 +19,7 @@ import ShortcutCheatSheet from './components/CheatSheet/ShortcutCheatSheet';
 import ConfirmCloseDialog from './components/ConfirmCloseDialog';
 import ConfirmCloseSurfaceDialog from './components/ConfirmCloseSurfaceDialog';
 import SupervisorSetupDialog from './components/Supervisor/SupervisorSetupDialog';
+import ProjectManagerDialog from './components/ProjectManager/ProjectManagerDialog';
 import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
@@ -506,9 +507,11 @@ function handleSupervisorHookEvent(event: any): void {
   const store = useStore.getState();
   const session = store.supervisor;
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
-  if (!session.active || !surfaceId) return;
-
   const lifecycle = String(event.event || '');
+  if (['Stop', 'StopFailure', 'Interrupt', 'Notification'].includes(lifecycle)) {
+    (window as any).__wmux_flushProjectManagerDeliveries?.();
+  }
+  if (!session.active || !surfaceId) return;
   const supervisorLane = session.lanes.find((item) => (
     dedicatedSupervisorSurfaceId(item) === surfaceId
     && (supervisorLaneControlState(item) === 'active' || supervisorLaneControlState(item) === 'waiting')
@@ -1305,12 +1308,23 @@ export default function App() {
               doneWhen: session.doneWhen,
               detail: action.detail,
             });
-            store.appendSupervisorLog(action.laneId, '通知你', action.reason);
-            store.addNotification({
-              surfaceId: (lane?.surfaceId || '') as SurfaceId,
-              workspaceId: (store.activeWorkspaceId || '') as WorkspaceId,
-              text: text.replace(/\n/g, ' · '),
-            });
+            store.appendSupervisorLog(action.laneId, lane?.projectManagerProjectId ? '通知项目管理 AI' : '通知你', action.reason);
+            if (lane?.projectManagerProjectId) {
+              void Promise.resolve((window as any).__wmux_projectManagerRemoteControl?.({
+                action: 'event',
+                projectId: lane.projectManagerProjectId,
+                workItemId: lane.projectWorkItemId,
+                eventType: 'supervisor.scheduler-attention',
+                summary: text,
+                payload: { reason: action.reason, detail: action.detail || '' },
+              })).catch(() => undefined);
+            } else {
+              store.addNotification({
+                surfaceId: (lane?.surfaceId || '') as SurfaceId,
+                workspaceId: (store.activeWorkspaceId || '') as WorkspaceId,
+                text: text.replace(/\n/g, ' · '),
+              });
+            }
             const disableLane = action.disableLane !== false;
             if (disableLane) {
               store.updateLane(action.laneId, {
@@ -2062,6 +2076,7 @@ export default function App() {
       <ConfirmCloseDialog />
       <ConfirmCloseSurfaceDialog />
       <SupervisorSetupDialog />
+      <ProjectManagerDialog />
 
       {broadcastInputActive && (
         <div className="broadcast-input-banner" title="Typed input is sent to every terminal pane in this workspace">

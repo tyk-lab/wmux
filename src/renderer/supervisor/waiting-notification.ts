@@ -21,6 +21,9 @@ export function announceSupervisorWaitingForDirection(
     stopWhen: config.stopWhen,
   });
 
+  // 项目管理模式下，待续由项目管理 AI 消化，不再打扰用户。
+  if (lane.projectManagerProjectId) return true;
+
   const text = `AI 监督通道“${lane.label}”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
   if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });

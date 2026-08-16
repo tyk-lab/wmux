@@ -354,12 +354,35 @@ export function appendSupervisorRecord(
 ): void {
   const managementSessionId = lane.managementSessionId || session.sessionId;
   if (!managementSessionId || !lane.projectDir) return;
-  const api = (window as any).wmux?.supervisor;
-  if (!api?.appendRecord) return;
-
   const compactPayload = Object.fromEntries(
     Object.entries(payload).map(([key, value]) => [key, compact(value)]),
   );
+  if (lane.projectWorkItemId) {
+    compactPayload.projectWorkItemId = lane.projectWorkItemId;
+    const event = String(compactPayload.event || compactPayload.outcome || '').trim();
+    const detail = String(compactPayload.reason || compactPayload.message || compactPayload.error || '').trim();
+    const important = type === 'supervisor.decision'
+      || type === 'worker.blocked'
+      || type === 'supervisor.provider-limit'
+      || type === 'supervisor.delivery.failed'
+      || type === 'supervisor.waiting-for-direction'
+      || (type === 'worker.lifecycle' && ['Stop', 'StopFailure', 'Interrupt'].includes(event));
+    if (important) {
+      const notification = (window as any).__wmux_projectManagerRemoteControl?.({
+        action: 'event',
+        projectId: lane.projectManagerProjectId,
+        workItemId: lane.projectWorkItemId,
+        eventType: type,
+        summary: [event, detail].filter(Boolean).join('：').slice(0, 1200) || type,
+        payload: compactPayload,
+      });
+      void Promise.resolve(notification).catch((err: unknown) => (
+        console.warn('[project-manager] supervisor event delivery failed', err)
+      ));
+    }
+  }
+  const api = (window as any).wmux?.supervisor;
+  if (!api?.appendRecord) return;
   void api.appendRecord({
     sessionId: managementSessionId,
     projectDir: lane.projectDir,
