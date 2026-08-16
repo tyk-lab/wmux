@@ -34,6 +34,17 @@ describe('project command JSON input', () => {
     expect(() => resolveProjectJsonInput(['task-create', '--json-file', 'task.json'], cwd)).toThrow('restricted');
   });
 
+  it('classifies a missing draft directory and file without leaking fs errors', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-project-command-missing-'));
+    roots.push(cwd);
+    expect(() => resolveProjectJsonInput(['task-create', '--json-file', '.wmux/tmp/task.json'], cwd))
+      .toThrow('draft directory');
+
+    const valid = root();
+    expect(() => resolveProjectJsonInput(['task-create', '--json-file', '.wmux/tmp/task.json'], valid))
+      .toThrow('draft file');
+  });
+
   it('preserves the draft after a failed command', () => {
     const cwd = root();
     const file = path.join(cwd, '.wmux', 'tmp', 'task.json');

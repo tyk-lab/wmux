@@ -214,10 +214,14 @@ async function cmdProject(args: string[]): Promise<void> {
   }
   if (sub === 'start') {
     const goal = getFlag(args, '--goal') || '';
+    const preconditions = getFlag(args, '--preconditions') || '';
     const doneWhen = getFlag(args, '--done-when') || '';
-    if (!goal || !doneWhen) throw new Error('project start requires --goal and --done-when');
+    if (!goal || !preconditions || !doneWhen) {
+      throw new Error('project start requires --goal, --preconditions and --done-when');
+    }
     print(await sendV2('project.start', {
       goal,
+      preconditions: preconditions.split(/\s*;\s*/u).filter(Boolean),
       doneWhen: doneWhen.split(/\s*;\s*/u).filter(Boolean),
       projectDir: getFlag(args, '--project-dir') || process.cwd(),
     }));
@@ -266,6 +270,18 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
+  if (sub === 'ask') {
+    const input = resolveProjectJsonInput(args);
+    let success = false;
+    try {
+      const result = await sendV2('project.user.question', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
   if (sub === 'terminal-rotate') {
     const input = resolveProjectJsonInput(args);
     let success = false;
@@ -286,6 +302,12 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
+  if (sub === 'pause-all' || sub === 'resume-all') {
+    print(await sendV2(`project.${sub}`, {
+      reason: getFlag(args, '--reason') || '',
+    }));
+    return;
+  }
   if (sub === 'complete') {
     const evidence = getFlag(args, '--evidence') || '';
     if (!evidence) throw new Error('project complete requires --evidence');
@@ -302,7 +324,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <start|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|pause|resume|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <start|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -991,8 +1013,8 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--test-command <text> --test-result <text> --changed-files <a,b> --evidence <text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project start --goal <text> --done-when <a;b> [--project-dir <path>]
-            project status|logs|terminals|terminal-create|task-create|task-update|record|supervise|pause|resume|complete|stop|reply
+Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
+            project status|logs|terminals|terminal-create|task-create|task-update|record|supervise|pause|resume|pause-all|resume-all|complete|stop|reply
             terminal-create/task-create/task-update/record use --json or --json-file <.wmux/tmp/file>
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]

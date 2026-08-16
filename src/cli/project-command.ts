@@ -18,8 +18,18 @@ export function resolveProjectJsonInput(args: string[], cwd = process.cwd()): Pr
   let text = inline;
   let sourceFile: string | undefined;
   if (fileArgument) {
-    const tempRoot = fs.realpathSync(path.join(cwd, '.wmux', 'tmp'));
-    sourceFile = fs.realpathSync(path.resolve(cwd, fileArgument));
+    const requested = path.resolve(cwd, fileArgument);
+    const configuredTempRoot = path.resolve(cwd, '.wmux', 'tmp');
+    const lexicalRelative = path.relative(configuredTempRoot, requested);
+    if (!lexicalRelative || lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative)) {
+      throw new Error('--json-file is restricted to the current project .wmux/tmp/ directory');
+    }
+    if (!fs.existsSync(configuredTempRoot) || !fs.statSync(configuredTempRoot).isDirectory()) {
+      throw new Error('project JSON draft directory .wmux/tmp does not exist');
+    }
+    if (!fs.existsSync(requested)) throw new Error('project JSON draft file does not exist');
+    const tempRoot = fs.realpathSync(configuredTempRoot);
+    sourceFile = fs.realpathSync(requested);
     const relative = path.relative(tempRoot, sourceFile);
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error('--json-file is restricted to the current project .wmux/tmp/ directory');
