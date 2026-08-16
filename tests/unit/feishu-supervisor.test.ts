@@ -2,9 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
-import { PROJECT_MANAGER_TERMINAL_STARTUP_INPUT } from '../../src/shared/project-manager-terminal';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -92,10 +91,11 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('允许白名单单聊和指定群聊，拒绝其他来源', () => {
-    const config = { controlChatId: 'oc-control', allowedOpenIds: new Set(['ou-allowed']) };
+    const config = { controlChatId: 'oc-control', projectManagerChatId: 'oc-project', allowedOpenIds: new Set(['ou-allowed']) };
     expect(isFeishuSupervisorActorAllowed(config, 'oc-control', 'ou-allowed', 'group')).toBe(true);
     expect(isFeishuSupervisorActorAllowed(config, 'oc-direct', 'ou-allowed', 'p2p')).toBe(true);
     expect(isFeishuSupervisorActorAllowed(config, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
+    expect(isFeishuSupervisorActorAllowed(config, 'oc-project', 'ou-allowed', 'group')).toBe(true);
     expect(isFeishuSupervisorActorAllowed(config, 'oc-control', 'ou-other', 'p2p')).toBe(false);
     expect(isFeishuSupervisorActorAllowed({ controlChatId: undefined, allowedOpenIds: new Set(['ou-allowed']) }, 'oc-audit', 'ou-allowed', 'group')).toBe(false);
   });
@@ -294,8 +294,8 @@ supervisor_model: k3`)).toEqual({
   });
 
   it('解析本机 .env 和首次配置用的标签值文件', () => {
-    expect(parseFeishuDotEnv("WMUX_ENV_FILE=.env.tyk\nWMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_CONTROL_CHAT_ID=oc-control\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
-      WMUX_ENV_FILE: '.env.tyk', WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_CONTROL_CHAT_ID: 'oc-control', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
+    expect(parseFeishuDotEnv("WMUX_ENV_FILE=.env.tyk\nWMUX_FEISHU_APP_ID=cli-test\nWMUX_FEISHU_CONTROL_CHAT_ID=oc-control\nWMUX_FEISHU_PROJECT_MANAGER_CHAT_ID=oc-project\nWMUX_FEISHU_ENV_FILE='docs/env.txt'")).toEqual({
+      WMUX_ENV_FILE: '.env.tyk', WMUX_FEISHU_APP_ID: 'cli-test', WMUX_FEISHU_CONTROL_CHAT_ID: 'oc-control', WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID: 'oc-project', WMUX_FEISHU_ENV_FILE: 'docs/env.txt',
     });
     expect(resolveFeishuEnvFilePointer({ WMUX_ENV_FILE: '.env.tyk', WMUX_FEISHU_ENV_FILE: 'docs/env.txt' })).toBe('.env.tyk');
     expect(resolveFeishuEnvFilePointer({ WMUX_FEISHU_ENV_FILE: 'docs/env.txt' })).toBe('docs/env.txt');
@@ -553,6 +553,11 @@ supervisor_model: k3`)).toEqual({
       ...terminals[0], supervised: true, supervisionState: 'active',
     }]) as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
     const createTask = JSON.stringify(createTaskObject);
+    const projectManager = JSON.stringify(buildProjectManagerConversationCard({
+      status: 'active', goal: '完成认证功能', workItems: [{ status: 'running' }, { status: 'waiting-decision' }],
+      events: [{ ts: 1, kind: 'work-item-created', summary: '创建认证任务' }],
+    }, undefined, true));
+    const projectManagerClosedLogs = JSON.stringify(buildProjectManagerConversationCard({ status: 'active' }));
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
       { ...terminals[0], supervised: true, supervisionState: 'active' },
     ]));
@@ -576,6 +581,19 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('启动监督');
     expect(menu).toContain('终端控制');
     expect(menu).toContain('关闭终端');
+    expect(menu).toContain('**项目管理 AI**');
+    expect(menu).toContain('进入项目管理 AI 对话');
+    expect(projectManager).toContain('wmux · 项目管理 AI');
+    expect(projectManager).toContain('直接与项目管理 AI 对话');
+    expect(projectManager).toContain('发送给项目管理 AI');
+    expect(projectManager).toContain('form_project_ai_message');
+    expect(projectManager).toContain('每项目 1 个监督 AI');
+    expect(projectManager).toContain('创建认证任务');
+    expect(projectManagerClosedLogs).toContain('project_ai_logs');
+    expect(projectManager).toContain('project_ai_pause');
+    expect(projectManager).not.toContain('activate_project_manager_ai');
+    expect(projectManager).not.toContain('项目管理终端');
+    expect(projectManager).not.toContain('task_name');
     expect(JSON.stringify(buildSupervisorControlMenuCard({
       active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
     }, undefined, false))).not.toContain('终端控制');
@@ -637,13 +655,12 @@ supervisor_model: k3`)).toEqual({
     expect(createTask).toContain('Codex（默认）');
     expect(createTask).toContain('Kimi');
     expect(createTask).toContain('Grok');
-    expect(createTask).toContain('创建项目管理终端');
-    expect(createTask).toContain(PROJECT_MANAGER_TERMINAL_STARTUP_INPUT);
-    expect(createTask).toContain('create_project_manager');
+    expect(createTask).not.toContain('创建项目管理终端');
+    expect(createTask).not.toContain('create_project_manager');
     expect(createTask).toContain('task_name');
     expect(createTask).toContain('form_create_task');
     expect(createTask).toContain('返回控制首页');
-    expect(createTask.indexOf('项目管理终端（可选）')).toBeLessThan(createTask.indexOf('普通终端任务'));
+    expect(createTask).toContain('普通终端任务');
     const createTaskForm = createTaskObject.body?.elements?.find((element) => element.tag === 'form');
     const createTaskInputs = createTaskForm?.elements?.filter((element) => element.tag === 'input') || [];
     const createTaskSelects = createTaskForm?.elements?.filter((element) => element.tag === 'select_static') || [];
@@ -658,8 +675,10 @@ supervisor_model: k3`)).toEqual({
     });
     expect(createTaskSelects[1]).toMatchObject({
       name: 'path_terminal',
-      options: [{ text: { content: 'E:\\repo' }, value: 'surf-a' }],
     });
+    expect(createTaskSelects[1].options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: expect.objectContaining({ content: 'E:\\repo' }), value: 'surf-a' }),
+    ]));
     expect(createTaskSelects[2]).toMatchObject({ name: 'agent' });
     expect(createTaskInputs.every((input) => Number(input.max_length) >= 1 && Number(input.max_length) <= 1000)).toBe(true);
     expect(start).toContain('surf-a');
@@ -820,26 +839,23 @@ supervisor_model: k3`)).toEqual({
     expect(confirmationCard).toContain('confirm_close_terminal');
   });
 
-  it('按会话而不是按终端选择项目管理终端创建位置', () => {
+  it('普通终端任务表单不再混入项目管理 AI 运行时入口', () => {
     const cardObject = buildDirectTerminalTaskCard([
       { surfaceId: 'surf-a', label: '任务 A', workspaceId: 'ws-a', workspace: '项目 A', supervised: true, supervisionState: 'active' },
       { surfaceId: 'surf-a-2', label: '任务 A2', workspaceId: 'ws-a', workspace: '项目 A', supervised: false },
       { surfaceId: 'surf-b', label: '任务 B', workspaceId: 'ws-b', workspace: '项目 B', supervised: false },
     ]) as any;
     const card = JSON.stringify(cardObject);
-    const managerForm = cardObject.body.elements.find((element: any) => element.name === 'wmux_project_manager_anchor_form');
-    const managerSelect = managerForm.elements.find((element: any) => element.name === 'project_manager_session');
     const taskForm = cardObject.body.elements.find((element: any) => element.name === 'wmux_create_task_form');
     const taskSessionSelect = taskForm.elements.find((element: any) => element.name === 'session_target');
 
-    expect(card).toContain('project_manager_anchor');
-    expect(card).toContain('wmux_form_create_project_manager');
-    expect(managerSelect.options).toEqual([
-      { text: { tag: 'plain_text', content: '项目 A' }, value: 'workspace:ws-a' },
-      { text: { tag: 'plain_text', content: '项目 B' }, value: 'workspace:ws-b' },
+    expect(card).not.toContain('project_manager_anchor');
+    expect(card).not.toContain('wmux_form_create_project_manager');
+    expect(taskSessionSelect.options).toEqual([
+      { text: { tag: 'plain_text', content: '新建独立会话（默认）' }, value: 'new' },
+      { text: { tag: 'plain_text', content: '已有会话：项目 A' }, value: 'workspace:ws-a' },
+      { text: { tag: 'plain_text', content: '已有会话：项目 B' }, value: 'workspace:ws-b' },
     ]);
-    expect(JSON.stringify(managerSelect.options)).not.toContain('surf-a-2');
-    expect(managerSelect.name).not.toBe(taskSessionSelect.name);
   });
 
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {
@@ -985,6 +1001,7 @@ supervisor_model: k3`)).toEqual({
       terminal: 'surf-a', task: '执行测试',
     });
     expect(parseFeishuCardFormValues({ event: { action: { form_value: { terminal: ['surf-b'] } } } })).toEqual({ terminal: 'surf-b' });
+    expect(resolveFeishuCardAction(undefined, 'wmux_form_project_ai_message')).toEqual({ wmux_action: 'form_project_ai_message' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send')).toEqual({ wmux_action: 'form_send' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_send_supervisor')).toEqual({ wmux_action: 'form_send_supervisor' });
     expect(resolveFeishuCardAction(undefined, 'wmux_form_supervisor_screen')).toEqual({ wmux_action: 'form_supervisor_screen' });

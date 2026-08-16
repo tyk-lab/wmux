@@ -277,6 +277,13 @@ contextBridge.exposeInMainWorld('wmux', {
     saveAs: (content: string, suggestedName?: string, defaultDir?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.MARKDOWN_SAVE_AS, content, suggestedName, defaultDir),
   },
+  projectManager: {
+    ensureSkill: () => ipcRenderer.invoke('project-manager:ensure-skill'),
+    saveSession: (session: any) => ipcRenderer.invoke('project-manager:save-session', session),
+    readLatestSession: (projectDir: string) => ipcRenderer.invoke('project-manager:read-latest-session', projectDir),
+    listActiveSessions: () => ipcRenderer.invoke('project-manager:list-active-sessions'),
+    appendRecord: (record: any) => ipcRenderer.invoke('project-manager:append-record', record),
+  },
   ssh: {
     importConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_IMPORT_CONFIG),
     pickKey: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_PICK_KEY),

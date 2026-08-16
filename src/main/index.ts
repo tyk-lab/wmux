@@ -55,6 +55,12 @@ import fs from 'fs';
 import path from 'path';
 import { initializeLoginStartup } from './login-startup';
 import { ensureProjectManagerSkill } from './project-manager-skill';
+import {
+  appendProjectManagerRecord,
+  readActiveProjectManagerSessions,
+  readLatestProjectManagerSession,
+  saveProjectManagerSession,
+} from './project-manager-records';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -69,6 +75,22 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
   }
   const target = BrowserWindow.getAllWindows()[0];
   if (!target || target.isDestroyed()) return { ok: false, error: 'wmux 窗口未就绪。' };
+  if (command.action.startsWith('project-')) {
+    const action = command.action === 'project-status'
+      ? 'status'
+      : command.action === 'project-message'
+        ? 'message'
+      : command.action === 'project-logs'
+        ? 'logs'
+        : command.action === 'project-pause'
+          ? 'pause'
+          : command.action === 'project-resume'
+            ? 'resume'
+            : 'stop';
+    const payload = JSON.stringify({ ...command, action, actor: actor.openId, source: actor.source });
+    const result = await target.webContents.executeJavaScript(`window.__wmux_projectManagerRemoteControl?.(${payload})`);
+    return result || { ok: false, error: 'wmux 界面尚未初始化项目管理控制器。' };
+  }
   let forwardedCommand: FeishuSupervisorCommand = command;
   let preservedDirectory = '';
   if (command.action === 'create-task') {
@@ -604,6 +626,19 @@ app.whenReady().then(() => {
       model: String(request?.model || ''),
       cwd: typeof request?.cwd === 'string' ? request.cwd : undefined,
     });
+  });
+  ipcMain.handle('project-manager:save-session', (_event, session) => saveProjectManagerSession(session));
+  ipcMain.handle('project-manager:ensure-skill', () => ensureProjectManagerSkill({
+    appPath: app.getAppPath(),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  }));
+  ipcMain.handle('project-manager:read-latest-session', (_event, projectDir) => readLatestProjectManagerSession(projectDir));
+  ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
+  ipcMain.handle('project-manager:append-record', (_event, record) => {
+    const result = appendProjectManagerRecord(record);
+    feishuSupervisor?.onProjectManagerRecord?.(record);
+    return result;
   });
   ipcMain.handle('supervisor:list-models', (_event, request) => {
     const launcher = String(request?.launcher || '');

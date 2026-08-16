@@ -3,12 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { loadSettings } from './settings-store';
 import type { SupervisorRecord } from './supervisor-records';
+import type { ProjectManagerRecord } from './project-manager-records';
 import { getAppDataDir } from '../shared/instance';
-import {
-  PROJECT_MANAGER_TERMINAL_AGENT,
-  PROJECT_MANAGER_TERMINAL_NAME,
-  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
-} from '../shared/project-manager-terminal';
 import {
   SUPERVISOR_NO_DECISION_OPTION,
   supervisorDecisionOptions,
@@ -32,7 +28,13 @@ export type FeishuSupervisorCommand =
   | { action: 'pause-all' }
   | { action: 'resume-all' }
   | { action: 'stop' }
-  | { action: 'decide'; approvalId: string; decision: 'approve' | 'direct' | 'pause' | 'stop'; selection?: string; task?: string };
+  | { action: 'decide'; approvalId: string; decision: 'approve' | 'direct' | 'pause' | 'stop'; selection?: string; task?: string }
+  | { action: 'project-status'; projectId?: string }
+  | { action: 'project-message'; projectId?: string; message: string; messageId: string; chatId: string }
+  | { action: 'project-logs'; projectId?: string }
+  | { action: 'project-pause'; projectId?: string; reason?: string }
+  | { action: 'project-resume'; projectId?: string; reason?: string }
+  | { action: 'project-stop'; projectId?: string; reason?: string; emergency: boolean };
 
 export interface FeishuSupervisorControl {
   (command: FeishuSupervisorCommand, actor: { openId: string; source: 'text' | 'card' | 'system' }): Promise<unknown>;
@@ -44,17 +46,21 @@ interface FeishuConfig {
   chatId: string;
   controlChatId?: string;
   decisionChatId?: string;
+  projectManagerChatId?: string;
   allowedOpenIds: Set<string>;
 }
 
 export function isFeishuSupervisorActorAllowed(
-  config: Pick<FeishuConfig, 'controlChatId' | 'allowedOpenIds'>,
+  config: Pick<FeishuConfig, 'controlChatId' | 'projectManagerChatId' | 'allowedOpenIds'>,
   chatId: string,
   openId: string,
   chatType: 'group' | 'p2p',
 ): boolean {
   if (!config.allowedOpenIds.has(openId)) return false;
-  return chatType === 'p2p' || (chatType === 'group' && !!config.controlChatId && chatId === config.controlChatId);
+  return chatType === 'p2p' || (chatType === 'group' && (
+    (!!config.controlChatId && chatId === config.controlChatId)
+    || (!!config.projectManagerChatId && chatId === config.projectManagerChatId)
+  ));
 }
 
 interface ApprovalCard {
@@ -90,7 +96,7 @@ export function isFeishuApprovalCardContext(
 
 const COMMAND_PREFIX = 'WMUX SUPERVISOR ';
 const MAX_COMMAND_VALUE_LENGTH = 4000;
-const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_DECISION_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
+const FEISHU_ENV_KEYS = ['WMUX_FEISHU_APP_ID', 'WMUX_FEISHU_APP_SECRET', 'WMUX_FEISHU_CHAT_ID', 'WMUX_FEISHU_CONTROL_CHAT_ID', 'WMUX_FEISHU_DECISION_CHAT_ID', 'WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'WMUX_FEISHU_ALLOWED_OPEN_IDS'] as const;
 const LEGACY_DOT_ENV_KEY_MAP: Record<string, FeishuEnvKey> = {
   FEISHU_APP_ID: 'WMUX_FEISHU_APP_ID',
   FEISHU_APP_SECRET: 'WMUX_FEISHU_APP_SECRET',
@@ -123,7 +129,7 @@ export function resolveFeishuEnvFilePointer(
 export function parseFeishuDotEnv(content: string): FeishuDotEnvValues {
   const values: FeishuDotEnvValues = {};
   for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*(WMUX_ENV_FILE|WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE)|FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|GROUP_CHAT_ID|USER_OPEN_ID))\s*=\s*(.*?)\s*$/.exec(rawLine);
+    const match = /^\s*(WMUX_ENV_FILE|WMUX_FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|CONTROL_CHAT_ID|DECISION_CHAT_ID|PROJECT_MANAGER_CHAT_ID|ALLOWED_OPEN_IDS|ENV_FILE)|FEISHU_(?:APP_ID|APP_SECRET|CHAT_ID|GROUP_CHAT_ID|USER_OPEN_ID))\s*=\s*(.*?)\s*$/.exec(rawLine);
     if (!match) continue;
     const value = match[2].replace(/^(['"])(.*)\1$/, '$2').trim();
     const key = LEGACY_DOT_ENV_KEY_MAP[match[1]] || match[1] as FeishuEnvKey | keyof FeishuEnvFilePointer;
@@ -215,9 +221,10 @@ function envConfig(env = process.env): FeishuConfig | null {
   const chatId = env.WMUX_FEISHU_CHAT_ID?.trim();
   const controlChatId = env.WMUX_FEISHU_CONTROL_CHAT_ID?.trim();
   const decisionChatId = env.WMUX_FEISHU_DECISION_CHAT_ID?.trim();
+  const projectManagerChatId = env.WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID?.trim();
   const allowedOpenIds = new Set((env.WMUX_FEISHU_ALLOWED_OPEN_IDS || '').split(',').map((item) => item.trim()).filter(Boolean));
   if (!appId || !appSecret || !chatId || allowedOpenIds.size === 0) return null;
-  return { appId, appSecret, chatId, controlChatId, decisionChatId, allowedOpenIds };
+  return { appId, appSecret, chatId, controlChatId, decisionChatId, projectManagerChatId, allowedOpenIds };
 }
 
 function fieldMap(lines: string[]): Record<string, string> {
@@ -690,6 +697,7 @@ export function buildSupervisorResultCard(title: string, content: string, succes
 
 interface ResolvedCardAction {
   wmux_action?: string;
+  projectId?: string;
   approval_id?: string;
   decision?: string;
   flow?: string;
@@ -721,8 +729,8 @@ function isReusableControlAction(value: ResolvedCardAction): boolean {
 
 export function resolveFeishuCardAction(value: unknown, name?: string): ResolvedCardAction {
   const rawValue = isObject(value) ? value : {};
+  if (name === 'wmux_form_project_ai_message') return { ...rawValue, wmux_action: 'form_project_ai_message' };
   if (name === 'wmux_form_create_task') return { ...rawValue, wmux_action: 'form_create_task' };
-  if (name === 'wmux_form_create_project_manager') return { ...rawValue, wmux_action: 'form_create_project_manager' };
   if (name === 'wmux_form_start') return { ...rawValue, wmux_action: 'form_start' };
   if (name === 'wmux_form_send') return { ...rawValue, wmux_action: 'form_send' };
   if (name === 'wmux_form_send_supervisor') return { ...rawValue, wmux_action: 'form_send_supervisor' };
@@ -795,6 +803,9 @@ export function buildSupervisorControlMenuCard(
         ]
       : []),
   ];
+  const projectManagerOperations = [
+    cardButton({ wmux_action: 'menu', flow: 'project-manager' }, '进入项目管理 AI 对话', 'primary'),
+  ];
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -812,6 +823,8 @@ export function buildSupervisorControlMenuCard(
           { tag: 'markdown', content: '**AI 监督**' },
           ...responsiveButtonRows(supervisorOperations),
         ] : []),
+        { tag: 'markdown', content: '**项目管理 AI**' },
+        ...responsiveButtonRows(projectManagerOperations),
         { tag: 'hr' },
         ...responsiveButtonRows([
           cardButton({ wmux_action: 'menu', flow: 'detail-status' }, '查看监督状态'),
@@ -821,7 +834,7 @@ export function buildSupervisorControlMenuCard(
           tag: 'div',
           text: {
             tag: 'plain_text',
-            content: '可创建项目管理终端或 Codex、Kimi、Grok 普通直连终端，发送任务或添加 AI 监督；人工决策仍私发白名单用户。',
+            content: 'AI 监督用于直接管理任务终端；项目管理 AI 是用户对话入口，负责拆分任务并统筹内部监督通道；人工决策仍私发白名单用户。',
             text_size: 'notation',
             text_color: 'grey',
           },
@@ -831,26 +844,142 @@ export function buildSupervisorControlMenuCard(
   };
 }
 
+interface FeishuProjectManagerView {
+  projectId?: string;
+  projectDir?: string;
+  status?: string;
+  goal?: string;
+  workItems?: Array<{
+    status?: string;
+    title?: string;
+    latestEvidence?: string;
+    latestContextSummary?: string;
+    latestBlocker?: string;
+    decisionsUsed?: number;
+    attempts?: number;
+    contract?: {
+      execution?: { taskWorkMode?: string; modeReason?: string };
+      budget?: { maxDecisions?: number; maxTaskRetries?: number };
+    };
+  }>;
+  managedSupervisors?: Array<{ label?: string; status?: string; workerSurfaceId?: string; taskWorkMode?: string }>;
+  projects?: Array<{ id?: string; projectDir?: string; status?: string; goal?: string }>;
+  events?: Array<{ ts?: number; kind?: string; summary?: string }>;
+}
+
+export function buildProjectManagerConversationCard(
+  session?: FeishuProjectManagerView | null,
+  notice?: ControlNotice,
+  showLogs = false,
+): object {
+  const workItems = Array.isArray(session?.workItems) ? session.workItems : [];
+  const waiting = workItems.filter((item) => item?.status === 'waiting-decision').length;
+  const projects = Array.isArray(session?.projects) ? session.projects : [];
+  const activeProjects = projects.filter((project) => !['completed', 'stopped'].includes(String(project.status || ''))).length
+    || (session && !['completed', 'stopped'].includes(String(session.status || '')) ? 1 : 0);
+  const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
+  const status = session?.status === 'active'
+    ? '运行中'
+    : session?.status === 'paused'
+      ? '已暂停'
+      : session?.status === 'waiting'
+        ? '等待决策'
+        : session?.status === 'completed'
+          ? '已完成'
+          : session?.status === 'stopped'
+            ? '已停止'
+            : '尚未建立项目会话';
+  const logs = Array.isArray(session?.events) ? session.events.slice(-20).reverse() : [];
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: 'wmux · 项目管理 AI' }, template: 'blue' },
+    body: {
+      elements: [
+        ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
+        { tag: 'markdown', content: '**用户 / 专用飞书会话 ↔ 项目管理 AI ↔ 最多 3 个不同目录 → 每项目 1 个监督 AI → 1 个任务终端**' },
+        { tag: 'markdown', content: `**项目组合：${activeProjects}/3 个活动项目**\n**项目状态：${status}** · 工作项 ${workItems.length} 个 · 正在管理的监督 AI ${supervisors.length} 个 · 待上层决策 ${waiting} 项` },
+        ...(projects.length > 0 ? [
+          { tag: 'markdown', content: '**项目列表**' },
+          ...projects.flatMap((project) => [
+            { tag: 'div', text: { tag: 'plain_text', content: `${project.id === session?.projectId ? '▶ ' : ''}${String(project.goal || '未命名项目').slice(0, 180)}\n${String(project.projectDir || '')}\n状态：${String(project.status || 'unknown')}` } },
+            ...responsiveButtonRows([cardButton({ wmux_action: 'project_ai_select', projectId: project.id || '' }, project.id === session?.projectId ? '当前项目' : '查看项目')]),
+          ]),
+        ] : []),
+        ...(session?.goal ? [{ tag: 'div', text: { tag: 'plain_text', content: `当前目标：${String(session.goal).slice(0, 1000)}` } }] : []),
+        ...(session?.projectDir ? [{ tag: 'div', text: { tag: 'plain_text', content: `项目目录：${String(session.projectDir).slice(0, 1000)}` } }] : []),
+        ...(supervisors.length > 0 ? [
+          { tag: 'markdown', content: '**正在管理的监督 AI**' },
+          ...supervisors.map((lane) => ({ tag: 'div', text: { tag: 'plain_text', content: `${lane.label || '监督 AI'} · ${lane.status || 'unknown'} · ${lane.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}\n任务终端：${lane.workerSurfaceId || '恢复中'}` } })),
+        ] : []),
+        ...(workItems.length > 0 ? [
+          { tag: 'markdown', content: '**工作项决策记录**' },
+          ...workItems.slice(-5).map((item) => {
+            const execution = item.contract?.execution;
+            const budget = item.contract?.budget;
+            return {
+              tag: 'div',
+              text: {
+                tag: 'plain_text',
+                content: [
+                  `${item.title || '未命名工作项'} · ${item.status || 'unknown'} · ${execution?.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}`,
+                  execution?.modeReason ? `模式理由：${execution.modeReason}` : '',
+                  `预算：决策 ${item.decisionsUsed || 0}/${budget?.maxDecisions || '-'} · 重试 ${item.attempts || 0}/${budget?.maxTaskRetries || '-'}`,
+                  `执行证据：${item.latestEvidence || '暂无'}`,
+                  `阻塞原因：${item.latestBlocker || '无'}`,
+                  item.latestContextSummary ? `上下文总结：${item.latestContextSummary}` : '',
+                ].filter(Boolean).join('\n').slice(0, 1000),
+              },
+            };
+          }),
+        ] : []),
+        {
+          tag: 'form',
+          name: 'wmux_project_ai_conversation_form',
+          elements: [
+            {
+              tag: 'input', element_id: 'project_ai_message', name: 'project_ai_message', required: true,
+              input_type: 'multiline_text', rows: 5, max_length: 1000,
+              label: { tag: 'plain_text', content: '直接与项目管理 AI 对话' },
+              placeholder: { tag: 'plain_text', content: '说明项目目标、讨论方案、调整优先级，或要求暂停/改线。项目管理 AI 会自行管理下层监督 AI。' },
+            },
+            formButton('wmux_form_project_ai_message', '发送给项目管理 AI', 'primary', { wmux_action: 'form_project_ai_message', projectId: session?.projectId || '' }),
+          ],
+        },
+        ...(showLogs ? [
+          { tag: 'hr' },
+          { tag: 'markdown', content: `**项目管理 AI 处理日志（最近 ${logs.length} 条）**` },
+          ...(logs.length > 0
+            ? logs.map((event) => ({
+                tag: 'div',
+                text: {
+                  tag: 'plain_text',
+                  content: `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · ${String(event.kind || 'event')} · ${String(event.summary || '').slice(0, 800)}`,
+                },
+              }))
+            : [{ tag: 'div', text: { tag: 'plain_text', content: '暂无项目管理 AI 处理日志。' } }]),
+        ] : []),
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'project_ai_refresh', projectId: session?.projectId || '' }, '刷新状态'),
+          cardButton({ wmux_action: showLogs ? 'project_ai_refresh' : 'project_ai_logs', projectId: session?.projectId || '' }, showLogs ? '收起日志' : '查看处理日志'),
+          ...(session?.status === 'active' || session?.status === 'waiting'
+            ? [cardButton({ wmux_action: 'project_ai_pause', projectId: session?.projectId || '' }, '暂停项目')]
+            : []),
+          ...(session?.status === 'paused' || session?.status === 'waiting'
+            ? [cardButton({ wmux_action: 'project_ai_resume', projectId: session?.projectId || '' }, '恢复项目', 'primary')]
+            : []),
+          cardButton({ wmux_action: 'menu', flow: 'home' }, '返回控制首页'),
+        ]),
+      ],
+    },
+  };
+}
+
 /** Form displayed after selecting “添加终端任务”. */
 export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []): object {
   const pathOptions = terminalPathOptions(terminals);
   const sessionOptions = terminalSessionOptions(terminals);
-  const managerSessionOptions = existingTerminalSessionOptions(terminals);
-  const managerElements = managerSessionOptions.length === 1
-    ? [{
-        tag: 'column_set', flex_mode: 'none', columns: [{
-          tag: 'column', width: 'auto',
-          elements: [cardButton({ wmux_action: 'create_project_manager', session_target: managerSessionOptions[0].value }, '在该会话创建项目管理终端', 'primary')],
-        }],
-      }]
-    : managerSessionOptions.length > 1
-      ? [{
-          tag: 'form', name: 'wmux_project_manager_anchor_form', elements: [
-            { tag: 'select_static', element_id: 'project_manager_anchor', name: 'project_manager_session', required: true, placeholder: { tag: 'plain_text', content: '选择要创建到的会话' }, options: managerSessionOptions },
-            formButton('wmux_form_create_project_manager', '在所选会话创建', 'primary', { wmux_action: 'form_create_project_manager' }),
-          ],
-        }]
-      : [{ tag: 'markdown', content: '当前没有任务终端；请先在 wmux 中创建一个终端，再创建项目管理终端。' }];
   return buildFormCard(
     'wmux · 添加 AI 终端任务',
     'blue',
@@ -878,12 +1007,7 @@ export function buildDirectTerminalTaskCard(terminals: FeishuListTerminal[] = []
       formButton('wmux_form_create_task', '创建任务终端', 'primary', { wmux_action: 'form_create_task' }),
     ],
     controlHomeFooter(),
-    [
-      { tag: 'markdown', content: '**项目管理终端（可选）**\n固定使用 Grok，在所选会话中运行 `/inspect-project-progress`。' },
-      ...managerElements,
-      { tag: 'hr' },
-      { tag: 'markdown', content: '**普通终端任务**' },
-    ],
+    [{ tag: 'markdown', content: '**普通终端任务**' }],
   );
 }
 
@@ -2013,6 +2137,8 @@ export class FeishuSupervisorService {
   private readonly busyTaskConfirmations = new Map<string, PendingBusyTaskConfirmation>();
   private readonly auditTerminalStatuses = new Map<string, FeishuAuditTerminalStatus>();
   private readonly auditStatusCards = new Map<string, { messageId: string; chatId: string }>();
+  /** Routes an asynchronous project-management AI reply back to the card/chat that sent the message. */
+  private readonly projectReplyTargets = new Map<string, string>();
   /** Configured decision DM, falling back to the most recent allowlisted DM. */
   private decisionChatId: string | undefined = this.config?.decisionChatId;
   private readonly pendingDecisionMessages: PendingDecisionMessage[] = [];
@@ -2058,6 +2184,11 @@ export class FeishuSupervisorService {
 
   onRecord(record: SupervisorRecord): void {
     if (!this.channel) return;
+    const projectWorkItemId = String(record.payload?.projectWorkItemId || '').trim();
+    if (projectWorkItemId) {
+      // Project-mode worker/supervisor traffic is private to the project manager.
+      return;
+    }
     if (record.type === 'supervisor.approval.requested') {
       const operation = record.payload?.approvalId
         ? () => this.sendApproval(record)
@@ -2126,6 +2257,18 @@ export class FeishuSupervisorService {
     this.enqueueAuditRecord(record);
   }
 
+  onProjectManagerRecord(record: ProjectManagerRecord): void {
+    if (!this.channel || record.type !== 'manager-reply') return;
+    const message = String(record.payload?.message || '').trim();
+    if (!message) return;
+    const correlationId = String(record.payload?.correlationId || '').trim();
+    const targetChatId = (correlationId && this.projectReplyTargets.get(correlationId))
+      || this.config?.projectManagerChatId;
+    if (!targetChatId) return;
+    if (correlationId) this.projectReplyTargets.delete(correlationId);
+    void this.sendText(message, targetChatId);
+  }
+
   private allowed(chatId: string, openId: string, chatType: 'group' | 'p2p'): boolean {
     return !!this.config && isFeishuSupervisorActorAllowed(this.config, chatId, openId, chatType);
   }
@@ -2154,6 +2297,40 @@ export class FeishuSupervisorService {
     }
     if (this.seen.has(messageId)) return;
     this.remember(messageId);
+    if (chatId === this.config?.projectManagerChatId) {
+      const normalized = content.trim();
+      let projectCommand: FeishuSupervisorCommand;
+      if (normalized === '/项目日志' || normalized === '查看项目日志') {
+        projectCommand = { action: 'project-logs' };
+      } else if (normalized === '/暂停项目') {
+        projectCommand = { action: 'project-pause', reason: '用户通过飞书暂停项目' };
+      } else if (normalized === '/恢复项目') {
+        projectCommand = { action: 'project-resume', reason: '用户通过飞书恢复项目' };
+      } else if (normalized === '/确认紧急停止') {
+        projectCommand = { action: 'project-stop', reason: '用户通过飞书确认紧急停止', emergency: true };
+      } else if (normalized === '/紧急停止') {
+        await this.sendText('紧急停止会中断正在运行的任务。请发送“/确认紧急停止”执行，或发送“/暂停项目”仅停止新任务派发。', chatId);
+        return;
+      } else {
+        projectCommand = { action: 'project-message', message: content, messageId, chatId };
+      }
+      if (projectCommand.action === 'project-message') this.rememberProjectReplyTarget(messageId, chatId);
+      const result = await this.control(projectCommand, { openId, source: 'text' })
+        .catch((err) => ({ error: String(err?.message || err) })) as any;
+      if (projectCommand.action === 'project-message' && (result?.ok === false || result?.error)) {
+        this.projectReplyTargets.delete(messageId);
+      }
+      if (projectCommand.action === 'project-message' && result?.ok !== false && !result?.error) return;
+      if (projectCommand.action === 'project-logs' && Array.isArray(result?.events)) {
+        const lines = result.events.slice(0, 20).map((event: any) => (
+          `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · ${event.kind || 'event'} · ${event.summary || ''}`
+        ));
+        await this.sendText(lines.length > 0 ? `项目管理日志（最近 ${lines.length} 条）\n${lines.join('\n')}` : '暂无项目管理日志。', chatId);
+        return;
+      }
+      await this.sendText(String(result?.message || result?.error || (result?.ok ? '操作成功。' : '操作失败。')), chatId);
+      return;
+    }
     if (isFeishuSupervisorHelp(content)) {
       await this.sendCurrentControlMenu(chatId, openId, 'text');
       return;
@@ -2179,7 +2356,7 @@ export class FeishuSupervisorService {
       await this.handleWaitingDecisionCardAction(event, value);
       return;
     }
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'create_project_manager' || value?.wmux_action === 'form_create_project_manager' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
         // Never execute an action from an old schema. Only issue a new control
@@ -2293,28 +2470,50 @@ export class FeishuSupervisorService {
       return !failedResult(result);
     }
     const form = this.cardFormValues(event);
-    if (value.wmux_action === 'create_project_manager' || value.wmux_action === 'form_create_project_manager') {
-      const sessionTarget = value.session_target || form.project_manager_session || '';
-      if (!sessionTarget || (!sessionTarget.startsWith('workspace:') && !sessionTarget.startsWith('terminal:'))) {
-        await this.sendText('请先选择项目管理终端要创建到的会话。', event.chatId);
+    if (value.wmux_action === 'form_project_ai_message') {
+      const message = form.project_ai_message?.trim() || '';
+      if (!message) {
+        await this.sendText('请先填写要发送给项目管理 AI 的消息。', event.chatId);
         return false;
       }
+      const correlationId = `feishu-card:${event.messageId}:${value.nonce || nextControlActionNonce()}`;
+      this.rememberProjectReplyTarget(correlationId, event.chatId);
       const result = await this.control({
-        action: 'create-task',
-        name: PROJECT_MANAGER_TERMINAL_NAME,
-        task: PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
-        agent: PROJECT_MANAGER_TERMINAL_AGENT,
-        preset: 'project-manager',
-        ...(sessionTarget.startsWith('workspace:')
-          ? { anchorWorkspace: sessionTarget.slice('workspace:'.length) }
-          : { anchorTerminal: sessionTarget.slice('terminal:'.length) }),
+        action: 'project-message', projectId: value.projectId || undefined, message, messageId: correlationId, chatId: event.chatId,
       }, {
         openId: event.operator.openId,
         source: 'card',
       }).catch((err) => ({ error: String(err?.message || err) }));
-      await this.replaceWithCurrentControlMenu(event, {
+      if (failedResult(result)) this.projectReplyTargets.delete(correlationId);
+      const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, {
+        text: failedResult(result) ? summary(result) : '消息已发送；项目管理 AI 会在当前飞书会话直接回复。',
+        success: !failedResult(result),
+      }));
+      return !failedResult(result);
+    }
+    if (value.wmux_action === 'project_ai_select') {
+      const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view));
+      return true;
+    }
+    if (value.wmux_action === 'project_ai_refresh' || value.wmux_action === 'project_ai_logs') {
+      const view = await this.loadProjectManagerView(event.operator.openId, value.wmux_action === 'project_ai_logs', value.projectId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, undefined, value.wmux_action === 'project_ai_logs'));
+      return true;
+    }
+    if (value.wmux_action === 'project_ai_pause' || value.wmux_action === 'project_ai_resume') {
+      const pause = value.wmux_action === 'project_ai_pause';
+      const result = await this.control({
+        action: pause ? 'project-pause' : 'project-resume',
+        projectId: value.projectId || undefined,
+        reason: pause ? '用户通过飞书项目管理 AI 对话暂停项目' : '用户通过飞书项目管理 AI 对话恢复项目',
+      }, { openId: event.operator.openId, source: 'card' })
+        .catch((err) => ({ error: String(err?.message || err) }));
+      const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, {
         text: summary(result), success: !failedResult(result),
-      });
+      }));
       return !failedResult(result);
     }
     if (value.wmux_action === 'terminal_screen') {
@@ -2746,7 +2945,45 @@ export class FeishuSupervisorService {
     return true;
   }
 
+  private async loadProjectManagerView(
+    openId: string,
+    includeLogs = false,
+    projectId?: string,
+  ): Promise<FeishuProjectManagerView | null> {
+    const statusResult = await this.control({ action: 'project-status', projectId: projectId || undefined }, { openId, source: 'card' })
+      .catch(() => null);
+    const rawSession = isObject(statusResult) && isObject(statusResult.session)
+      ? statusResult.session
+      : null;
+    if (!rawSession) return null;
+    const view: FeishuProjectManagerView = {
+      projectId: typeof rawSession.id === 'string' ? rawSession.id : undefined,
+      projectDir: typeof rawSession.projectDir === 'string' ? rawSession.projectDir : undefined,
+      status: typeof rawSession.status === 'string' ? rawSession.status : undefined,
+      goal: typeof rawSession.goal === 'string' ? rawSession.goal : undefined,
+      workItems: Array.isArray(rawSession.workItems) ? rawSession.workItems as FeishuProjectManagerView['workItems'] : [],
+      managedSupervisors: Array.isArray(rawSession.managedSupervisors)
+        ? rawSession.managedSupervisors as FeishuProjectManagerView['managedSupervisors']
+        : [],
+      projects: isObject(statusResult) && Array.isArray(statusResult.projects)
+        ? statusResult.projects as FeishuProjectManagerView['projects']
+        : [],
+    };
+    if (!includeLogs) return view;
+    const logsResult = await this.control({ action: 'project-logs', projectId: view.projectId }, { openId, source: 'card' })
+      .catch(() => null);
+    view.events = isObject(logsResult) && Array.isArray(logsResult.events)
+      ? logsResult.events as Array<{ ts?: number; kind?: string; summary?: string }>
+      : [];
+    return view;
+  }
+
   private async handleControlMenu(event: Lark.CardActionEvent, flow: string): Promise<void> {
+    if (flow === 'project-manager') {
+      const view = await this.loadProjectManagerView(event.operator.openId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view));
+      return;
+    }
     if (flow === 'create-task') {
       const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
         .catch(() => null);
@@ -2887,6 +3124,14 @@ export class FeishuSupervisorService {
 
   private cardFormValues(event: Lark.CardActionEvent): Record<string, string> {
     return parseFeishuCardFormValues(event.raw);
+  }
+
+  private rememberProjectReplyTarget(correlationId: string, chatId: string): void {
+    if (!correlationId || !chatId) return;
+    this.projectReplyTargets.set(correlationId, chatId);
+    while (this.projectReplyTargets.size > 200) {
+      this.projectReplyTargets.delete(this.projectReplyTargets.keys().next().value as string);
+    }
   }
 
   private cardDecisionSelection(event: Lark.CardActionEvent): string | undefined {

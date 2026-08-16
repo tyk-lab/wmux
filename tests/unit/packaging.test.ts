@@ -30,6 +30,14 @@ describe('electron-builder packaging', () => {
     ))).toBe(true);
   });
 
+  it('ships the project management orchestration skill outside the asar', () => {
+    expect(extraResources).toContainEqual({ from: 'resources/skills', to: 'skills' });
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/skills/manage-project/SKILL.md',
+    ))).toBe(true);
+  });
+
   it('keeps installer-only main-process modules out of normal CLI startup', () => {
     const cliSource = fs.readFileSync(path.join(__dirname, '../../src/cli/wmux.ts'), 'utf8');
     expect(cliSource).not.toMatch(/^import[\s\S]*?from '\.\.\/main\/install-agent-hooks';/m);

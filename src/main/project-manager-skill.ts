@@ -23,7 +23,7 @@ function bundledSkillDirectory(runtime: ProjectManagerSkillRuntime): string {
   const root = runtime.isPackaged
     ? runtime.resourcesPath
     : path.join(runtime.appPath, 'resources');
-  return path.join(root, 'skills', 'inspect-project-progress');
+  return path.join(root, 'skills', 'manage-project');
 }
 
 export function ensureProjectManagerSkill(
@@ -60,7 +60,7 @@ export function ensureProjectManagerSkill(
       ok: false,
       created: false,
       skillPath,
-      error: `无法创建 inspect-project-progress 技能：${String((error as Error)?.message || error)}`,
+      error: `无法创建 manage-project 技能：${String((error as Error)?.message || error)}`,
     };
   }
 }

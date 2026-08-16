@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage wmux Project"
+  short_description: "Manage supervisor AIs and bounded parallel project work"
+  default_prompt: "Use $manage-project to manage this wmux project through structured work items and supervisor AIs."
