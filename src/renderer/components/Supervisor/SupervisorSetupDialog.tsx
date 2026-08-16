@@ -195,7 +195,13 @@ function hasIncompleteMultiThreadAssignment(config: SupervisorLaneConfig | undef
 
 function collectTerminals(
   tree: SplitNode,
-  out: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }>,
+  out: Array<{
+    surfaceId: SurfaceId;
+    paneId: PaneId;
+    title: string;
+    projectDir?: string;
+    projectManagerTerminal?: boolean;
+  }>,
 ): void {
   if (tree.type === 'leaf') {
     for (const s of tree.surfaces) {
@@ -205,6 +211,7 @@ function collectTerminals(
           paneId: tree.paneId,
           title: s.customTitle?.trim() || s.shell || 'terminal',
           projectDir: s.currentCwd || s.cwd,
+          projectManagerTerminal: s.projectManagerTerminal,
         });
       }
     }
@@ -221,6 +228,7 @@ export default function SupervisorSetupDialog() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const agentMeta = useStore((s) => s.agentMeta);
   const closeSupervisorSetup = useStore((s) => s.closeSupervisorSetup);
+  const openProjectManagerDialog = useStore((s) => s.openProjectManagerDialog);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
   const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
   const startSupervisor = useStore((s) => s.startSupervisor);
@@ -265,9 +273,16 @@ export default function SupervisorSetupDialog() {
       supervisor.lanes.map(dedicatedSupervisorSurfaceId).filter(Boolean),
     );
     for (const ws of workspaces) {
-      const surfaces: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
+      const surfaces: Array<{
+        surfaceId: SurfaceId;
+        paneId: PaneId;
+        title: string;
+        projectDir?: string;
+        projectManagerTerminal?: boolean;
+      }> = [];
       collectTerminals(ws.splitTree, surfaces);
       for (const s of surfaces) {
+        if (s.projectManagerTerminal) continue;
         if (supervisorSurfaceIds.has(s.surfaceId)) continue;
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
         const meta = agentMeta.get(s.surfaceId);
@@ -291,6 +306,11 @@ export default function SupervisorSetupDialog() {
     }
     return list;
   }, [workspaces, agentMeta, agentStates, sessionRetained, supervisor.lanes]);
+
+  const openProjectManagerMode = () => {
+    closeSupervisorSetup();
+    openProjectManagerDialog();
+  };
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [terminalConfigExpansion, setTerminalConfigExpansion] = useState<Record<string, boolean>>({});
@@ -1359,7 +1379,7 @@ export default function SupervisorSetupDialog() {
         className="supervisor-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="AI 监督"
+        aria-label="AI 工作模式"
         tabIndex={-1}
         onFocusCapture={(event) => {
           const target = event.target;
@@ -1369,13 +1389,31 @@ export default function SupervisorSetupDialog() {
         }}
       >
         <header className="supervisor-dialog__header">
-          <div className="supervisor-dialog__title">AI 监督配置</div>
+          <div className="supervisor-dialog__title">选择 AI 工作模式</div>
           <div className="supervisor-dialog__sub">
-            工作终端仍由你正常下达任务；每个选中的终端使用独立、可见的监督 AI 上下文。
+            选择直接监督任务终端，或由项目管理 AI 同时管理最多 3 个不同目录的项目。
           </div>
         </header>
 
         <div className="supervisor-dialog__body">
+          <section className="supervisor-dialog__mode-picker" aria-label="工作模式选择">
+            <button type="button" className="supervisor-dialog__mode-card" data-selected="true" aria-pressed="true">
+              <strong>AI 监督模式</strong>
+              <span>直接选择任务终端，为每个终端配置独立监督 AI。</span>
+              <em>当前配置</em>
+            </button>
+            <button
+              type="button"
+              className="supervisor-dialog__mode-card"
+              data-selected="false"
+              aria-pressed="false"
+              onClick={openProjectManagerMode}
+            >
+              <strong>项目管理 AI 模式</strong>
+              <span>与项目管理 AI 对话；每个项目由它管理一条监督 AI＋任务终端链。</span>
+              <em>进入项目管理 AI 控制台</em>
+            </button>
+          </section>
           <section className="supervisor-dialog__group">
             <div className="supervisor-dialog__group-heading">
               <div>

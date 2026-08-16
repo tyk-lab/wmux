@@ -6,6 +6,7 @@ import WorkspaceContextMenu from './WorkspaceContextMenu';
 import SessionMenu from './SessionMenu';
 import OrchestrationPanel from './OrchestrationPanel';
 import SupervisorPanel from './SupervisorPanel';
+import ProjectManagerPanel from './ProjectManagerPanel';
 import { DropEdge, edgeForPointer, reorderByDrop } from './reorder';
 import ErrorBoundary from '../ErrorBoundary';
 import { useStore } from '../../store';
@@ -268,6 +269,10 @@ export default function Sidebar({
 
       <ErrorBoundary label="orchestration" silent>
         <OrchestrationPanel />
+      </ErrorBoundary>
+
+      <ErrorBoundary label="project-manager" silent>
+        <ProjectManagerPanel />
       </ErrorBoundary>
 
       <ErrorBoundary label="supervisor" silent>

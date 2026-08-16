@@ -86,6 +86,8 @@ export interface SurfaceRef {
   startupInput?: string;
   /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
   transientSupervisor?: boolean;
+  /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
+  projectManagerTerminal?: boolean;
   /** Remote terminal restored as an explicit disconnected surface after restart. */
   sshRemote?: boolean;
   /** Secret-free lookup key for main-process SSH password injection. */

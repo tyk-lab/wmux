@@ -81,6 +81,10 @@ export interface SupervisorLane {
   id: string;
   /** Stable identity for this terminal's management/audit conversation. */
   managementSessionId?: string;
+  /** Project-management work item that owns this lane, when centrally orchestrated. */
+  projectWorkItemId?: string;
+  /** Project-management project that owns this lane; work-item IDs are only unique within it. */
+  projectManagerProjectId?: string;
   label: string;
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */

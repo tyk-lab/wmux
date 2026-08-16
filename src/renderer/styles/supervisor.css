@@ -109,6 +109,285 @@
   background: rgba(0, 0, 0, 0.1);
 }
 
+.supervisor-dialog__mode-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.supervisor-dialog__mode-card {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.12);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.supervisor-dialog__mode-card[data-selected='true'] {
+  border-color: rgba(80, 160, 255, 0.65);
+  background: rgba(80, 160, 255, 0.12);
+}
+
+.supervisor-dialog__mode-card:hover:not(:disabled) {
+  border-color: rgba(80, 160, 255, 0.78);
+  background: rgba(80, 160, 255, 0.16);
+}
+
+.supervisor-dialog__mode-card span {
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.72;
+}
+
+.supervisor-dialog__mode-card em {
+  color: #8fc4ff;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.supervisor-dialog__mode-card:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.project-manager-dialog {
+  width: min(860px, calc(100vw - 32px));
+}
+
+.project-manager-dialog__architecture {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 10px;
+  border: 1px solid rgba(80, 160, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(80, 160, 255, 0.07);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__architecture span {
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.project-manager-dialog__architecture span[data-primary='true'] {
+  color: #a9d3ff;
+  font-weight: 700;
+}
+
+.project-manager-dialog__architecture b {
+  color: #6fb1f5;
+  font-weight: 500;
+}
+
+.project-manager-dialog .supervisor-dialog__label {
+  margin-top: 12px;
+}
+
+.project-manager-dialog__section-head,
+.project-manager-dialog__directory-row,
+.project-manager-dialog__managed-list article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-manager-dialog__directory-row .supervisor-dialog__input {
+  min-width: 0;
+  flex: 1;
+}
+
+.project-manager-dialog__project-list,
+.project-manager-dialog__managed-list,
+.project-manager-dialog__work-items {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.project-manager-dialog__project-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.project-manager-dialog__project-list button,
+.project-manager-dialog__managed-list article,
+.project-manager-dialog__work-items details {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.13);
+  color: inherit;
+  text-align: left;
+}
+
+.project-manager-dialog__project-list button {
+  position: relative;
+  display: grid;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.project-manager-dialog__project-list button[data-selected='1'] {
+  border-color: rgba(80, 160, 255, 0.65);
+  background: rgba(80, 160, 255, 0.12);
+}
+
+.project-manager-dialog__project-list span,
+.project-manager-dialog__path,
+.project-manager-dialog__managed-list p {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  opacity: 0.68;
+}
+
+.project-manager-dialog__project-list em,
+.project-manager-dialog__managed-list em {
+  color: #8fc4ff;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.project-manager-dialog__managed-list p {
+  margin: 5px 0 0;
+  line-height: 1.45;
+}
+
+.project-manager-dialog__work-items summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.project-manager-dialog__work-items summary span {
+  color: #8fc4ff;
+}
+
+.project-manager-dialog__work-items dl {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 10px 0 0;
+  font-size: 10px;
+}
+
+.project-manager-dialog__work-items dt {
+  opacity: 0.58;
+}
+
+.project-manager-dialog__work-items dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.project-manager-dialog__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.project-manager-dialog__summary > div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.09);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.project-manager-dialog__summary span,
+.project-manager-dialog__message span {
+  font-size: 10px;
+  opacity: 0.62;
+}
+
+.project-manager-dialog__goal {
+  margin-top: 7px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.project-manager-dialog__conversation {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  margin: 8px 0 10px;
+  overflow: auto;
+}
+
+.project-manager-dialog__message {
+  max-width: 84%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.project-manager-dialog__message[data-role='user'] {
+  justify-self: end;
+  background: rgba(80, 160, 255, 0.13);
+}
+
+.project-manager-dialog__message p {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-manager-dialog__logs summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-manager-dialog__event-list {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.project-manager-dialog__event {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.07);
+  font-size: 11px;
+}
+
+.project-manager-dialog__event span {
+  opacity: 0.55;
+}
+
+.project-manager-dialog__event strong {
+  color: #8fc4ff;
+  font-size: 10px;
+}
+
+.project-manager-dialog__event p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .supervisor-dialog__group-heading {
   display: flex;
   align-items: flex-start;
@@ -600,6 +879,34 @@
 }
 
 @media (max-width: 620px) {
+  .supervisor-dialog__mode-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .project-manager-dialog__architecture {
+    align-items: stretch;
+    flex-direction: column;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .project-manager-dialog__architecture b {
+    transform: rotate(90deg);
+  }
+
+  .project-manager-dialog__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .project-manager-dialog__project-list {
+    grid-template-columns: 1fr;
+  }
+
+  .project-manager-dialog__directory-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .supervisor-dialog__option-list--two-columns {
     grid-template-columns: 1fr;
   }

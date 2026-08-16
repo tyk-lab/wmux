@@ -111,7 +111,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
   const enabled = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
   const waiting = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
-  const pendingCount = supervisor.pendingApprovals.length;
+  const projectManaged = supervisor.lanes.some((lane) => !!lane.projectWorkItemId);
+  const visiblePendingApprovals = supervisor.pendingApprovals.filter((approval) => (
+    !supervisor.lanes.some((lane) => lane.id === approval.laneId && !!lane.projectManagerProjectId)
+  ));
+  const pendingCount = visiblePendingApprovals.length;
   const mode = supervisor.mode || 'unified';
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
@@ -695,11 +699,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             </div>
           )}
           <div className="sup-panel__freedom">
-            {supervisor.autonomous ? '全自动监督' : '有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
+            {projectManaged ? '项目管理护栏监督' : supervisor.autonomous ? '全自动监督' : '有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
             工作范围为“{WORK_SCOPE_LABELS[workScope]}”，另有 {forbiddenActionCount} 项禁止事项。硬风险始终等待人工。
           </div>
           <div className="sup-panel__goal">
-            最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
+            最大自动判断: {projectManaged ? '按项目任务契约限制' : supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
           </div>
           <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
             监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
@@ -915,10 +919,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             })}
           </div>
 
-          {supervisor.pendingApprovals.length > 0 && (
+          {visiblePendingApprovals.length > 0 && (
             <div className="sup-panel__approvals">
             <div className="sup-panel__approvals-title">需人工处理</div>
-              {supervisor.pendingApprovals.map((a) => {
+              {visiblePendingApprovals.map((a) => {
                 const lane = supervisor.lanes.find((entry) => entry.id === a.laneId);
                 const laneControlState = lane ? supervisorLaneControlState(lane) : 'stopped';
                 const isContextRecovery = a.source === 'supervisor-context-recovery';

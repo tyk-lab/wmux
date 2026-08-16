@@ -10,8 +10,29 @@ const panelSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/Sidebar/SupervisorPanel.tsx'),
   'utf8',
 );
+const projectManagerDialogSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/components/ProjectManager/ProjectManagerDialog.tsx'),
+  'utf8',
+);
 
 describe('supervisor setup dialog feedback', () => {
+  it('offers project management as a separate visible mode', () => {
+    expect(dialogSource).toContain('选择 AI 工作模式');
+    expect(dialogSource).toContain('AI 监督模式');
+    expect(dialogSource).toContain('项目管理 AI 模式');
+    expect(dialogSource).toContain('openProjectManagerDialog');
+    expect(dialogSource).toContain('进入项目管理 AI 控制台');
+    expect(dialogSource).not.toContain('创建或打开项目管理终端');
+    expect(dialogSource).toContain('if (s.projectManagerTerminal) continue;');
+    expect(projectManagerDialogSource).toContain('项目管理 AI 控制台');
+    expect(projectManagerDialogSource).toContain("action: 'start'");
+    expect(projectManagerDialogSource).toContain('每项目 1 个监督 AI');
+    expect(projectManagerDialogSource).toContain('选择目录');
+    expect(projectManagerDialogSource).toContain('项目组合');
+    expect(projectManagerDialogSource).toContain('查看项目管理 AI 处理日志');
+    expect(projectManagerDialogSource).toContain('添加项目');
+  });
+
   it('defaults new supervision lanes to wait for the next direction after completion', () => {
     expect(dialogSource).toMatch(
       /function emptyLaneConfig\(\): SupervisorLaneConfig \{[\s\S]*?waitForNextDirection: true,/,
