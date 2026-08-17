@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getAppDataDir } from '../shared/instance';
+import { readProjectManagerRuntimeSurfaceIds } from './project-manager-records';
 
 const APPDATA_DIR = getAppDataDir();
 const SESSIONS_DIR = path.join(APPDATA_DIR, 'sessions');
@@ -43,14 +44,18 @@ function treeHasSshSurface(tree: any): boolean {
 }
 
 function isTransientSupervisorSurface(surface: any): boolean {
-  return surface?.type === 'supervisor' || surface?.transientSupervisor === true;
+  return surface?.type === 'supervisor'
+    || surface?.transientSupervisor === true
+    || typeof surface?.projectManagerProjectId === 'string';
 }
 
-function stripTransientSupervisorSurfaces(tree: any): any | null {
+function stripTransientSupervisorSurfaces(tree: any, unsafeSurfaceIds: ReadonlySet<string>): any | null {
   if (!tree || typeof tree !== 'object') return null;
   if (tree.type === 'leaf') {
     const originalSurfaces = Array.isArray(tree.surfaces) ? tree.surfaces : [];
-    const surfaces = originalSurfaces.filter((surface: any) => !isTransientSupervisorSurface(surface));
+    const surfaces = originalSurfaces.filter((surface: any) => (
+      !isTransientSupervisorSurface(surface) && !unsafeSurfaceIds.has(String(surface?.id || ''))
+    ));
     // Empty local workspaces are valid restart state. Only drop a leaf that
     // became empty because every surface in it was transient supervision UI.
     if (surfaces.length === 0 && originalSurfaces.length > 0) return null;
@@ -68,8 +73,8 @@ function stripTransientSupervisorSurfaces(tree: any): any | null {
   }
   if (tree.type !== 'branch') return tree;
   const children = Array.isArray(tree.children) ? tree.children : [];
-  const left = stripTransientSupervisorSurfaces(children[0]);
-  const right = stripTransientSupervisorSurfaces(children[1]);
+  const left = stripTransientSupervisorSurfaces(children[0], unsafeSurfaceIds);
+  const right = stripTransientSupervisorSurfaces(children[1], unsafeSurfaceIds);
   if (!left) return right;
   if (!right) return left;
   return { ...tree, children: [left, right] };
@@ -86,17 +91,21 @@ function isSupervisorWorkspace(workspace: SessionData['windows'][number]['worksp
 }
 
 /**
- * AI-supervisor terminals and SSH workspaces own live runtime state, so they
- * must never reach the auto-restored session file.
+ * AI-supervisor/project-task terminals and SSH workspaces own live runtime
+ * state, so they must never reach the auto-restored session file.
  */
-export function omitRestartUnsafeWorkspaces(data: SessionData): SessionData {
+export function omitRestartUnsafeWorkspaces(
+  data: SessionData,
+  unsafeSurfaceIds: Iterable<string> = [],
+): SessionData {
+  const unsafeIds = new Set(unsafeSurfaceIds);
   return {
     ...data,
     windows: data.windows.flatMap((window) => {
       const workspaces = window.workspaces.flatMap((workspace) => {
         if (isSupervisorWorkspace(workspace)) return [];
         if (isSshWorkspace(workspace)) return [];
-        const splitTree = stripTransientSupervisorSurfaces(workspace.splitTree);
+        const splitTree = stripTransientSupervisorSurfaces(workspace.splitTree, unsafeIds);
         return splitTree ? [{ ...workspace, splitTree }] : [];
       });
       if (workspaces.length === 0) return [];
@@ -106,6 +115,14 @@ export function omitRestartUnsafeWorkspaces(data: SessionData): SessionData {
       return [{ ...window, activeWorkspaceId, workspaces }];
     }),
   };
+}
+
+function persistedProjectRuntimeSurfaceIds(): string[] {
+  try {
+    return readProjectManagerRuntimeSurfaceIds();
+  } catch {
+    return [];
+  }
 }
 
 /** @deprecated Use omitRestartUnsafeWorkspaces for newly added call sites. */
@@ -124,7 +141,11 @@ export function saveSession(data: SessionData): void {
   // Atomic write: write to temp file, then rename
   const tmpFile = SESSION_FILE + '.tmp';
   try {
-    fs.writeFileSync(tmpFile, JSON.stringify(omitRestartUnsafeWorkspaces(data), null, 2), 'utf-8');
+    fs.writeFileSync(tmpFile, JSON.stringify(
+      omitRestartUnsafeWorkspaces(data, persistedProjectRuntimeSurfaceIds()),
+      null,
+      2,
+    ), 'utf-8');
     // On Windows, rename won't overwrite, so remove first
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
@@ -132,7 +153,7 @@ export function saveSession(data: SessionData): void {
     fs.renameSync(tmpFile, SESSION_FILE);
   } catch (err) {
     // Clean up temp file if it exists
-    try { fs.unlinkSync(tmpFile); } catch {}
+    try { fs.unlinkSync(tmpFile); } catch { /* Best-effort cleanup after the original save failure. */ }
     console.error('Failed to save session:', err);
   }
 }
@@ -143,7 +164,7 @@ export function loadSession(): SessionData | null {
     const raw = fs.readFileSync(SESSION_FILE, 'utf-8');
     const data = JSON.parse(raw) as SessionData;
     if (data.version !== 1) return null;
-    return omitRestartUnsafeWorkspaces(data);
+    return omitRestartUnsafeWorkspaces(data, persistedProjectRuntimeSurfaceIds());
   } catch {
     // Corrupted file — fall back to default
     return null;
@@ -173,7 +194,7 @@ function backupAutoSession(previousVersion: string): void {
   try {
     if (!fs.existsSync(SESSION_FILE)) return;
     const data = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8')) as SessionData;
-    const win = data?.windows?.[0];
+    const win = omitRestartUnsafeWorkspaces(data, persistedProjectRuntimeSurfaceIds()).windows[0];
     if (!win || !Array.isArray(win.workspaces) || win.workspaces.length === 0) return;
 
     const backup = {
@@ -215,9 +236,9 @@ function pruneAutoBackups(): void {
       })
       .sort((a, b) => b.savedAt - a.savedAt);
     for (const stale of backups.slice(AUTO_BACKUP_KEEP)) {
-      try { fs.unlinkSync(stale.full); } catch {}
+      try { fs.unlinkSync(stale.full); } catch { /* A locked backup can be retried on the next prune. */ }
     }
-  } catch {}
+  } catch { /* Backup pruning must never block application startup. */ }
 }
 
 /**
@@ -242,7 +263,7 @@ export function handleVersionChange(currentVersion: string): boolean {
     // Archive, then reset, only the volatile auto-session. Named sessions
     // (SAVED_DIR) and the last-session pointer are intentionally preserved.
     backupAutoSession(saved);
-    try { if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE); } catch {}
+    try { if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE); } catch { /* Reset is best-effort. */ }
     fs.writeFileSync(VERSION_FILE, currentVersion, 'utf-8');
     return true;
   } catch { return false; }

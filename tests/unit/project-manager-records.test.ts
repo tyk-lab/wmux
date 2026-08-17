@@ -7,6 +7,7 @@ import {
   deleteProjectManagerSession,
   readActiveProjectManagerSessions,
   readLatestProjectManagerSession,
+  readProjectManagerRuntimeSurfaceIds,
   saveProjectManagerSession,
 } from '../../src/main/project-manager-records';
 import type { ProjectManagerSession } from '../../src/shared/project-manager';
@@ -67,6 +68,9 @@ describe('project manager records', () => {
     const appData = root();
     const pendingUserQuestion = {
       id: 'question-1',
+      category: 'manual-intervention' as const,
+      workItemId: 'wol_validation',
+      blocker: '需要用户进入 BIOS 进行真机验收',
       question: '是否允许覆盖现有配置？',
       context: '目标与计划文件存在冲突。',
       options: [{ id: 'keep', label: '保留现有配置' }, { id: 'replace', label: '允许覆盖' }],
@@ -88,7 +92,9 @@ describe('project manager records', () => {
 
     expect(readLatestProjectManagerSession('E:\\repo', appData)).toMatchObject({
       planFiles: [{ name: 'requirements.md', content: '# 需求' }],
-      pendingUserQuestion: { id: 'question-1', previousStatus: 'active' },
+      pendingUserQuestion: {
+        id: 'question-1', previousStatus: 'active', category: 'manual-intervention', workItemId: 'wol_validation',
+      },
     });
   });
 
@@ -109,6 +115,21 @@ describe('project manager records', () => {
     saveProjectManagerSession({ ...session('pm-stale', 10), projectDir: 'E:\\finished' }, appData);
     saveProjectManagerSession({ ...session('pm-finished', 20), projectDir: 'e:\\finished\\', status: 'completed' }, appData);
     expect(readActiveProjectManagerSessions(appData)).toEqual([]);
+  });
+
+  it('returns restart-unsafe task terminal ids from active and completed projects', () => {
+    const appData = root();
+    saveProjectManagerSession({
+      ...session('pm-active', 10), projectDir: 'E:\\active', taskTerminalSurfaceId: 'surf-active',
+    }, appData);
+    saveProjectManagerSession({
+      ...session('pm-completed', 20), projectDir: 'E:\\completed', status: 'completed',
+      taskTerminalSurfaceId: 'surf-completed',
+    }, appData);
+
+    expect(readProjectManagerRuntimeSurfaceIds(appData)).toEqual([
+      'surf-completed', 'surf-active',
+    ]);
   });
 
   it('ignores malformed snapshots instead of restoring executable state', () => {

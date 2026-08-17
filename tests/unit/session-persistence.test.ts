@@ -109,6 +109,10 @@ describe('session-persistence', () => {
         surfaces: [
           { id: 'local-terminal', type: 'terminal' },
           { id: 'supervisor-terminal', type: 'terminal', transientSupervisor: true },
+          {
+            id: 'project-task-terminal', type: 'terminal', projectManagerProjectId: 'pm-a',
+            startupCommands: ['codex'], startupInput: '不应在重启后自动重放',
+          },
         ],
       },
     };
@@ -148,6 +152,30 @@ describe('session-persistence', () => {
     expect(result.windows[0].workspaces).toHaveLength(1);
     expect(result.windows[0].workspaces[0].splitTree.surfaces).toEqual([{ id: 'local-terminal', type: 'terminal' }]);
     expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
+  });
+
+  it('removes a legacy unmarked project terminal by its persisted runtime id', () => {
+    const result = omitRestartUnsafeWorkspaces({
+      version: 1,
+      windows: [{
+        bounds: { x: 0, y: 0, width: 100, height: 100 }, sidebarWidth: 200,
+        activeWorkspaceId: 'ws-project',
+        workspaces: [{
+          id: 'ws-project', title: 'Project', pinned: false, shell: 'pwsh.exe',
+          splitTree: {
+            type: 'leaf', paneId: 'pane-project', activeSurfaceIndex: 1,
+            surfaces: [
+              { id: 'user-shell', type: 'terminal' },
+              { id: 'legacy-project-worker', type: 'terminal', startupCommands: ['codex'], startupInput: '旧任务' },
+            ],
+          },
+        }],
+      }],
+    } as SessionData, ['legacy-project-worker']);
+
+    expect(result.windows[0].workspaces[0].splitTree.surfaces).toEqual([
+      { id: 'user-shell', type: 'terminal' },
+    ]);
   });
 });
 

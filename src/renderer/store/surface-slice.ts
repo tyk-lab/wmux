@@ -26,6 +26,8 @@ export interface SurfaceSlice {
       startupInput?: string;
       transientSupervisor?: boolean;
       projectManagerTerminal?: boolean;
+      projectManagerProjectId?: string;
+      projectManagerWorkItemId?: string;
       projectManagerAgent?: 'codex' | 'kimi' | 'grok';
       projectManagerModel?: string;
       projectManagerReasoningEffort?: string;
@@ -184,6 +186,8 @@ interface ClosedSurface {
   startupInput?: string;
   transientSupervisor?: boolean;
   projectManagerTerminal?: boolean;
+  projectManagerProjectId?: string;
+  projectManagerWorkItemId?: string;
   projectManagerAgent?: 'codex' | 'kimi' | 'grok';
   projectManagerModel?: string;
   projectManagerReasoningEffort?: string;
@@ -196,7 +200,7 @@ function pushClosedSurface(surface: SurfaceRef): void {
   // Diff is a derived working-tree view; reopening a stale one is noise.
   // Project-manager runtimes carry caller authority. A runtime replaced after
   // a config change must never be resurrected through Ctrl+Shift+T.
-  if (surface.type === 'diff' || surface.projectManagerTerminal) return;
+  if (surface.type === 'diff' || surface.projectManagerTerminal || surface.projectManagerProjectId) return;
   closedSurfaceStack.push({
     type: surface.type,
     colorScheme: surface.colorScheme,
@@ -207,6 +211,8 @@ function pushClosedSurface(surface: SurfaceRef): void {
     startupInput: surface.startupInput,
     transientSupervisor: surface.transientSupervisor,
     projectManagerTerminal: surface.projectManagerTerminal,
+    projectManagerProjectId: surface.projectManagerProjectId,
+    projectManagerWorkItemId: surface.projectManagerWorkItemId,
     projectManagerAgent: surface.projectManagerAgent,
     projectManagerModel: surface.projectManagerModel,
     projectManagerReasoningEffort: surface.projectManagerReasoningEffort,
@@ -239,6 +245,8 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.startupInput ? { startupInput: options.startupInput } : {}),
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
+      ...(options?.projectManagerProjectId ? { projectManagerProjectId: options.projectManagerProjectId } : {}),
+      ...(options?.projectManagerWorkItemId ? { projectManagerWorkItemId: options.projectManagerWorkItemId } : {}),
       ...(options?.projectManagerAgent ? { projectManagerAgent: options.projectManagerAgent } : {}),
       ...(options?.projectManagerModel !== undefined ? { projectManagerModel: options.projectManagerModel } : {}),
       ...(options?.projectManagerReasoningEffort !== undefined ? { projectManagerReasoningEffort: options.projectManagerReasoningEffort } : {}),
@@ -527,6 +535,8 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.startupInput ? { startupInput: restored.startupInput } : {}),
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
+      ...(restored.projectManagerProjectId ? { projectManagerProjectId: restored.projectManagerProjectId } : {}),
+      ...(restored.projectManagerWorkItemId ? { projectManagerWorkItemId: restored.projectManagerWorkItemId } : {}),
       ...(restored.projectManagerAgent ? { projectManagerAgent: restored.projectManagerAgent } : {}),
       ...(restored.projectManagerModel !== undefined ? { projectManagerModel: restored.projectManagerModel } : {}),
       ...(restored.projectManagerReasoningEffort !== undefined ? { projectManagerReasoningEffort: restored.projectManagerReasoningEffort } : {}),

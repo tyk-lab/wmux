@@ -1377,7 +1377,17 @@ export default function App() {
       const supervisorSurfaceIds = state.supervisor.lanes
         .map(dedicatedSupervisorSurfaceId)
         .filter((surfaceId): surfaceId is SurfaceId => !!surfaceId);
-      const persisted = omitNonRestorableWorkspaces(state.workspaces, activeIndex, supervisorSurfaceIds);
+      // Project task terminals also contain native Agent conversations. Even
+      // legacy surfaces without the new marker must not replay their old prompt.
+      const projectTaskSurfaceIds = state.projectManagers.flatMap((session) => [
+        session.taskTerminalSurfaceId,
+        ...session.workItems.map((item) => item.workerSurfaceId),
+      ]).filter((surfaceId): surfaceId is string => !!surfaceId);
+      const persisted = omitNonRestorableWorkspaces(
+        state.workspaces,
+        activeIndex,
+        [...supervisorSurfaceIds, ...projectTaskSurfaceIds],
+      );
       const data = {
         version: 1,
         windows: [{

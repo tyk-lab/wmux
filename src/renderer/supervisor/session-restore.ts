@@ -7,7 +7,9 @@ export function shouldInitializeWorkspaceLayout(existingWorkspaceCount: number):
 
 /** Dedicated supervisor terminals are transient: their state lives only in the active renderer session. */
 export function isTransientSupervisorSurface(surface: SurfaceRef): boolean {
-  return surface.type === 'supervisor' || surface.transientSupervisor === true;
+  return surface.type === 'supervisor'
+    || surface.transientSupervisor === true
+    || !!surface.projectManagerProjectId;
 }
 
 function stripTransientSurfacesFromTree(tree: SplitNode, transientSurfaceIds: ReadonlySet<string>): SplitNode | null {
@@ -51,9 +53,9 @@ function treeHasSshSurface(tree: SplitNode): boolean {
 }
 
 /**
- * SSH workspaces own live connections, AI supervision owns transient renderer
- * state, and Diff is an on-demand working-tree view. Omit them from automatic
- * session layouts so startup never opens transient UI by itself.
+ * SSH workspaces own live connections, supervision and project task Agents own
+ * native conversations that cannot survive a process restart, and Diff is an
+ * on-demand view. Omit them so startup never replays an old Agent prompt.
  */
 export function omitNonRestorableWorkspaces<T extends {
   splitTree: SplitNode;

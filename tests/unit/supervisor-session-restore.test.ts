@@ -126,6 +126,28 @@ describe('supervisor session restore', () => {
     expect(restored.surfaces.map((surface) => surface.id)).toEqual(['worker']);
   });
 
+  it('does not auto-restore a project task Agent conversation', () => {
+    const result = omitNonRestorableWorkspaces([{
+      id: 'ws-project' as any,
+      splitTree: leaf([
+        { id: 'user-shell' as any, type: 'terminal' },
+        {
+          id: 'project-worker' as any,
+          type: 'terminal',
+          projectManagerProjectId: 'pm-a',
+          projectManagerWorkItemId: 'task-a',
+          startupCommands: ['codex -- wmux-automated-agent-task'],
+          startupInput: '继续执行旧任务',
+        },
+      ], 1),
+    }]);
+
+    const restored = result.workspaces[0].splitTree;
+    expect(restored.type).toBe('leaf');
+    if (restored.type !== 'leaf') return;
+    expect(restored.surfaces.map((surface) => surface.id)).toEqual(['user-shell']);
+  });
+
   it('omits SSH workspaces and remaps the active local workspace', () => {
     const result = omitNonRestorableWorkspaces([
       {

@@ -56,6 +56,9 @@ function isPendingUserQuestion(value: unknown): boolean {
   const question = value as Record<string, unknown>;
   const options = question.options;
   return typeof question.id === 'string'
+    && (question.category === undefined || ['clarification', 'manual-intervention'].includes(String(question.category)))
+    && (question.workItemId === undefined || typeof question.workItemId === 'string')
+    && (question.blocker === undefined || typeof question.blocker === 'string')
     && typeof question.question === 'string'
     && typeof question.context === 'string'
     && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
@@ -236,4 +239,14 @@ export function readActiveProjectManagerSessions(
     })
     .filter((session) => ['active', 'paused', 'waiting'].includes(session.status))
     .slice(0, MAX_ACTIVE_PROJECTS);
+}
+
+/** Native Agent conversations are restart-unsafe even after their project was completed or stopped. */
+export function readProjectManagerRuntimeSurfaceIds(
+  appDataDir = getAppDataDir(),
+): string[] {
+  return [...new Set(readProjectManagerSessions(appDataDir).flatMap((session) => [
+    session.taskTerminalSurfaceId,
+    ...session.workItems.map((item) => item.workerSurfaceId),
+  ]).filter((surfaceId): surfaceId is string => !!surfaceId))];
 }
