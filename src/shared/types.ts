@@ -88,6 +88,10 @@ export interface SurfaceRef {
   transientSupervisor?: boolean;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
   projectManagerTerminal?: boolean;
+  /** Project-mode task terminal. Its native Agent conversation is restart-unsafe and must not auto-restore. */
+  projectManagerProjectId?: string;
+  /** Work item currently owning a project-mode task terminal, used to build a fresh recovery chain. */
+  projectManagerWorkItemId?: string;
   /** Runtime identity used to decide whether a project-manager restart is required after configuration changes. */
   projectManagerAgent?: 'codex' | 'kimi' | 'grok';
   projectManagerModel?: string;

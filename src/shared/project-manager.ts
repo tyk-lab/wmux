@@ -31,6 +31,9 @@ export type ProjectManagerEventKind =
   | 'manager-runtime-restarted'
   | 'user-clarification-requested'
   | 'user-clarification-answered'
+  | 'requirements-alignment-required'
+  | 'requirements-alignment-confirmed'
+  | 'project-definition-updated'
   | 'project-preconditions-updated'
   | 'supervisor-decision'
   | 'guard-triggered'
@@ -57,6 +60,9 @@ export interface ProjectManagerQuestionOption {
 
 export interface ProjectManagerUserQuestion {
   id: string;
+  category?: 'clarification' | 'manual-intervention';
+  workItemId?: string;
+  blocker?: string;
   question: string;
   context: string;
   options: ProjectManagerQuestionOption[];
@@ -196,6 +202,24 @@ export interface ProjectManagerSession {
 }
 
 export type ProjectManagerAction =
+  | { type: 'require-requirements-alignment'; reason: string }
+  | {
+    type: 'confirm-requirements-alignment';
+    goalUnderstanding: string;
+    scopeSummary: string;
+    acceptanceSummary: string;
+    reason: string;
+  }
+  | {
+    type: 'update-project-definition';
+    goal: string;
+    preconditions: string[];
+    planFiles: ProjectPlanFileSnapshot[];
+    doneWhen: string[];
+    reason?: string;
+    source: 'user' | 'manager';
+    mode: 'revise' | 'replace';
+  }
   | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
   | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
   | { type: 'answer-user-clarification'; questionId: string; answer: string; optionId?: string; answeredBy: 'desktop' | 'feishu' }

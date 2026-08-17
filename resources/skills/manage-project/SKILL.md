@@ -83,6 +83,8 @@ When a work item finishes, keep the supervisor in waiting state and reuse the sa
 
 If a task terminal context becomes too long, first obtain a structured recovery summary from its supervisor. Then submit that summary with `wmux project terminal-rotate --project <project-id> --json-file <file>`. The old task terminal is closed only after a replacement is created and rebound; the same supervisor continues with the recovered context.
 
+Persist a compact recovery checkpoint after every meaningful milestone and before a supervisor enters waiting/blocked state. Update the work item with `latestContextSummary`, `latestEvidence`, and `latestBlocker` through `wmux project task-update`; include the current result, changed files, decisive validation, remaining work, and the exact next safe action. On application recovery, assume both native Agent conversations are gone: create a new task terminal with `workItemId`, let the control layer inject the recovery package, then start a new supervisor. The new terminal must inspect the working tree before acting and must not replay already evidenced work.
+
 ## Decision boundary
 
 - Supervisors may choose implementation details, small reversible adjustments, targeted tests, evidence-bearing retries, and bounded child threads only when the contract grants them.
@@ -102,7 +104,9 @@ If a task terminal context becomes too long, first obtain a structured recovery 
 
 ## User conversation
 
-When a material ambiguity affects the business goal, scope, physical prerequisite, credentials, destructive action, publish/deploy action, or another user-owned decision, ask exactly one bounded question with 2-4 mutually exclusive choices. Do not ask about routine technical choices that are already within your authority. Write a temporary JSON input and run:
+Before planning or dispatching a newly started project, perform a requirement-sufficiency gate. Check whether the goal, product form, functional scope, user preferences, physical/environment/access/resource prerequisites, and verifiable completion criteria are specific enough that different reasonable answers would not materially change the plan. If any material ambiguity remains, do not create a work item or task terminal yet.
+
+When a material ambiguity affects the business goal, scope, physical prerequisite, credentials, destructive action, publish/deploy action, or another user-owned decision, ask exactly one bounded question with 2-4 mutually exclusive choices. Analyze the known requirements first: every option must be an actionable proposal, its `description` must explain scope, benefit, cost, and important constraints, and `recommendedOptionId` must identify your recommended default. Do not make the user invent all possible solutions, and always leave the custom-answer path available. Do not ask about routine technical choices that are already within your authority. Never merely print a question, “please reply”, or “if you have no preference” in the project-manager terminal and then wait: the user does not monitor that terminal. The only valid blocking question is the structured command below, which pauses the selected project, opens its desktop conversation, and sends the question to its dedicated Feishu conversation. Write the JSON under the managed project's `.wmux/tmp/` directory and run:
 
 `wmux project ask --project <project-id> --json-file <file>`
 
@@ -110,6 +114,7 @@ The JSON shape is:
 
 ```json
 {
+  "category": "clarification",
   "question": "Which target environment should this project modify?",
   "context": "The plan mentions both staging and production; choosing one changes access and risk.",
   "options": [
@@ -120,9 +125,19 @@ The JSON shape is:
 }
 ```
 
+Use `"category": "clarification"` for initial requirement alignment, product or feature choices, and other non-physical user preferences. After the user answers, persist the answer as a project constraint. If another material ambiguity remains, ask the next single structured question instead of resuming prematurely; when the goal, scope, prerequisites, priorities, and completion evidence are aligned, explicitly choose resume and proceed with planning. The user may also direct replan, keep waiting, or stop. Never assume that a terminal-only question was delivered.
+
+If the control layer reports that it already executed the requirement-alignment gate, a fallback question with recommended options has already been delivered to the desktop project conversation and Feishu. Do not duplicate the question or resume the project. After the answer arrives, first use `wmux project update` to write the confirmed goal, scope, prerequisites, and verifiable completion criteria back into the project definition; the control layer intentionally rejects terminal creation, work-item creation, dispatch, and resume until this is done.
+
+For a blocked task that specifically requires human action, set `"category": "manual-intervention"`, plus the owning `workItemId` and an exact `blocker`. Examples include plugging in or power-cycling hardware, entering BIOS, supplying credentials, granting access, choosing a business tradeoff, or authorizing a destructive/production action. Do not mark that work item or project complete while `latestBlocker` remains. The control layer pauses only that project and sends a dedicated Feishu decision card. After the user answers, the project deliberately remains waiting: inspect the answer, update/clear the blocker only when it is actually resolved, and explicitly choose `wmux project resume`, replan, keep waiting, or stop.
+
 The control layer pauses only that project, opens the desktop confirmation dialog, and mirrors the question to the dedicated Feishu project conversation. Do not continue planning or dispatching that project until a user answer arrives through the structured response event. Other projects continue normally. Never create multiple pending questions for one project.
 
-Every direct user message from the desktop console or Feishu requires a direct answer. Route it back to that same project's conversation with `wmux project reply --project <project-id> --correlation <id> --message "..."`; never omit the project ID when more than one project exists. The reply is persisted in the selected project's desktop conversation and mirrored to Feishu when the message originated there. Proactively report without a direct question only:
+Every direct user message from the desktop console or Feishu requires a direct answer. Route it back to that same project's conversation with `wmux project reply --project <project-id> --correlation <id> --message "..."`; never omit the project ID when more than one project exists. The reply is persisted in the selected project's desktop conversation and mirrored to Feishu when the message originated there.
+
+If a user message changes or clarifies the project goal, functional scope, prerequisites, plan, or completion criteria, treat it as durable project input rather than transient chat. Read the current project status, merge the confirmed changes into a full or partial JSON definition, and run `wmux project update --project <project-id> --json-file <.wmux/tmp/file>`. Use `"mode": "revise"` when existing work may remain applicable. Use `"mode": "replace"` when the user explicitly clears the old goal and wants a new direction; this stops unfinished old work items while retaining their audit history. The control layer records the before/after definition and pauses the project's supervisor chain. Re-evaluate existing work items, stop or rewrite work that belongs to the old direction, ask another structured question if needed, reply to the user with the impact, and explicitly resume only after the revised plan is coherent. The project directory never changes through this command.
+
+Proactively report without a direct question only:
 
 - a user/business/high-risk decision;
 - a milestone completion, unrecoverable blocker, or material failure;
