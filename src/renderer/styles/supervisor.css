@@ -221,16 +221,40 @@
   margin-top: 10px;
 }
 
-.project-manager-dialog__recovery-list article {
-  display: grid;
-  gap: 5px;
+.project-manager-dialog__recovery-summary {
+  margin-top: 9px;
+  color: var(--accent, #58a6ff);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.project-manager-dialog__recovery-list label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
   padding: 9px 10px;
   border: 1px solid rgba(80, 160, 255, 0.24);
   border-radius: 7px;
   background: rgba(80, 160, 255, 0.07);
 }
 
-.project-manager-dialog__recovery-list span,
+.project-manager-dialog__recovery-list label[data-selected='1'] {
+  border-color: rgba(80, 160, 255, 0.72);
+  background: rgba(80, 160, 255, 0.16);
+}
+
+.project-manager-dialog__recovery-list label > span {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.project-manager-dialog__recovery-list input {
+  margin-top: 2px;
+}
+
+.project-manager-dialog__recovery-list small,
 .project-manager-dialog__recovery-list em {
   overflow-wrap: anywhere;
   font-size: 10px;
@@ -240,8 +264,29 @@
 
 .project-manager-dialog__recovery-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.project-manager-dialog__replace-goal {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 170, 60, 0.3);
+  border-radius: 7px;
+  background: rgba(255, 170, 60, 0.07);
+}
+
+.project-manager-dialog__replace-goal > span {
+  display: grid;
+  gap: 3px;
+}
+
+.project-manager-dialog__replace-goal small {
+  opacity: 0.72;
 }
 
 .project-manager-dialog__plan-files,

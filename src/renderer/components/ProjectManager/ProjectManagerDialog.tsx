@@ -126,6 +126,11 @@ export default function ProjectManagerDialog() {
   const [preconditions, setPreconditions] = useState('');
   const [planFiles, setPlanFiles] = useState<ProjectPlanFileSnapshot[]>([]);
   const [planFilePath, setPlanFilePath] = useState('');
+  const [definitionGoalDraft, setDefinitionGoalDraft] = useState('');
+  const [definitionDoneWhenDraft, setDefinitionDoneWhenDraft] = useState('');
+  const [definitionPlanFiles, setDefinitionPlanFiles] = useState<ProjectPlanFileSnapshot[]>([]);
+  const [definitionPlanFilePath, setDefinitionPlanFilePath] = useState('');
+  const [replaceProjectDirection, setReplaceProjectDirection] = useState(false);
   const [preconditionsDraft, setPreconditionsDraft] = useState('');
   const [doneWhen, setDoneWhen] = useState('');
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
@@ -139,6 +144,7 @@ export default function ProjectManagerDialog() {
   const [creating, setCreating] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState<'unchecked' | 'checking' | 'prompt' | 'done'>('unchecked');
   const [recoveryCandidates, setRecoveryCandidates] = useState<ProjectRecoveryCandidate[]>([]);
+  const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
   const clarificationRef = useRef<HTMLElement | null>(null);
@@ -146,8 +152,17 @@ export default function ProjectManagerDialog() {
   const conversation = useMemo(() => session?.events.filter((event) => (
     event.kind === 'user-message' || event.kind === 'manager-reply'
   )).slice(-50) || [], [session?.events]);
+  const definitionUpdates = useMemo(() => session?.events.filter((event) => (
+    event.kind === 'project-definition-updated'
+  )).slice(-20).reverse() || [], [session?.events]);
   const message = session ? messageDrafts[session.id] || '' : '';
   const lastConversationEvent = conversation.at(-1);
+  const sessionDefinitionFingerprint = session ? JSON.stringify([
+    session.goal,
+    session.preconditions,
+    session.doneWhen,
+    session.planFiles.map((file) => [file.path, file.sizeBytes, file.mtimeMs, file.capturedAt]),
+  ]) : '';
   const waitingForManagerReply = conversation.some((event) => (
     event.kind === 'user-message'
     && !!event.correlationId
@@ -177,9 +192,14 @@ export default function ProjectManagerDialog() {
 
   useEffect(() => {
     if (!open) return;
+    setDefinitionGoalDraft(session?.goal || '');
     setPreconditionsDraft((session?.preconditions || []).join('\n'));
+    setDefinitionDoneWhenDraft((session?.doneWhen || []).join('\n'));
+    setDefinitionPlanFiles(session?.planFiles || []);
+    setDefinitionPlanFilePath('');
+    setReplaceProjectDirection(false);
     setConstraintNotice('');
-  }, [open, session?.id]);
+  }, [open, session?.id, sessionDefinitionFingerprint]);
 
   useEffect(() => {
     setClarificationOptionId('');
@@ -218,6 +238,7 @@ export default function ProjectManagerDialog() {
       }
       const candidates = Array.isArray(result.candidates) ? result.candidates : [];
       setRecoveryCandidates(candidates);
+      setSelectedRecoveryIds(candidates.slice(0, MAX_ACTIVE_PROJECTS).map((candidate: ProjectRecoveryCandidate) => candidate.id));
       setRecoveryStatus(candidates.length > 0 ? 'prompt' : 'done');
     }).catch((error) => {
       setNotice(String((error as Error)?.message || error));
@@ -258,21 +279,39 @@ export default function ProjectManagerDialog() {
     }
   };
 
-  const chooseRecovery = async (restore: boolean) => {
+  const chooseRecovery = async (restore: boolean, addNewProject = false) => {
     if (busy) return;
+    if (restore && selectedRecoveryIds.length === 0) {
+      setNotice('请至少选择一个要继续推进的历史项目。');
+      return;
+    }
     setBusy(true);
     setNotice('');
     try {
-      const result = await invoke({ action: restore ? 'restore-projects' : 'skip-project-recovery' });
+      const result = await invoke({
+        action: restore ? 'restore-projects' : 'skip-project-recovery',
+        ...(restore ? { projectIds: selectedRecoveryIds } : {}),
+      });
       setRecoveryCandidates([]);
+      setSelectedRecoveryIds([]);
       setRecoveryStatus('done');
-      setCreating(false);
-      setConfigNotice(result.message || (restore ? '上次项目已恢复。' : '本次不恢复上次项目。'));
+      setCreating(addNewProject);
+      if (addNewProject) setProjectDir('');
+      setConfigNotice(result.message || (restore ? '所选历史项目已恢复。' : '本次不恢复历史项目。'));
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleRecoveryCandidate = (projectId: string) => {
+    setSelectedRecoveryIds((current) => (
+      current.includes(projectId)
+        ? current.filter((id) => id !== projectId)
+        : current.length < MAX_ACTIVE_PROJECTS ? [...current, projectId] : current
+    ));
+    setNotice('');
   };
 
   const start = async () => {
@@ -352,6 +391,51 @@ export default function ProjectManagerDialog() {
     }
   };
 
+  const mergeDefinitionPlanFiles = (incoming: ProjectPlanFileSnapshot[]) => {
+    const byPath = new Map(definitionPlanFiles.map((file) => [file.path.toLowerCase(), file]));
+    for (const file of incoming) byPath.set(file.path.toLowerCase(), file);
+    const merged = [...byPath.values()];
+    if (merged.length > MAX_PROJECT_PLAN_FILES) {
+      setNotice(`计划文件最多 ${MAX_PROJECT_PLAN_FILES} 个。`);
+      return;
+    }
+    setDefinitionPlanFiles(merged);
+    setNotice('');
+  };
+
+  const pickDefinitionPlanFiles = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await window.wmux?.projectManager?.pickPlanFiles?.();
+      if (result?.canceled) return;
+      if (!result?.ok) throw new Error(result?.error || '无法读取计划文件');
+      mergeDefinitionPlanFiles(Array.isArray(result.files) ? result.files : []);
+    } catch (error) {
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addDefinitionPlanFilePath = async () => {
+    const paths = definitionPlanFilePath.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
+    if (paths.length === 0 || busy) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await window.wmux?.projectManager?.readPlanFiles?.(paths);
+      if (!result?.ok) throw new Error(result?.error || '无法读取计划文件');
+      mergeDefinitionPlanFiles(Array.isArray(result.files) ? result.files : []);
+      setDefinitionPlanFilePath('');
+    } catch (error) {
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const answerClarification = async () => {
     const pending = session?.pendingUserQuestion;
     if (!pending || busy) return;
@@ -381,23 +465,33 @@ export default function ProjectManagerDialog() {
     }
   };
 
-  const updatePreconditions = async () => {
+  const updateProjectDefinition = async () => {
     if (!session || busy) return;
     const projectPreconditions = conditionLines(preconditionsDraft);
-    if (projectPreconditions.length === 0) {
-      setNotice('项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”。');
+    const projectDoneWhen = conditionLines(definitionDoneWhenDraft);
+    if (!definitionGoalDraft.trim() || projectPreconditions.length === 0 || projectDoneWhen.length === 0) {
+      setNotice('请填写项目目标、至少一个前置条件和至少一个可验证的完成条件。没有额外条件时请明确填写“无额外物理前置条件”。');
       return;
     }
+    if (replaceProjectDirection && !window.confirm('将以新目标取代旧目标，并停止所有尚未完成的旧工作项。旧记录会保留，但后续不再按旧目标推进。是否继续？')) return;
     setBusy(true);
     setNotice('');
     setConstraintNotice('');
     try {
       const result = await invoke({
-        action: 'update-preconditions',
+        action: 'update-definition',
         projectId: session.id,
+        goal: definitionGoalDraft.trim(),
         preconditions: projectPreconditions,
+        planFiles: definitionPlanFiles,
+        doneWhen: projectDoneWhen,
+        mode: replaceProjectDirection ? 'replace' : 'revise',
+        reason: replaceProjectDirection
+          ? '用户在项目管理 AI 控制台替换旧目标并要求按新方向重新规划'
+          : '用户在项目管理 AI 控制台更新目标或需求',
       });
-      setConstraintNotice(result.message || '项目前置条件已更新。');
+      setReplaceProjectDirection(false);
+      setConstraintNotice(result.message || '项目目标和需求已更新。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
@@ -489,6 +583,12 @@ export default function ProjectManagerDialog() {
   const canPausePortfolio = sessions.some((candidate) => candidate.status === 'active' || candidate.status === 'waiting');
   const canResumePortfolio = sessions.some((candidate) => candidate.status === 'paused' && candidate.pausedByPortfolio === true);
   const awaitingRecovery = sessions.length === 0 && recoveryStatus !== 'done';
+  const projectDefinitionChanged = !!session && (
+    definitionGoalDraft.trim() !== session.goal
+    || conditionLines(preconditionsDraft).join('\n') !== session.preconditions.join('\n')
+    || conditionLines(definitionDoneWhenDraft).join('\n') !== session.doneWhen.join('\n')
+    || JSON.stringify(definitionPlanFiles) !== JSON.stringify(session.planFiles || [])
+  );
 
   return (
     <div className="confirm-dialog__overlay supervisor-dialog__overlay" onMouseDown={(event) => {
@@ -507,31 +607,41 @@ export default function ProjectManagerDialog() {
 
           {awaitingRecovery && (
             <section className="supervisor-dialog__group project-manager-dialog__recovery">
-              <div className="supervisor-dialog__group-title">{recoveryStatus === 'checking' ? '正在检查上次项目…' : '发现上次的项目管理'}</div>
+              <div className="supervisor-dialog__group-title">{recoveryStatus === 'checking' ? '正在检查历史项目…' : '选择历史项目继续管理'}</div>
               {recoveryStatus === 'prompt' && (
                 <>
-                  <div className="supervisor-dialog__hint">选择恢复后才会启动项目管理 AI，并依据结构化记录继续；本次不恢复不会删除记录。</div>
+                  <div className="supervisor-dialog__hint">项目管理 AI 只恢复你勾选的项目，并基于结构化记录创建新的 AI 会话继续推进。未选择的历史记录会保留。</div>
+                  <div className="project-manager-dialog__recovery-summary">已选择 {selectedRecoveryIds.length}/{MAX_ACTIVE_PROJECTS} 个项目</div>
                   <div className="project-manager-dialog__recovery-list">
                     {recoveryCandidates.map((candidate) => (
-                      <article key={candidate.id}>
-                        <strong>{candidate.goal}</strong>
-                        <span>{candidate.projectDir}</span>
-                        <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
-                      </article>
+                      <label key={candidate.id} data-selected={selectedRecoveryIds.includes(candidate.id) ? '1' : '0'}>
+                        <input
+                          type="checkbox"
+                          checked={selectedRecoveryIds.includes(candidate.id)}
+                          onChange={() => toggleRecoveryCandidate(candidate.id)}
+                        />
+                        <span>
+                          <strong>{candidate.goal}</strong>
+                          <small>{candidate.projectDir}</small>
+                          <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · 最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
+                        </span>
+                      </label>
                     ))}
                   </div>
                   <div className="project-manager-dialog__recovery-actions">
-                    <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void chooseRecovery(true)}>{busy ? '正在恢复…' : '恢复上次项目'}</button>
-                    <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false)}>本次不恢复</button>
+                    <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || selectedRecoveryIds.length === 0} onClick={() => void chooseRecovery(true)}>{busy ? '正在恢复…' : `恢复所选项目（${selectedRecoveryIds.length}）`}</button>
+                    <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false, true)}>添加新项目</button>
+                    <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false)}>暂不恢复</button>
                   </div>
+                  <div className="supervisor-dialog__hint">恢复后仍可添加新项目，活动项目总数最多 {MAX_ACTIVE_PROJECTS} 个。旧监督 AI 和任务终端对话不会直接复活，将通过恢复包建立新链路。</div>
                 </>
               )}
             </section>
           )}
 
           {session?.pendingUserQuestion && !creating && (
-            <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label="项目管理 AI 需要用户确认">
-              <div className="supervisor-dialog__group-title">项目管理 AI 需要你确认</div>
+            <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
+              <div className="supervisor-dialog__group-title">{session.pendingUserQuestion.category === 'manual-intervention' ? '项目阻塞，需要你指示' : '项目管理 AI 邀请你对齐需求'}</div>
               <div className="project-manager-dialog__clarification-question">{session.pendingUserQuestion.question}</div>
               {session.pendingUserQuestion.context && <div className="supervisor-dialog__hint">{session.pendingUserQuestion.context}</div>}
               <div className="project-manager-dialog__clarification-options">
@@ -544,7 +654,7 @@ export default function ProjectManagerDialog() {
               </div>
               <textarea className="supervisor-dialog__textarea" rows={3} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="可补充说明，或不选上述选项直接填写自定义答复" />
               <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || (!clarificationOptionId && !clarificationAnswer.trim())} onClick={() => void answerClarification()}>{busy ? '正在提交…' : '确认并交给项目管理 AI'}</button>
-              <div className="supervisor-dialog__hint">该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效。</div>
+              <div className="supervisor-dialog__hint">该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。</div>
             </section>
           )}
 
@@ -700,30 +810,80 @@ export default function ProjectManagerDialog() {
                 <div><span>正在管理的监督 AI</span><strong>{activeManagedLanes.length}</strong></div>
                 <div><span>待决策</span><strong>{session.workItems.filter((item) => item.status === 'waiting-decision').length}</strong></div>
               </section>
-              <section className="supervisor-dialog__group">
-                <div className="supervisor-dialog__group-title">项目目标</div>
-                <div className="project-manager-dialog__goal">{session.goal}</div>
-                <div className="project-manager-dialog__path">{session.projectDir}</div>
-                {(session.planFiles || []).length > 0 && <div className="project-manager-dialog__path">计划文件：{session.planFiles.map((file) => file.name).join('、')}</div>}
-              </section>
               <section className="supervisor-dialog__group project-manager-dialog__preconditions">
                 <div className="project-manager-dialog__section-head">
                   <div>
-                    <div className="supervisor-dialog__group-title">项目级前置条件</div>
-                    <div className="supervisor-dialog__hint">可在项目进行中修改。更新后，项目管理 AI 和活动监督 AI 必须重新核对当前规划。</div>
+                    <div className="supervisor-dialog__group-title">项目目标与需求</div>
+                    <div className="supervisor-dialog__hint">项目目录保持不变；目标、计划文件、前置条件和完成条件可在推进中调整。保存后会暂停当前监督链，由项目管理 AI 评估影响并重规划。</div>
                   </div>
                   <button
                     type="button"
                     className="confirm-dialog__btn"
-                    disabled={busy || conditionLines(preconditionsDraft).join('\n') === (session.preconditions || []).join('\n')}
-                    onClick={() => void updatePreconditions()}
-                  >更新前置条件</button>
+                    disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}
+                    onClick={() => void updateProjectDefinition()}
+                  >保存需求变更</button>
                 </div>
+                <div className="supervisor-dialog__label">项目目录（不可变）</div>
+                <div className="project-manager-dialog__path">{session.projectDir}</div>
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目标</div>
+                <textarea className="supervisor-dialog__textarea" rows={3} value={definitionGoalDraft} onChange={(event) => {
+                  setDefinitionGoalDraft(event.target.value);
+                  setConstraintNotice('');
+                }} placeholder="描述项目管理 AI 当前要追逐的上层目标" />
+                <div className="supervisor-dialog__label">计划文件（可选，最多 {MAX_PROJECT_PLAN_FILES} 个）</div>
+                <div className="project-manager-dialog__directory-row">
+                  <input className="supervisor-dialog__input" value={definitionPlanFilePath} onChange={(event) => setDefinitionPlanFilePath(event.target.value)} placeholder={'C:\\project\\PLAN.md'} />
+                  <button type="button" className="confirm-dialog__btn" disabled={busy || !definitionPlanFilePath.trim()} onClick={() => void addDefinitionPlanFilePath()}>添加路径</button>
+                  <button type="button" className="confirm-dialog__btn" disabled={busy || definitionPlanFiles.length >= MAX_PROJECT_PLAN_FILES} onClick={() => void pickDefinitionPlanFiles()}>选择计划文件</button>
+                </div>
+                {definitionPlanFiles.length > 0 && <div className="project-manager-dialog__plan-files">
+                  {definitionPlanFiles.map((file) => <article key={file.path}>
+                    <div><strong>{file.name}</strong><button type="button" className="confirm-dialog__btn" onClick={() => setDefinitionPlanFiles((current) => current.filter((candidate) => candidate.path !== file.path))}>移除</button></div>
+                    <span>{file.path}</span><em>{Math.max(1, Math.ceil(file.sizeBytes / 1024))} KB · 已保存内容快照</em>
+                  </article>)}
+                </div>}
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">项目前置条件（每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={4} value={preconditionsDraft} onChange={(event) => {
                   setPreconditionsDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder="每行填写一项必须先满足的物理、环境、权限或资源条件" />
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">完成条件（每行一项）</div>
+                <textarea className="supervisor-dialog__textarea" rows={4} value={definitionDoneWhenDraft} onChange={(event) => {
+                  setDefinitionDoneWhenDraft(event.target.value);
+                  setConstraintNotice('');
+                }} placeholder={'相关功能实现并验证\n关键测试通过\n未验证条件已经明确报告'} />
+                <label className="project-manager-dialog__replace-goal">
+                  <input type="checkbox" checked={replaceProjectDirection} onChange={(event) => setReplaceProjectDirection(event.target.checked)} />
+                  <span><strong>清除旧目标的当前约束，按新方向重新规划</strong><small>未完成的旧工作项将停止并保留历史记录；项目管理 AI 会从新目标重新拆分任务。</small></span>
+                </label>
+                {session.pendingUserQuestion && <div className="supervisor-dialog__warning">请先完成当前需求确认，再保存新的项目配置。</div>}
                 {constraintNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{constraintNotice}</div>}
+              </section>
+              <section className="supervisor-dialog__group">
+                <div className="supervisor-dialog__group-title">需求变更历史</div>
+                <div className="project-manager-dialog__work-items">
+                  {definitionUpdates.length === 0 && <div className="supervisor-dialog__empty">尚未调整项目目标或需求。</div>}
+                  {definitionUpdates.map((event) => {
+                    const previous = event.payload?.previous as Record<string, unknown> | undefined;
+                    const next = event.payload?.next as Record<string, unknown> | undefined;
+                    const mode = event.payload?.mode === 'replace' ? '替换旧目标' : '修订现有需求';
+                    const lines = (value: unknown) => Array.isArray(value)
+                      ? value.map((item) => String(item)).join('\n')
+                      : '无';
+                    return (
+                      <details key={event.id}>
+                        <summary><strong>{mode}</strong><span>{new Date(event.ts).toLocaleString('zh-CN', { hour12: false })}</span></summary>
+                        <dl>
+                          <dt>变更说明</dt><dd>{event.summary}</dd>
+                          <dt>旧目标</dt><dd>{String(previous?.goal || '无')}</dd>
+                          <dt>新目标</dt><dd>{String(next?.goal || '无')}</dd>
+                          <dt>新前置条件</dt><dd>{lines(next?.preconditions)}</dd>
+                          <dt>新完成条件</dt><dd>{lines(next?.doneWhen)}</dd>
+                        </dl>
+                      </details>
+                    );
+                  })}
+                </div>
               </section>
               <section className="supervisor-dialog__group">
                 <div className="supervisor-dialog__group-title">正在管理的监督 AI</div>
@@ -773,12 +933,12 @@ export default function ProjectManagerDialog() {
                 <div className="project-manager-dialog__section-head">
                   <div>
                     <div className="supervisor-dialog__group-title">与项目管理 AI 对话</div>
-                    <div className="supervisor-dialog__hint">当前项目：{session.goal}</div>
+                    <div className="supervisor-dialog__hint">当前项目：{session.goal}。对话会持续记录；其中确认的新目标、范围和验收细节会由项目管理 AI 写回项目配置并触发重规划。</div>
                   </div>
                   <span className="project-manager-dialog__chat-project">{session.projectDir}</span>
                 </div>
                 <div className="project-manager-dialog__conversation">
-                  {conversation.length === 0 && <div className="supervisor-dialog__empty">会话已建立，可直接讨论拆分、暂停、改线或上层决策。</div>}
+                  {conversation.length === 0 && <div className="supervisor-dialog__empty">会话已建立，可直接讨论需求、确认细节、调整方向、暂停或改线。</div>}
                   {conversation.map((event) => (
                     <div
                       key={event.id}
