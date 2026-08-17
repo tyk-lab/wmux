@@ -30,6 +30,22 @@ function lane(): SupervisorLane {
   };
 }
 
+async function confirmAndResumeProject(projectId: string): Promise<void> {
+  const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
+  const request = (globalThis.window as any).__wmux_projectManagerRequest;
+  await expect(request({
+    action: 'alignment-confirm', callerSurfaceId: session?.managerSurfaceId, projectId,
+    goalUnderstanding: `按已保存目标推进：${session?.goal || projectId}`,
+    scopeSummary: `工作范围严格限制在 ${session?.projectDir || '项目目录'}`,
+    acceptanceSummary: (session?.doneWhen || []).join('；') || '按项目完成条件验收',
+    reason: '测试场景已明确目标、目录边界和可验证完成标准',
+  })).resolves.toMatchObject({ ok: true });
+  await expect(request({
+    action: 'resume', callerSurfaceId: session?.managerSurfaceId, projectId,
+    reason: '首次需求检测完成后继续',
+  })).resolves.toMatchObject({ ok: true });
+}
+
 describe('supervisor decision bridge', () => {
   const writes = vi.fn();
   let screenText: string;
@@ -1304,7 +1320,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({
       status: 'waiting', pendingUserQuestion: { question: '是否允许覆盖现有配置？' },
     });
-    expect(useStore.getState().projectManagers.find((project) => project.id === second.id)?.status).toBe('active');
+    expect(useStore.getState().projectManagers.find((project) => project.id === second.id)?.status).toBe('waiting');
     expect(useStore.getState().projectManagerDialogOpen).toBe(true);
 
     await expect(remote({
@@ -1316,10 +1332,7 @@ describe('supervisor decision bridge', () => {
       session: { id: first.id, status: 'waiting', pendingUserQuestion: undefined },
       event: { kind: 'user-clarification-answered', payload: { answeredBy: 'feishu', optionId: 'keep' } },
     });
-    await expect(request({
-      action: 'resume', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
-      reason: '项目管理 AI 核对用户答复后决定继续',
-    })).resolves.toMatchObject({ ok: true });
+    await confirmAndResumeProject(first.id);
     await expect(remote({
       action: 'answer-question', projectId: first.id, optionId: 'replace', answer: '改为覆盖', source: 'desktop',
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('没有待用户确认') });
@@ -1329,45 +1342,24 @@ describe('supervisor decision bridge', () => {
     }));
   });
 
-  it('automatically sends recommended requirement options for an underspecified restored project', async () => {
-    const persisted = {
-      id: 'pm-library-recovery',
+  it('automatically sends recommended requirement options when an underspecified project is first created', async () => {
+    const project = {
       projectDir: 'C:\\Users\\tyk\\Desktop\\新建文件夹 (2)',
       goal: '测试相关功能',
       preconditions: ['无'],
-      planFiles: [],
       doneWhen: ['做个图书馆管理系统'],
-      status: 'active' as const,
-      workItems: [],
-      events: [
-        {
-          id: 'pause-event', sessionId: 'pm-library-recovery', ts: 10, kind: 'project-paused' as const,
-          summary: '现有目标与完成条件不足以确定功能边界和验收标准，等待用户补充关键目标',
-        },
-        {
-          id: 'resume-event', sessionId: 'pm-library-recovery', ts: 20, kind: 'project-resumed' as const,
-          summary: '由项目管理 AI 恢复',
-        },
-      ],
-      createdAt: 1,
-      updatedAt: 20,
     };
-    (globalThis.window as any).wmux.projectManager.readLatestSession.mockResolvedValue(persisted);
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
 
     const result = await remote({
       action: 'start',
-      projectDir: persisted.projectDir,
-      goal: persisted.goal,
-      preconditions: persisted.preconditions,
-      doneWhen: persisted.doneWhen,
+      ...project,
     });
 
     expect(result).toMatchObject({
       ok: true,
-      restored: true,
+      restored: false,
       session: {
-        id: persisted.id,
         status: 'waiting',
         pendingUserQuestion: {
           question: expect.stringContaining('产品形态'),
@@ -1390,17 +1382,73 @@ describe('supervisor decision bridge', () => {
 
     const pending = useStore.getState().projectManager?.pendingUserQuestion;
     await expect(remote({
-      action: 'answer-question', projectId: persisted.id, questionId: pending?.id,
+      action: 'answer-question', projectId: useStore.getState().projectManager?.id, questionId: pending?.id,
       optionId: 'local-web', answer: '本地网页系统', source: 'feishu',
     })).resolves.toMatchObject({ ok: true, session: { status: 'waiting', pendingUserQuestion: undefined } });
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({
       action: 'resume', callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
-      projectId: persisted.id, reason: '直接恢复',
+      projectId: useStore.getState().projectManager?.id, reason: '直接恢复',
     })).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining('先执行 wmux project update'),
     });
+  });
+
+  it('reuses a persisted initial alignment decision when restoring a project', async () => {
+    const persisted = {
+      id: 'pm-aligned-recovery', projectDir: 'E:\\aligned-recovery',
+      goal: '实现认证模块', preconditions: ['测试环境可用'], planFiles: [], doneWhen: ['认证测试通过'],
+      status: 'active' as const, workItems: [],
+      events: [
+        {
+          id: 'required', sessionId: 'pm-aligned-recovery', ts: 10,
+          kind: 'requirements-alignment-required' as const, summary: '项目首次启动检测',
+        },
+        {
+          id: 'confirmed', sessionId: 'pm-aligned-recovery', ts: 20,
+          kind: 'requirements-alignment-confirmed' as const, summary: '目标、范围和验收标准已明确',
+        },
+      ],
+      createdAt: 1, updatedAt: 20,
+    };
+    (globalThis.window as any).wmux.projectManager.readLatestSession.mockResolvedValue(persisted);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'start', projectDir: persisted.projectDir, goal: persisted.goal,
+      preconditions: persisted.preconditions, doneWhen: persisted.doneWhen,
+    })).resolves.toMatchObject({
+      ok: true, restored: true,
+      session: { id: persisted.id, status: 'active' },
+    });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
+    const alignmentEvents = useStore.getState().projectManager?.events.filter((event) => (
+      event.kind === 'requirements-alignment-required' || event.kind === 'requirements-alignment-confirmed'
+    ));
+    expect(alignmentEvents).toHaveLength(2);
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'requirements-alignment-required' }),
+    );
+  });
+
+  it('does not start a new requirement check merely because an existing project is restored', async () => {
+    const persisted = {
+      id: 'pm-legacy-recovery', projectDir: 'E:\\legacy-recovery',
+      goal: '测试相关功能', preconditions: ['无'], planFiles: [], doneWhen: ['做个管理系统'],
+      status: 'active' as const, workItems: [], events: [], createdAt: 1, updatedAt: 2,
+    };
+    (globalThis.window as any).wmux.projectManager.readLatestSession.mockResolvedValue(persisted);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'start', projectDir: persisted.projectDir, goal: persisted.goal,
+      preconditions: persisted.preconditions, doneWhen: persisted.doneWhen,
+    })).resolves.toMatchObject({
+      ok: true, restored: true, session: { id: persisted.id, status: 'active' },
+    });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
+    expect(useStore.getState().projectManager?.events).toEqual([]);
   });
 
   it('routes a manager reply back to the correlated project conversation', async () => {
@@ -1432,7 +1480,9 @@ describe('supervisor decision bridge', () => {
       expect.objectContaining({ kind: 'user-message', summary: '项目 A 现在进展如何？' }),
       expect.objectContaining({ kind: 'manager-reply', summary: '项目 A 正在等待验证。' }),
     ]));
-    expect(projects.find((project) => project.id === second.id)?.events).toEqual([]);
+    expect(projects.find((project) => project.id === second.id)?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'requirements-alignment-required' }),
+    ]));
   });
 
   it('previews persisted projects without starting AI and restores them only after an explicit choice', async () => {
@@ -1602,6 +1652,7 @@ describe('supervisor decision bridge', () => {
     await remote({
       action: 'start', projectDir: 'E:\\configured-repo', goal: '验证配置换代', doneWhen: ['配置生效'],
     });
+    await confirmAndResumeProject(useStore.getState().projectManager!.id);
     const before = useStore.getState().projectManager?.managerSurfaceId;
     useStore.getState().setWorkspacePrefs({
       projectManagementAgents: {
@@ -1723,7 +1774,7 @@ describe('supervisor decision bridge', () => {
       workItems: [{ id: 'obsolete-task', status: 'stopped' }],
     });
     expect(useStore.getState().projectManagers.find((project) => project.projectDir === 'E:\\direction-b'))
-      .toMatchObject({ goal: '保持方向 B', status: 'active' });
+      .toMatchObject({ goal: '保持方向 B', status: 'waiting' });
 
     const managerSurfaceId = useStore.getState().projectManagers.find((project) => project.id === firstId)?.managerSurfaceId;
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -1766,6 +1817,7 @@ describe('supervisor decision bridge', () => {
       action: 'start', projectDir: 'E:\\rotation', goal: '完成轮换项目',
       preconditions: ['设备已断电并确认安全'], doneWhen: ['测试通过'],
     })).resolves.toMatchObject({ ok: true });
+    await confirmAndResumeProject(useStore.getState().projectManager!.id);
     const managerSurfaceId = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).find((surface) => surface.projectManagerTerminal)?.id;
@@ -1845,6 +1897,7 @@ describe('supervisor decision bridge', () => {
       preconditions: ['环境安全'], doneWhen: ['完成'],
     })).resolves.toMatchObject({ ok: true });
     const projectId = useStore.getState().projectManager?.id;
+    await confirmAndResumeProject(projectId!);
     const managerSurfaceId = useStore.getState().projectManager?.managerSurfaceId;
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({

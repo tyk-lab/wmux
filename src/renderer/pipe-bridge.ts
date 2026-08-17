@@ -2245,15 +2245,6 @@ function projectRequirementsAlignmentPending(session: ProjectManagerSession): bo
   return !latestConfirmed || latestRequired.ts > latestConfirmed.ts;
 }
 
-function projectHasRequirementsAlignmentHistory(session: ProjectManagerSession): boolean {
-  return session.events.some((event) => (
-    event.kind === 'requirements-alignment-required'
-    || event.kind === 'requirements-alignment-confirmed'
-    || event.kind === 'user-clarification-requested'
-    || event.kind === 'user-clarification-answered'
-  ));
-}
-
 function projectRequirementAlignmentState(session: ProjectManagerSession): ProjectRequirementAlignmentState {
   const hasCurrentWork = session.workItems.some((item) => !['completed', 'stopped'].includes(item.status));
   if (hasCurrentWork || (session.planFiles || []).length > 0) return 'sufficient';
@@ -2662,12 +2653,10 @@ async function ensureProjectManagerRuntime(options: {
   }
   for (const session of projects) {
     if (['active', 'paused', 'waiting'].includes(session.status)) {
-      if (restoredAfterRestart
-        && !projectHasRequirementsAlignmentHistory(session)
-        && projectRequirementAlignmentState(session) !== 'sufficient') {
+      if (restoredAfterRestart && projectRequirementsAlignmentPending(session)) {
         await requireProjectRequirementsAlignment(
           session.id,
-          '旧版本项目从未完成首次需求检测，且现有定义明显不足；执行一次兼容补检',
+          '继续首次启动时尚未完成的需求充分性检测',
           !previousManager || previousManager.surfaceId !== manager.surfaceId,
         );
       }
@@ -2782,7 +2771,7 @@ async function ensureProjectRequirementAlignment(
   if (!session || ['completed', 'stopped'].includes(session.status)) return { triggered: false, session };
   const alignmentRequired = projectRequirementsAlignmentPending(session);
   const alignmentState = projectRequirementAlignmentState(session);
-  if ((!alignmentRequired && alignmentState === 'sufficient') || session.pendingUserQuestion) {
+  if ((!alignmentRequired && !forceQuestion) || session.pendingUserQuestion) {
     return { triggered: false, session };
   }
   if (alignmentState === 'needs-definition-update') {
@@ -3056,11 +3045,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       const recovered = restoredProjectManagerSession(restored, callerSurfaceId);
       store.restoreProjectManager(recovered);
       await (window as any).wmux?.projectManager?.saveSession?.(recovered);
-      if (!projectHasRequirementsAlignmentHistory(recovered)
-        && projectRequirementAlignmentState(recovered) !== 'sufficient') {
-        await requireProjectRequirementsAlignment(recovered.id, '旧版本项目缺少首次需求检测记录，执行一次兼容补检');
+      if (projectRequirementsAlignmentPending(recovered)) {
+        await requireProjectRequirementsAlignment(recovered.id, '继续首次启动时尚未完成的需求充分性检测');
       }
-      const alignment = await ensureProjectRequirementAlignment(recovered.id, '恢复的项目定义不足以确定执行边界');
+      const alignment = await ensureProjectRequirementAlignment(recovered.id, '继续首次启动时尚未完成的需求充分性检测');
       return { ok: true, restored: true, session: alignment.session || recovered, alignmentQuestion: alignment.question };
     }
     const created = store.startProjectManager({ projectDir, goal, preconditions, planFiles, doneWhen, managerSurfaceId: callerSurfaceId });
@@ -3601,7 +3589,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     projectProgressTimers.delete(session.id);
     await persistProjectManagerMutation(result, session.id);
     if (projectRequirementGapReason(reason)) {
-      const alignment = await ensureProjectRequirementAlignment(session.id, reason);
+      const alignment = await ensureProjectRequirementAlignment(session.id, reason, false, true);
       if (alignment.triggered) {
         return { ok: true, event: result.event, question: alignment.question, message: '项目已暂停；控制层已通过桌面和飞书发送带推荐项的需求澄清问题。' };
       }
@@ -3876,9 +3864,8 @@ export function initPipeBridge(): void {
       await (window as any).wmux?.projectManager?.saveSession?.(session);
       if (!restored) {
         await requireProjectRequirementsAlignment(session.id, '项目首次启动，必须先完成需求充分性检测', runtime.created === true);
-      } else if (!projectHasRequirementsAlignmentHistory(session)
-        && projectRequirementAlignmentState(session) !== 'sufficient') {
-        await requireProjectRequirementsAlignment(session.id, '旧版本项目缺少首次需求检测记录，执行一次兼容补检', runtime.created === true);
+      } else if (projectRequirementsAlignmentPending(session)) {
+        await requireProjectRequirementsAlignment(session.id, '继续首次启动时尚未完成的需求充分性检测', runtime.created === true);
       }
       const alignment = await ensureProjectRequirementAlignment(
         session.id,
