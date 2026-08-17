@@ -183,7 +183,85 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     let next = session;
     let eventInput: Omit<ProjectManagerEvent, 'id' | 'sessionId' | 'ts'>;
 
-    if (action.type === 'update-project-preconditions') {
+    if (action.type === 'require-requirements-alignment') {
+      next = { ...session, status: 'waiting' };
+      eventInput = {
+        kind: 'requirements-alignment-required',
+        summary: action.reason.trim() || '项目必须先完成需求充分性判定',
+      };
+    } else if (action.type === 'confirm-requirements-alignment') {
+      const goalUnderstanding = action.goalUnderstanding.trim();
+      const scopeSummary = action.scopeSummary.trim();
+      const acceptanceSummary = action.acceptanceSummary.trim();
+      const reason = action.reason.trim();
+      if (!goalUnderstanding || !scopeSummary || !acceptanceSummary || !reason) {
+        return { ok: false, error: '需求充分性确认必须包含目标理解、范围、验收标准和判定理由' };
+      }
+      next = { ...session, status: 'waiting' };
+      eventInput = {
+        kind: 'requirements-alignment-confirmed',
+        summary: reason,
+        payload: { goalUnderstanding, scopeSummary, acceptanceSummary },
+      };
+    } else if (action.type === 'update-project-definition') {
+      const goal = action.goal.trim();
+      const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
+      const doneWhen = action.doneWhen.map((item) => item.trim()).filter(Boolean);
+      if (!goal) return { ok: false, error: '项目目标不能为空' };
+      if (preconditions.length === 0) {
+        return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
+      }
+      if (doneWhen.length === 0) return { ok: false, error: '项目完成条件不能为空' };
+      const previous = {
+        goal: session.goal,
+        preconditions: session.preconditions,
+        planFiles: session.planFiles.map((file) => ({ path: file.path, name: file.name })),
+        doneWhen: session.doneWhen,
+      };
+      const workItems = session.workItems.map((item) => {
+        if (action.mode === 'replace' && !['completed', 'stopped'].includes(item.status)) {
+          return {
+            ...item,
+            status: 'stopped' as const,
+            latestBlocker: undefined,
+            updatedAt: now,
+          };
+        }
+        if (['running', 'validating'].includes(item.status)) {
+          return {
+            ...item,
+            status: 'waiting-decision' as const,
+            latestBlocker: '项目需求已更新，等待项目管理 AI 重新评估任务目标、范围和验收条件',
+            updatedAt: now,
+          };
+        }
+        return item;
+      });
+      next = {
+        ...session,
+        goal,
+        preconditions,
+        planFiles: action.planFiles,
+        doneWhen,
+        workItems,
+        status: session.status === 'active' ? 'waiting' : session.status,
+      };
+      eventInput = {
+        kind: 'project-definition-updated',
+        summary: action.reason || `${action.source === 'user' ? '用户' : '项目管理 AI'}${action.mode === 'replace' ? '替换旧目标并要求重新规划' : '更新项目目标和需求'}`,
+        payload: {
+          source: action.source,
+          mode: action.mode,
+          previous,
+          next: {
+            goal,
+            preconditions,
+            planFiles: action.planFiles.map((file) => ({ path: file.path, name: file.name })),
+            doneWhen,
+          },
+        },
+      };
+    } else if (action.type === 'update-project-preconditions') {
       const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
       if (preconditions.length === 0) {
         return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
@@ -198,7 +276,18 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (session.pendingUserQuestion) {
         return { ok: false, error: '该项目已有待用户确认的问题，不能重复提问' };
       }
-      next = { ...session, status: 'waiting', pendingUserQuestion: action.question };
+      let workItems = session.workItems;
+      if (action.question.workItemId) {
+        const index = workItems.findIndex((item) => item.id === action.question.workItemId);
+        if (index < 0) return { ok: false, error: `任务不存在：${action.question.workItemId}` };
+        workItems = workItems.map((item, itemIndex) => itemIndex === index ? {
+          ...item,
+          status: 'waiting-decision',
+          latestBlocker: action.question.blocker || action.question.context || action.question.question,
+          updatedAt: now,
+        } : item);
+      }
+      next = { ...session, workItems, status: 'waiting', pendingUserQuestion: action.question };
       eventInput = {
         kind: 'user-clarification-requested',
         summary: action.question.question,
@@ -212,10 +301,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const answer = action.answer.trim();
       if (!answer) return { ok: false, error: '用户答复不能为空' };
-      const resumeStatus = session.status === 'waiting'
-        ? pending.previousStatus
-        : session.status;
-      next = { ...session, status: resumeStatus, pendingUserQuestion: undefined };
+      // Keep the project waiting after a user answer. The answer belongs to the
+      // project manager, which must explicitly choose resume/replan/stop before
+      // any supervisor or task terminal is allowed to continue.
+      next = { ...session, status: 'waiting', pendingUserQuestion: undefined };
       eventInput = {
         kind: 'user-clarification-answered',
         summary: `用户答复：${answer}`,
@@ -264,6 +353,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const required = session.workItems.filter((item) => item.status !== 'stopped');
       if (required.length === 0 || required.some((item) => item.status !== 'completed')) {
         return { ok: false, error: '所有未停止的项目任务完成后才能完成项目' };
+      }
+      const blocked = required.find((item) => !!item.latestBlocker?.trim());
+      if (blocked) {
+        return { ok: false, error: `任务仍有未解决阻塞，不能完成项目：${blocked.title} · ${blocked.latestBlocker}` };
       }
       if (!action.evidence.trim()) return { ok: false, error: '完成项目必须提供项目级验证证据' };
       next = { ...session, status: 'completed' };

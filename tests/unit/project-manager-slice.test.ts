@@ -111,6 +111,81 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能为空') });
   });
 
+  it('revises a project definition and pauses running work for re-evaluation', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '旧目标', preconditions: ['旧前置条件'], doneWhen: ['旧验收'],
+    });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('active-task') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'active-task', patch: { status: 'running' },
+    });
+
+    const result = useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition',
+      goal: '调整后的目标',
+      preconditions: ['新前置条件'],
+      planFiles: [{ path: 'E:\\repo\\PLAN.md', name: 'PLAN.md', content: '# 新计划' }],
+      doneWhen: ['新验收'],
+      source: 'user',
+      mode: 'revise',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'project-definition-updated',
+        payload: { mode: 'revise', previous: { goal: '旧目标' }, next: { goal: '调整后的目标' } },
+      },
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      goal: '调整后的目标',
+      preconditions: ['新前置条件'],
+      doneWhen: ['新验收'],
+      status: 'waiting',
+      workItems: [{ id: 'active-task', status: 'waiting-decision', latestBlocker: expect.stringContaining('重新评估') }],
+    });
+  });
+
+  it('clears the old goal constraints and stops unfinished work when replacing direction', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '开发旧产品', preconditions: ['旧设备可用'], doneWhen: ['旧产品验收'],
+    });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('finished') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'finished', patch: { status: 'completed', latestEvidence: '旧任务已验收' },
+    });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('unfinished') });
+
+    const result = useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition',
+      goal: '开发全新产品',
+      preconditions: ['新设备可用'],
+      planFiles: [],
+      doneWhen: ['新产品验收'],
+      reason: '用户明确清除旧目标',
+      source: 'user',
+      mode: 'replace',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'project-definition-updated',
+        summary: '用户明确清除旧目标',
+        payload: { mode: 'replace', previous: { goal: '开发旧产品' }, next: { goal: '开发全新产品' } },
+      },
+    });
+    expect(useStore.getState().projectManager?.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'finished', status: 'completed' }),
+      expect.objectContaining({ id: 'unfinished', status: 'stopped' }),
+    ]));
+    expect(useStore.getState().projectManager).toMatchObject({
+      goal: '开发全新产品', preconditions: ['新设备可用'], doneWhen: ['新产品验收'], status: 'waiting',
+    });
+  });
+
   it('rejects a task update that introduces a dependency cycle', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
@@ -165,8 +240,12 @@ describe('project-manager slice', () => {
     const useStore = store();
     const first = useStore.getState().startProjectManager({ projectDir: 'E:\\repo-a', goal: '项目 A', doneWhen: ['A 完成'] });
     const second = useStore.getState().startProjectManager({ projectDir: 'E:\\repo-b', goal: '项目 B', doneWhen: ['B 完成'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('manual-check') }, first.id);
     const question = {
       id: 'question-1',
+      category: 'manual-intervention' as const,
+      workItemId: 'manual-check',
+      blocker: '需要用户进入 BIOS 开启唤醒',
       question: '是否允许覆盖现有配置？',
       context: '现有配置与完成条件冲突。',
       options: [{ id: 'keep', label: '保留' }, { id: 'replace', label: '覆盖' }],
@@ -179,7 +258,8 @@ describe('project-manager slice', () => {
       type: 'request-user-clarification', question,
     }, first.id)).toMatchObject({ ok: true, event: { kind: 'user-clarification-requested' } });
     expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({
-      status: 'waiting', pendingUserQuestion: { id: 'question-1' },
+      status: 'waiting', pendingUserQuestion: { id: 'question-1', category: 'manual-intervention' },
+      workItems: [{ id: 'manual-check', status: 'waiting-decision', latestBlocker: expect.stringContaining('BIOS') }],
     });
     expect(useStore.getState().projectManagers.find((project) => project.id === second.id)?.status).toBe('active');
     expect(useStore.getState().applyProjectManagerAction({
@@ -189,8 +269,10 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'answer-user-clarification', questionId: 'question-1', answer: '保留现有配置', optionId: 'keep', answeredBy: 'desktop',
     }, first.id)).toMatchObject({ ok: true, event: { kind: 'user-clarification-answered' } });
-    expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({ status: 'active' });
+    expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({ status: 'waiting' });
     expect(useStore.getState().projectManagers.find((project) => project.id === first.id)?.pendingUserQuestion).toBeUndefined();
+    useStore.getState().applyProjectManagerAction({ type: 'resume-project', reason: '项目管理 AI 核对答复后决定继续' }, first.id);
+    expect(useStore.getState().projectManagers.find((project) => project.id === first.id)?.status).toBe('active');
     expect(useStore.getState().applyProjectManagerAction({
       type: 'answer-user-clarification', questionId: 'question-1', answer: '改为覆盖', optionId: 'replace', answeredBy: 'feishu',
     }, first.id)).toMatchObject({ ok: false, error: expect.stringContaining('已经处理') });
@@ -204,7 +286,14 @@ describe('project-manager slice', () => {
       type: 'complete-project', evidence: '单元测试通过',
     })).toMatchObject({ ok: false });
     useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'auth', patch: { status: 'completed', latestEvidence: '认证测试通过' },
+      type: 'update-work-item', workItemId: 'auth',
+      patch: { status: 'completed', latestEvidence: '认证测试通过', latestBlocker: '等待用户现场验收' },
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-project', evidence: '单元测试通过',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('未解决阻塞') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'auth', patch: { latestBlocker: undefined },
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-project', evidence: '',

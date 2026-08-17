@@ -30,6 +30,7 @@ import { prepareForUserTerminalInput } from './utils/terminal-user-submit';
 import {
   PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
+  PROJECT_MANAGER_ALIGNMENT_GATE,
   projectManagerStartupInput,
   type ProjectManagerRuntimeAgent,
 } from '../shared/project-manager-terminal';
@@ -1070,6 +1071,8 @@ interface RemoteDirectTerminalTask {
   displayPath?: string;
   anchorWorkspace?: string;
   anchorTerminal?: string;
+  projectManagerProjectId?: string;
+  projectManagerWorkItemId?: string;
   actor?: string;
 }
 
@@ -1305,6 +1308,8 @@ function createRemoteDirectTerminalTask(params: RemoteDirectTerminalTask): { ok:
     customTitle: `${agentLabel}直连 · ${name}`,
     shell: 'pwsh.exe',
     cwd,
+    ...(params.projectManagerProjectId ? { projectManagerProjectId: params.projectManagerProjectId } : {}),
+    ...(params.projectManagerWorkItemId ? { projectManagerWorkItemId: params.projectManagerWorkItemId } : {}),
     ...launch,
   };
 
@@ -2015,9 +2020,9 @@ function normalizeProjectWorkItemInput(
       updatedAt: now,
       completedAt: status === 'completed' ? previous?.completedAt || now : undefined,
       executionHistory: previous?.executionHistory || [],
-      latestEvidence: String(raw?.latestEvidence || previous?.latestEvidence || '').trim() || undefined,
-      latestContextSummary: String(raw?.latestContextSummary || previous?.latestContextSummary || '').trim() || undefined,
-      latestBlocker: String(raw?.latestBlocker || previous?.latestBlocker || '').trim() || undefined,
+      latestEvidence: String(raw?.latestEvidence ?? previous?.latestEvidence ?? '').trim() || undefined,
+      latestContextSummary: String(raw?.latestContextSummary ?? previous?.latestContextSummary ?? '').trim() || undefined,
+      latestBlocker: String(raw?.latestBlocker ?? previous?.latestBlocker ?? '').trim() || undefined,
     },
   };
 }
@@ -2030,38 +2035,78 @@ function projectSupervisorLaneIds(session: Pick<ProjectManagerSession, 'id' | 'w
   return scopedProjectSupervisorLaneIds(session, useStore.getState().supervisor.lanes);
 }
 
+function projectRecoveryWorkItem(session: ProjectManagerSession, requestedId = ''): ProjectWorkItem | undefined {
+  if (requestedId) return session.workItems.find((item) => item.id === requestedId);
+  const priority: ProjectWorkItem['status'][] = [
+    'running', 'validating', 'waiting-decision', 'paused', 'failed', 'planned', 'waiting-dependencies',
+  ];
+  return [...session.workItems]
+    .filter((item) => !['completed', 'stopped'].includes(item.status))
+    .sort((left, right) => priority.indexOf(left.status) - priority.indexOf(right.status))[0];
+}
+
+function projectRecoveryBriefing(session: ProjectManagerSession, item: ProjectWorkItem): string {
+  const recentEvents = session.events
+    .filter((event) => !event.workItemId || event.workItemId === item.id)
+    .slice(-12)
+    .map((event) => `- ${event.kind}：${event.summary}`);
+  return [
+    '[项目任务冷启动恢复包｜旧终端会话不可恢复]',
+    `项目 ID：${session.id}`,
+    `项目目录：${session.projectDir}`,
+    `项目目标：${session.goal}`,
+    `工作项：${item.id} · ${item.title}`,
+    `当前任务：${item.contract.objective}`,
+    item.latestContextSummary ? `最近上下文总结：${item.latestContextSummary}` : '最近上下文总结：无；必须先只读核对工作区。',
+    item.latestEvidence ? `已有执行证据：${item.latestEvidence}` : '已有执行证据：无。',
+    item.latestBlocker ? `最近阻塞：${item.latestBlocker}` : '',
+    recentEvents.length > 0 ? `最近决策记录：\n${recentEvents.join('\n')}` : '',
+    '',
+    '恢复规则：这是新的 Agent 对话。先只读检查当前文件、diff、测试产物和进程状态，再决定下一步；不得重新执行已有证据支持的步骤，不得把“会话已丢失”误判为“工作未完成”。',
+  ].filter(Boolean).join('\n');
+}
+
 function restoredProjectManagerSession(session: ProjectManagerSession, managerSurfaceId: string): ProjectManagerSession {
-  const terminals = new Set(remoteTerminalList().map((terminal) => terminal.surfaceId));
-  const lanes = new Set(useStore.getState().supervisor.lanes
-    .filter((lane) => lane.projectManagerProjectId === session.id || !lane.projectManagerProjectId)
-    .map((lane) => lane.id));
   const now = Date.now();
   return {
     ...session,
     preconditions: projectStringArray(session.preconditions),
     planFiles: Array.isArray(session.planFiles) ? session.planFiles : [],
     managerSurfaceId,
+    taskTerminalSurfaceId: undefined,
     recoveryState: 'checking' as const,
     updatedAt: now,
     workItems: session.workItems.map((item: ProjectWorkItem) => {
-      const workerExists = !item.workerSurfaceId || terminals.has(item.workerSurfaceId as SurfaceId);
-      const laneExists = !!item.supervisorLaneId && lanes.has(item.supervisorLaneId);
-      const interrupted = ['running', 'validating'].includes(item.status) && !laneExists;
+      const interrupted = ['running', 'validating'].includes(item.status);
+      const hadRuntimeBinding = !!item.workerSurfaceId || !!item.supervisorLaneId;
+      const needsRecovery = hadRuntimeBinding && !['completed', 'stopped'].includes(item.status);
       return {
         ...item,
-        workerSurfaceId: workerExists ? item.workerSurfaceId : undefined,
-        supervisorLaneId: laneExists ? item.supervisorLaneId : undefined,
-        startedAt: laneExists ? item.startedAt : undefined,
-        status: interrupted || !workerExists ? 'waiting-decision' : item.status,
-        latestBlocker: interrupted
-          ? '应用恢复后原监督通道已失效，需要项目管理 AI 复核并重新绑定监督'
-          : !workerExists
-            ? '原任务终端已不存在，需要重新绑定任务终端'
-            : item.latestBlocker,
-        updatedAt: interrupted || !workerExists ? now : item.updatedAt,
+        workerSurfaceId: undefined,
+        supervisorLaneId: undefined,
+        startedAt: undefined,
+        status: interrupted ? 'waiting-decision' : item.status,
+        latestBlocker: needsRecovery
+          ? [
+              '应用重启后原 AI 监督和任务终端对话已失效；项目管理 AI 必须基于恢复包建立新链路',
+              item.latestBlocker ? `重启前阻塞：${item.latestBlocker}` : '',
+            ].filter(Boolean).join('；')
+          : item.latestBlocker,
+        updatedAt: needsRecovery || interrupted ? now : item.updatedAt,
       };
     }),
   };
+}
+
+function markProjectRecoveryReady(sessionId: string, workItemId: string): void {
+  const store = useStore.getState();
+  const current = store.projectManagers.find((session) => session.id === sessionId);
+  if (!current || current.recoveryState !== 'checking') return;
+  store.restoreProjectManager({ ...current, recoveryState: 'ready', updatedAt: Date.now() });
+  store.appendProjectManagerEvent({
+    kind: 'recovery-restored', workItemId,
+    summary: '已基于持久化恢复包建立新 AI 监督和任务终端会话，项目继续推进',
+  }, sessionId);
 }
 
 function projectPlanFileSnapshots(value: unknown): ProjectPlanFileSnapshot[] {
@@ -2119,13 +2164,22 @@ function normalizeProjectManagerUserQuestion(
   if (options.some((option) => !option.id || !option.label) || new Set(options.map((option) => option.id)).size !== options.length) {
     return { error: '用户澄清选项必须具有唯一 id 和非空 label' };
   }
+  if (options.some((option) => !option.description)) {
+    return { error: '每个用户澄清选项都必须提供 description，说明方案范围、收益、代价或约束' };
+  }
   const recommendedOptionId = String(value?.recommendedOptionId || '').trim() || undefined;
+  if (!recommendedOptionId) {
+    return { error: '用户澄清问题必须设置 recommendedOptionId，明确项目管理 AI 的推荐方案' };
+  }
   if (recommendedOptionId && !options.some((option) => option.id === recommendedOptionId)) {
     return { error: 'recommendedOptionId 必须指向现有选项' };
   }
   return {
     question: {
       id: `pm-question-${uuid()}`,
+      category: value?.category === 'manual-intervention' ? 'manual-intervention' : 'clarification',
+      workItemId: String(value?.workItemId || '').trim().slice(0, 120) || undefined,
+      blocker: String(value?.blocker || '').trim().slice(0, 4000) || undefined,
       question,
       context,
       options,
@@ -2133,6 +2187,106 @@ function normalizeProjectManagerUserQuestion(
       previousStatus,
       createdAt: Date.now(),
     },
+  };
+}
+
+type ProjectRequirementAlignmentState = 'sufficient' | 'needs-question' | 'needs-definition-update';
+
+function projectRequirementsAlignmentPending(session: ProjectManagerSession): boolean {
+  const latestRequired = [...session.events].reverse().find((event) => event.kind === 'requirements-alignment-required');
+  if (!latestRequired) return false;
+  const latestConfirmed = [...session.events].reverse().find((event) => event.kind === 'requirements-alignment-confirmed');
+  return !latestConfirmed || latestRequired.ts > latestConfirmed.ts;
+}
+
+function projectHasRequirementsAlignmentHistory(session: ProjectManagerSession): boolean {
+  return session.events.some((event) => (
+    event.kind === 'requirements-alignment-required'
+    || event.kind === 'requirements-alignment-confirmed'
+    || event.kind === 'user-clarification-requested'
+    || event.kind === 'user-clarification-answered'
+  ));
+}
+
+function projectRequirementAlignmentState(session: ProjectManagerSession): ProjectRequirementAlignmentState {
+  const hasCurrentWork = session.workItems.some((item) => !['completed', 'stopped'].includes(item.status));
+  if (hasCurrentWork || (session.planFiles || []).length > 0) return 'sufficient';
+  const goal = session.goal.trim();
+  const doneWhen = session.doneWhen.map((item) => item.trim()).filter(Boolean);
+  const onlyCriterion = doneWhen.length === 1 ? doneWhen[0] : '';
+  const genericGoal = goal.length <= 12 && /^(测试(相关)?功能|测试项目|完成项目|继续项目|开发项目|实现(相关)?功能|做(个|一个).+)$/u.test(goal);
+  const hasVerifiableCriterion = doneWhen.some((criterion) => (
+    /(测试|验证|验收|通过|可复现|可运行|覆盖|成功|错误处理|文档)/u.test(criterion)
+  ));
+  const requestAsCriterion = /^(做|开发|实现|创建|搭建)(个|一个)?/u.test(onlyCriterion)
+    && !hasVerifiableCriterion;
+  if (!(genericGoal && !hasVerifiableCriterion) && !requestAsCriterion) return 'sufficient';
+  if (session.pendingUserQuestion) return 'needs-definition-update';
+  const latestAnswer = [...session.events].reverse().find((event) => event.kind === 'user-clarification-answered');
+  const latestDefinition = [...session.events].reverse().find((event) => event.kind === 'project-definition-updated');
+  if (latestAnswer && (!latestDefinition || latestAnswer.ts > latestDefinition.ts)) {
+    return 'needs-definition-update';
+  }
+  return 'needs-question';
+}
+
+function projectRequirementGapReason(reason: string): boolean {
+  return /(需求|目标|范围|边界|验收|产品形态|用户偏好|前置条件)/u.test(reason)
+    && /(不足|不明确|缺少|未明确|无法确定|不能确定|需要补充|等待.*补充|待确认|澄清)/u.test(reason);
+}
+
+function projectAlignmentQuestionInput(session: ProjectManagerSession): Record<string, unknown> {
+  const combined = [session.goal, ...session.doneWhen].join(' ');
+  const managementSystem = /(图书|library|管理系统|管理平台|后台系统)/iu.test(combined);
+  const subjectCandidate = session.doneWhen.find((item) => /^(做|开发|实现|创建|搭建)(个|一个)?/u.test(item)) || session.goal;
+  const subject = subjectCandidate.replace(/^(做|开发|实现|创建|搭建)(个|一个)?/u, '').trim() || session.goal;
+  if (managementSystem) {
+    return {
+      category: 'clarification',
+      question: `你希望先按哪种产品形态实现“${subject}”？`,
+      context: `当前项目目标为“${session.goal}”，完成条件为“${session.doneWhen.join('；')}”。这些信息还不能确定界面形态、首版范围和验收方式。项目管理 AI 推荐先做本地网页版本，选定后还会继续确认核心功能边界。`,
+      options: [
+        {
+          id: 'local-web',
+          label: '本地网页系统',
+          description: '推荐方案：浏览器使用，首版覆盖核心数据管理、查询和主要业务流程；部署与自动化验证较简单，但暂不包含复杂多人权限和公网发布。',
+        },
+        {
+          id: 'desktop-app',
+          label: '桌面单机应用',
+          description: '提供独立桌面窗口和本地数据存储，适合固定电脑离线使用；交互完整，但打包和跨平台验证成本更高。',
+        },
+        {
+          id: 'command-line',
+          label: '命令行原型',
+          description: '先验证数据模型与核心业务逻辑，开发和测试最快；不提供图形界面，后续改成网页或桌面端需要补做交互层。',
+        },
+      ],
+      recommendedOptionId: 'local-web',
+    };
+  }
+  return {
+    category: 'clarification',
+    question: `你希望以哪种交付深度推进“${subject}”？`,
+    context: `当前项目目标为“${session.goal}”，完成条件为“${session.doneWhen.join('；')}”，尚不足以唯一确定功能范围与验收边界。项目管理 AI 先给出三种可执行方向，选择后可继续在项目对话中补充细节。`,
+    options: [
+      {
+        id: 'minimal-prototype',
+        label: '最小可验证原型',
+        description: '推荐方案：先完成最关键的一条业务链和可重复测试，最快取得可验证结果；非核心功能留到后续迭代。',
+      },
+      {
+        id: 'standard-solution',
+        label: '标准完整版本',
+        description: '一次覆盖常用功能、基础异常处理和使用说明；交付更完整，但需求确认、实现和验证时间更长。',
+      },
+      {
+        id: 'plan-first',
+        label: '先产出实施计划',
+        description: '暂不修改业务代码，先输出架构、任务拆分、风险和验收方案供确认；返工风险最低，但不会立即得到可运行成品。',
+      },
+    ],
+    recommendedOptionId: 'minimal-prototype',
   };
 }
 
@@ -2201,8 +2355,10 @@ const pendingProjectManagerDeliveries: PendingProjectManagerDelivery[] = [];
 let projectManagerDeliveryScheduled = false;
 const MAX_PROJECT_MANAGER_DELIVERY_ATTEMPTS = 15;
 const PROJECT_PROGRESS_CHECK_INTERVAL_MS = 2 * 60_000;
+const PROJECT_ALIGNMENT_FALLBACK_DELAY_MS = 45_000;
 const projectProgressTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const projectProgressChecks = new Map<string, { fingerprint: string; unchanged: number }>();
+const projectAlignmentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function projectManagerTerminal(surfaceId?: string): RemoteTaskTerminalLocation | undefined {
   for (const workspace of useStore.getState().workspaces) {
@@ -2248,6 +2404,9 @@ function teardownManagedProject(session: ProjectManagerSession): void {
   if (timer) globalThis.clearTimeout(timer);
   projectProgressTimers.delete(session.id);
   projectProgressChecks.delete(session.id);
+  const alignmentTimer = projectAlignmentTimers.get(session.id);
+  if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
+  projectAlignmentTimers.delete(session.id);
 }
 
 function flushProjectManagerDeliveries(): void {
@@ -2456,6 +2615,27 @@ async function ensureProjectManagerRuntime(options: {
     projects = useStore.getState().projectManagers;
   }
   for (const session of projects) {
+    if (['active', 'paused', 'waiting'].includes(session.status)) {
+      if (restoredAfterRestart
+        && !projectHasRequirementsAlignmentHistory(session)
+        && projectRequirementAlignmentState(session) !== 'sufficient') {
+        await requireProjectRequirementsAlignment(
+          session.id,
+          '旧版本项目从未完成首次需求检测，且现有定义明显不足；执行一次兼容补检',
+          !previousManager || previousManager.surfaceId !== manager.surfaceId,
+        );
+      }
+      await ensureProjectRequirementAlignment(
+        session.id,
+        restoredAfterRestart
+          ? '软件重启后恢复的项目定义不足以确定执行边界'
+          : '项目管理 AI 运行时恢复后发现项目定义仍不足以确定执行边界',
+        !previousManager || previousManager.surfaceId !== manager.surfaceId,
+      );
+    }
+  }
+  projects = useStore.getState().projectManagers;
+  for (const session of projects) {
     if (session.status === 'active' && projectSupervisorLaneIds(session).length > 0) {
       scheduleProjectProgressCheck(session.id);
     }
@@ -2509,6 +2689,197 @@ async function persistProjectManagerMutation<T extends { event?: { kind: string;
   return result;
 }
 
+function scheduleProjectAlignmentFallback(sessionId: string, runtimeCreated = false): void {
+  const existing = projectAlignmentTimers.get(sessionId);
+  if (existing) globalThis.clearTimeout(existing);
+  const timer = globalThis.setTimeout(() => {
+    projectAlignmentTimers.delete(sessionId);
+    void ensureProjectRequirementAlignment(
+      sessionId,
+      '项目管理 AI 在规定时间内未提交需求充分性结论，控制层按需求不足处理',
+      runtimeCreated,
+      true,
+    ).catch((error) => console.warn('[project-manager] alignment fallback failed', error));
+  }, PROJECT_ALIGNMENT_FALLBACK_DELAY_MS);
+  (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+  projectAlignmentTimers.set(sessionId, timer);
+}
+
+async function requireProjectRequirementsAlignment(
+  sessionId: string,
+  reason: string,
+  runtimeCreated = false,
+): Promise<ProjectManagerSession | undefined> {
+  const store = useStore.getState();
+  const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
+  if (!session || ['completed', 'stopped'].includes(session.status)) return session;
+  if (!projectRequirementsAlignmentPending(session)) {
+    const result = store.applyProjectManagerAction({ type: 'require-requirements-alignment', reason }, session.id);
+    if (!result.ok) return session;
+    for (const laneId of projectSupervisorLaneIds(session)) {
+      store.pauseSupervisorLane(laneId, '项目启动或恢复后必须重新核对需求充分性');
+    }
+    await persistProjectManagerMutation(result, session.id);
+  }
+  scheduleProjectAlignmentFallback(session.id, runtimeCreated);
+  return useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+}
+
+async function ensureProjectRequirementAlignment(
+  sessionId: string,
+  trigger: string,
+  runtimeCreated = false,
+  forceQuestion = false,
+): Promise<{ triggered: boolean; alignmentRequired?: boolean; awaitingDefinitionUpdate?: boolean; session?: ProjectManagerSession; question?: ProjectManagerUserQuestion; error?: string }> {
+  const store = useStore.getState();
+  const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
+  if (!session || ['completed', 'stopped'].includes(session.status)) return { triggered: false, session };
+  const alignmentRequired = projectRequirementsAlignmentPending(session);
+  const alignmentState = projectRequirementAlignmentState(session);
+  if ((!alignmentRequired && alignmentState === 'sufficient') || session.pendingUserQuestion) {
+    return { triggered: false, session };
+  }
+  if (alignmentState === 'needs-definition-update') {
+    deliverProjectManagerMessage([
+      '[需求对齐门禁｜用户已答复但项目定义尚未更新]',
+      `项目：${session.id} · ${session.projectDir}`,
+      '禁止直接恢复。请先根据用户答复执行 wmux project update，补全目标、范围和可验证完成条件；仍有关键歧义时再发起下一轮结构化提问。',
+    ].join('\n'), runtimeCreated);
+    return { triggered: false, awaitingDefinitionUpdate: true, session };
+  }
+  if (alignmentRequired && alignmentState === 'sufficient' && !forceQuestion) {
+    deliverProjectManagerMessage([
+      '[强制需求充分性判定]',
+      `项目：${session.id} · ${session.projectDir}`,
+      '请先检查目标、产品形态、功能范围、前置条件和可验证完成标准。需求不足时必须执行 wmux project ask 并给出推荐方案；确认充分时执行 wmux project alignment-confirm，记录目标理解、范围、验收标准和理由。未提交结论前控制层不会创建终端、工作项、派遣监督或恢复项目。',
+    ].join('\n'), runtimeCreated);
+    return { triggered: false, alignmentRequired: true, session };
+  }
+  const normalized = normalizeProjectManagerUserQuestion(
+    projectAlignmentQuestionInput(session),
+    session.status,
+  );
+  if (!normalized.question) return { triggered: false, session, error: normalized.error };
+  const result = store.applyProjectManagerAction({
+    type: 'request-user-clarification',
+    question: normalized.question,
+  }, session.id);
+  if (!result.ok) return { triggered: false, session, error: result.error };
+  for (const laneId of projectSupervisorLaneIds(session)) {
+    store.pauseSupervisorLane(laneId, '项目需求尚未充分对齐，等待用户选择推荐方案');
+  }
+  const timer = projectProgressTimers.get(session.id);
+  if (timer) globalThis.clearTimeout(timer);
+  projectProgressTimers.delete(session.id);
+  const alignmentTimer = projectAlignmentTimers.get(session.id);
+  if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
+  projectAlignmentTimers.delete(session.id);
+  store.selectProjectManager(session.id);
+  store.openProjectManagerDialog();
+  await persistProjectManagerMutation(result, session.id);
+  const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  deliverProjectManagerMessage([
+    '[需求对齐门禁已由控制层执行]',
+    `项目：${session.id} · ${session.projectDir}`,
+    `触发原因：${trigger}`,
+    `已向桌面项目对话和飞书发送带推荐项的问题：${normalized.question.question}`,
+    '用户答复前不得恢复、创建工作项或派遣监督 AI。收到答复后先写回项目定义；仍有关键歧义时继续下一轮结构化提问。',
+  ].join('\n'), runtimeCreated);
+  return { triggered: true, session: updated, question: normalized.question };
+}
+
+async function updateProjectDefinition(
+  session: ProjectManagerSession,
+  params: any,
+  source: 'user' | 'manager',
+): Promise<any> {
+  if (['completed', 'stopped'].includes(session.status)) {
+    return { ok: false, error: '已完成或停止的项目不能修改目标和需求' };
+  }
+  if (session.pendingUserQuestion) {
+    return { ok: false, error: '项目仍有待答问题，请先在桌面或飞书完成当前需求确认' };
+  }
+  if (params?.mode !== undefined && !['revise', 'replace'].includes(params.mode)) {
+    return { ok: false, error: '项目需求变更模式必须是 revise 或 replace' };
+  }
+  const goal = params?.goal === undefined ? session.goal : String(params.goal || '').trim();
+  const preconditions = params?.preconditions === undefined
+    ? session.preconditions
+    : projectStringArray(params.preconditions);
+  const doneWhen = params?.doneWhen === undefined
+    ? session.doneWhen
+    : projectStringArray(params.doneWhen);
+  const planFiles = params?.planFiles === undefined
+    ? session.planFiles
+    : projectPlanFileSnapshots(params.planFiles);
+  if (params?.planFiles !== undefined && (
+    !Array.isArray(params.planFiles) || planFiles.length !== params.planFiles.length
+  )) {
+    return { ok: false, error: `计划文件格式无效、不可访问或超过 ${MAX_PROJECT_PLAN_FILES} 个` };
+  }
+  if (!goal) return { ok: false, error: '项目目标不能为空' };
+  if (preconditions.length === 0) {
+    return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
+  }
+  if (doneWhen.length === 0) return { ok: false, error: '项目完成条件不能为空' };
+  const unchanged = goal === session.goal
+    && JSON.stringify(preconditions) === JSON.stringify(session.preconditions)
+    && JSON.stringify(doneWhen) === JSON.stringify(session.doneWhen)
+    && JSON.stringify(planFiles) === JSON.stringify(session.planFiles);
+  if (unchanged) return { ok: false, error: '项目目标和需求没有发生变化' };
+
+  const mode = params?.mode === 'replace' ? 'replace' : 'revise';
+  const reason = String(params?.reason || '').trim().slice(0, 2000)
+    || `${source === 'user' ? '用户通过项目配置' : '项目管理 AI 根据用户对话'}${mode === 'replace' ? '替换旧目标并要求按新方向重新规划' : '更新项目目标和需求'}`;
+  const store = useStore.getState();
+  const result = store.applyProjectManagerAction({
+    type: 'update-project-definition',
+    goal,
+    preconditions,
+    planFiles,
+    doneWhen,
+    reason,
+    source,
+    mode,
+  }, session.id);
+  if (!result.ok) return result;
+  for (const laneId of projectSupervisorLaneIds(session)) {
+    store.pauseSupervisorLane(laneId, '项目目标或需求已更新，等待项目管理 AI 重新规划');
+  }
+  const timer = projectProgressTimers.get(session.id);
+  if (timer) globalThis.clearTimeout(timer);
+  projectProgressTimers.delete(session.id);
+  projectProgressChecks.delete(session.id);
+  await persistProjectManagerMutation(result, session.id);
+  const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  if (source === 'user') {
+    queueProjectManagerDelivery([
+      '[用户更新项目目标与需求｜必须重新评估后回复用户]',
+      `项目：${session.id} · ${session.projectDir}`,
+      `原目标：${session.goal}`,
+      `新目标：${goal}`,
+      `变更模式：${mode === 'replace' ? '替换旧目标并从新方向重新规划' : '调整现有需求并评估既有任务'}`,
+      `新前置条件：${preconditions.join('；')}`,
+      `新完成条件：${doneWhen.join('；')}`,
+      `计划文件：${planFiles.length > 0 ? planFiles.map((file) => file.name).join('、') : '无'}`,
+      `用户说明：${reason}`,
+      '',
+      mode === 'replace'
+        ? '旧目标已退出当前约束，未完成的旧工作项已停止但保留审计记录。当前监督链已暂停；请按新目标重新拆分任务，必要时轮换任务终端上下文。'
+        : '当前项目和监督链已暂停等待复核。请检查既有工作项与新目标是否冲突，停止或改写过期任务，必要时通过 wmux project ask 继续澄清。',
+      `完成重规划后，执行 wmux project reply --project ${session.id} --message "<变更影响和新计划>" 回复用户，再显式执行 wmux project resume --project ${session.id}。`,
+    ].join('\n'));
+  }
+  return {
+    ok: true,
+    event: result.event,
+    session: updated,
+    message: source === 'user'
+      ? '项目目标和需求已更新；当前监督链已暂停，等待项目管理 AI 评估影响并重规划。'
+      : '项目目标和需求已根据用户对话写入记录；请完成重规划后显式恢复项目。',
+  };
+}
+
 async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const session = projectSessionForParams(params);
   const pending = session?.pendingUserQuestion;
@@ -2534,12 +2905,6 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   }, session.id);
   if (!result.ok) return result;
   const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-  if (updated?.status === 'active') {
-    for (const laneId of projectSupervisorLaneIds(updated)) {
-      store.resumeSupervisorLane(laneId, '用户已答复项目澄清问题');
-    }
-    scheduleProjectProgressCheck(updated.id);
-  }
   await persistProjectManagerMutation(result, session.id);
   deliverProjectManagerMessage([
     '[用户澄清答复]',
@@ -2548,9 +2913,9 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     `问题：${pending.question}`,
     `答复：${answer}`,
     `渠道：${answeredBy === 'feishu' ? '飞书' : '桌面端'}`,
-    '请依据该答复继续规划；不得扩张原项目范围，若仍存在新的关键歧义可再次发起一次结构化澄清。',
+    '项目和监督仍保持等待。请先依据答复决定恢复、改线、继续等待或结束；只有选择继续时才执行 wmux project resume。不得扩张原项目范围。',
   ].join('\n'));
-  return { ok: true, event: result.event, session: updated, message: '用户答复已提交给项目管理 AI。' };
+  return { ok: true, event: result.event, session: updated, message: '用户答复已提交给项目管理 AI；项目仍暂停等待其决策。' };
 }
 
 async function setProjectPortfolioPaused(paused: boolean, reason: string): Promise<{
@@ -2645,11 +3010,18 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       const recovered = restoredProjectManagerSession(restored, callerSurfaceId);
       store.restoreProjectManager(recovered);
       await (window as any).wmux?.projectManager?.saveSession?.(recovered);
-      return { ok: true, restored: true, session: recovered };
+      if (!projectHasRequirementsAlignmentHistory(recovered)
+        && projectRequirementAlignmentState(recovered) !== 'sufficient') {
+        await requireProjectRequirementsAlignment(recovered.id, '旧版本项目缺少首次需求检测记录，执行一次兼容补检');
+      }
+      const alignment = await ensureProjectRequirementAlignment(recovered.id, '恢复的项目定义不足以确定执行边界');
+      return { ok: true, restored: true, session: alignment.session || recovered, alignmentQuestion: alignment.question };
     }
     const created = store.startProjectManager({ projectDir, goal, preconditions, planFiles, doneWhen, managerSurfaceId: callerSurfaceId });
     await (window as any).wmux?.projectManager?.saveSession?.(created);
-    return { ok: true, session: created };
+    await requireProjectRequirementsAlignment(created.id, '项目首次启动，必须先完成需求充分性检测');
+    const alignment = await ensureProjectRequirementAlignment(created.id, '新项目定义不足以确定执行边界');
+    return { ok: true, session: alignment.session || created, alignmentQuestion: alignment.question };
   }
   store = useStore.getState();
   session = projectSessionForParams(params);
@@ -2663,6 +3035,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }
     const normalized = normalizeProjectManagerUserQuestion(params, session.status);
     if (!normalized.question) return { ok: false, error: normalized.error };
+    if (normalized.question.workItemId && !session.workItems.some((item) => item.id === normalized.question?.workItemId)) {
+      return { ok: false, error: `任务不存在：${normalized.question.workItemId}` };
+    }
     const result = store.applyProjectManagerAction({
       type: 'request-user-clarification',
       question: normalized.question,
@@ -2688,6 +3063,60 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   }
   if (session.pendingUserQuestion && !['reply'].includes(action)) {
     return { ok: false, error: `项目正在等待用户答复：${session.pendingUserQuestion.question}` };
+  }
+  if (action === 'alignment-confirm') {
+    if (!projectRequirementsAlignmentPending(session)) {
+      return { ok: false, error: '该项目当前没有待完成的首次需求充分性检测' };
+    }
+    if (projectRequirementAlignmentState(session) !== 'sufficient') {
+      const alignment = await ensureProjectRequirementAlignment(
+        session.id,
+        '项目管理 AI 声称需求充分，但控制层检测到目标或完成标准仍明显不足',
+        false,
+        true,
+      );
+      return {
+        ok: false,
+        error: '项目定义仍明显不足，不能确认需求充分；已向桌面和飞书发送推荐方案',
+        question: alignment.question,
+      };
+    }
+    const assessment = params?.assessment || params;
+    const result = store.applyProjectManagerAction({
+      type: 'confirm-requirements-alignment',
+      goalUnderstanding: String(assessment?.goalUnderstanding || ''),
+      scopeSummary: String(assessment?.scopeSummary || ''),
+      acceptanceSummary: String(assessment?.acceptanceSummary || ''),
+      reason: String(assessment?.reason || ''),
+    }, session.id);
+    if (!result.ok) return result;
+    const timer = projectAlignmentTimers.get(session.id);
+    if (timer) globalThis.clearTimeout(timer);
+    projectAlignmentTimers.delete(session.id);
+    await persistProjectManagerMutation(result, session.id);
+    return {
+      ok: true,
+      event: result.event,
+      message: '首次需求充分性检测已记录；请根据规划显式恢复项目后再创建任务链。',
+    };
+  }
+  if (['terminal-create', 'task-create', 'task-supervise'].includes(action)) {
+    const alignment = await ensureProjectRequirementAlignment(session.id, `项目管理 AI 尝试在需求未充分对齐时执行 ${action}`);
+    if (alignment.triggered || alignment.alignmentRequired || alignment.awaitingDefinitionUpdate) {
+      return {
+        ok: false,
+        error: alignment.awaitingDefinitionUpdate
+          ? '用户答复尚未写回项目定义；请先执行 wmux project update'
+          : alignment.alignmentRequired
+            ? '项目尚未提交首次需求充分性结论；请先执行 wmux project alignment-confirm，需求不足则执行 wmux project ask'
+            : '项目需求尚未充分对齐；控制层已向桌面和飞书发送带推荐项的问题',
+        question: alignment.question,
+      };
+    }
+  }
+
+  if (action === 'update-definition') {
+    return updateProjectDefinition(session, params, 'manager');
   }
 
   if (action === 'terminals') {
@@ -2789,6 +3218,8 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       reasoningEffort: taskDefaults.reasoningEffort,
       cwd: oldTerminal.cwd || session.projectDir,
       anchorWorkspace: oldTerminal.workspaceId,
+      projectManagerProjectId: session.id,
+      projectManagerWorkItemId: item?.id,
       actor: `project-manager:${session.id}`,
     });
     if (!created.ok || !created.surfaceId) return created;
@@ -2840,23 +3271,51 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (reservedSurfaceId && locateRemoteTaskTerminal(reservedSurfaceId).terminal) {
       return { ok: false, error: '该项目已有任务终端；请复用它或使用 terminal-rotate 安全轮换，不能创建第二个' };
     }
+    const requestedWorkItemId = String(params?.workItemId || '').trim();
+    const recoveryItem = session.recoveryState === 'checking'
+      ? projectRecoveryWorkItem(session, requestedWorkItemId)
+      : requestedWorkItemId
+        ? session.workItems.find((item) => item.id === requestedWorkItemId)
+        : undefined;
+    if (requestedWorkItemId && !recoveryItem) {
+      return { ok: false, error: `任务不存在：${requestedWorkItemId}` };
+    }
+    const requestedTask = String(params?.task || '').trim();
+    const task = recoveryItem && session.recoveryState === 'checking'
+      ? [projectRecoveryBriefing(session, recoveryItem), requestedTask ? `[项目管理 AI 本次续作指令]\n${requestedTask}` : ''].filter(Boolean).join('\n\n')
+      : requestedTask;
     const taskDefaults = projectTaskTerminalDefaults(useStore.getState().workspacePrefs.projectManagementAgents);
     const created = createRemoteDirectTerminalTask({
       action: 'create-task',
       name: String(params?.name || '').trim(),
-      task: String(params?.task || '').trim(),
+      task,
       agent: taskDefaults.agent,
       model: taskDefaults.model,
       reasoningEffort: taskDefaults.reasoningEffort,
       cwd,
       anchorWorkspace: String(params?.anchorWorkspace || '') || undefined,
       anchorTerminal: String(params?.anchorTerminal || '') || undefined,
+      projectManagerProjectId: session.id,
+      projectManagerWorkItemId: recoveryItem?.id,
       actor: `project-manager:${session.id}`,
     });
     if (!created.ok || !created.surfaceId) return created;
     store.restoreProjectManager({ ...session, taskTerminalSurfaceId: created.surfaceId });
+    if (recoveryItem) {
+      store.applyProjectManagerAction({
+        type: 'update-work-item', workItemId: recoveryItem.id,
+        patch: { workerSurfaceId: created.surfaceId },
+      }, session.id);
+    }
     saveProjectManagerSnapshot(session.id);
-    return { ...created, message: '已确保该项目唯一的任务终端；后续任务将复用此终端。' };
+    return {
+      ...created,
+      workItemId: recoveryItem?.id,
+      recovered: session.recoveryState === 'checking' && !!recoveryItem,
+      message: recoveryItem && session.recoveryState === 'checking'
+        ? '已用持久化恢复包创建新任务会话并重新绑定工作项；启动监督后才进入续作。'
+        : '已确保该项目唯一的任务终端；后续任务将复用此终端。',
+    };
   }
 
   if (action === 'task-create') {
@@ -2879,6 +3338,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (!normalized.workItem) return { ok: false, error: normalized.error };
     if (normalized.workItem.status === 'completed' && !normalized.workItem.latestEvidence) {
       return { ok: false, error: '任务完成状态必须附带可复核的 latestEvidence' };
+    }
+    if (normalized.workItem.status === 'completed' && normalized.workItem.latestBlocker) {
+      return {
+        ok: false,
+        error: '任务仍有 latestBlocker，不能标记完成。若确实需要用户介入，请先用 wmux project ask 发起 manual-intervention；用户答复并处理后显式清空 latestBlocker。',
+      };
     }
     return persistProjectManagerMutation(
       store.applyProjectManagerAction({ type: 'update-work-item', workItemId, patch: normalized.workItem }, session.id),
@@ -2971,6 +3436,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         summary: `${execution.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}：${execution.modeReason}`,
         payload: { ...execution },
       }, session.id);
+      markProjectRecoveryReady(session.id, item.id);
       saveProjectManagerSnapshot(session.id);
       scheduleProjectProgressCheck(session.id);
       return { ok: true, reused: true, laneId: existingLane.id, message: '已复用该项目的 AI 监督和任务终端并派发下一项任务' };
@@ -3018,6 +3484,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       workItemId: item.id,
       patch: { supervisorLaneId: lane.id, status: 'running', startedAt: Date.now() },
     }, session.id);
+    markProjectRecoveryReady(session.id, item.id);
     await (window as any).wmux?.projectManager?.saveSession?.(
       useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
     );
@@ -3080,15 +3547,35 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   }
   if (action === 'pause') {
     if (session.status !== 'active' && session.status !== 'waiting') return { ok: false, error: '项目当前状态不能暂停' };
-    const result = store.applyProjectManagerAction({ type: 'pause-project', reason: String(params?.reason || '由项目管理 AI 暂停') }, session.id);
+    const reason = String(params?.reason || '由项目管理 AI 暂停');
+    const result = store.applyProjectManagerAction({ type: 'pause-project', reason }, session.id);
     for (const laneId of projectSupervisorLaneIds(session)) store.pauseSupervisorLane(laneId, '项目管理会话已暂停');
     const timer = projectProgressTimers.get(session.id);
     if (timer) globalThis.clearTimeout(timer);
     projectProgressTimers.delete(session.id);
-    return persistProjectManagerMutation(result, session.id);
+    await persistProjectManagerMutation(result, session.id);
+    if (projectRequirementGapReason(reason)) {
+      const alignment = await ensureProjectRequirementAlignment(session.id, reason);
+      if (alignment.triggered) {
+        return { ok: true, event: result.event, question: alignment.question, message: '项目已暂停；控制层已通过桌面和飞书发送带推荐项的需求澄清问题。' };
+      }
+    }
+    return result;
   }
   if (action === 'resume') {
     if (session.status !== 'paused' && session.status !== 'waiting') return { ok: false, error: '只有暂停或等待中的项目可以恢复' };
+    const alignment = await ensureProjectRequirementAlignment(session.id, '项目管理 AI 尝试在需求未充分对齐时恢复项目');
+    if (alignment.triggered || alignment.alignmentRequired || alignment.awaitingDefinitionUpdate) {
+      return {
+        ok: false,
+        error: alignment.awaitingDefinitionUpdate
+          ? '用户答复尚未写回项目定义；请先执行 wmux project update，不能直接恢复'
+          : alignment.alignmentRequired
+            ? '项目尚未提交首次需求充分性结论；需求充分时先执行 wmux project alignment-confirm，需求不足时执行 wmux project ask'
+            : '项目需求尚未充分对齐；已向桌面和飞书发送带推荐项的问题，用户答复前不能恢复',
+        question: alignment.question,
+      };
+    }
     const result = store.applyProjectManagerAction({ type: 'resume-project', reason: String(params?.reason || '由项目管理 AI 恢复') }, session.id);
     for (const laneId of projectSupervisorLaneIds(session)) store.resumeSupervisorLane(laneId, '项目管理会话已恢复');
     scheduleProjectProgressCheck(session.id);
@@ -3185,7 +3672,19 @@ export function initPipeBridge(): void {
         return { ok: false, error: '项目恢复接口尚未就绪，请重启 wmux 后再试' };
       }
       const persisted = await listActiveSessions();
-      const candidates = Array.isArray(persisted) ? persisted.slice(0, MAX_ACTIVE_PROJECTS) : [];
+      const available = Array.isArray(persisted) ? persisted.slice(0, MAX_ACTIVE_PROJECTS) : [];
+      const requestedIds = Array.isArray(params?.projectIds)
+        ? [...new Set(params.projectIds.map((value: unknown) => String(value).trim()).filter(Boolean))]
+        : [];
+      if (requestedIds.length > MAX_ACTIVE_PROJECTS) {
+        return { ok: false, error: `一次最多恢复 ${MAX_ACTIVE_PROJECTS} 个项目。` };
+      }
+      const candidates = requestedIds.length > 0
+        ? available.filter((session: ProjectManagerSession) => requestedIds.includes(session.id))
+        : available;
+      if (requestedIds.length > 0 && candidates.length !== requestedIds.length) {
+        return { ok: false, error: '部分所选历史项目已失效，请刷新恢复列表后重试。' };
+      }
       if (candidates.length === 0) {
         projectManagerRecoveryChoice = 'skip';
         return { ok: true, restored: false, projects: [], message: '没有可恢复的项目。' };
@@ -3295,7 +3794,9 @@ export function initPipeBridge(): void {
         const current = projectSessionForParams(params) || store.projectManagers[0];
         if (current) {
           store.selectProjectManager(current.id);
-          return { ok: true, restored: true, session: projectManagerSessionView(current), projects: store.projectManagers.map(projectManagerSessionView) };
+          const alignment = await ensureProjectRequirementAlignment(current.id, '重新打开的项目定义不足以确定执行边界');
+          const activeSession = alignment.session || current;
+          return { ok: true, restored: true, session: projectManagerSessionView(activeSession), projects: useStore.getState().projectManagers.map(projectManagerSessionView), alignmentQuestion: alignment.question };
         }
       }
       if (!normalizeAbsolutePath(projectDir) || !goal || doneWhen.length === 0) {
@@ -3312,7 +3813,9 @@ export function initPipeBridge(): void {
       ));
       if (current) {
         store.selectProjectManager(current.id);
-        return { ok: true, restored: true, session: projectManagerSessionView(current), projects: store.projectManagers.map(projectManagerSessionView) };
+        const alignment = await ensureProjectRequirementAlignment(current.id, '重新打开的项目定义不足以确定执行边界');
+        const activeSession = alignment.session || current;
+        return { ok: true, restored: true, session: projectManagerSessionView(activeSession), projects: useStore.getState().projectManagers.map(projectManagerSessionView), alignmentQuestion: alignment.question };
       }
       if (store.projectManagers.filter((candidate) => !['completed', 'stopped'].includes(candidate.status)).length >= MAX_ACTIVE_PROJECTS) {
         return { ok: false, error: `同时活动的项目最多 ${MAX_ACTIVE_PROJECTS} 个` };
@@ -3323,19 +3826,38 @@ export function initPipeBridge(): void {
         : store.startProjectManager({ projectDir, goal, preconditions, planFiles, doneWhen, managerSurfaceId: runtime.manager.surfaceId });
       if (restored && ['active', 'paused', 'waiting'].includes(restored.status)) store.restoreProjectManager(session);
       await (window as any).wmux?.projectManager?.saveSession?.(session);
+      if (!restored) {
+        await requireProjectRequirementsAlignment(session.id, '项目首次启动，必须先完成需求充分性检测', runtime.created === true);
+      } else if (!projectHasRequirementsAlignmentHistory(session)
+        && projectRequirementAlignmentState(session) !== 'sufficient') {
+        await requireProjectRequirementsAlignment(session.id, '旧版本项目缺少首次需求检测记录，执行一次兼容补检', runtime.created === true);
+      }
+      const alignment = await ensureProjectRequirementAlignment(
+        session.id,
+        restored ? '恢复的项目定义不足以确定执行边界' : '新项目定义不足以确定执行边界',
+        runtime.created === true,
+      );
+      const activeSession = alignment.session || session;
       deliverProjectManagerMessage([
         '[项目管理 AI 会话]',
-        `项目 ID：${session.id}`,
-        `项目目录：${session.projectDir}`,
-        `项目目标：${session.goal}`,
-        `项目级前置条件：${session.preconditions.length > 0 ? session.preconditions.join('；') : '未声明；规划前必须主动核实物理、环境、权限和资源条件'}`,
-        `完成条件：${session.doneWhen.join('；')}`,
-        projectPlanFilesBriefing(session.planFiles || []),
+        `项目 ID：${activeSession.id}`,
+        `项目目录：${activeSession.projectDir}`,
+        `项目目标：${activeSession.goal}`,
+        `项目级前置条件：${activeSession.preconditions.length > 0 ? activeSession.preconditions.join('；') : '未声明；规划前必须主动核实物理、环境、权限和资源条件'}`,
+        `完成条件：${activeSession.doneWhen.join('；')}`,
+        projectPlanFilesBriefing(activeSession.planFiles || []),
         '',
         `当前最多可同时管理 ${MAX_ACTIVE_PROJECTS} 个目录互不相同的项目；每个项目只允许一个 AI 监督和一个任务终端。`,
+        '[首次需求对齐门禁｜必须先执行]',
+        PROJECT_MANAGER_ALIGNMENT_GATE,
+        alignment.triggered
+          ? `控制层已为本项目发出结构化推荐问题。用户答复前保持等待，不得自行恢复；答复后先执行 wmux project update --project ${activeSession.id} 写回需求。`
+          : `本项目的结构化提问命令必须包含：wmux project ask --project ${activeSession.id} --json-file <项目目录内的 .wmux/tmp/文件>。禁止把“请回复”“若无偏好”等问题只输出在项目管理终端后停住，因为用户不会直接监看该终端。`,
         '请通过 wmux project --project <项目ID> 管理工作项和监督 AI；不要把普通执行过程发送给用户。',
+        '每个有意义的里程碑及监督进入待续/阻塞前，必须用 task-update 持久化 latestContextSummary、latestEvidence 和 latestBlocker，供软件重启后创建新 AI 会话续作。',
+        '需求不足或用户偏好不明确时，必须用 wmux project ask 发起 category=clarification 的结构化飞书通知；阻塞超出你的决策权或需要人工操作时改用 category=manual-intervention。用户答复后先决定下一步，不得自动恢复任务。',
       ].join('\n'), runtime.created);
-      return { ok: true, restored: !!restored, session };
+      return { ok: true, restored: !!restored, session: activeSession, alignmentQuestion: alignment.question };
     }
     if (action === 'message') {
       const runtime = await ensureProjectManagerRuntime();
@@ -3380,7 +3902,7 @@ export function initPipeBridge(): void {
         message,
         '',
         selectedProject
-          ? `请作为项目管理 AI 直接回复用户。需要执行管理动作时使用 wmux project；最终必须执行 wmux project reply --project ${selectedProject.id} --correlation "${String(params?.messageId || 'unknown')}" --message "<回复内容>"，让回复进入该项目自己的桌面/飞书会话。`
+          ? `请作为项目管理 AI 直接回复用户。需要执行管理动作时使用 wmux project；若消息确认了目标、范围、前置条件或完成条件的变化，先执行 wmux project update --project ${selectedProject.id} --json-file <项目目录内的 .wmux/tmp/文件> 将新需求写回项目记录：调整需求使用 mode=revise，用户明确清除旧目标并切换方向时使用 mode=replace。随后评估既有任务是否需要停止或重规划。最终必须执行 wmux project reply --project ${selectedProject.id} --correlation "${String(params?.messageId || 'unknown')}" --message "<回复内容>"，让回复进入该项目自己的桌面/飞书会话。`
           : '请先确定用户所指项目，再使用带 --project 和 --correlation 的 wmux project reply 回复；不得把回复记入其他项目。',
       ].filter(Boolean).join('\n'), runtime.created);
       return { ok: true, message: '消息已交给项目管理 AI' };
@@ -3401,10 +3923,20 @@ export function initPipeBridge(): void {
         summary,
         payload: { eventType, ...(params?.payload || {}) },
       }, session.id);
-      if (decisionRequest && workItemId) {
+      const contextSummary = String(
+        params?.payload?.contextSummary || (!decisionRequest ? summary : ''),
+      ).trim().slice(0, 12000);
+      const evidence = String(params?.payload?.evidence || '').trim().slice(0, 12000);
+      const blocker = String(params?.payload?.blocker || '').trim().slice(0, 12000);
+      if (workItemId && (decisionRequest || contextSummary || evidence || blocker)) {
         store.applyProjectManagerAction({
           type: 'update-work-item', workItemId,
-          patch: { status: 'waiting-decision', latestBlocker: summary },
+          patch: {
+            ...(decisionRequest ? { status: 'waiting-decision' as const } : {}),
+            ...(contextSummary ? { latestContextSummary: contextSummary } : {}),
+            ...(evidence ? { latestEvidence: evidence } : {}),
+            ...((blocker || decisionRequest) ? { latestBlocker: blocker || summary } : {}),
+          },
         }, session.id);
       }
       await (window as any).wmux?.projectManager?.saveSession?.(
@@ -3422,7 +3954,7 @@ export function initPipeBridge(): void {
           `摘要：${summary}`,
           '',
           decisionRequest
-            ? '该监督决策只交给项目管理 AI。请在项目权限内自行处理；只有超出边界或涉及用户偏好/高风险时，整理成上层问题再询问用户。'
+            ? '该监督决策只交给项目管理 AI。请在项目权限内自行处理；只有超出边界或涉及人工操作、用户偏好/高风险时，才执行 wmux project ask，并在 JSON 中设置 category=manual-intervention、workItemId 和 blocker，通过飞书请用户指示。存在 latestBlocker 时禁止将任务或项目标记完成。'
             : '请更新项目任务状态并决定继续、重规划、暂停或验收。普通执行过程不要发送给用户。',
         ].join('\n'));
       }
@@ -3431,6 +3963,9 @@ export function initPipeBridge(): void {
     store = useStore.getState();
     const session = projectSessionForParams(params);
     if (!session) return { ok: false, error: '当前没有项目管理会话' };
+    if (action === 'update-definition') {
+      return updateProjectDefinition(session, params, 'user');
+    }
     if (action === 'update-preconditions') {
       if (['completed', 'stopped'].includes(session.status)) {
         return { ok: false, error: '已完成或停止的项目不能再修改前置条件' };
@@ -3501,6 +4036,20 @@ export function initPipeBridge(): void {
       }
       if (action === 'resume' && session.pendingUserQuestion) {
         return { ok: false, error: '项目仍在等待用户答复，不能绕过澄清直接恢复' };
+      }
+      if (action === 'resume') {
+        const alignment = await ensureProjectRequirementAlignment(session.id, '用户尝试在需求未充分对齐时恢复项目');
+        if (alignment.triggered || alignment.alignmentRequired || alignment.awaitingDefinitionUpdate) {
+          return {
+            ok: false,
+            error: alignment.awaitingDefinitionUpdate
+              ? '用户答复尚未写回项目定义；请先让项目管理 AI 更新目标、范围和完成条件'
+              : alignment.alignmentRequired
+                ? '项目尚未提交首次需求充分性结论；请先由项目管理 AI 完成检测'
+                : '项目需求尚未充分对齐；已向桌面和飞书发送带推荐项的问题，请先答复',
+            question: alignment.question,
+          };
+        }
       }
       const result = action === 'pause'
         ? store.applyProjectManagerAction({ type: 'pause-project', reason }, session.id)
