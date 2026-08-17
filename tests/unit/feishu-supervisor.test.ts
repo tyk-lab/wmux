@@ -557,6 +557,10 @@ supervisor_model: k3`)).toEqual({
       status: 'active', goal: '完成认证功能', workItems: [{ status: 'running' }, { status: 'waiting-decision' }],
       projects: [{ id: 'pm-a', status: 'active', goal: '完成认证功能' }],
       events: [{ ts: 1, kind: 'work-item-created', summary: '创建认证任务' }],
+      conversation: [
+        { ts: 2, kind: 'user-message', summary: '当前主要做什么？' },
+        { ts: 3, kind: 'manager-reply', summary: '先完成认证接口回归。' },
+      ],
     }, undefined, true));
     const projectManagerClosedLogs = JSON.stringify(buildProjectManagerConversationCard({ status: 'active' }));
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
@@ -587,6 +591,9 @@ supervisor_model: k3`)).toEqual({
     expect(projectManager).toContain('wmux · 项目管理 AI');
     expect(projectManager).toContain('直接与项目管理 AI 对话');
     expect(projectManager).toContain('发送给项目管理 AI');
+    expect(projectManager).toContain('你 · 询问');
+    expect(projectManager).toContain('项目管理 AI · 回复');
+    expect(projectManager).toContain('当前主要做什么');
     expect(projectManager).toContain('form_project_ai_message');
     expect(projectManager).toContain('每项目 1 个监督 AI');
     expect(projectManager).toContain('创建认证任务');
@@ -867,16 +874,37 @@ supervisor_model: k3`)).toEqual({
       context: '继续执行前必须明确这一边界。',
       options: [
         { id: 'keep', label: '保留现有配置', description: '仅做兼容性修改。' },
-        { id: 'replace', label: '允许覆盖' },
+        { id: 'replace', label: '允许覆盖', description: '配置更简洁，但会替换现有设置。' },
       ],
       recommendedOptionId: 'keep',
     }));
 
-    expect(card).toContain('项目管理 AI 需要确认');
+    expect(card).toContain('项目需求需要与你对齐');
+    expect(card).toContain('可选方案和推荐项');
     expect(card).toContain('其他项目继续运行');
     expect(card).toContain('保留现有配置（推荐）');
     expect(card).toContain('project_clarification_option');
     expect(card).toContain('wmux_form_project_clarification');
+  });
+
+  it('将需要人工介入的阻塞渲染为项目级飞书指示卡', () => {
+    const card = JSON.stringify(buildProjectClarificationCard('pm-wol', {
+      id: 'question-wol', category: 'manual-intervention', workItemId: 'wol_validation',
+      blocker: '需要用户进入 BIOS/UEFI 开启 PCIe 唤醒并进行真机测试',
+      question: '现在应该如何继续？',
+      context: '代码和静态检查已完成，但物理验收尚未完成。',
+      options: [
+        { id: 'ready', label: '我现在去设置并测试' },
+        { id: 'later', label: '暂时保持阻塞' },
+      ],
+      recommendedOptionId: 'ready',
+    }));
+
+    expect(card).toContain('项目阻塞，需要你的指示');
+    expect(card).toContain('wol_validation');
+    expect(card).toContain('BIOS/UEFI');
+    expect(card).toContain('答复后仍保持暂停');
+    expect(card).toContain('我现在去设置并测试（推荐）');
   });
 
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {

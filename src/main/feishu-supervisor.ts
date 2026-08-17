@@ -871,12 +871,16 @@ interface FeishuProjectManagerView {
   }>;
   managedSupervisors?: Array<{ label?: string; status?: string; workerSurfaceId?: string; taskWorkMode?: string }>;
   projects?: Array<{ id?: string; projectDir?: string; status?: string; goal?: string; pausedByPortfolio?: boolean }>;
-  events?: Array<{ ts?: number; kind?: string; summary?: string }>;
+  events?: Array<{ ts?: number; kind?: string; summary?: string; correlationId?: string }>;
+  conversation?: Array<{ ts?: number; kind?: string; summary?: string; correlationId?: string }>;
   pendingUserQuestion?: FeishuProjectClarification;
 }
 
 interface FeishuProjectClarification {
   id: string;
+  category?: 'clarification' | 'manual-intervention';
+  workItemId?: string;
+  blocker?: string;
   question: string;
   context?: string;
   options: Array<{ id: string; label: string; description?: string }>;
@@ -887,10 +891,19 @@ export function buildProjectClarificationCard(
   projectId: string,
   question: FeishuProjectClarification,
 ): object {
+  const manualIntervention = question.category === 'manual-intervention';
   return buildFormCard(
-    'wmux · 项目管理 AI 需要确认',
+    manualIntervention ? 'wmux · 项目阻塞，需要你的指示' : 'wmux · 项目需求需要与你对齐',
     'orange',
-    `项目 **${projectId}** 已暂停等待你的答复；其他项目继续运行。\n\n**${question.question.slice(0, 1800)}**${question.context ? `\n\n${question.context.slice(0, 1800)}` : ''}`,
+    [
+      `项目 **${projectId}** 已暂停等待你的答复；其他项目继续运行。`,
+      manualIntervention ? '该情况超出项目管理 AI 的决策权，答复后仍保持暂停，由项目管理 AI 决定恢复、改线或结束。' : '',
+      !manualIntervention ? '项目管理 AI 已根据当前需求整理了可选方案和推荐项。你可以选择建议、补充边界或直接填写自己的方案；答复会回到该项目的连续对话。' : '',
+      question.workItemId ? `工作项：${question.workItemId}` : '',
+      question.blocker ? `阻塞原因：${question.blocker.slice(0, 1600)}` : '',
+      `**${question.question.slice(0, 1800)}**`,
+      question.context ? question.context.slice(0, 1800) : '',
+    ].filter(Boolean).join('\n\n'),
     'wmux_project_clarification_form',
     [
       { tag: 'markdown', content: '**选择一个答复**' },
@@ -932,6 +945,9 @@ export function buildProjectManagerConversationCard(
   const canPausePortfolio = projects.some((project) => project.status === 'active' || project.status === 'waiting');
   const canResumePortfolio = projects.some((project) => project.status === 'paused' && project.pausedByPortfolio === true);
   const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
+  // Keep the card comfortably below Feishu's payload limit even when the
+  // optional 20-entry processing log is expanded.
+  const conversation = Array.isArray(session?.conversation) ? session.conversation.slice(-6) : [];
   const pendingQuestion = session?.pendingUserQuestion;
   const status = session?.status === 'active'
     ? '运行中'
@@ -992,6 +1008,16 @@ export function buildProjectManagerConversationCard(
             };
           }),
         ] : []),
+        { tag: 'markdown', content: `**与项目管理 AI 对话 · ${session?.goal ? String(session.goal).slice(0, 80) : '当前项目'}**` },
+        ...(conversation.length > 0
+          ? conversation.map((event) => ({
+              tag: 'div',
+              text: {
+                tag: 'plain_text',
+                content: `${event.kind === 'user-message' ? '🔵 你 · 询问' : '🟣 项目管理 AI · 回复'}  ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${String(event.summary || '').slice(0, 1000)}`,
+              },
+            }))
+          : [{ tag: 'div', text: { tag: 'plain_text', content: '暂无对话。下方消息只会进入当前选中项目。' } }]),
         {
           tag: 'form',
           name: 'wmux_project_ai_conversation_form',
@@ -2203,7 +2229,12 @@ export class FeishuSupervisorService {
   private readonly auditTerminalStatuses = new Map<string, FeishuAuditTerminalStatus>();
   private readonly auditStatusCards = new Map<string, { messageId: string; chatId: string }>();
   /** Routes an asynchronous project-management AI reply back to the card/chat that sent the message. */
-  private readonly projectReplyTargets = new Map<string, string>();
+  private readonly projectReplyTargets = new Map<string, {
+    chatId: string;
+    openId?: string;
+    cardMessageId?: string;
+    projectId?: string;
+  }>();
   private readonly projectQuestionCards = new Map<string, { messageId: string; chatId: string }>();
   private readonly projectQuestionResolutions = new Map<string, string>();
   /** Configured decision DM, falling back to the most recent allowlisted DM. */
@@ -2348,10 +2379,17 @@ export class FeishuSupervisorService {
     const message = String(record.payload?.message || '').trim();
     if (!message) return;
     const correlationId = String(record.payload?.correlationId || '').trim();
-    const targetChatId = (correlationId && this.projectReplyTargets.get(correlationId))
-      || this.config?.projectManagerChatId;
+    const target = correlationId ? this.projectReplyTargets.get(correlationId) : undefined;
+    const targetChatId = target?.chatId || this.config?.projectManagerChatId;
     if (!targetChatId) return;
     if (correlationId) this.projectReplyTargets.delete(correlationId);
+    if (target?.cardMessageId && target.openId) {
+      void this.refreshProjectConversationCard({
+        ...target,
+        projectId: record.sessionId || target.projectId,
+      }, message);
+      return;
+    }
     void this.sendText(message, targetChatId);
   }
 
@@ -2371,8 +2409,8 @@ export class FeishuSupervisorService {
     const card = this.projectQuestionCards.get(questionId);
     if (!card || !this.channel) return;
     await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
-      'wmux · 项目确认已处理',
-      `答复：${resolution}`,
+      'wmux · 项目确认已提交',
+      `答复：${resolution}\n\n项目仍保持暂停，等待项目管理 AI 决定下一步。`,
       true,
     )).catch(() => undefined);
     this.projectQuestionCards.delete(questionId);
@@ -2600,7 +2638,11 @@ export class FeishuSupervisorService {
         answer,
       }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
       if (!failedResult(result)) {
-        await this.replaceControlCard(event, buildSupervisorResultCard('wmux · 项目确认已处理', `答复：${answer}`, true));
+        await this.replaceControlCard(event, buildSupervisorResultCard(
+          'wmux · 项目确认已提交',
+          `答复：${answer}\n\n项目仍保持暂停，等待项目管理 AI 决定下一步。`,
+          true,
+        ));
         this.projectQuestionCards.delete(value.questionId);
       } else {
         await this.sendText(summary(result), event.chatId);
@@ -2614,7 +2656,13 @@ export class FeishuSupervisorService {
         return false;
       }
       const correlationId = `feishu-card:${event.messageId}:${value.nonce || nextControlActionNonce()}`;
-      this.rememberProjectReplyTarget(correlationId, event.chatId);
+      this.rememberProjectReplyTarget(
+        correlationId,
+        event.chatId,
+        event.operator.openId,
+        event.messageId,
+        value.projectId,
+      );
       const result = await this.control({
         action: 'project-message', projectId: value.projectId || undefined, message, messageId: correlationId, chatId: event.chatId,
       }, {
@@ -3121,6 +3169,11 @@ export class FeishuSupervisorService {
       projects: isObject(statusResult) && Array.isArray(statusResult.projects)
         ? statusResult.projects as FeishuProjectManagerView['projects']
         : [],
+      conversation: Array.isArray(rawSession.events)
+        ? (rawSession.events as FeishuProjectManagerView['conversation'])?.filter((event) => (
+            event?.kind === 'user-message' || event?.kind === 'manager-reply'
+          )).slice(-10)
+        : [],
     };
     if (!includeLogs) return view;
     const logsResult = await this.control({ action: 'project-logs', projectId: view.projectId }, { openId, source: 'card' })
@@ -3279,11 +3332,40 @@ export class FeishuSupervisorService {
     return parseFeishuCardFormValues(event.raw);
   }
 
-  private rememberProjectReplyTarget(correlationId: string, chatId: string): void {
+  private rememberProjectReplyTarget(
+    correlationId: string,
+    chatId: string,
+    openId?: string,
+    cardMessageId?: string,
+    projectId?: string,
+  ): void {
     if (!correlationId || !chatId) return;
-    this.projectReplyTargets.set(correlationId, chatId);
+    this.projectReplyTargets.set(correlationId, { chatId, openId, cardMessageId, projectId });
     while (this.projectReplyTargets.size > 200) {
       this.projectReplyTargets.delete(this.projectReplyTargets.keys().next().value as string);
+    }
+  }
+
+  private async refreshProjectConversationCard(
+    target: { chatId: string; openId?: string; cardMessageId?: string; projectId?: string },
+    reply: string,
+  ): Promise<void> {
+    if (!this.channel || !target.openId || !target.cardMessageId) return;
+    const view = await this.loadProjectManagerView(target.openId, false, target.projectId);
+    if (!view) {
+      await this.sendText(reply, target.chatId);
+      return;
+    }
+    const card = buildProjectManagerConversationCard(view, {
+      text: '项目管理 AI 已回复，对话已保存到当前项目。',
+      success: true,
+    });
+    try {
+      await this.channel.updateCard(target.cardMessageId, card);
+      this.controlCards.set(target.cardMessageId, target.chatId);
+    } catch (error) {
+      console.warn('[feishu] project conversation card refresh failed; sending a replacement', error);
+      await this.sendControlCard(card, target.chatId);
     }
   }
 
