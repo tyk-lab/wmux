@@ -1043,6 +1043,18 @@ interface RemoteTerminalTask {
   force?: boolean;
 }
 
+interface RemoteTerminalEscape {
+  action: 'terminal-escape';
+  terminal: string;
+  actor?: string;
+}
+
+interface RemoteTerminalInterrupt {
+  action: 'terminal-interrupt';
+  terminal: string;
+  actor?: string;
+}
+
 interface RemoteSupervisorMessage {
   action: 'send-supervisor-message';
   terminal: string;
@@ -1582,6 +1594,40 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
   return { ok: true, message: manuallyResolved
     ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
     : `已向 ${terminal.label} 发送任务。` };
+}
+
+function sendRemoteTerminalEscape(params: RemoteTerminalEscape): { ok: boolean; message: string; error?: string } {
+  const located = locateRemoteTaskTerminal(params.terminal);
+  const terminal = located.terminal;
+  if (!terminal) return { ok: false, error: located.error || '终端不存在或不可中断。', message: '' };
+  try {
+    sendToSurface(terminal.surfaceId, '\x1b', false);
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message || err), message: '' };
+  }
+  const session = useStore.getState().supervisor;
+  const lane = session.lanes.find((item) => item.surfaceId === terminal.surfaceId);
+  remoteAudit(session, lane, 'supervisor.remote-command', {
+    action: 'send-escape', terminal: terminal.surfaceId, actor: params.actor || 'unknown',
+  });
+  return { ok: true, message: `已向 ${terminal.label} 发送 Esc 中断请求。` };
+}
+
+function sendRemoteTerminalInterrupt(params: RemoteTerminalInterrupt): { ok: boolean; message: string; error?: string } {
+  const located = locateRemoteTaskTerminal(params.terminal);
+  const terminal = located.terminal;
+  if (!terminal) return { ok: false, error: located.error || '终端不存在或不可中断。', message: '' };
+  try {
+    sendToSurface(terminal.surfaceId, '\x03', false);
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message || err), message: '' };
+  }
+  const session = useStore.getState().supervisor;
+  const lane = session.lanes.find((item) => item.surfaceId === terminal.surfaceId);
+  remoteAudit(session, lane, 'supervisor.remote-command', {
+    action: 'send-ctrl-c', terminal: terminal.surfaceId, actor: params.actor || 'unknown',
+  });
+  return { ok: true, message: `已向 ${terminal.label} 发送 Ctrl+C 中断请求。` };
 }
 
 function closeRemoteTerminal(params: { terminal: string; actor?: string }): { ok: boolean; message: string; error?: string } {
@@ -5139,6 +5185,8 @@ export function initPipeBridge(): void {
     if (action === 'start') return startRemoteSupervisor(params as RemoteSupervisorStart);
     if (action === 'create-task') return createRemoteDirectTerminalTask(params as RemoteDirectTerminalTask);
     if (action === 'send') return sendRemoteTerminalTask(params as RemoteTerminalTask);
+    if (action === 'terminal-escape') return sendRemoteTerminalEscape(params as RemoteTerminalEscape);
+    if (action === 'terminal-interrupt') return sendRemoteTerminalInterrupt(params as RemoteTerminalInterrupt);
     if (action === 'close-terminal') return closeRemoteTerminal(params);
     if (action === 'send-supervisor-message') return sendRemoteSupervisorMessage(params as RemoteSupervisorMessage);
     if (action === 'waiting-decision') return decideRemoteWaiting(params as RemoteWaitingDecision);

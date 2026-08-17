@@ -19,6 +19,8 @@ export type FeishuSupervisorCommand =
   | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'project-manager'; cwd?: string; displayPath?: string; anchorWorkspace?: string; anchorTerminal?: string }
   | { action: 'start'; terminals: string[]; stopWhen: string; stopWhenKind: 'concrete' | 'direction'; taskGoal?: string; taskDescription?: string; preconditions?: string; planFile?: string; autonomous: boolean; supervisorLaunchCmd?: string; supervisorModel?: string; supervisorReasoningEffort?: string }
   | { action: 'send'; terminal: string; task: string; force?: boolean }
+  | { action: 'terminal-escape'; terminal: string }
+  | { action: 'terminal-interrupt'; terminal: string }
   | { action: 'close-terminal'; terminal: string }
   | { action: 'send-supervisor-message'; terminal: string; message: string }
   | { action: 'waiting-decision'; terminal: string; decision: 'keep' | 'resume' | 'submit' | 'stop'; message?: string }
@@ -752,6 +754,8 @@ export function resolveFeishuCardAction(value: unknown, name?: string): Resolved
   if (name === 'wmux_form_terminal_expand') return { ...rawValue, wmux_action: 'form_terminal_expand' };
   if (name === 'wmux_form_terminal_collapse') return { ...rawValue, wmux_action: 'form_terminal_collapse' };
   if (name === 'wmux_form_terminal_send') return { ...rawValue, wmux_action: 'form_terminal_send' };
+  if (name === 'wmux_form_terminal_escape') return { ...rawValue, wmux_action: 'form_terminal_escape' };
+  if (name === 'wmux_form_terminal_interrupt') return { ...rawValue, wmux_action: 'form_terminal_interrupt' };
   if (name === 'wmux_form_close_terminal') return { ...rawValue, wmux_action: 'form_close_terminal' };
   if (name === 'wmux_form_lane_control') return { ...rawValue, wmux_action: 'form_lane_control' };
   const waitingDecision = /^wmux_waiting_(keep|resume|submit|stop)$/.exec(name || '')?.[1];
@@ -1252,6 +1256,10 @@ function buildTerminalControlCard(
           { tag: 'column', width: 'weighted', weight: 1, elements: [formButton(`wmux_form_${actionStem}_send`, supervisorTarget ? '发送监督信息' : '发送内容', 'primary', { wmux_action: `form_${actionStem}_send`, terminal: result.terminal.surfaceId })] },
         ],
       },
+      ...(!supervisorTarget ? responsiveButtonRows([
+        formButton('wmux_form_terminal_escape', '发送 Esc（中断输出）', 'danger', { wmux_action: 'form_terminal_escape', terminal: result.terminal.surfaceId }),
+        formButton('wmux_form_terminal_interrupt', '发送 Ctrl+C（中断进程）', 'danger', { wmux_action: 'form_terminal_interrupt', terminal: result.terminal.surfaceId }),
+      ]) : []),
       ...responsiveButtonRows([
         formButton(`wmux_form_${actionStem}_other`, supervisorTarget ? '选择其他监督终端' : '选择其他终端', 'default', { wmux_action: 'menu', flow: supervisorTarget ? 'send-supervisor' : 'terminal-control' }),
         formButton(`wmux_form_${actionStem}_home`, '返回控制首页', 'default', { wmux_action: 'menu', flow: 'status' }),
@@ -2508,7 +2516,7 @@ export class FeishuSupervisorService {
       await this.handleWaitingDecisionCardAction(event, value);
       return;
     }
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_terminal_escape' || value?.wmux_action === 'form_terminal_interrupt' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
         // Never execute an action from an old schema. Only issue a new control
@@ -2731,6 +2739,38 @@ export class FeishuSupervisorService {
     }
     if (value.wmux_action === 'form_terminal_send') {
       return this.sendTaskFromControlCard(event, value.terminal || '', form.task || '');
+    }
+    if (value.wmux_action === 'form_terminal_escape') {
+      const terminal = value.terminal || '';
+      if (!terminal) {
+        await this.sendText('缺少要中断的任务终端，请重新打开终端控制。', event.chatId);
+        return false;
+      }
+      const result = await this.control({ action: 'terminal-escape', terminal }, {
+        openId: event.operator.openId,
+        source: 'card',
+      }).catch((err) => ({ error: String(err?.message || err) }));
+      if (failedResult(result)) {
+        await this.sendText(`Esc 中断未发送：${summary(result)}`, event.chatId);
+        return false;
+      }
+      return this.showTerminalScreen(event, terminal, form.task || '', `⎋ ${summary(result)}`);
+    }
+    if (value.wmux_action === 'form_terminal_interrupt') {
+      const terminal = value.terminal || '';
+      if (!terminal) {
+        await this.sendText('缺少要中断的任务终端，请重新打开终端控制。', event.chatId);
+        return false;
+      }
+      const result = await this.control({ action: 'terminal-interrupt', terminal }, {
+        openId: event.operator.openId,
+        source: 'card',
+      }).catch((err) => ({ error: String(err?.message || err) }));
+      if (failedResult(result)) {
+        await this.sendText(`Ctrl+C 中断未发送：${summary(result)}`, event.chatId);
+        return false;
+      }
+      return this.showTerminalScreen(event, terminal, form.task || '', `^C ${summary(result)}`);
     }
     if (value.wmux_action === 'form_supervisor_screen') {
       return this.showSupervisorScreen(event, form.terminal || '', form.message || '');

@@ -130,6 +130,14 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '确认后继续执行', actor: 'ou-user', force: true }))
       .toMatchObject({ ok: true });
     expect(writes).toHaveBeenCalledWith('worker-a', '确认后继续执行');
+
+    expect(remoteControl({ action: 'terminal-escape', terminal: 'worker-a', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: '已向 Codex worker 发送 Esc 中断请求。' });
+    expect(writes).toHaveBeenLastCalledWith('worker-a', '\x1b');
+
+    expect(remoteControl({ action: 'terminal-interrupt', terminal: 'worker-a', actor: 'ou-user' }))
+      .toMatchObject({ ok: true, message: '已向 Codex worker 发送 Ctrl+C 中断请求。' });
+    expect(writes).toHaveBeenLastCalledWith('worker-a', '\x03');
   });
 
   it('identifies a manually created agent terminal from its screen content', () => {

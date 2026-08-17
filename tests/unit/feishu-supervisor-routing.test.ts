@@ -1494,6 +1494,8 @@ describe('飞书人工决策单聊路由', () => {
         };
       }
       if (command.action === 'send') return { ok: true, message: '已向 Codex worker 发送任务。' };
+      if (command.action === 'terminal-escape') return { ok: true, message: '已向 Codex worker 发送 Esc 中断请求。' };
+      if (command.action === 'terminal-interrupt') return { ok: true, message: '已向 Codex worker 发送 Ctrl+C 中断请求。' };
       return { ok: true, message: listMessage };
     });
     const service = new FeishuSupervisorService(control);
@@ -1578,11 +1580,37 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_escape', value: currentControlValue({ wmux_action: 'form_terminal_escape', terminal: 'surf-screen', nonce: 'escape-screen' }) },
+      raw: { action: { form_value: { task: '不会被发送的草稿' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.filter(([command]) => command.action === 'terminal-escape')).toHaveLength(1));
+    expect(control.mock.calls.find(([command]) => command.action === 'terminal-escape')?.[0]).toEqual({
+      action: 'terminal-escape', terminal: 'surf-screen',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(7));
+    expect(JSON.stringify(updateCard.mock.calls[6][1])).toContain('已向 Codex worker 发送 Esc 中断请求');
+    expect(JSON.stringify(updateCard.mock.calls[6][1])).toContain('不会被发送的草稿');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_interrupt', value: currentControlValue({ wmux_action: 'form_terminal_interrupt', terminal: 'surf-screen', nonce: 'interrupt-screen' }) },
+      raw: { action: { form_value: { task: '仍然不会被发送的草稿' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.filter(([command]) => command.action === 'terminal-interrupt')).toHaveLength(1));
+    expect(control.mock.calls.find(([command]) => command.action === 'terminal-interrupt')?.[0]).toEqual({
+      action: 'terminal-interrupt', terminal: 'surf-screen',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(8));
+    expect(JSON.stringify(updateCard.mock.calls[7][1])).toContain('已向 Codex worker 发送 Ctrl+C 中断请求');
+    expect(JSON.stringify(updateCard.mock.calls[7][1])).toContain('仍然不会被发送的草稿');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { name: 'wmux_form_terminal_home', value: currentControlValue({ wmux_action: 'menu', flow: 'status', nonce: 'terminal-home' }) },
       raw: { action: { form_value: { task: '不会被发送的残留文本' } } },
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(7));
-    expect(JSON.stringify(updateCard.mock.calls[6][1])).toContain('任务与监督控制');
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(9));
+    expect(JSON.stringify(updateCard.mock.calls[8][1])).toContain('任务与监督控制');
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(1);
   });
 
