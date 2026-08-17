@@ -116,6 +116,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.update': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'update-definition' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.logs': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'logs' })})`,
     requireResult: 'Project manager bridge is unavailable',
