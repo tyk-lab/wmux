@@ -1169,7 +1169,7 @@ describe('supervisor decision bridge', () => {
 
     await expect(projectRemoteControl({
       action: 'start', projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['测试通过'],
-    })).resolves.toMatchObject({ ok: true, session: { goal: '完成项目' } });
+    })).resolves.toMatchObject({ ok: true, session: { goal: '完成项目', status: 'waiting' } });
 
     const workspaces = useStore.getState().workspaces;
     const taskWorkspace = workspaces.find((workspace) => workspace.title === '被监督项目');
@@ -1191,6 +1191,20 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().activeWorkspaceId).toBe(taskWorkspace?.id);
     expect(JSON.parse(supervisorRemoteControl({ action: 'list' }).message).terminals)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ surfaceId: surface?.id })]));
+
+    await expect(projectRequest({
+      action: 'alignment-confirm', callerSurfaceId: surface?.id,
+      projectId: useStore.getState().projectManager?.id,
+      goalUnderstanding: '完成当前仓库项目',
+      scopeSummary: '仅修改 E:\\repo 内的认证功能',
+      acceptanceSummary: '相关测试通过且结果可复核',
+      reason: '目标、范围和验收标准均已明确',
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'requirements-alignment-confirmed' } });
+    await expect(projectRequest({
+      action: 'resume', callerSurfaceId: surface?.id,
+      projectId: useStore.getState().projectManager?.id,
+      reason: '首次需求检测已经完成',
+    })).resolves.toMatchObject({ ok: true });
 
     await expect(projectRequest({
       action: 'task-create', callerSurfaceId: surface?.id,

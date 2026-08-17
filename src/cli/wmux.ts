@@ -252,6 +252,18 @@ async function cmdProject(args: string[]): Promise<void> {
     }
     return;
   }
+  if (sub === 'alignment-confirm') {
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.alignment.confirm', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
   if (sub === 'task-create' || sub === 'task-update' || sub === 'record') {
     const input = await resolveProjectScopedJsonInput(args, projectId);
     const method = sub === 'task-create'
@@ -349,7 +361,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <start|update|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1039,8 +1051,8 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
-            project update|status|logs|terminals|terminal-create|task-create|task-update|record|supervise|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/terminal-create/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            project update|alignment-confirm|status|logs|terminals|terminal-create|task-create|task-update|record|supervise|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/terminal-create/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

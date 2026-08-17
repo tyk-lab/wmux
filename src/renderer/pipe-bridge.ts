@@ -3616,6 +3616,8 @@ export function initPipeBridge(): void {
   for (const timer of projectProgressTimers.values()) globalThis.clearTimeout(timer);
   projectProgressTimers.clear();
   projectProgressChecks.clear();
+  for (const timer of projectAlignmentTimers.values()) globalThis.clearTimeout(timer);
+  projectAlignmentTimers.clear();
   w.__wmux_projectManagerRequest = (params: any) => handleProjectManagerRequest(params);
   w.__wmux_flushProjectManagerDeliveries = () => flushProjectManagerDeliveries();
   w.__wmux_projectManagerRemoteControl = async (params: any) => {

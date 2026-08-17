@@ -82,11 +82,12 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
 }
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
-  '恢复项目组合后，对每个新启动或恢复的项目先执行需求充分性检查，再规划或派遣任务。',
+  '每个首次启动的项目必须先执行需求充分性检查，再规划或派遣任务；软件重启恢复项目时沿用已持久化的检查结论和待确认状态，不重复打扰用户。',
   '若目标、产品形态、功能范围、用户偏好、物理/环境/权限前置条件或可验证完成标准存在会改变方案的歧义，禁止只在项目管理终端输出问题后等待。',
   '必须在对应项目的 .wmux/tmp/ 写入结构化问题，并执行 wmux project ask --project <项目ID> --json-file <文件>；初始需求澄清使用 category=clarification，只有必须人工操作或越权授权才使用 category=manual-intervention。',
   '提问前先基于现有需求给出 2-4 个可执行且互斥的建议方案，在 description 中说明各自范围、收益和代价，并设置 recommendedOptionId 明确推荐项及理由；同时允许用户自定义答复。',
   '若控制层提示“需求对齐门禁已由控制层执行”，说明兜底推荐问题已经发到桌面和飞书；不得重复提问或自行恢复。收到答复后必须先用 wmux project update 写回目标、范围和可验证完成条件。',
+  '若需求已经充分，写入 JSON，包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason，并执行 wmux project alignment-confirm --project <项目ID> --json-file <文件>；控制层记录结论后才允许显式恢复项目。',
   '一次只问一个关键问题。收到桌面或飞书答复前保持该项目等待，其他项目继续；收到答复后吸收为项目约束，若仍有会改变方案的歧义则继续下一轮结构化提问，全部对齐后再明确决定恢复、重规划、继续等待或停止。',
 ].join('\n');
 
