@@ -153,6 +153,11 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
         : 'task-runtime-failed';
     if (lane) {
       state.pauseSupervisorLane(lane.id, text);
+      state.updateLane(lane.id, {
+        projectTaskRotationPending: false,
+        projectTaskRotationSummary: undefined,
+        projectTaskRotationRequestedAt: undefined,
+      });
       if (lane.projectWorkItemId) {
         state.applyProjectManagerAction({
           type: 'update-work-item',
@@ -160,6 +165,9 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
           patch: {
             status: 'waiting-decision',
             latestBlocker: text,
+            ...(lane.projectTaskRotationSummary
+              ? { latestContextSummary: lane.projectTaskRotationSummary }
+              : {}),
           },
         }, session.id);
       }
@@ -188,6 +196,15 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
         projectDir: session.projectDir,
         type: event.kind,
         payload: { message: event.summary, surfaceId, detail, laneId: lane?.id },
+      });
+    }
+    if (role === 'supervisor' || role === 'task') {
+      (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
+        projectId: session.id,
+        workItemId: lane?.projectWorkItemId,
+        laneId: lane?.id,
+        role,
+        detail: text,
       });
     }
   }

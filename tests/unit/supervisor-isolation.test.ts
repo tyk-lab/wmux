@@ -953,6 +953,38 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('不要求任务终端 AI 拆分主线程和子线程');
   });
 
+  it('keeps adaptive threading inside the task AI and within supervisor-approved bounds', () => {
+    const adaptiveLane = lane({
+      config: {
+        taskGoal: '完成硬件控制模块改造',
+        taskDescription: '',
+        preconditions: '',
+        stopWhen: '聚焦测试通过',
+        stopWhenKind: 'concrete',
+        planFilePath: '',
+        taskWorkMode: 'adaptive',
+        mainThreadResponsibility: '整合实现并串行执行硬件验证',
+        childThreadResponsibilities: [],
+        maxChildThreads: 2,
+        supervisorMayApproveThreads: true,
+        parallelizableOperations: ['只读分析驱动', '只读分析测试'],
+        serializedOperations: ['设备重上电', '固件烧录', '最终验证'],
+      },
+    });
+
+    const briefing = buildSupervisorBriefing(createDefaultSupervisorSession(), {
+      lane: adaptiveLane,
+      state: 'idle',
+    });
+
+    expect(briefing).toContain('模式: 自适应线程');
+    expect(briefing).toContain('内部子线程上限: 2');
+    expect(briefing).toContain('[内部线程提案]');
+    expect(briefing).toContain('[批准内部线程方案 childThreads=N]');
+    expect(briefing).toContain('不得创建额外 wmux 任务终端');
+    expect(briefing).toContain('设备上电/重上电');
+  });
+
   it('preserves an existing lane management session when supervision starts', () => {
     const store = makeStore();
     store.getState().setOrdinarySupervisorLanes([
@@ -1132,6 +1164,28 @@ describe('supervisor isolation', () => {
         },
       }),
     )).toBe(true);
+    const previousAdaptiveLane = lane({
+      config: {
+        ...previousLane.config!,
+        taskWorkMode: 'adaptive',
+        mainThreadResponsibility: '统筹实现',
+        maxChildThreads: 2,
+        supervisorMayApproveThreads: true,
+        parallelizableOperations: ['只读分析'],
+        serializedOperations: ['最终验证'],
+      },
+    });
+    expect(supervisorLaneBriefingChanged(
+      previousSession,
+      previousAdaptiveLane,
+      nextSession,
+      lane({
+        config: {
+          ...previousAdaptiveLane.config!,
+          maxChildThreads: 1,
+        },
+      }),
+    )).toBe(true);
     expect(supervisorLaneBriefingChanged(
       previousSession,
       previousLane,
@@ -1232,7 +1286,9 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('当前项目需求版本内持续有效');
     expect(briefing).toContain('不得逐步重新取证、索要授权');
     expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
-    expect(briefing).toContain('已授权低风险权限确认');
+    expect(briefing).toContain('未授权权限确认');
+    expect(briefing).toContain('项目模式本身不授予权限确认权');
+    expect(briefing).not.toContain('已授权低风险权限确认');
     expect(briefing).toContain('不得按步骤重复索要同一授权');
   });
 

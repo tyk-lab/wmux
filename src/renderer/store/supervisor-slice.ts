@@ -62,6 +62,10 @@ export interface SupervisorLaneConfig {
   taskWorkMode?: TaskWorkMode;
   mainThreadResponsibility?: string;
   childThreadResponsibilities?: string[];
+  maxChildThreads?: number;
+  supervisorMayApproveThreads?: boolean;
+  parallelizableOperations?: string[];
+  serializedOperations?: string[];
 }
 
 export interface SupervisorLane {
@@ -77,6 +81,8 @@ export interface SupervisorLane {
   /** Project manager requested context rotation; only this lane's supervisor may execute it. */
   projectTaskRotationPending?: boolean;
   projectTaskRotationSummary?: string;
+  /** Used to reclaim a delivered rotation request when the supervisor never acknowledges it. */
+  projectTaskRotationRequestedAt?: number;
   label: string;
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */
@@ -126,6 +132,15 @@ export interface SupervisorLane {
   workScopeOverride?: SupervisorWorkScope;
   /** Hook lifecycle facts retained until the dedicated supervisor terminal accepts them. */
   pendingSupervisorDeliveries?: SupervisorDelivery[];
+  /** True until the dedicated supervisor has delivered this work item's complete task contract. */
+  projectTaskContractPending?: boolean;
+  /** Bounded permission audit used to stop repeated confirmations that make no progress. */
+  permissionConfirmations?: Array<{
+    ts: number;
+    commandSignature: string;
+    blockedRequestId?: string;
+    requirementsVersion?: number;
+  }>;
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
   decisions?: SupervisorDecision[];
   /** Bounded audit summary restored for this terminal only after a restart. */
@@ -332,6 +347,7 @@ export function clearSupervisorLaneContext(
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
+    permissionConfirmations: [],
     decisions: [],
     restoredHistory: undefined,
     restoredFromSessionId: undefined,
@@ -376,7 +392,7 @@ export function normalizeSupervisorLaneBinding(lane: SupervisorLane): Supervisor
     autonomousOverride: normalized.autonomousOverride ?? true,
     autonomyPermissionsOverride: Array.isArray(normalized.autonomyPermissionsOverride)
       ? normalized.autonomyPermissionsOverride
-      : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
+      : ['same-route-next'],
     workScopeOverride: normalized.workScopeOverride || DEFAULT_SUPERVISOR_WORK_SCOPE,
     forbiddenActionsOverride: Array.isArray(normalized.forbiddenActionsOverride)
       ? normalized.forbiddenActionsOverride

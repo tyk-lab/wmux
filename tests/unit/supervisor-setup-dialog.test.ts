@@ -67,7 +67,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('你 · 询问');
     expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
     expect(projectManagerDialogSource).toContain('messageDrafts');
-    expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话]');
+    expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话${revokedOldRun');
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
   });
 

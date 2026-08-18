@@ -237,8 +237,16 @@ function sendSurfaceInputReliably(
   text: string,
   submitEnter: boolean,
   captureBeforeSubmit?: () => string,
+  validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
   const pty = (window as any).wmux?.pty;
+  const preSubmitValidationError = (): string | null => {
+    try {
+      return validateBeforeSubmit?.() || null;
+    } catch (error) {
+      return `提交前校验异常，已按失败关闭处理：${String((error as Error)?.message || error)}`;
+    }
+  };
   if (!pty?.writeReliable) {
     if (!submitEnter) {
       sendToSurface(surfaceId, text, false);
@@ -264,6 +272,12 @@ function sendSurfaceInputReliably(
         return;
       }
       window.setTimeout(() => {
+        const validationError = preSubmitValidationError();
+        if (validationError) {
+          cancelPendingAutomatedTerminalSubmit(surfaceId, true);
+          reject(new Error(validationError));
+          return;
+        }
         if (!consumeAutomatedTerminalSubmit(token)) {
           reject(new Error('正文投递期间检测到用户输入，已取消自动提交'));
           return;
@@ -297,6 +311,11 @@ function sendSurfaceInputReliably(
     }
 
     await new Promise<void>((resolve) => window.setTimeout(resolve, pasteSubmitDelayMs(input)));
+    const validationError = preSubmitValidationError();
+    if (validationError) {
+      cancelPendingAutomatedTerminalSubmit(surfaceId, true);
+      throw new Error(validationError);
+    }
     if (!consumeAutomatedTerminalSubmit(token)) {
       throw new Error('正文投递期间检测到用户输入，已取消自动提交');
     }
@@ -334,6 +353,7 @@ export function sendPermissionResponseReliably(
   surfaceId: string,
   response: string,
   captureBeforeSubmit?: () => string,
+  validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
-  return sendSurfaceInputReliably(surfaceId, response, true, captureBeforeSubmit);
+  return sendSurfaceInputReliably(surfaceId, response, true, captureBeforeSubmit, validateBeforeSubmit);
 }
