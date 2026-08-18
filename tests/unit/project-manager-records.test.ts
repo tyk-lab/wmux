@@ -107,7 +107,7 @@ describe('project manager records', () => {
     });
   });
 
-  it('restores at most three active projects with unique directories', () => {
+  it('restores every active project while keeping only the latest session per directory', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-a', 50), projectDir: 'E:\\a' }, appData);
     saveProjectManagerSession({ ...session('pm-a-old', 10), projectDir: 'E:\\a\\' }, appData);
@@ -116,7 +116,19 @@ describe('project manager records', () => {
     saveProjectManagerSession({ ...session('pm-d', 20), projectDir: 'E:\\d' }, appData);
     saveProjectManagerSession({ ...session('pm-done', 60), projectDir: 'E:\\done', status: 'completed' }, appData);
 
-    expect(readActiveProjectManagerSessions(appData).map((item) => item.id)).toEqual(['pm-a', 'pm-b', 'pm-c']);
+    expect(readActiveProjectManagerSessions(appData).map((item) => item.id)).toEqual(['pm-a', 'pm-b', 'pm-c', 'pm-d']);
+  });
+
+  it('does not truncate the recovery list at the former session-file ceiling', () => {
+    const appData = root();
+    for (let index = 0; index < 105; index += 1) {
+      saveProjectManagerSession({
+        ...session(`pm-many-${index}`, index + 1),
+        projectDir: `E:\\many-${index}`,
+      }, appData);
+    }
+
+    expect(readActiveProjectManagerSessions(appData)).toHaveLength(105);
   });
 
   it('does not resurrect an older active session after the same directory was completed', () => {

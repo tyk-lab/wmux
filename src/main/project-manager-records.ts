@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
-  MAX_ACTIVE_PROJECTS,
   normalizedProjectDirectoryKey,
   type ProjectManagerSession,
 } from '../shared/project-manager';
@@ -16,7 +15,6 @@ export interface ProjectManagerRecord {
 }
 
 const SESSION_ID = /^pm-[A-Za-z0-9_-]+$/;
-const MAX_SESSION_FILES = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 // Three 1 MB text snapshots can expand under JSON escaping; leave bounded room
 // for work items and the 500-entry decision timeline without breaking recovery.
@@ -165,8 +163,7 @@ function readProjectManagerSessions(
         }
       })
       .filter((session): session is ProjectManagerSession => !!session)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, MAX_SESSION_FILES);
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   } catch {
     return [];
   }
@@ -260,8 +257,7 @@ export function readActiveProjectManagerSessions(
       directories.add(key);
       return true;
     })
-    .filter((session) => ['active', 'paused', 'waiting'].includes(session.status))
-    .slice(0, MAX_ACTIVE_PROJECTS);
+    .filter((session) => ['active', 'paused', 'waiting'].includes(session.status));
 }
 
 /** Native Agent conversations are restart-unsafe even after their project was completed or stopped. */

@@ -589,11 +589,11 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('启动监督');
     expect(menu).toContain('终端控制');
     expect(menu).toContain('关闭终端');
-    expect(menu).toContain('**项目管理 AI**');
-    expect(menu).toContain('进入项目管理 AI 对话');
+    expect(menu).toContain('**项目中心**');
+    expect(menu).toContain('进入项目中心');
     expect(projectManager).toContain('wmux · 完成认证功能');
     expect(projectManager).toContain('项目 AI 最新回复');
-    expect(projectManager).toContain('返回项目组合');
+    expect(projectManager).toContain('返回项目中心');
     expect(projectManager).toContain('project_ai_view');
     expect(projectManager).toContain('先完成认证接口回归');
     expect(projectManager).toContain('当前执行');

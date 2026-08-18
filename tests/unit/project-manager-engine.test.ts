@@ -65,6 +65,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('禁止动作：git push');
     expect(text).toContain('不得原样重复命令或测试');
     expect(text).toContain('最多 6 次连续决策');
+    expect(text).toContain('当前需求版本内由监督 AI 和任务 AI 持续继承');
+    expect(text).toContain('不得把同一条件拆成逐步确认');
   });
 
   it('passes a multi-thread plan and explicit thread responsibilities to the supervisor', () => {

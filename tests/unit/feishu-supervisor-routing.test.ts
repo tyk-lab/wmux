@@ -918,8 +918,8 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
     const projectManagerCard = JSON.stringify(updateCard.mock.calls[4][1]);
-    expect(projectManagerCard).toContain('wmux · 项目组合');
-    expect(projectManagerCard).toContain('选择项目进入工作台');
+    expect(projectManagerCard).toContain('wmux · 项目中心');
+    expect(projectManagerCard).toContain('选择项目进入其独立会话');
     expect(projectManagerCard).not.toContain('启动项目管理 AI');
     expect(projectManagerCard).not.toContain('项目管理终端');
     expect(control.mock.calls.some(([command]) => command.action === 'project-status')).toBe(true);
@@ -1218,7 +1218,7 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     const portfolioCard = JSON.stringify(updateCard.mock.calls[0][1]);
-    expect(portfolioCard).toContain('wmux · 项目组合');
+    expect(portfolioCard).toContain('wmux · 项目中心');
     const workspaceNonce = /"wmux_action":"project_ai_workspace"[^}]*"nonce":"([^"]+)"/.exec(portfolioCard)?.[1];
     expect(workspaceNonce).toBeTruthy();
     handlers.cardAction({
@@ -1235,7 +1235,7 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
     const projectCard = JSON.stringify(updateCard.mock.calls[2][1]);
-    expect(projectCard).toContain('与项目管理 AI 对话');
+    expect(projectCard).toContain('与项目 AI 对话');
     expect(projectCard).not.toContain('activate_project_manager_ai');
     expect(projectCard).not.toContain('项目管理终端');
     const managerNonce = /"wmux_action":"form_project_ai_message"[^}]*"nonce":"([^"]+)"/.exec(projectCard)?.[1];
@@ -1271,7 +1271,7 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
     const refreshedCard = JSON.stringify(updateCard.mock.calls[4][1]);
     expect(refreshedCard).toContain('🔵 **你**');
-    expect(refreshedCard).toContain('🟣 **项目管理 AI**');
+    expect(refreshedCard).toContain('🟣 **项目 AI**');
     expect(refreshedCard).toContain('我先整理认证方案');
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -1313,7 +1313,7 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     const openedCardObject = updateCard.mock.calls[0][1] as Record<string, unknown>;
     const openedCard = JSON.stringify(openedCardObject);
-    expect(openedCard).toContain('wmux · 项目组合');
+    expect(openedCard).toContain('wmux · 项目中心');
     expect(openedCard).toContain('项目 A');
     expect(openedCard).toContain('项目 B');
     const values: Array<Record<string, unknown>> = [];

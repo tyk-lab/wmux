@@ -135,6 +135,7 @@ export function buildProjectSupervisorBriefing(options: {
     contract.scope.denyPaths.length > 0 ? `禁止路径：${contract.scope.denyPaths.join('；')}` : '',
     contract.scope.forbiddenActions.length > 0 ? `禁止动作：${contract.scope.forbiddenActions.join('；')}` : '',
     `决策权限：${permissions.join('；')}`,
+    '项目级已确认前置条件与其中的明确授权，在当前需求版本内由监督 AI 和任务 AI 持续继承；用户未通知变更且没有具体反证时，不得把同一条件拆成逐步确认。普通本地执行提示可由监督 AI 按低风险权限规则自行处理。',
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,

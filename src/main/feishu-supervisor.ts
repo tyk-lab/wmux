@@ -826,7 +826,7 @@ export function buildSupervisorControlMenuCard(
       : []),
   ];
   const projectManagerOperations = [
-    cardButton({ wmux_action: 'menu', flow: 'project-manager' }, '进入项目管理 AI 对话', 'primary'),
+    cardButton({ wmux_action: 'menu', flow: 'project-manager' }, '进入项目中心', 'primary'),
   ];
   return {
     schema: '2.0',
@@ -845,7 +845,7 @@ export function buildSupervisorControlMenuCard(
           { tag: 'markdown', content: '**AI 监督**' },
           ...responsiveButtonRows(supervisorOperations),
         ] : []),
-        { tag: 'markdown', content: '**项目管理 AI**' },
+        { tag: 'markdown', content: '**项目中心**' },
         ...responsiveButtonRows(projectManagerOperations),
         { tag: 'hr' },
         ...responsiveButtonRows([
@@ -856,7 +856,7 @@ export function buildSupervisorControlMenuCard(
           tag: 'div',
           text: {
             tag: 'plain_text',
-            content: 'AI 监督用于直接管理任务终端；项目管理 AI 是用户对话入口，负责拆分任务并统筹内部监督通道；人工决策仍私发白名单用户。',
+            content: '普通 AI 监督直接管理普通任务终端；项目中心只负责项目入口与路由，进入项目后由该项目的专属项目 AI 负责决策和监督链调度；人工决策仍私发白名单用户。',
             text_size: 'notation',
             text_color: 'grey',
           },
@@ -1018,7 +1018,7 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
         { tag: 'hr' },
         ...responsiveButtonRows([
           cardButton({ wmux_action: 'project_ai_workspace', projectId: record.sessionId }, '打开项目工作台', 'primary'),
-          cardButton({ wmux_action: 'project_ai_portfolio' }, '查看项目组合'),
+          cardButton({ wmux_action: 'project_ai_portfolio' }, '查看项目中心'),
         ]),
       ],
     },
@@ -1037,11 +1037,11 @@ export function buildProjectManagerPortfolioCard(
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux · 项目组合' }, template: 'blue' },
+    header: { title: { tag: 'plain_text', content: 'wmux · 项目中心' }, template: 'blue' },
     body: {
       elements: [
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
-        { tag: 'markdown', content: `**${activeProjects}/3 个活动项目** · 选择项目进入工作台，与项目 AI 对话、查看决策或管理状态。` },
+        { tag: 'markdown', content: `**${activeProjects} 个活动项目** · 项目中心只负责入口和状态路由；选择项目进入其独立会话，与专属项目 AI 对话。` },
         ...(projects.length > 0 ? projects.flatMap((project) => [
           {
             tag: 'markdown',
@@ -1052,7 +1052,7 @@ export function buildProjectManagerPortfolioCard(
             ].filter(Boolean).join('\n'),
           },
           ...responsiveButtonRows([cardButton({ wmux_action: 'project_ai_workspace', projectId: project.id || '' }, project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台', 'primary')]),
-        ]) : [{ tag: 'markdown', content: '暂无活动项目。请先在桌面端添加项目，或直接向项目管理 AI 发起新项目。' }]),
+        ]) : [{ tag: 'markdown', content: '暂无活动项目。请先在桌面端或飞书项目入口添加项目。' }]),
         { tag: 'hr' },
         ...responsiveButtonRows([
           ...(canPausePortfolio ? [cardButton({ wmux_action: 'project_ai_pause_all' }, '暂停全部项目')] : []),
@@ -1116,7 +1116,7 @@ export function buildProjectManagerConversationCard(
     ...(supervisors.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**监督链**\n${supervisors.map((lane) => `${lane.label || '监督 AI'} · ${projectManagerStatusLabel(lane.status)} · 任务端 ${lane.workerSurfaceId || '恢复中'}`).join('\n')}`, 1000) }] : []),
   ];
   const chatElements: object[] = [
-    { tag: 'markdown', content: '**与项目管理 AI 对话**\n对话只进入当前项目；已确认的目标、范围和验收细节会写回项目配置。' },
+    { tag: 'markdown', content: '**与项目 AI 对话**\n对话只进入当前项目；已确认的目标、范围和验收细节会写回项目配置。' },
     ...(hiddenConversationCount > 0 ? [
       {
         tag: 'markdown',
@@ -1131,11 +1131,11 @@ export function buildProjectManagerConversationCard(
       }, chatHistoryExpanded ? '收起近期对话' : `展开近期对话（${hiddenConversationCount}）`)]),
     ] : []),
     ...(visibleConversation.length > 0 ? visibleConversation.map((event) => ({
-      tag: 'markdown', content: `${event.kind === 'user-message' ? '🔵 **你**' : '🟣 **项目管理 AI**'} · ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${compactProjectCardText(event.summary, 700)}`,
+      tag: 'markdown', content: `${event.kind === 'user-message' ? '🔵 **你**' : '🟣 **项目 AI**'} · ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${compactProjectCardText(event.summary, 700)}`,
     })) : [{ tag: 'markdown', content: '暂无对话。可以询问进度、确认细节、调整优先级或说明新约束。' }]),
     {
       tag: 'form', name: 'wmux_project_ai_conversation_form', elements: [
-        { tag: 'input', element_id: 'project_ai_message', name: 'project_ai_message', required: true, input_type: 'multiline_text', rows: 5, max_length: 1000, label: { tag: 'plain_text', content: '发送给项目管理 AI' }, placeholder: { tag: 'plain_text', content: '询问进度、确认细节、调整优先级或说明新约束。' } },
+        { tag: 'input', element_id: 'project_ai_message', name: 'project_ai_message', required: true, input_type: 'multiline_text', rows: 5, max_length: 1000, label: { tag: 'plain_text', content: '发送给项目 AI' }, placeholder: { tag: 'plain_text', content: '询问进度、确认细节、调整优先级或说明新约束。' } },
         formButton('wmux_form_project_ai_message', '发送并等待项目 AI 回复', 'primary', { wmux_action: 'form_project_ai_message', projectId: session?.projectId || '' }),
       ],
     },
@@ -1194,7 +1194,7 @@ export function buildProjectManagerConversationCard(
           ...(session?.status === 'paused' || session?.status === 'waiting'
             ? [cardButton({ wmux_action: 'project_ai_resume', projectId: session?.projectId || '' }, '恢复项目', 'primary')]
             : []),
-          cardButton({ wmux_action: 'project_ai_portfolio' }, '返回项目组合'),
+          cardButton({ wmux_action: 'project_ai_portfolio' }, '返回项目中心'),
         ]),
       ],
     },
@@ -1277,7 +1277,7 @@ export function buildSupervisorStartCard(terminals: FeishuListTerminal[], adding
         { text: { tag: 'plain_text', content: '目标方向' }, value: 'direction' },
       ] },
       { tag: 'input', element_id: 'start_desc', name: 'task_description', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '停止条件补充说明（可选）' }, placeholder: { tag: 'plain_text', content: '帮助监督 AI 理解何时适合结束' } },
-      { tag: 'input', element_id: 'start_pre', name: 'preconditions', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '已确认前置条件（可选）' }, placeholder: { tag: 'plain_text', content: '例如：测试环境已准备好' } },
+      { tag: 'input', element_id: 'start_pre', name: 'preconditions', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '已确认条件与授权（可选）' }, placeholder: { tag: 'plain_text', content: '例如：硬件已上电，允许直接运行本项目测试；变化时再更新' } },
       { tag: 'input', element_id: 'start_plan', name: 'plan_file', max_length: 1000, label: { tag: 'plain_text', content: '计划文件绝对路径（可选）' }, placeholder: { tag: 'plain_text', content: '例如：E:\\work\\project\\PLAN.md' } },
       { tag: 'markdown', content: '**全自动监督**' },
       { tag: 'select_static', element_id: 'start_auto', name: 'autonomous', placeholder: { tag: 'plain_text', content: '未选择时关闭' }, options: [
