@@ -77,6 +77,11 @@ function maxAutoDecisions(value: unknown, legacyDefaults: boolean): number | nul
     : legacyDefaults ? null : 1;
 }
 
+function normalizeOrdinaryTaskWorkMode(value: unknown): TaskWorkMode {
+  const normalized = normalizeTaskWorkMode(value);
+  return normalized === 'adaptive' ? 'single-thread' : normalized;
+}
+
 function terminalConfig(value: unknown): SupervisorTerminalConfigFileData | null {
   if (!value || typeof value !== 'object') return null;
   const config = value as Record<string, unknown>;
@@ -98,7 +103,7 @@ function terminalConfig(value: unknown): SupervisorTerminalConfigFileData | null
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     waitForNextDirection: config.waitForNextDirection === true,
     planFilePath: text(config.planFilePath),
-    taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
+    taskWorkMode: normalizeOrdinaryTaskWorkMode(config.taskWorkMode),
     mainThreadResponsibility: normalizeTaskThreadResponsibility(config.mainThreadResponsibility),
     childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
       config.childThreadResponsibilities,
@@ -139,7 +144,7 @@ export function normalizeSupervisorConfig(
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     waitForNextDirection: config.waitForNextDirection === true,
     planFilePath: text(config.planFilePath),
-    taskWorkMode: normalizeTaskWorkMode(config.taskWorkMode),
+    taskWorkMode: normalizeOrdinaryTaskWorkMode(config.taskWorkMode),
     mainThreadResponsibility: normalizeTaskThreadResponsibility(config.mainThreadResponsibility),
     childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
       config.childThreadResponsibilities,

@@ -131,6 +131,18 @@ describe('supervisor config file', () => {
       .toMatchObject({ maxAutoDecisions: 1 });
   });
 
+  it('keeps adaptive thread approval exclusive to project task contracts', () => {
+    const parsed = parseSupervisorConfig(serializeSupervisorConfig(currentConfig({
+      taskWorkMode: 'adaptive',
+      terminals: [{ surfaceId: 'surf-current', taskWorkMode: 'adaptive' }],
+    })));
+
+    expect(parsed).toMatchObject({
+      taskWorkMode: 'single-thread',
+      terminals: [{ surfaceId: 'surf-current', taskWorkMode: 'single-thread' }],
+    });
+  });
+
   it('rejects V4 files and exports without at least one valid terminal', () => {
     const invalidConfigs = [
       {},
