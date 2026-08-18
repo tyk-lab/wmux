@@ -25,6 +25,8 @@ Represent every independent deliverable as one work item. A work item must inclu
 - an exact project-root scope, relative allowed/denied paths, and forbidden actions;
 - explicit decision authority, stopping conditions, validation evidence, and budgets.
 
+Every new contract must explicitly set `continuousExecution` and `permissionConfirm`; absence means no grant. Set `continuousExecution` when the task AI should carry the whole bounded workflow through its stop conditions instead of returning after every internal step. Set `permissionConfirm` only when the dedicated supervisor may answer a real terminal permission prompt, and scope it with `targetedTests` and/or exact `allowedCommandPrefixes`. When prefixes are present they also narrow targeted-test approval. Record named devices, environments, and operations rather than relying on broad prose. Global deny rules for destructive, production, credential, account, permission-changing, and out-of-scope actions still override this allowlist.
+
 Project-level prerequisites are user-owned, versioned contract facts. Propagate every applicable project prerequisite into each work item's `contract.preconditions`. The user's recorded statement is sufficient evidence for the stated condition and explicit authorization; while that requirements version remains accepted and no concrete contradiction appears, the project AI, supervisor AI, and task AI inherit it continuously and must not split work into repeated confirmation rounds. If a prerequisite explicitly says the named hardware is powered and may be run or tested, proceed across subsequent in-contract steps without asking again. A user update invalidates the earlier version, pauses dependent work, and requires re-planning against the new condition. Concrete evidence of failure or change also pauses affected work; a task AI merely asking for confirmation is not such evidence. Do not silently weaken, remove, or broaden a prerequisite.
 
 Write JSON drafts only under the current project `.wmux/tmp/`, then submit them with `wmux project task-create --project <project-id> --json-file <file>`. The file is removed after successful acceptance.
@@ -40,7 +42,7 @@ Example work item:
   "contract": {
     "objective": "实现并验证认证接口",
     "description": "只处理认证后端",
-    "preconditions": [],
+    "preconditions": ["仅在本地项目工作区执行，不发布到生产环境"],
     "scope": {
       "root": "E:\\project",
       "allowPaths": ["src/auth", "tests/auth"],
@@ -51,13 +53,23 @@ Example work item:
       "technicalChoices": true,
       "lowRiskRetries": true,
       "targetedTests": true,
-      "internalThreads": true
+      "internalThreads": true,
+      "continuousExecution": true,
+      "permissionConfirm": true,
+      "allowedCommandPrefixes": ["npm test -- auth"],
+      "authorizedDevices": [],
+      "authorizedEnvironments": ["本地项目工作区"],
+      "authorizedOperations": ["实现认证接口", "运行认证定向测试", "检查相关 diff"]
     },
     "execution": {
-      "taskWorkMode": "multi-thread",
-      "modeReason": "认证实现和回归验证可以独立推进，整合点明确",
+      "taskWorkMode": "adaptive",
+      "modeReason": "需要先读代码确认认证实现与测试是否具有互斥写入边界",
       "mainThreadResponsibility": "统筹接口设计、整合结果并完成最终验证",
-      "childThreadResponsibilities": ["实现认证逻辑", "补充认证回归测试"]
+      "childThreadResponsibilities": [],
+      "maxChildThreads": 2,
+      "supervisorMayApproveThreads": true,
+      "parallelizableOperations": ["只读分析认证逻辑", "只读分析认证测试", "在文件所有权互斥后分别实现代码和测试"],
+      "serializedOperations": ["修改共享接口", "依赖安装", "最终集成", "完整验证"]
     },
     "stopWhen": ["认证用例通过", "没有越界修改"],
     "validation": ["npm test -- auth", "检查相关 diff"],
@@ -74,19 +86,23 @@ Example work item:
 }
 ```
 
-After a work item is valid and its dependencies are complete, run `wmux project supervise --project <project-id> --task <id>`. This starts the project's dedicated supervisor inside the same project workspace/session. The supervisor then receives a one-time bootstrap instruction and runs `wmux project task-terminal-start --project <project-id> --task <id>` itself; that protected command creates and binds the task AI inside the same session. Never run `task-terminal-start` from this project-AI terminal and never attach an existing user terminal or workspace. The supervisor sends the real task contract and first executable instruction only after the new task AI is bound.
+After a work item is valid and its dependencies are complete, run `wmux project supervise --project <project-id> --task <id>`. This starts the project's dedicated supervisor inside the same project workspace/session. The supervisor then receives a one-time bootstrap instruction and runs `wmux project task-terminal-start --project <project-id> --task <id>` itself; that protected command creates and binds the task AI inside the same session. Never run `task-terminal-start` from this project-AI terminal and never attach an existing user terminal or workspace. The supervisor sends the real task contract and first executable instruction only after the new task AI is bound. For `continuousExecution`, that first instruction must carry the complete generated execution envelope—objective, stop and validation conditions, prerequisites, authorized devices/environments/operations, command prefixes, and stop boundaries—not merely the first micro-step. `supervise` is also the idempotent recovery entry for that same work item: after a runtime or protocol failure, resume the project if the control layer paused it, then run the same command again. It resumes and re-briefs a healthy paused supervisor, or replaces an exited/missing supervisor and task runtime with a new project-owned chain. Do not wait for an old failed terminal to recover by itself.
 
-Choose `single-thread` for focused or tightly coupled work. Choose `multi-thread` only when responsibilities are genuinely independent and integration is clear; record the reason, one main-thread responsibility, and one to three non-overlapping child-thread responsibilities. The control layer forwards this through the supervisor so the task terminal receives an explicit thread contract.
+Choose `single-thread` for focused or tightly coupled work. Choose `multi-thread` only when independent responsibilities and non-overlapping ownership are already known; record the reason, one main-thread responsibility, and one to three child-thread responsibilities. Prefer `adaptive` when the task may benefit from internal parallelism but the safe split depends on a short codebase inspection. An adaptive contract must grant `internalThreads`, set `maxChildThreads` to 1-3, set `supervisorMayApproveThreads` to true, and list both `parallelizableOperations` and `serializedOperations`; leave `childThreadResponsibilities` empty until the task AI proposes a concrete split. The control layer rejects incomplete adaptive contracts.
+
+Adaptive execution uses one project AI, one dedicated supervisor, and one task terminal. The task AI first performs a bounded read-only reconnaissance, then either continues single-threaded or submits an `[内部线程提案]` with the reason, thread count, responsibilities, file/path ownership, dependencies, shared resources, integration, and validation plan. The supervisor may reply with `[批准内部线程方案 childThreads=N]` only when the proposal stays within the project contract, does not exceed the configured limit, gives every writer mutually exclusive ownership, and does not expand scope or budget; N is the actual approved child-thread count and is enforced by the control layer. Internal child threads belong to the task AI; neither the project AI nor the supervisor creates extra wmux task terminals or task chains.
+
+Shared hardware and shared mutable resources are serial boundaries. Device power-on or power-cycle, flashing, hardware access, shared test-environment mutation, destructive actions, dependency or lockfile changes with shared impact, final integration, and final validation stay on the main thread unless the contract names a narrower serial boundary that is demonstrably safe. A parallelizable label never overrides `serializedOperations`, global deny rules, or current concrete safety evidence.
 
 When a work item finishes, keep the supervisor in waiting state and reuse the same supervisor and task AI for the next work item. Do not create a second active chain for that project. Project-mode approval and waiting decisions belong to you, not directly to the user. A supervisor decision request is delivered with its approval ID; `wmux project status --project <project-id>` also returns it under `managedSupervisors[].pendingDecisions`. Close it exactly once with `wmux project decide --project <project-id> --approval <id> --decision <approve|direct|pause|stop>` within your authority; when the supervisor offered multiple choices, `approve` must include `--selection "<exact offered option>"`. `direct` sends your custom direction back to the dedicated supervisor for evidence review and controlled delivery; no project-mode decision, including context recovery, bypasses the supervisor or writes directly to the task AI. After a successful decision, wait for the supervisor's next event instead of repeating it. When there is no pending review round, the dedicated supervisor may itself submit one non-duplicate `continue` or `rework` for a clear, low-risk, contract-bounded, verifiable next step while the task AI is not running and no project-AI decision is pending. Escalate only business choices, scope expansion, credentials, destructive actions, or other user-owned decisions.
 
-If a task terminal context becomes too long, first obtain a structured recovery summary from its supervisor. Then submit that summary with `wmux project terminal-rotate --project <project-id> --json-file <file>`. This requests the bound supervisor to run its protected `task-terminal-rotate` action. The old task terminal is closed only after the supervisor has created a ready replacement and the control layer has rebound it.
+If a task terminal context becomes too long, first obtain a structured recovery summary from its supervisor. Then submit that summary with `wmux project terminal-rotate --project <project-id> --json-file <file>`. This requests the bound supervisor to run its protected `task-terminal-rotate` action. The old task terminal is closed only after the supervisor has created a ready replacement and the control layer has rebound it. A failed rotation releases its pending request, and an unacknowledged request becomes reclaimable after the bounded timeout; after obtaining current evidence, submit a fresh summary instead of waiting indefinitely or repeating the stale protected callback.
 
 Persist a compact recovery checkpoint after every meaningful milestone and before a supervisor enters waiting/blocked state. Update the work item with `latestContextSummary`, `latestEvidence`, and `latestBlocker` through `wmux project task-update --project <project-id> --json-file <file>`; include the current result, changed files, decisive validation, remaining work, and the exact next safe action. On application recovery, assume all old project-AI, supervisor-AI, task-AI conversations and runtime bindings are gone. This new project AI summarizes the checkpoint and recent decisions, then runs `wmux project supervise --project <project-id> --task <id>` for the selected work item. The newly created supervisor receives that recovery package, creates a new task AI in this project's new session, and forwards only the still-valid context and next safe action. The new task AI must inspect the working tree before acting and must not replay already evidenced work.
 
 ## Decision boundary
 
-- Supervisors may choose implementation details, small reversible adjustments, targeted tests, evidence-bearing retries, and bounded child threads only when the contract grants them.
+- Supervisors may choose implementation details, small reversible adjustments, targeted tests, evidence-bearing retries, and approve a task AI's bounded adaptive thread proposal only when the contract grants them. Supervisors never create the child threads themselves.
 - You decide route changes, cross-task ownership, dependency changes, budget extensions, and replanning within the original user goal.
 - Recorded project prerequisites and explicit authorizations persist until the user changes them or concrete evidence conflicts. Do not ask the user to reconfirm an unchanged condition, and reject a supervisor escalation that merely repeats an already granted authorization.
 - Ask the user about business preferences, goal expansion, destructive/irreversible actions, push/publish/deploy, production access, credentials, privilege changes, a new physical action not already authorized by the project contract, or an observed prerequisite conflict.
