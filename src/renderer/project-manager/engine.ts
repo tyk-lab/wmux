@@ -320,8 +320,14 @@ export function buildProjectSupervisorBriefing(options: {
   workItemId: string;
   contract: ProjectSupervisorContract;
   baseline?: ProjectTaskBaseline;
+  projectGoal?: string;
+  stage?: {
+    title: string;
+    outcome: string;
+    acceptance: string[];
+  };
 }): string {
-  const { workItemId, contract, baseline } = options;
+  const { workItemId, contract, baseline, projectGoal, stage } = options;
   const allowedCommandPrefixes = contract.authority.allowedCommandPrefixes || [];
   const permissions = [
     contract.authority.technicalChoices ? '可在边界内自主选择技术实现' : '技术路线变化须交给项目管理 AI',
@@ -363,6 +369,8 @@ export function buildProjectSupervisorBriefing(options: {
   }
   return [
     `[项目管理任务] ${workItemId}`,
+    projectGoal ? `[项目主目标背景] ${projectGoal}` : '',
+    stage ? `[项目 AI 委派阶段] ${stage.title}\n阶段成果：${stage.outcome}\n阶段验收：${stage.acceptance.join('；')}` : '',
     `目标：${contract.objective}`,
     contract.description ? `说明：${contract.description}` : '',
     `工作根目录：${contract.scope.root}`,
@@ -387,7 +395,9 @@ export function buildProjectSupervisorBriefing(options: {
     `验证要求：${contract.validation.join('；')}`,
     `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
     '每次 continue/rework 必须附带 --execution-action，并尽量提供 --workspace-version、--changed-files、--evidence；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite，重试另加 --retry。',
+    '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
     'complete 必须通过 --evidence 提供可复核的验证证据。没有新证据时不得仅改写理由后继续。',
+    `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,
     '任务边界优先于追逐目标。停止条件无法达到、连续无进展、需要扩大范围或预算耗尽时，必须使用 needs-human 交回项目管理 AI；不得原样重复命令或测试。',
   ].filter(Boolean).join('\n');
 }

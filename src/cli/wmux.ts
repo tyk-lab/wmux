@@ -275,6 +275,29 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.task.supervise', { workItemId, projectId }));
     return;
   }
+  if (sub === 'progress-sync') {
+    print(await sendV2('project.progress.sync', {
+      projectId,
+      acknowledge: args.includes('--ack'),
+      summary: getFlag(args, '--summary') || '',
+    }));
+    return;
+  }
+  if (sub === 'transition-ack') {
+    const transitionId = getFlag(args, '--transition') || '';
+    const resolution = getFlag(args, '--resolution') || '';
+    const summary = getFlag(args, '--summary') || '';
+    if (!transitionId || !resolution || !summary) {
+      throw new Error('project transition-ack requires --transition, --resolution, and --summary');
+    }
+    print(await sendV2('project.supervisor.transition.ack', {
+      projectId,
+      transitionId,
+      resolution,
+      summary,
+    }));
+    return;
+  }
   if (sub === 'goal-plan') {
     const input = await resolveProjectScopedJsonInput(args, projectId);
     let success = false;
@@ -301,6 +324,16 @@ async function cmdProject(args: string[]): Promise<void> {
       throw new Error('project task-terminal-rotate requires --project and --task');
     }
     print(await sendV2('project.task-terminal.rotate', { workItemId, projectId }));
+    return;
+  }
+  if (sub === 'task-terminal-control') {
+    const workItemId = getFlag(args, '--task') || '';
+    const control = getFlag(args, '--key') || '';
+    const reason = getFlag(args, '--reason') || '';
+    if (!projectId || !workItemId || !control || !reason) {
+      throw new Error('project task-terminal-control requires --project, --task, --key <escape|interrupt>, and --reason');
+    }
+    print(await sendV2('project.task-terminal.control', { workItemId, projectId, control, reason }));
     return;
   }
   if (sub === 'inspect') {
@@ -377,7 +410,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1066,10 +1099,12 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--test-command <text> --test-result <text> --changed-files <a,b> --evidence <text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
+            transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
-            task-terminal-start and task-terminal-rotate are reserved for the dedicated project supervisor
+            task-terminal-start, task-terminal-rotate, and task-terminal-control are reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

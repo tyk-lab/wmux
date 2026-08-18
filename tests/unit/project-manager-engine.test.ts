@@ -104,11 +104,24 @@ describe('project-manager engine', () => {
   });
 
   it('builds a bounded supervisor briefing with anti-loop instructions', () => {
-    const text = buildProjectSupervisorBriefing({ workItemId: 'auth', contract: item('auth', 'planned').contract });
+    const text = buildProjectSupervisorBriefing({
+      workItemId: 'auth',
+      contract: item('auth', 'planned').contract,
+      projectGoal: '交付完整认证能力',
+      stage: {
+        title: '认证闭环',
+        outcome: '认证实现、回归与边界证据形成闭环',
+        acceptance: ['实现与回归测试一致', '边界证据可复核'],
+      },
+    });
     expect(text).toContain('允许范围：src/auth');
     expect(text).toContain('禁止动作：git push');
     expect(text).toContain('不得原样重复命令或测试');
-    expect(text).toContain('最多 6 次连续决策');
+    expect(text).toContain('最多 12 次连续决策');
+    expect(text).toContain('[项目主目标背景] 交付完整认证能力');
+    expect(text).toContain('阶段成果：认证实现、回归与边界证据形成闭环');
+    expect(text).toContain('委派粒度是可验收的完整阶段成果');
+    expect(text).toContain('小里程碑结束不得进入待续');
     expect(text).toContain('当前需求版本内由监督 AI 和任务 AI 持续继承');
     expect(text).toContain('不得把同一条件拆成逐步确认');
     expect(text).toContain(PROJECT_TASK_EXECUTION_ENVELOPE_MARKER);

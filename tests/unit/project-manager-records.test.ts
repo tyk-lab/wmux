@@ -103,7 +103,30 @@ describe('project manager records', () => {
       pendingUserQuestion,
       requirementsVersion: 3,
       acceptedRequirementsVersion: 2,
-      pendingManagerDeliveries: [{ id: 'delivery-1', text: '请按新条件重新规划', createdAt: 13 }],
+      pendingManagerDeliveries: [{
+        id: 'delivery-1', text: '请按新条件重新规划', createdAt: 13,
+        transitionId: 'transition-1',
+      }],
+      pendingSupervisorTransitions: [{
+        id: 'transition-1', laneId: 'lane-1', workItemId: 'wol_validation',
+        kind: 'stage-complete' as const, eventType: 'supervisor.waiting-for-direction',
+        summary: '阶段证据已经交接', evidence: '定向测试通过',
+        createdAt: 12, notifiedAt: 13, notificationCount: 1,
+      }],
+      progressSnapshot: {
+        version: 1 as const, capturedAt: 14, mode: 'git' as const,
+        fingerprint: 'progress-fingerprint', head: 'abc123', headSummary: 'abc123 外部实现进度',
+        branch: 'main', truncated: false,
+        entries: [{
+          path: 'src/external.ts', source: 'workspace' as const,
+          status: 'M', signature: 'sha256:external',
+        }],
+      },
+      progressSync: {
+        status: 'review-required' as const, checkedAt: 15,
+        snapshotFingerprint: 'progress-fingerprint', summary: '检测到外部实现进度',
+        changeCount: 1, reason: '软件恢复',
+      },
     };
 
     saveProjectManagerSession(saved, appData);
@@ -116,7 +139,20 @@ describe('project manager records', () => {
       },
       requirementsVersion: 3,
       acceptedRequirementsVersion: 2,
-      pendingManagerDeliveries: [{ id: 'delivery-1', text: '请按新条件重新规划' }],
+      pendingManagerDeliveries: [{
+        id: 'delivery-1', text: '请按新条件重新规划', transitionId: 'transition-1',
+      }],
+      pendingSupervisorTransitions: [{
+        id: 'transition-1', kind: 'stage-complete', workItemId: 'wol_validation',
+        evidence: '定向测试通过', notificationCount: 1,
+      }],
+      progressSnapshot: {
+        fingerprint: 'progress-fingerprint', headSummary: 'abc123 外部实现进度',
+        entries: [{ path: 'src/external.ts', status: 'M' }],
+      },
+      progressSync: {
+        status: 'review-required', snapshotFingerprint: 'progress-fingerprint', changeCount: 1,
+      },
     });
   });
 

@@ -31,7 +31,7 @@ export interface SupervisorDecision {
 /** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */
 export interface SupervisorDelivery {
   id: string;
-  kind: 'task-start' | 'task-end' | 'task-interrupted' | 'liveness-probe';
+  kind: 'task-start' | 'task-end' | 'task-interrupted' | 'worker-status' | 'liveness-probe';
   text: string;
   task: string;
   createdAt: number;
@@ -680,9 +680,23 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   resumeSupervisorLane(laneId, detail) {
     set((s) => {
       const lane = s.supervisor.lanes.find((item) => item.id === laneId);
-      if (!lane || supervisorLaneControlState(lane) !== 'paused') return s;
+      const previousState = lane ? supervisorLaneControlState(lane) : 'stopped';
+      if (!lane || (previousState !== 'paused' && previousState !== 'waiting')) return s;
       const lanes = s.supervisor.lanes.map((item) => item.id === laneId
-        ? { ...item, controlState: 'active' as const }
+        ? {
+            ...item,
+            controlState: 'active' as const,
+            ...(previousState === 'waiting' ? {
+              awaitingStopCheck: false,
+              stopConfirmed: false,
+              awaitingReview: false,
+              awaitingDirectionAfterWaitingResume: true,
+              resumeAfterCancelledDecision: false,
+              autoDecisionLimitReached: false,
+              autoDecisionsUsed: 0,
+              pendingSupervisorDeliveries: [],
+            } : {}),
+          }
         : item);
       return {
         supervisor: {
@@ -690,7 +704,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           ...supervisorRuntimeFlags(lanes),
           lanes,
           log: [{
-            ts: Date.now(), laneId, action: '继续通道', detail: detail || `${lane.label} 已继续`,
+            ts: Date.now(), laneId,
+            action: previousState === 'waiting' ? '待续恢复' : '继续通道',
+            detail: detail || `${lane.label} 已继续`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };

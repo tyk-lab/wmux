@@ -5,7 +5,25 @@ import {
   PROJECT_LIVENESS_PROBE_REPORT_MS,
   PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS,
   evaluateProjectLiveness,
+  normalizeProjectActivityFingerprintText,
 } from '../../src/renderer/project-manager/liveness';
+
+describe('normalizeProjectActivityFingerprintText', () => {
+  it('忽略长思考期间变化的计时、动画和相对时间', () => {
+    const first = normalizeProjectActivityFingerprintText('⠋ Working (1m 20s • esc to interrupt)\n10 seconds ago\n正在分析');
+    const second = normalizeProjectActivityFingerprintText('⠙ Working (28m 40s • esc to interrupt)\n99 seconds ago\n正在分析');
+
+    expect(first).toBe(second);
+  });
+
+  it('保留真正的新语义输出', () => {
+    const before = normalizeProjectActivityFingerprintText('Thinking (10s)\n正在分析');
+    const after = normalizeProjectActivityFingerprintText('Thinking (20s)\n已经找到失败原因');
+
+    expect(after).not.toBe(before);
+    expect(normalizeProjectActivityFingerprintText('Working (10 files modified)')).toContain('10 files modified');
+  });
+});
 
 describe('project execution-chain liveness', () => {
   const initial = evaluateProjectLiveness({
@@ -74,9 +92,16 @@ describe('project execution-chain liveness', () => {
   });
 
   it('wakes queued work when the supervisor becomes deliverable and resets on real progress', () => {
-    expect(evaluateProjectLiveness({
+    const woke = evaluateProjectLiveness({
       runtime: initial, fingerprint: 'v2', now: 9_000,
       supervisorState: 'idle', workerState: 'working', pendingSupervisorDeliveries: 1,
-    })).toMatchObject({ action: 'wake-supervisor', silentForMs: 0 });
+    });
+    expect(woke).toMatchObject({ action: 'wake-supervisor', silentForMs: 0 });
+    expect(evaluateProjectLiveness({
+      runtime: woke.runtime,
+      fingerprint: 'v2',
+      now: 9_000 + PROJECT_LIVENESS_PROBE_REPORT_MS,
+      supervisorState: 'unknown', workerState: 'working', pendingSupervisorDeliveries: 1,
+    }).action).toBe('report-supervisor-stuck');
   });
 });

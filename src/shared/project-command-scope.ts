@@ -12,6 +12,8 @@ const PROJECT_SCOPED_COMMANDS = new Set([
   'record-execution',
   'supervise',
   'task-supervise',
+  'progress-sync',
+  'transition-ack',
   'task-terminal-start',
   'task-terminal-rotate',
   'inspect',

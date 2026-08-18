@@ -3,6 +3,8 @@ import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
   normalizeProjectManagerSession,
+  normalizeProjectProgressSnapshot,
+  normalizeProjectProgressSyncState,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 import {
@@ -197,11 +199,33 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
         || typeof delivery.id !== 'string'
         || typeof delivery.text !== 'string'
         || !Number.isFinite(delivery.createdAt)
+        || (delivery.transitionId !== undefined && typeof delivery.transitionId !== 'string')
+      ))
+    ))
+    || (session.pendingSupervisorTransitions !== undefined && (
+      !Array.isArray(session.pendingSupervisorTransitions)
+      || session.pendingSupervisorTransitions.length > 50
+      || session.pendingSupervisorTransitions.some((transition) => (
+        !transition || typeof transition !== 'object'
+        || typeof transition.id !== 'string'
+        || typeof transition.laneId !== 'string'
+        || (transition.workItemId !== undefined && typeof transition.workItemId !== 'string')
+        || !['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle']
+          .includes(String(transition.kind))
+        || typeof transition.eventType !== 'string' || !transition.eventType.trim()
+        || typeof transition.summary !== 'string' || !transition.summary.trim()
+        || (transition.evidence !== undefined && typeof transition.evidence !== 'string')
+        || (transition.contextSummary !== undefined && typeof transition.contextSummary !== 'string')
+        || !Number.isFinite(transition.createdAt)
+        || !Number.isFinite(transition.notifiedAt)
+        || !Number.isFinite(transition.notificationCount)
       ))
     ))
     || (session.requirementsVersion !== undefined && (!Number.isFinite(session.requirementsVersion) || Number(session.requirementsVersion) < 1))
     || (session.authorizationVersion !== undefined && (!Number.isFinite(session.authorizationVersion) || Number(session.authorizationVersion) < 1))
     || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
+    || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
+    || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')

@@ -140,6 +140,14 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-supervise' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.progress.sync': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'progress-sync' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.supervisor.transition.ack': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'transition-ack' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.goal.plan': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'goal-plan' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -150,6 +158,10 @@ const SPECS: Record<string, BridgeSpec> = {
   },
   'project.task-terminal.rotate': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-rotate' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.task-terminal.control': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-control' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.supervisor.inspect': {

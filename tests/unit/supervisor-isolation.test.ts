@@ -640,6 +640,16 @@ describe('supervisor isolation', () => {
       autoDecisionLimitReached: false,
     });
     expect(store.getState().supervisor.log[0].action).toBe('停止条件确认，进入待续');
+
+    store.getState().resumeSupervisorLane('lane-a', '项目 AI 已派发下一阶段目标');
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      stopConfirmed: false,
+      awaitingReview: false,
+      awaitingDirectionAfterWaitingResume: true,
+      autoDecisionsUsed: 0,
+    });
+    expect(store.getState().supervisor.log[0].action).toBe('待续恢复');
   });
 
   it('stops a completed lane when waiting for another direction is disabled', () => {

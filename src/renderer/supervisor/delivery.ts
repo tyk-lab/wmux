@@ -3,13 +3,14 @@ import type { SupervisorDelivery } from '../store/supervisor-slice';
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
 
 export function signalSupervisorDeliveryReady(): void {
-  window.dispatchEvent(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
+  (globalThis as any).window?.dispatchEvent?.(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
 }
 
 export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): string {
   if (kind === 'task-start') return '任务开始';
   if (kind === 'task-end') return '任务结束';
   if (kind === 'task-interrupted') return '任务中断';
+  if (kind === 'worker-status') return '任务状态更新';
   return '活性检查';
 }
 
@@ -33,6 +34,10 @@ export function enqueueSupervisorDelivery(
     ? previous.turnId === delivery.turnId
     : previous?.task === delivery.task;
   if (previous?.kind === delivery.kind && sameTurn) {
+    if (delivery.kind === 'worker-status' && previous.stage !== 'pasted') {
+      return [...current.slice(0, -1), delivery];
+    }
+    if (delivery.kind === 'worker-status') return [...current, delivery];
     return current;
   }
   return [...current, delivery];
@@ -41,4 +46,23 @@ export function enqueueSupervisorDelivery(
 /** A busy or blocked supervisor must finish its current turn before receiving another command. */
 export function canDeliverToSupervisor(state: unknown): boolean {
   return state !== 'working' && state !== 'blocked';
+}
+
+/** Detect a supervisor Agent turn that ended without publishing a state handoff. */
+export function shouldReportUnacknowledgedSupervisorIdle(options: {
+  lifecycle: unknown;
+  projectManaged: boolean;
+  controlState: unknown;
+  awaitingReview: boolean;
+  providerLimited: boolean;
+  hasPendingDecision: boolean;
+  pendingDeliveries: number;
+}): boolean {
+  return (options.lifecycle === 'Stop' || options.lifecycle === 'StopFailure')
+    && options.projectManaged
+    && options.controlState === 'active'
+    && options.awaitingReview
+    && !options.providerLimited
+    && !options.hasPendingDecision
+    && options.pendingDeliveries === 0;
 }

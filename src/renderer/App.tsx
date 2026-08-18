@@ -46,7 +46,6 @@ import {
   blankRuntime,
   pasteSubmitDelayMs,
   prepareTerminalPasteInput,
-  sendToSurface,
   tickLane,
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
@@ -64,6 +63,10 @@ import { appendSupervisorRecord } from './supervisor/recording';
 import {
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
+  signalSupervisorDeliveryReady,
+  shouldReportUnacknowledgedSupervisorIdle,
+  SUPERVISOR_DELIVERY_READY_EVENT,
+  supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
 } from './supervisor/delivery';
 import {
@@ -80,8 +83,12 @@ import {
   clearSupervisorProviderLimitAlert,
   reportSupervisorProviderLimit,
 } from './supervisor/provider-limit';
-import type { SupervisorLane, SupervisorSession } from './store/supervisor-slice';
-import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from './store/supervisor-slice';
+import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from './store/supervisor-slice';
+import {
+  dedicatedSupervisorSurfaceId,
+  isProjectManagedSupervisorLane,
+  supervisorLaneControlState,
+} from './store/supervisor-slice';
 import {
   normalizeTaskChildThreadResponsibilities,
   normalizeTaskThreadResponsibility,
@@ -89,12 +96,6 @@ import {
 } from '../shared/supervisor-work-mode';
 
 const DEFAULT_SIDEBAR_WIDTH = 240;
-const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
-
-function signalSupervisorDeliveryReady(): void {
-  window.dispatchEvent(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
-}
-
 /** Per-key last lifecycle notify time — drops twin Stop floods without merging panes. */
 const lastLifecycleNotifyAt = new Map<string, number>();
 
@@ -483,7 +484,7 @@ function resolveSupervisorProjectDir(lane: { projectDir?: string }, cwd: unknown
 function queueSupervisorDelivery(
   session: SupervisorSession,
   lane: SupervisorLane,
-  kind: 'task-start' | 'task-end' | 'task-interrupted',
+  kind: SupervisorDelivery['kind'],
   task: string,
   text: string,
 ): void {
@@ -521,7 +522,37 @@ function handleSupervisorHookEvent(event: any): void {
     if (lifecycle === 'UserPromptSubmit') {
       clearSupervisorProviderLimitAlert(session, supervisorLane);
     } else if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Notification') {
-      reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
+      const providerLimited = reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
+      const freshLane = useStore.getState().supervisor.lanes
+        .find((candidate) => candidate.id === supervisorLane.id) || supervisorLane;
+      const hasPendingDecision = useStore.getState().supervisor.pendingApprovals
+        .some((approval) => approval.laneId === freshLane.id);
+      if (shouldReportUnacknowledgedSupervisorIdle({
+        lifecycle,
+        projectManaged: isProjectManagedSupervisorLane(freshLane),
+        controlState: supervisorLaneControlState(freshLane),
+        awaitingReview: freshLane.awaitingReview === true,
+        providerLimited,
+        hasPendingDecision,
+        pendingDeliveries: (freshLane.pendingSupervisorDeliveries || []).length,
+      })) {
+        appendSupervisorRecord(session, freshLane, 'supervisor.idle-unreported', {
+          event: lifecycle,
+          reason: '专属监督回合已结束，但没有提交继续、阶段交接、暂停或待决状态',
+          contextSummary: '控制层已原地唤醒同一专属监督，要求根据最新任务证据完成一次结构化裁决。',
+        });
+        queueSupervisorDelivery(
+          session,
+          freshLane,
+          'liveness-probe',
+          freshLane.currentTask || freshLane.projectWorkItemId || '当前项目任务',
+          [
+            '[监督回合未完成状态交接｜立即补报]',
+            '你的 Agent 回合已经结束，但控制层没有收到 continue/rework、阶段完成、暂停或待决事件。',
+            '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
+          ].join('\n'),
+        );
+      }
     }
     return;
   }
@@ -1104,7 +1135,10 @@ export default function App() {
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
-          if (!canDeliverToSupervisor(supervisorState)) continue;
+          const canDeliver = delivery.kind === 'liveness-probe'
+            ? supervisorState === 'idle'
+            : canDeliverToSupervisor(supervisorState);
+          if (!canDeliver) continue;
           const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
             scheduleRetry();
@@ -1189,7 +1223,7 @@ export default function App() {
             kind: delivery.kind,
             task: delivery.task,
           });
-          store.appendSupervisorLog(lane.id, '监督通知已送达', delivery.kind === 'task-start' ? '任务开始' : delivery.kind === 'task-end' ? '任务结束' : '任务中断');
+          store.appendSupervisorLog(lane.id, '监督通知已送达', supervisorDeliveryLabel(delivery.kind));
         }
       } catch {
         // Keep the head event queued and retry only while delivery work exists.
@@ -1257,13 +1291,14 @@ export default function App() {
               });
             }
             const sid = lane ? dedicatedSupervisorSurfaceId(lane) : null;
-            if (sid) {
-              try {
-                sendToSurface(sid, action.text, true);
-              } catch (err) {
-                if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: false });
-                store.appendSupervisorLog(action.laneId, '监督通知发送失败', String((err as Error)?.message || err));
-              }
+            if (sid && lane) {
+              queueSupervisorDelivery(
+                session,
+                lane,
+                'worker-status',
+                lane.currentTask || action.statusDetail || lane.label,
+                action.text,
+              );
             } else if (action.opensReview) {
               store.updateLane(action.laneId, { awaitingReview: false });
               store.appendSupervisorLog(action.laneId, '监督通知发送失败', '专属监督终端不存在');
@@ -1281,6 +1316,7 @@ export default function App() {
               void Promise.resolve((window as any).__wmux_projectManagerRemoteControl?.({
                 action: 'event',
                 projectId: lane.projectManagerProjectId,
+                laneId: lane.id,
                 workItemId: lane.projectWorkItemId,
                 eventType: 'supervisor.scheduler-attention',
                 summary: text,

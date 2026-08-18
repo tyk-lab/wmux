@@ -11,6 +11,11 @@ import { appendSupervisorRecord } from './recording';
 export function announceSupervisorWaitingForDirection(
   previousLane: SupervisorLane,
   reason = '已确认达到停止条件',
+  options: {
+    handoffKind?: 'stage-complete' | 'direction-needed';
+    evidence?: string;
+    contextSummary?: string;
+  } = {},
 ): boolean {
   if (supervisorLaneControlState(previousLane) === 'waiting') return false;
 
@@ -23,6 +28,9 @@ export function announceSupervisorWaitingForDirection(
     reason,
     taskGoal: effectiveSupervisorTaskGoal(lane),
     stopWhen: config.stopWhen,
+    ...(options.handoffKind ? { handoffKind: options.handoffKind } : {}),
+    ...(options.evidence ? { evidence: options.evidence } : {}),
+    ...(options.contextSummary ? { contextSummary: options.contextSummary } : {}),
   });
 
   // 项目管理模式下，待续由项目管理 AI 消化，不再打扰用户。

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
+  shouldReportUnacknowledgedSupervisorIdle,
+  supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
 } from '../../src/renderer/supervisor/delivery';
 
@@ -32,6 +34,29 @@ describe('supervisor delivery queue', () => {
       .toEqual(['end-1', 'end-2']);
   });
 
+  it('coalesces queued worker status to the newest snapshot', () => {
+    const first = {
+      id: 'status-working', kind: 'worker-status' as const, task: '运行测试',
+      text: '任务仍在运行', createdAt: 1, turnId: 1, stage: 'pending' as const,
+    };
+    const latest = { ...first, id: 'status-idle', text: '任务已经空闲', createdAt: 2 };
+    const queued = enqueueSupervisorDelivery([first], latest);
+
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ id: 'status-idle', text: '任务已经空闲' });
+  });
+
+  it('preserves an in-flight worker status and queues the newest snapshot after it', () => {
+    const pasted = {
+      id: 'status-pasted', kind: 'worker-status' as const, task: '运行测试',
+      text: '任务仍在运行', createdAt: 1, turnId: 1, stage: 'pasted' as const,
+    };
+    const latest = { ...pasted, id: 'status-latest', text: '任务已经空闲', createdAt: 2, stage: 'pending' as const };
+
+    expect(enqueueSupervisorDelivery([pasted], latest).map((item) => item.id))
+      .toEqual(['status-pasted', 'status-latest']);
+  });
+
   it('waits while the dedicated supervisor is working or blocked', () => {
     expect(canDeliverToSupervisor('working')).toBe(false);
     expect(canDeliverToSupervisor('blocked')).toBe(false);
@@ -45,5 +70,24 @@ describe('supervisor delivery queue', () => {
     expect(supervisorWakeDeliveryKind('Stop')).toBe('task-end');
     expect(supervisorWakeDeliveryKind('StopFailure')).toBe('task-end');
     expect(supervisorWakeDeliveryKind('Interrupt')).toBe('task-interrupted');
+  });
+
+  it('labels liveness probes separately from task lifecycle notifications', () => {
+    expect(supervisorDeliveryLabel('liveness-probe')).toBe('活性检查');
+  });
+
+  it('reports only a project supervisor turn that ended without a structured state handoff', () => {
+    const base = {
+      lifecycle: 'Stop', projectManaged: true, controlState: 'active',
+      awaitingReview: true, providerLimited: false, hasPendingDecision: false,
+      pendingDeliveries: 0,
+    };
+    expect(shouldReportUnacknowledgedSupervisorIdle(base)).toBe(true);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, projectManaged: false })).toBe(false);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, awaitingReview: false })).toBe(false);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, controlState: 'waiting' })).toBe(false);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, hasPendingDecision: true })).toBe(false);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, pendingDeliveries: 1 })).toBe(false);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, providerLimited: true })).toBe(false);
   });
 });

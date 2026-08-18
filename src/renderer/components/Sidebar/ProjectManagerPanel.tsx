@@ -76,7 +76,7 @@ export default function ProjectManagerPanel() {
       <button type="button" className="sup-panel__header" onClick={openProjectManagerDialog}>
         <span className="sup-panel__dot" />
         <span className="sup-panel__title">项目中心</span>
-        <span className="sup-panel__status">{activeProjects} 个项目 · {active ? '运行中' : paused ? '已暂停' : session.status}</span>
+        <span className="sup-panel__status">{activeProjects} 个项目 · {session.progressSync?.status === 'review-required' ? '同步新进度' : session.pendingSupervisorTransitions?.length ? '处理监督交接' : active ? '运行中' : paused ? '已暂停' : session.status}</span>
       </button>
       <div className="sup-panel__goal" title={`${projectDisplayName(session)} · ${session.goal}`}>
         {projectDisplayName(session)} · G{currentGoal.sequence} {session.goal}

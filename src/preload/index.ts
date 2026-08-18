@@ -284,6 +284,10 @@ contextBridge.exposeInMainWorld('wmux', {
     saveSession: (session: any) => ipcRenderer.invoke('project-manager:save-session', session),
     deleteSession: (sessionId: string) => ipcRenderer.invoke('project-manager:delete-session', sessionId),
     listActiveSessions: () => ipcRenderer.invoke('project-manager:list-active-sessions'),
+    captureProgress: (projectDir: string, planFilePaths: string[]) => ipcRenderer.invoke(
+      'project-manager:capture-progress',
+      { projectDir, planFilePaths },
+    ),
     pickPlanFiles: () => ipcRenderer.invoke('project-manager:pick-plan-files'),
     readPlanFiles: (filePaths: string[]) => ipcRenderer.invoke('project-manager:read-plan-files', filePaths),
     appendRecord: (record: any) => ipcRenderer.invoke('project-manager:append-record', record),

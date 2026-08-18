@@ -1,9 +1,11 @@
 import type {
+  SupervisorDelivery,
   SupervisorDecision,
   SupervisorLane,
   SupervisorRestoreSource,
   SupervisorSession,
 } from '../store/supervisor-slice';
+import { supervisorDeliveryLabel } from './delivery';
 
 const MAX_VALUE = 1_200;
 const MAX_RESTORED_HISTORY_CHARS = 12_000;
@@ -169,7 +171,7 @@ function operationalEventMarkdown(event: AuditEvent): string | null {
   }
   if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
     const kind = payloadText(payload, 'kind');
-    const label = kind === 'task-start' ? '任务开始' : kind === 'task-end' ? '任务结束' : '任务中断';
+    const label = supervisorDeliveryLabel(kind as SupervisorDelivery['kind']);
     const status = event.type === 'supervisor.delivery.queued' ? '待投递' : '已送达';
     return `- ${at} · 监督通知${status}：${label}`;
   }
@@ -361,16 +363,18 @@ export function appendSupervisorRecord(
     compactPayload.projectWorkItemId = lane.projectWorkItemId;
     const event = String(compactPayload.event || compactPayload.outcome || '').trim();
     const detail = String(compactPayload.reason || compactPayload.message || compactPayload.error || '').trim();
-    const important = type === 'supervisor.decision'
-      || type === 'worker.blocked'
-      || type === 'supervisor.provider-limit'
+    // Project AI receives state handoffs, not the supervisor's routine inner
+    // loop. Worker lifecycle and continue/rework decisions stay within the
+    // dedicated supervisor so the manager inbox cannot become a progress log.
+    const important = type === 'supervisor.provider-limit'
       || type === 'supervisor.delivery.failed'
       || type === 'supervisor.waiting-for-direction'
-      || (type === 'worker.lifecycle' && ['Stop', 'StopFailure', 'Interrupt'].includes(event));
+      || type === 'supervisor.idle-unreported';
     if (important) {
       const notification = (window as any).__wmux_projectManagerRemoteControl?.({
         action: 'event',
         projectId: lane.projectManagerProjectId,
+        laneId: lane.id,
         workItemId: lane.projectWorkItemId,
         eventType: type,
         summary: [event, detail].filter(Boolean).join('：').slice(0, 1200) || type,

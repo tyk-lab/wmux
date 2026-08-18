@@ -63,6 +63,7 @@ import {
   saveProjectManagerSession,
 } from './project-manager-records';
 import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './project-plan-files';
+import { captureProjectProgress } from './project-progress-sync';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -676,6 +677,16 @@ app.whenReady().then(() => {
     }, agent);
   });
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
+  ipcMain.handle('project-manager:capture-progress', (_event, request) => {
+    const requestedDir = String(request?.projectDir || '').trim();
+    if (!path.isAbsolute(requestedDir)) return { ok: false, error: '项目进度同步目录必须是绝对路径' };
+    const normalizedRequestedDir = path.resolve(requestedDir).toLowerCase();
+    const session = readActiveProjectManagerSessions().find((candidate) => (
+      path.resolve(candidate.projectDir).toLowerCase() === normalizedRequestedDir
+    ));
+    if (!session) return { ok: false, error: '项目进度同步目录未登记为活动项目' };
+    return captureProjectProgress(session.projectDir, session.planFiles.map((file) => file.path));
+  });
   ipcMain.handle('project-manager:read-plan-files', (_event, filePaths) => captureProjectPlanFiles(filePaths));
   ipcMain.handle('project-manager:pick-plan-files', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;

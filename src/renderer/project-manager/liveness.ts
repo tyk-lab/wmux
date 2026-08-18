@@ -30,6 +30,16 @@ export interface ProjectLivenessDecision {
   silentForMs: number;
 }
 
+/** Remove presentation-only timers/spinners so they cannot masquerade as progress. */
+export function normalizeProjectActivityFingerprintText(text: string): string {
+  return text
+    .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]/gu, '•')
+    .replace(/\b(working|thinking)\s*\(\s*(?:\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\s*)+(?:[·•|—-]\s*)?(?:esc\s+to\s+interrupt)?\s*\)/giu, '$1')
+    .replace(/\b(working|thinking)\s+for\s+(?:\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\s*)+/giu, '$1')
+    .replace(/\b\d+\s*seconds?\s+ago\b/giu, '')
+    .replace(/\d+\s*秒前/gu, '');
+}
+
 /**
  * Pure backpressure policy for one project execution chain. A semantic screen
  * or state change resets escalation; elapsed wall time alone never creates a
@@ -50,7 +60,11 @@ export function evaluateProjectLiveness(options: {
       action: pendingSupervisorDeliveries > 0 && supervisorState !== 'working' && supervisorState !== 'blocked'
         ? 'wake-supervisor'
         : 'none',
-      runtime: { fingerprint, lastProgressAt: now },
+      runtime: {
+        fingerprint,
+        lastProgressAt: now,
+        ...(pendingSupervisorDeliveries > 0 ? { probeQueuedAt: now } : {}),
+      },
       silentForMs: 0,
     };
   }
@@ -87,16 +101,21 @@ export function evaluateProjectLiveness(options: {
     return { action: 'none', runtime, silentForMs };
   }
 
-  if (pendingSupervisorDeliveries > 0) {
-    return { action: 'wake-supervisor', runtime, silentForMs };
-  }
-
   if (runtime.probeQueuedAt) {
     if (!runtime.attentionReportedAt && now - runtime.probeQueuedAt >= PROJECT_LIVENESS_PROBE_REPORT_MS) {
       runtime.attentionReportedAt = now;
       return { action: 'report-supervisor-stuck', runtime, silentForMs };
     }
-    return { action: 'none', runtime, silentForMs };
+    return {
+      action: pendingSupervisorDeliveries > 0 ? 'wake-supervisor' : 'none',
+      runtime,
+      silentForMs,
+    };
+  }
+
+  if (pendingSupervisorDeliveries > 0) {
+    runtime.probeQueuedAt = now;
+    return { action: 'wake-supervisor', runtime, silentForMs };
   }
 
   const probeAfterMs = workerState === 'idle'

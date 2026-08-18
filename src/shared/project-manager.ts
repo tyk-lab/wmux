@@ -29,6 +29,9 @@ export type ProjectManagerEventKind =
   | 'user-work-item-intervention'
   | 'dispatch-mode-selected'
   | 'supervisor-status'
+  | 'supervisor-handoff'
+  | 'supervisor-transition'
+  | 'supervisor-transition-acknowledged'
   | 'supervisor-decision-request'
   | 'supervisor-direction'
   | 'progress-inspection'
@@ -38,6 +41,9 @@ export type ProjectManagerEventKind =
   | 'manager-runtime-failed'
   | 'supervisor-runtime-failed'
   | 'task-runtime-failed'
+  | 'progress-snapshot'
+  | 'progress-sync-required'
+  | 'progress-sync-acknowledged'
   | 'requirements-quiesce-failed'
   | 'requirements-quiesced'
   | 'manager-delivery-failed'
@@ -109,11 +115,11 @@ export interface ProjectExecutionBudget {
 }
 
 export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
-  maxDecisions: 6,
-  maxContinuousMinutes: 30,
+  maxDecisions: 12,
+  maxContinuousMinutes: 90,
   maxIdenticalFailures: 2,
   maxNoProgressRounds: 2,
-  maxTaskRetries: 2,
+  maxTaskRetries: 3,
   maxSameTestRuns: 2,
   maxFullSuiteRunsPerVersion: 1,
 };
@@ -206,6 +212,50 @@ export interface ProjectTaskBaseline {
   approvedAt?: number;
 }
 
+export type ProjectProgressEntrySource = 'workspace' | 'plan';
+
+/** Bounded content identity captured from the managed project directory. */
+export interface ProjectProgressEntry {
+  path: string;
+  source: ProjectProgressEntrySource;
+  status: string;
+  signature: string;
+}
+
+export interface ProjectProgressSnapshot {
+  version: 1;
+  capturedAt: number;
+  mode: 'git' | 'filesystem';
+  fingerprint: string;
+  head?: string;
+  headSummary?: string;
+  branch?: string;
+  entries: ProjectProgressEntry[];
+  truncated: boolean;
+}
+
+export interface ProjectProgressSyncState {
+  status: 'ready' | 'review-required';
+  checkedAt: number;
+  snapshotFingerprint: string;
+  summary: string;
+  changeCount: number;
+  reason?: string;
+  acknowledgedAt?: number;
+  acknowledgement?: string;
+}
+
+export interface ProjectProgressDiff {
+  baselineMissing: boolean;
+  changed: boolean;
+  headChanged: boolean;
+  branchChanged: boolean;
+  added: string[];
+  modified: string[];
+  removed: string[];
+  changeCount: number;
+}
+
 /** A user-owned main-goal episode inside a long-lived project. */
 export interface ProjectGoalRevision {
   id: string;
@@ -278,6 +328,30 @@ export interface ProjectManagerPendingDelivery {
   id: string;
   text: string;
   createdAt: number;
+  /** Keeps an actionable supervisor transition traceable after PTY delivery. */
+  transitionId?: string;
+}
+
+export type ProjectSupervisorTransitionKind =
+  | 'stage-complete'
+  | 'direction-needed'
+  | 'decision-required'
+  | 'supervisor-unavailable'
+  | 'supervisor-idle';
+
+/** Durable actionable state handoff from one project's dedicated supervisor. */
+export interface ProjectSupervisorTransition {
+  id: string;
+  laneId: string;
+  workItemId?: string;
+  kind: ProjectSupervisorTransitionKind;
+  eventType: string;
+  summary: string;
+  evidence?: string;
+  contextSummary?: string;
+  createdAt: number;
+  notifiedAt: number;
+  notificationCount: number;
 }
 
 export interface ProjectManagerSession {
@@ -310,9 +384,15 @@ export interface ProjectManagerSession {
   managerSurfaceId?: string;
   feishuChatId?: string;
   recoveryState?: 'ready' | 'checking';
+  /** Last workspace state explicitly seen by the project AI or a trusted stage checkpoint. */
+  progressSnapshot?: ProjectProgressSnapshot;
+  /** Blocks stale task dispatch until the project AI has reviewed a changed recovery snapshot. */
+  progressSync?: ProjectProgressSyncState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
   /** Manager-bound messages that have not yet been written to the manager terminal. */
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
+  /** Actionable supervisor handoffs remain here until the project AI records a resolution. */
+  pendingSupervisorTransitions?: ProjectSupervisorTransition[];
   workItems: ProjectWorkItem[];
   events: ProjectManagerEvent[];
   createdAt: number;
@@ -338,6 +418,117 @@ export function projectAcceptedRequirementsVersion(
   // Missing acceptance is never interpreted as authorization to execute. Old
   // snapshots may still be inspected, but must pass alignment before resuming.
   return 0;
+}
+
+const MAX_PROJECT_PROGRESS_ENTRIES = 500;
+const MAX_PROJECT_PROGRESS_TEXT = 12_000;
+
+export function normalizeProjectProgressSnapshot(value: unknown): ProjectProgressSnapshot | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectProgressSnapshot>;
+  if (raw.version !== 1
+    || !Number.isFinite(raw.capturedAt)
+    || !['git', 'filesystem'].includes(String(raw.mode))
+    || typeof raw.fingerprint !== 'string'
+    || !raw.fingerprint.trim()
+    || !Array.isArray(raw.entries)) return undefined;
+  const entries = raw.entries.slice(0, MAX_PROJECT_PROGRESS_ENTRIES)
+    .filter((entry): entry is ProjectProgressEntry => (
+      !!entry && typeof entry === 'object'
+      && typeof entry.path === 'string' && !!entry.path.trim()
+      && ['workspace', 'plan'].includes(String(entry.source))
+      && typeof entry.status === 'string'
+      && typeof entry.signature === 'string' && !!entry.signature.trim()
+    ))
+    .map((entry) => ({
+      path: entry.path.slice(0, 2000),
+      source: entry.source,
+      status: entry.status.slice(0, 40),
+      signature: entry.signature.slice(0, 200),
+    }));
+  if (entries.length !== Math.min(raw.entries.length, MAX_PROJECT_PROGRESS_ENTRIES)) return undefined;
+  return {
+    version: 1,
+    capturedAt: Number(raw.capturedAt),
+    mode: raw.mode as ProjectProgressSnapshot['mode'],
+    fingerprint: raw.fingerprint.trim().slice(0, 200),
+    ...(typeof raw.head === 'string' && raw.head.trim() ? { head: raw.head.trim().slice(0, 200) } : {}),
+    ...(typeof raw.headSummary === 'string' && raw.headSummary.trim()
+      ? { headSummary: raw.headSummary.trim().slice(0, 500) }
+      : {}),
+    ...(typeof raw.branch === 'string' && raw.branch.trim() ? { branch: raw.branch.trim().slice(0, 500) } : {}),
+    entries,
+    truncated: raw.truncated === true || raw.entries.length > MAX_PROJECT_PROGRESS_ENTRIES,
+  };
+}
+
+export function normalizeProjectProgressSyncState(value: unknown): ProjectProgressSyncState | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectProgressSyncState>;
+  if (!['ready', 'review-required'].includes(String(raw.status))
+    || !Number.isFinite(raw.checkedAt)
+    || typeof raw.snapshotFingerprint !== 'string' || !raw.snapshotFingerprint.trim()
+    || typeof raw.summary !== 'string'
+    || !Number.isFinite(raw.changeCount) || Number(raw.changeCount) < 0) return undefined;
+  return {
+    status: raw.status as ProjectProgressSyncState['status'],
+    checkedAt: Number(raw.checkedAt),
+    snapshotFingerprint: raw.snapshotFingerprint.trim().slice(0, 200),
+    summary: raw.summary.slice(0, MAX_PROJECT_PROGRESS_TEXT),
+    changeCount: Math.max(0, Math.trunc(Number(raw.changeCount))),
+    ...(typeof raw.reason === 'string' && raw.reason.trim()
+      ? { reason: raw.reason.trim().slice(0, 2000) }
+      : {}),
+    ...(Number.isFinite(raw.acknowledgedAt) ? { acknowledgedAt: Number(raw.acknowledgedAt) } : {}),
+    ...(typeof raw.acknowledgement === 'string' && raw.acknowledgement.trim()
+      ? { acknowledgement: raw.acknowledgement.trim().slice(0, 4000) }
+      : {}),
+  };
+}
+
+export function diffProjectProgressSnapshots(
+  previous: ProjectProgressSnapshot | undefined,
+  current: ProjectProgressSnapshot,
+): ProjectProgressDiff {
+  if (!previous) {
+    return {
+      baselineMissing: true,
+      changed: true,
+      headChanged: false,
+      branchChanged: false,
+      added: current.entries.map((entry) => entry.path),
+      modified: [],
+      removed: [],
+      changeCount: current.entries.length,
+    };
+  }
+  const before = new Map(previous.entries.map((entry) => [`${entry.source}\u0000${entry.path}`, entry]));
+  const after = new Map(current.entries.map((entry) => [`${entry.source}\u0000${entry.path}`, entry]));
+  const added: string[] = [];
+  const modified: string[] = [];
+  const removed: string[] = [];
+  for (const [key, entry] of after) {
+    const old = before.get(key);
+    if (!old) added.push(entry.path);
+    else if (old.signature !== entry.signature || old.status !== entry.status) modified.push(entry.path);
+  }
+  for (const [key, entry] of before) {
+    if (!after.has(key)) removed.push(entry.path);
+  }
+  const headChanged = (previous.head || '') !== (current.head || '');
+  const branchChanged = (previous.branch || '') !== (current.branch || '');
+  const changeCount = added.length + modified.length + removed.length
+    + (headChanged ? 1 : 0) + (branchChanged ? 1 : 0);
+  return {
+    baselineMissing: false,
+    changed: previous.fingerprint !== current.fingerprint || changeCount > 0,
+    headChanged,
+    branchChanged,
+    added,
+    modified,
+    removed,
+    changeCount,
+  };
 }
 
 function fallbackProjectName(session: Pick<ProjectManagerSession, 'projectDir' | 'goal'>): string {
@@ -421,6 +612,39 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     requirementsVersion,
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
+    progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
+    progressSync: normalizeProjectProgressSyncState(session.progressSync),
+    pendingSupervisorTransitions: (Array.isArray(session.pendingSupervisorTransitions)
+      ? session.pendingSupervisorTransitions
+      : [])
+      .slice(-50)
+      .filter((transition): transition is ProjectSupervisorTransition => (
+        !!transition
+        && typeof transition.id === 'string' && !!transition.id.trim()
+        && typeof transition.laneId === 'string' && !!transition.laneId.trim()
+        && ['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle']
+          .includes(String(transition.kind))
+        && typeof transition.eventType === 'string' && !!transition.eventType.trim()
+        && typeof transition.summary === 'string' && !!transition.summary.trim()
+        && (transition.evidence === undefined || typeof transition.evidence === 'string')
+        && (transition.contextSummary === undefined || typeof transition.contextSummary === 'string')
+        && Number.isFinite(transition.createdAt)
+        && Number.isFinite(transition.notifiedAt)
+        && Number.isFinite(transition.notificationCount)
+      ))
+      .map((transition) => ({
+        ...transition,
+        id: transition.id.trim().slice(0, 200),
+        laneId: transition.laneId.trim().slice(0, 200),
+        ...(transition.workItemId?.trim() ? { workItemId: transition.workItemId.trim().slice(0, 200) } : {}),
+        eventType: transition.eventType.trim().slice(0, 200),
+        summary: transition.summary.trim().slice(0, 4000),
+        ...(transition.evidence?.trim() ? { evidence: transition.evidence.trim().slice(0, 12_000) } : {}),
+        ...(transition.contextSummary?.trim()
+          ? { contextSummary: transition.contextSummary.trim().slice(0, 12_000) }
+          : {}),
+        notificationCount: Math.max(1, Math.trunc(transition.notificationCount)),
+      })),
     workItems: session.workItems.map((item) => {
       const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
       const activeBaseline = item.baseline?.requirementsVersion === itemRequirementsVersion && (

@@ -840,6 +840,37 @@ export default function ProjectManagerDialog() {
             </section>
           )}
 
+          {session?.progressSync?.status === 'review-required' && !creating && (
+            <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label="项目进度等待项目 AI 同步">
+              <div className="supervisor-dialog__group-title">检测到项目目录有新进度</div>
+              <div className="supervisor-dialog__warning">项目 AI 正在把其他 AI、人工操作或中断前未汇报的变化同步进当前安排；同步完成前不会沿用旧任务继续派发。</div>
+              <details>
+                <summary>查看同步摘要</summary>
+                <pre className="project-manager-dialog__pre">{session.progressSync.summary}</pre>
+              </details>
+              <div className="supervisor-dialog__hint">这是项目 AI 的内部复核，不需要用户逐步确认；只有出现业务选择、权限或高风险冲突时才会单独询问。</div>
+            </section>
+          )}
+
+          {!!session?.pendingSupervisorTransitions?.length && !creating && (
+            <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label="项目 AI 正在处理监督状态交接">
+              <div className="supervisor-dialog__group-title">项目 AI 正在处理监督状态交接</div>
+              <div className="supervisor-dialog__warning">监督 AI 已主动上报完成、待续、暂停或异常状态；项目 AI 会据此更新任务方向，不需要用户确认。</div>
+              <details>
+                <summary>查看待处理交接（{session.pendingSupervisorTransitions.length}）</summary>
+                <div className="project-manager-dialog__decision-list">
+                  {session.pendingSupervisorTransitions.slice(-5).reverse().map((transition) => (
+                    <div key={transition.id} className="project-manager-dialog__decision-item">
+                      <strong>{transition.kind} · {transition.workItemId || '未绑定任务'}</strong>
+                      <span>{transition.summary}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+              <div className="supervisor-dialog__hint">交接在项目 AI 回写处理结果前会持久保留；定时看门狗只负责丢事件补投，不再反复询问监督进度。</div>
+            </section>
+          )}
+
           {session?.pendingUserQuestion && !creating && (
             <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
               <div className="supervisor-dialog__group-title">{session.pendingUserQuestion.category === 'manual-intervention' ? '项目阻塞，需要你指示' : '项目管理 AI 邀请你对齐需求'}</div>
