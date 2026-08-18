@@ -178,6 +178,10 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     return ptyManager.writeReliable(id, data);
   });
 
+  ipcMain.handle(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, (_event, id: SurfaceId, content: string) => {
+    return ptyManager.stageInputFile(id, content);
+  });
+
   ipcMain.on(IPC_CHANNELS.PTY_RESIZE, (_event, id: SurfaceId, cols: number, rows: number) => {
     ptyManager.resize(id, cols, rows);
   });

@@ -66,6 +66,7 @@ describe('project command scope', () => {
   it('requires an explicit project ID for scoped commands in a multi-project portfolio', () => {
     expect(projectCommandNeedsExplicitId('task-create', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('supervisor-decide', '', projects)).toBe(true);
+    expect(projectCommandNeedsExplicitId('goal-plan', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('task-create', 'project-a', projects)).toBe(false);
   });
 

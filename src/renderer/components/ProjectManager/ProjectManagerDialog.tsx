@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  activeProjectGoal,
+  activeProjectSubgoals,
   MAX_PROJECT_PLAN_FILES,
+  projectDisplayName,
   type ProjectPlanFileSnapshot,
 } from '../../../shared/project-manager';
 import {
@@ -35,6 +38,12 @@ const STATUS_LABELS: Record<string, string> = {
   waiting: '等待决策',
   completed: '已完成',
   stopped: '已停止',
+  transitioning: '切换规划中',
+  achieved: '已达成',
+  superseded: '已被新目标替代',
+  abandoned: '已放弃',
+  blocked: '阻塞中',
+  obsolete: '已取消',
 };
 
 function taskWorkModeLabel(mode: string | undefined): string {
@@ -61,12 +70,19 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
   'requirements-quiesce-failed': '需求变更停机确认失败',
 };
 
-function projectActivityLabel(session: { status: string; workItems: Array<{ status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }> }): string {
+function projectActivityLabel(session: {
+  status: string;
+  activeGoalId?: string;
+  workItems: Array<{ goalId?: string; status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }>;
+}): string {
   if (session.status !== 'active') return STATUS_LABELS[session.status] || session.status;
-  const current = session.workItems.find((item) => item.latestBlocker || item.status === 'waiting-decision' || item.status === 'failed')
-    || session.workItems.find((item) => item.status === 'running' || item.status === 'validating')
-    || session.workItems.find((item) => item.workerSurfaceId && !item.supervisorLaneId)
-    || session.workItems.find((item) => item.status === 'planned');
+  const workItems = session.workItems.filter((item) => (
+    !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
+  ));
+  const current = workItems.find((item) => item.latestBlocker || item.status === 'waiting-decision' || item.status === 'failed')
+    || workItems.find((item) => item.status === 'running' || item.status === 'validating')
+    || workItems.find((item) => item.workerSurfaceId && !item.supervisorLaneId)
+    || workItems.find((item) => item.status === 'planned');
   if (!current) return '规划中';
   if (current.latestBlocker || current.status === 'waiting-decision' || current.status === 'failed') return '阻塞中';
   if (current.status === 'running' || current.status === 'validating') return '监督中';
@@ -127,6 +143,7 @@ function projectReasoningOptions(agent: string): Array<{ value: string; label: s
 interface ProjectRecoveryCandidate {
   id: string;
   projectDir: string;
+  projectName?: string;
   goal: string;
   status: string;
   workItemCount: number;
@@ -145,6 +162,8 @@ export default function ProjectManagerDialog() {
   const workspacePrefs = useStore((state) => state.workspacePrefs);
   const setWorkspacePrefs = useStore((state) => state.setWorkspacePrefs);
   const [projectDir, setProjectDir] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [projectScope, setProjectScope] = useState('');
   const [goal, setGoal] = useState('');
   const [preconditions, setPreconditions] = useState('');
   const [planFiles, setPlanFiles] = useState<ProjectPlanFileSnapshot[]>([]);
@@ -153,7 +172,7 @@ export default function ProjectManagerDialog() {
   const [definitionDoneWhenDraft, setDefinitionDoneWhenDraft] = useState('');
   const [definitionPlanFiles, setDefinitionPlanFiles] = useState<ProjectPlanFileSnapshot[]>([]);
   const [definitionPlanFilePath, setDefinitionPlanFilePath] = useState('');
-  const [replaceProjectDirection, setReplaceProjectDirection] = useState(false);
+  const [goalChangeMode, setGoalChangeMode] = useState<'refine' | 'pivot'>('refine');
   const [preconditionsDraft, setPreconditionsDraft] = useState('');
   const [doneWhen, setDoneWhen] = useState('');
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
@@ -182,6 +201,12 @@ export default function ProjectManagerDialog() {
   const definitionUpdates = useMemo(() => session?.events.filter((event) => (
     event.kind === 'project-definition-updated'
   )).slice(-20).reverse() || [], [session?.events]);
+  const currentGoal = useMemo(() => session ? activeProjectGoal(session) : null, [session]);
+  const currentWorkItems = useMemo(() => session?.workItems.filter((item) => (
+    !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
+  )) || [], [session]);
+  const currentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
+  const goalHistory = useMemo(() => [...(session?.goals || [])].sort((left, right) => right.sequence - left.sequence), [session?.goals]);
   const activeAlert = useMemo(() => {
     if (!session) return null;
     const latestAlert = [...session.events].reverse().find((event) => PROJECT_ALERT_KINDS.has(event.kind));
@@ -197,6 +222,11 @@ export default function ProjectManagerDialog() {
   const lastConversationEvent = conversation.at(-1);
   const sessionDefinitionFingerprint = session ? JSON.stringify([
     session.goal,
+    session.projectName,
+    session.projectScope,
+    session.activeGoalId,
+    session.goals,
+    session.subgoals,
     session.preconditions,
     session.doneWhen,
     session.planFiles.map((file) => [file.path, file.sizeBytes, file.mtimeMs, file.capturedAt]),
@@ -255,7 +285,7 @@ export default function ProjectManagerDialog() {
     setDefinitionDoneWhenDraft((session?.doneWhen || []).join('\n'));
     setDefinitionPlanFiles(session?.planFiles || []);
     setDefinitionPlanFilePath('');
-    setReplaceProjectDirection(false);
+    setGoalChangeMode('refine');
     setConstraintNotice('');
   }, [open, session?.id, sessionDefinitionFingerprint]);
 
@@ -399,8 +429,9 @@ export default function ProjectManagerDialog() {
   const start = async () => {
     const projectPreconditions = conditionLines(preconditions);
     const conditions = conditionLines(doneWhen);
-    if (!projectDir.trim() || !goal.trim() || projectPreconditions.length === 0 || conditions.length === 0) {
-      setNotice('请填写项目目录、项目目标、至少一个前置条件和至少一个可验证的完成条件。');
+    if (!projectDir.trim() || !projectName.trim() || !projectScope.trim() || !goal.trim()
+      || projectPreconditions.length === 0 || conditions.length === 0) {
+      setNotice('请填写项目名称、目录、稳定范围、当前主目标、至少一个前置条件和至少一个可验证的完成条件。');
       return;
     }
     setBusy(true);
@@ -409,12 +440,16 @@ export default function ProjectManagerDialog() {
       await invoke({
         action: 'start',
         projectDir: projectDir.trim(),
+        projectName: projectName.trim(),
+        projectScope: projectScope.trim(),
         goal: goal.trim(),
         preconditions: projectPreconditions,
         planFiles,
         doneWhen: conditions,
       });
       setCreating(false);
+      setProjectName('');
+      setProjectScope('');
       setGoal('');
       setPreconditions('');
       setPlanFiles([]);
@@ -555,7 +590,6 @@ export default function ProjectManagerDialog() {
       setNotice('请填写项目目标、至少一个前置条件和至少一个可验证的完成条件。没有额外条件时请明确填写“无额外物理前置条件”。');
       return;
     }
-    if (replaceProjectDirection && !window.confirm('将以新目标取代旧目标，并停止所有尚未完成的旧工作项。旧记录会保留，但后续不再按旧目标推进。是否继续？')) return;
     setBusy(true);
     setNotice('');
     setConstraintNotice('');
@@ -567,13 +601,13 @@ export default function ProjectManagerDialog() {
         preconditions: projectPreconditions,
         planFiles: definitionPlanFiles,
         doneWhen: projectDoneWhen,
-        mode: replaceProjectDirection ? 'replace' : 'revise',
-        reason: replaceProjectDirection
-          ? '用户在项目中心替换旧目标并要求按新方向重新规划'
-          : '用户在项目中心更新目标或需求',
+        mode: goalChangeMode,
+        reason: goalChangeMode === 'pivot'
+          ? '用户在稳定项目内切换新的主目标'
+          : '用户在项目中心调整当前主目标或需求',
       });
-      setReplaceProjectDirection(false);
-      setConstraintNotice(result.message || '项目目标和需求已更新。');
+      setGoalChangeMode('refine');
+      setConstraintNotice(result.message || '主目标变更已记录。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
@@ -634,7 +668,7 @@ export default function ProjectManagerDialog() {
 
   const deleteSelectedProject = async () => {
     if (!session || busy) return;
-    if (!window.confirm(`将删除“${session.goal}”的项目管理记录，并关闭该项目已绑定的监督 AI 和任务终端。项目目录及业务文件不会删除。是否继续？`)) return;
+    if (!window.confirm(`将删除“${projectDisplayName(session)}”的项目管理记录，并关闭该项目已绑定的监督 AI 和任务终端。项目目录及业务文件不会删除。是否继续？`)) return;
     setBusy(true);
     setNotice('');
     try {
@@ -666,7 +700,8 @@ export default function ProjectManagerDialog() {
   const canResumePortfolio = sessions.some((candidate) => candidate.status === 'paused' && candidate.pausedByPortfolio === true);
   const awaitingRecovery = sessions.length === 0 && recoveryStatus !== 'done';
   const projectDefinitionChanged = !!session && (
-    definitionGoalDraft.trim() !== session.goal
+    goalChangeMode === 'pivot'
+    || definitionGoalDraft.trim() !== session.goal
     || conditionLines(preconditionsDraft).join('\n') !== session.preconditions.join('\n')
     || conditionLines(definitionDoneWhenDraft).join('\n') !== session.doneWhen.join('\n')
     || JSON.stringify(definitionPlanFiles) !== JSON.stringify(session.planFiles || [])
@@ -687,7 +722,9 @@ export default function ProjectManagerDialog() {
             )}
           </div>
           <div className="supervisor-dialog__sub" title={session?.goal}>
-            {session && !creating ? session.goal : '管理独立的项目 AI 会话、专属监督和任务终端'}
+            {session && !creating
+              ? `${projectDisplayName(session)} · G${currentGoal?.sequence || 1} ${session.goal}`
+              : '项目是稳定容器；每个项目由独立项目 AI 围绕当前主目标推进'}
           </div>
         </header>
 
@@ -713,7 +750,8 @@ export default function ProjectManagerDialog() {
                             onChange={() => toggleRecoveryCandidate(candidate.id)}
                           />
                           <span>
-                            <strong>{candidate.goal}</strong>
+                            <strong>{candidate.projectName || candidate.goal}</strong>
+                            {candidate.projectName && <small>当前主目标：{candidate.goal}</small>}
                             <small>{candidate.projectDir}</small>
                             <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · 最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
                           </span>
@@ -722,7 +760,7 @@ export default function ProjectManagerDialog() {
                           type="button"
                           className="confirm-dialog__btn confirm-dialog__btn--danger project-manager-dialog__recovery-delete"
                           disabled={busy}
-                          aria-label={`删除历史项目记录：${candidate.goal}`}
+                          aria-label={`删除历史项目记录：${candidate.projectName || candidate.goal}`}
                           onClick={() => setRecoveryDeleteCandidate(candidate)}
                         >删除记录</button>
                       </div>
@@ -834,11 +872,13 @@ export default function ProjectManagerDialog() {
               <div className="project-manager-dialog__section-head">
                 <div>
                   <div className="supervisor-dialog__group-title">项目列表（{activeSessionCount} 个活动项目）</div>
-                  <div className="supervisor-dialog__hint">目录必须不同；项目数量不受限制。每个项目使用独立会话，内部始终只有一个项目 AI 和一条监督链。</div>
+                  <div className="supervisor-dialog__hint">项目数量不受限制；同一目录也可按不同稳定范围建立独立项目。每个项目使用独立会话，内部始终只有一个项目 AI 和一条监督链。</div>
                 </div>
                 <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
                   setCreating(true);
                   setProjectDir('');
+                  setProjectName('');
+                  setProjectScope('');
                   setNotice('');
                 }}>添加项目</button>
                 {session && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void deleteSelectedProject()}>删除选中项目</button>}
@@ -852,7 +892,8 @@ export default function ProjectManagerDialog() {
                     setCreating(false);
                     setNotice('');
                   }}>
-                    <strong>{candidate.goal}</strong>
+                    <strong>{projectDisplayName(candidate)}</strong>
+                    <span>G{activeProjectGoal(candidate).sequence} · {candidate.goal}</span>
                     <span>{candidate.projectDir}</span>
                     <em>{projectActivityLabel(candidate)}</em>
                   </button>
@@ -874,6 +915,12 @@ export default function ProjectManagerDialog() {
           {!awaitingRecovery && (
             creating || !session ? <section className="supervisor-dialog__group">
               <div className="supervisor-dialog__group-title">添加项目</div>
+              <div className="supervisor-dialog__hint">先定义长期稳定的项目身份，再说明当前要完成的主目标。创建后，专属项目 AI 会提出 3-7 个阶段目标并自主拆分执行任务。</div>
+              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目名称</div>
+              <input className="supervisor-dialog__input" value={projectName} onChange={(event) => {
+                setProjectName(event.target.value);
+                setNotice('');
+              }} placeholder="例如：TMC6460 调试与验证" />
               <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目录</div>
               <div className="project-manager-dialog__directory-row">
                 <input className="supervisor-dialog__input" value={projectDir} onChange={(event) => {
@@ -882,11 +929,16 @@ export default function ProjectManagerDialog() {
                 }} placeholder={'E:\\project'} />
                 <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void pickProjectDirectory()}>选择目录</button>
               </div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目标</div>
+              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目稳定范围</div>
+              <textarea className="supervisor-dialog__textarea" rows={2} value={projectScope} onChange={(event) => {
+                setProjectScope(event.target.value);
+                setNotice('');
+              }} placeholder="说明这个项目长期负责什么、不负责什么；主目标变化时该范围保持不变" />
+              <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标</div>
               <textarea ref={goalRef} className="supervisor-dialog__textarea" rows={3} value={goal} onChange={(event) => {
                 setGoal(event.target.value);
                 setNotice('');
-              }} placeholder="描述项目管理 AI 要追逐的上层目标" />
+              }} placeholder="描述用户当前希望项目最终达到的结果；同一项目以后可以切换新的主目标" />
               <div className="supervisor-dialog__label">计划文件（可选，最多 {MAX_PROJECT_PLAN_FILES} 个）</div>
               <div className="project-manager-dialog__directory-row">
                 <input className="supervisor-dialog__input" value={planFilePath} onChange={(event) => setPlanFilePath(event.target.value)} placeholder={'C:\\project\\PLAN.md'} />
@@ -906,19 +958,19 @@ export default function ProjectManagerDialog() {
                 setNotice('');
               }} placeholder={'树莓派已接通受控电源并可安全断电\n局域网访问权限已获得\n目标设备、接口和安全限值已经人工确认'} />
               <div className="supervisor-dialog__hint">这里填写的内容视为当前需求版本中用户已确认的事实；其中明确写出的“允许、可以、可直接运行/测试”等授权会持续有效，不会逐步重复确认。条件变化时再从项目中心更新；无额外条件时请明确填写。</div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">完成条件（每行一项）</div>
+              <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标完成条件（每行一项）</div>
               <textarea className="supervisor-dialog__textarea" rows={4} value={doneWhen} onChange={(event) => {
                 setDoneWhen(event.target.value);
                 setNotice('');
               }} placeholder={'相关功能实现并验证\n关键测试通过\n高风险或未验证项已明确报告'} />
-              <div className="supervisor-dialog__hint">项目管理 AI 会选择单线程、固定多线程或自适应线程模式，明确线程上限、并行/串行边界、决策权、停止条件和防死循环预算。</div>
+              <div className="supervisor-dialog__hint">用户只确认主目标和必要边界；阶段目标、执行任务、技术路线与普通重试由项目 AI 和专属监督自主决策。只有业务选择、越界或硬风险才向上提案。</div>
             </section> : (
             <>
               {activeView === 'execution' && <section className="project-manager-dialog__summary">
-                <div><span>状态</span><strong>{projectActivityLabel(session)}</strong></div>
-                <div><span>工作项</span><strong>{session.workItems.length}</strong></div>
+                <div><span>状态</span><strong>{currentGoal?.status === 'achieved' ? '等待下一主目标' : projectActivityLabel(session)}</strong></div>
+                <div><span>当前目标工作项</span><strong>{currentWorkItems.length}</strong></div>
                 <div><span>正在管理的监督 AI</span><strong>{activeManagedLanes.length}</strong></div>
-                <div><span>待决策</span><strong>{session.workItems.filter((item) => item.status === 'waiting-decision').length}</strong></div>
+                <div><span>待决策</span><strong>{currentWorkItems.filter((item) => item.status === 'waiting-decision').length}</strong></div>
               </section>}
               {activeAlert && (
                 <section className="project-manager-dialog__alert" role="alert">
@@ -934,19 +986,23 @@ export default function ProjectManagerDialog() {
               {activeView === 'requirements' && <section className="supervisor-dialog__group project-manager-dialog__preconditions">
                 <div className="project-manager-dialog__section-head">
                   <div>
-                    <div className="supervisor-dialog__group-title">项目目标与需求</div>
-                    <div className="supervisor-dialog__hint">项目目录保持不变；目标、计划文件、前置条件和完成条件可在推进中调整。保存后会暂停当前监督链，由项目管理 AI 评估影响并重规划。</div>
+                    <div className="supervisor-dialog__group-title">项目身份与当前主目标</div>
+                    <div className="supervisor-dialog__hint">项目名称、目录和稳定范围属于长期身份；这里调整的是 G{currentGoal?.sequence || 1}，或在同一项目内切换新的主目标。变更后由项目 AI 自主评估复用、停止和重绑。</div>
                   </div>
                   <button
                     type="button"
                     className="confirm-dialog__btn"
                     disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}
                     onClick={() => void updateProjectDefinition()}
-                  >保存需求变更</button>
+                  >应用主目标变更</button>
                 </div>
+                <div className="supervisor-dialog__label">项目名称</div>
+                <div className="project-manager-dialog__path">{projectDisplayName(session)}</div>
                 <div className="supervisor-dialog__label">项目目录（不可变）</div>
                 <div className="project-manager-dialog__path">{session.projectDir}</div>
-                <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目标</div>
+                <div className="supervisor-dialog__label">稳定项目范围</div>
+                <div className="project-manager-dialog__path">{session.projectScope}</div>
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标 G{currentGoal?.sequence || 1}</div>
                 <textarea className="supervisor-dialog__textarea" rows={3} value={definitionGoalDraft} onChange={(event) => {
                   setDefinitionGoalDraft(event.target.value);
                   setConstraintNotice('');
@@ -968,26 +1024,65 @@ export default function ProjectManagerDialog() {
                   setPreconditionsDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder="每行填写一项已确认条件或授权；例如：硬件已上电，允许直接运行本项目测试" />
-                <div className="supervisor-dialog__label supervisor-dialog__label--required">完成条件（每行一项）</div>
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标完成条件（每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={4} value={definitionDoneWhenDraft} onChange={(event) => {
                   setDefinitionDoneWhenDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder={'相关功能实现并验证\n关键测试通过\n未验证条件已经明确报告'} />
-                <label className="project-manager-dialog__replace-goal">
-                  <input type="checkbox" checked={replaceProjectDirection} onChange={(event) => setReplaceProjectDirection(event.target.checked)} />
-                  <span><strong>清除旧目标的当前约束，按新方向重新规划</strong><small>未完成的旧工作项将停止并保留历史记录；项目管理 AI 会从新目标重新拆分任务。</small></span>
-                </label>
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">本次变更类型</div>
+                <div className="project-manager-dialog__clarification-options">
+                  <label data-selected={goalChangeMode === 'refine' ? '1' : '0'}>
+                    <input type="radio" name="project-goal-change-mode" checked={goalChangeMode === 'refine'} onChange={() => setGoalChangeMode('refine')} />
+                    <span><strong>调整当前主目标</strong><small>最终结果没有改变；项目 AI 复核受影响任务，兼容任务显式重绑后继续。</small></span>
+                  </label>
+                  <label data-selected={goalChangeMode === 'pivot' ? '1' : '0'}>
+                    <input type="radio" name="project-goal-change-mode" checked={goalChangeMode === 'pivot'} onChange={() => setGoalChangeMode('pivot')} />
+                    <span><strong>切换新的主目标</strong><small>仍属于同一稳定项目；旧目标进入历史，未完成旧任务停止，新建阶段计划和执行链。</small></span>
+                  </label>
+                </div>
                 {session.pendingUserQuestion && <div className="supervisor-dialog__warning">请先完成当前需求确认，再保存新的项目配置。</div>}
                 {constraintNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{constraintNotice}</div>}
               </section>}
               {activeView === 'requirements' && <section className="supervisor-dialog__group">
-                <div className="supervisor-dialog__group-title">需求变更历史</div>
+                <div className="supervisor-dialog__group-title">当前主目标的阶段计划</div>
+                <div className="supervisor-dialog__hint">阶段目标由项目 AI 维护，只描述粗粒度成果、依赖和验收；具体终端任务由项目 AI 和专属监督继续拆分。</div>
+                <div className="project-manager-dialog__work-items">
+                  {currentSubgoals.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未提交阶段计划，当前主目标不能启动新的监督任务。</div>}
+                  {currentSubgoals.map((subgoal) => (
+                    <details key={subgoal.id} open={subgoal.status === 'active' || subgoal.status === 'blocked'}>
+                      <summary><strong>S{subgoal.order} · {subgoal.title}</strong><span>{STATUS_LABELS[subgoal.status] || subgoal.status}</span></summary>
+                      <dl>
+                        <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
+                        <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
+                        <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
+                      </dl>
+                    </details>
+                  ))}
+                </div>
+              </section>}
+              {activeView === 'requirements' && <section className="supervisor-dialog__group">
+                <div className="supervisor-dialog__group-title">主目标历史</div>
+                <div className="project-manager-dialog__work-items">
+                  {goalHistory.map((goalEntry, index) => (
+                    <details key={goalEntry.id} open={index === 0}>
+                      <summary><strong>G{goalEntry.sequence} · {goalEntry.statement}</strong><span>{STATUS_LABELS[goalEntry.status] || goalEntry.status}</span></summary>
+                      <dl>
+                        <dt>完成条件</dt><dd>{goalEntry.doneWhen.join('\n')}</dd>
+                        <dt>需求版本</dt><dd>v{goalEntry.requirementsVersion}</dd>
+                        {goalEntry.changeReason && <><dt>切换说明</dt><dd>{goalEntry.changeReason}</dd></>}
+                      </dl>
+                    </details>
+                  ))}
+                </div>
+              </section>}
+              {activeView === 'requirements' && <section className="supervisor-dialog__group">
+                <div className="supervisor-dialog__group-title">详细变更记录</div>
                 <div className="project-manager-dialog__work-items">
                   {definitionUpdates.length === 0 && <div className="supervisor-dialog__empty">尚未调整项目目标或需求。</div>}
                   {definitionUpdates.map((event) => {
                     const previous = event.payload?.previous as Record<string, unknown> | undefined;
                     const next = event.payload?.next as Record<string, unknown> | undefined;
-                    const mode = event.payload?.mode === 'replace' ? '替换旧目标' : '修订现有需求';
+                    const mode = event.payload?.mode === 'pivot' ? '切换新的主目标' : '调整当前主目标';
                     const lines = (value: unknown) => Array.isArray(value)
                       ? value.map((item) => String(item)).join('\n')
                       : '无';
@@ -1031,10 +1126,10 @@ export default function ProjectManagerDialog() {
                 </div>
               </section>}
               {activeView === 'execution' && <section className="supervisor-dialog__group">
-                <div className="supervisor-dialog__group-title">工作项决策记录</div>
+                <div className="supervisor-dialog__group-title">当前主目标工作项决策记录</div>
                 <div className="project-manager-dialog__work-items">
-                  {session.workItems.length === 0 && <div className="supervisor-dialog__empty">项目管理 AI 尚未拆分工作项。</div>}
-                  {session.workItems.map((item) => {
+                  {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
+                  {currentWorkItems.map((item) => {
                     const execution = item.contract.execution;
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
                     return (
@@ -1119,7 +1214,11 @@ export default function ProjectManagerDialog() {
         )}
         <div className="supervisor-dialog__actions">
           {!creating && session?.status === 'active' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('pause')}>暂停项目</button>}
-          {!creating && (session?.status === 'paused' || session?.status === 'waiting') && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('resume')}>恢复项目</button>}
+          {!creating && (session?.status === 'paused' || session?.status === 'waiting') && currentGoal?.status !== 'achieved' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('resume')}>恢复项目</button>}
+          {!creating && session?.status === 'waiting' && currentGoal?.status === 'achieved' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
+            setGoalChangeMode('pivot');
+            setActiveView('requirements');
+          }}>设置下一主目标</button>}
           {creating && session && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => { setCreating(false); setNotice(''); }}>取消添加</button>}
           <span className="supervisor-dialog__actions-spacer" />
           <button type="button" className="confirm-dialog__btn" onClick={close}>关闭</button>
@@ -1133,7 +1232,7 @@ export default function ProjectManagerDialog() {
             <div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="确认删除历史项目记录">
               <div className="confirm-dialog__title">确认删除历史项目记录？</div>
               <div className="confirm-dialog__message project-manager-dialog__delete-confirm-message">
-                <div>将永久删除“{recoveryDeleteCandidate.goal}”的历史项目管理记录和管理日志。</div>
+                <div>将永久删除“{recoveryDeleteCandidate.projectName || recoveryDeleteCandidate.goal}”的历史项目管理记录和管理日志。</div>
                 <div>项目目录标识：{recoveryDeleteCandidate.projectDir}</div>
                 <div>项目目录、代码和业务文件不会删除；删除后无法从此页面恢复。</div>
               </div>

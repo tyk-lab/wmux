@@ -15,6 +15,7 @@ import {
   consumeAutomatedTerminalSubmit,
 } from '../utils/terminal-user-submit';
 import { INTERACTIVE_TUI_READY_DELAY_MS, pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
+import { terminalRuntimeInputError } from '../terminal-runtime-lifecycle';
 
 export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 
@@ -176,10 +177,48 @@ function terminalPasteInput(surfaceId: string, text: string, submitEnter: boolea
   return prepareTerminalPasteInput(input, bracketedPasteMode);
 }
 
-export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;
+
+export function stagedTerminalInputPrompt(reference: string): string {
+  return [
+    '[wmux 临时投递文件]',
+    `请先使用文件读取工具完整读取当前工作目录内的 ${reference}。`,
+    '文件内容是本轮完整指令；读取后直接执行，不要将全文重新粘贴到终端。',
+    `确认读取成功后，只删除这一个临时文件：${reference}。`,
+  ].join('\n');
+}
+
+function stageOversizedTerminalInput(surfaceId: string, text: string): Promise<string> {
+  const pty = (window as any).wmux?.pty;
+  if (!pty?.stageInputFile) {
+    return Promise.reject(new Error('当前版本不支持大文段临时文件投递；已拒绝全文写入终端'));
+  }
+  return Promise.resolve(pty.stageInputFile(surfaceId, text)).then(
+    (staged: { reference?: string }) => {
+      const reference = String(staged?.reference || '');
+      if (!/^\.wmux\/tmp\/terminal-input-[A-Za-z0-9._-]+\.txt$/u.test(reference)) {
+        throw new Error('临时投递文件返回了非法路径');
+      }
+      return stagedTerminalInputPrompt(reference);
+    },
+  );
+}
+
+export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): Promise<void> | void {
+  const runtimeError = terminalRuntimeInputError(surfaceId);
+  if (runtimeError) throw new Error(`终端 Agent 已不可用：${runtimeError}`);
   const pty = (window as any).wmux?.pty;
   if (!pty?.write) {
     throw new Error('wmux.pty.write unavailable');
+  }
+  if (submitEnter && text.length > TERMINAL_INLINE_TEXT_LIMIT) {
+    const stagedDelivery = stageOversizedTerminalInput(surfaceId, text).then((prompt) => {
+      sendToSurface(surfaceId, prompt, true);
+    });
+    void stagedDelivery.catch((error) => {
+      console.warn('[supervisor] oversized terminal input staging failed', error);
+    });
+    return stagedDelivery;
   }
   const input = terminalPasteInput(surfaceId, text, submitEnter);
   if (!submitEnter) {
@@ -189,7 +228,9 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
 
   const token = beginAutomatedTerminalSubmit(surfaceId, () => {
     try {
-      pty.write(surfaceId, '\x03');
+      // The text has not been submitted yet. Clear the composer without using
+      // Ctrl+C, which can terminate an idle interactive Agent.
+      pty.write(surfaceId, '\x15');
     } catch {
       /* ignore */
     }
@@ -239,7 +280,20 @@ function sendSurfaceInputReliably(
   captureBeforeSubmit?: () => string,
   validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
+  const runtimeError = terminalRuntimeInputError(surfaceId);
+  if (runtimeError) throw new Error(`终端 Agent 已不可用：${runtimeError}`);
   const pty = (window as any).wmux?.pty;
+  if (submitEnter && text.length > TERMINAL_INLINE_TEXT_LIMIT) {
+    return stageOversizedTerminalInput(surfaceId, text).then((prompt) => (
+      sendSurfaceInputReliably(
+        surfaceId,
+        prompt,
+        true,
+        captureBeforeSubmit,
+        validateBeforeSubmit,
+      ) || { beforeSubmitScreen: captureBeforeSubmit?.() }
+    ));
+  }
   const preSubmitValidationError = (): string | null => {
     try {
       return validateBeforeSubmit?.() || null;
@@ -259,7 +313,7 @@ function sendSurfaceInputReliably(
     return new Promise<{ beforeSubmitScreen?: string }>((resolve, reject) => {
       const token = beginAutomatedTerminalSubmit(surfaceId, () => {
         try {
-          pty.write(surfaceId, '\x03');
+          pty.write(surfaceId, '\x15');
         } catch {
           /* ignore */
         }
@@ -303,7 +357,7 @@ function sendSurfaceInputReliably(
     }
 
     const token = beginAutomatedTerminalSubmit(surfaceId, () => {
-      void pty.writeReliable(surfaceId, '\x03');
+      void pty.writeReliable(surfaceId, '\x15');
     });
     if (!await pty.writeReliable(surfaceId, input)) {
       cancelPendingAutomatedTerminalSubmit(surfaceId, false);
@@ -321,7 +375,7 @@ function sendSurfaceInputReliably(
     }
     const beforeSubmitScreen = captureBeforeSubmit?.();
     if (!await pty.writeReliable(surfaceId, '\r')) {
-      void pty.writeReliable(surfaceId, '\x03');
+      void pty.writeReliable(surfaceId, '\x15');
       throw new Error('任务终端未接受提交键；已尝试清理未提交正文');
     }
     return { beforeSubmitScreen };

@@ -3,13 +3,15 @@ import {
   clearTerminalRuntimeStatus,
   disposeTerminalRuntimeStatus,
   markTerminalRuntimeFailed,
+  markTerminalRuntimeExited,
   markTerminalRuntimeReady,
   markTerminalRuntimeStarting,
   terminalRuntimeStatus,
+  terminalRuntimeInputError,
   waitForTerminalRuntimeReady,
 } from '../../src/renderer/terminal-runtime-lifecycle';
 
-const surfaceIds = ['surface-ready', 'surface-failed', 'surface-closed'];
+const surfaceIds = ['surface-ready', 'surface-failed', 'surface-exited', 'surface-closed'];
 
 afterEach(() => {
   for (const surfaceId of surfaceIds) clearTerminalRuntimeStatus(surfaceId);
@@ -50,5 +52,14 @@ describe('terminal runtime lifecycle', () => {
 
     await expect(readiness).resolves.toEqual({ ok: false, error: '启动期间已取消' });
     expect(terminalRuntimeStatus('surface-closed')).toBeUndefined();
+  });
+
+  it('blocks automated input after the nested Agent exits while the PTY survives', () => {
+    markTerminalRuntimeReady('surface-exited');
+    expect(terminalRuntimeInputError('surface-exited')).toBeNull();
+
+    markTerminalRuntimeExited('surface-exited', 'Codex Agent 已退出');
+
+    expect(terminalRuntimeInputError('surface-exited')).toBe('Codex Agent 已退出');
   });
 });

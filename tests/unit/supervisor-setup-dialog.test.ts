@@ -45,8 +45,19 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('视为当前需求版本中用户已确认的事实');
     expect(projectManagerDialogSource).toContain('不会逐步重复确认');
     expect(projectManagerDialogSource).toContain("action: 'update-definition'");
-    expect(projectManagerDialogSource).toContain('项目目标与需求');
-    expect(projectManagerDialogSource).toContain('保存需求变更');
+    expect(projectManagerDialogSource).toContain('项目身份与当前主目标');
+    expect(projectManagerDialogSource).toContain('应用主目标变更');
+    expect(projectManagerDialogSource).toContain('项目稳定范围');
+    expect(projectManagerDialogSource).toContain('调整当前主目标');
+    expect(projectManagerDialogSource).toContain('切换新的主目标');
+    expect(projectManagerDialogSource).toContain("goalChangeMode === 'pivot'");
+    expect(projectManagerDialogSource).toContain('当前主目标的阶段计划');
+    expect(projectManagerDialogSource).toContain('主目标历史');
+    const definitionUpdateHandler = projectManagerDialogSource.match(
+      /const updateProjectDefinition = async[\s\S]*?^  };/m,
+    )?.[0] || '';
+    expect(definitionUpdateHandler).not.toContain('window.confirm');
+    expect(projectManagerDialogSource).toContain('同一目录也可按不同稳定范围建立独立项目');
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
     expect(projectManagerDialogSource).toContain('恢复所选项目');

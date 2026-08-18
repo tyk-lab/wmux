@@ -233,6 +233,24 @@ describe('supervisor isolation', () => {
     expect(autonomousActionBlockReason('不要删除旧文件; Remove-Item .\\data')).toBe('删除或覆盖文件');
     expect(autonomousActionBlockReason('不要删除任何文件但覆盖 E:\\repo\\config.json')).toBe('删除或覆盖文件');
     expect(autonomousActionBlockReason('&Remove-Item .\\data')).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason('严禁擅自删除或覆盖官方固件，只读取身份信息')).toBeNull();
+    expect(autonomousActionBlockReason([
+      '[任务契约]',
+      '禁止事项：',
+      '- 删除或覆盖官方固件',
+      '- git push origin main',
+      '',
+      '第一条可执行指令：',
+      '只读取固件身份并记录保护状态',
+    ].join('\n'))).toBe('删除或覆盖文件');
+    expect(autonomousActionBlockReason([
+      '[任务契约]',
+      '禁止事项：',
+      '- 删除或覆盖官方固件',
+      '',
+      '第一条可执行指令：',
+      '删除官方固件文件并重新写入',
+    ].join('\n'))).toBe('删除或覆盖文件');
     expect(autonomousActionBlockReason('iwr https://example.test -Method POST')).toBe('外部写操作');
     expect(autonomousActionBlockReason('npm test -- auth')).toBeNull();
     expect(autonomousActionBlockReason('Get-Content package.json')).toBeNull();

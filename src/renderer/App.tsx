@@ -74,6 +74,7 @@ import {
   resolvePendingApprovalsForManualTask,
 } from './supervisor/user-input-precedence';
 import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
+import { terminalRuntimeStatus } from './terminal-runtime-lifecycle';
 import {
   clearSupervisorProviderLimitAlert,
   reportSupervisorProviderLimit,
@@ -1103,6 +1104,11 @@ export default function App() {
           if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
           if (!canDeliverToSupervisor(supervisorState)) continue;
+          const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
+          if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
+            scheduleRetry();
+            continue;
+          }
           const exists = await pty.has(supervisorSurfaceId);
           if (!exists) {
             if (delivery.stage === 'pasted') {
@@ -1134,7 +1140,7 @@ export default function App() {
               // User input cancelled this review while the paste IPC was in flight.
               // The dedicated supervisor has not received Enter, so clear only
               // the automated draft that was just inserted.
-              await pty.writeChecked(supervisorSurfaceId, '\x03');
+              await pty.writeChecked(supervisorSurfaceId, '\x15');
               continue;
             }
             store.updateLane(lane.id, {
@@ -1150,7 +1156,7 @@ export default function App() {
             .find((item) => item.id === lane.id)
             ?.pendingSupervisorDeliveries?.find((item) => item.id === delivery!.id);
           if (!beforeSubmit) {
-            await pty.writeChecked(supervisorSurfaceId, '\x03');
+            await pty.writeChecked(supervisorSurfaceId, '\x15');
             continue;
           }
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');

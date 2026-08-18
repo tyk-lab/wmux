@@ -23,6 +23,7 @@ import {
 } from '../utils/terminal-input-delivery';
 import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/terminal-user-submit';
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
+import { interactiveAgentExitDetail } from '../utils/interactive-agent-runtime';
 import {
   consumeTerminalBufferSnapshot,
   registerTerminalBufferSnapshotter,
@@ -103,7 +104,11 @@ function findSurfaceRef(node: SplitNode, surfaceId: string): SurfaceRef | null {
   return findSurfaceRef(node.children[0], surfaceId) || findSurfaceRef(node.children[1], surfaceId);
 }
 
-function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): void {
+function notifyProjectManagerRuntimeFailure(
+  surfaceId: string,
+  detail: string,
+  recoverManagerRuntime = false,
+): void {
   const state = useStore.getState();
   const workspace = state.workspaces.find((candidate) => treeHasSurface(candidate.splitTree, surfaceId));
   const surface = workspace ? findSurfaceRef(workspace.splitTree, surfaceId) : null;
@@ -198,7 +203,7 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
         payload: { message: event.summary, surfaceId, detail, laneId: lane?.id },
       });
     }
-    if (role === 'supervisor' || role === 'task') {
+    if ((role === 'manager' && recoverManagerRuntime) || role === 'supervisor' || role === 'task') {
       (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
         projectId: session.id,
         workItemId: lane?.projectWorkItemId,
@@ -915,6 +920,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     let startupTrustPollTimer: ReturnType<typeof setInterval> | undefined;
     let startupTrustPollTimeout: ReturnType<typeof setTimeout> | undefined;
     let runtimeReadyTimer: ReturnType<typeof setTimeout> | undefined;
+    let innerAgentExitHandled = false;
 
     const startupInputScreenText = (): string => {
       try {
@@ -938,7 +944,12 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     };
 
     const maybeConfirmStartupTrust = (id: string) => {
-      if (!automatedStartupAgent || startupTrustConfirmed || startupTrustConfirmationScheduled) return;
+      if (
+        innerAgentExitHandled
+        || !automatedStartupAgent
+        || startupTrustConfirmed
+        || startupTrustConfirmationScheduled
+      ) return;
       const visibleOutput = `${startupInputOutput}\n${startupInputScreenText()}`;
       if (!isStartupTrustPromptReady(automatedStartupAgent, visibleOutput)) return;
       startupTrustConfirmationScheduled = true;
@@ -956,8 +967,22 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
         if (disposed) return;
         startupInputOutput = `${startupInputOutput}${data}`.slice(-12_000);
+        const innerAgentExit = innerAgentExitHandled
+          ? null
+          : interactiveAgentExitDetail(automatedStartupAgent, startupInputOutput);
+        if (innerAgentExit) {
+          innerAgentExitHandled = true;
+          if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
+          runtimeReadyTimer = undefined;
+          stopStartupTrustPolling();
+          clearStuckRunningState(id);
+          markTerminalRuntimeExited(id, innerAgentExit);
+          notifyProjectManagerRuntimeFailure(id, innerAgentExit, true);
+          useStore.getState().setSurfaceProgress(id, null);
+        }
         if (
-          !startupInputRef.current
+          !innerAgentExitHandled
+          && !startupInputRef.current
           && !runtimeReadyTimer
           && terminalRuntimeStatus(id)?.state === 'starting'
         ) {
@@ -969,7 +994,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             if (terminalRuntimeStatus(id)?.state === 'starting') markTerminalRuntimeReady(id);
           }, 300);
         }
-        maybeConfirmStartupTrust(id);
+        if (!innerAgentExitHandled) maybeConfirmStartupTrust(id);
         // Track SGR/button mouse enable (?1006h, ?1000h, ?1002h, ?1003h) and disable
         // so the wheel handler can distinguish tmux from a plain shell after remount.
         // Mirror the enable pattern for disable so any of the four modes clears the flag.
@@ -988,8 +1013,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         clearStuckRunningState(id);
         if (sshProfileId) detachExitedSshWorkspace(id);
         const detail = `进程已退出（代码 ${code}）`;
-        markTerminalRuntimeExited(id, detail);
-        notifyProjectManagerRuntimeFailure(id, detail);
+        if (!innerAgentExitHandled) {
+          markTerminalRuntimeExited(id, detail);
+          notifyProjectManagerRuntimeFailure(id, detail);
+        }
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).
         useStore.getState().setSurfaceProgress(id, null);

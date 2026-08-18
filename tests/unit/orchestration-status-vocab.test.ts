@@ -57,7 +57,11 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-describe('on-agent-stop.sh status vocabulary (#99)', () => {
+// System32 bash.exe is a WSL launcher, not a native POSIX test runtime: it
+// cannot safely translate this Windows repository and TMPDIR into one shell
+// namespace. The script behavior runs on POSIX CI; portable JSON/static checks
+// below continue to run on Windows.
+describe.skipIf(process.platform === 'win32')('on-agent-stop.sh status vocabulary (#99)', () => {
   it('marks a successful agent "exited" — the word the sidebar counts, not "completed"', () => {
     writeState();
     runHook();

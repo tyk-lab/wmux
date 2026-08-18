@@ -3,10 +3,12 @@ import path from 'path';
 
 export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--execution-action <text> --command <text> --error <text> --workspace-version <hash> --test-command <text> --test-result <text> --changed-files <a,b> --evidence <text> --full-suite --retry] [--verbose]';
 
-const MAX_NEXT_CHARS = 4_000;
+const MAX_INLINE_NEXT_CHARS = 4_000;
+const MAX_NEXT_FILE_CHARS = 64_000;
 
 export interface SupervisorNextInput {
   text: string;
+  fileReference?: string;
   cleanup?: () => void;
 }
 
@@ -23,7 +25,12 @@ export function resolveSupervisorNextInput(args: string[], cwd = process.cwd()):
   if (args.includes('--next') && args.includes('--next-file')) {
     throw new Error('--next and --next-file cannot be used together');
   }
-  if (!args.includes('--next-file')) return { text: inline };
+  if (!args.includes('--next-file')) {
+    if (inline.length > MAX_INLINE_NEXT_CHARS) {
+      throw new Error(`--next cannot exceed ${MAX_INLINE_NEXT_CHARS} characters; use --next-file`);
+    }
+    return { text: inline };
+  }
   if (!fileArgument) throw new Error('--next-file requires a file under .wmux/tmp/');
 
   const tempRoot = path.resolve(cwd, '.wmux', 'tmp');
@@ -49,9 +56,12 @@ export function resolveSupervisorNextInput(args: string[], cwd = process.cwd()):
 
   const text = fs.readFileSync(realFilePath, 'utf8').trim();
   if (!text) throw new Error('--next-file cannot be empty');
-  if (text.length > MAX_NEXT_CHARS) throw new Error(`--next-file cannot exceed ${MAX_NEXT_CHARS} characters`);
+  if (text.length > MAX_NEXT_FILE_CHARS) {
+    throw new Error(`--next-file cannot exceed ${MAX_NEXT_FILE_CHARS} characters`);
+  }
   return {
     text,
+    fileReference: path.relative(realCwd, realFilePath).replace(/\\/g, '/'),
     cleanup: () => {
       try {
         fs.unlinkSync(realFilePath);

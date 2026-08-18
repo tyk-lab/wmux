@@ -128,7 +128,7 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能为空') });
   });
 
-  it('revises a project definition and pauses running work for re-evaluation', () => {
+  it('refines the active main goal and pauses current-goal work for explicit rebinding', () => {
     const useStore = store();
     useStore.getState().startProjectManager({
       projectDir: 'E:\\repo', goal: '旧目标', preconditions: ['旧前置条件'], doneWhen: ['旧验收'],
@@ -145,14 +145,14 @@ describe('project-manager slice', () => {
       planFiles: [{ path: 'E:\\repo\\PLAN.md', name: 'PLAN.md', content: '# 新计划' }],
       doneWhen: ['新验收'],
       source: 'user',
-      mode: 'revise',
+      mode: 'refine',
     });
 
     expect(result).toMatchObject({
       ok: true,
       event: {
         kind: 'project-definition-updated',
-        payload: { mode: 'revise', previous: { goal: '旧目标' }, next: { goal: '调整后的目标' } },
+        payload: { mode: 'refine', previous: { goal: '旧目标' }, next: { goal: '调整后的目标' } },
       },
     });
     expect(useStore.getState().projectManager).toMatchObject({
@@ -160,11 +160,11 @@ describe('project-manager slice', () => {
       preconditions: ['新前置条件'],
       doneWhen: ['新验收'],
       status: 'waiting',
-      workItems: [{ id: 'active-task', status: 'waiting-decision', latestBlocker: expect.stringContaining('重新评估') }],
+      workItems: [{ id: 'active-task', status: 'waiting-decision', latestBlocker: expect.stringContaining('重新绑定') }],
     });
   });
 
-  it('clears the old goal constraints and stops unfinished work when replacing direction', () => {
+  it('creates a new main-goal record and stops unfinished old-goal work on pivot', () => {
     const useStore = store();
     useStore.getState().startProjectManager({
       projectDir: 'E:\\repo', goal: '开发旧产品', preconditions: ['旧设备可用'], doneWhen: ['旧产品验收'],
@@ -183,7 +183,7 @@ describe('project-manager slice', () => {
       doneWhen: ['新产品验收'],
       reason: '用户明确清除旧目标',
       source: 'user',
-      mode: 'replace',
+      mode: 'pivot',
     });
 
     expect(result).toMatchObject({
@@ -191,7 +191,7 @@ describe('project-manager slice', () => {
       event: {
         kind: 'project-definition-updated',
         summary: '用户明确清除旧目标',
-        payload: { mode: 'replace', previous: { goal: '开发旧产品' }, next: { goal: '开发全新产品' } },
+        payload: { mode: 'pivot', previous: { goal: '开发旧产品' }, next: { goal: '开发全新产品' } },
       },
     });
     expect(useStore.getState().projectManager?.workItems).toEqual(expect.arrayContaining([
@@ -201,6 +201,130 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager).toMatchObject({
       goal: '开发全新产品', preconditions: ['新设备可用'], doneWhen: ['新产品验收'], status: 'waiting',
     });
+    expect(useStore.getState().projectManager?.goals).toEqual([
+      expect.objectContaining({ statement: '开发旧产品', status: 'superseded' }),
+      expect.objectContaining({ statement: '开发全新产品', status: 'transitioning' }),
+    ]);
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'unfinished', patch: { status: 'running' },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
+  });
+
+  it('stores a coarse subgoal plan under the active main goal', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', projectName: '认证项目', projectScope: '只处理认证模块',
+      goal: '交付可验收认证能力', doneWhen: ['认证验收通过'],
+    });
+    const goalId = project.activeGoalId || '';
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals',
+      source: 'manager',
+      reason: '建立首轮阶段计划',
+      subgoals: [{
+        id: 'auth_backend_ready', goalId, title: '认证后端可验收',
+        outcome: '接口、约束和错误行为稳定', acceptance: ['认证定向测试通过'],
+        dependencies: [], status: 'planned', order: 1, createdAt: 1, updatedAt: 1,
+      }],
+    })).toMatchObject({ ok: true, event: { kind: 'project-subgoals-updated' } });
+    expect(useStore.getState().projectManager?.subgoals).toEqual([
+      expect.objectContaining({ id: 'auth_backend_ready', goalId, status: 'planned' }),
+    ]);
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: { ...item('auth-api'), goalId, subgoalId: 'auth_backend_ready' },
+    });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      goalId, subgoalId: 'auth_backend_ready', requirementsVersion: 1, authorizationVersion: 1,
+    });
+  });
+
+  it('preserves repeated stage ids across main-goal history and protects live task ownership', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成第一目标', preconditions: ['环境可用'], doneWhen: ['第一目标验收'],
+    });
+    const firstGoalId = project.activeGoalId || '';
+    useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        id: 'implementation', goalId: firstGoalId, title: '实现阶段', outcome: '第一目标形成实现',
+        acceptance: ['实现可验证'], dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+      }],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: { ...item('first-task'), goalId: firstGoalId, subgoalId: 'implementation' },
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        id: 'replacement', goalId: firstGoalId, title: '替代阶段', outcome: '替代原阶段',
+        acceptance: ['替代结果可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 2, updatedAt: 2,
+      }],
+    })).toMatchObject({ ok: false, error: expect.stringContaining('first-task') });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'first-task', patch: { goalId: 'another-goal' },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('归属不可变') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '完成第二目标', preconditions: ['环境可用'], planFiles: [],
+      doneWhen: ['第二目标验收'], source: 'user', mode: 'pivot',
+    });
+    const secondGoalId = useStore.getState().projectManager?.activeGoalId || '';
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        id: 'implementation', goalId: secondGoalId, title: '实现阶段', outcome: '第二目标形成实现',
+        acceptance: ['实现可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 3, updatedAt: 3,
+      }],
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.subgoals.filter((subgoal) => subgoal.id === 'implementation'))
+      .toEqual([
+        expect.objectContaining({ goalId: firstGoalId }),
+        expect.objectContaining({ goalId: secondGoalId }),
+      ]);
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: { ...item('second-task'), goalId: secondGoalId, subgoalId: 'implementation' },
+    })).toMatchObject({ ok: true });
+  });
+
+  it('requires coarse stages to be accepted before completing the current main goal', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成目标', preconditions: ['环境可用'], doneWhen: ['目标验收'],
+    });
+    const goalId = project.activeGoalId || '';
+    const stage = {
+      id: 'validation', goalId, title: '验收阶段', outcome: '目标得到验收', acceptance: ['证据完整'],
+      dependencies: [], status: 'active' as const, order: 1, createdAt: 1, updatedAt: 1,
+    };
+    useStore.getState().applyProjectManagerAction({ type: 'set-project-subgoals', source: 'manager', subgoals: [stage] });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: { ...item('validate'), goalId, subgoalId: stage.id },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'validate', patch: { status: 'completed', latestEvidence: '证据完整' },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '目标级复核', acceptRequirementsVersion: true,
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '目标验收通过',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('阶段目标尚未验收') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{ ...stage, status: 'achieved' }],
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        ...stage,
+        outcome: '改写已经验收的历史结果',
+        status: 'planned',
+      }],
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能撤销或改写') });
+    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({
+      outcome: stage.outcome,
+      status: 'achieved',
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '目标验收通过',
+    })).toMatchObject({ ok: true });
   });
 
   it('rejects a task update that introduces a dependency cycle', () => {
@@ -295,29 +419,58 @@ describe('project-manager slice', () => {
     }, first.id)).toMatchObject({ ok: false, error: expect.stringContaining('已经处理') });
   });
 
+  it('rejects execution records from a superseded main goal', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '旧目标', doneWhen: ['旧目标完成'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('old-task') }, session.id);
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', mode: 'pivot', source: 'user', reason: '切换新目标',
+      goal: '新目标', preconditions: ['环境可用'], planFiles: [], doneWhen: ['新目标完成'],
+    }, session.id);
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'record-execution', workItemId: 'old-task',
+      record: { ts: Date.now(), action: '继续旧任务', decision: 'allow' },
+    }, session.id)).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
+  });
+
   it('requires completed work and project-level evidence before completion', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') });
     expect(useStore.getState().applyProjectManagerAction({
-      type: 'complete-project', evidence: '单元测试通过',
+      type: 'complete-current-goal', evidence: '单元测试通过',
     })).toMatchObject({ ok: false });
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'auth',
       patch: { status: 'completed', latestEvidence: '认证测试通过', latestBlocker: '等待用户现场验收' },
     });
     expect(useStore.getState().applyProjectManagerAction({
-      type: 'complete-project', evidence: '单元测试通过',
+      type: 'complete-current-goal', evidence: '单元测试通过',
     })).toMatchObject({ ok: false, error: expect.stringContaining('未解决阻塞') });
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'auth', patch: { latestBlocker: undefined },
     });
     expect(useStore.getState().applyProjectManagerAction({
-      type: 'complete-project', evidence: '',
+      type: 'complete-current-goal', evidence: '',
     })).toMatchObject({ ok: false, error: expect.stringContaining('证据') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '项目 AI 已完成目标级复核', acceptRequirementsVersion: true,
+    });
     expect(useStore.getState().applyProjectManagerAction({
-      type: 'complete-project', evidence: '项目级验收全部通过',
+      type: 'complete-current-goal', evidence: '目标级验收全部通过',
     })).toMatchObject({ ok: true });
-    expect(useStore.getState().projectManager?.status).toBe('completed');
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting', goals: [expect.objectContaining({ status: 'achieved' })],
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition',
+      goal: '推进同一项目的下一主目标', preconditions: ['无额外物理前置条件'],
+      planFiles: [], doneWhen: ['下一目标验收通过'], source: 'user', mode: 'pivot',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.goals).toEqual([
+      expect.objectContaining({ status: 'achieved' }),
+      expect.objectContaining({ statement: '推进同一项目的下一主目标', status: 'transitioning' }),
+    ]);
   });
 });

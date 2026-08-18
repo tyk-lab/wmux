@@ -23,6 +23,10 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('无决策权的项目中心');
       expect(input).toContain('当前需求版本内持续有效');
       expect(input).toContain('不得让项目 AI、监督 AI 或任务 AI 逐步重复确认');
+      expect(input).toContain('wmux project goal-plan');
+      expect(input).toContain('mode=refine');
+      expect(input).toContain('mode=pivot');
+      expect(input).toContain('旧 goalId 任务不得在新目标下复活');
     },
   );
 });

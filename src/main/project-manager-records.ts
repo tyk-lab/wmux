@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
-  normalizedProjectDirectoryKey,
+  normalizeProjectManagerSession,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 import {
@@ -28,6 +28,8 @@ const WORK_ITEM_STATUSES = new Set([
   'planned', 'waiting-dependencies', 'running', 'validating', 'waiting-decision',
   'paused', 'completed', 'failed', 'stopped',
 ]);
+const GOAL_STATUSES = new Set(['transitioning', 'active', 'achieved', 'superseded', 'abandoned']);
+const SUBGOAL_STATUSES = new Set(['planned', 'active', 'blocked', 'achieved', 'obsolete']);
 
 function recordsDirectory(appDataDir = getAppDataDir()): string {
   return path.join(appDataDir, 'project-manager');
@@ -120,12 +122,47 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.recommendedOptionId === undefined || typeof question.recommendedOptionId === 'string');
 }
 
+function isProjectGoal(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const goal = value as Record<string, unknown>;
+  return typeof goal.id === 'string' && goal.id.length > 0
+    && Number.isInteger(goal.sequence) && Number(goal.sequence) >= 1
+    && typeof goal.statement === 'string' && goal.statement.trim().length > 0
+    && isStringArray(goal.doneWhen) && goal.doneWhen.length > 0
+    && typeof goal.status === 'string' && GOAL_STATUSES.has(goal.status)
+    && Number.isFinite(goal.requirementsVersion) && Number(goal.requirementsVersion) >= 1
+    && (goal.supersedesGoalId === undefined || typeof goal.supersedesGoalId === 'string')
+    && (goal.changeReason === undefined || typeof goal.changeReason === 'string')
+    && Number.isFinite(goal.createdAt)
+    && (goal.activatedAt === undefined || Number.isFinite(goal.activatedAt))
+    && (goal.closedAt === undefined || Number.isFinite(goal.closedAt));
+}
+
+function isProjectSubgoal(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const subgoal = value as Record<string, unknown>;
+  return typeof subgoal.id === 'string' && subgoal.id.length > 0
+    && typeof subgoal.goalId === 'string' && subgoal.goalId.length > 0
+    && typeof subgoal.title === 'string' && subgoal.title.trim().length > 0
+    && typeof subgoal.outcome === 'string' && subgoal.outcome.trim().length > 0
+    && isStringArray(subgoal.acceptance) && subgoal.acceptance.length > 0
+    && isStringArray(subgoal.dependencies)
+    && typeof subgoal.status === 'string' && SUBGOAL_STATUSES.has(subgoal.status)
+    && Number.isInteger(subgoal.order) && Number(subgoal.order) >= 1
+    && Number.isFinite(subgoal.createdAt) && Number.isFinite(subgoal.updatedAt);
+}
+
 function isProjectManagerSession(value: unknown): value is ProjectManagerSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
   if (
     typeof session.id !== 'string' || !SESSION_ID.test(session.id)
     || typeof session.projectDir !== 'string' || !path.isAbsolute(session.projectDir)
+    || (session.projectName !== undefined && typeof session.projectName !== 'string')
+    || (session.projectScope !== undefined && typeof session.projectScope !== 'string')
+    || (session.activeGoalId !== undefined && typeof session.activeGoalId !== 'string')
+    || (session.goals !== undefined && (!Array.isArray(session.goals) || !session.goals.every(isProjectGoal)))
+    || (session.subgoals !== undefined && (!Array.isArray(session.subgoals) || !session.subgoals.every(isProjectSubgoal)))
     || typeof session.goal !== 'string' || !isStringArray(session.doneWhen)
     || (session.preconditions !== undefined && !isStringArray(session.preconditions))
     || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
@@ -141,6 +178,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       ))
     ))
     || (session.requirementsVersion !== undefined && (!Number.isFinite(session.requirementsVersion) || Number(session.requirementsVersion) < 1))
+    || (session.authorizationVersion !== undefined && (!Number.isFinite(session.authorizationVersion) || Number(session.authorizationVersion) < 1))
     || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
@@ -148,7 +186,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || !Array.isArray(session.workItems) || !Array.isArray(session.events)
     || !Number.isFinite(session.createdAt) || !Number.isFinite(session.updatedAt)
   ) return false;
-  return session.workItems.every((value) => {
+  const workItemsValid = session.workItems.every((value) => {
     if (!value || typeof value !== 'object') return false;
     const item = value as Record<string, any>;
     const contract = item.contract;
@@ -157,6 +195,10 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     const budget = contract?.budget;
     const execution = contract?.execution;
     return typeof item.id === 'string'
+      && (item.goalId === undefined || typeof item.goalId === 'string')
+      && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
+      && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
+      && (item.authorizationVersion === undefined || (Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)
@@ -174,6 +216,52 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)
       && (!execution || isProjectTaskExecutionPlan(execution, authority?.internalThreads === true));
   });
+  if (!workItemsValid) return false;
+  const goals = Array.isArray(session.goals) ? session.goals as Array<Record<string, unknown>> : [];
+  const subgoals = Array.isArray(session.subgoals) ? session.subgoals as Array<Record<string, unknown>> : [];
+  if (goals.length === 0) return session.activeGoalId === undefined && subgoals.length === 0;
+  const goalIds = new Set(goals.map((goal) => String(goal.id)));
+  const goalSequences = new Set(goals.map((goal) => Number(goal.sequence)));
+  if (goalIds.size !== goals.length || goalSequences.size !== goals.length || !goalIds.has(String(session.activeGoalId))) {
+    return false;
+  }
+  const openGoals = goals.filter((goal) => ['active', 'transitioning'].includes(String(goal.status)));
+  if (openGoals.length > 1 || (openGoals.length === 1 && String(openGoals[0].id) !== String(session.activeGoalId))) {
+    return false;
+  }
+  const subgoalKey = (goalId: unknown, subgoalId: unknown) => `${String(goalId)}\u0000${String(subgoalId)}`;
+  const subgoalKeys = new Set(subgoals.map((subgoal) => subgoalKey(subgoal.goalId, subgoal.id)));
+  if (subgoalKeys.size !== subgoals.length || subgoals.some((subgoal) => (
+    !goalIds.has(String(subgoal.goalId))
+    || (subgoal.dependencies as unknown[]).some((dependency) => (
+      !subgoalKeys.has(subgoalKey(subgoal.goalId, dependency))
+    ))
+  ))) return false;
+  const dependenciesBySubgoal = new Map(subgoals.map((subgoal) => [
+    subgoalKey(subgoal.goalId, subgoal.id),
+    (subgoal.dependencies as unknown[]).map((dependency) => subgoalKey(subgoal.goalId, dependency)),
+  ]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const dependencyGraphIsAcyclic = (subgoalId: string): boolean => {
+    if (visited.has(subgoalId)) return true;
+    if (visiting.has(subgoalId)) return false;
+    visiting.add(subgoalId);
+    for (const dependencyId of dependenciesBySubgoal.get(subgoalId) || []) {
+      if (!dependencyGraphIsAcyclic(dependencyId)) return false;
+    }
+    visiting.delete(subgoalId);
+    visited.add(subgoalId);
+    return true;
+  };
+  if ([...subgoalKeys].some((subgoalId) => !dependencyGraphIsAcyclic(subgoalId))) return false;
+  return session.workItems.every((rawItem) => {
+    const item = rawItem as Record<string, unknown>;
+    if (item.goalId === undefined && item.subgoalId === undefined) return true;
+    if (!goalIds.has(String(item.goalId))) return false;
+    if (item.subgoalId === undefined) return true;
+    return subgoalKeys.has(subgoalKey(item.goalId, item.subgoalId));
+  });
 }
 
 function readProjectManagerSessions(
@@ -189,14 +277,14 @@ function readProjectManagerSessions(
           if (fs.statSync(filePath).size > MAX_SESSION_BYTES) return null;
           const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { version?: unknown; session?: unknown };
           return parsed.version === 1 && isProjectManagerSession(parsed.session)
-            ? {
+            ? normalizeProjectManagerSession({
                 ...parsed.session,
                 preconditions: parsed.session.preconditions || [],
                 planFiles: parsed.session.planFiles || [],
                 pendingManagerDeliveries: parsed.session.pendingManagerDeliveries || [],
                 requirementsVersion: parsed.session.requirementsVersion || 1,
                 acceptedRequirementsVersion: parsed.session.acceptedRequirementsVersion ?? 0,
-              } satisfies ProjectManagerSession
+              } satisfies ProjectManagerSession)
             : null;
         } catch {
           return null;
@@ -213,12 +301,14 @@ export function saveProjectManagerSession(
   session: ProjectManagerSession,
   appDataDir = getAppDataDir(),
 ): { path: string } {
-  validateIdentity(session.id, session.projectDir);
+  const normalized = normalizeProjectManagerSession(session);
+  validateIdentity(normalized.id, normalized.projectDir);
+  if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
   const directory = recordsDirectory(appDataDir);
   fs.mkdirSync(directory, { recursive: true });
   const sessionPath = path.join(directory, `${session.id}.json`);
   const temporaryPath = path.join(directory, `${session.id}.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(temporaryPath, `${JSON.stringify({ version: 1, session }, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({ version: 1, session: normalized }, null, 2)}\n`, 'utf8');
   try {
     fs.renameSync(temporaryPath, sessionPath);
   } catch (error) {
@@ -276,27 +366,10 @@ export function appendProjectManagerRecord(
   return { path: recordPath };
 }
 
-export function readLatestProjectManagerSession(
-  projectDir: string,
-  appDataDir = getAppDataDir(),
-): ProjectManagerSession | null {
-  if (!path.isAbsolute(projectDir)) return null;
-  const projectKey = normalizedProjectDirectoryKey(projectDir);
-  return readProjectManagerSessions(appDataDir)
-    .find((session) => normalizedProjectDirectoryKey(session.projectDir) === projectKey) || null;
-}
-
 export function readActiveProjectManagerSessions(
   appDataDir = getAppDataDir(),
 ): ProjectManagerSession[] {
-  const directories = new Set<string>();
   return readProjectManagerSessions(appDataDir)
-    .filter((session) => {
-      const key = normalizedProjectDirectoryKey(session.projectDir);
-      if (!key || directories.has(key)) return false;
-      directories.add(key);
-      return true;
-    })
     .filter((session) => ['active', 'paused', 'waiting'].includes(session.status));
 }
 

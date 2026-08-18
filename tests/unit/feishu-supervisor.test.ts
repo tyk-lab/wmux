@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, projectManagerViewFromStatusResult, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 import { USER_RECORDS_TERMINAL_DIRECTORY } from '../../src/shared/user-records-terminal';
 
@@ -699,6 +699,28 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
     expect(laneControl).toContain('stop-lane');
+  });
+
+  it('飞书状态投影保留项目身份、当前主目标和阶段计划', () => {
+    const view = projectManagerViewFromStatusResult({
+      session: {
+        id: 'pm-a', projectDir: 'E:\\repo', projectName: '认证项目', projectScope: '仅认证模块',
+        activeGoalId: 'goal-2', status: 'active', goal: '完成第二阶段认证',
+        goals: [{ id: 'goal-2', sequence: 2, statement: '完成第二阶段认证', status: 'active' }],
+        subgoals: [{ id: 'integration', goalId: 'goal-2', title: '集成验收', outcome: '完成集成', status: 'planned', order: 1 }],
+        workItems: [{ goalId: 'goal-2', subgoalId: 'integration', title: '集成任务', status: 'planned' }],
+        events: [{ ts: 1, kind: 'manager-reply', summary: '当前计划已建立' }],
+      },
+      projects: [{ id: 'pm-a', projectName: '认证项目', activeGoalId: 'goal-2' }],
+    });
+
+    expect(view).toMatchObject({
+      projectId: 'pm-a', projectName: '认证项目', projectScope: '仅认证模块', activeGoalId: 'goal-2',
+      goals: [expect.objectContaining({ id: 'goal-2', sequence: 2 })],
+      subgoals: [expect.objectContaining({ id: 'integration', goalId: 'goal-2' })],
+      workItems: [expect.objectContaining({ goalId: 'goal-2', subgoalId: 'integration' })],
+      conversation: [expect.objectContaining({ summary: '当前计划已建立' })],
+    });
   });
 
   it('项目管理 AI 对话默认折叠较早记录并可在原卡片展开和收起', () => {

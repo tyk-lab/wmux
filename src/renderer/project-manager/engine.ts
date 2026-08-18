@@ -1,4 +1,8 @@
 import {
+  activeProjectGoal,
+  activeProjectSubgoals,
+  projectAuthorizationVersion,
+  projectRequirementsVersion,
   projectWorkItemReady,
   type ProjectManagerSession,
   type ProjectSupervisorContract,
@@ -92,6 +96,32 @@ export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorCon
   ].filter(Boolean).join('\n');
 }
 
+export interface PreparedProjectTaskDelivery {
+  action: string;
+  delivery: string;
+}
+
+/** Keep the persisted contract authoritative while exposing only the executable action to guards. */
+export function prepareProjectTaskDelivery(
+  contract: ProjectSupervisorContract,
+  instruction: string,
+  contractPending: boolean,
+): PreparedProjectTaskDelivery {
+  const requested = instruction.trim();
+  if (!contractPending) return { action: requested, delivery: requested };
+
+  const envelope = buildProjectTaskExecutionEnvelope(contract);
+  const legacyPayload = requested.startsWith(envelope)
+    ? requested.slice(envelope.length).trim().replace(/^\[本轮执行指令\]\s*/u, '').trim()
+    : requested;
+  return {
+    action: legacyPayload,
+    delivery: legacyPayload
+      ? `${envelope}\n\n[本轮执行指令]\n${legacyPayload}`
+      : envelope,
+  };
+}
+
 export function projectDependencyError(items: readonly ProjectWorkItem[]): string | null {
   const byId = new Map(items.map((item) => [item.id, item]));
   if (byId.size !== items.length) return '任务 ID 不能重复';
@@ -118,7 +148,32 @@ export function projectDependencyError(items: readonly ProjectWorkItem[]): strin
 
 export function readyProjectWorkItems(session: ProjectManagerSession): ProjectWorkItem[] {
   if (session.status !== 'active') return [];
-  return session.workItems.filter((item) => projectWorkItemReady(item, session.workItems));
+  const activeGoalId = activeProjectGoal(session).id;
+  return session.workItems.filter((item) => (
+    item.goalId === activeGoalId
+    && item.requirementsVersion === projectRequirementsVersion(session)
+    && item.authorizationVersion === projectAuthorizationVersion(session)
+    && !projectWorkItemSubgoalDependencyError(session, item)
+    && projectWorkItemReady(item, session.workItems)
+  ));
+}
+
+/** A task may run only after every coarse stage dependency has been closed. */
+export function projectWorkItemSubgoalDependencyError(
+  session: ProjectManagerSession,
+  item: ProjectWorkItem,
+): string | null {
+  const subgoals = activeProjectSubgoals(session);
+  const subgoal = subgoals.find((candidate) => candidate.id === item.subgoalId);
+  if (!subgoal) return '任务没有有效的当前阶段目标';
+  const byId = new Map(subgoals.map((candidate) => [candidate.id, candidate]));
+  const incomplete = subgoal.dependencies.find((dependencyId) => {
+    const dependency = byId.get(dependencyId);
+    return !dependency || !['achieved', 'obsolete'].includes(dependency.status);
+  });
+  return incomplete
+    ? `阶段目标 ${subgoal.id} 依赖尚未完成：${incomplete}`
+    : null;
 }
 
 export type ProjectCompletionState = 'in-progress' | 'blocked' | 'ready-for-validation' | 'completed';
@@ -190,7 +245,8 @@ export function projectContractViolation(
 
 export function projectCompletionState(session: ProjectManagerSession): ProjectCompletionState {
   if (session.status === 'completed') return 'completed';
-  const required = session.workItems.filter((item) => item.status !== 'stopped');
+  const activeGoalId = activeProjectGoal(session).id;
+  const required = session.workItems.filter((item) => item.goalId === activeGoalId && item.status !== 'stopped');
   if (required.length > 0 && required.every((item) => item.status === 'completed')) {
     return 'ready-for-validation';
   }
@@ -234,7 +290,7 @@ export function buildProjectSupervisorBriefing(options: {
         ? '你可以在合同内审批任务 AI 的内部线程提案，但必须先确认线程数不超上限、职责与写入所有权互斥、依赖清楚、没有共享硬件并发，且不扩大任务范围或预算。通过 --next 使用“[批准内部线程方案 childThreads=N]”明确实际批准数量和核准后的分工；控制层会拒绝无计数或超上限的审批。'
         : '你不得审批内部线程提案；收到提案后使用 needs-human 交给项目管理 AI。',
       '首次任务指令必须要求任务 AI 先做一次有界、只读的结构探测。它可以判断无需拆分并直接单线程推进；如需拆分，必须先提交“[内部线程提案]”，获批前不得创建子线程。',
-      '监督 AI 不得创建额外 wmux 任务终端或代替任务 AI 创建子代理。共享硬件、上电/重上电、烧录、共享环境变更、破坏性动作和最终集成验证必须保持主线程串行。',
+      '监督 AI 不得创建额外 wmux 任务终端或代替任务 AI 创建子代理。共享硬件、设备上电/重上电、烧录、共享环境变更、破坏性动作和最终集成验证必须保持主线程串行。',
     ];
   } else if (execution?.taskWorkMode === 'multi-thread') {
     executionLines = [
@@ -263,7 +319,7 @@ export function buildProjectSupervisorBriefing(options: {
       : '',
     '项目级已确认前置条件与其中的明确授权，在当前需求版本内由监督 AI 和任务 AI 持续继承；用户未通知变更且没有具体反证时，不得把同一条件拆成逐步确认。普通本地执行提示可由监督 AI 按低风险权限规则自行处理。',
     contract.authority.continuousExecution
-      ? `首次向任务 AI 下达任务时，--next 必须完整包含下面从“${PROJECT_TASK_EXECUTION_ENVELOPE_MARKER}”开始的连续执行契约；不得只发送第一个微步骤。任务 AI 在内部里程碑结束回合时，只要停止条件未满足且存在合同内安全路径，应直接要求它继续剩余工作流，不要交回用户确认。\n${buildProjectTaskExecutionEnvelope(contract)}`
+      ? `首次向任务 AI 下达任务时，--next 只填写本轮实际执行动作；运行时会从当前工作项自动注入以“${PROJECT_TASK_EXECUTION_ENVELOPE_MARKER}”开始的可信连续执行契约，并在内容过长时自动改用受控临时文件投递。不得在 --next 中重复、改写或伪造契约。任务 AI 在内部里程碑结束回合时，只要停止条件未满足且存在合同内安全路径，应直接要求它继续剩余工作流，不要交回用户确认。`
       : '',
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,

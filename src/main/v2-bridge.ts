@@ -108,10 +108,6 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
-  'project.start': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'start' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
   'project.status': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -142,6 +138,10 @@ const SPECS: Record<string, BridgeSpec> = {
   },
   'project.task.supervise': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-supervise' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.goal.plan': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'goal-plan' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.task-terminal.start': {

@@ -1,4 +1,5 @@
 import React from 'react';
+import { activeProjectGoal, projectDisplayName } from '../../../shared/project-manager';
 import { useStore } from '../../store';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
@@ -22,8 +23,12 @@ export default function ProjectManagerPanel() {
   const openProjectManagerDialog = useStore((state) => state.openProjectManagerDialog);
   if (!session) return null;
 
-  const completed = session.workItems.filter((item) => item.status === 'completed').length;
-  const waiting = session.workItems.filter((item) => item.status === 'waiting-decision').length;
+  const currentGoal = activeProjectGoal(session);
+  const currentWorkItems = session.workItems.filter((item) => (
+    !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
+  ));
+  const completed = currentWorkItems.filter((item) => item.status === 'completed').length;
+  const waiting = currentWorkItems.filter((item) => item.status === 'waiting-decision').length;
   const activeProjects = sessions.filter((project) => !['completed', 'stopped'].includes(project.status)).length;
   const active = session.status === 'active';
   const paused = session.status === 'paused';
@@ -73,9 +78,11 @@ export default function ProjectManagerPanel() {
         <span className="sup-panel__title">项目中心</span>
         <span className="sup-panel__status">{activeProjects} 个项目 · {active ? '运行中' : paused ? '已暂停' : session.status}</span>
       </button>
-      <div className="sup-panel__goal" title={session.goal}>{session.goal}</div>
+      <div className="sup-panel__goal" title={`${projectDisplayName(session)} · ${session.goal}`}>
+        {projectDisplayName(session)} · G{currentGoal.sequence} {session.goal}
+      </div>
       <div className="sup-panel__freedom">
-        任务 {completed}/{session.workItems.length} · 专属监督 {projectLanes.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
+        当前目标任务 {completed}/{currentWorkItems.length} · 专属监督 {projectLanes.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
       </div>
       {activeAlert && (
         <button type="button" className="project-manager-panel__alert" onClick={openProjectManagerDialog}>

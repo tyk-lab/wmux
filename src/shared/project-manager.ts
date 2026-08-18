@@ -5,6 +5,10 @@ export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
+export type ProjectGoalStatus = 'transitioning' | 'active' | 'achieved' | 'superseded' | 'abandoned';
+
+export type ProjectSubgoalStatus = 'planned' | 'active' | 'blocked' | 'achieved' | 'obsolete';
+
 export type ProjectWorkItemStatus =
   | 'planned'
   | 'waiting-dependencies'
@@ -39,6 +43,8 @@ export type ProjectManagerEventKind =
   | 'requirements-alignment-required'
   | 'requirements-alignment-confirmed'
   | 'project-definition-updated'
+  | 'project-subgoals-updated'
+  | 'project-goal-completed'
   | 'project-preconditions-updated'
   | 'supervisor-decision'
   | 'guard-triggered'
@@ -185,8 +191,44 @@ export interface ProjectExecutionRecord {
   fullSuite?: boolean;
 }
 
+/** A user-owned main-goal episode inside a long-lived project. */
+export interface ProjectGoalRevision {
+  id: string;
+  sequence: number;
+  statement: string;
+  doneWhen: string[];
+  status: ProjectGoalStatus;
+  requirementsVersion: number;
+  supersedesGoalId?: string;
+  changeReason?: string;
+  createdAt: number;
+  activatedAt?: number;
+  closedAt?: number;
+}
+
+/** A coarse outcome planned by the project AI. It is not an executable terminal task. */
+export interface ProjectSubgoal {
+  id: string;
+  goalId: string;
+  title: string;
+  outcome: string;
+  acceptance: string[];
+  dependencies: string[];
+  status: ProjectSubgoalStatus;
+  order: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ProjectWorkItem {
   id: string;
+  /** Immutable main-goal ownership. Old-goal tasks cannot be rebound across a pivot. */
+  goalId?: string;
+  /** Coarse project-AI stage that owns this executable task. */
+  subgoalId?: string;
+  /** Requirements and inherited-authorization versions accepted for this task contract. */
+  requirementsVersion?: number;
+  authorizationVersion?: number;
   title: string;
   contract: ProjectSupervisorContract;
   status: ProjectWorkItemStatus;
@@ -224,6 +266,13 @@ export interface ProjectManagerPendingDelivery {
 export interface ProjectManagerSession {
   id: string;
   projectDir: string;
+  /** Stable identity fields. They survive main-goal changes. */
+  projectName?: string;
+  projectScope?: string;
+  /** First-class goal history. `goal` and `doneWhen` mirror the active entry for older consumers. */
+  activeGoalId?: string;
+  goals?: ProjectGoalRevision[];
+  subgoals?: ProjectSubgoal[];
   goal: string;
   /** User-owned physical, environmental, access, or resource gates for all project work. */
   preconditions: string[];
@@ -232,6 +281,8 @@ export interface ProjectManagerSession {
   doneWhen: string[];
   /** Monotonic version of user-owned goals, prerequisites, plans, and completion criteria. */
   requirementsVersion?: number;
+  /** Changes only when inherited project scope, prerequisites, or grants change. */
+  authorizationVersion?: number;
   /** Latest requirements version explicitly accepted by the project manager through resume. */
   acceptedRequirementsVersion?: number;
   status: ProjectManagerSessionStatus;
@@ -255,6 +306,12 @@ export function projectRequirementsVersion(session: Pick<ProjectManagerSession, 
   return Math.max(1, Math.trunc(session.requirementsVersion || 1));
 }
 
+export function projectAuthorizationVersion(
+  session: Pick<ProjectManagerSession, 'authorizationVersion' | 'requirementsVersion'>,
+): number {
+  return Math.max(1, Math.trunc(session.authorizationVersion || session.requirementsVersion || 1));
+}
+
 export function projectAcceptedRequirementsVersion(
   session: Pick<ProjectManagerSession, 'requirementsVersion' | 'acceptedRequirementsVersion' | 'status'>,
 ): number {
@@ -264,6 +321,97 @@ export function projectAcceptedRequirementsVersion(
   // Missing acceptance is never interpreted as authorization to execute. Old
   // snapshots may still be inspected, but must pass alignment before resuming.
   return 0;
+}
+
+function fallbackProjectName(session: Pick<ProjectManagerSession, 'projectDir' | 'goal'>): string {
+  const segments = session.projectDir.trim().replace(/[\\/]+$/u, '').split(/[\\/]/u).filter(Boolean);
+  return segments.at(-1) || session.goal.trim().slice(0, 80) || '未命名项目';
+}
+
+export function activeProjectGoal(session: ProjectManagerSession): ProjectGoalRevision {
+  const requirementsVersion = projectRequirementsVersion(session);
+  const goals = Array.isArray(session.goals) ? session.goals : [];
+  const active = goals.find((goal) => goal.id === session.activeGoalId)
+    || [...goals].reverse().find((goal) => goal.status === 'active' || goal.status === 'transitioning')
+    || goals.at(-1);
+  return active || {
+    id: `${session.id}-goal-1`,
+    sequence: 1,
+    statement: session.goal,
+    doneWhen: session.doneWhen,
+    status: session.status === 'completed' ? 'achieved' : 'active',
+    requirementsVersion,
+    createdAt: session.createdAt,
+    activatedAt: session.createdAt,
+  };
+}
+
+export function activeProjectSubgoals(session: ProjectManagerSession): ProjectSubgoal[] {
+  const goalId = activeProjectGoal(session).id;
+  return (session.subgoals || [])
+    .filter((subgoal) => subgoal.goalId === goalId)
+    .sort((left, right) => left.order - right.order || left.createdAt - right.createdAt);
+}
+
+export function projectDisplayName(session: Pick<ProjectManagerSession, 'projectName' | 'projectDir' | 'goal'>): string {
+  return session.projectName?.trim() || fallbackProjectName(session);
+}
+
+/** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
+export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
+  const requirementsVersion = projectRequirementsVersion(session);
+  const authorizationVersion = projectAuthorizationVersion(session);
+  const rawGoals = Array.isArray(session.goals) ? session.goals : [];
+  const goals = rawGoals.length > 0
+    ? rawGoals.map((goal, index) => ({
+        ...goal,
+        sequence: Math.max(1, Math.trunc(goal.sequence || index + 1)),
+        statement: goal.statement.trim(),
+        doneWhen: goal.doneWhen.map((item) => item.trim()).filter(Boolean),
+        requirementsVersion: Math.max(1, Math.trunc(goal.requirementsVersion || requirementsVersion)),
+      }))
+    : [activeProjectGoal(session)];
+  const activeGoal = goals.find((goal) => goal.id === session.activeGoalId)
+    || [...goals].reverse().find((goal) => goal.status === 'active' || goal.status === 'transitioning')
+    || goals[goals.length - 1];
+  const activeGoalId = activeGoal.id;
+  const rawSubgoals = Array.isArray(session.subgoals) ? session.subgoals : [];
+  const needsLegacySubgoal = rawSubgoals.length === 0 && session.workItems.length > 0;
+  const legacySubgoalId = `${session.id}-legacy-${activeGoalId}`;
+  const subgoals = needsLegacySubgoal
+    ? [{
+        id: legacySubgoalId,
+        goalId: activeGoalId,
+        title: '历史执行工作',
+        outcome: '保留升级前已有工作项的归属和审计记录',
+        acceptance: activeGoal.doneWhen,
+        dependencies: [],
+        status: 'active' as const,
+        order: 1,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      }]
+    : rawSubgoals;
+  return {
+    ...session,
+    projectName: projectDisplayName(session),
+    projectScope: session.projectScope?.trim() || `仅限项目目录 ${session.projectDir} 内与本项目直接相关的工作`,
+    activeGoalId,
+    goals,
+    subgoals,
+    goal: activeGoal.statement,
+    doneWhen: activeGoal.doneWhen,
+    requirementsVersion,
+    authorizationVersion,
+    acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
+    workItems: session.workItems.map((item) => ({
+      ...item,
+      goalId: item.goalId || activeGoalId,
+      subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
+      requirementsVersion: Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion)),
+      authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
+    })),
+  };
 }
 
 export type ProjectManagerAction =
@@ -283,8 +431,9 @@ export type ProjectManagerAction =
     doneWhen: string[];
     reason?: string;
     source: 'user' | 'manager';
-    mode: 'revise' | 'replace';
+    mode: 'refine' | 'pivot';
   }
+  | { type: 'set-project-subgoals'; subgoals: ProjectSubgoal[]; reason?: string; source: 'user' | 'manager' }
   | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
   | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
   | { type: 'answer-user-clarification'; questionId: string; answer: string; optionId?: string; answeredBy: 'desktop' | 'feishu' }
@@ -299,13 +448,9 @@ export type ProjectManagerAction =
     /** Only the authenticated project-manager protocol may accept a new requirements version. */
     acceptRequirementsVersion?: boolean;
   }
-  | { type: 'complete-project'; evidence: string }
+  | { type: 'complete-current-goal'; evidence: string }
   | { type: 'stop-project'; reason: string; emergency?: boolean }
   | { type: 'reply'; correlationId?: string; message: string };
-
-export function normalizedProjectDirectoryKey(value: string): string {
-  return value.trim().replace(/[\\/]+$/u, '').replace(/\\/g, '/').toLowerCase();
-}
 
 export function projectWorkItemReady(
   item: ProjectWorkItem,

@@ -174,6 +174,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     outcome,
     reason: getFlag(args, '--reason') || '',
     next: nextInput.text,
+    nextFile: nextInput.fileReference || '',
     proposalKind: getFlag(args, '--proposal-kind') || '',
     impact: getFlag(args, '--impact') || '',
     alternatives: getFlag(args, '--alternatives') || '',
@@ -190,7 +191,10 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     fullSuite: args.includes('--full-suite'),
     retry: args.includes('--retry'),
   });
-  cleanupSupervisorNextInput(nextInput, result?.ok !== false);
+  cleanupSupervisorNextInput(
+    nextInput,
+    result?.ok !== false && result?.retainNextFile !== true,
+  );
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
   // are always visible so an agent cannot mistake a rejected write for success.
@@ -213,7 +217,7 @@ async function resolveProjectScopedJsonInput(args: string[], projectId: string) 
 async function cmdProject(args: string[]): Promise<void> {
   const sub = args[1];
   const projectId = getFlag(args, '--project') || '';
-  if (!projectId && sub && sub !== 'status' && sub !== 'start'
+  if (!projectId && sub && sub !== 'status'
     && sub !== 'pause-all' && sub !== 'resume-all') {
     const portfolio = await sendV2('project.status', { projectId: '' });
     if (projectCommandNeedsExplicitId(sub, projectId, Array.isArray(portfolio?.projects) ? portfolio.projects : [])) {
@@ -222,21 +226,6 @@ async function cmdProject(args: string[]): Promise<void> {
   }
   if (sub === 'status' || sub === 'logs' || sub === 'terminals') {
     print(await sendV2(`project.${sub}`, { projectId }));
-    return;
-  }
-  if (sub === 'start') {
-    const goal = getFlag(args, '--goal') || '';
-    const preconditions = getFlag(args, '--preconditions') || '';
-    const doneWhen = getFlag(args, '--done-when') || '';
-    if (!goal || !preconditions || !doneWhen) {
-      throw new Error('project start requires --goal, --preconditions and --done-when');
-    }
-    print(await sendV2('project.start', {
-      goal,
-      preconditions: preconditions.split(/\s*;\s*/u).filter(Boolean),
-      doneWhen: doneWhen.split(/\s*;\s*/u).filter(Boolean),
-      projectDir: getFlag(args, '--project-dir') || process.cwd(),
-    }));
     return;
   }
   if (sub === 'update') {
@@ -284,6 +273,18 @@ async function cmdProject(args: string[]): Promise<void> {
     const workItemId = getFlag(args, '--task') || '';
     if (!workItemId) throw new Error('project supervise requires --task');
     print(await sendV2('project.task.supervise', { workItemId, projectId }));
+    return;
+  }
+  if (sub === 'goal-plan') {
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.goal.plan', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
     return;
   }
   if (sub === 'task-terminal-start') {
@@ -376,7 +377,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1065,9 +1066,8 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--test-command <text> --test-result <text> --changed-files <a,b> --evidence <text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
-            project update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+Project:    project update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
             project-specific commands use --project <id> (required when multiple projects exist)
             task-terminal-start and task-terminal-rotate are reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end

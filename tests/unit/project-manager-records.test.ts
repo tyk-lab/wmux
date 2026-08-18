@@ -6,12 +6,12 @@ import {
   appendProjectManagerRecord,
   deleteProjectManagerSession,
   readActiveProjectManagerSessions,
-  readLatestProjectManagerSession,
   readProjectManagerRuntimeSurfaceIds,
   saveProjectManagerSession,
 } from '../../src/main/project-manager-records';
 import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
+  normalizeProjectManagerSession,
   type ProjectManagerSession,
 } from '../../src/shared/project-manager';
 
@@ -43,15 +43,18 @@ function session(id: string, updatedAt: number): ProjectManagerSession {
   };
 }
 
+function recoveredSession(appData: string, sessionId: string): ProjectManagerSession | undefined {
+  return readActiveProjectManagerSessions(appData).find((candidate) => candidate.id === sessionId);
+}
+
 describe('project manager records', () => {
-  it('atomically saves and restores the latest session for one project', () => {
+  it('atomically replaces one project snapshot without hiding another project in the directory', () => {
     const appData = root();
     saveProjectManagerSession(session('pm-old', 10), appData);
     saveProjectManagerSession(session('pm-new', 20), appData);
     saveProjectManagerSession(session('pm-new', 30), appData);
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.id).toBe('pm-new');
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.updatedAt).toBe(30);
-    expect(readLatestProjectManagerSession('E:\\other', appData)).toBeNull();
+    expect(recoveredSession(appData, 'pm-new')?.updatedAt).toBe(30);
+    expect(readActiveProjectManagerSessions(appData).map((candidate) => candidate.id)).toEqual(['pm-new', 'pm-old']);
   });
 
   it('restores incomplete snapshots as unaccepted definitions that require alignment', () => {
@@ -63,9 +66,16 @@ describe('project manager records', () => {
     delete legacy.planFiles;
     fs.writeFileSync(path.join(directory, 'pm-legacy.json'), JSON.stringify({ version: 1, session: legacy }), 'utf8');
 
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.preconditions).toEqual([]);
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.planFiles).toEqual([]);
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.acceptedRequirementsVersion).toBe(0);
+    const restored = recoveredSession(appData, 'pm-legacy');
+    expect(restored?.preconditions).toEqual([]);
+    expect(restored?.planFiles).toEqual([]);
+    expect(restored?.acceptedRequirementsVersion).toBe(0);
+    expect(restored).toMatchObject({
+      projectName: 'repo',
+      activeGoalId: 'pm-legacy-goal-1',
+      goals: [expect.objectContaining({ statement: '完成项目', status: 'active' })],
+      authorizationVersion: 1,
+    });
   });
 
   it('persists plan snapshots and a pending user clarification for recovery', () => {
@@ -98,7 +108,7 @@ describe('project manager records', () => {
 
     saveProjectManagerSession(saved, appData);
 
-    expect(readLatestProjectManagerSession('E:\\repo', appData)).toMatchObject({
+    expect(recoveredSession(appData, 'pm-plan')).toMatchObject({
       planFiles: [{ name: 'requirements.md', content: '# 需求' }],
       pendingUserQuestion: {
         id: 'question-1', previousStatus: 'active', category: 'manual-intervention',
@@ -155,7 +165,7 @@ describe('project manager records', () => {
 
     saveProjectManagerSession(saved, appData);
 
-    expect(readLatestProjectManagerSession('E:\\repo', appData)?.workItems[0].contract.execution)
+    expect(recoveredSession(appData, 'pm-adaptive')?.workItems[0].contract.execution)
       .toMatchObject({
         taskWorkMode: 'adaptive',
         maxChildThreads: 2,
@@ -164,7 +174,50 @@ describe('project manager records', () => {
       });
   });
 
-  it('restores every active project while keeping only the latest session per directory', () => {
+  it('persists repeated stage ids in separate main goals and rejects cyclic stage plans', () => {
+    const appData = root();
+    const base = normalizeProjectManagerSession(session('pm-goals', 20));
+    const firstGoal = base.goals![0];
+    const secondGoal = {
+      ...firstGoal,
+      id: 'pm-goals-goal-2', sequence: 2, statement: '完成第二目标',
+      status: 'active' as const, requirementsVersion: 2, supersedesGoalId: firstGoal.id, createdAt: 10,
+    };
+    const repeatedStages: ProjectManagerSession = {
+      ...base,
+      activeGoalId: secondGoal.id,
+      goals: [{ ...firstGoal, status: 'superseded' }, secondGoal],
+      goal: secondGoal.statement,
+      doneWhen: secondGoal.doneWhen,
+      requirementsVersion: 2,
+      subgoals: [firstGoal, secondGoal].map((goal, index) => ({
+        id: 'implementation', goalId: goal.id, title: `实现阶段 ${index + 1}`, outcome: '形成可验收实现',
+        acceptance: ['实现可验证'], dependencies: [], status: index === 0 ? 'achieved' : 'active',
+        order: 1, createdAt: index + 1, updatedAt: index + 1,
+      })),
+    };
+    expect(() => saveProjectManagerSession(repeatedStages, appData)).not.toThrow();
+    expect(recoveredSession(appData, repeatedStages.id)?.subgoals).toHaveLength(2);
+
+    const cyclic = {
+      ...repeatedStages,
+      id: 'pm-cyclic',
+      subgoals: [
+        { ...repeatedStages.subgoals![1], id: 'a', dependencies: ['b'] },
+        { ...repeatedStages.subgoals![1], id: 'b', dependencies: ['a'] },
+      ],
+    };
+    expect(() => saveProjectManagerSession(cyclic, appData)).toThrow('invalid project manager session payload');
+
+    const competingGoals = {
+      ...repeatedStages,
+      id: 'pm-competing-goals',
+      goals: repeatedStages.goals!.map((goal) => ({ ...goal, status: 'active' as const })),
+    };
+    expect(() => saveProjectManagerSession(competingGoals, appData)).toThrow('invalid project manager session payload');
+  });
+
+  it('restores every active project including independent projects that share one directory', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-a', 50), projectDir: 'E:\\a' }, appData);
     saveProjectManagerSession({ ...session('pm-a-old', 10), projectDir: 'E:\\a\\' }, appData);
@@ -173,7 +226,9 @@ describe('project manager records', () => {
     saveProjectManagerSession({ ...session('pm-d', 20), projectDir: 'E:\\d' }, appData);
     saveProjectManagerSession({ ...session('pm-done', 60), projectDir: 'E:\\done', status: 'completed' }, appData);
 
-    expect(readActiveProjectManagerSessions(appData).map((item) => item.id)).toEqual(['pm-a', 'pm-b', 'pm-c', 'pm-d']);
+    expect(readActiveProjectManagerSessions(appData).map((item) => item.id)).toEqual([
+      'pm-a', 'pm-b', 'pm-c', 'pm-d', 'pm-a-old',
+    ]);
   });
 
   it('does not truncate the recovery list at the former session-file ceiling', () => {
@@ -188,11 +243,13 @@ describe('project manager records', () => {
     expect(readActiveProjectManagerSessions(appData)).toHaveLength(105);
   });
 
-  it('does not resurrect an older active session after the same directory was completed', () => {
+  it('keeps an independent active project recoverable when another project in the directory completed', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-stale', 10), projectDir: 'E:\\finished' }, appData);
     saveProjectManagerSession({ ...session('pm-finished', 20), projectDir: 'e:\\finished\\', status: 'completed' }, appData);
-    expect(readActiveProjectManagerSessions(appData)).toEqual([]);
+    expect(readActiveProjectManagerSessions(appData)).toEqual([
+      expect.objectContaining({ id: 'pm-stale', status: 'active' }),
+    ]);
   });
 
   it('returns restart-unsafe task terminal ids from active and completed projects', () => {
@@ -218,7 +275,7 @@ describe('project manager records', () => {
       version: 1,
       session: { ...session('pm-bad', 100), workItems: [{}] },
     }), 'utf8');
-    expect(readLatestProjectManagerSession('E:\\repo', appData)).toBeNull();
+    expect(recoveredSession(appData, 'pm-bad')).toBeUndefined();
   });
 
   it('appends bounded audit records outside the project tree', () => {

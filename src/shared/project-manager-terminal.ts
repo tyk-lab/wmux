@@ -84,10 +84,11 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '首次启动项目时只执行一次需求充分性检查；恢复时沿用持久化结论或待确认问题，不得重复对齐。',
   '存在会改变方案的实质歧义时，禁止只在项目管理终端输出问题后等待；必须执行 wmux project ask --project <项目ID>，使用 category=clarification，一次只问一个问题，提供 2-4 个互斥方案并设置 recommendedOptionId。',
-  '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；记录后再显式恢复。',
+  '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
   '执行阶段的技术方案、任务路由、依赖调整、有限重试和原目标内重规划由项目管理 AI 决定；只有确需人工操作或用户专属决定时才用 category=manual-intervention，并附 workItemId、blocker 及允许的 reasonCode。',
   '用户已写入项目的前置条件及其中明确授权，在当前需求版本内持续有效；用户未通知变化且没有具体反证时，不得让项目 AI、监督 AI 或任务 AI 逐步重复确认。任务 AI 自身再次询问不代表条件已变化。',
+  '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',
 ].join('\n');
 
 export function projectManagerStartupInput(

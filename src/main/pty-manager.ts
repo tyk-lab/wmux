@@ -242,6 +242,7 @@ function buildShellArgs(
 
 interface PtyEntry {
   pty: pty.IPty;
+  cwd: string;
   dataListeners: Set<(data: string) => void>;
   exitListeners: Set<(code: number) => void>;
   // Serial queue: long writes are split into ConPTY-friendly chunks and
@@ -440,6 +441,7 @@ export class PtyManager {
 
     const entry: PtyEntry = {
       pty: ptyProcess,
+      cwd: spawnCwd || process.cwd(),
       dataListeners: new Set(),
       exitListeners: new Set(),
       writeChain: Promise.resolve(),
@@ -547,6 +549,28 @@ export class PtyManager {
         entry.pendingChunks = Math.max(0, entry.pendingChunks - 1);
       });
     return delivery;
+  }
+
+  /** Persist oversized AI input beside the target local terminal instead of pasting it through ConPTY. */
+  stageInputFile(id: SurfaceId, content: string): { reference: string } {
+    const entry = this.ptys.get(id);
+    if (!entry || !entry.alive) throw new Error('目标终端不存在或已退出');
+    if (entry.sshProfileId) throw new Error('SSH 远程终端不能读取本地 .wmux/tmp/ 临时文件');
+    if (!content || content.length > 256_000) throw new Error('临时投递文件必须为 1-256000 字符');
+
+    const cwd = fs.realpathSync(entry.cwd);
+    const tempRoot = path.join(cwd, '.wmux', 'tmp');
+    fs.mkdirSync(tempRoot, { recursive: true });
+    const realTempRoot = fs.realpathSync(tempRoot);
+    const relativeTempRoot = path.relative(cwd, realTempRoot);
+    if (relativeTempRoot.startsWith('..') || path.isAbsolute(relativeTempRoot)) {
+      throw new Error('.wmux/tmp/ 临时目录不得指向工作目录之外');
+    }
+
+    const fileName = `terminal-input-${Date.now()}-${uuidv4().slice(0, 8)}.txt`;
+    const filePath = path.join(realTempRoot, fileName);
+    fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    return { reference: `.wmux/tmp/${fileName}` };
   }
 
   private writeChunked(entry: PtyEntry, data: string): Promise<boolean> {

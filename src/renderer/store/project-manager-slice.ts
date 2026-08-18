@@ -1,10 +1,15 @@
 import type { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import {
+  activeProjectGoal,
+  normalizeProjectManagerSession,
+  projectAcceptedRequirementsVersion,
+  projectAuthorizationVersion,
   projectRequirementsVersion,
   type ProjectManagerAction,
   type ProjectManagerEvent,
   type ProjectManagerSession,
+  type ProjectSubgoal,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
 import { projectDependencyError } from '../project-manager/engine';
@@ -27,6 +32,8 @@ export interface ProjectManagerSlice {
   closeProjectManagerDialog: () => void;
   startProjectManager: (options: {
     projectDir: string;
+    projectName?: string;
+    projectScope?: string;
     goal: string;
     preconditions?: string[];
     planFiles?: ProjectManagerSession['planFiles'];
@@ -86,6 +93,28 @@ function updateWorkItem(
   };
 }
 
+function projectSubgoalDependencyError(subgoals: readonly ProjectSubgoal[]): string | null {
+  const byId = new Map(subgoals.map((subgoal) => [subgoal.id, subgoal]));
+  if (byId.size !== subgoals.length) return '阶段目标 ID 不能重复';
+  for (const subgoal of subgoals) {
+    const missing = subgoal.dependencies.find((dependency) => !byId.has(dependency));
+    if (missing) return `阶段目标 ${subgoal.id} 依赖不存在的阶段目标 ${missing}`;
+    if (subgoal.dependencies.includes(subgoal.id)) return `阶段目标 ${subgoal.id} 不能依赖自身`;
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (visiting.has(id)) return true;
+    if (visited.has(id)) return false;
+    visiting.add(id);
+    if (byId.get(id)?.dependencies.some(visit)) return true;
+    visiting.delete(id);
+    visited.add(id);
+    return false;
+  };
+  return subgoals.some((subgoal) => visit(subgoal.id)) ? '阶段目标依赖不能形成循环' : null;
+}
+
 export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set, get) => ({
   projectManager: null,
   projectManagers: [],
@@ -99,14 +128,30 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
   },
   startProjectManager(options) {
     const now = Date.now();
+    const id = `pm-${uuid()}`;
+    const goalId = `${id}-goal-1`;
     const session: ProjectManagerSession = {
-      id: `pm-${uuid()}`,
+      id,
       projectDir: options.projectDir,
+      projectName: options.projectName?.trim(),
+      projectScope: options.projectScope?.trim(),
+      activeGoalId: goalId,
+      goals: [{
+        id: goalId,
+        sequence: 1,
+        statement: options.goal,
+        doneWhen: options.doneWhen,
+        status: 'transitioning',
+        requirementsVersion: 1,
+        createdAt: now,
+      }],
+      subgoals: [],
       goal: options.goal,
       preconditions: options.preconditions || [],
       planFiles: options.planFiles || [],
       doneWhen: options.doneWhen,
       requirementsVersion: 1,
+      authorizationVersion: 1,
       acceptedRequirementsVersion: 0,
       status: 'active',
       recoveryState: 'ready',
@@ -117,29 +162,32 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       createdAt: now,
       updatedAt: now,
     };
+    const normalized = normalizeProjectManagerSession(session);
     set((state) => ({
-      projectManager: session,
-      projectManagers: upsertProjectManagerSession(state.projectManagers, session),
-      selectedProjectManagerId: session.id,
+      projectManager: normalized,
+      projectManagers: upsertProjectManagerSession(state.projectManagers, normalized),
+      selectedProjectManagerId: normalized.id,
     }));
-    return session;
+    return normalized;
   },
   restoreProjectManager(session) {
     if (!session) {
       set({ projectManager: null, projectManagers: [], selectedProjectManagerId: null });
       return;
     }
+    const normalized = normalizeProjectManagerSession(session);
     set((state) => ({
-      projectManager: session,
-      projectManagers: upsertProjectManagerSession(state.projectManagers, session),
-      selectedProjectManagerId: session.id,
+      projectManager: normalized,
+      projectManagers: upsertProjectManagerSession(state.projectManagers, normalized),
+      selectedProjectManagerId: normalized.id,
     }));
   },
   restoreProjectManagers(sessions, selectedId) {
-    const selected = sessions.find((session) => session.id === selectedId) || sessions[0] || null;
+    const normalized = sessions.map(normalizeProjectManagerSession);
+    const selected = normalized.find((session) => session.id === selectedId) || normalized[0] || null;
     set({
       projectManager: selected,
-      projectManagers: [...sessions],
+      projectManagers: normalized,
       selectedProjectManagerId: selected?.id || null,
     });
   },
@@ -178,10 +226,11 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
   },
   applyProjectManagerAction(action, sessionId) {
     const state = get();
-    const session = sessionId
+    const rawSession = sessionId
       ? state.projectManagers.find((candidate) => candidate.id === sessionId) || null
       : state.projectManager;
-    if (!session) return { ok: false, error: '当前没有项目管理会话' };
+    if (!rawSession) return { ok: false, error: '当前没有项目管理会话' };
+    const session = normalizeProjectManagerSession(rawSession);
     const now = Date.now();
     let next = session;
     let eventInput: Omit<ProjectManagerEvent, 'id' | 'sessionId' | 'ts'>;
@@ -217,13 +266,55 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (doneWhen.length === 0) return { ok: false, error: '项目完成条件不能为空' };
       const previous = {
         goal: session.goal,
+        goalId: session.activeGoalId,
         preconditions: session.preconditions,
         planFiles: session.planFiles.map((file) => ({ path: file.path, name: file.name })),
         doneWhen: session.doneWhen,
       };
+      const activeGoal = activeProjectGoal(session);
+      if (action.mode === 'refine' && ['achieved', 'superseded', 'abandoned'].includes(activeGoal.status)) {
+        return { ok: false, error: '已结束的主目标不能继续调整，请切换新的主目标' };
+      }
       const nextRequirementsVersion = projectRequirementsVersion(session) + 1;
+      const authorizationChanged = JSON.stringify(preconditions) !== JSON.stringify(session.preconditions);
+      const nextAuthorizationVersion = authorizationChanged
+        ? projectAuthorizationVersion(session) + 1
+        : projectAuthorizationVersion(session);
+      const nextGoalId = action.mode === 'pivot'
+        ? `${session.id}-goal-${Math.max(0, ...(session.goals || []).map((entry) => entry.sequence)) + 1}-${uuid()}`
+        : activeGoal.id;
+      const nextGoalSequence = action.mode === 'pivot'
+        ? Math.max(0, ...(session.goals || []).map((entry) => entry.sequence)) + 1
+        : activeGoal.sequence;
+      const goals = action.mode === 'pivot'
+        ? [
+            ...(session.goals || []).map((entry) => entry.id === activeGoal.id ? {
+              ...entry,
+              status: entry.status === 'achieved' ? 'achieved' as const : 'superseded' as const,
+              closedAt: entry.closedAt || now,
+            } : entry),
+            {
+              id: nextGoalId,
+              sequence: nextGoalSequence,
+              statement: goal,
+              doneWhen,
+              status: 'transitioning' as const,
+              requirementsVersion: nextRequirementsVersion,
+              supersedesGoalId: activeGoal.id,
+              changeReason: action.reason,
+              createdAt: now,
+            },
+          ]
+        : (session.goals || []).map((entry) => entry.id === activeGoal.id ? {
+            ...entry,
+            statement: goal,
+            doneWhen,
+            requirementsVersion: nextRequirementsVersion,
+            changeReason: action.reason || entry.changeReason,
+          } : entry);
       const workItems = session.workItems.map((item) => {
-        if (action.mode === 'replace' && !['completed', 'stopped'].includes(item.status)) {
+        if (item.goalId !== activeGoal.id || ['completed', 'stopped'].includes(item.status)) return item;
+        if (action.mode === 'pivot') {
           return {
             ...item,
             status: 'stopped' as const,
@@ -231,41 +322,132 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
             updatedAt: now,
           };
         }
-        if (!['completed', 'stopped'].includes(item.status)) {
-          return {
-            ...item,
-            status: 'waiting-decision' as const,
-            latestBlocker: '项目需求已更新，等待项目管理 AI 重新评估任务目标、范围和验收条件',
-            updatedAt: now,
-          };
-        }
-        return item;
+        return {
+          ...item,
+          status: 'waiting-decision' as const,
+          latestBlocker: '当前主目标要求已调整，等待项目 AI 评估后显式重新绑定需求和授权版本',
+          updatedAt: now,
+        };
       });
       next = {
         ...session,
+        activeGoalId: nextGoalId,
+        goals,
         goal,
         preconditions,
         planFiles: action.planFiles,
         doneWhen,
         requirementsVersion: nextRequirementsVersion,
+        authorizationVersion: nextAuthorizationVersion,
         workItems,
         status: 'waiting',
         pausedByPortfolio: false,
+        pendingUserQuestion: undefined,
       };
       eventInput = {
         kind: 'project-definition-updated',
-        summary: action.reason || `${action.source === 'user' ? '用户' : '项目管理 AI'}${action.mode === 'replace' ? '替换旧目标并要求重新规划' : '更新项目目标和需求'}`,
+        summary: action.reason || `${action.source === 'user' ? '用户' : '项目 AI'}${action.mode === 'pivot' ? '切换新的主目标' : '调整当前主目标'}`,
         payload: {
           source: action.source,
           mode: action.mode,
+          previousGoalId: activeGoal.id,
+          activeGoalId: nextGoalId,
           requirementsVersion: nextRequirementsVersion,
+          authorizationVersion: nextAuthorizationVersion,
+          supersededQuestionId: session.pendingUserQuestion?.id,
           previous,
           next: {
             goal,
+            goalId: nextGoalId,
             preconditions,
             planFiles: action.planFiles.map((file) => ({ path: file.path, name: file.name })),
             doneWhen,
           },
+        },
+      };
+    } else if (action.type === 'set-project-subgoals') {
+      const activeGoal = activeProjectGoal(session);
+      if (['achieved', 'superseded', 'abandoned'].includes(activeGoal.status)) {
+        return { ok: false, error: '当前主目标已经结束，不能再更新阶段目标' };
+      }
+      if (action.subgoals.length === 0 || action.subgoals.length > 20) {
+        return { ok: false, error: '当前主目标必须包含 1-20 个阶段目标' };
+      }
+      if (action.subgoals.some((subgoal) => subgoal.goalId !== activeGoal.id)) {
+        return { ok: false, error: '阶段目标只能归属于当前主目标' };
+      }
+      const dependencyError = projectSubgoalDependencyError(action.subgoals);
+      if (dependencyError) return { ok: false, error: dependencyError };
+      const existingCurrentSubgoals = new Map((session.subgoals || [])
+        .filter((subgoal) => subgoal.goalId === activeGoal.id)
+        .map((subgoal) => [subgoal.id, subgoal]));
+      const changedAchievedSubgoal = action.subgoals.find((subgoal) => {
+        const previous = existingCurrentSubgoals.get(subgoal.id);
+        return previous?.status === 'achieved' && (
+          subgoal.status !== 'achieved'
+          || subgoal.title !== previous.title
+          || subgoal.outcome !== previous.outcome
+          || JSON.stringify(subgoal.acceptance) !== JSON.stringify(previous.acceptance)
+          || JSON.stringify(subgoal.dependencies) !== JSON.stringify(previous.dependencies)
+        );
+      });
+      if (changedAchievedSubgoal) {
+        return {
+          ok: false,
+          error: `已验收阶段目标 ${changedAchievedSubgoal.id} 只能保留为历史，不能撤销或改写`,
+        };
+      }
+      const incomingIds = new Set(action.subgoals.map((subgoal) => subgoal.id));
+      const incomingById = new Map(action.subgoals.map((subgoal) => [subgoal.id, subgoal]));
+      const invalidatedTask = session.workItems.find((item) => {
+        if (item.goalId !== activeGoal.id || !item.subgoalId || ['completed', 'stopped'].includes(item.status)) return false;
+        const nextSubgoal = incomingById.get(item.subgoalId);
+        const previousSubgoal = existingCurrentSubgoals.get(item.subgoalId);
+        return !nextSubgoal
+          || ['achieved', 'obsolete'].includes(nextSubgoal.status)
+          || (['running', 'validating'].includes(item.status)
+            && JSON.stringify(nextSubgoal.dependencies) !== JSON.stringify(previousSubgoal?.dependencies || []));
+      });
+      if (invalidatedTask) {
+        return {
+          ok: false,
+          error: `任务 ${invalidatedTask.id} 的运行阶段将被结束、移除或改变依赖；请先暂停/停止任务或保持当前阶段执行边界`,
+        };
+      }
+      const retained = (session.subgoals || []).map((subgoal) => (
+        subgoal.goalId === activeGoal.id && !incomingIds.has(subgoal.id) && subgoal.status !== 'achieved'
+          ? { ...subgoal, status: 'obsolete' as const, updatedAt: now }
+          : subgoal
+      ));
+      const subgoalKey = (subgoal: Pick<ProjectSubgoal, 'goalId' | 'id'>) => `${subgoal.goalId}\u0000${subgoal.id}`;
+      const byId = new Map(retained.map((subgoal) => [subgoalKey(subgoal), subgoal]));
+      for (const subgoal of action.subgoals) {
+        const previous = existingCurrentSubgoals.get(subgoal.id);
+        byId.set(subgoalKey(subgoal), previous?.status === 'achieved' ? previous : subgoal);
+      }
+      const validIds = new Set(action.subgoals.filter((subgoal) => subgoal.status !== 'obsolete').map((subgoal) => subgoal.id));
+      const workItems = session.workItems.map((item) => (
+        item.goalId === activeGoal.id
+        && item.subgoalId
+        && !validIds.has(item.subgoalId)
+        && !['completed', 'stopped'].includes(item.status)
+          ? {
+              ...item,
+              status: 'waiting-decision' as const,
+              latestBlocker: '所属阶段目标已取消，等待项目 AI 重新规划或停止任务',
+              updatedAt: now,
+            }
+          : item
+      ));
+      next = { ...session, subgoals: [...byId.values()], workItems };
+      eventInput = {
+        kind: 'project-subgoals-updated',
+        summary: action.reason || `${action.source === 'user' ? '用户' : '项目 AI'}更新当前主目标的阶段计划`,
+        payload: {
+          goalId: activeGoal.id,
+          subgoals: action.subgoals.map(({ id, title, outcome, status, order, dependencies }) => ({
+            id, title, outcome, status, order, dependencies,
+          })),
         },
       };
     } else if (action.type === 'update-project-preconditions') {
@@ -274,8 +456,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
       }
       const nextRequirementsVersion = projectRequirementsVersion(session) + 1;
+      const nextAuthorizationVersion = projectAuthorizationVersion(session) + 1;
+      const activeGoal = activeProjectGoal(session);
       const workItems = session.workItems.map((item) => (
-        ['completed', 'stopped'].includes(item.status)
+        item.goalId !== activeGoal.id || ['completed', 'stopped'].includes(item.status)
           ? item
           : {
               ...item,
@@ -288,14 +472,21 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         ...session,
         preconditions,
         requirementsVersion: nextRequirementsVersion,
+        authorizationVersion: nextAuthorizationVersion,
         workItems,
         status: 'waiting',
         pausedByPortfolio: false,
+        pendingUserQuestion: undefined,
       };
       eventInput = {
         kind: 'project-preconditions-updated',
         summary: action.reason || `更新项目前置条件：${preconditions.join('；')}`,
-        payload: { preconditions, requirementsVersion: nextRequirementsVersion },
+        payload: {
+          preconditions,
+          requirementsVersion: nextRequirementsVersion,
+          authorizationVersion: nextAuthorizationVersion,
+          supersededQuestionId: session.pendingUserQuestion?.id,
+        },
       };
     } else if (action.type === 'request-user-clarification') {
       if (session.pendingUserQuestion) {
@@ -305,6 +496,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (action.question.workItemId) {
         const index = workItems.findIndex((item) => item.id === action.question.workItemId);
         if (index < 0) return { ok: false, error: `任务不存在：${action.question.workItemId}` };
+        if (workItems[index].goalId !== activeProjectGoal(session).id) {
+          return { ok: false, error: '旧主目标任务不能再触发新的用户确认' };
+        }
         workItems = workItems.map((item, itemIndex) => itemIndex === index ? {
           ...item,
           status: 'waiting-decision',
@@ -346,19 +540,74 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (session.workItems.some((item) => item.id === action.workItem.id)) {
         return { ok: false, error: `任务 ID 已存在：${action.workItem.id}` };
       }
-      const workItems = [...session.workItems, action.workItem];
+      const activeGoal = activeProjectGoal(session);
+      const workItem = {
+        ...action.workItem,
+        goalId: action.workItem.goalId || activeGoal.id,
+        requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
+        authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),
+      };
+      if (workItem.goalId !== activeGoal.id) return { ok: false, error: '只能为当前主目标创建任务' };
+      if (workItem.subgoalId) {
+        const subgoal = (session.subgoals || []).find((candidate) => (
+          candidate.goalId === activeGoal.id && candidate.id === workItem.subgoalId
+        ));
+        if (!subgoal || ['achieved', 'obsolete'].includes(subgoal.status)) {
+          return { ok: false, error: `阶段目标不存在、已结束或不属于当前主目标：${workItem.subgoalId}` };
+        }
+      }
+      const workItems = [...session.workItems, workItem];
       const dependencyError = projectDependencyError(workItems);
       if (dependencyError) return { ok: false, error: dependencyError };
       next = { ...session, workItems };
-      eventInput = { kind: 'work-item-created', workItemId: action.workItem.id, summary: `创建任务：${action.workItem.title}` };
+      eventInput = { kind: 'work-item-created', workItemId: workItem.id, summary: `创建任务：${workItem.title}` };
     } else if (action.type === 'update-work-item') {
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({ ...item, ...action.patch, id: item.id, updatedAt: now }));
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (existing?.goalId && existing.goalId !== activeProjectGoal(session).id) {
+        return { ok: false, error: '旧主目标任务已经失效，不能修改当前目标状态' };
+      }
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (action.patch.goalId !== undefined && action.patch.goalId !== existing.goalId) {
+        return { ok: false, error: '任务的主目标归属不可变；切换主目标后必须创建新任务' };
+      }
+      if (action.patch.requirementsVersion !== undefined
+        && action.patch.requirementsVersion !== existing.requirementsVersion
+        && action.patch.requirementsVersion !== projectRequirementsVersion(session)) {
+        return { ok: false, error: '任务只能保留原需求版本或显式重绑当前需求版本' };
+      }
+      if (action.patch.authorizationVersion !== undefined
+        && action.patch.authorizationVersion !== existing.authorizationVersion
+        && action.patch.authorizationVersion !== projectAuthorizationVersion(session)) {
+        return { ok: false, error: '任务只能保留原授权版本或显式重绑当前授权版本' };
+      }
+      if (action.patch.subgoalId !== undefined && action.patch.subgoalId !== existing.subgoalId) {
+        if (['running', 'validating'].includes(existing.status)) {
+          return { ok: false, error: '运行中的任务不能直接更换阶段归属；请先暂停或停止对应执行链' };
+        }
+        const targetSubgoal = (session.subgoals || []).find((subgoal) => (
+          subgoal.goalId === activeProjectGoal(session).id
+          && subgoal.id === action.patch.subgoalId
+          && !['achieved', 'obsolete'].includes(subgoal.status)
+        ));
+        if (!targetSubgoal) return { ok: false, error: '任务只能重分配到当前主目标下的有效阶段' };
+      }
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        ...action.patch,
+        id: item.id,
+        goalId: item.goalId,
+        updatedAt: now,
+      }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       const dependencyError = projectDependencyError(updated.workItems);
       if (dependencyError) return { ok: false, error: dependencyError };
       next = updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
     } else if (action.type === 'record-execution') {
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (existing?.goalId && existing.goalId !== activeProjectGoal(session).id) {
+        return { ok: false, error: '旧主目标任务已经失效，不能再追加执行记录' };
+      }
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
         decisionsUsed: item.decisionsUsed + 1,
@@ -372,27 +621,70 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
       eventInput = { kind: 'project-paused', summary: action.reason || '项目已暂停' };
     } else if (action.type === 'resume-project') {
+      const activeGoal = activeProjectGoal(session);
       next = {
         ...session,
         status: 'active',
+        goals: (session.goals || []).map((goal) => goal.id === activeGoal.id && goal.status === 'transitioning'
+          ? { ...goal, status: 'active' as const, activatedAt: now }
+          : goal),
         pausedByPortfolio: false,
         ...(action.acceptRequirementsVersion
           ? { acceptedRequirementsVersion: projectRequirementsVersion(session) }
           : {}),
       };
       eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
-    } else if (action.type === 'complete-project') {
-      const required = session.workItems.filter((item) => item.status !== 'stopped');
+    } else if (action.type === 'complete-current-goal') {
+      const activeGoal = activeProjectGoal(session);
+      const required = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
       if (required.length === 0 || required.some((item) => item.status !== 'completed')) {
-        return { ok: false, error: '所有未停止的项目任务完成后才能完成项目' };
+        return { ok: false, error: '当前主目标的所有未停止任务完成后才能完成主目标' };
       }
       const blocked = required.find((item) => !!item.latestBlocker?.trim());
       if (blocked) {
-        return { ok: false, error: `任务仍有未解决阻塞，不能完成项目：${blocked.title} · ${blocked.latestBlocker}` };
+        return { ok: false, error: `任务仍有未解决阻塞，不能完成主目标：${blocked.title} · ${blocked.latestBlocker}` };
       }
-      if (!action.evidence.trim()) return { ok: false, error: '完成项目必须提供项目级验证证据' };
-      next = { ...session, status: 'completed' };
-      eventInput = { kind: 'project-completed', summary: '项目级验收已完成', payload: { evidence: action.evidence.trim() } };
+      if (!action.evidence.trim()) return { ok: false, error: '完成主目标必须提供目标级验证证据' };
+      if (session.status !== 'active') {
+        return { ok: false, error: '项目必须处于运行中，完成复核后才能结束当前主目标' };
+      }
+      if (projectAcceptedRequirementsVersion(session) !== projectRequirementsVersion(session)) {
+        return { ok: false, error: '最新主目标要求尚未由项目 AI 接受，不能完成主目标' };
+      }
+      const staleEvidence = required.find((item) => (
+        item.requirementsVersion !== projectRequirementsVersion(session)
+        || item.authorizationVersion !== projectAuthorizationVersion(session)
+      ));
+      if (staleEvidence) {
+        return { ok: false, error: `任务 ${staleEvidence.id} 的证据属于旧需求或授权版本，必须先复核并显式重绑` };
+      }
+      const incompleteSubgoal = (session.subgoals || []).find((subgoal) => (
+        subgoal.goalId === activeGoal.id
+        && !subgoal.id.startsWith(`${session.id}-legacy-`)
+        && !['achieved', 'obsolete'].includes(subgoal.status)
+      ));
+      if (incompleteSubgoal) {
+        return { ok: false, error: `阶段目标尚未验收：${incompleteSubgoal.title}` };
+      }
+      next = {
+        ...session,
+        status: 'waiting',
+        goals: (session.goals || []).map((goal) => goal.id === activeGoal.id ? {
+          ...goal,
+          status: 'achieved' as const,
+          closedAt: now,
+        } : goal),
+        subgoals: (session.subgoals || []).map((subgoal) => (
+          subgoal.goalId === activeGoal.id && subgoal.status !== 'obsolete'
+            ? { ...subgoal, status: 'achieved' as const, updatedAt: now }
+            : subgoal
+        )),
+      };
+      eventInput = {
+        kind: 'project-goal-completed',
+        summary: `主目标 G${activeGoal.sequence} 已完成，项目等待下一目标`,
+        payload: { goalId: activeGoal.id, evidence: action.evidence.trim() },
+      };
     } else if (action.type === 'stop-project') {
       next = { ...session, status: 'stopped' };
       eventInput = { kind: 'project-stopped', summary: action.reason || '项目已停止', payload: { emergency: action.emergency === true } };

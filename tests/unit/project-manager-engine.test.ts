@@ -3,14 +3,17 @@ import {
   PROJECT_TASK_EXECUTION_ENVELOPE_MARKER,
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
+  prepareProjectTaskDelivery,
   projectPermissionAuthorizationError,
   projectContractViolation,
   projectCompletionState,
   projectDependencyError,
+  projectWorkItemSubgoalDependencyError,
   readyProjectWorkItems,
 } from '../../src/renderer/project-manager/engine';
 import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
+  normalizeProjectManagerSession,
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
@@ -50,10 +53,10 @@ function item(id: string, status: ProjectWorkItem['status'], dependencies: strin
 }
 
 function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['status'] = 'active'): ProjectManagerSession {
-  return {
+  return normalizeProjectManagerSession({
     id: 'pm-1', projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['环境已准备'], planFiles: [], doneWhen: ['全部测试通过'], status,
     workItems, events: [], createdAt: 1, updatedAt: 1,
-  };
+  });
 }
 
 describe('project-manager engine', () => {
@@ -69,6 +72,29 @@ describe('project-manager engine', () => {
     expect(readyProjectWorkItems(session([base, ui, api])).map((entry) => entry.id)).toEqual(['ui', 'api']);
   });
 
+  it('does not dispatch work before its coarse stage dependencies finish', () => {
+    const project = session([item('implementation', 'planned')]);
+    const goalId = project.activeGoalId!;
+    project.subgoals = [
+      {
+        id: 'design', goalId, title: '方案定稿', outcome: '形成可执行方案', acceptance: ['方案已确认'],
+        dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+      },
+      {
+        id: 'implementation', goalId, title: '实现完成', outcome: '完成实现', acceptance: ['实现可验证'],
+        dependencies: ['design'], status: 'planned', order: 2, createdAt: 1, updatedAt: 1,
+      },
+    ];
+    project.workItems[0] = { ...project.workItems[0], goalId, subgoalId: 'implementation' };
+
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[0])).toContain('design');
+    expect(readyProjectWorkItems(project)).toEqual([]);
+
+    project.subgoals[0] = { ...project.subgoals[0], status: 'achieved' };
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[0])).toBeNull();
+    expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['implementation']);
+  });
+
   it('requires project-level validation after all work completes', () => {
     expect(projectCompletionState(session([item('a', 'completed')]))).toBe('ready-for-validation');
   });
@@ -82,7 +108,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('当前需求版本内由监督 AI 和任务 AI 持续继承');
     expect(text).toContain('不得把同一条件拆成逐步确认');
     expect(text).toContain(PROJECT_TASK_EXECUTION_ENVELOPE_MARKER);
-    expect(text).toContain('不得只发送第一个微步骤');
+    expect(text).toContain('--next 只填写本轮实际执行动作');
+    expect(text).toContain('内容过长时自动改用受控临时文件投递');
   });
 
   it('builds one continuous execution envelope instead of a micro-step', () => {
@@ -93,6 +120,23 @@ describe('project-manager engine', () => {
     expect(text).toContain('停止条件：认证测试通过');
     expect(text).toContain('验证要求：npm test -- auth');
     expect(text).toContain('连续工作流推进到停止条件');
+  });
+
+  it('injects the trusted contract while exposing only the executable action to guards', () => {
+    const contract = item('auth', 'planned').contract;
+    const envelope = buildProjectTaskExecutionEnvelope(contract);
+    const prepared = prepareProjectTaskDelivery(contract, '检查认证实现并完成合同内验证', true);
+    expect(prepared.action).toBe('检查认证实现并完成合同内验证');
+    expect(prepared.delivery).toBe(`${envelope}\n\n[本轮执行指令]\n${prepared.action}`);
+    expect(projectContractViolation(contract, { instruction: prepared.action })).toBeNull();
+
+    const legacy = prepareProjectTaskDelivery(
+      contract,
+      `${envelope}\n\n[本轮执行指令]\n检查认证实现`,
+      true,
+    );
+    expect(legacy.action).toBe('检查认证实现');
+    expect(legacy.delivery).toBe(`${envelope}\n\n[本轮执行指令]\n检查认证实现`);
   });
 
   it('requires explicit permission grant and narrows tests with command prefixes', () => {

@@ -43,6 +43,13 @@ export function terminalRuntimeStatus(surfaceId: string): TerminalRuntimeStatus 
   return statuses.get(surfaceId);
 }
 
+/** Reject automated input after the nested Agent has failed or exited. */
+export function terminalRuntimeInputError(surfaceId: string): string | null {
+  const status = statuses.get(surfaceId);
+  if (status?.state !== 'failed' && status?.state !== 'exited') return null;
+  return status.detail || '终端 Agent 运行时不可用';
+}
+
 export function onTerminalRuntimeStatus(listener: RuntimeListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

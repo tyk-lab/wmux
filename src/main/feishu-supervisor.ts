@@ -866,12 +866,19 @@ export function buildSupervisorControlMenuCard(
   };
 }
 
-interface FeishuProjectManagerView {
+export interface FeishuProjectManagerView {
   projectId?: string;
   projectDir?: string;
+  projectName?: string;
+  projectScope?: string;
+  activeGoalId?: string;
   status?: string;
   goal?: string;
+  goals?: Array<{ id?: string; sequence?: number; statement?: string; status?: string }>;
+  subgoals?: Array<{ id?: string; goalId?: string; title?: string; outcome?: string; status?: string; order?: number }>;
   workItems?: Array<{
+    goalId?: string;
+    subgoalId?: string;
     status?: string;
     title?: string;
     latestEvidence?: string;
@@ -885,7 +892,7 @@ interface FeishuProjectManagerView {
     };
   }>;
   managedSupervisors?: Array<{ label?: string; status?: string; workerSurfaceId?: string; taskWorkMode?: string }>;
-  projects?: Array<{ id?: string; projectDir?: string; status?: string; goal?: string; pausedByPortfolio?: boolean }>;
+  projects?: Array<{ id?: string; projectDir?: string; projectName?: string; activeGoalId?: string; goals?: Array<{ id?: string; sequence?: number }>; status?: string; goal?: string; pausedByPortfolio?: boolean }>;
   events?: Array<{ ts?: number; kind?: string; summary?: string; correlationId?: string }>;
   conversation?: Array<{ ts?: number; kind?: string; summary?: string; correlationId?: string }>;
   pendingUserQuestion?: FeishuProjectClarification;
@@ -906,6 +913,41 @@ export type ProjectManagerCardView = 'overview' | 'chat' | 'chat-expanded' | 'de
 
 const FEISHU_PROJECT_RECENT_ITEM_LIMIT = 6;
 const FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT = 3;
+
+/** Keep the Feishu projection in sync with the first-class project/goal model. */
+export function projectManagerViewFromStatusResult(statusResult: unknown): FeishuProjectManagerView | null {
+  const root = isObject(statusResult) ? statusResult : null;
+  const rawSession = root && isObject(root.session)
+    ? root.session
+    : null;
+  if (!rawSession) return null;
+  return {
+    projectId: typeof rawSession.id === 'string' ? rawSession.id : undefined,
+    projectDir: typeof rawSession.projectDir === 'string' ? rawSession.projectDir : undefined,
+    projectName: typeof rawSession.projectName === 'string' ? rawSession.projectName : undefined,
+    projectScope: typeof rawSession.projectScope === 'string' ? rawSession.projectScope : undefined,
+    activeGoalId: typeof rawSession.activeGoalId === 'string' ? rawSession.activeGoalId : undefined,
+    status: typeof rawSession.status === 'string' ? rawSession.status : undefined,
+    goal: typeof rawSession.goal === 'string' ? rawSession.goal : undefined,
+    goals: Array.isArray(rawSession.goals) ? rawSession.goals as FeishuProjectManagerView['goals'] : [],
+    subgoals: Array.isArray(rawSession.subgoals) ? rawSession.subgoals as FeishuProjectManagerView['subgoals'] : [],
+    workItems: Array.isArray(rawSession.workItems) ? rawSession.workItems as FeishuProjectManagerView['workItems'] : [],
+    managedSupervisors: Array.isArray(rawSession.managedSupervisors)
+      ? rawSession.managedSupervisors as FeishuProjectManagerView['managedSupervisors']
+      : [],
+    pendingUserQuestion: isObject(rawSession.pendingUserQuestion)
+      ? rawSession.pendingUserQuestion as unknown as FeishuProjectClarification
+      : undefined,
+    projects: Array.isArray(root?.projects)
+      ? root.projects as FeishuProjectManagerView['projects']
+      : [],
+    conversation: Array.isArray(rawSession.events)
+      ? (rawSession.events as FeishuProjectManagerView['conversation'])?.filter((event) => (
+          event?.kind === 'user-message' || event?.kind === 'manager-reply'
+        )).slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT)
+      : [],
+  };
+}
 
 function compactProjectCardText(value: unknown, maxLength: number): string {
   const text = String(value || '').trim();
@@ -1046,7 +1088,8 @@ export function buildProjectManagerPortfolioCard(
           {
             tag: 'markdown',
             content: [
-              `${projectManagerStatusMarker(project.status)} **${String(project.goal || '未命名项目').slice(0, 180)}**`,
+              `${projectManagerStatusMarker(project.status)} **${String(project.projectName || '未命名项目').slice(0, 100)}**`,
+              `当前主目标：G${project.goals?.find((goal) => goal.id === project.activeGoalId)?.sequence || 1} · ${String(project.goal || '待设置').slice(0, 160)}`,
               `状态：${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
               project.projectDir ? `目录：${String(project.projectDir).slice(0, 240)}` : '',
             ].filter(Boolean).join('\n'),
@@ -1069,7 +1112,10 @@ export function buildProjectManagerConversationCard(
   notice?: ControlNotice,
   view: ProjectManagerCardView = 'overview',
 ): object {
-  const workItems = Array.isArray(session?.workItems) ? session.workItems : [];
+  const allWorkItems = Array.isArray(session?.workItems) ? session.workItems : [];
+  const workItems = allWorkItems.filter((item) => (
+    !session?.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
+  ));
   const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
   const allConversation = Array.isArray(session?.conversation) ? session.conversation : [];
   const conversation = allConversation.slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT);
@@ -1085,6 +1131,10 @@ export function buildProjectManagerConversationCard(
   const decisionsExpanded = view === 'decisions-expanded';
   const activityView = view === 'activity' || view === 'activity-expanded';
   const activityExpanded = view === 'activity-expanded';
+  const currentGoal = session?.goals?.find((goal) => goal.id === session.activeGoalId);
+  const currentSubgoals = (session?.subgoals || [])
+    .filter((subgoal) => subgoal.goalId === session?.activeGoalId && subgoal.status !== 'obsolete')
+    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
   let collapsedConversationStart = Math.max(0, conversation.length - 1);
   for (let index = conversation.length - 1; index >= 0; index -= 1) {
     if (conversation[index]?.kind !== 'user-message') continue;
@@ -1110,6 +1160,8 @@ export function buildProjectManagerConversationCard(
   ]);
   const overviewElements: object[] = [
     { tag: 'markdown', content: `**${projectManagerStatusMarker(session?.status)} ${status}** · 工作项 ${workItems.length} · 监督 AI ${supervisors.length} · 待决 ${waiting}` },
+    ...(currentGoal?.status === 'achieved' ? [{ tag: 'markdown', content: '✅ 当前主目标已经完成。请向项目 AI 提出同一项目的下一主目标；新目标建立阶段计划后再恢复执行。' }] : []),
+    ...(currentSubgoals.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**阶段计划**\n${currentSubgoals.map((subgoal) => `${projectManagerStatusMarker(subgoal.status)} S${subgoal.order || '-'} · ${subgoal.title || subgoal.id}\n${subgoal.outcome || ''}`).join('\n')}`, 1300) }] : [{ tag: 'markdown', content: '阶段计划尚未由项目 AI 建立；当前不会启动新的监督任务。' }]),
     ...(latestReply ? [{ tag: 'markdown', content: `**项目 AI 最新回复**\n${compactProjectCardText(latestReply.summary, 900)}` }] : [{ tag: 'markdown', content: '项目 AI 暂无回复。可进入“与 AI 对话”确认进度或补充要求。' }]),
     ...(pendingQuestion ? [{ tag: 'markdown', content: `⚠️ **等待你的决策**\n${compactProjectCardText(pendingQuestion.question, 800)}${pendingQuestion.recommendedOptionId ? '\n请在飞书决策卡或桌面项目对话中选择方案。' : ''}` }] : []),
     ...(workItems.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**当前执行**\n${workItems.slice(-3).map((item) => `${projectManagerStatusMarker(item.status)} ${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}${item.latestBlocker ? `\n阻塞：${item.latestBlocker}` : ''}`).join('\n')}`, 1400) }] : []),
@@ -1177,21 +1229,21 @@ export function buildProjectManagerConversationCard(
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: `wmux · ${session?.goal ? String(session.goal).slice(0, 40) : '项目工作台'}` }, template: pendingQuestion ? 'orange' : 'blue' },
+    header: { title: { tag: 'plain_text', content: `wmux · ${String(session?.projectName || session?.goal || '项目工作台').slice(0, 40)}` }, template: pendingQuestion ? 'orange' : 'blue' },
     body: {
       elements: [
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
-        { tag: 'markdown', content: `**${session?.goal || '未选择项目'}**${session?.projectDir ? `\n${session.projectDir}` : ''}`.slice(0, 1200) },
+        { tag: 'markdown', content: `**${session?.projectName || '未选择项目'}**\n当前主目标：G${currentGoal?.sequence || 1} · ${session?.goal || '待设置'}${session?.projectDir ? `\n${session.projectDir}` : ''}`.slice(0, 1200) },
         ...nav,
         { tag: 'hr' },
         ...(chatView ? chatElements : decisionView ? decisionElements : activityView ? activityElements : overviewElements),
         { tag: 'hr' },
         ...responsiveButtonRows([
           cardButton({ wmux_action: 'project_ai_workspace', projectId: session?.projectId || '' }, '刷新工作台'),
-          ...(session?.status === 'active' || session?.status === 'waiting'
+          ...(session?.status === 'active' || (session?.status === 'waiting' && currentGoal?.status !== 'achieved')
             ? [cardButton({ wmux_action: 'project_ai_pause', projectId: session?.projectId || '' }, '暂停项目')]
             : []),
-          ...(session?.status === 'paused' || session?.status === 'waiting'
+          ...((session?.status === 'paused' || session?.status === 'waiting') && currentGoal?.status !== 'achieved'
             ? [cardButton({ wmux_action: 'project_ai_resume', projectId: session?.projectId || '' }, '恢复项目', 'primary')]
             : []),
           cardButton({ wmux_action: 'project_ai_portfolio' }, '返回项目中心'),
@@ -3393,31 +3445,8 @@ export class FeishuSupervisorService {
   ): Promise<FeishuProjectManagerView | null> {
     const statusResult = await this.control({ action: 'project-status', projectId: projectId || undefined }, { openId, source: 'card' })
       .catch(() => null);
-    const rawSession = isObject(statusResult) && isObject(statusResult.session)
-      ? statusResult.session
-      : null;
-    if (!rawSession) return null;
-    const view: FeishuProjectManagerView = {
-      projectId: typeof rawSession.id === 'string' ? rawSession.id : undefined,
-      projectDir: typeof rawSession.projectDir === 'string' ? rawSession.projectDir : undefined,
-      status: typeof rawSession.status === 'string' ? rawSession.status : undefined,
-      goal: typeof rawSession.goal === 'string' ? rawSession.goal : undefined,
-      workItems: Array.isArray(rawSession.workItems) ? rawSession.workItems as FeishuProjectManagerView['workItems'] : [],
-      managedSupervisors: Array.isArray(rawSession.managedSupervisors)
-        ? rawSession.managedSupervisors as FeishuProjectManagerView['managedSupervisors']
-        : [],
-      pendingUserQuestion: isObject(rawSession.pendingUserQuestion)
-        ? rawSession.pendingUserQuestion as unknown as FeishuProjectClarification
-        : undefined,
-      projects: isObject(statusResult) && Array.isArray(statusResult.projects)
-        ? statusResult.projects as FeishuProjectManagerView['projects']
-        : [],
-      conversation: Array.isArray(rawSession.events)
-        ? (rawSession.events as FeishuProjectManagerView['conversation'])?.filter((event) => (
-            event?.kind === 'user-message' || event?.kind === 'manager-reply'
-          )).slice(-10)
-        : [],
-    };
+    const view = projectManagerViewFromStatusResult(statusResult);
+    if (!view) return null;
     if (!includeLogs) return view;
     const logsResult = await this.control({ action: 'project-logs', projectId: view.projectId }, { openId, source: 'card' })
       .catch(() => null);

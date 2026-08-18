@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.invoke(IPC_CHANNELS.PTY_WRITE_CHECKED, id, data) as Promise<boolean>,
     writeReliable: (id: string, data: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_WRITE_RELIABLE, id, data) as Promise<boolean>,
+    stageInputFile: (id: string, content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, id, content) as Promise<{ reference: string }>,
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.send(IPC_CHANNELS.PTY_RESIZE, id, cols, rows),
     kill: (id: string) =>
@@ -281,7 +283,6 @@ contextBridge.exposeInMainWorld('wmux', {
     ensureSkill: (agent?: 'codex' | 'kimi' | 'grok') => ipcRenderer.invoke('project-manager:ensure-skill', agent),
     saveSession: (session: any) => ipcRenderer.invoke('project-manager:save-session', session),
     deleteSession: (sessionId: string) => ipcRenderer.invoke('project-manager:delete-session', sessionId),
-    readLatestSession: (projectDir: string) => ipcRenderer.invoke('project-manager:read-latest-session', projectDir),
     listActiveSessions: () => ipcRenderer.invoke('project-manager:list-active-sessions'),
     pickPlanFiles: () => ipcRenderer.invoke('project-manager:pick-plan-files'),
     readPlanFiles: (filePaths: string[]) => ipcRenderer.invoke('project-manager:read-plan-files', filePaths),

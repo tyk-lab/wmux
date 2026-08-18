@@ -43,6 +43,7 @@ describe('supervisor decide command', () => {
     ], project);
 
     expect(input.text).toBe('第一行\n第二行');
+    expect(input.fileReference).toBe('.wmux/tmp/context-recovery-1.txt');
     expect(fs.existsSync(draftPath)).toBe(true);
     cleanupSupervisorNextInput(input, false);
     expect(fs.existsSync(draftPath)).toBe(true);

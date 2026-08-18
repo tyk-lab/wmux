@@ -38,10 +38,12 @@ export function buildInteractiveAgentLaunch(
   };
 }
 
+export type AutomatedInteractiveAgent = 'codex' | 'kimi';
+
 export function detectAutomatedInteractiveAgent(
   startupCommands: string[] | undefined,
   startupInput: string | undefined,
-): 'codex' | 'kimi' | undefined {
+): AutomatedInteractiveAgent | undefined {
   const command = startupCommands?.[0]?.trim().toLowerCase() || '';
   if (command.startsWith('codex ') && command.includes('convertfrom-json')) return 'codex';
   if (command.startsWith('kimi ') && command.endsWith(AUTOMATED_KIMI_STARTUP_MARKER) && !!startupInput) return 'kimi';

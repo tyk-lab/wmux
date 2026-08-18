@@ -60,7 +60,6 @@ import {
   appendProjectManagerRecord,
   deleteProjectManagerSession,
   readActiveProjectManagerSessions,
-  readLatestProjectManagerSession,
   saveProjectManagerSession,
 } from './project-manager-records';
 import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './project-plan-files';
@@ -676,7 +675,6 @@ app.whenReady().then(() => {
       resourcesPath: process.resourcesPath,
     }, agent);
   });
-  ipcMain.handle('project-manager:read-latest-session', (_event, projectDir) => readLatestProjectManagerSession(projectDir));
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
   ipcMain.handle('project-manager:read-plan-files', (_event, filePaths) => captureProjectPlanFiles(filePaths));
   ipcMain.handle('project-manager:pick-plan-files', async (event) => {

@@ -2,6 +2,7 @@ const PROJECT_SCOPED_COMMANDS = new Set([
   'update',
   'update-definition',
   'alignment-confirm',
+  'goal-plan',
   'logs',
   'terminals',
   'terminal-rotate',
