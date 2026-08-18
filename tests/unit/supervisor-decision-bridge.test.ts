@@ -86,6 +86,7 @@ function bindProjectLaneToWorkItem(options: {
   continuousExecution?: boolean;
   permissionConfirm?: boolean;
   allowedCommandPrefixes?: string[];
+  baselineRequired?: boolean;
 } = {}): ProjectManagerSession {
   const projectId = options.projectId || 'pm-project';
   const workItemId = options.workItemId || 'task-a';
@@ -101,6 +102,14 @@ function bindProjectLaneToWorkItem(options: {
     status: 'active',
     workItems: [{
       id: workItemId,
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      baseline: options.baselineRequired
+        ? { status: 'required', requirementsVersion: 1 }
+        : {
+            status: 'approved', requirementsVersion: 1, workspaceVersion: 'head:test',
+            evidence: '测试夹具已提供项目基线', approvedAt: 1,
+          },
       title: workItemId,
       status: 'running',
       dependencies: [],
@@ -144,6 +153,19 @@ function bindProjectLaneToWorkItem(options: {
     ],
   });
   return project;
+}
+
+function approveProjectWorkItemBaseline(projectId: string, workItemId: string, requirementsVersion = 1): void {
+  const store = useStore.getState();
+  const started = store.applyProjectManagerAction({ type: 'start-work-item-baseline', workItemId }, projectId);
+  if (!started.ok) throw new Error(started.error || 'failed to start project baseline');
+  const approved = store.applyProjectManagerAction({
+    type: 'approve-work-item-baseline',
+    workItemId,
+    workspaceVersion: `head:test-v${requirementsVersion}`,
+    evidence: '测试夹具已审核当前项目工作树、入口、测试约定和改动边界',
+  }, projectId);
+  if (!approved.ok) throw new Error(approved.error || 'failed to approve project baseline');
 }
 
 async function startTaskThroughDedicatedSupervisor(projectId: string, workItemId: string) {
@@ -312,6 +334,8 @@ describe('supervisor decision bridge', () => {
     useStore.getState().setWorkspacePrefs({ projectManagementAgents: DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG });
     surfaceTerminalRegistry.delete('worker-a');
     surfaceTerminalRegistry.delete('supervisor-a');
+    surfaceTerminalRegistry.delete('project-manager-atomic');
+    clearTerminalRuntimeStatus('project-manager-atomic');
     Reflect.deleteProperty(globalThis, 'window');
   });
 
@@ -354,6 +378,56 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'terminal-interrupt', terminal: 'worker-a', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: '已向 Codex worker 发送 Ctrl+C 中断请求。' });
     expect(writes).toHaveBeenLastCalledWith('worker-a', '\x03');
+  });
+
+  it('stops only the selected project work-item runtime and delivers the user reason to project AI', async () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-project-intervention' as any,
+      title: '项目执行链',
+      cwd: 'E:\\repo',
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-project-intervention' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', projectManagerProjectId: 'pm-project', projectManagerWorkItemId: 'task-a' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pi', transientSupervisor: true, projectSupervisorProjectId: 'pm-project' },
+          { id: 'unrelated-worker' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '其他工作项' },
+        ],
+      },
+    }]);
+    const project = bindProjectLaneToWorkItem();
+    writes.mockClear();
+
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'intervene-work-item',
+      projectId: project.id,
+      workItemId: 'task-a',
+      intervention: 'skip',
+      reason: '已有验收记录，无需重复执行',
+    })).resolves.toMatchObject({ ok: true, message: expect.stringContaining('通知项目 AI') });
+
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      id: 'task-a', status: 'stopped', supervisorLaneId: undefined, workerSurfaceId: undefined,
+    });
+    expect(useStore.getState().projectManager?.events.at(-1)).toMatchObject({
+      kind: 'user-work-item-intervention',
+      workItemId: 'task-a',
+      payload: { intervention: 'skip', reason: '已有验收记录，无需重复执行' },
+    });
+    expect(useStore.getState().supervisor.lanes.some((item) => item.id === 'lane-a')).toBe(false);
+    const remainingSurfaces = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    ));
+    expect(remainingSurfaces.some((surface) => surface.id === 'worker-a')).toBe(false);
+    expect(remainingSurfaces.some((surface) => surface.id === 'supervisor-a')).toBe(false);
+    expect(remainingSurfaces.some((surface) => surface.id === 'unrelated-worker')).toBe(true);
+    const managerNotifications = JSON.stringify([
+      ...writes.mock.calls,
+      ...(useStore.getState().projectManager?.pendingManagerDeliveries || []).map((delivery) => delivery.text),
+    ]);
+    expect(managerNotifications).toContain('已有验收记录，无需重复执行');
+    expect(managerNotifications).toContain('其他工作项没有被全局暂停');
   });
 
   it('identifies a manually created agent terminal from its screen content', () => {
@@ -1650,7 +1724,23 @@ describe('supervisor decision bridge', () => {
         },
       },
     })).resolves.toMatchObject({ ok: true });
-    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({ attempts: 0, decisionsUsed: 0 });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      attempts: 0,
+      decisionsUsed: 0,
+      baseline: { status: 'required', requirementsVersion: 1 },
+    });
+    await expect(projectRequest({
+      action: 'task-update', callerSurfaceId: surface?.id, workItemId: 'auth',
+      patch: {
+        baseline: {
+          status: 'approved', requirementsVersion: 1, workspaceVersion: 'forged',
+          evidence: 'forged', approvedAt: 1,
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('项目基线状态由控制层维护'),
+    });
     await expect(projectRequest({
       action: 'task-update', callerSurfaceId: surface?.id, workItemId: 'auth',
       patch: { workerSurfaceId: 'worker-a', supervisorLaneId: 'lane-a' },
@@ -1668,6 +1758,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
       title: '认证更新', attempts: 2, decisionsUsed: 4,
     });
+    approveProjectWorkItemBaseline(project.id, 'auth');
     await expect(projectRequest({
       action: 'task-update', callerSurfaceId: surface?.id, workItemId: 'auth',
       patch: { status: 'completed', latestEvidence: '代码测试通过', latestBlocker: 'needs-human: 等待用户现场验收' },
@@ -2106,6 +2197,78 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
+  it('keeps one project message pending until its flattened body and final Enter are acknowledged', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-atomic-message' });
+    const managerSurfaceId = 'project-manager-atomic';
+    useStore.getState().restoreProjectManager({
+      ...project,
+      managerSurfaceId: managerSurfaceId as any,
+    });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-project-manager-atomic' as any,
+      title: '项目执行空间',
+      cwd: project.projectDir,
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-project-manager-atomic' as any, activeSurfaceIndex: 0,
+        surfaces: [{
+          id: managerSurfaceId as any,
+          type: 'terminal',
+          shell: 'pwsh.exe',
+          cwd: 'E:\\wmux-data\\project-manager\\runtime',
+          projectManagerTerminal: true,
+          projectManagerProjectId: project.id,
+          projectManagerAgent: 'codex',
+          projectManagerModel: '',
+          projectManagerReasoningEffort: '',
+        }],
+      },
+    }]);
+    surfaceTerminalRegistry.set(managerSurfaceId, {
+      buffer: {
+        active: {
+          baseY: 0,
+          cursorX: 0,
+          cursorY: 0,
+          length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+      modes: { bracketedPasteMode: true },
+    } as any);
+    markTerminalRuntimeReady(managerSurfaceId);
+    let acknowledgeEnter: ((accepted: boolean) => void) | undefined;
+    const enterAcknowledgement = new Promise<boolean>((resolve) => {
+      acknowledgeEnter = resolve;
+    });
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => (
+      data === '\r' ? enterAcknowledgement : true
+    ));
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'message',
+      source: 'desktop',
+      projectId: project.id,
+      messageId: 'desktop-atomic-1',
+      message: '继续保持暂停，等待新的复核结果。',
+    })).resolves.toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(writeReliable).toHaveBeenCalledTimes(2));
+
+    const body = String(writeReliable.mock.calls[0]?.[1] || '');
+    expect(body).toContain('桌面项目管理消息');
+    expect(body).toContain('继续保持暂停，等待新的复核结果。');
+    expect(body).not.toMatch(/[\r\n]/u);
+    expect(writeReliable.mock.calls[1]).toEqual([managerSurfaceId, '\r']);
+    expect(useStore.getState().projectManager?.pendingManagerDeliveries).toHaveLength(1);
+
+    acknowledgeEnter?.(true);
+    await vi.waitFor(() => expect(useStore.getState().projectManager?.pendingManagerDeliveries).toHaveLength(0));
+    surfaceTerminalRegistry.delete(managerSurfaceId);
+    clearTerminalRuntimeStatus(managerSurfaceId);
+  });
+
   it('revokes the old project run before routing a confirmed prerequisite-change message', async () => {
     expect(projectMessageChangeSignal('如果设备断电应该怎么办？')).toBeNull();
     expect(projectMessageChangeSignal('目标硬件刚刚断电，先不要继续实测')).toBe('prerequisite-change');
@@ -2150,6 +2313,11 @@ describe('supervisor decision bridge', () => {
       taskTerminalSurfaceId: 'old-worker',
       workItems: [{
         id: 'recover_task', title: '恢复任务', status: 'running', dependencies: [],
+        requirementsVersion: 1,
+        baseline: {
+          status: 'approved', requirementsVersion: 1, workspaceVersion: 'head:before-restart',
+          evidence: '重启前已审核项目基线', approvedAt: 15,
+        },
         workerSurfaceId: 'old-worker', supervisorLaneId: 'old-lane', attempts: 1, decisionsUsed: 2,
         startedAt: 12, updatedAt: 18, executionHistory: [],
         latestContextSummary: '已完成核心实现，剩余针对性测试。',
@@ -2194,6 +2362,7 @@ describe('supervisor decision bridge', () => {
       workItems: [{
         id: 'recover_task', status: 'waiting-decision', workerSurfaceId: undefined,
         supervisorLaneId: undefined, startedAt: undefined,
+        baseline: { status: 'required', requirementsVersion: 1 },
         latestContextSummary: expect.stringContaining('核心实现'),
       }],
     });
@@ -2486,6 +2655,7 @@ describe('supervisor decision bridge', () => {
       }),
     ]));
     expect(useStore.getState().supervisor.supervisorWorkspaceId).not.toBe(projectSupervisorWorkspace?.id);
+    approveProjectWorkItemBaseline(projectId, 'first_task');
     await expect(request({
       action: 'task-update', callerSurfaceId: managerSurfaceId, projectId,
       workItemId: 'first_task', patch: { status: 'completed', latestEvidence: '第一项验证通过' },
@@ -3150,6 +3320,51 @@ describe('supervisor decision bridge', () => {
     ))).toBe(true);
   });
 
+  it('blocks implementation until a delivered read-only baseline is reviewed and approved', () => {
+    const project = bindProjectLaneToWorkItem({ baselineRequired: true, continuousExecution: true });
+    useStore.getState().updateLane('lane-a', {
+      projectTaskContractPending: true,
+      awaitingReview: true,
+    });
+
+    expect(decide({ next: '直接修改实现', executionAction: 'implementation' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('项目基线尚未审核'),
+    });
+    expect(decide({
+      next: '[批准项目基线] 开始实现',
+      executionAction: 'approve-baseline',
+      workspaceVersion: 'head:test',
+      evidence: '声称已经看过项目',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能预先批准'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+
+    expect(decide({
+      next: '[项目基线调查] 只读检查当前工作树、相关入口、测试约定和共享资源边界；以 [项目基线报告] 返回，不得写入或运行测试',
+      executionAction: 'readonly-project-baseline',
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(useStore.getState().projectManagers.find((item) => item.id === project.id)?.workItems[0].baseline)
+      .toMatchObject({ status: 'investigating', requirementsVersion: 1 });
+
+    expect(decide({
+      next: '[批准项目基线] 报告与合同一致，开始实现合同内任务',
+      executionAction: 'approve-project-baseline',
+      workspaceVersion: 'head:test,status:dirty-known',
+      evidence: '已审核工作树、入口调用链、测试约定、既有改动和共享资源边界',
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(useStore.getState().projectManagers.find((item) => item.id === project.id)?.workItems[0].baseline)
+      .toMatchObject({
+        status: 'approved',
+        requirementsVersion: 1,
+        workspaceVersion: 'head:test,status:dirty-known',
+      });
+    expect(useStore.getState().projectManagers.find((item) => item.id === project.id)?.workItems[0].decisionsUsed)
+      .toBe(0);
+  });
+
   it('matches permission evidence only in the active prompt tail', () => {
     const staleEvidence = [
       'Permission required: npm test -- auth',
@@ -3185,7 +3400,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(false);
   });
 
-  it('uses bracketed paste for a multi-line next step when the task terminal supports it', async () => {
+  it('flattens a multi-line next step even when the terminal reports bracketed paste', async () => {
     (surfaceTerminalRegistry.get('worker-a') as any).modes = { bracketedPasteMode: true };
     const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
       if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
@@ -3196,7 +3411,7 @@ describe('supervisor decision bridge', () => {
 
     await expect(decide({ next: '先检查实现\n再运行测试' })).resolves.toMatchObject({ ok: true });
     expect(writeReliable.mock.calls).toEqual([
-      ['worker-a', '\x1b[200~先检查实现\r再运行测试\x1b[201~'],
+      ['worker-a', '先检查实现 再运行测试'],
       ['worker-a', '\r'],
     ]);
   });
@@ -3386,6 +3601,7 @@ describe('supervisor decision bridge', () => {
       updatedAt: 1,
     };
     useStore.getState().restoreProjectManager(project);
+    approveProjectWorkItemBaseline(project.id, 'hardware-test');
     useStore.getState().updateLane('lane-a', {
       projectManagerProjectId: 'pm-project',
       projectWorkItemId: 'hardware-test',
@@ -3488,6 +3704,7 @@ describe('supervisor decision bridge', () => {
       updatedAt: 3,
     });
     useStore.getState().resumeSupervisorLane('lane-a', '测试已显式重绑当前需求版本');
+    approveProjectWorkItemBaseline(project.id, 'hardware-test', 2);
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
     screenText = 'Permission required: npm test';
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
@@ -3635,6 +3852,7 @@ describe('supervisor decision bridge', () => {
       workItemId: 'decision_task',
       patch: { supervisorLaneId: 'lane-a', workerSurfaceId: 'worker-a' },
     }, projectId);
+    approveProjectWorkItemBaseline(projectId, 'decision_task');
     useStore.getState().updateLane('lane-a', {
       projectManagerProjectId: projectId,
       projectWorkItemId: 'decision_task',
@@ -3799,6 +4017,7 @@ describe('supervisor decision bridge', () => {
         },
       },
     });
+    approveProjectWorkItemBaseline(useStore.getState().projectManagers[0].id, 'auth');
     store.updateLane('lane-a', {
       projectManagerProjectId: useStore.getState().projectManagers[0].id,
       projectWorkItemId: 'auth',
@@ -3847,6 +4066,7 @@ describe('supervisor decision bridge', () => {
         },
       },
     });
+    approveProjectWorkItemBaseline(useStore.getState().projectManagers[0].id, 'auth');
     store.updateLane('lane-a', {
       projectManagerProjectId: useStore.getState().projectManagers[0].id,
       projectWorkItemId: 'auth',
@@ -3877,6 +4097,7 @@ describe('supervisor decision bridge', () => {
         },
       },
     });
+    approveProjectWorkItemBaseline(useStore.getState().projectManagers[0].id, 'auth');
     store.updateLane('lane-a', {
       projectManagerProjectId: useStore.getState().projectManagers[0].id,
       projectWorkItemId: 'auth',

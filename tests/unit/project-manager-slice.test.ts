@@ -93,6 +93,99 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.events[0]).toMatchObject({ kind: 'work-item-created', workItemId: 'auth' });
   });
 
+  it('keeps project baseline approval under control-plane ownership and resets it on contract changes', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
+    const forged = {
+      ...item('baseline-task'),
+      baseline: {
+        status: 'approved' as const,
+        requirementsVersion: 1,
+        workspaceVersion: 'forged',
+        evidence: 'forged',
+        approvedAt: 1,
+      },
+    };
+    expect(useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: forged })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toEqual({
+      status: 'required', requirementsVersion: 1,
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
+      workspaceVersion: 'head:a', evidence: '已审核',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能预先批准') });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'start-work-item-baseline', workItemId: 'baseline-task',
+    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
+      workspaceVersion: 'head:a,status:clean', evidence: '已审核入口、工作树与测试约定',
+    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-approved' } });
+    expect(useStore.getState().projectManager?.workItems[0].baseline?.status).toBe('approved');
+
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'baseline-task',
+      patch: {
+        baseline: forged.baseline,
+        contract: {
+          ...forged.contract,
+          description: '合同边界发生变化',
+        },
+      },
+    });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toEqual({
+      status: 'required', requirementsVersion: 1,
+    });
+  });
+
+  it('records a user work-item intervention and prevents AI from reviving the stopped item', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('first') });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('middle') });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('last') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'middle',
+      patch: { status: 'running', supervisorLaneId: 'lane-middle', workerSurfaceId: 'worker-middle' },
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'middle',
+      intervention: 'skip',
+      reason: '已有等效证据，不再重复执行',
+    })).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'user-work-item-intervention',
+        workItemId: 'middle',
+        payload: {
+          intervention: 'skip',
+          reason: '已有等效证据，不再重复执行',
+          previousStatus: 'running',
+        },
+      },
+    });
+    expect(useStore.getState().projectManager?.workItems).toEqual([
+      expect.objectContaining({ id: 'first', status: 'planned' }),
+      expect.objectContaining({
+        id: 'middle', status: 'stopped', supervisorLaneId: undefined, workerSurfaceId: undefined,
+      }),
+      expect.objectContaining({ id: 'last', status: 'planned' }),
+    ]);
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'middle', patch: { status: 'planned' },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能由 AI 恢复') });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item', workItemId: 'last', intervention: 'close',
+    })).toMatchObject({
+      ok: true,
+      event: { kind: 'user-work-item-intervention', payload: { intervention: 'close' } },
+    });
+  });
+
   it('updates user-owned project prerequisites during an active project', () => {
     const useStore = store();
     useStore.getState().startProjectManager({

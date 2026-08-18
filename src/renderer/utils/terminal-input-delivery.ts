@@ -8,6 +8,11 @@ export function pasteSubmitDelayMs(text: string): number {
   return Math.min(3_000, Math.max(300, 300 + Math.ceil(text.length * 0.75)));
 }
 
+/** Make one automated prompt one terminal draft and one explicit submit. */
+export function prepareAutomatedTerminalInput(text: string): string {
+  return text.replace(/[\r\n]+$/u, '').replace(/\r\n|\n|\r/gu, ' ');
+}
+
 export interface TerminalInputWriter {
   write: (surfaceId: string, data: string) => void;
   writeChecked?: (surfaceId: string, data: string) => Promise<boolean>;
@@ -96,6 +101,8 @@ export async function deliverStartupInput(
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   if (!input) return false;
+  const atomicInput = prepareAutomatedTerminalInput(input);
+  if (!atomicInput) return false;
 
   if (options.readyWhen) {
     const maxReadyAttempts = Math.max(1, Math.ceil(readyTimeoutMs / readyPollMs) + 1);
@@ -110,9 +117,9 @@ export async function deliverStartupInput(
     if (!ready) return false;
   }
   await wait(readyDelayMs);
-  const pasted = await writeWhenAvailable(writer, surfaceId, input, wait, retryDelayMs, maxAttempts);
+  const pasted = await writeWhenAvailable(writer, surfaceId, atomicInput, wait, retryDelayMs, maxAttempts);
   if (!pasted) return false;
 
-  await wait(pasteSubmitDelayMs(input));
+  await wait(pasteSubmitDelayMs(atomicInput));
   return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
 }

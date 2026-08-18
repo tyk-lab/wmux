@@ -122,6 +122,28 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.recommendedOptionId === undefined || typeof question.recommendedOptionId === 'string');
 }
 
+function isProjectTaskBaseline(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const baseline = value as Record<string, unknown>;
+  if (!['required', 'investigating', 'approved'].includes(String(baseline.status))
+    || !Number.isInteger(baseline.requirementsVersion)
+    || Number(baseline.requirementsVersion) < 1) return false;
+  if (baseline.workspaceVersion !== undefined && (
+    typeof baseline.workspaceVersion !== 'string' || baseline.workspaceVersion.length > 2000
+  )) return false;
+  if (baseline.evidence !== undefined && (
+    typeof baseline.evidence !== 'string' || baseline.evidence.length > 12000
+  )) return false;
+  if (baseline.requestedAt !== undefined && !Number.isFinite(baseline.requestedAt)) return false;
+  if (baseline.approvedAt !== undefined && !Number.isFinite(baseline.approvedAt)) return false;
+  if (baseline.status === 'investigating' && !Number.isFinite(baseline.requestedAt)) return false;
+  return baseline.status !== 'approved' || (
+    typeof baseline.workspaceVersion === 'string' && baseline.workspaceVersion.trim().length > 0
+    && typeof baseline.evidence === 'string' && baseline.evidence.trim().length > 0
+    && Number.isFinite(baseline.approvedAt)
+  );
+}
+
 function isProjectGoal(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const goal = value as Record<string, unknown>;
@@ -199,6 +221,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
       && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
       && (item.authorizationVersion === undefined || (Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1))
+      && (item.baseline === undefined || isProjectTaskBaseline(item.baseline))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)

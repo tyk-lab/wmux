@@ -5,9 +5,26 @@ import {
   isKimiInteractiveInputReady,
   isStartupTrustPromptReady,
   pasteSubmitDelayMs,
+  prepareAutomatedTerminalInput,
 } from '../../src/renderer/utils/terminal-input-delivery';
 
 describe('terminal startup input delivery', () => {
+  it('把多行自动消息合并为一个草稿，只保留最终一次提交', async () => {
+    const writeChecked = vi.fn(async () => true);
+    const input = '用户澄清答复\n项目：pm-1\r\n答复：继续保持暂停\n';
+
+    expect(prepareAutomatedTerminalInput(input)).toBe('用户澄清答复 项目：pm-1 答复：继续保持暂停');
+    await expect(deliverStartupInput({ write: vi.fn(), writeChecked }, 'surf-atomic', input, {
+      readyDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-atomic', '用户澄清答复 项目：pm-1 答复：继续保持暂停'],
+      ['surf-atomic', '\r'],
+    ]);
+  });
+
   it('识别 Codex 和 Kimi 的目录信任页，且不误判普通欢迎页', () => {
     expect(isStartupTrustPromptReady('codex', 'Do you trust the contents of this directory? 1. Yes, continue')).toBe(true);
     expect(isStartupTrustPromptReady('codex', '1. Yes, continue\n2. No, quit')).toBe(true);

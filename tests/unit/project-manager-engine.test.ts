@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PROJECT_TASK_BASELINE_APPROVAL_MARKER,
+  PROJECT_TASK_BASELINE_INVESTIGATION_MARKER,
+  PROJECT_TASK_BASELINE_REPORT_MARKER,
   PROJECT_TASK_EXECUTION_ENVELOPE_MARKER,
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
   prepareProjectTaskDelivery,
   projectPermissionAuthorizationError,
+  projectTaskBaselineViolation,
   projectContractViolation,
   projectCompletionState,
   projectDependencyError,
@@ -110,6 +114,8 @@ describe('project-manager engine', () => {
     expect(text).toContain(PROJECT_TASK_EXECUTION_ENVELOPE_MARKER);
     expect(text).toContain('--next 只填写本轮实际执行动作');
     expect(text).toContain('内容过长时自动改用受控临时文件投递');
+    expect(text).toContain('项目基线：待审核');
+    expect(text).toContain(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
   });
 
   it('builds one continuous execution envelope instead of a micro-step', () => {
@@ -120,6 +126,42 @@ describe('project-manager engine', () => {
     expect(text).toContain('停止条件：认证测试通过');
     expect(text).toContain('验证要求：npm test -- auth');
     expect(text).toContain('连续工作流推进到停止条件');
+    expect(text).toContain(PROJECT_TASK_BASELINE_REPORT_MARKER);
+    expect(text).toContain('任何写入');
+  });
+
+  it('enforces a two-round read-only project baseline before implementation', () => {
+    const task = item('auth', 'running');
+    task.requirementsVersion = 1;
+    task.baseline = { status: 'required', requirementsVersion: 1 };
+
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: '直接修改认证实现',
+    })).toContain('只能先下达');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
+      evidence: '已查看结构', workspaceVersion: 'head:abc',
+    })).toContain('不能预先批准');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 只读查看相关结构`,
+      testCommand: 'npm test -- auth',
+    })).toContain('只允许只读调查');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 只读查看相关结构`,
+    })).toBeNull();
+
+    task.baseline = { status: 'investigating', requirementsVersion: 1, requestedAt: 2 };
+    expect(buildProjectSupervisorBriefing({
+      workItemId: task.id, contract: task.contract, baseline: task.baseline,
+    })).toContain('只读调查已投递');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
+    })).toContain('--evidence');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
+      evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',
+    })).toBeNull();
+    expect(projectTaskBaselineViolation(task, { outcome: 'complete' })).toContain('不能把工作项判定为完成');
   });
 
   it('injects the trusted contract while exposing only the executable action to guards', () => {
@@ -172,7 +214,7 @@ describe('project-manager engine', () => {
       childThreadResponsibilities: ['检查 UI 状态', '检查协议和恢复行为'],
     };
     const text = buildProjectSupervisorBriefing({ workItemId: 'auth', contract });
-    expect(text).toContain('任务终端工作模式：多线程');
+    expect(text).toContain('任务终端工作模式：固定多线程');
     expect(text).toContain('主线程职责：整合实现并负责最终验证');
     expect(text).toContain('子线程 1 职责：检查 UI 状态');
     expect(text).toContain('必须把以上线程职责清晰传达给任务终端');

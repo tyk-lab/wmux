@@ -24,6 +24,9 @@ export type ProjectManagerEventKind =
   | 'user-message'
   | 'work-item-created'
   | 'work-item-updated'
+  | 'work-item-baseline-started'
+  | 'work-item-baseline-approved'
+  | 'user-work-item-intervention'
   | 'dispatch-mode-selected'
   | 'supervisor-status'
   | 'supervisor-decision-request'
@@ -191,6 +194,18 @@ export interface ProjectExecutionRecord {
   fullSuite?: boolean;
 }
 
+export type ProjectTaskBaselineStatus = 'required' | 'investigating' | 'approved';
+
+/** Control-plane-owned proof that the task inspected the current project before writing. */
+export interface ProjectTaskBaseline {
+  status: ProjectTaskBaselineStatus;
+  requirementsVersion: number;
+  requestedAt?: number;
+  workspaceVersion?: string;
+  evidence?: string;
+  approvedAt?: number;
+}
+
 /** A user-owned main-goal episode inside a long-lived project. */
 export interface ProjectGoalRevision {
   id: string;
@@ -229,6 +244,8 @@ export interface ProjectWorkItem {
   /** Requirements and inherited-authorization versions accepted for this task contract. */
   requirementsVersion?: number;
   authorizationVersion?: number;
+  /** Project AI cannot approve this field; only the bound supervisor decision bridge can. */
+  baseline?: ProjectTaskBaseline;
   title: string;
   contract: ProjectSupervisorContract;
   status: ProjectWorkItemStatus;
@@ -404,13 +421,25 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     requirementsVersion,
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
-    workItems: session.workItems.map((item) => ({
-      ...item,
-      goalId: item.goalId || activeGoalId,
-      subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
-      requirementsVersion: Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion)),
-      authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
-    })),
+    workItems: session.workItems.map((item) => {
+      const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
+      const activeBaseline = item.baseline?.requirementsVersion === itemRequirementsVersion && (
+        (item.baseline.status === 'investigating' && Number.isFinite(item.baseline.requestedAt))
+        || (item.baseline.status === 'approved'
+          && !!item.baseline.workspaceVersion?.trim()
+          && !!item.baseline.evidence?.trim())
+      );
+      return {
+        ...item,
+        goalId: item.goalId || activeGoalId,
+        subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
+        requirementsVersion: itemRequirementsVersion,
+        authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
+        baseline: activeBaseline
+          ? item.baseline
+          : requiredProjectTaskBaseline(itemRequirementsVersion),
+      };
+    }),
   };
 }
 
@@ -439,6 +468,19 @@ export type ProjectManagerAction =
   | { type: 'answer-user-clarification'; questionId: string; answer: string; optionId?: string; answeredBy: 'desktop' | 'feishu' }
   | { type: 'create-work-item'; workItem: ProjectWorkItem }
   | { type: 'update-work-item'; workItemId: string; patch: Partial<ProjectWorkItem> }
+  | { type: 'start-work-item-baseline'; workItemId: string }
+  | {
+    type: 'approve-work-item-baseline';
+    workItemId: string;
+    workspaceVersion: string;
+    evidence: string;
+  }
+  | {
+    type: 'intervene-work-item';
+    workItemId: string;
+    intervention: 'skip' | 'close';
+    reason?: string;
+  }
   | { type: 'record-execution'; workItemId: string; record: ProjectExecutionRecord }
   | { type: 'pause-project'; reason: string; source?: 'project' | 'portfolio' }
   | {
@@ -459,6 +501,23 @@ export function projectWorkItemReady(
   if (item.status !== 'planned' && item.status !== 'waiting-dependencies') return false;
   const byId = new Map(items.map((candidate) => [candidate.id, candidate]));
   return item.dependencies.every((dependency) => byId.get(dependency)?.status === 'completed');
+}
+
+export function requiredProjectTaskBaseline(requirementsVersion: number): ProjectTaskBaseline {
+  return {
+    status: 'required',
+    requirementsVersion: Math.max(1, Math.trunc(requirementsVersion || 1)),
+  };
+}
+
+export function projectTaskBaselineApproved(
+  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'baseline'>,
+): boolean {
+  const requirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || 1));
+  return item.baseline?.status === 'approved'
+    && item.baseline.requirementsVersion === requirementsVersion
+    && !!item.baseline.workspaceVersion?.trim()
+    && !!item.baseline.evidence?.trim();
 }
 
 export function normalizeProjectExecutionBudget(

@@ -3,13 +3,18 @@ import {
   activeProjectSubgoals,
   projectAuthorizationVersion,
   projectRequirementsVersion,
+  projectTaskBaselineApproved,
   projectWorkItemReady,
   type ProjectManagerSession,
   type ProjectSupervisorContract,
+  type ProjectTaskBaseline,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
 
 export const PROJECT_TASK_EXECUTION_ENVELOPE_MARKER = '[项目任务连续执行契约]';
+export const PROJECT_TASK_BASELINE_INVESTIGATION_MARKER = '[项目基线调查]';
+export const PROJECT_TASK_BASELINE_REPORT_MARKER = '[项目基线报告]';
+export const PROJECT_TASK_BASELINE_APPROVAL_MARKER = '[批准项目基线]';
 
 export function isProjectTargetedTestCommand(command: string): boolean {
   return /^\s*(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test(?::[^\s]+)?|vitest|jest)|npx\s+(?:vitest|jest)|python(?:\.exe)?\s+-m\s+pytest|pytest|vitest|jest|cargo\s+test|go\s+test|dotnet\s+test|ctest|mvn\s+test|(?:gradle|gradlew|\.\/gradlew)\s+test)\b/i.test(command);
@@ -48,6 +53,54 @@ export function projectPermissionAuthorizationError(
     : '权限命令不在任务契约 allowedCommandPrefixes 授权范围内';
 }
 
+/** Require a reviewed, current workspace baseline before any project task can write or finish. */
+export function projectTaskBaselineViolation(
+  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'baseline'>,
+  proposal: {
+    outcome: SupervisorDecisionOutcome;
+    instruction?: string;
+    changedFiles?: string[];
+    testCommand?: string;
+    fullSuite?: boolean;
+    retry?: boolean;
+    permissionResponse?: string;
+    evidence?: string;
+    workspaceVersion?: string;
+  },
+): string | null {
+  if (projectTaskBaselineApproved(item) || proposal.outcome === 'needs-human') return null;
+  if (proposal.permissionResponse) return '项目基线尚未审核，不能自动确认权限或执行写操作';
+  if (proposal.outcome === 'complete') return '项目基线尚未审核，不能把工作项判定为完成';
+
+  const instruction = proposal.instruction?.trim() || '';
+  const investigationRequested = instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
+  const approvalRequested = instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER);
+  if (investigationRequested && approvalRequested) {
+    return '项目基线调查与批准必须分成两轮，不能在尚未收到报告时预先批准';
+  }
+  if (!investigationRequested && !approvalRequested) {
+    return `项目基线尚未审核；只能先下达以 ${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 开头的只读调查，或在审查报告后使用 ${PROJECT_TASK_BASELINE_APPROVAL_MARKER}`;
+  }
+  if ((proposal.changedFiles || []).length > 0
+    || !!proposal.testCommand?.trim()
+    || proposal.fullSuite === true
+    || proposal.retry === true) {
+    return '项目基线门禁阶段只允许只读调查，不能报告任务写入、运行测试、全量验证或重试';
+  }
+  if (approvalRequested && item.baseline?.status !== 'investigating') {
+    return '项目基线尚未完成已投递的只读调查轮次，不能预先批准';
+  }
+  if (approvalRequested && (
+    !proposal.evidence?.trim()
+    || !proposal.workspaceVersion?.trim()
+  )) {
+    return `批准项目基线必须同时提供 --evidence 和 --workspace-version，以记录已审查报告及当前工作区快照`;
+  }
+  return null;
+}
+
+type SupervisorDecisionOutcome = 'continue' | 'rework' | 'complete' | 'needs-human';
+
 export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorContract): string {
   const authority = contract.authority;
   const execution = contract.execution;
@@ -57,7 +110,7 @@ export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorCon
   const allowedCommandPrefixes = authority.allowedCommandPrefixes || [];
   const executionModeLines = execution?.taskWorkMode === 'adaptive'
     ? [
-        `任务 AI 工作模式：自适应线程；理由：${execution.modeReason}`,
+        `任务 AI 工作模式：自适应线程；这是唯一会依据基线调查结果动态决定单/多线程的模式。理由：${execution.modeReason}`,
         `主线程职责：${execution.mainThreadResponsibility}`,
         `内部子线程上限：${execution.maxChildThreads || 1}`,
         `可并行候选：${execution.parallelizableOperations?.join('；') || '无'}`,
@@ -67,7 +120,7 @@ export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorCon
       ]
     : execution?.taskWorkMode === 'multi-thread'
       ? [
-          `任务 AI 工作模式：多线程；理由：${execution.modeReason}`,
+          `任务 AI 工作模式：固定多线程；不会自行切换模式。理由：${execution.modeReason}`,
           `主线程职责：${execution.mainThreadResponsibility}`,
           ...execution.childThreadResponsibilities.map((responsibility, index) => (
             `子线程 ${index + 1} 职责：${responsibility}`
@@ -75,7 +128,7 @@ export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorCon
           '内部线程仅属于本任务 AI，不得新建额外 wmux 任务终端；共享资源操作与最终集成由主线程串行完成。',
         ]
       : [
-          `任务 AI 工作模式：单线程；职责：${execution?.mainThreadResponsibility || contract.objective}`,
+          `任务 AI 工作模式：固定单线程；不会依据复杂度自行创建内部线程。职责：${execution?.mainThreadResponsibility || contract.objective}`,
           '不得自行创建内部子线程或额外 wmux 任务终端。',
         ];
   return [
@@ -89,8 +142,10 @@ export function buildProjectTaskExecutionEnvelope(contract: ProjectSupervisorCon
     authorizedOperations.length > 0 ? `授权连续操作：${authorizedOperations.join('；')}` : '',
     allowedCommandPrefixes.length > 0 ? `允许由监督确认的命令前缀：${allowedCommandPrefixes.join('；')}` : '',
     authority.continuousExecution
-      ? '执行方式：把上述范围作为一个连续工作流推进到停止条件；注册、映射、DRY_RUN、聚焦测试、实测和证据整理等已授权内部步骤不得逐步停下来索要同一确认。内部里程碑只记录，不结束回合。'
+      ? '执行方式：项目基线获批后，把上述范围作为一个连续工作流推进到停止条件；注册、映射、DRY_RUN、聚焦测试、实测和证据整理等已授权内部步骤不得逐步停下来索要同一确认。基线报告必须停止等待审核；获批后的普通内部里程碑只记录，不结束回合。'
       : '执行方式：仅执行监督 AI 本轮明确下达的单步指令，完成后返回证据。',
+    '项目基线门禁：无论线程模式如何，在任何写入、依赖安装、构建/测试、设备操作或权限确认前，先执行监督 AI 以“[项目基线调查]”下达的有界只读调查。调查至少覆盖当前 git/未提交状态、相关目录与入口/调用链、已有构建测试约定、当前错误或缺口、预期改动路径与共享资源边界。',
+    '调查完成后以“[项目基线报告]”返回工作区快照、证据、建议执行模式及下一安全动作，然后停止等待监督审核。只有收到“[批准项目基线]”才可开始实现；固定单/多线程不得静默改换，自适应模式才可另附“[内部线程提案]”。',
     ...executionModeLines,
     '只有发现已确认条件发生变化的具体证据、命令或目标越出合同、出现不可逆/生产/凭据/权限变更风险，或预算护栏触发时才停止并报告。普通工具确认提示和同一前置条件的重复询问不是停止理由。',
   ].filter(Boolean).join('\n');
@@ -264,8 +319,9 @@ export function projectCompletionState(session: ProjectManagerSession): ProjectC
 export function buildProjectSupervisorBriefing(options: {
   workItemId: string;
   contract: ProjectSupervisorContract;
+  baseline?: ProjectTaskBaseline;
 }): string {
-  const { workItemId, contract } = options;
+  const { workItemId, contract, baseline } = options;
   const allowedCommandPrefixes = contract.authority.allowedCommandPrefixes || [];
   const permissions = [
     contract.authority.technicalChoices ? '可在边界内自主选择技术实现' : '技术路线变化须交给项目管理 AI',
@@ -281,7 +337,7 @@ export function buildProjectSupervisorBriefing(options: {
   let executionLines: string[];
   if (execution?.taskWorkMode === 'adaptive') {
     executionLines = [
-      `任务终端工作模式：自适应线程；选择理由：${execution.modeReason}`,
+      `任务终端工作模式：自适应线程；只有此模式可依据基线调查后的实际复杂度动态决定保持单线程或申请多线程。选择理由：${execution.modeReason}`,
       `主线程职责：${execution.mainThreadResponsibility}`,
       `允许的内部子线程上限：${execution.maxChildThreads || 1}`,
       `可并行候选：${execution.parallelizableOperations?.join('；') || '无'}`,
@@ -294,14 +350,14 @@ export function buildProjectSupervisorBriefing(options: {
     ];
   } else if (execution?.taskWorkMode === 'multi-thread') {
     executionLines = [
-      `任务终端工作模式：多线程；选择理由：${execution.modeReason}`,
+      `任务终端工作模式：固定多线程；不得静默改成其他模式。选择理由：${execution.modeReason}`,
       `主线程职责：${execution.mainThreadResponsibility}`,
       ...execution.childThreadResponsibilities.map((responsibility, index) => `子线程 ${index + 1} 职责：${responsibility}`),
       '你必须把以上线程职责清晰传达给任务终端，并检查各线程没有越界或重复工作。',
     ];
   } else {
     executionLines = [
-      `任务终端工作模式：单线程；选择理由：${execution?.modeReason || '任务集中且职责不可安全拆分'}`,
+      `任务终端工作模式：固定单线程；不得根据复杂度自行创建内部线程。选择理由：${execution?.modeReason || '任务集中且职责不可安全拆分'}`,
       `单线程职责：${execution?.mainThreadResponsibility || contract.objective}`,
     ];
   }
@@ -317,9 +373,14 @@ export function buildProjectSupervisorBriefing(options: {
     allowedCommandPrefixes.length > 0
       ? `权限命令白名单前缀：${allowedCommandPrefixes.join('；')}`
       : '',
+    baseline?.status === 'approved'
+      ? `项目基线：已审核；工作区版本 ${baseline.workspaceVersion || '已记录'}。需求或工作区状态发生变化时必须重新调查。`
+      : baseline?.status === 'investigating'
+        ? `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；报告不足时继续下达以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的只读补充调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。`
+        : `项目基线：待审核。首次指令只能以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头，要求任务 AI 做有界只读调查并以“${PROJECT_TASK_BASELINE_REPORT_MARKER}”报告；在你审查报告前不得写入、安装依赖、构建/测试、操作设备或确认权限。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence；控制层会阻止绕过。`,
     '项目级已确认前置条件与其中的明确授权，在当前需求版本内由监督 AI 和任务 AI 持续继承；用户未通知变更且没有具体反证时，不得把同一条件拆成逐步确认。普通本地执行提示可由监督 AI 按低风险权限规则自行处理。',
     contract.authority.continuousExecution
-      ? `首次向任务 AI 下达任务时，--next 只填写本轮实际执行动作；运行时会从当前工作项自动注入以“${PROJECT_TASK_EXECUTION_ENVELOPE_MARKER}”开始的可信连续执行契约，并在内容过长时自动改用受控临时文件投递。不得在 --next 中重复、改写或伪造契约。任务 AI 在内部里程碑结束回合时，只要停止条件未满足且存在合同内安全路径，应直接要求它继续剩余工作流，不要交回用户确认。`
+      ? `首次向任务 AI 下达任务时，--next 只填写本轮实际执行动作；运行时会从当前工作项自动注入以“${PROJECT_TASK_EXECUTION_ENVELOPE_MARKER}”开始的可信连续执行契约，并在内容过长时自动改用受控临时文件投递。不得在 --next 中重复、改写或伪造契约。项目基线报告必须先停止等待审核；基线获批后，任务 AI 在普通内部里程碑结束回合时，只要停止条件未满足且存在合同内安全路径，应直接要求它继续剩余工作流，不要交回用户确认。`
       : '',
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,

@@ -292,6 +292,37 @@
   flex: 1;
 }
 
+.project-manager-dialog__definition-state {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.07);
+  color: #86efac;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__definition-state[data-dirty='1'] {
+  border-color: rgba(251, 191, 36, 0.38);
+  background: rgba(251, 191, 36, 0.1);
+  color: #fcd34d;
+}
+
+.project-manager-dialog__definition-state--footer {
+  font-size: 11px;
+}
+
+.project-manager-dialog__apply-btn:not(:disabled) {
+  border-color: rgba(80, 160, 255, 0.7);
+  background: rgba(80, 160, 255, 0.2);
+  color: #cce7ff;
+}
+
+.project-manager-dialog__apply-btn:not(:disabled):hover {
+  background: rgba(80, 160, 255, 0.34);
+}
+
 .project-manager-dialog__agent-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -626,11 +657,25 @@
 }
 
 .project-manager-dialog__work-items summary {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
+  align-items: center;
   cursor: pointer;
   font-size: 11px;
+}
+
+.project-manager-dialog__work-items summary input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #60a5fa;
+  cursor: pointer;
+}
+
+.project-manager-dialog__work-items summary input:disabled {
+  cursor: not-allowed;
+  opacity: 0.34;
 }
 
 .project-manager-dialog__work-items summary span {
@@ -653,6 +698,93 @@
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.project-manager-dialog__work-item-decisions {
+  max-height: min(36vh, 330px);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.project-manager-dialog__work-item-decisions details[data-selected='1'] {
+  border-color: rgba(96, 165, 250, 0.72);
+  background: rgba(59, 130, 246, 0.11);
+}
+
+.project-manager-dialog__work-item-count {
+  color: var(--ui-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__work-item-intervention {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.46);
+  border-radius: 8px;
+  background: rgba(30, 64, 175, 0.09);
+}
+
+.project-manager-dialog__work-item-intervention-head,
+.project-manager-dialog__work-item-intervention-submit {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-manager-dialog__work-item-intervention-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.project-manager-dialog__work-item-intervention-head span,
+.project-manager-dialog__work-item-intervention-submit > span {
+  color: var(--ui-text-muted);
+  font-size: 10px;
+}
+
+.project-manager-dialog__work-item-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.project-manager-dialog__work-item-actions label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.project-manager-dialog__work-item-actions label[data-selected='1'] {
+  border-color: rgba(96, 165, 250, 0.64);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.project-manager-dialog__work-item-actions input {
+  margin: 2px 0 0;
+  accent-color: #60a5fa;
+}
+
+.project-manager-dialog__work-item-actions span {
+  display: grid;
+  gap: 3px;
+}
+
+.project-manager-dialog__work-item-actions small {
+  color: var(--ui-text-muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .project-manager-dialog__summary {

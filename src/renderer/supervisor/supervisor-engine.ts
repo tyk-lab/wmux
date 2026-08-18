@@ -14,7 +14,11 @@ import {
   cancelPendingAutomatedTerminalSubmit,
   consumeAutomatedTerminalSubmit,
 } from '../utils/terminal-user-submit';
-import { INTERACTIVE_TUI_READY_DELAY_MS, pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
+import {
+  INTERACTIVE_TUI_READY_DELAY_MS,
+  pasteSubmitDelayMs,
+  prepareAutomatedTerminalInput,
+} from '../utils/terminal-input-delivery';
 import { terminalRuntimeInputError } from '../terminal-runtime-lifecycle';
 
 export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
@@ -155,26 +159,21 @@ export function tickLane(opts: {
 /** Delay before the first briefing so a freshly launched AI TUI can accept it. */
 export const SUPERVISOR_TUI_READY_DELAY_MS = INTERACTIVE_TUI_READY_DELAY_MS;
 
-const BRACKETED_PASTE_START = '\x1b[200~';
-const BRACKETED_PASTE_END = '\x1b[201~';
-
-/** Keep multi-line AI text inside one terminal draft instead of submitting its first line. */
+/**
+ * Keep automated control text inside one terminal draft. The emulator's
+ * bracketed-paste flag can be stale after a nested Agent TUI redraw or restart,
+ * so embedded newlines must never be trusted as safe input delimiters.
+ */
 export function prepareTerminalPasteInput(
   text: string,
-  bracketedPasteMode: boolean,
+  _bracketedPasteMode: boolean,
 ): string {
-  if (!/[\r\n]/u.test(text)) return text;
-  const normalized = text.replace(/\r\n|\n|\r/gu, '\r');
-  if (bracketedPasteMode) {
-    return `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`;
-  }
-  return normalized.replace(/\r+/gu, ' ');
+  return prepareAutomatedTerminalInput(text);
 }
 
-function terminalPasteInput(surfaceId: string, text: string, submitEnter: boolean): string {
+function terminalPasteInput(_surfaceId: string, text: string, submitEnter: boolean): string {
   const input = submitEnter ? text.replace(/[\r\n]+$/u, '') : text;
-  const bracketedPasteMode = surfaceTerminalRegistry.get(surfaceId)?.modes?.bracketedPasteMode === true;
-  return prepareTerminalPasteInput(input, bracketedPasteMode);
+  return prepareTerminalPasteInput(input, false);
 }
 
 export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;

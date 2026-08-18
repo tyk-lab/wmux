@@ -6,6 +6,7 @@ import {
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
+  requiredProjectTaskBaseline,
   type ProjectManagerAction,
   type ProjectManagerEvent,
   type ProjectManagerSession,
@@ -325,6 +326,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return {
           ...item,
           status: 'waiting-decision' as const,
+          baseline: requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
           latestBlocker: '当前主目标要求已调整，等待项目 AI 评估后显式重新绑定需求和授权版本',
           updatedAt: now,
         };
@@ -464,6 +466,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           : {
               ...item,
               status: 'waiting-decision' as const,
+              baseline: requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
               latestBlocker: '项目前置条件已更新，等待项目管理 AI 按新条件重新核对任务安全性和可执行性',
               updatedAt: now,
             }
@@ -546,6 +549,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goalId: action.workItem.goalId || activeGoal.id,
         requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
         authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),
+        baseline: requiredProjectTaskBaseline(
+          action.workItem.requirementsVersion || projectRequirementsVersion(session),
+        ),
       };
       if (workItem.goalId !== activeGoal.id) return { ok: false, error: '只能为当前主目标创建任务' };
       if (workItem.subgoalId) {
@@ -567,6 +573,17 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return { ok: false, error: '旧主目标任务已经失效，不能修改当前目标状态' };
       }
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      const userIntervention = [...session.events].reverse().find((event) => (
+        event.kind === 'user-work-item-intervention' && event.workItemId === existing.id
+      ));
+      if (
+        existing.status === 'stopped'
+        && userIntervention
+        && action.patch.status !== undefined
+        && action.patch.status !== 'stopped'
+      ) {
+        return { ok: false, error: '该工作项已被用户跳过或关闭，不能由 AI 恢复；如需继续请按用户最新决定创建新的工作项' };
+      }
       if (action.patch.goalId !== undefined && action.patch.goalId !== existing.goalId) {
         return { ok: false, error: '任务的主目标归属不可变；切换主目标后必须创建新任务' };
       }
@@ -591,18 +608,125 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         ));
         if (!targetSubgoal) return { ok: false, error: '任务只能重分配到当前主目标下的有效阶段' };
       }
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({
-        ...item,
-        ...action.patch,
-        id: item.id,
-        goalId: item.goalId,
-        updatedAt: now,
-      }));
+      const { baseline: _untrustedBaseline, ...safePatch } = action.patch;
+      const updated = updateWorkItem(session, action.workItemId, (item) => {
+        const nextRequirementsVersion = safePatch.requirementsVersion || item.requirementsVersion
+          || projectRequirementsVersion(session);
+        const resetBaseline = nextRequirementsVersion !== item.requirementsVersion
+          || (safePatch.contract !== undefined
+            && JSON.stringify(safePatch.contract) !== JSON.stringify(item.contract))
+          || (safePatch.subgoalId !== undefined && safePatch.subgoalId !== item.subgoalId);
+        return {
+          ...item,
+          ...safePatch,
+          id: item.id,
+          goalId: item.goalId,
+          baseline: resetBaseline
+            ? requiredProjectTaskBaseline(nextRequirementsVersion)
+            : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
+          updatedAt: now,
+        };
+      });
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       const dependencyError = projectDependencyError(updated.workItems);
       if (dependencyError) return { ok: false, error: dependencyError };
       next = updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
+    } else if (action.type === 'start-work-item-baseline') {
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (['completed', 'stopped'].includes(existing.status)) {
+        return { ok: false, error: '已经结束的任务不能再发起项目基线调查' };
+      }
+      if (existing.requirementsVersion !== projectRequirementsVersion(session)) {
+        return { ok: false, error: '任务尚未绑定当前需求版本，不能发起项目基线调查' };
+      }
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        baseline: {
+          status: 'investigating',
+          requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
+          requestedAt: now,
+        },
+        updatedAt: now,
+      }));
+      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      next = updated;
+      eventInput = {
+        kind: 'work-item-baseline-started',
+        workItemId: action.workItemId,
+        summary: `监督 AI 已发起只读项目基线调查：${action.workItemId}`,
+      };
+    } else if (action.type === 'approve-work-item-baseline') {
+      const evidence = action.evidence.trim().slice(0, 12000);
+      const workspaceVersion = action.workspaceVersion.trim().slice(0, 2000);
+      if (!evidence || !workspaceVersion) {
+        return { ok: false, error: '批准项目基线必须提供工作区版本和审核证据' };
+      }
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (['completed', 'stopped'].includes(existing.status)) {
+        return { ok: false, error: '已经结束的任务不能再批准项目基线' };
+      }
+      if (existing.requirementsVersion !== projectRequirementsVersion(session)) {
+        return { ok: false, error: '任务尚未绑定当前需求版本，不能批准项目基线' };
+      }
+      if (existing.baseline?.status !== 'investigating') {
+        return { ok: false, error: '项目基线尚未完成调查轮次，不能预先批准' };
+      }
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        baseline: {
+          status: 'approved',
+          requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
+          workspaceVersion,
+          evidence,
+          approvedAt: now,
+        },
+        updatedAt: now,
+      }));
+      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      next = updated;
+      eventInput = {
+        kind: 'work-item-baseline-approved',
+        workItemId: action.workItemId,
+        summary: `监督 AI 已审核项目基线：${action.workItemId}`,
+        payload: { workspaceVersion, evidence },
+      };
+    } else if (action.type === 'intervene-work-item') {
+      if (['completed', 'stopped'].includes(session.status)) {
+        return { ok: false, error: '已完成或停止的项目不能再干预工作项' };
+      }
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
+        return { ok: false, error: '旧主目标工作项已经失效，不能作为当前目标的用户裁决' };
+      }
+      if (['completed', 'stopped'].includes(existing.status)) {
+        return { ok: false, error: '该工作项已经结束，无需重复干预' };
+      }
+      const reason = action.reason?.trim().slice(0, 1200) || '';
+      const interventionLabel = action.intervention === 'skip' ? '跳过' : '关闭';
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        status: 'stopped',
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        updatedAt: now,
+      }));
+      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      next = updated;
+      eventInput = {
+        kind: 'user-work-item-intervention',
+        workItemId: existing.id,
+        summary: `用户${interventionLabel}工作项：${existing.title}${reason ? `；理由：${reason}` : ''}`,
+        payload: {
+          intervention: action.intervention,
+          reason: reason || undefined,
+          title: existing.title,
+          previousStatus: existing.status,
+        },
+      };
     } else if (action.type === 'record-execution') {
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (existing?.goalId && existing.goalId !== activeProjectGoal(session).id) {

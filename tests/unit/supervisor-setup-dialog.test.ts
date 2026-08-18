@@ -18,6 +18,10 @@ const pipeBridgeSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/pipe-bridge.ts'),
   'utf8',
 );
+const supervisorCssSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/styles/supervisor.css'),
+  'utf8',
+);
 
 describe('supervisor setup dialog feedback', () => {
   it('offers project management as a separate visible mode', () => {
@@ -46,7 +50,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('不会逐步重复确认');
     expect(projectManagerDialogSource).toContain("action: 'update-definition'");
     expect(projectManagerDialogSource).toContain('项目身份与当前主目标');
-    expect(projectManagerDialogSource).toContain('应用主目标变更');
+    expect(projectManagerDialogSource).toContain('未确认变更尚未生效');
+    expect(projectManagerDialogSource).toContain('取消变更');
+    expect(projectManagerDialogSource).toContain('确认生效');
+    expect(projectManagerDialogSource).toContain('关闭（取消变更）');
     expect(projectManagerDialogSource).toContain('项目稳定范围');
     expect(projectManagerDialogSource).toContain('调整当前主目标');
     expect(projectManagerDialogSource).toContain('切换新的主目标');
@@ -57,6 +64,22 @@ describe('supervisor setup dialog feedback', () => {
       /const updateProjectDefinition = async[\s\S]*?^  };/m,
     )?.[0] || '';
     expect(definitionUpdateHandler).not.toContain('window.confirm');
+    const discardDefinitionHandler = projectManagerDialogSource.match(
+      /const discardProjectDefinitionChanges = \(\) => \{[\s\S]*?^  };/m,
+    )?.[0] || '';
+    expect(discardDefinitionHandler).toContain('setDefinitionGoalDraft(session.goal)');
+    expect(discardDefinitionHandler).toContain("setGoalChangeMode('refine')");
+    expect(discardDefinitionHandler).not.toContain('invoke(');
+    const closeDialogHandler = projectManagerDialogSource.match(
+      /const closeDialog = \(\) => \{[\s\S]*?^  };/m,
+    )?.[0] || '';
+    expect(closeDialogHandler).toContain('discardProjectDefinitionChanges()');
+    expect(closeDialogHandler).toContain('close()');
+    expect(closeDialogHandler).not.toContain('updateProjectDefinition');
+    const definitionFingerprint = projectManagerDialogSource.match(
+      /const sessionDefinitionFingerprint = session \? JSON\.stringify\(\[[\s\S]*?\]\) : '';/m,
+    )?.[0] || '';
+    expect(definitionFingerprint).not.toContain('session.subgoals');
     expect(projectManagerDialogSource).toContain('同一目录也可按不同稳定范围建立独立项目');
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
@@ -83,6 +106,16 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('你 · 询问');
     expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
     expect(projectManagerDialogSource).toContain('messageDrafts');
+    expect(projectManagerDialogSource).toContain("action: 'intervene-work-item'");
+    expect(projectManagerDialogSource).toContain('跳过此项');
+    expect(projectManagerDialogSource).toContain('关闭此项');
+    expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭的理由');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-decisions');
+    expect(supervisorCssSource).toMatch(
+      /\.project-manager-dialog__work-item-decisions\s*\{[\s\S]*?max-height:[\s\S]*?overflow-y:\s*auto;/,
+    );
+    expect(pipeBridgeSource).toContain("if (action === 'intervene-work-item')");
+    expect(pipeBridgeSource).toContain('其他工作项没有被全局暂停');
     expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话${revokedOldRun');
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
   });

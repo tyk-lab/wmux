@@ -47,12 +47,13 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 function taskWorkModeLabel(mode: string | undefined): string {
-  if (mode === 'multi-thread') return '多线程';
-  if (mode === 'adaptive') return '自适应线程';
-  return '单线程';
+  if (mode === 'multi-thread') return '固定多线程';
+  if (mode === 'adaptive') return '自适应线程（按调查结果）';
+  return '固定单线程';
 }
 
 type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
+type ProjectWorkItemIntervention = 'skip' | 'close';
 
 const PROJECT_ALERT_KINDS = new Set([
   'manager-runtime-failed',
@@ -190,6 +191,10 @@ export default function ProjectManagerDialog() {
   const [recoveryDeleteCandidate, setRecoveryDeleteCandidate] = useState<ProjectRecoveryCandidate | null>(null);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
+  const [workItemInterventionId, setWorkItemInterventionId] = useState('');
+  const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
+  const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
+  const [workItemInterventionNotice, setWorkItemInterventionNotice] = useState('');
   const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('conversation');
   const goalRef = useRef<HTMLTextAreaElement | null>(null);
   const recoveryDeleteCancelRef = useRef<HTMLButtonElement | null>(null);
@@ -205,6 +210,14 @@ export default function ProjectManagerDialog() {
   const currentWorkItems = useMemo(() => session?.workItems.filter((item) => (
     !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
   )) || [], [session]);
+  const intervenableWorkItems = useMemo(() => (
+    !session || ['completed', 'stopped'].includes(session.status)
+      ? []
+      : currentWorkItems.filter((item) => !['completed', 'stopped'].includes(item.status))
+  ), [currentWorkItems, session]);
+  const selectedInterventionWorkItem = useMemo(() => intervenableWorkItems.find((item) => (
+    item.id === workItemInterventionId
+  )) || null, [intervenableWorkItems, workItemInterventionId]);
   const currentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
   const goalHistory = useMemo(() => [...(session?.goals || [])].sort((left, right) => right.sequence - left.sequence), [session?.goals]);
   const activeAlert = useMemo(() => {
@@ -225,8 +238,6 @@ export default function ProjectManagerDialog() {
     session.projectName,
     session.projectScope,
     session.activeGoalId,
-    session.goals,
-    session.subgoals,
     session.preconditions,
     session.doneWhen,
     session.planFiles.map((file) => [file.path, file.sizeBytes, file.mtimeMs, file.capturedAt]),
@@ -261,6 +272,13 @@ export default function ProjectManagerDialog() {
   useEffect(() => {
     if (open) setActiveView('conversation');
   }, [open, session?.id]);
+
+  useEffect(() => {
+    setWorkItemInterventionId('');
+    setWorkItemIntervention('skip');
+    setWorkItemInterventionReason('');
+    setWorkItemInterventionNotice('');
+  }, [session?.activeGoalId, session?.id]);
 
   useEffect(() => {
     if (!open) setRecoveryDeleteCandidate(null);
@@ -615,6 +633,18 @@ export default function ProjectManagerDialog() {
     }
   };
 
+  const discardProjectDefinitionChanges = () => {
+    if (!session || busy) return;
+    setDefinitionGoalDraft(session.goal);
+    setPreconditionsDraft(session.preconditions.join('\n'));
+    setDefinitionDoneWhenDraft(session.doneWhen.join('\n'));
+    setDefinitionPlanFiles(session.planFiles || []);
+    setDefinitionPlanFilePath('');
+    setGoalChangeMode('refine');
+    setNotice('');
+    setConstraintNotice('未确认变更已取消，当前项目目标和需求没有改变。');
+  };
+
   const sendMessage = async () => {
     const text = message.trim();
     if (!text || busy || !session) return;
@@ -706,10 +736,43 @@ export default function ProjectManagerDialog() {
     || conditionLines(definitionDoneWhenDraft).join('\n') !== session.doneWhen.join('\n')
     || JSON.stringify(definitionPlanFiles) !== JSON.stringify(session.planFiles || [])
   );
+  const projectDefinitionDraftDirty = projectDefinitionChanged || !!definitionPlanFilePath.trim();
+  const closeDialog = () => {
+    if (busy) return;
+    if (!creating && session && projectDefinitionDraftDirty) discardProjectDefinitionChanges();
+    close();
+  };
+
+  const interveneWorkItem = async () => {
+    if (!session || !selectedInterventionWorkItem || busy) {
+      if (!selectedInterventionWorkItem) setWorkItemInterventionNotice('请先选择一个尚未结束的工作项。');
+      return;
+    }
+    setBusy(true);
+    setNotice('');
+    setWorkItemInterventionNotice('');
+    try {
+      const result = await invoke({
+        action: 'intervene-work-item',
+        projectId: session.id,
+        workItemId: selectedInterventionWorkItem.id,
+        intervention: workItemIntervention,
+        reason: workItemInterventionReason.trim(),
+      });
+      setWorkItemInterventionId('');
+      setWorkItemIntervention('skip');
+      setWorkItemInterventionReason('');
+      setWorkItemInterventionNotice(result.message || '工作项干预已提交给项目 AI。');
+    } catch (error) {
+      setWorkItemInterventionNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="confirm-dialog__overlay supervisor-dialog__overlay" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) close();
+      if (event.target === event.currentTarget) closeDialog();
     }}>
       <div className="supervisor-dialog project-manager-dialog" role="dialog" aria-modal="true" aria-label="项目中心">
         <header className="supervisor-dialog__header project-manager-dialog__header">
@@ -989,12 +1052,11 @@ export default function ProjectManagerDialog() {
                     <div className="supervisor-dialog__group-title">项目身份与当前主目标</div>
                     <div className="supervisor-dialog__hint">项目名称、目录和稳定范围属于长期身份；这里调整的是 G{currentGoal?.sequence || 1}，或在同一项目内切换新的主目标。变更后由项目 AI 自主评估复用、停止和重绑。</div>
                   </div>
-                  <button
-                    type="button"
-                    className="confirm-dialog__btn"
-                    disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}
-                    onClick={() => void updateProjectDefinition()}
-                  >应用主目标变更</button>
+                  <span
+                    className="project-manager-dialog__definition-state"
+                    data-dirty={projectDefinitionDraftDirty ? '1' : '0'}
+                    role="status"
+                  >{projectDefinitionDraftDirty ? '有未确认变更 · 尚未生效' : '当前内容已生效'}</span>
                 </div>
                 <div className="supervisor-dialog__label">项目名称</div>
                 <div className="project-manager-dialog__path">{projectDisplayName(session)}</div>
@@ -1112,7 +1174,7 @@ export default function ProjectManagerDialog() {
                       <article key={lane.id}>
                         <div><strong>{lane.label}</strong><em>{STATUS_LABELS[supervisorLaneControlState(lane)] || supervisorLaneControlState(lane)}</em></div>
                         <p>监督终端：{lane.supervisorSurfaceId || '恢复中'} · 任务终端：{lane.projectTaskStartupPending ? '等待监督 AI 创建' : lane.surfaceId}</p>
-                        <p>工作项：{item?.title || lane.projectWorkItemId || '未绑定'} · {taskWorkModeLabel(execution?.taskWorkMode)}</p>
+                        <p>工作项：{item?.title || lane.projectWorkItemId || '未绑定'} · {taskWorkModeLabel(execution?.taskWorkMode)} · 项目基线：{item?.baseline?.status === 'approved' ? '已审核' : item?.baseline?.status === 'investigating' ? '调查待审核' : '待只读调查'}</p>
                         {execution?.modeReason && <p>模式理由：{execution.modeReason}</p>}
                         {execution?.taskWorkMode === 'multi-thread' && (
                           <p>主线程：{execution.mainThreadResponsibility}；子线程：{execution.childThreadResponsibilities.join('；')}</p>
@@ -1126,18 +1188,51 @@ export default function ProjectManagerDialog() {
                 </div>
               </section>}
               {activeView === 'execution' && <section className="supervisor-dialog__group">
-                <div className="supervisor-dialog__group-title">当前主目标工作项决策记录</div>
-                <div className="project-manager-dialog__work-items">
+                <div className="project-manager-dialog__section-head">
+                  <div>
+                    <div className="supervisor-dialog__group-title">当前主目标工作项决策记录</div>
+                    <div className="supervisor-dialog__hint">选择工作项左侧圆点可进行用户干预；已完成、已跳过或已关闭的工作项只保留为审计记录。</div>
+                  </div>
+                  <span className="project-manager-dialog__work-item-count">{currentWorkItems.length} 项</span>
+                </div>
+                <div className="project-manager-dialog__work-items project-manager-dialog__work-item-decisions">
                   {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
                   {currentWorkItems.map((item) => {
                     const execution = item.contract.execution;
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
+                    const latestIntervention = [...decisions].reverse().find((event) => (
+                      event.kind === 'user-work-item-intervention'
+                    ));
+                    const intervention = latestIntervention?.payload?.intervention;
+                    const statusLabel = item.status === 'stopped' && intervention === 'skip'
+                      ? '已跳过'
+                      : item.status === 'stopped' && intervention === 'close'
+                        ? '已关闭'
+                        : STATUS_LABELS[item.status] || item.status;
+                    const canIntervene = !['completed', 'stopped'].includes(session.status)
+                      && !['completed', 'stopped'].includes(item.status);
                     return (
-                      <details key={item.id}>
-                        <summary><strong>{item.title}</strong><span>{STATUS_LABELS[item.status] || item.status}</span></summary>
+                      <details key={item.id} data-selected={workItemInterventionId === item.id ? '1' : '0'}>
+                        <summary>
+                          <input
+                            type="radio"
+                            name={`work-item-intervention-${session.id}`}
+                            checked={workItemInterventionId === item.id}
+                            disabled={busy || !canIntervene}
+                            aria-label={`选择工作项：${item.title}`}
+                            title={canIntervene ? '选择此工作项进行干预' : '该工作项已经结束'}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={() => {
+                              setWorkItemInterventionId(item.id);
+                              setWorkItemInterventionNotice('');
+                            }}
+                          />
+                          <strong>{item.title}</strong><span>{statusLabel}</span>
+                        </summary>
                         <dl>
                           <dt>执行模式</dt><dd>{taskWorkModeLabel(execution?.taskWorkMode)}{execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
                           {execution?.taskWorkMode === 'adaptive' && <><dt>自适应边界</dt><dd>最多 {execution.maxChildThreads} 个内部子线程；可并行：{execution.parallelizableOperations?.join('；')}；必须串行：{execution.serializedOperations?.join('；')}</dd></>}
+                          <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>决策预算</dt><dd>{item.decisionsUsed}/{item.contract.budget.maxDecisions}；重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
@@ -1148,6 +1243,44 @@ export default function ProjectManagerDialog() {
                     );
                   })}
                 </div>
+                {selectedInterventionWorkItem && (
+                  <div className="project-manager-dialog__work-item-intervention" role="group" aria-label="干预选中的工作项">
+                    <div className="project-manager-dialog__work-item-intervention-head">
+                      <div><strong>干预：{selectedInterventionWorkItem.title}</strong><span>只处理此工作项，不会暂停整个项目。</span></div>
+                      <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
+                        setWorkItemInterventionId('');
+                        setWorkItemInterventionReason('');
+                        setWorkItemInterventionNotice('');
+                      }}>取消选择</button>
+                    </div>
+                    <div className="project-manager-dialog__work-item-actions">
+                      <label data-selected={workItemIntervention === 'skip' ? '1' : '0'}>
+                        <input type="radio" name="work-item-intervention-action" value="skip" checked={workItemIntervention === 'skip'} disabled={busy} onChange={() => setWorkItemIntervention('skip')} />
+                        <span><strong>跳过此项</strong><small>本轮不执行，由项目 AI 自主重排或建立替代项。</small></span>
+                      </label>
+                      <label data-selected={workItemIntervention === 'close' ? '1' : '0'}>
+                        <input type="radio" name="work-item-intervention-action" value="close" checked={workItemIntervention === 'close'} disabled={busy} onChange={() => setWorkItemIntervention('close')} />
+                        <span><strong>关闭此项</strong><small>明确从当前计划移除，项目 AI 不得自行恢复或等价重建。</small></span>
+                      </label>
+                    </div>
+                    <textarea
+                      className="supervisor-dialog__textarea"
+                      rows={2}
+                      maxLength={1200}
+                      value={workItemInterventionReason}
+                      disabled={busy}
+                      onChange={(event) => setWorkItemInterventionReason(event.target.value)}
+                      placeholder="可选：说明跳过或关闭的理由、已知事实，供项目 AI 重排时采用"
+                    />
+                    <div className="project-manager-dialog__work-item-intervention-submit">
+                      <span>{workItemIntervention === 'skip' ? '原工作项会停止，后续依赖交由项目 AI 评估。' : '原工作项及其专属监督/任务 AI 会停止。'}</span>
+                      <button type="button" className="confirm-dialog__btn project-manager-dialog__apply-btn" disabled={busy} onClick={() => void interveneWorkItem()}>
+                        {busy ? '正在提交…' : `确认${workItemIntervention === 'skip' ? '跳过' : '关闭'}`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {workItemInterventionNotice && <div className="supervisor-dialog__notice" role="status">{workItemInterventionNotice}</div>}
               </section>}
               {activeView === 'conversation' && <section className="supervisor-dialog__group project-manager-dialog__chat">
                 <div className="project-manager-dialog__section-head">
@@ -1220,8 +1353,30 @@ export default function ProjectManagerDialog() {
             setActiveView('requirements');
           }}>设置下一主目标</button>}
           {creating && session && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => { setCreating(false); setNotice(''); }}>取消添加</button>}
+          {!creating && session && activeView === 'requirements' && (
+            <span
+              className="project-manager-dialog__definition-state project-manager-dialog__definition-state--footer"
+              data-dirty={projectDefinitionDraftDirty ? '1' : '0'}
+              aria-live="polite"
+            >{projectDefinitionDraftDirty ? '未确认变更尚未生效' : '目标与需求已生效'}</span>
+          )}
           <span className="supervisor-dialog__actions-spacer" />
-          <button type="button" className="confirm-dialog__btn" onClick={close}>关闭</button>
+          {!creating && session && activeView === 'requirements' && <>
+            <button
+              type="button"
+              className="confirm-dialog__btn"
+              disabled={busy || !projectDefinitionDraftDirty}
+              onClick={discardProjectDefinitionChanges}
+            >取消变更</button>
+            <button
+              type="button"
+              className="confirm-dialog__btn project-manager-dialog__apply-btn"
+              disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}
+              title={session.pendingUserQuestion ? '请先完成当前需求确认' : undefined}
+              onClick={() => void updateProjectDefinition()}
+            >{busy ? '正在应用…' : '确认生效'}</button>
+          </>}
+          <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={closeDialog}>{projectDefinitionDraftDirty ? '关闭（取消变更）' : '关闭'}</button>
           {!awaitingRecovery && (creating || !session) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : '添加项目'}</button>}
         </div>
 

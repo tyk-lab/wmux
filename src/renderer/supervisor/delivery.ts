@@ -1,5 +1,18 @@
 import type { SupervisorDelivery } from '../store/supervisor-slice';
 
+export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
+
+export function signalSupervisorDeliveryReady(): void {
+  window.dispatchEvent(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
+}
+
+export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): string {
+  if (kind === 'task-start') return '任务开始';
+  if (kind === 'task-end') return '任务结束';
+  if (kind === 'task-interrupted') return '任务中断';
+  return '活性检查';
+}
+
 export type SupervisorWakeDeliveryKind = 'task-end' | 'task-interrupted';
 
 /** Only terminal states that need a decision should wake the dedicated supervisor. */

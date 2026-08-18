@@ -126,6 +126,12 @@ describe('project manager records', () => {
       ...session('pm-adaptive', 20),
       workItems: [{
         id: 'adaptive-task',
+        requirementsVersion: 1,
+        baseline: {
+          status: 'approved', requirementsVersion: 1,
+          workspaceVersion: 'head:adaptive,status:clean',
+          evidence: '已审核项目结构、测试约定与共享资源边界', approvedAt: 19,
+        },
         title: '自适应任务',
         status: 'planned',
         dependencies: [],
@@ -165,12 +171,18 @@ describe('project manager records', () => {
 
     saveProjectManagerSession(saved, appData);
 
-    expect(recoveredSession(appData, 'pm-adaptive')?.workItems[0].contract.execution)
+    expect(recoveredSession(appData, 'pm-adaptive')?.workItems[0])
       .toMatchObject({
+        baseline: {
+          status: 'approved',
+          workspaceVersion: 'head:adaptive,status:clean',
+        },
+        contract: { execution: {
         taskWorkMode: 'adaptive',
         maxChildThreads: 2,
         supervisorMayApproveThreads: true,
         serializedOperations: ['硬件重上电', '最终验证'],
+        } },
       });
   });
 

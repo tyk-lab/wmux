@@ -45,6 +45,7 @@ import {
 import {
   blankRuntime,
   pasteSubmitDelayMs,
+  prepareTerminalPasteInput,
   sendToSurface,
   tickLane,
   type LaneRuntime,
@@ -1127,7 +1128,10 @@ export default function App() {
           }
 
           if (delivery.stage !== 'pasted') {
-            const input = delivery.text.replace(/[\r\n]+$/u, '');
+            const input = prepareTerminalPasteInput(
+              delivery.text.replace(/[\r\n]+$/u, ''),
+              false,
+            );
             const pasted = await pty.writeChecked(supervisorSurfaceId, input);
             if (!pasted) {
               scheduleRetry();
