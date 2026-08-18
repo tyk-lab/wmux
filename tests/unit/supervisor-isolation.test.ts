@@ -32,6 +32,7 @@ import { DEFAULT_WORKSPACE_PREFS, type WorkspacePrefs } from '../../src/renderer
 import {
   autonomousDecisionBoundary,
   buildSupervisorBriefing,
+  buildSupervisorWakeRoleAnchor,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -55,6 +56,17 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
     ...partial,
   };
 }
+
+describe('supervisor wake role anchor', () => {
+  it('resets the supervisor role and binds one decision to one task surface', () => {
+    const text = buildSupervisorWakeRoleAnchor('worker-a');
+
+    expect(text).toContain('专属监督，不是任务执行者');
+    expect(text).toContain('wmux read-screen --surface worker-a');
+    expect(text).toContain('不得修改交付文件');
+    expect(text).toContain('本次只形成一个裁决');
+  });
+});
 
 type SupervisorTestStore = SupervisorSlice & {
   workspacePrefs: Pick<
@@ -1194,13 +1206,34 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');
-    expect(briefing).toContain('用户已确认、在本次监督会话内有效');
-    expect(briefing).toContain('不要仅因历史审计、任务日志');
+    expect(briefing).toContain('用户已确认、在当前监督配置内持续有效');
+    expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
     expect(briefing).toContain('本终端启用有限自主监督');
     expect(briefing).toContain('continue / rework 携带 --next');
     expect(briefing).toContain('--proposal-kind route-adjustment');
     expect(briefing).toContain('--permission-command');
+  });
+
+  it('treats project prerequisites and explicit authorization as durable until conditions change', () => {
+    const session = createDefaultSupervisorSession();
+    const briefing = buildSupervisorBriefing(session, { lane: lane({
+      projectManagerProjectId: 'pm-hardware',
+      projectWorkItemId: 'board-test',
+      autonomousOverride: true,
+      autonomyPermissionsOverride: ['same-route-next'],
+      config: {
+        taskGoal: '完成目标板验证', taskDescription: '',
+        preconditions: '目标硬件已上电，允许直接运行本项目测试。', stopWhen: '验证完成',
+        stopWhenKind: 'concrete', planFilePath: '',
+      },
+    }), state: 'blocked' });
+
+    expect(briefing).toContain('当前项目需求版本内持续有效');
+    expect(briefing).toContain('不得逐步重新取证、索要授权');
+    expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
+    expect(briefing).toContain('已授权低风险权限确认');
+    expect(briefing).toContain('不得按步骤重复索要同一授权');
   });
 
   it('briefs an autonomous supervisor to safely advance the worker', () => {

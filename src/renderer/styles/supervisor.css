@@ -202,6 +202,7 @@
 }
 
 .project-manager-dialog .supervisor-dialog__body {
+  flex: 1 1 auto;
   padding: 10px 16px 14px;
 }
 
@@ -301,7 +302,9 @@
 .project-manager-dialog__recovery-list {
   display: grid;
   gap: 7px;
+  max-height: min(36vh, 320px);
   margin-top: 10px;
+  overflow: auto;
 }
 
 .project-manager-dialog__recovery-summary {
@@ -541,7 +544,10 @@
 }
 
 .project-manager-dialog__portfolio .project-manager-dialog__project-list {
+  max-height: 126px;
   margin-top: 6px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .project-manager-dialog__portfolio .project-manager-dialog__project-list button {
@@ -698,12 +704,15 @@
 
 .project-manager-dialog__conversation {
   display: grid;
+  align-content: start;
   gap: 8px;
-  min-height: 72px;
-  max-height: min(120px, calc(100vh - 460px));
+  min-height: min(240px, 32vh);
+  height: clamp(240px, 42vh, 440px);
+  max-height: min(52vh, 440px);
   margin: 8px 0 10px;
   padding: 12px;
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.13);

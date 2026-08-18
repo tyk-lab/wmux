@@ -23,17 +23,17 @@ describe('supervisor setup dialog feedback', () => {
   it('offers project management as a separate visible mode', () => {
     expect(dialogSource).toContain('选择 AI 工作模式');
     expect(dialogSource).toContain('AI 监督模式');
-    expect(dialogSource).toContain('项目管理 AI 模式');
+    expect(dialogSource).toContain('项目 AI 模式');
     expect(dialogSource).toContain('openProjectManagerDialog');
-    expect(dialogSource).toContain('进入项目管理 AI 控制台');
+    expect(dialogSource).toContain('进入项目中心');
     expect(dialogSource).not.toContain('创建或打开项目管理终端');
     expect(dialogSource).toContain('if (s.projectManagerTerminal) continue;');
-    expect(projectManagerDialogSource).toContain('项目管理 AI 控制台');
+    expect(projectManagerDialogSource).toContain('项目中心');
     expect(projectManagerDialogSource).toContain("action: 'start'");
-    expect(projectManagerDialogSource).toContain('每项目 1 个监督 AI');
+    expect(projectManagerDialogSource).toContain('项目 AI + 监督 AI + 任务 AI');
     expect(projectManagerDialogSource).toContain('选择目录');
-    expect(projectManagerDialogSource).toContain('项目组合');
-    expect(projectManagerDialogSource).toContain('查看项目管理 AI 处理日志');
+    expect(projectManagerDialogSource).toContain('项目数量不受限制');
+    expect(projectManagerDialogSource).toContain('查看当前项目 AI 处理日志');
     expect(projectManagerDialogSource).toContain('添加项目');
     expect(projectManagerDialogSource).toContain('项目管理模式 Agent 配置');
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
@@ -42,6 +42,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('通过会话内 /effort 调整');
     expect(projectManagerDialogSource).toContain('项目前置条件（每行一项）');
+    expect(projectManagerDialogSource).toContain('视为当前需求版本中用户已确认的事实');
+    expect(projectManagerDialogSource).toContain('不会逐步重复确认');
     expect(projectManagerDialogSource).toContain("action: 'update-definition'");
     expect(projectManagerDialogSource).toContain('项目目标与需求');
     expect(projectManagerDialogSource).toContain('保存需求变更');
@@ -61,9 +63,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
     expect(projectManagerDialogSource).toContain('当前项目：{session.goal}');
-    expect(projectManagerDialogSource).toContain('项目管理 AI · 回复');
+    expect(projectManagerDialogSource).toContain('项目 AI · 回复');
     expect(projectManagerDialogSource).toContain('你 · 询问');
-    expect(projectManagerDialogSource).toContain('项目管理 AI 正在处理并将回复到此项目会话');
+    expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
     expect(projectManagerDialogSource).toContain('messageDrafts');
     expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话]');
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
@@ -114,7 +116,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('resetOrdinarySupervisorSession()');
     expect(panelSource).toContain("surface.type === 'supervisor' && surface.projectSupervisorProjectId");
     expect(panelSource).toContain("scopedProjectId ? '项目专属监督' : 'AI 监督'");
-    expect(pipeBridgeSource).toContain('PROJECT_MANAGER_WORKSPACE_TITLE');
+    expect(pipeBridgeSource).toContain('projectManagerWorkspaceTitle');
     expect(pipeBridgeSource).toContain('projectSupervisorWorkspaceTitle');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__alert');

@@ -138,7 +138,10 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
   });
 
   const projectSessions = role === 'manager'
-    ? state.projectManagers.filter((candidate) => !['completed', 'stopped'].includes(candidate.status))
+    ? state.projectManagers.filter((candidate) => (
+        candidate.id === surface.projectManagerProjectId
+        && !['completed', 'stopped'].includes(candidate.status)
+      ))
     : lane?.projectManagerProjectId
       ? state.projectManagers.filter((candidate) => candidate.id === lane.projectManagerProjectId)
       : [];

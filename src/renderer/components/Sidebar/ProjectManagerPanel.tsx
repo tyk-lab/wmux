@@ -70,8 +70,8 @@ export default function ProjectManagerPanel() {
     <section className="sup-panel sup-panel--compact" data-active={active ? '1' : '0'} data-paused={paused ? '1' : '0'}>
       <button type="button" className="sup-panel__header" onClick={openProjectManagerDialog}>
         <span className="sup-panel__dot" />
-        <span className="sup-panel__title">项目管理 AI</span>
-        <span className="sup-panel__status">{activeProjects}/3 · {active ? '运行中' : paused ? '已暂停' : session.status}</span>
+        <span className="sup-panel__title">项目中心</span>
+        <span className="sup-panel__status">{activeProjects} 个项目 · {active ? '运行中' : paused ? '已暂停' : session.status}</span>
       </button>
       <div className="sup-panel__goal" title={session.goal}>{session.goal}</div>
       <div className="sup-panel__freedom">

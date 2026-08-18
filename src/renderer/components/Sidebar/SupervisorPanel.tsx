@@ -540,17 +540,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       return;
     }
 
-    const launchCommand = buildSupervisorLaunchCommand(
-      supervisor.supervisorLaunchCmd,
-      supervisor.supervisorModel,
-      supervisor.supervisorReasoningEffort,
-    );
-    if (!launchCommand) {
+    if (!supervisor.supervisorLaunchCmd.trim()) {
       appendSupervisorLog('-', '启动失败', '未配置可启动的监督 AI，请先打开配置。');
       openSupervisorSetup();
       return;
     }
-    const startupCommands = [launchCommand];
     const replacements: Array<{
       lane: SupervisorLane;
       oldSurfaceId: SurfaceId;
@@ -560,11 +554,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     }> = [];
 
     for (const { lane, supervisorSurfaceId, location } of lanesToRestart) {
+      const launchCommand = buildSupervisorLaunchCommand(
+        supervisor.supervisorLaunchCmd,
+        supervisor.supervisorModel,
+        supervisor.supervisorReasoningEffort,
+        { isolateSupervisor: true, projectDir: lane.projectDir, isolationKey: lane.id },
+      );
       const newSurfaceId = addSurface(location!.workspaceId, location!.paneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
         shell: 'pwsh.exe',
         cwd: lane.projectDir,
-        startupCommands,
+        startupCommands: [launchCommand],
         transientSupervisor: true,
       });
       if (!newSurfaceId || !supervisorSurfaceId) {
@@ -1203,7 +1203,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
           {scopedProjectId ? (
             <div className="sup-panel__waiting-notice" role="note">
-              此处只展示当前项目的专属监督。暂停、恢复、换线和需求调整请回到“项目管理 AI 控制台”处理。
+              此处只展示当前项目的专属监督。暂停、恢复、换线和需求调整请回到“项目中心”处理。
             </div>
           ) : <div className="sup-panel__actions">
             <button type="button" onClick={openSupervisorSetup}>

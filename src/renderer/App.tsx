@@ -51,6 +51,7 @@ import {
 } from './supervisor/supervisor-engine';
 import {
   buildUserNotifyText,
+  buildSupervisorWakeRoleAnchor,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -566,7 +567,11 @@ function handleSupervisorHookEvent(event: any): void {
       auditLane,
       deliveryKind,
       lane.currentTask || '（任务未上报）',
-      `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。请 read-screen 后提交监督裁决。\n`,
+      [
+        `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。`,
+        buildSupervisorWakeRoleAnchor(surfaceId),
+        '',
+      ].join('\n'),
     );
   }
 }

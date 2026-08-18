@@ -1075,8 +1075,6 @@ export default function SupervisorSetupDialog() {
     lanes: SupervisorLane[],
     replaceExisting = false,
   ): { ok: boolean; lanes: SupervisorLane[] } => {
-    const launchCommand = buildSupervisorLaunchCommand(launchCmd, supervisorModel, reasoningEffort);
-    const startupCommands = launchCommand ? [launchCommand] : undefined;
     const terminalLocations = new Map<SurfaceId, { workspaceId: WorkspaceId; paneId: PaneId }>();
     for (const workspace of workspaces) {
       const terminals: Array<{ surfaceId: SurfaceId; paneId: PaneId; title: string; projectDir?: string }> = [];
@@ -1119,11 +1117,17 @@ export default function SupervisorSetupDialog() {
       if (existingLocation && !replaceExisting) {
         return lane;
       }
+      const launchCommand = buildSupervisorLaunchCommand(
+        launchCmd,
+        supervisorModel,
+        reasoningEffort,
+        { isolateSupervisor: true, projectDir: lane.projectDir, isolationKey: lane.id },
+      );
       const supervisorSurfaceId = addSurface(supervisorWorkspace.id, targetPaneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
         shell: 'pwsh.exe',
         cwd: lane.projectDir,
-        startupCommands,
+        startupCommands: launchCommand ? [launchCommand] : undefined,
         transientSupervisor: true,
       });
       if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
@@ -1390,7 +1394,7 @@ export default function SupervisorSetupDialog() {
         <header className="supervisor-dialog__header">
           <div className="supervisor-dialog__title">选择 AI 工作模式</div>
           <div className="supervisor-dialog__sub">
-            选择直接监督任务终端，或由项目管理 AI 同时管理最多 3 个不同目录的项目。
+            选择直接监督任务终端，或通过项目中心创建不限数量、彼此独立的项目 AI 会话。
           </div>
         </header>
 
@@ -1408,9 +1412,9 @@ export default function SupervisorSetupDialog() {
               aria-pressed="false"
               onClick={openProjectManagerMode}
             >
-              <strong>项目管理 AI 模式</strong>
-              <span>与项目管理 AI 对话；每个项目由它管理一条监督 AI＋任务终端链。</span>
-              <em>进入项目管理 AI 控制台</em>
+              <strong>项目 AI 模式</strong>
+              <span>从项目中心进入；每个项目拥有独立会话，由一个项目 AI 管理一条专属监督 AI＋任务 AI 链。</span>
+              <em>进入项目中心</em>
             </button>
           </section>
           <section className="supervisor-dialog__group">
