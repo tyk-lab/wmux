@@ -1,5 +1,14 @@
 export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'pi' | 'other';
 
+export interface SupervisorLaunchOptions {
+  /** Run a dedicated supervisor outside the managed project context. */
+  isolateSupervisor?: boolean;
+  /** Authoritative project root retained only for constrained wmux temp files. */
+  projectDir?: string;
+  /** Stable lane/surface identity used to prevent supervisor runtimes sharing context. */
+  isolationKey?: string;
+}
+
 function matchesLauncherCommand(command: string, executable: string): boolean {
   const escaped = executable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
@@ -42,6 +51,69 @@ function qualifyPiModel(model: string): string {
   return model;
 }
 
+function appendFlagIfMissing(command: string, pattern: RegExp, flag: string): string {
+  return pattern.test(command) ? command : `${command} ${flag}`;
+}
+
+function isKnownSupervisorLauncher(command: string, launcher: SupervisorLauncherKind): boolean {
+  return launcher !== 'other'
+    || matchesLauncherCommand(command, 'claude')
+    || matchesLauncherCommand(command, 'opencode');
+}
+
+function normalizedIsolationKey(value: string): string {
+  return value.trim().replace(/[^a-z0-9._-]+/gi, '-').slice(0, 80) || 'default';
+}
+
+function isolatedSupervisorCommand(
+  command: string,
+  launcher: SupervisorLauncherKind,
+  projectDir: string,
+  isolationKey: string,
+): string {
+  if (!isKnownSupervisorLauncher(command, launcher)) return command;
+
+  let isolatedCommand = command;
+  if (launcher === 'pi') {
+    isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-skills(?:\s|$)/i, '--no-skills');
+    isolatedCommand = appendFlagIfMissing(
+      isolatedCommand,
+      /(?:^|\s)--no-prompt-templates(?:\s|$)/i,
+      '--no-prompt-templates',
+    );
+    isolatedCommand = appendFlagIfMissing(
+      isolatedCommand,
+      /(?:^|\s)--no-context-files(?:\s|$)/i,
+      '--no-context-files',
+    );
+  } else if (launcher === 'grok') {
+    isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-memory(?:\s|$)/i, '--no-memory');
+    isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-subagents(?:\s|$)/i, '--no-subagents');
+    isolatedCommand = appendFlagIfMissing(
+      isolatedCommand,
+      /(?:^|\s)--disable-web-search(?:\s|$)/i,
+      '--disable-web-search',
+    );
+  }
+
+  const prelude = [
+    "$wmuxSupervisorDataRoot = [Environment]::GetFolderPath('ApplicationData')",
+    "$wmuxSupervisorInstance = if ($env:WMUX_INSTANCE) { 'wmux-' + $env:WMUX_INSTANCE } else { 'wmux' }",
+    `$wmuxSupervisorRuntimeDir = Join-Path $wmuxSupervisorDataRoot ($wmuxSupervisorInstance + '\\supervisor\\runtime\\${normalizedIsolationKey(isolationKey)}')`,
+    '[void][System.IO.Directory]::CreateDirectory($wmuxSupervisorRuntimeDir)',
+  ];
+  if (projectDir.trim()) {
+    prelude.push(`$env:WMUX_SUPERVISOR_PROJECT_DIR = ${quotePowerShellArgument(projectDir.trim())}`);
+  }
+  if (launcher === 'kimi' && !/(?:^|\s)--skills-dir(?:\s|=)/i.test(isolatedCommand)) {
+    prelude.push("$wmuxSupervisorSkillsDir = Join-Path $wmuxSupervisorRuntimeDir 'skills'");
+    prelude.push('[void][System.IO.Directory]::CreateDirectory($wmuxSupervisorSkillsDir)');
+    isolatedCommand = `${isolatedCommand} --skills-dir $wmuxSupervisorSkillsDir`;
+  }
+  prelude.push('Set-Location -LiteralPath $wmuxSupervisorRuntimeDir', isolatedCommand);
+  return prelude.join('; ');
+}
+
 /**
  * Adds only the selected launcher's supported startup options. A caller-supplied
  * --model / -m always wins so existing custom commands stay reproducible.
@@ -50,25 +122,37 @@ export function buildSupervisorLaunchCommand(
   launchCommand: string,
   model: string,
   reasoningEffort = '',
+  options: SupervisorLaunchOptions = {},
 ): string {
   const command = launchCommand.trim();
   const launcher = detectSupervisorLauncher(command);
   const selectedModel = launcher === 'pi' ? qualifyPiModel(model.trim()) : model.trim();
   const selectedEffort = reasoningEffort.trim();
-  if (!command || launcher === 'other') return command;
+  if (!command) return command;
   const modelFlag = launcher === 'grok' ? '-m' : '--model';
-  const modelCommand = selectedModel && !/(?:^|\s)(?:--model|-m)(?:\s|=)/i.test(command)
+  const modelCommand = launcher !== 'other'
+    && selectedModel
+    && !/(?:^|\s)(?:--model|-m)(?:\s|=)/i.test(command)
     ? `${command} ${modelFlag} ${quotePowerShellArgument(selectedModel)}`
     : command;
+  let configuredCommand = modelCommand;
   if (launcher === 'codex') {
-    if (!selectedEffort || /\bmodel_reasoning_effort\b/i.test(command)) return modelCommand;
-    return `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
+    if (selectedEffort && !/\bmodel_reasoning_effort\b/i.test(command)) {
+      configuredCommand = `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
+    }
   }
   if (launcher === 'kimi' && selectedEffort === 'on' && !/(?:^|\s)--thinking(?:\s|$)/i.test(command)) {
-    return `${modelCommand} --thinking`;
+    configuredCommand = `${modelCommand} --thinking`;
   }
   if (launcher === 'pi' && selectedEffort && !/(?:^|\s)--thinking(?:\s|=)/i.test(command)) {
-    return `${modelCommand} --thinking ${quotePowerShellArgument(selectedEffort)}`;
+    configuredCommand = `${modelCommand} --thinking ${quotePowerShellArgument(selectedEffort)}`;
   }
-  return modelCommand;
+  return options.isolateSupervisor
+    ? isolatedSupervisorCommand(
+        configuredCommand,
+        launcher,
+        options.projectDir || '',
+        options.isolationKey || '',
+      )
+    : configuredCommand;
 }

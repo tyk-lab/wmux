@@ -19,11 +19,9 @@ import {
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
-import superviseTaskSkillSource from '../../../resources/skills/supervise-task/SKILL.md?raw';
+import supervisorProtocolSource from '../../../resources/prompts/supervisor-protocol.md?raw';
 
-const SUPERVISE_TASK_SKILL_BODY = superviseTaskSkillSource
-  .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/u, '')
-  .trim();
+const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -69,9 +67,9 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
 export const SUPERVISOR_TAB_TITLE = 'AI 监督';
 /** Pinned workspace where the full supervisor session is expanded. */
 export const SUPERVISOR_WORKSPACE_TITLE = 'AI 监督';
-/** Runtime workspace for the portfolio-level Project AI. It is never an ordinary-supervision entrypoint. */
-export const PROJECT_MANAGER_WORKSPACE_TITLE = '项目 AI 控制台';
-/** Prefix for a project-owned supervisor workspace. */
+/** Base title for a project-scoped Project AI runtime. The project center itself has no AI runtime. */
+export const PROJECT_MANAGER_WORKSPACE_TITLE = '项目';
+/** Project execution workspace containing its control surface, supervisor AI, and task AI. */
 export const PROJECT_SUPERVISOR_WORKSPACE_TITLE = '项目专属监督';
 
 export function projectSupervisorWorkspaceTitle(projectGoal: string, projectId: string): string {
@@ -79,8 +77,24 @@ export function projectSupervisorWorkspaceTitle(projectGoal: string, projectId: 
   return `${PROJECT_SUPERVISOR_WORKSPACE_TITLE} · ${label}`;
 }
 
+export function projectManagerWorkspaceTitle(projectGoal: string, projectId: string): string {
+  const label = projectGoal.trim().replace(/\s+/gu, ' ').slice(0, 24) || projectId.slice(0, 8);
+  return `${PROJECT_MANAGER_WORKSPACE_TITLE} · ${label}`;
+}
+
 export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
+}
+
+/** Compact role reset attached to every event-driven supervisor wake-up. */
+export function buildSupervisorWakeRoleAnchor(surfaceId: string): string {
+  const target = surfaceId.trim() || '（未指定）';
+  return [
+    '【监督角色锚点】你是此任务终端的专属监督，不是任务执行者。',
+    `仅检查任务终端 ${target}；除 briefing 指定的计划文件和工程 .wmux/tmp 裁决草稿外，不读取其他上下文。`,
+    '不得修改交付文件、执行实现或测试、创建子代理、调用无关技能，也不得直接控制其他终端。',
+    `先运行 wmux read-screen --surface ${target}；本次只形成一个裁决并用 wmux supervisor decide 提交，仅按 briefing 的单次投递核验处理未送达，成功后立即结束本回合。`,
+  ].join('\n');
 }
 
 export function effectiveSupervisorTaskGoal(lane: SupervisorLane): string {
@@ -130,12 +144,19 @@ export function effectiveSupervisorAutonomyPermissions(
   session: SupervisorSession,
   lane: SupervisorLane,
 ): SupervisorAutonomyPermission[] {
-  if (Array.isArray(lane.autonomyPermissionsOverride)) {
-    return [...lane.autonomyPermissionsOverride];
-  }
-  return Array.isArray(session.autonomyPermissions)
+  const permissions = Array.isArray(lane.autonomyPermissionsOverride)
+    ? [...lane.autonomyPermissionsOverride]
+    : Array.isArray(session.autonomyPermissions)
     ? [...session.autonomyPermissions]
     : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
+  // Project mode is created from a user-approved, versioned task contract. Its
+  // supervisor may acknowledge bounded local execution prompts without asking
+  // the user again; the decision bridge still rejects risky, remote and
+  // out-of-scope permission requests.
+  if (isProjectManagedSupervisorLane(lane) && !permissions.includes('permission-confirm')) {
+    permissions.push('permission-confirm');
+  }
+  return permissions;
 }
 
 export function effectiveSupervisorAutonomous(
@@ -244,7 +265,7 @@ function autonomyPermissionBoundary(permissions: readonly SupervisorAutonomyPerm
   const result = [
     permissionEnabled(permissions, 'same-route-next')
       ? '已授权原路线继续：可用 continue / rework 携带 --next，发送目标内明确、低风险、可逆且可验证的下一步。'
-      : '未授权原路线继续：continue / rework 只可记录裁决，不得携带 --next；需要继续时使用 needs-human。',
+      : '未授权原路线继续：不得使用 continue / rework 推进，也不得携带 --next；需要继续时使用 needs-human。',
     permissionEnabled(permissions, 'technical-choice')
       ? '已授权技术方案选择：终端要求方案 A / B 或 question / input 时，若只是目标内低风险技术选择，应比较证据、成本与可回滚性后自行回答；同一阻塞状态只回答一次。'
       : '未授权技术方案选择：终端提出 question / input 或方案 A / B 时使用 needs-human，不得自行回答。',
@@ -258,7 +279,7 @@ function autonomyPermissionBoundary(permissions: readonly SupervisorAutonomyPerm
   return result;
 }
 
-const LONG_NEXT_TEMP_FILE_RULE = '短文本可直接使用 --next；长文本、多行文本或包含复杂引号时，必须先以 UTF-8 写入当前项目的 .wmux/tmp/<唯一文件名>.txt，再改用 --next-file .wmux/tmp/<唯一文件名>.txt。禁止在项目根目录或 .wmux/tmp/ 之外创建 .tmp-* 等监督草稿；裁决成功后 CLI 会自动删除该临时文件，失败时才保留以供检查。';
+const LONG_NEXT_TEMP_FILE_RULE = '短文本可直接使用 --next；长文本、多行文本或包含复杂引号时，必须先以 UTF-8 写入 briefing 所示工程目录的 .wmux/tmp/<唯一文件名>.txt，再改用 --next-file .wmux/tmp/<唯一文件名>.txt。监督运行目录与工程目录相互隔离，创建文件时必须使用工程绝对路径；CLI 会把相对 --next-file 锚定到该工程。禁止在项目根目录或 .wmux/tmp/ 之外创建监督草稿；裁决成功后 CLI 会自动删除该临时文件，失败时才保留以供检查。';
 
 /** Limited autonomy for ordinary supervision, with a hard human boundary for material risk. */
 export function humanDecisionBoundary(
@@ -300,6 +321,10 @@ export function autonomousDecisionBoundary(
       ? '本任务已由项目管理 AI 启用自主监督：不受普通自动判断次数上限，但仍只能使用任务契约明确授予的能力。'
       : '本会话已由用户启用全自动监督：不受自动判断次数上限，但仍只能使用“自主权限”中已勾选的能力。',
     ...autonomyPermissionBoundary(permissions),
+    ...(projectManaged ? [
+      '项目记录中的已确认前置条件和明确授权在当前需求版本内持续有效；不得按步骤重复索要同一授权。任务终端出现与合同一致的普通本地执行确认时，应在风险、范围和终端证据校验通过后自行确认。',
+      '只有收到用户更新前置条件的事件、当前证据明确与记录冲突，或动作进入原授权未覆盖的新设备、新环境或更高风险层级时，才停止沿用旧条件并交回项目管理 AI。任务终端自身再次询问，不构成条件已经变化的证据。',
+    ] : []),
     projectManaged
       ? '改变任务契约、跨任务协调、删除或覆盖文件、git push/重写历史、发布/部署、云端或生产环境、凭据与权限变更始终使用 needs-human，先交给项目管理 AI，且不要携带权限确认参数。'
       : '删除或覆盖文件、git push/重写历史、发布/部署、云端或生产环境、凭据与权限变更始终使用 needs-human，且不要携带权限确认参数。',
@@ -350,6 +375,7 @@ function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane)
   return [
     '## 用户选择的工作范围与禁止事项',
     `工程目录: ${projectDir}`,
+    '监督 AI 运行在独立目录；该工程目录只用于读取明确计划文件、创建受限裁决草稿及通过任务终端证据作出裁决，不是监督 AI 的执行工作区。',
     `工作范围: ${WORK_SCOPE_TEXT[workScope]}`,
     '禁止事项:',
     forbidden,
@@ -385,7 +411,11 @@ export function buildSupervisorBriefing(
   const worker = [
     `任务终端: ${lane.label} | ${lane.surfaceId}`,
     `监督通道状态: ${channelState}`,
-    `待裁决轮次: ${lane.awaitingReview ? '有' : '无（监听中，等待任务结束或阻塞事件）'}`,
+    `待裁决轮次: ${lane.awaitingReview
+      ? '有'
+      : isProjectManagedSupervisorLane(lane)
+        ? '无（若任务终端非运行且已有明确、低风险、合同内的补证步骤，仍可主动提交 continue/rework）'
+        : '无（监听中，等待任务结束或阻塞事件）'}`,
     `任务终端 Agent 活动状态: ${taskAgentState}${state === 'unknown' ? '（原始值 unknown）' : ''}`,
     '状态说明: 任务终端 Agent 活动状态与监督通道状态相互独立；unknown 只表示没有可信 Agent 状态报告，不得据此断言监督通道异常或任务尚未启动，应先 read-screen 核对终端正文。',
   ].join('\n');
@@ -418,8 +448,9 @@ export function buildSupervisorBriefing(
         '## 已确认的前置条件 / 环境信息',
         laneConfig.preconditions.trim(),
         '',
-        '这些信息是用户已确认、在本次监督会话内有效的环境与安全前提；不要仅因历史审计、任务日志出现“下次确认”“再次确认”等泛化提醒而重复要求人工确认。',
-        `仅当当前终端证据明确表明条件已变化、缺失、失效，或任务进入未被这些前置条件覆盖的新危险操作时，说明具体冲突并交给${decisionOwnerLabel}。它们不是任务或停止条件。`,
+        `这些信息是用户已确认、在${decisionOwner === 'project-manager' ? '当前项目需求版本' : '当前监督配置'}内持续有效的事实和授权；除非权威配置被更新，否则后续步骤默认继承，不得逐步重新取证、索要授权或把同一前置条件改写成待确认项。`,
+        '若其中明确写有“可以”“允许”“可直接运行/测试/上电”等授权，在相同设备、环境、范围和风险等级内可连续执行；任务终端自身再次弹出普通确认，不代表授权失效，应按低风险权限确认规则处理。',
+        `仅当收到前置条件变更事件、当前终端或设备证据明确表明条件已变化/失效，或动作进入未被这些条件覆盖的新设备、新环境或更高风险层级时，说明具体冲突并交给${decisionOwnerLabel}。它们不是任务或停止条件。`,
         '',
       ]
     : [];
@@ -502,11 +533,12 @@ export function buildSupervisorBriefing(
   const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
     : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
-  const postDecisionRule = decisionBoundary.length + 4;
+  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 5 : 4;
+  const postDecisionRule = decisionBoundary.length + decisionBoundaryStart;
 
   const kind = laneConfig.stopWhenKind;
   return [
-      SUPERVISE_TASK_SKILL_BODY,
+      SUPERVISOR_PROTOCOL_CORE,
       '',
       '# AI 监督',
       '',
@@ -549,7 +581,10 @@ export function buildSupervisorBriefing(
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
       '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
       '3. 证据足以收尾可提交 complete；证据不足时优先用 continue / rework 补证或返工，只有无低风险路径时才 needs-human。',
-      ...decisionBoundary.map((line, index) => `${index + 4}. ${line}`),
+      ...(isProjectManagedSupervisorLane(lane) ? [
+        '4. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
+      ] : []),
+      ...decisionBoundary.map((line, index) => `${index + decisionBoundaryStart}. ${line}`),
       `${postDecisionRule}. 每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录裁决；该命令成功时静默。`,
       lane.remoteSshControl
         ? `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；SSH 远程控制终端不允许自动权限确认。`

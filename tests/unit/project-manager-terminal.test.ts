@@ -9,7 +9,7 @@ describe('project manager runtime startup protocol', () => {
   it.each<ProjectManagerRuntimeAgent>(['codex', 'kimi', 'grok'])(
     'forces %s to use the structured user-alignment channel',
     (agent) => {
-      const input = projectManagerStartupInput(agent, 'E:\\runtime\\manage-project\\SKILL.md');
+      const input = projectManagerStartupInput(agent, 'E:\\runtime\\manage-project\\SKILL.md', 'pm-test-project');
 
       expect(input).toContain(PROJECT_MANAGER_ALIGNMENT_GATE);
       expect(input).toContain('wmux project ask');
@@ -18,6 +18,11 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('recommendedOptionId');
       expect(input).toContain('下一轮结构化提问');
       expect(input).toContain('category=manual-intervention');
+      expect(input).toContain('wmux project status --project pm-test-project');
+      expect(input).toContain('只能管理这一个项目');
+      expect(input).toContain('无决策权的项目中心');
+      expect(input).toContain('当前需求版本内持续有效');
+      expect(input).toContain('不得让项目 AI、监督 AI 或任务 AI 逐步重复确认');
     },
   );
 });

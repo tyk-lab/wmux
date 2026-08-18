@@ -73,4 +73,67 @@ describe('supervisor launch command', () => {
   it('does not add Codex arguments to another launcher', () => {
     expect(buildSupervisorLaunchCommand('claude', 'gpt-5.6-sol')).toBe('claude');
   });
+
+  it('isolates a dedicated Pi supervisor from project context and external skills', () => {
+    const command = buildSupervisorLaunchCommand(
+      'pi',
+      'gpt-5.6-sol',
+      'medium',
+      { isolateSupervisor: true, projectDir: "E:\\Work\\O'Brien", isolationKey: 'lane-auth' },
+    );
+
+    expect(command).toContain("$env:WMUX_SUPERVISOR_PROJECT_DIR = 'E:\\Work\\O''Brien'");
+    expect(command).toContain('\\supervisor\\runtime\\lane-auth');
+    expect(command).toContain('Set-Location -LiteralPath $wmuxSupervisorRuntimeDir');
+    expect(command).toContain('--no-skills');
+    expect(command).toContain('--no-prompt-templates');
+    expect(command).toContain('--no-context-files');
+  });
+
+  it('gives a dedicated Kimi supervisor an empty isolated skill directory', () => {
+    const command = buildSupervisorLaunchCommand(
+      'kimi',
+      'k3',
+      'on',
+      { isolateSupervisor: true, projectDir: 'E:\\project' },
+    );
+
+    expect(command).toContain("$wmuxSupervisorSkillsDir = Join-Path $wmuxSupervisorRuntimeDir 'skills'");
+    expect(command).toContain('--skills-dir $wmuxSupervisorSkillsDir');
+  });
+
+  it('disables memory, subagents and web search for a dedicated Grok supervisor', () => {
+    const command = buildSupervisorLaunchCommand(
+      'grok --no-memory',
+      'grok-build',
+      '',
+      { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: 'lane-grok' },
+    );
+
+    expect(command.match(/--no-memory/g)).toHaveLength(1);
+    expect(command).toContain('--no-subagents');
+    expect(command).toContain('--disable-web-search');
+  });
+
+  it('isolates built-in Claude even though wmux does not add launcher options to it', () => {
+    const command = buildSupervisorLaunchCommand(
+      'claude',
+      'gpt-5.6-sol',
+      '',
+      { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: 'lane-claude' },
+    );
+
+    expect(command).toContain('\\supervisor\\runtime\\lane-claude');
+    expect(command.endsWith('; claude')).toBe(true);
+    expect(command).not.toContain("--model 'gpt-5.6-sol'");
+  });
+
+  it('preserves an unknown custom launcher when supervisor isolation is requested', () => {
+    expect(buildSupervisorLaunchCommand(
+      'my-supervisor --profile safe',
+      '',
+      '',
+      { isolateSupervisor: true, projectDir: 'E:\\project' },
+    )).toBe('my-supervisor --profile safe');
+  });
 });

@@ -1,6 +1,5 @@
 import type { TaskWorkMode } from './supervisor-work-mode';
 
-export const MAX_ACTIVE_PROJECTS = 3;
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 
