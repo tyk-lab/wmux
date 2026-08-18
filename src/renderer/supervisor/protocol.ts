@@ -16,6 +16,8 @@ import {
 } from '../../shared/supervisor-policy';
 import {
   normalizeTaskChildThreadResponsibilities,
+  normalizeTaskMaxChildThreads,
+  normalizeTaskOperationBoundaries,
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
@@ -111,7 +113,11 @@ export function effectiveSupervisorLaneConfig(
   if (lane.config) {
     const hasTaskWorkModeConfig = lane.config.taskWorkMode !== undefined
       || lane.config.mainThreadResponsibility !== undefined
-      || lane.config.childThreadResponsibilities !== undefined;
+      || lane.config.childThreadResponsibilities !== undefined
+      || lane.config.maxChildThreads !== undefined
+      || lane.config.supervisorMayApproveThreads !== undefined
+      || lane.config.parallelizableOperations !== undefined
+      || lane.config.serializedOperations !== undefined;
     return {
       taskGoal: lane.config.taskGoal || '',
       taskDescription: lane.config.taskDescription || '',
@@ -125,6 +131,14 @@ export function effectiveSupervisorLaneConfig(
         mainThreadResponsibility: normalizeTaskThreadResponsibility(lane.config.mainThreadResponsibility),
         childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
           lane.config.childThreadResponsibilities,
+        ),
+        maxChildThreads: normalizeTaskMaxChildThreads(lane.config.maxChildThreads),
+        supervisorMayApproveThreads: lane.config.supervisorMayApproveThreads === true,
+        parallelizableOperations: normalizeTaskOperationBoundaries(
+          lane.config.parallelizableOperations,
+        ),
+        serializedOperations: normalizeTaskOperationBoundaries(
+          lane.config.serializedOperations,
         ),
       } : {}),
     };
@@ -149,13 +163,6 @@ export function effectiveSupervisorAutonomyPermissions(
     : Array.isArray(session.autonomyPermissions)
     ? [...session.autonomyPermissions]
     : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS];
-  // Project mode is created from a user-approved, versioned task contract. Its
-  // supervisor may acknowledge bounded local execution prompts without asking
-  // the user again; the decision bridge still rejects risky, remote and
-  // out-of-scope permission requests.
-  if (isProjectManagedSupervisorLane(lane) && !permissions.includes('permission-confirm')) {
-    permissions.push('permission-confirm');
-  }
   return permissions;
 }
 
@@ -223,11 +230,22 @@ export function supervisorLaneBriefingChanged(
       !== normalizeTaskWorkMode(nextConfig.taskWorkMode)
     || normalizeTaskThreadResponsibility(previousConfig.mainThreadResponsibility).trim()
       !== normalizeTaskThreadResponsibility(nextConfig.mainThreadResponsibility).trim()
+    || normalizeTaskMaxChildThreads(previousConfig.maxChildThreads)
+      !== normalizeTaskMaxChildThreads(nextConfig.maxChildThreads)
+    || previousConfig.supervisorMayApproveThreads !== nextConfig.supervisorMayApproveThreads
     || !sameStringList(
       normalizeTaskChildThreadResponsibilities(previousConfig.childThreadResponsibilities)
         .map((item) => item.trim()),
       normalizeTaskChildThreadResponsibilities(nextConfig.childThreadResponsibilities)
         .map((item) => item.trim()),
+    )
+    || !sameStringList(
+      normalizeTaskOperationBoundaries(previousConfig.parallelizableOperations),
+      normalizeTaskOperationBoundaries(nextConfig.parallelizableOperations),
+    )
+    || !sameStringList(
+      normalizeTaskOperationBoundaries(previousConfig.serializedOperations),
+      normalizeTaskOperationBoundaries(nextConfig.serializedOperations),
     )) return true;
 
   return effectiveSupervisorAutonomous(previousSession, previousLane)
@@ -324,6 +342,7 @@ export function autonomousDecisionBoundary(
     ...(projectManaged ? [
       '项目记录中的已确认前置条件和明确授权在当前需求版本内持续有效；不得按步骤重复索要同一授权。任务终端出现与合同一致的普通本地执行确认时，应在风险、范围和终端证据校验通过后自行确认。',
       '只有收到用户更新前置条件的事件、当前证据明确与记录冲突，或动作进入原授权未覆盖的新设备、新环境或更高风险层级时，才停止沿用旧条件并交回项目管理 AI。任务终端自身再次询问，不构成条件已经变化的证据。',
+      '项目模式本身不授予权限确认权；只有任务合同显式启用 permission-confirm，且当前具体命令命中合同测试权限或 allowedCommandPrefixes 时才能批准。同一命令连续确认两次仍再次阻塞时，必须改变执行路径或交回项目管理 AI。',
     ] : []),
     projectManaged
       ? '改变任务契约、跨任务协调、删除或覆盖文件、git push/重写历史、发布/部署、云端或生产环境、凭据与权限变更始终使用 needs-human，先交给项目管理 AI，且不要携带权限确认参数。'
@@ -510,25 +529,53 @@ export function buildSupervisorBriefing(
   const childThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
     laneConfig.childThreadResponsibilities,
   ).map((item) => item.trim());
-  const taskWorkModeBlock = taskWorkMode === 'multi-thread'
-    ? [
-        '## 任务终端 AI 工作模式',
-        '模式: 多线程工程',
-        `主线程职责: ${mainThreadResponsibility || '（未设置）'}`,
-        ...childThreadResponsibilities.map((responsibility, index) => (
-          `子线程 ${index + 1} 职责: ${responsibility || '（未设置）'}`
-        )),
-        '',
-        '这是用户为被监督的任务终端 AI 约定的内部工作分工，不是监督 AI 的工作模式。你仍只负责监督、读取证据和裁决，不要把自己当作主线程或子线程，也不要创建额外 wmux 终端。',
-        '后续通过 --next 指导任务终端 AI 时，应把这份分工作为执行约定明确传达并保持一致，由任务终端 AI 自行组织其内部主线程和子线程。wmux 不检查或强制它是否实际创建子线程，最终以终端证据为准。',
-        '',
-      ]
-    : [
-        '## 任务终端 AI 工作模式',
-        '模式: 单线程工作',
-        '这是被监督的任务终端 AI 的工作方式，不是监督 AI 的工作模式。按单一执行线程监督，不要求任务终端 AI 拆分主线程和子线程。',
-        '',
-      ];
+  const maxChildThreads = normalizeTaskMaxChildThreads(laneConfig.maxChildThreads);
+  const parallelizableOperations = normalizeTaskOperationBoundaries(
+    laneConfig.parallelizableOperations,
+  );
+  const serializedOperations = normalizeTaskOperationBoundaries(
+    laneConfig.serializedOperations,
+  );
+  let taskWorkModeBlock: string[];
+  if (taskWorkMode === 'multi-thread') {
+    taskWorkModeBlock = [
+      '## 任务终端 AI 工作模式',
+      '模式: 多线程工程',
+      `主线程职责: ${mainThreadResponsibility || '（未设置）'}`,
+      ...childThreadResponsibilities.map((responsibility, index) => (
+        `子线程 ${index + 1} 职责: ${responsibility || '（未设置）'}`
+      )),
+      '',
+      '这是用户为被监督的任务终端 AI 约定的内部工作分工，不是监督 AI 的工作模式。你仍只负责监督、读取证据和裁决，不要把自己当作主线程或子线程，也不要创建额外 wmux 终端。',
+      '后续通过 --next 指导任务终端 AI 时，应把这份分工作为执行约定明确传达并保持一致，由任务终端 AI 自行组织其内部主线程和子线程。wmux 不检查或强制它是否实际创建子线程，最终以终端证据为准。',
+      '',
+    ];
+  } else if (taskWorkMode === 'adaptive') {
+    taskWorkModeBlock = [
+      '## 任务终端 AI 工作模式',
+      '模式: 自适应线程',
+      `主线程职责: ${mainThreadResponsibility || '（未设置）'}`,
+      `内部子线程上限: ${maxChildThreads}`,
+      `可并行操作: ${parallelizableOperations.join('；') || '（未授权）'}`,
+      `必须串行操作: ${serializedOperations.join('；') || '（未设置）'}`,
+      `监督 AI 可在合同内审批线程方案: ${laneConfig.supervisorMayApproveThreads === true ? '是' : '否'}`,
+      '',
+      '这是被监督任务终端 AI 的内部组织方式，不是监督 AI 自己的多线程模式。你不得创建额外 wmux 任务终端，也不得代替任务 AI 创建子代理。',
+      '首次下达任务时，要求任务 AI 先完成一次有界、只读的结构探测；如果任务可以安全拆分，它应提交“[内部线程提案]”，列明理由、线程数、各线程职责与文件/路径所有权、依赖、共享资源、汇总和验证方式；否则直接保持单线程推进。',
+      laneConfig.supervisorMayApproveThreads === true
+        ? `你只能批准不超过 ${maxChildThreads} 个子线程、职责与写入所有权互斥、没有共享硬件并发、且不扩大任务范围或预算的提案。批准后通过 --next 明确回复“[批准内部线程方案 childThreads=N]”及核准分工，N 必须是实际批准的子线程数。`
+        : '你不得自行批准内部线程方案；任务 AI 提案后必须使用 needs-human 交给决策所有者。',
+      '所有共享硬件、设备上电/重上电、固件烧录、共享测试环境变更、破坏性动作和最终集成验证必须由主线程串行执行；“必须串行操作”清单优先于任何并行提案。',
+      '',
+    ];
+  } else {
+    taskWorkModeBlock = [
+      '## 任务终端 AI 工作模式',
+      '模式: 单线程工作',
+      '这是被监督的任务终端 AI 的工作方式，不是监督 AI 的工作模式。按单一执行线程监督，不要求任务终端 AI 拆分主线程和子线程。',
+      '',
+    ];
+  }
   const policyBlock = structuredPolicyBlock(session, lane);
   const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
