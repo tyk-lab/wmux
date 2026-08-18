@@ -157,7 +157,52 @@
 }
 
 .project-manager-dialog {
-  width: min(860px, calc(100vw - 32px));
+  width: min(920px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.project-manager-dialog__header {
+  padding: 12px 16px 10px;
+}
+
+.project-manager-dialog__header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-manager-dialog__header-row .supervisor-dialog__title {
+  margin-bottom: 0;
+}
+
+.project-manager-dialog__header-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(74, 222, 128, 0.28);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.08);
+  color: #86efac;
+  font-size: 10px;
+}
+
+.project-manager-dialog__header-status[data-status='paused'],
+.project-manager-dialog__header-status[data-status='waiting'] {
+  border-color: rgba(251, 191, 36, 0.34);
+  background: rgba(251, 191, 36, 0.09);
+  color: #fcd34d;
+}
+
+.project-manager-dialog__header .supervisor-dialog__sub {
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-manager-dialog .supervisor-dialog__body {
+  padding: 10px 16px 14px;
 }
 
 .project-manager-dialog__architecture {
@@ -172,6 +217,44 @@
   background: rgba(80, 160, 255, 0.07);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.project-manager-dialog__tabs {
+  position: sticky;
+  z-index: 2;
+  top: -10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0 0 10px;
+  padding: 6px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--ui-bg-1, #1e1e1e) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.project-manager-dialog__tabs button {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.project-manager-dialog__tabs button:hover {
+  color: inherit;
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.06);
+}
+
+.project-manager-dialog__tabs button[data-active='1'] {
+  border-color: rgba(80, 160, 255, 0.4);
+  background: rgba(80, 160, 255, 0.14);
+  color: #b9dcff;
 }
 
 .project-manager-dialog__architecture span {
@@ -408,6 +491,26 @@
   border-radius: 0 0 7px 7px;
 }
 
+.project-manager-dialog__agent-config > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-manager-dialog__agent-config > summary span {
+  color: var(--ui-text-muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.project-manager-dialog__agent-config[open] > summary {
+  margin-bottom: 10px;
+}
+
 .project-manager-dialog__preconditions .supervisor-dialog__textarea {
   margin-top: 10px;
 }
@@ -427,6 +530,27 @@
 
 .project-manager-dialog__project-list {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.project-manager-dialog__portfolio {
+  padding: 9px 10px;
+}
+
+.project-manager-dialog__portfolio .supervisor-dialog__hint {
+  display: none;
+}
+
+.project-manager-dialog__portfolio .project-manager-dialog__project-list {
+  margin-top: 6px;
+}
+
+.project-manager-dialog__portfolio .project-manager-dialog__project-list button {
+  gap: 3px;
+  padding: 6px 8px;
+}
+
+.project-manager-dialog__portfolio .project-manager-dialog__project-list button > span {
+  display: none;
 }
 
 .project-manager-dialog__project-list button,
@@ -510,6 +634,47 @@
   margin-bottom: 12px;
 }
 
+.project-manager-dialog__alert {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(127, 29, 29, 0.24), rgba(127, 29, 29, 0.08));
+}
+
+.project-manager-dialog__alert-icon {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.project-manager-dialog__alert strong {
+  color: #fecaca;
+  font-size: 12px;
+}
+
+.project-manager-dialog__alert p {
+  margin: 3px 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.project-manager-dialog__alert small {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
 .project-manager-dialog__summary > div {
   display: grid;
   gap: 3px;
@@ -534,8 +699,8 @@
 .project-manager-dialog__conversation {
   display: grid;
   gap: 8px;
-  min-height: 132px;
-  max-height: 320px;
+  min-height: 72px;
+  max-height: min(120px, calc(100vh - 460px));
   margin: 8px 0 10px;
   padding: 12px;
   overflow: auto;
@@ -612,6 +777,34 @@
   border-radius: 50%;
   background: #c4b5ff;
   box-shadow: 0 0 0 3px rgba(154, 124, 255, 0.13);
+}
+
+.project-manager-dialog__composer {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: stretch;
+  padding: 8px 16px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.09);
+  background: var(--ui-bg-1, #1e1e1e);
+}
+
+.project-manager-dialog__composer .supervisor-dialog__textarea {
+  min-height: 42px;
+  margin: 0;
+  resize: none;
+}
+
+.project-manager-dialog__composer .confirm-dialog__btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  padding-inline: 14px;
+}
+
+.project-manager-dialog__composer-send:not(:disabled) {
+  border-color: rgba(80, 160, 255, 0.56);
+  background: rgba(80, 160, 255, 0.18);
+  color: #d8ebff;
 }
 
 .project-manager-dialog__logs summary {
@@ -1300,6 +1493,40 @@
   display: flex;
   gap: 6px;
   padding: 0 8px 8px;
+}
+
+.project-manager-panel__alert {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  border-radius: 6px;
+  background: rgba(127, 29, 29, 0.2);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-manager-panel__alert span {
+  color: #fca5a5;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.project-manager-panel__alert strong {
+  overflow: hidden;
+  color: #fecaca;
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-manager-panel__alert:hover {
+  border-color: rgba(248, 113, 113, 0.64);
+  background: rgba(127, 29, 29, 0.3);
 }
 
 .sup-panel__compact-actions button,

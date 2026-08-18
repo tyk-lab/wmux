@@ -1,10 +1,24 @@
 import React from 'react';
 import { useStore } from '../../store';
+import { findLeaf, getAllPaneIds } from '../../store/split-utils';
+import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
+
+const PROJECT_ALERT_KINDS = new Set([
+  'manager-runtime-failed',
+  'supervisor-runtime-failed',
+  'task-runtime-failed',
+  'manager-delivery-failed',
+  'requirements-quiesce-failed',
+]);
 
 export default function ProjectManagerPanel() {
   const session = useStore((state) => state.projectManager);
   const sessions = useStore((state) => state.projectManagers);
+  const supervisor = useStore((state) => state.supervisor);
+  const workspaces = useStore((state) => state.workspaces);
+  const selectWorkspace = useStore((state) => state.selectWorkspace);
+  const selectSurface = useStore((state) => state.selectSurface);
   const openProjectManagerDialog = useStore((state) => state.openProjectManagerDialog);
   if (!session) return null;
 
@@ -13,6 +27,30 @@ export default function ProjectManagerPanel() {
   const activeProjects = sessions.filter((project) => !['completed', 'stopped'].includes(project.status)).length;
   const active = session.status === 'active';
   const paused = session.status === 'paused';
+  const projectLanes = supervisor.lanes.filter((lane) => (
+    lane.projectManagerProjectId === session.id
+    && supervisorLaneControlState(lane) !== 'stopped'
+  ));
+  const projectSupervisorView = workspaces.flatMap((workspace) => (
+    workspace.transientSupervisorWorkspace === true
+      ? getAllPaneIds(workspace.splitTree).flatMap((paneId) => {
+          const pane = findLeaf(workspace.splitTree, paneId);
+          const surfaceIndex = pane?.surfaces.findIndex((surface) => (
+            surface.type === 'supervisor' && surface.projectSupervisorProjectId === session.id
+          )) ?? -1;
+          return surfaceIndex >= 0 ? [{ workspaceId: workspace.id, paneId, surfaceIndex }] : [];
+        })
+      : []
+  ))[0];
+  const latestAlert = [...session.events].reverse().find((event) => PROJECT_ALERT_KINDS.has(event.kind));
+  const latestRecovery = [...session.events].reverse().find((event) => (
+    event.kind === 'project-resumed'
+    || event.kind === 'manager-runtime-restarted'
+    || event.kind === 'recovery-restored'
+  ));
+  const activeAlert = latestAlert && (!latestRecovery || latestAlert.ts > latestRecovery.ts)
+    ? latestAlert
+    : null;
 
   const control = (action: 'pause' | 'resume') => {
     void (window as any).__wmux_projectManagerRemoteControl?.({
@@ -22,19 +60,34 @@ export default function ProjectManagerPanel() {
     });
   };
 
+  const openProjectSupervisor = () => {
+    if (!projectSupervisorView) return;
+    selectWorkspace(projectSupervisorView.workspaceId);
+    selectSurface(projectSupervisorView.workspaceId, projectSupervisorView.paneId, projectSupervisorView.surfaceIndex);
+  };
+
   return (
     <section className="sup-panel sup-panel--compact" data-active={active ? '1' : '0'} data-paused={paused ? '1' : '0'}>
       <button type="button" className="sup-panel__header" onClick={openProjectManagerDialog}>
         <span className="sup-panel__dot" />
         <span className="sup-panel__title">项目管理 AI</span>
-        <span className="sup-panel__status">{activeProjects}/3 · {session.status}</span>
+        <span className="sup-panel__status">{activeProjects}/3 · {active ? '运行中' : paused ? '已暂停' : session.status}</span>
       </button>
       <div className="sup-panel__goal" title={session.goal}>{session.goal}</div>
       <div className="sup-panel__freedom">
-        任务 {completed}/{session.workItems.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
+        任务 {completed}/{session.workItems.length} · 专属监督 {projectLanes.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
       </div>
+      {activeAlert && (
+        <button type="button" className="project-manager-panel__alert" onClick={openProjectManagerDialog}>
+          <span>项目告警</span>
+          <strong>{activeAlert.summary}</strong>
+        </button>
+      )}
       <div className="sup-panel__compact-actions">
         <button type="button" onClick={openProjectManagerDialog}>打开控制台</button>
+        {projectSupervisorView && (
+          <button type="button" onClick={openProjectSupervisor}>打开项目监督</button>
+        )}
         {active && <button type="button" onClick={() => control('pause')}>暂停项目</button>}
         {paused && <button type="button" onClick={() => control('resume')}>恢复项目</button>}
       </div>

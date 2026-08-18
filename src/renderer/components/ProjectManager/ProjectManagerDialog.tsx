@@ -38,6 +38,24 @@ const STATUS_LABELS: Record<string, string> = {
   stopped: '已停止',
 };
 
+type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
+
+const PROJECT_ALERT_KINDS = new Set([
+  'manager-runtime-failed',
+  'supervisor-runtime-failed',
+  'task-runtime-failed',
+  'manager-delivery-failed',
+  'requirements-quiesce-failed',
+]);
+
+const PROJECT_ALERT_LABELS: Record<string, string> = {
+  'manager-runtime-failed': '项目管理 AI 运行时故障',
+  'supervisor-runtime-failed': '项目专属监督故障',
+  'task-runtime-failed': '任务终端 AI 故障',
+  'manager-delivery-failed': '项目管理消息投递失败',
+  'requirements-quiesce-failed': '需求变更停机确认失败',
+};
+
 function projectActivityLabel(session: { status: string; workItems: Array<{ status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }> }): string {
   if (session.status !== 'active') return STATUS_LABELS[session.status] || session.status;
   const current = session.workItems.find((item) => item.latestBlocker || item.status === 'waiting-decision' || item.status === 'failed')
@@ -147,14 +165,26 @@ export default function ProjectManagerDialog() {
   const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
+  const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('conversation');
   const clarificationRef = useRef<HTMLElement | null>(null);
-  const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationRef = useRef<HTMLDivElement | null>(null);
   const conversation = useMemo(() => session?.events.filter((event) => (
     event.kind === 'user-message' || event.kind === 'manager-reply'
   )).slice(-50) || [], [session?.events]);
   const definitionUpdates = useMemo(() => session?.events.filter((event) => (
     event.kind === 'project-definition-updated'
   )).slice(-20).reverse() || [], [session?.events]);
+  const activeAlert = useMemo(() => {
+    if (!session) return null;
+    const latestAlert = [...session.events].reverse().find((event) => PROJECT_ALERT_KINDS.has(event.kind));
+    if (!latestAlert) return null;
+    const latestRecovery = [...session.events].reverse().find((event) => (
+      event.kind === 'project-resumed'
+      || event.kind === 'manager-runtime-restarted'
+      || event.kind === 'recovery-restored'
+    ));
+    return latestRecovery && latestRecovery.ts >= latestAlert.ts ? null : latestAlert;
+  }, [session]);
   const message = session ? messageDrafts[session.id] || '' : '';
   const lastConversationEvent = conversation.at(-1);
   const sessionDefinitionFingerprint = session ? JSON.stringify([
@@ -191,6 +221,10 @@ export default function ProjectManagerDialog() {
   }, [open, workspacePrefs.projectManagementAgents]);
 
   useEffect(() => {
+    if (open) setActiveView('conversation');
+  }, [open, session?.id]);
+
+  useEffect(() => {
     if (!open) return;
     setDefinitionGoalDraft(session?.goal || '');
     setPreconditionsDraft((session?.preconditions || []).join('\n'));
@@ -213,12 +247,13 @@ export default function ProjectManagerDialog() {
   }, [session?.pendingUserQuestion?.id]);
 
   useEffect(() => {
-    if (!open || conversation.length === 0) return undefined;
+    if (!open || activeView !== 'conversation' || conversation.length === 0) return undefined;
     const frame = window.requestAnimationFrame(() => {
-      conversationEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      const target = conversationRef.current;
+      target?.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [conversation.length, lastConversationEvent?.id, open, session?.id]);
+  }, [activeView, conversation.length, lastConversationEvent?.id, open, session?.id]);
 
   useEffect(() => {
     if (!open || sessions.length > 0 || recoveryStatus !== 'unchecked') return;
@@ -595,15 +630,24 @@ export default function ProjectManagerDialog() {
       if (event.target === event.currentTarget) close();
     }}>
       <div className="supervisor-dialog project-manager-dialog" role="dialog" aria-modal="true" aria-label="项目管理 AI 控制台">
-        <header className="supervisor-dialog__header">
-          <div className="supervisor-dialog__title">项目管理 AI 控制台</div>
-          <div className="supervisor-dialog__sub">一个项目管理 AI 最多管理 3 个不同目录；每个项目严格对应一个监督 AI 和一个任务终端。</div>
+        <header className="supervisor-dialog__header project-manager-dialog__header">
+          <div className="project-manager-dialog__header-row">
+            <div className="supervisor-dialog__title">项目管理 AI 控制台</div>
+            {session && !creating && (
+              <span className="project-manager-dialog__header-status" data-status={session.status}>
+                {projectActivityLabel(session)} · 专属监督 {activeManagedLanes.length}
+              </span>
+            )}
+          </div>
+          <div className="supervisor-dialog__sub" title={session?.goal}>
+            {session && !creating ? session.goal : '管理项目组合、项目专属监督和任务终端'}
+          </div>
         </header>
 
         <div className="supervisor-dialog__body">
-          <div className="project-manager-dialog__architecture" aria-label="项目管理 AI 调度架构">
+          {(!session || creating || awaitingRecovery) && <div className="project-manager-dialog__architecture" aria-label="项目管理 AI 调度架构">
             <span>用户 / 飞书</span><b>↔</b><span data-primary="true">项目管理 AI</span><b>↔</b><span>最多 3 个项目</span><b>→</b><span>每项目 1 个监督 AI</span><b>→</b><span>1 个任务终端</span>
-          </div>
+          </div>}
 
           {awaitingRecovery && (
             <section className="supervisor-dialog__group project-manager-dialog__recovery">
@@ -658,10 +702,10 @@ export default function ProjectManagerDialog() {
             </section>
           )}
 
-          <section className="supervisor-dialog__group project-manager-dialog__agent-config">
+          {!awaitingRecovery && <details className="supervisor-dialog__advanced project-manager-dialog__agent-config">
+            <summary>项目模式 Agent 配置 <span>项目管理 / 专属监督 / 任务终端</span></summary>
             <div className="project-manager-dialog__section-head">
               <div>
-                <div className="supervisor-dialog__group-title">项目管理模式 Agent 配置</div>
                 <div className="supervisor-dialog__hint">仅作用于项目管理模式：项目管理 AI、监督 AI、任务终端三层分别选择 Agent、模型和思考程度。</div>
               </div>
               <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void saveAgentConfig()}>保存配置</button>
@@ -727,7 +771,7 @@ export default function ProjectManagerDialog() {
               })}
             </div>
             {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
-          </section>
+          </details>}
 
           {sessions.length > 0 && (
             <section className="supervisor-dialog__group project-manager-dialog__portfolio">
@@ -759,6 +803,16 @@ export default function ProjectManagerDialog() {
                 ))}
               </div>
             </section>
+          )}
+
+          {session && !creating && !awaitingRecovery && (
+            <nav className="project-manager-dialog__tabs" aria-label="项目控制台视图">
+              <button type="button" data-active={activeView === 'conversation' ? '1' : '0'} onClick={() => setActiveView('conversation')}>对话与进度</button>
+              <button type="button" data-active={activeView === 'execution' ? '1' : '0'} onClick={() => setActiveView('execution')}>
+                执行链{activeAlert ? ' · 告警' : ''}
+              </button>
+              <button type="button" data-active={activeView === 'requirements' ? '1' : '0'} onClick={() => setActiveView('requirements')}>目标与需求</button>
+            </nav>
           )}
 
           {!awaitingRecovery && (
@@ -804,13 +858,24 @@ export default function ProjectManagerDialog() {
               <div className="supervisor-dialog__hint">项目管理 AI 会选择单/多线程模式，明确各线程职责、任务边界、决策权、停止条件和防死循环预算。</div>
             </section> : (
             <>
-              <section className="project-manager-dialog__summary">
+              {activeView === 'execution' && <section className="project-manager-dialog__summary">
                 <div><span>状态</span><strong>{projectActivityLabel(session)}</strong></div>
                 <div><span>工作项</span><strong>{session.workItems.length}</strong></div>
                 <div><span>正在管理的监督 AI</span><strong>{activeManagedLanes.length}</strong></div>
                 <div><span>待决策</span><strong>{session.workItems.filter((item) => item.status === 'waiting-decision').length}</strong></div>
-              </section>
-              <section className="supervisor-dialog__group project-manager-dialog__preconditions">
+              </section>}
+              {activeAlert && (
+                <section className="project-manager-dialog__alert" role="alert">
+                  <div className="project-manager-dialog__alert-icon">!</div>
+                  <div>
+                    <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
+                    <p>{activeAlert.summary}</p>
+                    <small>{new Date(activeAlert.ts).toLocaleString('zh-CN', { hour12: false })} · 项目与对应执行链会保持暂停，处理后再恢复。</small>
+                  </div>
+                  <button type="button" className="confirm-dialog__btn" onClick={() => setActiveView('execution')}>查看执行链</button>
+                </section>
+              )}
+              {activeView === 'requirements' && <section className="supervisor-dialog__group project-manager-dialog__preconditions">
                 <div className="project-manager-dialog__section-head">
                   <div>
                     <div className="supervisor-dialog__group-title">项目目标与需求</div>
@@ -858,8 +923,8 @@ export default function ProjectManagerDialog() {
                 </label>
                 {session.pendingUserQuestion && <div className="supervisor-dialog__warning">请先完成当前需求确认，再保存新的项目配置。</div>}
                 {constraintNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{constraintNotice}</div>}
-              </section>
-              <section className="supervisor-dialog__group">
+              </section>}
+              {activeView === 'requirements' && <section className="supervisor-dialog__group">
                 <div className="supervisor-dialog__group-title">需求变更历史</div>
                 <div className="project-manager-dialog__work-items">
                   {definitionUpdates.length === 0 && <div className="supervisor-dialog__empty">尚未调整项目目标或需求。</div>}
@@ -884,8 +949,8 @@ export default function ProjectManagerDialog() {
                     );
                   })}
                 </div>
-              </section>
-              <section className="supervisor-dialog__group">
+              </section>}
+              {activeView === 'execution' && <section className="supervisor-dialog__group">
                 <div className="supervisor-dialog__group-title">正在管理的监督 AI</div>
                 <div className="project-manager-dialog__managed-list">
                   {activeManagedLanes.length === 0 && <div className="supervisor-dialog__empty">尚未派遣监督 AI。</div>}
@@ -905,8 +970,8 @@ export default function ProjectManagerDialog() {
                     );
                   })}
                 </div>
-              </section>
-              <section className="supervisor-dialog__group">
+              </section>}
+              {activeView === 'execution' && <section className="supervisor-dialog__group">
                 <div className="supervisor-dialog__group-title">工作项决策记录</div>
                 <div className="project-manager-dialog__work-items">
                   {session.workItems.length === 0 && <div className="supervisor-dialog__empty">项目管理 AI 尚未拆分工作项。</div>}
@@ -928,8 +993,8 @@ export default function ProjectManagerDialog() {
                     );
                   })}
                 </div>
-              </section>
-              <section className="supervisor-dialog__group project-manager-dialog__chat">
+              </section>}
+              {activeView === 'conversation' && <section className="supervisor-dialog__group project-manager-dialog__chat">
                 <div className="project-manager-dialog__section-head">
                   <div>
                     <div className="supervisor-dialog__group-title">与项目管理 AI 对话</div>
@@ -937,7 +1002,7 @@ export default function ProjectManagerDialog() {
                   </div>
                   <span className="project-manager-dialog__chat-project">{session.projectDir}</span>
                 </div>
-                <div className="project-manager-dialog__conversation">
+                <div ref={conversationRef} className="project-manager-dialog__conversation">
                   {conversation.length === 0 && <div className="supervisor-dialog__empty">会话已建立，可直接讨论需求、确认细节、调整方向、暂停或改线。</div>}
                   {conversation.map((event) => (
                     <div
@@ -958,19 +1023,9 @@ export default function ProjectManagerDialog() {
                       <i />项目管理 AI 正在处理并将回复到此项目会话
                     </div>
                   )}
-                  <div ref={conversationEndRef} aria-hidden="true" />
                 </div>
-                <textarea
-                  className="supervisor-dialog__textarea"
-                  rows={3}
-                  value={message}
-                  onChange={(event) => setMessageDrafts((current) => ({ ...current, [session.id]: event.target.value }))}
-                  placeholder="向当前项目提问，或讨论需求、优先级、暂停、改线和处理依据"
-                  aria-label={`向“${session.goal}”的项目管理 AI 发送消息`}
-                />
-                <button type="button" className="confirm-dialog__btn" disabled={busy || !message.trim()} onClick={() => void sendMessage()}>发送给项目管理 AI</button>
-              </section>
-              <details className="supervisor-dialog__advanced project-manager-dialog__logs">
+              </section>}
+              {activeView === 'execution' && <details className="supervisor-dialog__advanced project-manager-dialog__logs" open>
                 <summary>查看项目管理 AI 处理日志（{session.events.length}）</summary>
                 <div className="project-manager-dialog__event-list">
                   {session.events.length === 0 && <div className="supervisor-dialog__empty">暂无处理记录。</div>}
@@ -982,13 +1037,26 @@ export default function ProjectManagerDialog() {
                     </div>
                   ))}
                 </div>
-              </details>
+              </details>}
             </>
             )
           )}
         </div>
 
         {notice && <div className="supervisor-dialog__notice" data-kind="error" role="alert">{notice}</div>}
+        {session && !creating && activeView === 'conversation' && (
+          <div className="project-manager-dialog__composer">
+            <textarea
+              className="supervisor-dialog__textarea"
+              rows={2}
+              value={message}
+              onChange={(event) => setMessageDrafts((current) => ({ ...current, [session.id]: event.target.value }))}
+              placeholder="向当前项目补充要求、询问进度或调整优先级"
+              aria-label={`向“${session.goal}”的项目管理 AI 发送消息`}
+            />
+            <button type="button" className="confirm-dialog__btn project-manager-dialog__composer-send" disabled={busy || !message.trim()} onClick={() => void sendMessage()}>发送给项目 AI</button>
+          </div>
+        )}
         <div className="supervisor-dialog__actions">
           {!creating && session?.status === 'active' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('pause')}>暂停项目</button>}
           {!creating && (session?.status === 'paused' || session?.status === 'waiting') && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('resume')}>恢复项目</button>}
