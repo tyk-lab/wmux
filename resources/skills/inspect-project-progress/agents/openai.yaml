@@ -1,4 +1,0 @@
-interface:
-  display_name: "Inspect Project Progress"
-  short_description: "Inspect project state and report evidence-backed progress"
-  default_prompt: "Use $inspect-project-progress to inspect this project and report current progress, risks, and next actions."

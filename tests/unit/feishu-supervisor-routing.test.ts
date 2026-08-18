@@ -10,6 +10,11 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 
 import { FEISHU_CONTROL_CARD_VERSION, FeishuSupervisorService, isFeishuApprovalCardContext } from '../../src/main/feishu-supervisor';
 import type { SupervisorRecord } from '../../src/main/supervisor-records';
+import {
+  USER_RECORDS_TERMINAL_AGENT,
+  USER_RECORDS_TERMINAL_NAME,
+  USER_RECORDS_TERMINAL_STARTUP_INPUT,
+} from '../../src/shared/user-records-terminal';
 
 interface MessageEvent {
   chatId: string;
@@ -1048,6 +1053,57 @@ describe('飞书人工决策单聊路由', () => {
     });
     expect(control.mock.calls.filter(([command]) => command.action === 'create-task').at(-1)?.[0]).not.toHaveProperty('cwd');
     expect(control.mock.calls.filter(([command]) => command.action === 'create-task').at(-1)?.[0]).not.toHaveProperty('anchorWorkspace');
+  });
+
+  it('从控制首页创建独立的用户记录特别终端', async () => {
+    const listMessage = JSON.stringify({
+      active: false,
+      paused: false,
+      terminals: [],
+      session: null,
+      pendingApprovals: [],
+    });
+    const control = vi.fn(async (command: { action: string }) => command.action === 'create-task'
+      ? { ok: true, message: '已创建用户记录终端。' }
+      : { ok: true, message: listMessage });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-special', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'special-terminal', nonce: 'open-special' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const specialCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(specialCard).toContain('创建特别终端');
+    expect(specialCard).toContain(USER_RECORDS_TERMINAL_NAME);
+    expect(specialCard).toContain('$user-data-management');
+
+    const formNonce = /"wmux_action":"form_create_user_records_terminal"[^}]*"nonce":"([^"]+)"/.exec(specialCard)?.[1];
+    expect(formNonce).toBeTruthy();
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_form_create_user_records_terminal',
+        value: currentControlValue({ wmux_action: 'form_create_user_records_terminal', nonce: formNonce }),
+      },
+      raw: { action: { form_value: {} } },
+    });
+
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'create-task')).toBe(true));
+    expect(control.mock.calls.find(([command]) => command.action === 'create-task')?.[0]).toEqual({
+      action: 'create-task',
+      name: USER_RECORDS_TERMINAL_NAME,
+      task: USER_RECORDS_TERMINAL_STARTUP_INPUT,
+      agent: USER_RECORDS_TERMINAL_AGENT,
+      preset: 'user-records',
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(updateCard.mock.calls[1][1])).toContain('已创建用户记录终端。');
   });
 
   it('选择的已有会话已关闭时不创建任务目录或终端', async () => {

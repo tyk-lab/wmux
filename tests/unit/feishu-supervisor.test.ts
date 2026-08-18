@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
+import { USER_RECORDS_TERMINAL_DIRECTORY } from '../../src/shared/user-records-terminal';
 
 describe('飞书 AI 监督命令', () => {
   it('解析启动命令及可选监督配置', () => {
@@ -553,6 +554,7 @@ supervisor_model: k3`)).toEqual({
       ...terminals[0], supervised: true, supervisionState: 'active',
     }]) as { body?: { elements?: Array<{ tag?: string; elements?: Array<Record<string, unknown>> }> } };
     const createTask = JSON.stringify(createTaskObject);
+    const specialTerminal = JSON.stringify(buildSpecialTerminalCard());
     const projectManager = JSON.stringify(buildProjectManagerConversationCard({
       status: 'active', goal: '完成认证功能', workItems: [{ status: 'running' }, { status: 'waiting-decision' }],
       projects: [{ id: 'pm-a', status: 'active', goal: '完成认证功能' }],
@@ -583,6 +585,7 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('查看监督状态');
     expect(menu).toContain('查看监督日志');
     expect(menu).toContain('添加终端任务');
+    expect(menu).toContain('创建特别终端');
     expect(menu).toContain('启动监督');
     expect(menu).toContain('终端控制');
     expect(menu).toContain('关闭终端');
@@ -658,6 +661,11 @@ supervisor_model: k3`)).toEqual({
       supervisionState: 'active', activityState: 'working', activityUpdatedAt: Date.now(),
     }], false))).not.toContain('查看终端信息');
     expect(createTask).toContain('添加 AI 终端任务');
+    expect(specialTerminal).toContain('创建特别终端');
+    expect(specialTerminal).toContain('用户记录终端');
+    expect(specialTerminal).toContain(USER_RECORDS_TERMINAL_DIRECTORY.replace(/\\/gu, '\\\\'));
+    expect(specialTerminal).toContain('$user-data-management');
+    expect(specialTerminal).toContain('form_create_user_records_terminal');
     expect(createTask).toContain('Codex（默认）');
     expect(createTask).toContain('Kimi');
     expect(createTask).toContain('Grok');

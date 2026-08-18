@@ -9,6 +9,12 @@ import {
 } from '../../src/shared/project-manager-terminal';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 import { DEFAULT_PROJECT_EXECUTION_BUDGET } from '../../src/shared/project-manager';
+import {
+  USER_RECORDS_TERMINAL_AGENT,
+  USER_RECORDS_TERMINAL_DIRECTORY,
+  USER_RECORDS_TERMINAL_NAME,
+  USER_RECORDS_TERMINAL_STARTUP_INPUT,
+} from '../../src/shared/user-records-terminal';
 
 function lane(): SupervisorLane {
   return {
@@ -1174,6 +1180,62 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true });
     expect(useStore.getState().supervisor.lanes.some((item) => item.surfaceId === directSurface?.id)).toBe(true);
     surfaceTerminalRegistry.delete(directSurface!.id);
+  });
+
+  it('creates one dedicated user-records terminal with its fixed directory and default skill', () => {
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    const request = {
+      action: 'create-task',
+      name: USER_RECORDS_TERMINAL_NAME,
+      task: USER_RECORDS_TERMINAL_STARTUP_INPUT,
+      agent: USER_RECORDS_TERMINAL_AGENT,
+      preset: 'user-records',
+      cwd: USER_RECORDS_TERMINAL_DIRECTORY,
+    };
+
+    const created = remoteControl(request);
+    expect(created).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('默认技能 $user-data-management'),
+    });
+    const workspace = useStore.getState().workspaces.find(
+      (item) => item.title === USER_RECORDS_TERMINAL_NAME,
+    );
+    const surface = workspace?.splitTree.type === 'leaf' ? workspace.splitTree.surfaces[0] : undefined;
+    expect(workspace).toMatchObject({ cwd: USER_RECORDS_TERMINAL_DIRECTORY });
+    expect(surface).toMatchObject({
+      customTitle: USER_RECORDS_TERMINAL_NAME,
+      cwd: USER_RECORDS_TERMINAL_DIRECTORY,
+      userRecordsTerminal: true,
+      startupCommands: [expect.stringContaining('$user-data-management')],
+    });
+    expect(surface?.projectManagerTerminal).toBeUndefined();
+    expect(surface?.projectManagerProjectId).toBeUndefined();
+
+    const repeated = remoteControl(request);
+    expect(repeated).toMatchObject({
+      ok: true,
+      surfaceId: surface?.id,
+      message: expect.stringContaining('已存在'),
+    });
+    expect(useStore.getState().workspaces.filter(
+      (item) => item.title === USER_RECORDS_TERMINAL_NAME,
+    )).toHaveLength(1);
+  });
+
+  it('rejects a user-records preset that changes its dedicated terminal contract', () => {
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    expect(remoteControl({
+      action: 'create-task',
+      name: USER_RECORDS_TERMINAL_NAME,
+      task: USER_RECORDS_TERMINAL_STARTUP_INPUT,
+      agent: USER_RECORDS_TERMINAL_AGENT,
+      preset: 'user-records',
+      cwd: 'E:\\other',
+    })).toMatchObject({ ok: false, error: '用户记录终端配置无效。' });
+    expect(useStore.getState().workspaces.some(
+      (item) => item.title === USER_RECORDS_TERMINAL_NAME,
+    )).toBe(false);
   });
 
   it('adds a direct task terminal to an existing session while keeping the selected task directory', () => {

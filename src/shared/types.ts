@@ -88,6 +88,8 @@ export interface SurfaceRef {
   transientSupervisor?: boolean;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
   projectManagerTerminal?: boolean;
+  /** Singleton user-records terminal created from the Feishu special-terminal entrypoint. */
+  userRecordsTerminal?: boolean;
   /** Project-mode task terminal. Its native Agent conversation is restart-unsafe and must not auto-restore. */
   projectManagerProjectId?: string;
   /** Work item currently owning a project-mode task terminal, used to build a fresh recovery chain. */

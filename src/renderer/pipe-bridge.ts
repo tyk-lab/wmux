@@ -35,6 +35,12 @@ import {
   type ProjectManagerRuntimeAgent,
 } from '../shared/project-manager-terminal';
 import {
+  USER_RECORDS_TERMINAL_AGENT,
+  USER_RECORDS_TERMINAL_DIRECTORY,
+  USER_RECORDS_TERMINAL_NAME,
+  USER_RECORDS_TERMINAL_STARTUP_INPUT,
+} from '../shared/user-records-terminal';
+import {
   SUPERVISOR_NO_DECISION_OPTION,
   supervisorDecisionOptions,
 } from '../shared/supervisor-decision-options';
@@ -1088,7 +1094,7 @@ interface RemoteDirectTerminalTask {
   agent?: 'codex' | 'kimi' | 'grok';
   model?: string;
   reasoningEffort?: string;
-  preset?: 'project-manager';
+  preset?: 'project-manager' | 'user-records';
   replaceProjectManager?: boolean;
   cwd: string;
   displayPath?: string;
@@ -1263,6 +1269,10 @@ function locateRemoteTaskSession(
     : { error: '目标任务终端不存在、已关闭或属于项目管理模式。' };
 }
 
+function currentUserRecordsTerminal(): RemoteTaskTerminalLocation | undefined {
+  return remoteTerminalList().find((terminal) => terminal.surface.userRecordsTerminal === true);
+}
+
 function focusRemoteTerminal(terminal: RemoteTaskTerminalLocation): void {
   const store = useStore.getState();
   store.selectWorkspace(terminal.workspaceId);
@@ -1280,10 +1290,13 @@ function createRemoteDirectTerminalTask(
   const task = String(params.task || '').trim();
   const cwd = String(params.cwd || '').trim();
   const requestedAgent = String(params.agent || 'codex').trim().toLowerCase();
-  const agent = projectTaskTerminalAgent(params.agent);
   const model = String(params.model || '').trim();
   const reasoningEffort = String(params.reasoningEffort || '').trim();
   const projectManager = params.preset === 'project-manager';
+  const userRecordsTerminal = params.preset === 'user-records';
+  const agent = userRecordsTerminal
+    ? USER_RECORDS_TERMINAL_AGENT
+    : projectTaskTerminalAgent(params.agent);
   const requestsProjectManagedCreate = !!(
     projectManager || params.projectManagerProjectId || params.projectManagerWorkItemId
   );
@@ -1293,6 +1306,52 @@ function createRemoteDirectTerminalTask(
   if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。', message: '' };
   if (!['codex', 'kimi', 'grok'].includes(requestedAgent)) return { ok: false, error: 'AI 终端类型仅允许 Codex、Kimi 或 Grok。', message: '' };
   if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(cwd)) return { ok: false, error: '任务目录必须是 Windows 绝对路径。', message: '' };
+
+  if (userRecordsTerminal) {
+    const valid = name === USER_RECORDS_TERMINAL_NAME
+      && task === USER_RECORDS_TERMINAL_STARTUP_INPUT
+      && requestedAgent === USER_RECORDS_TERMINAL_AGENT
+      && normalizeAbsolutePath(cwd) === normalizeAbsolutePath(USER_RECORDS_TERMINAL_DIRECTORY)
+      && !model
+      && !reasoningEffort
+      && !params.anchorWorkspace
+      && !params.anchorTerminal
+      && !params.projectManagerProjectId
+      && !params.projectManagerWorkItemId;
+    if (!valid) return { ok: false, error: '用户记录终端配置无效。', message: '' };
+
+    const existing = currentUserRecordsTerminal();
+    if (existing) {
+      focusRemoteTerminal(existing);
+      return {
+        ok: true,
+        surfaceId: existing.surfaceId,
+        message: '用户记录终端已存在，已切换到该终端。',
+      };
+    }
+
+    const launch = buildInteractiveAgentLaunch(USER_RECORDS_TERMINAL_AGENT, task);
+    const tree = createLeaf(undefined, 'terminal', USER_RECORDS_TERMINAL_DIRECTORY);
+    const surface = tree.surfaces[0];
+    tree.surfaces[0] = {
+      ...surface,
+      customTitle: USER_RECORDS_TERMINAL_NAME,
+      shell: 'pwsh.exe',
+      cwd: USER_RECORDS_TERMINAL_DIRECTORY,
+      userRecordsTerminal: true,
+      ...launch,
+    };
+    useStore.getState().createWorkspace({
+      title: USER_RECORDS_TERMINAL_NAME,
+      cwd: USER_RECORDS_TERMINAL_DIRECTORY,
+      splitTree: tree,
+    });
+    return {
+      ok: true,
+      surfaceId: surface.id,
+      message: `已创建${USER_RECORDS_TERMINAL_NAME}；默认技能 ${USER_RECORDS_TERMINAL_STARTUP_INPUT} 将在 Codex 启动时加载。`,
+    };
+  }
 
   if (projectManager) {
     const runtimeSegments = cwd.replace(/[\\/]+$/u, '').split(/[\\/]/u).slice(-2);

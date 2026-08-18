@@ -32,10 +32,12 @@ import {
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
 import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
-  PROJECT_MANAGER_TERMINAL_AGENT,
-  PROJECT_MANAGER_TERMINAL_NAME,
-  projectManagerStartupInput,
-} from '../shared/project-manager-terminal';
+  USER_RECORDS_TERMINAL_AGENT,
+  USER_RECORDS_TERMINAL_DIRECTORY,
+  USER_RECORDS_TERMINAL_NAME,
+  USER_RECORDS_TERMINAL_SKILL_RELATIVE_PATH,
+  USER_RECORDS_TERMINAL_STARTUP_INPUT,
+} from '../shared/user-records-terminal';
 import {
   parseSupervisorConfig,
   serializeSupervisorConfig,
@@ -101,27 +103,52 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
   let forwardedCommand: FeishuSupervisorCommand = command;
   let preservedDirectory = '';
   if (command.action === 'create-task') {
-    const projectManager = command.preset === 'project-manager';
-    const name = projectManager ? PROJECT_MANAGER_TERMINAL_NAME : command.name.trim();
+    const preset = String(command.preset || '');
+    if (preset && preset !== 'user-records') {
+      return { ok: false, error: '该飞书专用终端类型已停用，请从新版控制卡创建用户记录终端。' };
+    }
+    const userRecordsTerminal = preset === 'user-records';
+    const name = userRecordsTerminal ? USER_RECORDS_TERMINAL_NAME : command.name.trim();
     let task = command.task.trim();
-    const agent = projectManager ? PROJECT_MANAGER_TERMINAL_AGENT : command.agent || 'codex';
-    if (!name || (!projectManager && !task)) return { ok: false, error: '任务名称和首条任务都不能为空。' };
+    const agent = userRecordsTerminal ? USER_RECORDS_TERMINAL_AGENT : command.agent || 'codex';
+    if (!name || (!userRecordsTerminal && !task)) {
+      return { ok: false, error: '任务名称和首条任务都不能为空。' };
+    }
     if (!['codex', 'kimi', 'grok'].includes(agent)) return { ok: false, error: 'AI 终端类型仅允许 codex、kimi 或 grok。' };
-    if (projectManager) {
-      const skill = ensureProjectManagerSkill({
-        appPath: app.getAppPath(),
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-      });
-      if (!skill.ok) return { ok: false, error: skill.error };
-      task = projectManagerStartupInput(PROJECT_MANAGER_TERMINAL_AGENT, skill.skillPath || '');
+    if (userRecordsTerminal) {
+      const skillPath = path.join(
+        USER_RECORDS_TERMINAL_DIRECTORY,
+        ...USER_RECORDS_TERMINAL_SKILL_RELATIVE_PATH,
+      );
+      let directoryAvailable = false;
+      let skillAvailable = false;
+      try {
+        directoryAvailable = fs.statSync(USER_RECORDS_TERMINAL_DIRECTORY).isDirectory();
+        skillAvailable = fs.statSync(skillPath).isFile();
+      } catch {
+        // Report the precise missing requirement below without exposing a raw filesystem error.
+      }
+      if (!directoryAvailable) {
+        return { ok: false, error: `用户记录终端目录不存在：${USER_RECORDS_TERMINAL_DIRECTORY}` };
+      }
+      if (!skillAvailable) {
+        return { ok: false, error: `用户记录终端缺少默认技能：${skillPath}` };
+      }
+      try {
+        ensureCodexProjectTrusted(USER_RECORDS_TERMINAL_DIRECTORY);
+      } catch (error) {
+        console.warn('[feishu] failed to trust user-records terminal directory', error);
+        return { ok: false, error: '用户记录终端目录可用，但无法写入 Codex 信任配置。' };
+      }
+      task = USER_RECORDS_TERMINAL_STARTUP_INPUT;
       forwardedCommand = {
         ...command,
         name,
         task,
         agent,
-        cwd: skill.runtimeDir,
-        displayPath: skill.runtimeDir,
+        preset: 'user-records',
+        cwd: USER_RECORDS_TERMINAL_DIRECTORY,
+        displayPath: USER_RECORDS_TERMINAL_DIRECTORY,
       };
     } else {
       const selectedCwd = command.cwd?.trim();

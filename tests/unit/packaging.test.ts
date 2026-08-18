@@ -22,14 +22,6 @@ describe('electron-builder packaging', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli', to: 'cli', filter: ['*.js'] });
   });
 
-  it('ships the project progress inspection skill outside the asar', () => {
-    expect(extraResources).toContainEqual({ from: 'resources/skills', to: 'skills' });
-    expect(fs.existsSync(path.join(
-      __dirname,
-      '../../resources/skills/inspect-project-progress/SKILL.md',
-    ))).toBe(true);
-  });
-
   it('ships the project management orchestration skill outside the asar', () => {
     expect(extraResources).toContainEqual({ from: 'resources/skills', to: 'skills' });
     expect(fs.existsSync(path.join(
