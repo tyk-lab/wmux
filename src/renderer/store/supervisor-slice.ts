@@ -85,6 +85,8 @@ export interface SupervisorLane {
   projectWorkItemId?: string;
   /** Project-management project that owns this lane; work-item IDs are only unique within it. */
   projectManagerProjectId?: string;
+  /** The project supervisor is running, but it has not created its dedicated task terminal yet. */
+  projectTaskStartupPending?: boolean;
   label: string;
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */
@@ -138,6 +140,8 @@ export interface SupervisorLane {
   autonomousOverride?: boolean;
   /** Optional per-terminal forbidden actions; undefined inherits the session defaults. */
   forbiddenActionsOverride?: SupervisorForbiddenAction[];
+  /** Optional per-terminal work scope; project-managed lanes never inherit ordinary-mode settings. */
+  workScopeOverride?: SupervisorWorkScope;
   /** @deprecated Compatibility with sessions created before per-terminal configuration. */
   taskGoalOverride?: string;
   /** @deprecated Compatibility with sessions created before per-terminal configuration. */
@@ -260,10 +264,16 @@ export interface SupervisorSlice {
   closeSupervisorSetup: () => void;
   patchSupervisor: (partial: Partial<SupervisorSession>) => void;
   setSupervisorLanes: (lanes: SupervisorLane[]) => void;
+  /** Replace ordinary lanes while preserving every project-managed lane and its pending decisions. */
+  setOrdinarySupervisorLanes: (lanes: SupervisorLane[]) => void;
   startSupervisor: () => void;
+  startOrdinarySupervisor: () => void;
   pauseSupervisor: (detail?: string) => void;
+  pauseOrdinarySupervisor: (detail?: string) => void;
   resumeSupervisor: () => void;
+  resumeOrdinarySupervisor: () => void;
   stopSupervisor: (detail?: string) => void;
+  stopOrdinarySupervisor: (detail?: string) => void;
   pauseSupervisorLane: (laneId: string, detail?: string) => void;
   resumeSupervisorLane: (laneId: string, detail?: string) => void;
   stopSupervisorLane: (laneId: string, detail?: string) => void;
@@ -277,6 +287,8 @@ export interface SupervisorSlice {
   updateStep: (laneId: string, stepId: string, patch: Partial<SupervisorStep>) => void;
   /** Drop the current in-memory session so the next run starts with clean context. */
   resetSupervisorSession: () => void;
+  /** Drop ordinary supervision state without changing project-managed lanes. */
+  resetOrdinarySupervisorSession: () => void;
   /** direct: human/AI confirms end condition — stop injects for this lane. */
   confirmStopCondition: (laneId: string) => void;
   /** direct: end condition not met — keep watching; allow further injects if steps added. */
@@ -441,8 +453,21 @@ export function dedicatedSupervisorSurfaceId(
 }
 
 export function normalizeSupervisorLaneBinding(lane: SupervisorLane): SupervisorLane {
-  if (dedicatedSupervisorSurfaceId(lane) || !lane.supervisorSurfaceId) return lane;
-  return { ...lane, supervisorSurfaceId: null };
+  const normalized = dedicatedSupervisorSurfaceId(lane) || !lane.supervisorSurfaceId
+    ? lane
+    : { ...lane, supervisorSurfaceId: null };
+  if (!isProjectManagedSupervisorLane(normalized)) return normalized;
+  return {
+    ...normalized,
+    autonomousOverride: normalized.autonomousOverride ?? true,
+    autonomyPermissionsOverride: Array.isArray(normalized.autonomyPermissionsOverride)
+      ? normalized.autonomyPermissionsOverride
+      : [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
+    workScopeOverride: normalized.workScopeOverride || DEFAULT_SUPERVISOR_WORK_SCOPE,
+    forbiddenActionsOverride: Array.isArray(normalized.forbiddenActionsOverride)
+      ? normalized.forbiddenActionsOverride
+      : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
+  };
 }
 
 /** Paused lanes remain bound; stopped lanes are historical compatibility data only. */
@@ -452,12 +477,32 @@ export function isSupervisorLaneBound(
   return supervisorLaneControlState(lane) !== 'stopped';
 }
 
+/** Project-owned lanes are controlled by Project AI, never by ordinary supervision controls. */
+export function isProjectManagedSupervisorLane(
+  lane: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId' | 'projectTaskStartupPending'>,
+): boolean {
+  return !!(lane.projectManagerProjectId || lane.projectWorkItemId || lane.projectTaskStartupPending);
+}
+
+function supervisorRuntimeFlags(lanes: readonly SupervisorLane[]): Pick<SupervisorSession, 'active' | 'paused'> {
+  const active = lanes.some((lane) => {
+    const state = supervisorLaneControlState(lane);
+    return state === 'active' || state === 'waiting';
+  });
+  const paused = !active && lanes.some((lane) => supervisorLaneControlState(lane) === 'paused');
+  return { active, paused };
+}
+
 export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], SupervisorSlice> = (set, get) => ({
   supervisor: createDefaultSupervisorSession(),
 
   openSupervisorSetup() {
     set((s) => {
-      if (s.supervisor.active || s.supervisor.paused || s.supervisor.sessionId) {
+      const hasRetainedOrdinaryLane = s.supervisor.lanes.some((lane) => (
+        !isProjectManagedSupervisorLane(lane) && isSupervisorLaneBound(lane)
+      ));
+      const hasProjectLane = s.supervisor.lanes.some(isProjectManagedSupervisorLane);
+      if (hasRetainedOrdinaryLane || (!!s.supervisor.sessionId && !hasProjectLane)) {
         return { supervisor: { ...s.supervisor, setupOpen: true } };
       }
       const workspacePrefs = (s as unknown as {
@@ -469,7 +514,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         workspacePrefs?.defaultSupervisorAgent || 'pi',
         workspacePrefs,
       );
-      return { supervisor: { ...s.supervisor, ...defaults, setupOpen: true } };
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...defaults,
+          autonomous: false,
+          setupOpen: true,
+        },
+      };
     });
   },
   closeSupervisorSetup() {
@@ -480,6 +532,15 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   },
   setSupervisorLanes(lanes) {
     set((s) => ({ supervisor: { ...s.supervisor, lanes: lanes.map(normalizeSupervisorLaneBinding) } }));
+  },
+  setOrdinarySupervisorLanes(lanes) {
+    set((s) => {
+      const projectLanes = s.supervisor.lanes.filter(isProjectManagedSupervisorLane);
+      const ordinaryLanes = lanes
+        .filter((lane) => !isProjectManagedSupervisorLane(lane))
+        .map(normalizeSupervisorLaneBinding);
+      return { supervisor: { ...s.supervisor, lanes: [...projectLanes, ...ordinaryLanes] } };
+    });
   },
   startSupervisor() {
     set((s) => {
@@ -518,6 +579,52 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
+  startOrdinarySupervisor() {
+    set((s) => {
+      const ordinaryLaneIds = new Set(
+        s.supervisor.lanes
+          .filter((lane) => !isProjectManagedSupervisorLane(lane))
+          .map((lane) => lane.id),
+      );
+      if (ordinaryLaneIds.size === 0) return s;
+      const projectLaneIds = new Set(
+        s.supervisor.lanes
+          .filter(isProjectManagedSupervisorLane)
+          .map((lane) => lane.id),
+      );
+      const lanes = s.supervisor.lanes.map((rawLane) => {
+        if (!ordinaryLaneIds.has(rawLane.id)) return rawLane;
+        const lane = normalizeSupervisorLaneBinding(rawLane);
+        return {
+          ...lane,
+          enabled: true,
+          controlState: 'active' as const,
+          managementSessionId: lane.managementSessionId
+            || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          awaitingReview: true,
+          resumeAfterCancelledDecision: false,
+        };
+      });
+      return {
+        supervisor: {
+          ...s.supervisor,
+          lanes,
+          sessionId: s.supervisor.sessionId
+            || `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          active: true,
+          paused: false,
+          setupOpen: false,
+          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => projectLaneIds.has(item.laneId)),
+          log: [{
+            ts: Date.now(),
+            laneId: '-',
+            action: '启动普通监督',
+            detail: `普通监督 通道=${ordinaryLaneIds.size}`,
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
   pauseSupervisor(detail) {
     set((s) => {
       if (!s.supervisor.active) return s;
@@ -535,6 +642,32 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
             },
             ...s.supervisor.log,
           ].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
+  pauseOrdinarySupervisor(detail) {
+    set((s) => {
+      const ordinaryLaneIds = new Set(
+        s.supervisor.lanes
+          .filter((lane) => !isProjectManagedSupervisorLane(lane))
+          .map((lane) => lane.id),
+      );
+      const lanes = s.supervisor.lanes.map((lane) => (
+        ordinaryLaneIds.has(lane.id) && supervisorLaneControlState(lane) === 'active'
+          ? { ...lane, controlState: 'paused' as const }
+          : lane
+      ));
+      if (!lanes.some((lane, index) => lane !== s.supervisor.lanes[index])) return s;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
+          log: [{
+            ts: Date.now(), laneId: '-', action: '暂停普通监督',
+            detail: detail || '普通监督已暂停；项目监督状态不变',
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };
     });
@@ -568,6 +701,40 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
+  resumeOrdinarySupervisor() {
+    set((s) => {
+      const ordinaryLaneIds = new Set(
+        s.supervisor.lanes
+          .filter((lane) => !isProjectManagedSupervisorLane(lane))
+          .map((lane) => lane.id),
+      );
+      const pendingLaneIds = new Set(s.supervisor.pendingApprovals.map((item) => item.laneId));
+      const lanes = s.supervisor.lanes.map((lane) => {
+        if (!ordinaryLaneIds.has(lane.id) || supervisorLaneControlState(lane) !== 'paused') return lane;
+        return {
+          ...lane,
+          enabled: true,
+          controlState: 'active' as const,
+          awaitingReview: lane.resumeAfterCancelledDecision && !pendingLaneIds.has(lane.id)
+            ? false
+            : lane.awaitingReview,
+          resumeAfterCancelledDecision: false,
+        };
+      });
+      if (!lanes.some((lane, index) => lane !== s.supervisor.lanes[index])) return s;
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
+          setupOpen: false,
+          log: [{
+            ts: Date.now(), laneId: '-', action: '继续普通监督', detail: '继续普通监督会话；项目监督状态不变',
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
+  },
   stopSupervisor(detail) {
     set((s) => ({
       supervisor: {
@@ -594,6 +761,37 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ].slice(0, MAX_LOG),
       },
     }));
+  },
+  stopOrdinarySupervisor(detail) {
+    set((s) => {
+      const ordinaryLaneIds = new Set(
+        s.supervisor.lanes
+          .filter((lane) => !isProjectManagedSupervisorLane(lane))
+          .map((lane) => lane.id),
+      );
+      if (ordinaryLaneIds.size === 0) return s;
+      const lanes = s.supervisor.lanes.map((lane) => ordinaryLaneIds.has(lane.id)
+        ? {
+            ...lane,
+            enabled: false,
+            controlState: 'stopped' as const,
+            autonomousOverride: undefined,
+          }
+        : lane);
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
+          autonomous: false,
+          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => !ordinaryLaneIds.has(item.laneId)),
+          log: [{
+            ts: Date.now(), laneId: '-', action: '停止普通监督',
+            detail: detail || '普通监督已停止；项目监督状态不变',
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
+        },
+      };
+    });
   },
   pauseSupervisorLane(laneId, detail) {
     set((s) => {
@@ -794,6 +992,32 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
       },
     }));
+  },
+  resetOrdinarySupervisorSession() {
+    set((s) => {
+      const defaults = createDefaultSupervisorSession();
+      const projectLanes = s.supervisor.lanes.filter(isProjectManagedSupervisorLane);
+      if (projectLanes.length === 0) {
+        return {
+          supervisor: {
+            ...defaults,
+            supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
+          },
+        };
+      }
+      const projectLaneIds = new Set(projectLanes.map((lane) => lane.id));
+      return {
+        supervisor: {
+          ...defaults,
+          ...supervisorRuntimeFlags(projectLanes),
+          sessionId: s.supervisor.sessionId,
+          lanes: projectLanes,
+          supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
+          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => projectLaneIds.has(item.laneId)),
+          log: s.supervisor.log,
+        },
+      };
+    });
   },
   confirmStopCondition(laneId) {
     set((s) => {

@@ -8,6 +8,7 @@ import type {
 } from '../../store/supervisor-slice';
 import {
   dedicatedSupervisorSurfaceId,
+  isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   supervisorDefaultsForAgent,
   supervisorLaneControlState,
@@ -201,6 +202,8 @@ function collectTerminals(
     title: string;
     projectDir?: string;
     projectManagerTerminal?: boolean;
+    projectManagerProjectId?: string;
+    projectManagerWorkItemId?: string;
   }>,
 ): void {
   if (tree.type === 'leaf') {
@@ -212,6 +215,8 @@ function collectTerminals(
           title: s.customTitle?.trim() || s.shell || 'terminal',
           projectDir: s.currentCwd || s.cwd,
           projectManagerTerminal: s.projectManagerTerminal,
+          projectManagerProjectId: s.projectManagerProjectId,
+          projectManagerWorkItemId: s.projectManagerWorkItemId,
         });
       }
     }
@@ -230,8 +235,8 @@ export default function SupervisorSetupDialog() {
   const closeSupervisorSetup = useStore((s) => s.closeSupervisorSetup);
   const openProjectManagerDialog = useStore((s) => s.openProjectManagerDialog);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
-  const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
-  const startSupervisor = useStore((s) => s.startSupervisor);
+  const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
+  const startOrdinarySupervisor = useStore((s) => s.startOrdinarySupervisor);
   const defaultSupervisorAgent = useStore((s) => s.workspacePrefs.defaultSupervisorAgent);
   const defaultSupervisorModels = useStore((s) => s.workspacePrefs.defaultSupervisorModels);
   const defaultSupervisorReasoningEfforts = useStore(
@@ -239,7 +244,7 @@ export default function SupervisorSetupDialog() {
   );
   const supervisorModelCatalogs = useStore((s) => s.workspacePrefs.supervisorModelCatalogs);
   const setWorkspacePrefs = useStore((s) => s.setWorkspacePrefs);
-  const stopSupervisor = useStore((s) => s.stopSupervisor);
+  const stopOrdinarySupervisor = useStore((s) => s.stopOrdinarySupervisor);
   const addSurface = useStore((s) => s.addSurface);
   const closeSurface = useStore((s) => s.closeSurface);
   const createWorkspace = useStore((s) => s.createWorkspace);
@@ -248,13 +253,24 @@ export default function SupervisorSetupDialog() {
   const lastFocusedFieldRef = useRef<HTMLElement | null>(null);
   const modelValidationRequestRef = useRef(0);
   const modelDiscoveryRequestRef = useRef(0);
-  const sessionRetained = supervisor.active || supervisor.paused;
+  const ordinarySupervisorLanes = useMemo(
+    () => supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane)),
+    [supervisor.lanes],
+  );
+  const sessionRetained = ordinarySupervisorLanes.some(isSupervisorLaneBound);
+  const ordinaryActive = ordinarySupervisorLanes.some((lane) => {
+    const state = supervisorLaneControlState(lane);
+    return state === 'active' || state === 'waiting';
+  });
+  const ordinaryPaused = ordinarySupervisorLanes.some(
+    (lane) => supervisorLaneControlState(lane) === 'paused',
+  );
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
   const modelCatalogScope = supervisorModelCatalogScope(activeWorkspace?.cwd, activeWorkspaceId || undefined);
   const modelCatalog = supervisorModelCatalogs[modelCatalogScope] || {};
   let primaryActionLabel = '启动 AI 监督';
-  if (supervisor.active) primaryActionLabel = '应用并继续监督';
-  else if (supervisor.paused) primaryActionLabel = '应用并返回监督会话';
+  if (ordinaryActive) primaryActionLabel = '应用并继续普通监督';
+  else if (ordinaryPaused) primaryActionLabel = '应用并返回普通监督会话';
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -279,10 +295,13 @@ export default function SupervisorSetupDialog() {
         title: string;
         projectDir?: string;
         projectManagerTerminal?: boolean;
+        projectManagerProjectId?: string;
+        projectManagerWorkItemId?: string;
       }> = [];
       collectTerminals(ws.splitTree, surfaces);
       for (const s of surfaces) {
         if (s.projectManagerTerminal) continue;
+        if (s.projectManagerProjectId || s.projectManagerWorkItemId) continue;
         if (supervisorSurfaceIds.has(s.surfaceId)) continue;
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
         const meta = agentMeta.get(s.surfaceId);
@@ -370,10 +389,10 @@ export default function SupervisorSetupDialog() {
     if (!setupOpen) return;
     setDialogNotice(null);
     setRestoreEnabled(new Set(
-      supervisor.lanes.flatMap((lane) => lane.restoreSource ? [lane.surfaceId] : []),
+      ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource ? [lane.surfaceId] : []),
     ));
     setRestoreSources(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
+      ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
     ));
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setSupervisorModel(supervisor.supervisorModel || '');
@@ -395,7 +414,7 @@ export default function SupervisorSetupDialog() {
     setAutonomyPermissions(normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions));
     setWorkScope(normalizeSupervisorWorkScope(supervisor.workScope));
     setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
-    const boundSurfaceIds = supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId);
+    const boundSurfaceIds = ordinarySupervisorLanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId);
     setSelected(new Set(boundSurfaceIds));
     setTerminalConfigExpansion((current) => {
       const next = { ...current };
@@ -408,20 +427,20 @@ export default function SupervisorSetupDialog() {
       return changed ? next : current;
     });
     setLaneConfigs(Object.fromEntries(
-      supervisor.lanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
+      ordinarySupervisorLanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
     ));
     setLanePermissionOverrides(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => Array.isArray(lane.autonomyPermissionsOverride)
+      ordinarySupervisorLanes.flatMap((lane) => Array.isArray(lane.autonomyPermissionsOverride)
         ? [[lane.surfaceId, [...lane.autonomyPermissionsOverride]]]
         : []),
     ));
     setLaneAutonomousOverrides(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => typeof lane.autonomousOverride === 'boolean'
+      ordinarySupervisorLanes.flatMap((lane) => typeof lane.autonomousOverride === 'boolean'
         ? [[lane.surfaceId, lane.autonomousOverride]]
         : []),
     ));
     setLaneForbiddenActionOverrides(Object.fromEntries(
-      supervisor.lanes.flatMap((lane) => Array.isArray(lane.forbiddenActionsOverride)
+      ordinarySupervisorLanes.flatMap((lane) => Array.isArray(lane.forbiddenActionsOverride)
         ? [[lane.surfaceId, [...lane.forbiddenActionsOverride]]]
         : []),
     ));
@@ -783,7 +802,7 @@ export default function SupervisorSetupDialog() {
 
   const configFileDefaultPath = () => {
     const selectedTerminal = candidates.find((candidate) => selected.has(candidate.surfaceId) && candidate.projectDir)
-      || supervisor.lanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped' && lane.projectDir);
+      || ordinarySupervisorLanes.find((lane) => supervisorLaneControlState(lane) !== 'stopped' && lane.projectDir);
     if (!selectedTerminal?.projectDir) return undefined;
     const projectDir = selectedTerminal.projectDir.replace(/[\\/]+$/, '');
     return `${projectDir}\\.wmux\\ai-supervisor.wmux-supervisor.json`;
@@ -817,7 +836,7 @@ export default function SupervisorSetupDialog() {
     const config = result.config;
     const importedTerminals = Array.isArray(config.terminals) ? config.terminals : [];
     const retainedSurfaceIds = sessionRetained
-      ? supervisor.lanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)
+      ? ordinarySupervisorLanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)
       : [];
     const importPlan = planSupervisorTerminalConfigImport(
       importedTerminals,
@@ -945,7 +964,7 @@ export default function SupervisorSetupDialog() {
     const lanes: SupervisorLane[] = [];
     for (const c of candidates) {
       if (!selected.has(c.surfaceId)) continue;
-      const prev = supervisor.lanes.find((l) => (
+      const prev = ordinarySupervisorLanes.find((l) => (
         l.surfaceId === c.surfaceId && isSupervisorLaneBound(l)
       ));
       const selectedSourceId = restoreSourceIdFor(c.surfaceId);
@@ -1140,7 +1159,7 @@ export default function SupervisorSetupDialog() {
       return { ok: false, lanes };
     }
     if (replaceExisting) {
-      for (const oldLane of supervisor.lanes) {
+      for (const oldLane of ordinarySupervisorLanes) {
         if (!oldLane.supervisorSurfaceId) continue;
         const location = terminalLocations.get(oldLane.supervisorSurfaceId);
         if (!location) continue;
@@ -1238,12 +1257,14 @@ export default function SupervisorSetupDialog() {
         return;
       }
       persistFields(result.lanes, true);
-      setSupervisorLanes(result.lanes);
-      if (!sessionRetained) startSupervisor();
+      setOrdinarySupervisorLanes(result.lanes);
+      if (!sessionRetained) startOrdinarySupervisor();
       else closeSupervisorSetup();
       const nextSession = useStore.getState().supervisor;
-      const previousBySurfaceId = new Map(supervisor.lanes.map((lane) => [lane.surfaceId, lane]));
-      const changedLanes = nextSession.lanes.filter((lane) => supervisorLaneBriefingChanged(
+      const previousBySurfaceId = new Map(ordinarySupervisorLanes.map((lane) => [lane.surfaceId, lane]));
+      const changedLanes = nextSession.lanes
+        .filter((lane) => !isProjectManagedSupervisorLane(lane))
+        .filter((lane) => supervisorLaneBriefingChanged(
           supervisor,
           previousBySurfaceId.get(lane.surfaceId),
           nextSession,
@@ -1277,10 +1298,11 @@ export default function SupervisorSetupDialog() {
       }
       const appliedSession = useStore.getState().supervisor;
       const hasRetainedLane = appliedSession.lanes.some(
-        (lane) => supervisorLaneControlState(lane) !== 'stopped',
+        (lane) => !isProjectManagedSupervisorLane(lane)
+          && supervisorLaneControlState(lane) !== 'stopped',
       );
       if (sessionRetained && !hasRetainedLane) {
-        stopSupervisor('所有待续通道均已取消“完成后待续”，本轮正式完成');
+        stopOrdinarySupervisor('所有普通待续通道均已取消“完成后待续”，本轮正式完成');
       }
       const briefingLaneIds = new Set(changedLanes
         .filter((lane) => supervisorLaneControlState(
@@ -1294,7 +1316,7 @@ export default function SupervisorSetupDialog() {
       sendDedicatedBriefings(briefingLaneIds);
     } else {
       persistFields(lanes, false);
-      setSupervisorLanes(lanes);
+      setOrdinarySupervisorLanes(lanes);
       closeSupervisorSetup();
     }
   };
@@ -1346,7 +1368,7 @@ export default function SupervisorSetupDialog() {
       return;
     }
     persistFields(result.lanes, false);
-    setSupervisorLanes(result.lanes);
+    setOrdinarySupervisorLanes(result.lanes);
     closeSupervisorSetup();
     const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;
     if (workspaceId) selectWorkspace(workspaceId);
@@ -2318,7 +2340,7 @@ export default function SupervisorSetupDialog() {
               className="confirm-dialog__btn"
               onClick={() => {
                 setAutonomous(false);
-                stopSupervisor();
+                stopOrdinarySupervisor();
               }}
             >
               停止监督

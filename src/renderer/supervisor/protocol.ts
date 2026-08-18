@@ -1,4 +1,5 @@
 import {
+  isProjectManagedSupervisorLane,
   supervisorLaneControlState,
   type StopWhenKind,
   type SupervisorLane,
@@ -171,6 +172,15 @@ export function effectiveSupervisorForbiddenActions(
     : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS];
 }
 
+export function effectiveSupervisorWorkScope(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+): SupervisorWorkScope {
+  return lane.workScopeOverride
+    || session.workScope
+    || DEFAULT_SUPERVISOR_WORK_SCOPE;
+}
+
 function sameStringList(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   const a = left || [];
   const b = right || [];
@@ -216,7 +226,8 @@ export function supervisorLaneBriefingChanged(
     || effectiveSupervisorAutonomous(previousSession, previousLane)
       !== effectiveSupervisorAutonomous(nextSession, nextLane)
     || previousSession.maxAutoDecisions !== nextSession.maxAutoDecisions
-    || previousSession.workScope !== nextSession.workScope
+    || effectiveSupervisorWorkScope(previousSession, previousLane)
+      !== effectiveSupervisorWorkScope(nextSession, nextLane)
     || !sameStringList(
       effectiveSupervisorAutonomyPermissions(previousSession, previousLane),
       effectiveSupervisorAutonomyPermissions(nextSession, nextLane),
@@ -336,7 +347,7 @@ const FORBIDDEN_ACTION_TEXT: Record<SupervisorForbiddenAction, string> = {
 function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane): string[] {
   const projectDir = lane.scopeRoot?.trim() || lane.projectDir?.trim() || '（当前终端工程目录未上报）';
   const forbiddenActions = effectiveSupervisorForbiddenActions(session, lane);
-  const workScope = session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE;
+  const workScope = effectiveSupervisorWorkScope(session, lane);
   const forbidden = forbiddenActions.length
     ? forbiddenActions.map((item) => `- ${FORBIDDEN_ACTION_TEXT[item]}`).join('\n')
     : '- （没有额外勾选；仍受不可绕过的高风险边界约束）';
@@ -431,7 +442,7 @@ export function buildSupervisorBriefing(
   const currentTask = lane.currentTask?.trim() || '';
   const laneConfig = effectiveSupervisorLaneConfig(session, lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
-  const decisionOwner = lane.projectManagerProjectId ? 'project-manager' as const : 'user' as const;
+  const decisionOwner = isProjectManagedSupervisorLane(lane) ? 'project-manager' as const : 'user' as const;
   const decisionOwnerLabel = decisionOwner === 'project-manager' ? '项目管理 AI' : '用户';
   const completionBehavior = laneConfig.waitForNextDirection
     ? `达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待${decisionOwnerLabel}的新指令或方向。待续恢复后，若${decisionOwnerLabel}的新方向仍不足以形成可执行下一步，使用 needs-human 并附 --proposal-kind direction-needed 说明缺少的信息；wmux 会让通道再次进入待续并重新通知${decisionOwnerLabel}。权限、业务取舍或路线变更仍使用原有上级决策类型，不得标记 direction-needed。`

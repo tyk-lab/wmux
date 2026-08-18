@@ -895,7 +895,7 @@ export default function ProjectManagerDialog() {
                     return (
                       <article key={lane.id}>
                         <div><strong>{lane.label}</strong><em>{STATUS_LABELS[supervisorLaneControlState(lane)] || supervisorLaneControlState(lane)}</em></div>
-                        <p>监督终端：{lane.supervisorSurfaceId || '恢复中'} · 任务终端：{lane.surfaceId}</p>
+                        <p>监督终端：{lane.supervisorSurfaceId || '恢复中'} · 任务终端：{lane.projectTaskStartupPending ? '等待监督 AI 创建' : lane.surfaceId}</p>
                         <p>工作项：{item?.title || lane.projectWorkItemId || '未绑定'} · {execution?.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}</p>
                         {execution?.modeReason && <p>模式理由：{execution.modeReason}</p>}
                         {execution?.taskWorkMode === 'multi-thread' && (

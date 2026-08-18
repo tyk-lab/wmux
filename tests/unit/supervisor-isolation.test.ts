@@ -19,9 +19,11 @@ import {
   clearSupervisorLaneContext,
   createSupervisorSlice,
   dedicatedSupervisorSurfaceId,
+  isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   isSurfaceSupervised,
   supervisorDefaultsForAgent,
+  supervisorLaneControlState,
   type SupervisorLane,
   type SupervisorSlice,
 } from '../../src/renderer/store/supervisor-slice';
@@ -35,6 +37,7 @@ import {
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
+  effectiveSupervisorWorkScope,
   humanDecisionBoundary,
   supervisorLaneBriefingChanged,
   supervisorTabTitle,
@@ -348,6 +351,132 @@ describe('supervisor isolation', () => {
       lanes: [],
       log: [],
     });
+  });
+
+  it('replaces ordinary lanes without changing project-managed ownership or policy', () => {
+    const store = makeStore();
+    const projectLane = lane({
+      id: 'lane-project',
+      surfaceId: 'worker-project' as any,
+      supervisorSurfaceId: 'supervisor-project' as any,
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'task-a',
+      autonomyPermissionsOverride: ['same-route-next'],
+      workScopeOverride: 'project',
+      forbiddenActionsOverride: ['external-network'],
+    });
+    store.getState().setSupervisorLanes([lane(), projectLane]);
+
+    store.getState().setOrdinarySupervisorLanes([
+      lane({ id: 'lane-b', surfaceId: 'worker-b' as any, supervisorSurfaceId: 'supervisor-b' as any }),
+    ]);
+
+    const session = store.getState().supervisor;
+    expect(session.lanes).toHaveLength(2);
+    expect(session.lanes.find((item) => item.id === 'lane-project')).toMatchObject({
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'task-a',
+      autonomyPermissionsOverride: ['same-route-next'],
+      workScopeOverride: 'project',
+      forbiddenActionsOverride: ['external-network'],
+    });
+    expect(session.lanes.find((item) => item.id === 'lane-b')).toBeDefined();
+    expect(session.lanes.find((item) => item.id === 'lane-a')).toBeUndefined();
+  });
+
+  it('scopes ordinary lifecycle controls while a project supervisor keeps running', () => {
+    const store = makeStore();
+    store.getState().setSupervisorLanes([
+      lane(),
+      lane({
+        id: 'lane-project',
+        surfaceId: 'worker-project' as any,
+        supervisorSurfaceId: 'supervisor-project' as any,
+        projectManagerProjectId: 'project-a',
+        projectWorkItemId: 'task-a',
+      }),
+    ]);
+    store.getState().startOrdinarySupervisor();
+    store.getState().enqueueApproval({
+      laneId: 'lane-a', surfaceId: 'worker-a' as any, laneLabel: 'Auth worker',
+      text: '普通待决', source: 'supervisor-important', proposalKind: 'important',
+    });
+    store.getState().enqueueApproval({
+      laneId: 'lane-project', surfaceId: 'worker-project' as any, laneLabel: 'Project worker',
+      text: '项目待决', source: 'supervisor-important', proposalKind: 'important',
+    });
+
+    store.getState().pauseOrdinarySupervisor();
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
+    expect(store.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'paused' });
+    expect(supervisorLaneControlState(
+      store.getState().supervisor.lanes.find((item) => item.id === 'lane-project')!,
+    )).toBe('active');
+
+    store.getState().resumeOrdinarySupervisor();
+    expect(store.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'active' });
+
+    store.getState().stopOrdinarySupervisor();
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
+    expect(store.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'stopped' });
+    expect(supervisorLaneControlState(
+      store.getState().supervisor.lanes.find((item) => item.id === 'lane-project')!,
+    )).toBe('active');
+    expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(store.getState().supervisor.pendingApprovals[0].laneId).toBe('lane-project');
+  });
+
+  it('resets ordinary supervision without clearing project lanes or inheriting ordinary policy', () => {
+    const store = makeStore();
+    store.getState().patchSupervisor({
+      autonomous: false,
+      autonomyPermissions: [],
+      workScope: 'plan-defined',
+      forbiddenActions: [],
+    });
+    store.getState().setSupervisorLanes([
+      lane(),
+      lane({
+        id: 'lane-project',
+        surfaceId: 'worker-project' as any,
+        projectManagerProjectId: 'project-a',
+        projectWorkItemId: 'task-a',
+      }),
+    ]);
+    const normalizedProjectLane = store.getState().supervisor.lanes.find((item) => item.id === 'lane-project')!;
+    expect(isProjectManagedSupervisorLane(normalizedProjectLane)).toBe(true);
+    expect(effectiveSupervisorWorkScope(store.getState().supervisor, normalizedProjectLane)).toBe('project');
+
+    store.getState().resetOrdinarySupervisorSession();
+
+    const session = store.getState().supervisor;
+    expect(session.lanes).toHaveLength(1);
+    expect(session.lanes[0]).toMatchObject({ id: 'lane-project', projectManagerProjectId: 'project-a' });
+    expect(session.workScope).toBe('project');
+    expect(effectiveSupervisorWorkScope(session, session.lanes[0])).toBe('project');
+  });
+
+  it('opens ordinary setup with ordinary agent defaults while only project supervision is active', () => {
+    const store = makeStore('codex', { codex: 'gpt-ordinary' }, { codex: 'high' });
+    store.getState().setSupervisorLanes([lane({
+      id: 'lane-project',
+      surfaceId: 'worker-project' as any,
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'task-a',
+    })]);
+    store.getState().startSupervisor();
+
+    store.getState().openSupervisorSetup();
+
+    expect(store.getState().supervisor).toMatchObject({
+      active: true,
+      setupOpen: true,
+      supervisorLaunchCmd: 'codex',
+      supervisorModel: 'gpt-ordinary',
+      supervisorReasoningEffort: 'high',
+      autonomous: false,
+    });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({ projectManagerProjectId: 'project-a' });
   });
 
   it('revokes autonomous authority when the supervision session stops', () => {

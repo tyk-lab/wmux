@@ -83,7 +83,7 @@ describe('supervisor setup dialog feedback', () => {
 
   it('closes the setup dialog after applying changes to a retained session', () => {
     expect(dialogSource).toMatch(
-      /if \(!sessionRetained\) startSupervisor\(\);\s*else closeSupervisorSetup\(\);/,
+      /if \(!sessionRetained\) startOrdinarySupervisor\(\);\s*else closeSupervisorSetup\(\);/,
     );
   });
 
@@ -97,9 +97,21 @@ describe('supervisor setup dialog feedback', () => {
 
   it('keeps retained supervision lanes selected while importing only matched terminal configs', () => {
     expect(dialogSource).toContain('planSupervisorTerminalConfigImport(');
-    expect(dialogSource).toContain('supervisor.lanes.filter(isSupervisorLaneBound)');
+    expect(dialogSource).toContain('ordinarySupervisorLanes.filter(isSupervisorLaneBound)');
     expect(dialogSource).toContain('setSelected(new Set(importPlan.selectedSurfaceIds))');
     expect(dialogSource).toContain('for (const surfaceId of importedSurfaceIds)');
+  });
+
+  it('isolates ordinary setup and lifecycle controls from project-managed supervision', () => {
+    expect(dialogSource).toContain('if (s.projectManagerProjectId || s.projectManagerWorkItemId) continue;');
+    expect(dialogSource).toContain('supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane))');
+    expect(dialogSource).toContain('setOrdinarySupervisorLanes(result.lanes)');
+    expect(dialogSource).toContain('startOrdinarySupervisor()');
+    expect(dialogSource).toContain('stopOrdinarySupervisor()');
+    expect(panelSource).toContain('普通监督配置和控制不会修改这些通道');
+    expect(panelSource).toContain('isProjectManagedSupervisorLane(lane)');
+    expect(panelSource).toContain('stopOrdinarySupervisor()');
+    expect(panelSource).toContain('resetOrdinarySupervisorSession()');
   });
 
   it('configures task-terminal work mode with one to three child threads', () => {
@@ -151,7 +163,8 @@ describe('supervisor setup dialog feedback', () => {
   it('shows waiting state prominently in the supervisor header and lane card', () => {
     expect(panelSource).toContain("? `运行中 · ${waiting.length} 待续`");
     expect(panelSource).toContain('data-waiting={waiting.length > 0');
-    expect(panelSource).toContain('当前有 {waiting.length} 个 AI 监督通道处于待续状态');
+    expect(panelSource).toContain('当前有 {ordinaryWaiting.length} 个普通监督通道处于待续状态');
+    expect(panelSource).toContain('当前有 {projectWaiting.length} 个项目监督通道待续');
     expect(panelSource).toContain('data-control-state={laneControlState}');
   });
 });

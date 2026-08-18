@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { findLeaf, getAllPaneIds } from '../store/split-utils';
 import type { SupervisorSession } from '../store/supervisor-slice';
 
 export interface SupervisorGenericInputGuardResult {
@@ -8,16 +9,42 @@ export interface SupervisorGenericInputGuardResult {
 }
 
 /**
- * Dedicated supervisors may write through supervisor.decide only. Generic
- * cross-surface input would otherwise bypass the configured decision policy.
+ * Project managers and dedicated supervisors may write through their bounded
+ * protocols only. Generic cross-surface input would bypass the decision chain.
  */
 export function evaluateSupervisorGenericInput(
   session: Pick<SupervisorSession, 'lanes'>,
   callerSurfaceId: string,
   targetSurfaceId: string,
+  projectManagerSurfaceIds: ReadonlySet<string> = new Set(),
+  projectTaskSurfaceIds: ReadonlySet<string> = new Set(),
 ): SupervisorGenericInputGuardResult {
   if (!callerSurfaceId) {
     return { supervisedCaller: false, blocked: false };
+  }
+
+  const projectManagerCaller = projectManagerSurfaceIds.has(callerSurfaceId);
+  if (projectManagerCaller) {
+    if (!targetSurfaceId || targetSurfaceId === callerSurfaceId) {
+      return { supervisedCaller: true, blocked: false };
+    }
+    return {
+      supervisedCaller: true,
+      blocked: true,
+      reason: '项目管理 AI 不能使用通用 send/send-key 向其他终端输入；请通过项目协议启动或指挥 AI 监督',
+    };
+  }
+
+  const projectTaskCaller = projectTaskSurfaceIds.has(callerSurfaceId);
+  if (projectTaskCaller) {
+    if (!targetSurfaceId || targetSurfaceId === callerSurfaceId) {
+      return { supervisedCaller: true, blocked: false };
+    }
+    return {
+      supervisedCaller: true,
+      blocked: true,
+      reason: '项目任务 AI 不能使用通用 send/send-key 操作其他终端；请在当前任务终端内工作并由 AI 监督裁决后续输入',
+    };
   }
 
   const lane = session.lanes.find(
@@ -41,11 +68,26 @@ export function initSupervisorGenericInputGuard(): () => void {
   w.__wmux_guardSupervisorGenericInput = (
     callerSurfaceId: string,
     targetSurfaceId: string,
-  ) => evaluateSupervisorGenericInput(
-    useStore.getState().supervisor,
-    String(callerSurfaceId || ''),
-    String(targetSurfaceId || ''),
-  );
+  ) => {
+    const state = useStore.getState();
+    const projectManagerSurfaceIds = new Set<string>();
+    const projectTaskSurfaceIds = new Set<string>();
+    for (const workspace of state.workspaces) {
+      for (const paneId of getAllPaneIds(workspace.splitTree)) {
+        for (const surface of findLeaf(workspace.splitTree, paneId)?.surfaces || []) {
+          if (surface.projectManagerTerminal) projectManagerSurfaceIds.add(surface.id);
+          if (surface.projectManagerProjectId) projectTaskSurfaceIds.add(surface.id);
+        }
+      }
+    }
+    return evaluateSupervisorGenericInput(
+      state.supervisor,
+      String(callerSurfaceId || ''),
+      String(targetSurfaceId || ''),
+      projectManagerSurfaceIds,
+      projectTaskSurfaceIds,
+    );
+  };
 
   return () => {
     delete w.__wmux_guardSupervisorGenericInput;

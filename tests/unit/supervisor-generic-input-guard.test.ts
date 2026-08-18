@@ -48,6 +48,24 @@ describe('supervisor generic input guard', () => {
       .toMatchObject({ supervisedCaller: true, blocked: true });
   });
 
+  it('blocks the project manager from bypassing the supervisor with generic input', () => {
+    const managers = new Set(['project-manager-a']);
+    expect(evaluateSupervisorGenericInput(session(), 'project-manager-a', 'worker-a', managers))
+      .toMatchObject({ supervisedCaller: true, blocked: true, reason: expect.stringContaining('项目协议') });
+    expect(evaluateSupervisorGenericInput(session(), 'project-manager-a', 'user-terminal', managers))
+      .toMatchObject({ supervisedCaller: true, blocked: true });
+    expect(evaluateSupervisorGenericInput(session(), 'project-manager-a', 'project-manager-a', managers))
+      .toEqual({ supervisedCaller: true, blocked: false });
+  });
+
+  it('keeps a project task AI inside its own terminal', () => {
+    const tasks = new Set(['project-task-a']);
+    expect(evaluateSupervisorGenericInput(session(), 'project-task-a', 'worker-a', new Set(), tasks))
+      .toMatchObject({ supervisedCaller: true, blocked: true, reason: expect.stringContaining('当前任务终端') });
+    expect(evaluateSupervisorGenericInput(session(), 'project-task-a', 'project-task-a', new Set(), tasks))
+      .toEqual({ supervisedCaller: true, blocked: false });
+  });
+
   it('allows normal terminals and supervisor self-input', () => {
     expect(evaluateSupervisorGenericInput(session(), 'user-terminal', 'worker-a'))
       .toEqual({ supervisedCaller: false, blocked: false });

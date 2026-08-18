@@ -6,6 +6,7 @@ import {
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
+  effectiveSupervisorWorkScope,
   modeLabel,
   stopWhenKindLabel,
   supervisorTabTitle,
@@ -45,6 +46,7 @@ import {
 import {
   clearSupervisorLaneContext,
   dedicatedSupervisorSurfaceId,
+  isProjectManagedSupervisorLane,
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../../store/supervisor-slice';
@@ -68,23 +70,23 @@ const WORK_SCOPE_LABELS: Record<SupervisorWorkScope, string> = {
 
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
-  const stopSupervisor = useStore((s) => s.stopSupervisor);
+  const stopOrdinarySupervisor = useStore((s) => s.stopOrdinarySupervisor);
   const pauseSupervisorLane = useStore((s) => s.pauseSupervisorLane);
   const resumeSupervisorLane = useStore((s) => s.resumeSupervisorLane);
   const stopSupervisorLane = useStore((s) => s.stopSupervisorLane);
-  const startSupervisor = useStore((s) => s.startSupervisor);
-  const pauseSupervisor = useStore((s) => s.pauseSupervisor);
-  const resumeSupervisor = useStore((s) => s.resumeSupervisor);
+  const startOrdinarySupervisor = useStore((s) => s.startOrdinarySupervisor);
+  const pauseOrdinarySupervisor = useStore((s) => s.pauseOrdinarySupervisor);
+  const resumeOrdinarySupervisor = useStore((s) => s.resumeOrdinarySupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
   const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
-  const setSupervisorLanes = useStore((s) => s.setSupervisorLanes);
+  const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
   const appendSupervisorLog = useStore((s) => s.appendSupervisorLog);
   const confirmStopCondition = useStore((s) => s.confirmStopCondition);
   const rejectStopCondition = useStore((s) => s.rejectStopCondition);
-  const resetSupervisorSession = useStore((s) => s.resetSupervisorSession);
+  const resetOrdinarySupervisorSession = useStore((s) => s.resetOrdinarySupervisorSession);
   const closeSurface = useStore((s) => s.closeSurface);
   const addSurface = useStore((s) => s.addSurface);
   const setMarkdownContent = useStore((s) => s.setMarkdownContent);
@@ -109,11 +111,20 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
   if (supervisor.lanes.length === 0 && !supervisor.active && !supervisor.supervisorWorkspaceId) return null;
 
+  const ordinaryLanes = supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
+  const projectLanes = supervisor.lanes.filter(isProjectManagedSupervisorLane);
   const enabled = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
   const waiting = supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
-  const projectManaged = supervisor.lanes.some((lane) => !!lane.projectWorkItemId);
+  const ordinaryEnabled = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
+  const ordinaryWaiting = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
+  const ordinaryPaused = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'paused');
+  const projectWaiting = projectLanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
+  const ordinaryRetained = ordinaryLanes.some((lane) => supervisorLaneControlState(lane) !== 'stopped');
+  const projectManaged = projectLanes.length > 0;
   const visiblePendingApprovals = supervisor.pendingApprovals.filter((approval) => (
-    !supervisor.lanes.some((lane) => lane.id === approval.laneId && !!lane.projectManagerProjectId)
+    !supervisor.lanes.some((lane) => (
+      lane.id === approval.laneId && isProjectManagedSupervisorLane(lane)
+    ))
   ));
   const pendingCount = visiblePendingApprovals.length;
   const mode = supervisor.mode || 'unified';
@@ -137,7 +148,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const missingDedicatedSupervisor = supervisor.lanes.some(
     (lane) => {
       const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-      return supervisorLaneControlState(lane) !== 'stopped'
+      return !isProjectManagedSupervisorLane(lane)
+        && supervisorLaneControlState(lane) !== 'stopped'
         && (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId));
     },
   );
@@ -373,21 +385,22 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const resumePausedSession = () => {
-    if (!supervisor.paused) return;
+    if (ordinaryPaused.length === 0) return;
     if (missingDedicatedSupervisor) {
       openSupervisorSetup();
       return;
     }
 
     const pendingLaneIds = new Set(supervisor.pendingApprovals.map((item) => item.laneId));
-    const cancelledDecisionLaneIds = new Set(supervisor.lanes.filter((lane) => (
-      supervisorLaneControlState(lane) === 'active'
+    const cancelledDecisionLaneIds = new Set(ordinaryLanes.filter((lane) => (
+      supervisorLaneControlState(lane) === 'paused'
       && lane.awaitingReview
       && lane.resumeAfterCancelledDecision
       && !pendingLaneIds.has(lane.id)
     )).map((lane) => lane.id));
-    resumeSupervisor();
-    for (const lane of supervisor.lanes) {
+    resumeOrdinarySupervisor();
+    const resumedSession = useStore.getState().supervisor;
+    for (const lane of resumedSession.lanes.filter((candidate) => !isProjectManagedSupervisorLane(candidate))) {
       const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
       if (supervisorLaneControlState(lane) !== 'active'
         || !supervisorSurfaceId
@@ -400,8 +413,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const pauseActiveSession = () => {
-    if (!supervisor.active) return;
-    pauseSupervisor('用户手动暂停监督；现有监督终端与会话上下文已保留');
+    if (ordinaryEnabled.length === 0) return;
+    pauseOrdinarySupervisor('用户手动暂停普通监督；项目监督状态不变');
   };
 
   const closeDedicatedSupervisor = (lane: SupervisorLane): boolean => {
@@ -423,11 +436,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const pauseLane = (lane: SupervisorLane) => {
+    if (isProjectManagedSupervisorLane(lane)) return;
     pauseSupervisorLane(lane.id, `用户暂停 ${lane.label}；其他监督通道继续运行`);
     appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'pause' });
   };
 
   const resumeLane = (lane: SupervisorLane) => {
+    if (isProjectManagedSupervisorLane(lane)) return;
     const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
     if (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId)) {
       openSupervisorSetup();
@@ -441,6 +456,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const stopLane = (lane: SupervisorLane) => {
+    if (isProjectManagedSupervisorLane(lane)) return;
     if (!window.confirm(`将停止“${lane.label}”的监督、关闭其专属监督 AI，并解除与任务终端的绑定；之后可重新选择该终端启动监督，其他通道不受影响。是否继续？`)) return;
     if (!closeDedicatedSupervisor(lane)) {
       window.alert(`无法安全关闭“${lane.label}”的专属监督 AI，该通道未停止。`);
@@ -451,11 +467,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   };
 
   const restartFromScratch = () => {
-    if (!window.confirm('将关闭所有专属监督 AI，并清空本次任务与裁决记录；历史审计文件会保留。是否继续？')) {
+    if (!window.confirm('将关闭所有普通监督 AI，并清空普通监督任务与裁决记录；项目监督和历史审计文件不受影响。是否继续？')) {
       return;
     }
 
-    for (const lane of supervisor.lanes) {
+    for (const lane of ordinaryLanes) {
       appendSupervisorRecord(supervisor, lane, 'session.abandoned', {
         reason: '用户选择重头再来',
       });
@@ -482,7 +498,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         closeSurface(location.workspaceId, location.paneId, supervisorSurfaceId);
       }
     }
-    resetSupervisorSession();
+    resetOrdinarySupervisorSession();
     openSupervisorSetup();
   };
 
@@ -497,7 +513,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       }
     }
 
-    const lanesToRestart = supervisor.lanes.map((lane) => {
+    const lanesToRestart = ordinaryLanes.map((lane) => {
       const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
       return {
         lane,
@@ -566,7 +582,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       mode: 'unified',
       autonomous: false,
       autonomyPermissions: normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions),
-      workScope: normalizedScope === 'plan-defined' && supervisor.lanes.some(
+      workScope: normalizedScope === 'plan-defined' && ordinaryLanes.some(
         (lane) => !effectiveSupervisorLaneConfig(supervisor, lane).planFilePath.trim(),
       )
         ? 'task-files'
@@ -585,7 +601,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       maxAutoSteps: 0,
       maxAutoDecisions: normalizedDecisionLimit,
     });
-    setSupervisorLanes(supervisor.lanes.map((lane) =>
+    setOrdinarySupervisorLanes(ordinaryLanes.map((lane) =>
       ({
         ...clearSupervisorLaneContext(lane, replacementByLaneId.get(lane.id) || null),
         autonomousOverride: undefined,
@@ -595,13 +611,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
       closeSurface(replacement.workspaceId, replacement.paneId, replacement.oldSurfaceId);
     }
 
-    startSupervisor();
+    startOrdinarySupervisor();
     const sessionId = useStore.getState().supervisor.sessionId;
     window.setTimeout(() => {
       const session = useStore.getState().supervisor;
       if (!session.active || session.sessionId !== sessionId) return;
       const states = (window as any).__wmux_getAgentStates?.() || {};
-      for (const lane of session.lanes) {
+      for (const lane of session.lanes.filter((candidate) => !isProjectManagedSupervisorLane(candidate))) {
         const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
         if (!supervisorSurfaceId) continue;
         const text = buildSupervisorBriefing(session, {
@@ -639,21 +655,25 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         </button>
         <div className="sup-panel__compact-actions">
           <button type="button" onClick={openSupervisorSession}>打开</button>
-          <button type="button" onClick={openSupervisorSetup}>配置</button>
-          {supervisor.active && (
-            <>
-              <button type="button" onClick={pauseActiveSession}>暂停监督</button>
-              <button type="button" onClick={() => stopSupervisor()}>停止监督</button>
-            </>
+          <button type="button" onClick={openSupervisorSetup}>配置普通监督</button>
+          {ordinaryEnabled.length > 0 && (
+            <button type="button" onClick={pauseActiveSession}>暂停普通监督</button>
           )}
-          {!supervisor.active && supervisor.paused && (
+          {ordinaryRetained && (
+            <button type="button" onClick={() => stopOrdinarySupervisor()}>停止普通监督</button>
+          )}
+          {ordinaryPaused.length > 0 && (
             <button type="button" className="sup-panel__btn-primary" onClick={resumePausedSession}>
               {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
             </button>
           )}
-          {!supervisor.active && !supervisor.paused && (
-            <button type="button" className="sup-panel__btn-primary" onClick={missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}>
-              {missingDedicatedSupervisor ? '创建 AI' : '启动新会话'}
+          {!ordinaryRetained && (
+            <button
+              type="button"
+              className="sup-panel__btn-primary"
+              onClick={ordinaryLanes.length === 0 || missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
+            >
+              {ordinaryLanes.length === 0 || missingDedicatedSupervisor ? '配置普通监督' : '启动普通监督新会话'}
             </button>
           )}
         </div>
@@ -686,29 +706,45 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
       {!collapsed && (
         <>
-          {supervisor.paused && (
+          {ordinaryPaused.length > 0 && (
             <div className="sup-panel__paused-notice">
               {missingDedicatedSupervisor
                 ? '会话已暂停，但专属监督终端已缺失；请停止后重新配置。'
                 : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续监督”即可恢复。'}
             </div>
           )}
-          {supervisor.active && waiting.length > 0 && (
+          {ordinaryWaiting.length > 0 && (
             <div className="sup-panel__waiting-notice" role="status">
-              当前有 {waiting.length} 个 AI 监督通道处于待续状态，正在等待用户提供新方案或下一步方向。
+              当前有 {ordinaryWaiting.length} 个普通监督通道处于待续状态，正在等待用户提供新方案或下一步方向。
             </div>
           )}
-          <div className="sup-panel__freedom">
-            {projectManaged ? '项目管理护栏监督' : supervisor.autonomous ? '全自动监督' : '有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
-            工作范围为“{WORK_SCOPE_LABELS[workScope]}”，另有 {forbiddenActionCount} 项禁止事项。硬风险始终等待人工。
-          </div>
-          <div className="sup-panel__goal">
-            最大自动判断: {projectManaged ? '按项目任务契约限制' : supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
-          </div>
-          <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
-            监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
-          </div>
-          {(supervisorLauncher === 'codex' || supervisorLauncher === 'kimi' || supervisorLauncher === 'pi') && (
+          {projectWaiting.length > 0 && (
+            <div className="sup-panel__waiting-notice" role="status">
+              当前有 {projectWaiting.length} 个项目监督通道待续，由对应项目管理 AI 处理，不需要用户在普通监督中介入。
+            </div>
+          )}
+          {ordinaryLanes.length > 0 && (
+            <div className="sup-panel__freedom">
+              {supervisor.autonomous ? '普通全自动监督' : '普通有限自主监督'}：已授予 {autonomyPermissionCount}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} 项自主权限；
+              工作范围为“{WORK_SCOPE_LABELS[workScope]}”，另有 {forbiddenActionCount} 项禁止事项。硬风险始终等待人工。
+            </div>
+          )}
+          {projectManaged && (
+            <div className="sup-panel__freedom">
+              项目管理护栏监督：{projectLanes.length} 个通道由项目管理 AI 按各自任务契约管理；普通监督配置和控制不会修改这些通道。
+            </div>
+          )}
+          {ordinaryLanes.length > 0 && (
+            <div className="sup-panel__goal">
+              普通监督最大自动判断: {supervisor.autonomous ? '全自动会话（不限制）' : supervisor.maxAutoDecisions ? `${supervisor.maxAutoDecisions} 次 / 终端` : '不限制'}
+            </div>
+          )}
+          {ordinaryLanes.length > 0 && (
+            <div className="sup-panel__goal" title={supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}>
+              普通监督模型: {supervisor.supervisorModel || `${supervisorLauncherName} 默认模型`}
+            </div>
+          )}
+          {ordinaryLanes.length > 0 && (supervisorLauncher === 'codex' || supervisorLauncher === 'kimi' || supervisorLauncher === 'pi') && (
             <div className="sup-panel__goal" title={supervisor.supervisorReasoningEffort || `${supervisorLauncherName} 默认${supervisorThinkingLabel}`}>
               {supervisorThinkingLabel}: {supervisor.supervisorReasoningEffort || '默认'}
             </div>
@@ -716,14 +752,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
           <div className="sup-panel__lanes">
             {supervisor.lanes.map((lane) => {
+              const laneProjectManaged = isProjectManagedSupervisorLane(lane);
               const laneControlState = supervisorLaneControlState(lane);
               const laneConfig = effectiveSupervisorLaneConfig(supervisor, lane);
               const lanePermissions = effectiveSupervisorAutonomyPermissions(supervisor, lane);
               const laneAutonomous = effectiveSupervisorAutonomous(supervisor, lane);
               const laneForbiddenActions = effectiveSupervisorForbiddenActions(supervisor, lane);
+              const laneWorkScope = effectiveSupervisorWorkScope(supervisor, lane);
               const lanePolicyOverridden = Array.isArray(lane.autonomyPermissionsOverride)
                 || typeof lane.autonomousOverride === 'boolean'
-                || Array.isArray(lane.forbiddenActionsOverride);
+                || Array.isArray(lane.forbiddenActionsOverride)
+                || !!lane.workScopeOverride;
               const planFileName = laneConfig.planFilePath.split(/[\\/]/).pop() || '';
               const open = lane.steps.find(
                 (s) => s.status === 'pending' || s.status === 'in_progress',
@@ -743,8 +782,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 <>
                   <span className="sup-panel__lane-label">{lane.label}</span>
                   <span className="sup-panel__lane-progress">
+                    {laneProjectManaged ? '项目监督 · ' : '普通监督 · '}
                     {laneStatusLabel}
-                    {' · '}{(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{supervisor.maxAutoDecisions || '∞'}
+                    {' · '}{(lane.decisions || []).length} 次裁决 · 自动 {lane.autoDecisionsUsed || 0}/{laneProjectManaged || laneAutonomous ? '∞' : supervisor.maxAutoDecisions || '∞'}
                   </span>
                 </>
               );
@@ -835,7 +875,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   </div>
                   <div className="sup-panel__lane-supervisor">
                     权限: {laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length}
-                    {lanePolicyOverridden ? '（终端专用）' : '（会话默认）'}
+                    {' · '}范围: {WORK_SCOPE_LABELS[laneWorkScope]}
+                    {lanePolicyOverridden ? '（终端专用）' : '（普通会话默认）'}
                   </div>
                   {lane.restoredFromSessionId && (
                     <div className="sup-panel__lane-supervisor">
@@ -857,17 +898,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     );
                   })()}
                   <div className="sup-panel__lane-actions">
-                    {laneControlState === 'active' && (
+                    {!laneProjectManaged && laneControlState === 'active' && (
                       <button type="button" onClick={() => pauseLane(lane)} disabled={!supervisor.active}>
                         暂停此监督
                       </button>
                     )}
-                    {laneControlState === 'paused' && (
+                    {!laneProjectManaged && laneControlState === 'paused' && (
                       <button type="button" onClick={() => resumeLane(lane)} disabled={!supervisor.active}>
                         继续此监督
                       </button>
                     )}
-                    {laneControlState !== 'stopped' && (
+                    {!laneProjectManaged && laneControlState !== 'stopped' && (
                       <button type="button" onClick={() => stopLane(lane)}>
                         停止此监督
                       </button>
@@ -878,10 +919,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                   </div>
                   {laneControlState === 'waiting' && (
                     <div className="sup-panel__lane-supervisor">
-                      待续中：直接在对应 AI 监督终端说明新方案或下一步方向即可自动恢复；向任务终端发送新任务也可恢复，无需重新配置监督。
+                      {laneProjectManaged
+                        ? '待续中：由对应项目管理 AI 提供新任务契约或下一步方向。'
+                        : '待续中：直接在对应 AI 监督终端说明新方案或下一步方向即可自动恢复；向任务终端发送新任务也可恢复，无需重新配置监督。'}
                     </div>
                   )}
-                  {lane.awaitingStopCheck && !lane.stopConfirmed && (
+                  {!laneProjectManaged && lane.awaitingStopCheck && !lane.stopConfirmed && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
                       <button type="button" onClick={() => rejectStopCondition(lane.id)} disabled={!supervisor.active}>
                         未达到
@@ -899,7 +942,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                       </button>
                     </div>
                   )}
-                  {lane.autoDecisionLimitReached && (
+                  {!laneProjectManaged && lane.autoDecisionLimitReached && (
                     <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
                       <span>已达自动判断上限，请先人工审阅。</span>
                       <button
@@ -1161,19 +1204,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
 
           <div className="sup-panel__actions">
             <button type="button" onClick={openSupervisorSetup}>
-              配置
+              配置普通监督
             </button>
-            {supervisor.active && (
-              <>
-                <button type="button" onClick={pauseActiveSession}>
-                  暂停监督
-                </button>
-                <button type="button" onClick={() => stopSupervisor()}>
-                  停止监督
-                </button>
-              </>
+            {ordinaryEnabled.length > 0 && (
+              <button type="button" onClick={pauseActiveSession}>
+                暂停普通监督
+              </button>
             )}
-            {!supervisor.active && supervisor.paused && (
+            {ordinaryRetained && (
+              <button type="button" onClick={() => stopOrdinarySupervisor()}>
+                停止普通监督
+              </button>
+            )}
+            {ordinaryPaused.length > 0 && (
               <button
                 type="button"
                 className="sup-panel__btn-primary"
@@ -1182,18 +1225,20 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
               </button>
             )}
-            {!supervisor.active && !supervisor.paused && (
+            {!ordinaryRetained && (
               <button
                 type="button"
                 className="sup-panel__btn-primary"
-                onClick={missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
+                onClick={ordinaryLanes.length === 0 || missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
               >
-                {missingDedicatedSupervisor ? '创建专属监督 AI' : '启动新会话'}
+                {ordinaryLanes.length === 0 || missingDedicatedSupervisor ? '创建普通监督 AI' : '启动普通监督新会话'}
               </button>
             )}
-            <button type="button" onClick={restartFromScratch}>
-              重头再来
-            </button>
+            {ordinaryLanes.length > 0 && (
+              <button type="button" onClick={restartFromScratch}>
+                普通监督重头再来
+              </button>
+            )}
           </div>
         </>
       )}

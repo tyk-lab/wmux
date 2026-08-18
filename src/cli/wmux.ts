@@ -287,6 +287,14 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.task.supervise', { workItemId, projectId }));
     return;
   }
+  if (sub === 'task-terminal-start') {
+    const workItemId = getFlag(args, '--task') || '';
+    if (!projectId || !workItemId) {
+      throw new Error('project task-terminal-start requires --project and --task');
+    }
+    print(await sendV2('project.task-terminal.start', { workItemId, projectId }));
+    return;
+  }
   if (sub === 'inspect') {
     print(await sendV2('project.supervisor.inspect', {
       projectId,
@@ -361,7 +369,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1051,8 +1059,9 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
-            project update|alignment-confirm|status|logs|terminals|terminal-create|task-create|task-update|record|supervise|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/terminal-create/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            project update|alignment-confirm|status|logs|terminals|task-create|task-update|record|supervise|task-terminal-start|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            task-terminal-start is reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]
