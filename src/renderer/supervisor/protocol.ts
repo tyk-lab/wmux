@@ -19,6 +19,11 @@ import {
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
+import superviseTaskSkillSource from '../../../resources/skills/supervise-task/SKILL.md?raw';
+
+const SUPERVISE_TASK_SKILL_BODY = superviseTaskSkillSource
+  .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/u, '')
+  .trim();
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -492,6 +497,8 @@ export function buildSupervisorBriefing(
 
   const kind = laneConfig.stopWhenKind;
   return [
+      SUPERVISE_TASK_SKILL_BODY,
+      '',
       '# AI 监督',
       '',
       autonomous
