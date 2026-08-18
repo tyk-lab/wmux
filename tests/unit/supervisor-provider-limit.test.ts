@@ -14,10 +14,7 @@ const lane = (): SupervisorLane => ({
   surfaceId: 'worker-limit' as any,
   supervisorSurfaceId: 'supervisor-limit' as any,
   projectDir: 'E:\\repo',
-  enabled: true,
-  steps: [],
-  maxAutoSteps: 0,
-  autoStepsUsed: 0,
+  controlState: 'active',
   awaitingStopCheck: false,
   stopConfirmed: false,
   awaitingReview: true,
@@ -38,14 +35,16 @@ describe('AI supervisor provider limit detection', () => {
       },
     });
     const store = useStore.getState();
-    store.resetSupervisorSession();
-    store.setSupervisorLanes([lane()]);
+    store.setProjectSupervisorLanes([]);
+    store.resetOrdinarySupervisorSession();
+    store.setOrdinarySupervisorLanes([lane()]);
     store.patchSupervisor({ supervisorModel: 'gpt-limited' });
-    store.startSupervisor();
+    store.startOrdinarySupervisor();
   });
 
   afterEach(() => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     resetSupervisorProviderLimitAlerts();
     Reflect.deleteProperty(globalThis, 'window');
   });

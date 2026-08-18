@@ -97,7 +97,3 @@ export function projectManagerStartupInput(agent: ProjectManagerRuntimeAgent, sk
   if (agent === 'grok') return `/manage-project\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;
   return `请读取并严格执行项目管理协议文件：${skillPath}。先运行 wmux project status 恢复项目组合，不要从头重新规划。\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;
 }
-
-/** Backward-compatible exports for callers that still use the default runtime. */
-export const PROJECT_MANAGER_TERMINAL_STARTUP_INPUT = projectManagerStartupInput('codex', '');
-export const PROJECT_MANAGER_TERMINAL_SKILL_RELATIVE_PATH = projectManagerSkillRelativePath('codex');

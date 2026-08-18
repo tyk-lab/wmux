@@ -34,7 +34,7 @@ import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirecto
 import {
   PROJECT_MANAGER_TERMINAL_AGENT,
   PROJECT_MANAGER_TERMINAL_NAME,
-  PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
+  projectManagerStartupInput,
 } from '../shared/project-manager-terminal';
 import {
   parseSupervisorConfig,
@@ -103,9 +103,9 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
   if (command.action === 'create-task') {
     const projectManager = command.preset === 'project-manager';
     const name = projectManager ? PROJECT_MANAGER_TERMINAL_NAME : command.name.trim();
-    const task = projectManager ? PROJECT_MANAGER_TERMINAL_STARTUP_INPUT : command.task.trim();
+    let task = command.task.trim();
     const agent = projectManager ? PROJECT_MANAGER_TERMINAL_AGENT : command.agent || 'codex';
-    if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。' };
+    if (!name || (!projectManager && !task)) return { ok: false, error: '任务名称和首条任务都不能为空。' };
     if (!['codex', 'kimi', 'grok'].includes(agent)) return { ok: false, error: 'AI 终端类型仅允许 codex、kimi 或 grok。' };
     if (projectManager) {
       const skill = ensureProjectManagerSkill({
@@ -114,6 +114,7 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
         resourcesPath: process.resourcesPath,
       });
       if (!skill.ok) return { ok: false, error: skill.error };
+      task = projectManagerStartupInput(PROJECT_MANAGER_TERMINAL_AGENT, skill.skillPath || '');
       forwardedCommand = {
         ...command,
         name,

@@ -44,9 +44,7 @@ import {
 } from './agent-lifecycle-notify';
 import {
   blankRuntime,
-  makeGoalChaseStep,
   pasteSubmitDelayMs,
-  sendTaskToSurface,
   sendToSurface,
   tickLane,
   type LaneRuntime,
@@ -1045,9 +1043,8 @@ export default function App() {
       const managementSessionId = lane.managementSessionId || session.sessionId;
       if (!managementSessionId || recordedSupervisorManagementIdsRef.current.has(managementSessionId)) continue;
       recordedSupervisorManagementIdsRef.current.add(managementSessionId);
-      const laneConfig = effectiveSupervisorLaneConfig(session, lane);
+      const laneConfig = effectiveSupervisorLaneConfig(lane);
       appendSupervisorRecord(session, lane, 'session.started', {
-        mode: session.mode,
         taskGoal: laneConfig.taskGoal,
         taskDescription: laneConfig.taskDescription,
         preconditions: laneConfig.preconditions,
@@ -1220,7 +1217,6 @@ export default function App() {
           if (screen.text) reportSupervisorProviderLimit(session, lane, screen.text);
         }
         const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
-        const hasPending = session.pendingApprovals.some((a) => a.laneId === lane.id);
         const { actions, runtime: nextRt } = tickLane({
           session,
           lane,
@@ -1231,53 +1227,12 @@ export default function App() {
           },
           runtime,
           now,
-          hasPendingApproval: hasPending,
         });
         supervisorRuntimeRef.current[lane.id] = nextRt;
 
         for (const action of actions) {
           if (action.type === 'log') {
             store.appendSupervisorLog(action.laneId, action.action, action.detail);
-          } else if (action.type === 'complete_step') {
-            store.updateStep(action.laneId, action.stepId, {
-              status: 'completed',
-              completedAt: now,
-            });
-          } else if (action.type === 'ensure_goal_step') {
-            const ln = store.supervisor.lanes.find((l) => l.id === action.laneId);
-            if (ln && ln.autoStepsUsed < ln.maxAutoSteps) {
-              const step = makeGoalChaseStep(ln.autoStepsUsed);
-              store.updateLane(action.laneId, {
-                steps: [...ln.steps, step],
-              });
-            }
-          } else if (action.type === 'request_stop_check') {
-            store.updateLane(action.laneId, { awaitingStopCheck: true, stopConfirmed: false });
-          } else if (action.type === 'dispatch') {
-            // Resume inject path clears stop-check wait when new work is sent.
-            store.updateLane(action.laneId, { awaitingStopCheck: false });
-            try {
-              sendTaskToSurface(action.surfaceId, action.text, session.submitEnter);
-              store.updateStep(action.laneId, action.stepId, {
-                status: 'in_progress',
-                dispatchedAt: now,
-              });
-              store.updateLane(action.laneId, {
-                currentTask: action.text.trim().slice(0, 800),
-              });
-              if (action.countAuto) {
-                const ln = store.supervisor.lanes.find((l) => l.id === action.laneId);
-                if (ln) {
-                  store.updateLane(action.laneId, { autoStepsUsed: ln.autoStepsUsed + 1 });
-                }
-              }
-            } catch (err: any) {
-              store.appendSupervisorLog(
-                action.laneId,
-                '发送失败',
-                String(err?.message || err),
-              );
-            }
           } else if (action.type === 'notify_supervisor') {
             if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: true });
             const lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
@@ -1301,11 +1256,9 @@ export default function App() {
           } else if (action.type === 'notify_user') {
             const lane = store.supervisor.lanes.find((l) => l.id === action.laneId);
             const text = buildUserNotifyText({
-              mode: session.mode,
               reason: action.reason,
               laneLabel: lane?.label,
-              stopWhen: lane ? effectiveSupervisorStopWhen(session, lane) : session.stopWhen,
-              doneWhen: session.doneWhen,
+              stopWhen: lane ? effectiveSupervisorStopWhen(lane) : '',
               detail: action.detail,
             });
             store.appendSupervisorLog(action.laneId, lane?.projectManagerProjectId ? '通知项目管理 AI' : '通知你', action.reason);
@@ -1325,22 +1278,7 @@ export default function App() {
                 text: text.replace(/\n/g, ' · '),
               });
             }
-            const disableLane = action.disableLane !== false;
-            if (disableLane) {
-              store.updateLane(action.laneId, {
-                enabled: false,
-                controlState: 'stopped',
-                autonomousOverride: undefined,
-              });
-              const remaining = useStore
-                .getState()
-                .supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) !== 'stopped');
-              if (action.stopAll || remaining.length === 0) {
-                store.stopSupervisor(action.reason);
-              }
-            } else if (action.stopAll) {
-              store.stopSupervisor(action.reason);
-            }
+            store.stopSupervisorLane(action.laneId, action.reason);
           }
         }
       }

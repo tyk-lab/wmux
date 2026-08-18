@@ -427,7 +427,7 @@ export default function SupervisorSetupDialog() {
       return changed ? next : current;
     });
     setLaneConfigs(Object.fromEntries(
-      ordinarySupervisorLanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(supervisor, lane)]),
+      ordinarySupervisorLanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(lane)]),
     ));
     setLanePermissionOverrides(Object.fromEntries(
       ordinarySupervisorLanes.flatMap((lane) => Array.isArray(lane.autonomyPermissionsOverride)
@@ -780,7 +780,7 @@ export default function SupervisorSetupDialog() {
         const surfaceId = candidate.surfaceId;
         const previousLane = supervisor.lanes.find((lane) => lane.surfaceId === surfaceId);
         const laneConfig = laneConfigs[surfaceId]
-          || (previousLane ? effectiveSupervisorLaneConfig(supervisor, previousLane) : emptyLaneConfig());
+          || (previousLane ? effectiveSupervisorLaneConfig(previousLane) : emptyLaneConfig());
         return {
           surfaceId,
           label: candidate.label,
@@ -987,7 +987,7 @@ export default function SupervisorSetupDialog() {
           : 'draft-pending' as const
         : undefined;
       const config = laneConfigs[c.surfaceId]
-        || (prev ? effectiveSupervisorLaneConfig(supervisor, prev) : emptyLaneConfig());
+        || (prev ? effectiveSupervisorLaneConfig(prev) : emptyLaneConfig());
       const finalizesWaiting = supervisorWaitingConfigAction(
         prev ? supervisorLaneControlState(prev) : undefined,
         config.waitForNextDirection === true,
@@ -1006,15 +1006,11 @@ export default function SupervisorSetupDialog() {
         remoteSshControl: c.remoteSshControl,
         projectDir: c.projectDir,
         scopeRoot: sessionRetained ? prev?.scopeRoot || c.projectDir : c.projectDir,
-        enabled: finalizesWaiting ? false : keepsCurrentContext ? prev?.enabled ?? true : true,
         controlState: finalizesWaiting
           ? 'stopped'
           : keepsCurrentContext && prev
             ? supervisorLaneControlState(prev)
             : 'active',
-        steps: keepsCurrentContext ? prev?.steps || [] : [],
-        maxAutoSteps: keepsCurrentContext ? prev?.maxAutoSteps || 0 : 0,
-        autoStepsUsed: keepsCurrentContext ? prev?.autoStepsUsed || 0 : 0,
         awaitingStopCheck: keepsCurrentContext ? prev?.awaitingStopCheck || false : false,
         stopConfirmed: keepsCurrentContext ? prev?.stopConfirmed || false : false,
         awaitingReview: keepsCurrentContext ? prev?.awaitingReview || false : false,
@@ -1060,31 +1056,13 @@ export default function SupervisorSetupDialog() {
     return lanes;
   };
 
-  const persistFields = (lanes: SupervisorLane[], grantSessionAutonomy: boolean) => {
-    const legacyConfig = lanes[0]?.config || emptyLaneConfig();
+  const persistFields = (grantSessionAutonomy: boolean) => {
     patchSupervisor({
-      mode: 'unified',
-      directInstructions: '',
-      goal: '',
-      allowPaths: '',
-      denyNotes: '',
-      doneWhen: '',
-      // Compatibility mirror for old saved sessions and remote integrations.
-      // Runtime decisions always read the owning lane.config first.
-      taskGoal: legacyConfig.taskGoal,
-      taskDescription: legacyConfig.taskDescription,
-      preconditions: legacyConfig.preconditions,
-      stopWhen: legacyConfig.stopWhen,
-      stopWhenKind: legacyConfig.stopWhenKind,
-      planFilePath: legacyConfig.planFilePath,
-      planFileContent: '',
-      restoreAuditHistory: lanes.some((lane) => !!lane.restoreSource),
       supervisorLaunchCmd: launchCmd,
       supervisorModel: launcherKind === 'other' ? '' : supervisorModel,
       supervisorReasoningEffort: launcherKind === 'codex' || launcherKind === 'kimi' || launcherKind === 'pi'
         ? reasoningEffort
         : '',
-      maxAutoSteps: 0,
       maxAutoDecisions: normalizeMaxAutoDecisions(maxAutoDecisions),
       autonomous: grantSessionAutonomy ? autonomous : false,
       autonomyPermissions,
@@ -1256,7 +1234,7 @@ export default function SupervisorSetupDialog() {
         setDialogNotice({ kind: 'error', message: '无法为所有选中终端创建专属监督 AI；监督尚未启动，请重试。' });
         return;
       }
-      persistFields(result.lanes, true);
+      persistFields(true);
       setOrdinarySupervisorLanes(result.lanes);
       if (!sessionRetained) startOrdinarySupervisor();
       else closeSupervisorSetup();
@@ -1278,7 +1256,6 @@ export default function SupervisorSetupDialog() {
           true,
         ) !== 'resume') continue;
         useStore.getState().updateLane(lane.id, {
-          enabled: true,
           controlState: 'active',
           awaitingStopCheck: false,
           stopConfirmed: false,
@@ -1315,7 +1292,7 @@ export default function SupervisorSetupDialog() {
       }
       sendDedicatedBriefings(briefingLaneIds);
     } else {
-      persistFields(lanes, false);
+      persistFields(false);
       setOrdinarySupervisorLanes(lanes);
       closeSupervisorSetup();
     }
@@ -1367,7 +1344,7 @@ export default function SupervisorSetupDialog() {
       setDialogNotice({ kind: 'error', message: '无法为所有选中终端创建专属监督 AI，请重试。' });
       return;
     }
-    persistFields(result.lanes, false);
+    persistFields(false);
     setOrdinarySupervisorLanes(result.lanes);
     closeSupervisorSetup();
     const workspaceId = useStore.getState().supervisor.supervisorWorkspaceId;

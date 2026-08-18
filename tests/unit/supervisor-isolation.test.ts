@@ -31,7 +31,6 @@ import type { DefaultSupervisorAgent } from '../../src/shared/types';
 import { DEFAULT_WORKSPACE_PREFS, type WorkspacePrefs } from '../../src/renderer/store/settings-slice';
 import {
   autonomousDecisionBoundary,
-  buildInjectedPrompt,
   buildSupervisorBriefing,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
@@ -50,10 +49,7 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
     label: 'Auth worker',
     surfaceId: 'worker-a' as any,
     supervisorSurfaceId: 'supervisor-a' as any,
-    enabled: true,
-    steps: [],
-    maxAutoSteps: 8,
-    autoStepsUsed: 0,
+    controlState: 'active',
     awaitingStopCheck: false,
     stopConfirmed: false,
     ...partial,
@@ -153,7 +149,7 @@ describe('supervisor isolation', () => {
     expect(clearSupervisorLaneContext(invalid, 'worker-a' as any).supervisorSurfaceId).toBeNull();
 
     const store = makeStore();
-    store.getState().setSupervisorLanes([invalid]);
+    store.getState().setOrdinarySupervisorLanes([invalid]);
     expect(store.getState().supervisor.lanes[0].supervisorSurfaceId).toBeNull();
 
     store.getState().updateLane('lane-a', { supervisorSurfaceId: 'worker-a' as any });
@@ -199,16 +195,15 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('禁止调用 sleep/wait');
   });
 
-  it('allows ordinary unified supervision to inject bounded next work', () => {
-    expect(isSupervisorNextAllowed('unified', 'continue', '继续修复')).toBe(true);
-    expect(isSupervisorNextAllowed('unified', 'rework', '补测试')).toBe(true);
-    expect(isSupervisorNextAllowed('unified', 'needs-human', '建议改为另一方案')).toBe(true);
-    expect(isSupervisorNextAllowed('unified', 'complete', '继续操作')).toBe(false);
-    expect(isSupervisorNextAllowed('direct', 'continue', '继续')).toBe(true);
+  it('allows supervision to inject bounded next work only from valid outcomes', () => {
+    expect(isSupervisorNextAllowed('continue', '继续修复')).toBe(true);
+    expect(isSupervisorNextAllowed('rework', '补测试')).toBe(true);
+    expect(isSupervisorNextAllowed('needs-human', '建议改为另一方案')).toBe(true);
+    expect(isSupervisorNextAllowed('complete', '继续操作')).toBe(false);
   });
 
-  it('allows an autonomous unified session to inject its next safe task', () => {
-    expect(isSupervisorNextAllowed('unified', 'continue', '补充登录回归测试', true)).toBe(true);
+  it('allows a supervisor to inject its next safe task', () => {
+    expect(isSupervisorNextAllowed('continue', '补充登录回归测试')).toBe(true);
   });
 
   it('blocks high-impact actions from autonomous approval', () => {
@@ -338,12 +333,12 @@ describe('supervisor isolation', () => {
 
   it('clears lanes and in-memory decision history when restarting from scratch', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([
+    store.getState().setOrdinarySupervisorLanes([
       lane({ currentTask: '修复登录', decisions: [{ ts: 1, task: '修复登录', outcome: 'continue', reason: '继续', next: '' }] }),
     ]);
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
 
-    store.getState().resetSupervisorSession();
+    store.getState().resetOrdinarySupervisorSession();
 
     expect(store.getState().supervisor).toMatchObject({
       active: false,
@@ -365,7 +360,8 @@ describe('supervisor isolation', () => {
       workScopeOverride: 'project',
       forbiddenActionsOverride: ['external-network'],
     });
-    store.getState().setSupervisorLanes([lane(), projectLane]);
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().setProjectSupervisorLanes([projectLane]);
 
     store.getState().setOrdinarySupervisorLanes([
       lane({ id: 'lane-b', surfaceId: 'worker-b' as any, supervisorSurfaceId: 'supervisor-b' as any }),
@@ -386,8 +382,8 @@ describe('supervisor isolation', () => {
 
   it('scopes ordinary lifecycle controls while a project supervisor keeps running', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([
-      lane(),
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().setProjectSupervisorLanes([
       lane({
         id: 'lane-project',
         surfaceId: 'worker-project' as any,
@@ -434,8 +430,8 @@ describe('supervisor isolation', () => {
       workScope: 'plan-defined',
       forbiddenActions: [],
     });
-    store.getState().setSupervisorLanes([
-      lane(),
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().setProjectSupervisorLanes([
       lane({
         id: 'lane-project',
         surfaceId: 'worker-project' as any,
@@ -458,13 +454,14 @@ describe('supervisor isolation', () => {
 
   it('opens ordinary setup with ordinary agent defaults while only project supervision is active', () => {
     const store = makeStore('codex', { codex: 'gpt-ordinary' }, { codex: 'high' });
-    store.getState().setSupervisorLanes([lane({
+    const projectLane = lane({
       id: 'lane-project',
       surfaceId: 'worker-project' as any,
       projectManagerProjectId: 'project-a',
       projectWorkItemId: 'task-a',
-    })]);
-    store.getState().startSupervisor();
+    });
+    store.getState().setProjectSupervisorLanes([projectLane]);
+    store.getState().startProjectSupervisor([projectLane.id]);
 
     store.getState().openSupervisorSetup();
 
@@ -481,23 +478,23 @@ describe('supervisor isolation', () => {
 
   it('revokes autonomous authority when the supervision session stops', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane({ autonomousOverride: true })]);
+    store.getState().setOrdinarySupervisorLanes([lane({ autonomousOverride: true })]);
     store.getState().patchSupervisor({ autonomous: true });
-    store.getState().startSupervisor();
-    store.getState().pauseSupervisor();
+    store.getState().startOrdinarySupervisor();
+    store.getState().pauseOrdinarySupervisor();
 
-    store.getState().stopSupervisor();
+    store.getState().stopOrdinarySupervisor();
 
     expect(store.getState().supervisor).toMatchObject({ active: false, paused: false, autonomous: false });
-    expect(store.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'stopped', enabled: false });
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'stopped' });
     expect(store.getState().supervisor.lanes[0].autonomousOverride).toBeUndefined();
   });
 
   it('pauses and resumes the same session without discarding its pending decision', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane({ awaitingReview: true })]);
+    store.getState().setOrdinarySupervisorLanes([lane({ awaitingReview: true })]);
     store.getState().patchSupervisor({ autonomous: true });
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
     store.getState().enqueueApproval({
       laneId: 'lane-a',
       surfaceId: 'worker-a' as any,
@@ -508,7 +505,7 @@ describe('supervisor isolation', () => {
     });
     const sessionId = store.getState().supervisor.sessionId;
 
-    store.getState().pauseSupervisor('人工选择暂停');
+    store.getState().pauseOrdinarySupervisor('人工选择暂停');
 
     expect(store.getState().supervisor).toMatchObject({
       active: false,
@@ -518,9 +515,9 @@ describe('supervisor isolation', () => {
     });
     expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
     expect(store.getState().supervisor.lanes[0].supervisorSurfaceId).toBe('supervisor-a');
-    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '暂停', detail: '人工选择暂停' });
+    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '暂停普通监督', detail: '人工选择暂停' });
 
-    store.getState().resumeSupervisor();
+    store.getState().resumeOrdinarySupervisor();
 
     expect(store.getState().supervisor).toMatchObject({
       active: true,
@@ -530,13 +527,13 @@ describe('supervisor isolation', () => {
     });
     expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
     expect(store.getState().supervisor.lanes[0].supervisorSurfaceId).toBe('supervisor-a');
-    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '继续', detail: '继续原监督会话' });
+    expect(store.getState().supervisor.log[0]).toMatchObject({ action: '继续普通监督' });
   });
 
   it('cancels a pending decision without recording it as rejected', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane()]);
-    store.getState().startSupervisor();
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().startOrdinarySupervisor();
     store.getState().enqueueApproval({
       laneId: 'lane-a',
       surfaceId: 'worker-a' as any,
@@ -558,8 +555,8 @@ describe('supervisor isolation', () => {
 
   it('treats direct task input as a resolved human decision without pausing supervision', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane({ awaitingReview: true, autoDecisionLimitReached: true, autoDecisionsUsed: 3 })]);
-    store.getState().startSupervisor();
+    store.getState().setOrdinarySupervisorLanes([lane({ awaitingReview: true, autoDecisionLimitReached: true, autoDecisionsUsed: 3 })]);
+    store.getState().startOrdinarySupervisor();
     store.getState().enqueueApproval({
       laneId: 'lane-a',
       surfaceId: 'worker-a' as any,
@@ -588,7 +585,7 @@ describe('supervisor isolation', () => {
 
   it('keeps a completed lane waiting when it is configured for another direction', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane({
+    store.getState().setOrdinarySupervisorLanes([lane({
       config: {
         taskGoal: '完成当前任务',
         taskDescription: '',
@@ -601,13 +598,12 @@ describe('supervisor isolation', () => {
       awaitingReview: true,
       autoDecisionLimitReached: true,
     })]);
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
 
     store.getState().confirmStopCondition('lane-a');
 
     expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
     expect(store.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: true,
       controlState: 'waiting',
       stopConfirmed: true,
       awaitingReview: false,
@@ -618,7 +614,7 @@ describe('supervisor isolation', () => {
 
   it('stops a completed lane when waiting for another direction is disabled', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane({
+    store.getState().setOrdinarySupervisorLanes([lane({
       config: {
         taskGoal: '完成当前任务',
         taskDescription: '',
@@ -629,13 +625,12 @@ describe('supervisor isolation', () => {
         planFilePath: '',
       },
     })]);
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
 
     store.getState().confirmStopCondition('lane-a');
 
     expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
     expect(store.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: false,
       controlState: 'stopped',
       stopConfirmed: true,
     });
@@ -643,15 +638,15 @@ describe('supervisor isolation', () => {
 
   it('resumes only the lane whose decision was cancelled by alternate input', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([
+    store.getState().setOrdinarySupervisorLanes([
       lane({ awaitingReview: true }),
       lane({ id: 'lane-b', surfaceId: 'worker-b' as any, awaitingReview: true }),
     ]);
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
     store.getState().updateLane('lane-a', { resumeAfterCancelledDecision: true });
-    store.getState().pauseSupervisor();
+    store.getState().pauseOrdinarySupervisor();
 
-    store.getState().resumeSupervisor();
+    store.getState().resumeOrdinarySupervisor();
 
     const [cancelledLane, unrelatedLane] = store.getState().supervisor.lanes;
     expect(cancelledLane).toMatchObject({ awaitingReview: false, resumeAfterCancelledDecision: false });
@@ -660,7 +655,7 @@ describe('supervisor isolation', () => {
 
   it('clears stale human approvals when a new supervision session starts', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([lane()]);
+    store.getState().setOrdinarySupervisorLanes([lane()]);
     store.getState().enqueueApproval({
       laneId: 'lane-a',
       surfaceId: 'worker-a' as any,
@@ -670,7 +665,7 @@ describe('supervisor isolation', () => {
       proposalKind: 'important',
     });
 
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
 
     expect(store.getState().supervisor.pendingApprovals).toEqual([]);
   });
@@ -682,8 +677,12 @@ describe('supervisor isolation', () => {
     expect(text).not.toContain('停止条件补充说明（可选）');
     expect(text).toContain('停止条件参考');
 
-    session.taskDescription = '登录成功后保留现有错误提示。';
-    expect(buildSupervisorBriefing(session, { lane: lane(), state: 'idle' }))
+    expect(buildSupervisorBriefing(session, { lane: lane({
+      config: {
+        taskGoal: '', taskDescription: '登录成功后保留现有错误提示。', preconditions: '',
+        stopWhen: '', stopWhenKind: 'concrete', planFilePath: '',
+      },
+    }), state: 'idle' }))
       .toContain('## 停止条件补充说明（可选）\n登录成功后保留现有错误提示。');
   });
 
@@ -711,7 +710,6 @@ describe('supervisor isolation', () => {
   it('clears supervisor context but retains monitored-terminal facts on restart', () => {
     const monitored = lane({
       currentTask: '修复登录',
-      steps: [{ id: 'step-1', prompt: '补测试', status: 'in_progress' }],
       pendingSupervisorDeliveries: [{ id: 'delivery-1', kind: 'task-end', text: '已结束', task: '修复登录', createdAt: 1 }],
       decisions: [{ ts: 1, task: '修复登录', outcome: 'continue', reason: '继续', next: '' }],
       restoredHistory: '上一轮记录',
@@ -728,7 +726,6 @@ describe('supervisor isolation', () => {
       surfaceId: 'worker-a',
       supervisorSurfaceId: 'supervisor-new',
       currentTask: '修复登录',
-      steps: [],
       pendingSupervisorDeliveries: [],
       decisions: [],
       awaitingReview: false,
@@ -748,7 +745,7 @@ describe('supervisor isolation', () => {
     session.active = false;
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
     session.active = true;
-    session.lanes[0].enabled = false;
+    session.lanes[0].controlState = 'stopped';
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
   });
 
@@ -821,12 +818,9 @@ describe('supervisor isolation', () => {
     expect(DEFAULT_WORKSPACE_PREFS.defaultSshAgent).toBe('codex');
   });
 
-  it('creates unified supervision by default', () => {
+  it('creates a bounded supervision session by default', () => {
     const session = createDefaultSupervisorSession();
-    expect(session.mode).toBe('unified');
     expect(session.paused).toBe(false);
-    expect(session.taskGoal).toBe('');
-    expect(session.taskDescription).toBe('');
     expect(session.maxAutoDecisions).toBeNull();
     expect(session.autonomous).toBe(false);
     expect(session.autonomyPermissions).toEqual([
@@ -844,25 +838,23 @@ describe('supervisor isolation', () => {
     ]);
   });
 
-  it('uses lane-specific task and stopping overrides in the briefing', () => {
+  it('uses only lane-owned task and stopping configuration in the briefing', () => {
     const session = createDefaultSupervisorSession();
-    session.taskGoal = '共享目标';
-    session.stopWhen = '共享停止条件';
     session.workScope = 'task-files';
     session.forbiddenActions = ['external-network'];
     const text = buildSupervisorBriefing(session, {
       lane: lane({
         projectDir: 'E:\\repo',
-        taskGoalOverride: '仅修复认证模块',
-        stopWhenOverride: '认证测试全部通过',
+        config: {
+          taskGoal: '仅修复认证模块', taskDescription: '', preconditions: '',
+          stopWhen: '认证测试全部通过', stopWhenKind: 'concrete', planFilePath: '',
+        },
       }),
       state: 'idle',
     });
 
     expect(text).toContain('配置任务目标: 仅修复认证模块');
-    expect(text).not.toContain('配置任务目标: 共享目标');
     expect(text).toContain('具体条件: 认证测试全部通过');
-    expect(text).not.toContain('具体条件: 共享停止条件');
     expect(text).toContain('工程目录: E:\\repo');
     expect(text).toContain('仅限当前任务直接涉及的工程内文件');
     expect(text).toContain('访问外部网络或调用外部服务');
@@ -870,8 +862,6 @@ describe('supervisor isolation', () => {
 
   it('keeps all task semantics isolated between dedicated supervisors', () => {
     const session = createDefaultSupervisorSession();
-    session.taskGoal = '旧共享目标';
-    session.stopWhen = '旧共享停止条件';
     const authLane = lane({
       config: {
         taskGoal: '只处理认证模块',
@@ -901,7 +891,7 @@ describe('supervisor isolation', () => {
     const authBriefing = buildSupervisorBriefing(session, { lane: authLane, state: 'idle' });
     const docsBriefing = buildSupervisorBriefing(session, { lane: docsLane, state: 'idle' });
 
-    expect(effectiveSupervisorLaneConfig(session, authLane)).toEqual(authLane.config);
+    expect(effectiveSupervisorLaneConfig(authLane)).toEqual(authLane.config);
     expect(authBriefing).toContain('只处理认证模块');
     expect(authBriefing).toContain('认证测试环境已登录');
     expect(authBriefing).toContain('D:\\plans\\auth.md');
@@ -941,7 +931,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('wmux 不检查或强制它是否实际创建子线程');
   });
 
-  it('defaults legacy task terminals to single-thread work', () => {
+  it('defaults task terminals without an explicit work mode to single-thread work', () => {
     const briefing = buildSupervisorBriefing(createDefaultSupervisorSession(), {
       lane: lane(),
       state: 'idle',
@@ -953,12 +943,12 @@ describe('supervisor isolation', () => {
 
   it('preserves an existing lane management session when supervision starts', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([
+    store.getState().setOrdinarySupervisorLanes([
       lane({ managementSessionId: 'sup-lane-existing' }),
       lane({ id: 'lane-b', surfaceId: 'surf-b' as any, managementSessionId: undefined }),
     ]);
 
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
 
     const [existing, added] = store.getState().supervisor.lanes;
     expect(existing.managementSessionId).toBe('sup-lane-existing');
@@ -968,11 +958,11 @@ describe('supervisor isolation', () => {
 
   it('keeps a paused lane bound but releases a stopped lane without changing the other lane', () => {
     const store = makeStore();
-    store.getState().setSupervisorLanes([
+    store.getState().setOrdinarySupervisorLanes([
       lane({ pendingSupervisorDeliveries: [{ id: 'delivery-a', kind: 'task-end', text: 'done', task: 'auth', createdAt: 1 }] }),
       lane({ id: 'lane-b', surfaceId: 'worker-b' as any, supervisorSurfaceId: 'supervisor-b' as any }),
     ]);
-    store.getState().startSupervisor();
+    store.getState().startOrdinarySupervisor();
     store.getState().enqueueApproval({
       laneId: 'lane-a', surfaceId: 'worker-a' as any, laneLabel: 'Auth worker',
       text: '等待决策', source: 'supervisor-important',
@@ -981,9 +971,9 @@ describe('supervisor isolation', () => {
     store.getState().pauseSupervisorLane('lane-a', '仅暂停 A');
     let session = store.getState().supervisor;
     expect(session).toMatchObject({ active: true, paused: false });
-    expect(session.lanes[0]).toMatchObject({ controlState: 'paused', enabled: true });
+    expect(session.lanes[0]).toMatchObject({ controlState: 'paused' });
     expect(session.lanes[0]).toMatchObject({ surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a' });
-    expect(session.lanes[1]).toMatchObject({ controlState: 'active', enabled: true });
+    expect(session.lanes[1]).toMatchObject({ controlState: 'active' });
     expect(session.lanes[0].pendingSupervisorDeliveries).toHaveLength(1);
     expect(session.pendingApprovals).toHaveLength(1);
 
@@ -999,9 +989,24 @@ describe('supervisor isolation', () => {
     expect(session.pendingApprovals).toHaveLength(0);
   });
 
-  it('treats legacy stopped lanes as unbound while paused lanes remain bound', () => {
+  it('derives aggregate runtime flags from a single lane lifecycle', () => {
+    const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().startOrdinarySupervisor();
+
+    store.getState().pauseSupervisorLane('lane-a');
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: true });
+
+    store.getState().resumeSupervisorLane('lane-a');
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
+
+    store.getState().stopSupervisorLane('lane-a');
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
+  });
+
+  it('treats stopped lanes as unbound while paused lanes remain bound', () => {
     expect(isSupervisorLaneBound(lane({ controlState: 'paused' }))).toBe(true);
-    expect(isSupervisorLaneBound(lane({ controlState: 'stopped', enabled: false }))).toBe(false);
+    expect(isSupervisorLaneBound(lane({ controlState: 'stopped' }))).toBe(false);
   });
 
   it('inherits session permissions by default and supports complete per-lane policy overrides', () => {
@@ -1032,10 +1037,7 @@ describe('supervisor isolation', () => {
 
   it('briefs only a newly added or explicitly changed supervision lane', () => {
     const previousSession = createDefaultSupervisorSession();
-    previousSession.taskGoal = '认证任务';
-    previousSession.stopWhen = '认证测试通过';
-    const previousLane = lane();
-    const migratedLane = lane({
+    const previousLane = lane({
       config: {
         taskGoal: '认证任务',
         taskDescription: '',
@@ -1045,13 +1047,13 @@ describe('supervisor isolation', () => {
         planFilePath: '',
       },
     });
-    const nextSession = { ...previousSession, lanes: [migratedLane] };
+    const nextSession = { ...previousSession, lanes: [previousLane] };
 
     expect(supervisorLaneBriefingChanged(
       previousSession,
       previousLane,
       nextSession,
-      migratedLane,
+      previousLane,
     )).toBe(false);
     expect(supervisorLaneBriefingChanged(
       previousSession,
@@ -1063,15 +1065,15 @@ describe('supervisor isolation', () => {
       previousSession,
       previousLane,
       nextSession,
-      lane({ config: { ...migratedLane.config!, stopWhen: '认证与集成测试通过' } }),
+      lane({ config: { ...previousLane.config!, stopWhen: '认证与集成测试通过' } }),
     )).toBe(true);
     expect(supervisorLaneBriefingChanged(
       previousSession,
-      migratedLane,
+      previousLane,
       nextSession,
       lane({
         config: {
-          ...migratedLane.config!,
+          ...previousLane.config!,
           taskWorkMode: 'multi-thread',
           mainThreadResponsibility: '统筹实现',
           childThreadResponsibilities: ['补充测试'],
@@ -1080,7 +1082,7 @@ describe('supervisor isolation', () => {
     )).toBe(true);
     const previousMultiThreadLane = lane({
       config: {
-        ...migratedLane.config!,
+        ...previousLane.config!,
         taskWorkMode: 'multi-thread',
         mainThreadResponsibility: '统筹实现',
         childThreadResponsibilities: ['补充测试'],
@@ -1101,7 +1103,7 @@ describe('supervisor isolation', () => {
       previousSession,
       previousLane,
       { ...nextSession, autonomous: true },
-      migratedLane,
+      previousLane,
     )).toBe(true);
   });
 
@@ -1127,10 +1129,6 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('禁止调用 sleep/wait');
   });
 
-  it('does not restore audit history unless the user enables it', () => {
-    expect(createDefaultSupervisorSession().restoreAuditHistory).toBe(false);
-  });
-
   it('retains the route-change proposal details until the user resolves them', () => {
     const store = makeStore();
     store.getState().enqueueApproval({
@@ -1153,27 +1151,22 @@ describe('supervisor isolation', () => {
     });
   });
 
-  it('gives the selected plan to the dedicated supervisor but not the worker', () => {
+  it('gives the selected plan only to the dedicated supervisor briefing', () => {
     const session = {
       ...createDefaultSupervisorSession(),
-      planFilePath: 'D:\\plans\\auth.md',
-      planFileContent: '只允许改动 src/auth，必须保留现有 API。',
-      preconditions: '设备已上电，安全措施已确认。',
       maxAutoDecisions: 3,
     };
-    const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
-    const workerPrompt = buildInjectedPrompt({
-      session,
-      lane: lane(),
-      step: { id: 's1', prompt: '修复登录错误处理', status: 'pending' },
-      stepIndex: 1,
-      stepCount: 1,
-    });
+    const briefing = buildSupervisorBriefing(session, { lane: lane({
+      config: {
+        taskGoal: '修复登录错误处理', taskDescription: '',
+        preconditions: '设备已上电，安全措施已确认。', stopWhen: '认证测试通过',
+        stopWhenKind: 'concrete', planFilePath: 'D:\\plans\\auth.md',
+      },
+    }), state: 'idle' });
 
     expect(briefing).toContain('计划文件（停止裁决参考 · 可更新）');
     expect(briefing).toContain('路径: D:\\plans\\auth.md');
     expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
-    expect(briefing).not.toContain('只允许改动 src/auth');
     expect(briefing).toContain('每次裁决前先检查文件是否更新');
     expect(briefing).toContain('首次使用或发现更新时才重新读取正文');
     expect(briefing).toContain('先检查计划文件（D:\\plans\\auth.md）是否更新；首次使用或更新时重新读取');
@@ -1187,8 +1180,6 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('continue / rework 携带 --next');
     expect(briefing).toContain('--proposal-kind route-adjustment');
     expect(briefing).toContain('--permission-command');
-    expect(workerPrompt).not.toContain('只允许改动 src/auth');
-    expect(workerPrompt).not.toContain('设备已上电');
   });
 
   it('briefs an autonomous supervisor to safely advance the worker', () => {
@@ -1203,7 +1194,7 @@ describe('supervisor isolation', () => {
   });
 
   it('injects recovered audit context only into its dedicated supervisor briefing', () => {
-    const session = { ...createDefaultSupervisorSession(), mode: 'goal-chase' as const };
+    const session = createDefaultSupervisorSession();
     const laneA = lane({
       restoredFromSessionId: 'sup-old',
       restoredHistory: '[2026/7/31 10:00:00] 收到任务：修复登录',

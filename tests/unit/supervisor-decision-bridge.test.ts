@@ -17,15 +17,16 @@ function lane(): SupervisorLane {
     surfaceId: 'worker-a' as any,
     supervisorSurfaceId: 'supervisor-a' as any,
     projectDir: 'E:\\repo',
-    enabled: true,
-    steps: [],
-    maxAutoSteps: 0,
-    autoStepsUsed: 0,
+    controlState: 'active',
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
     autoDecisionsUsed: 0,
     decisions: [],
+    config: {
+      taskGoal: '完成当前测试任务', taskDescription: '', preconditions: '',
+      stopWhen: '测试任务完成', stopWhenKind: 'concrete', planFilePath: '',
+    },
   };
 }
 
@@ -163,22 +164,22 @@ describe('supervisor decision bridge', () => {
       },
     });
     const store = useStore.getState();
-    store.resetSupervisorSession();
+    store.setProjectSupervisorLanes([]);
+    store.resetOrdinarySupervisorSession();
     store.restoreProjectManager(null);
-    store.setSupervisorLanes([lane()]);
+    store.setOrdinarySupervisorLanes([lane()]);
     store.patchSupervisor({
-      mode: 'unified',
       autonomous: false,
       submitEnter: false,
-      taskGoal: '完成当前测试任务',
     });
-    store.startSupervisor();
+    store.startOrdinarySupervisor();
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(true);
     initPipeBridge();
   });
 
   afterEach(() => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().restoreProjectManager(null);
     useStore.getState().replaceAllWorkspaces([]);
     useStore.getState().setWorkspacePrefs({ projectManagementAgents: DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG });
@@ -316,7 +317,7 @@ describe('supervisor decision bridge', () => {
       laneId: 'lane-a', action: '待续恢复', detail: '用户已远程向 AI 监督终端提供新方向，继续监督',
     });
 
-    useStore.getState().pauseSupervisor('测试暂停');
+    useStore.getState().pauseOrdinarySupervisor('测试暂停');
     writes.mockClear();
     expect(remoteControl({
       action: 'send-supervisor-message', terminal: 'worker-a', message: '暂停时不应发送', actor: 'ou-user',
@@ -382,10 +383,11 @@ describe('supervisor decision bridge', () => {
     );
 
     useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
-    useStore.getState().pauseSupervisor('测试全局暂停');
+    useStore.getState().pauseOrdinarySupervisor('等待中的通道无需暂停');
     expect(remoteControl({
       action: 'waiting-decision', terminal: 'worker-a', decision: 'resume', actor: 'ou-user',
-    })).toMatchObject({ ok: false, error: expect.stringContaining('全局暂停') });
+    })).toMatchObject({ ok: true, message: expect.stringContaining('按原目标恢复') });
+    useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
     expect(remoteControl({
       action: 'waiting-decision', terminal: 'worker-a', decision: 'stop', actor: 'ou-user',
     })).toMatchObject({ ok: true, message: expect.stringContaining('其他通道不受影响') });
@@ -517,8 +519,9 @@ describe('supervisor decision bridge', () => {
   it('removes next-step plans from the fallback task goal published to the group', async () => {
     const appendRecord = vi.fn(async () => undefined);
     (globalThis.window as any).wmux.supervisor = { appendRecord };
-    useStore.getState().patchSupervisor({ taskGoal: '' });
+    const currentConfig = useStore.getState().supervisor.lanes[0].config!;
     useStore.getState().updateLane('lane-a', {
+      config: { ...currentConfig, taskGoal: '' },
       currentTask: '固件修复已验收。下一步：方案 A：远程烧录；方案 B：现场断开设备',
     });
 
@@ -1902,7 +1905,8 @@ describe('supervisor decision bridge', () => {
   });
 
   it('reuses only the project-owned supervisor chain for a later work item', async () => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().patchSupervisor({
       supervisorLaunchCmd: 'grok',
       supervisorModel: 'ordinary-model',
@@ -2064,7 +2068,8 @@ describe('supervisor decision bridge', () => {
   });
 
   it('rotates an overlong task terminal while preserving the project supervisor lane', async () => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-rotation' as any,
       title: '轮换项目',
@@ -2157,7 +2162,8 @@ describe('supervisor decision bridge', () => {
   });
 
   it('deletes only the selected project and closes its managed supervisor chain', async () => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-delete-worker' as any,
       title: '待删除项目',
@@ -2526,7 +2532,6 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ ok: true, outcome: 'complete' });
 
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: true,
       controlState: 'waiting',
     });
     expect(appendRecord).toHaveBeenCalledWith(expect.objectContaining({
@@ -2558,7 +2563,6 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true, outcome: 'needs-human', waiting: true });
 
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: true,
       controlState: 'waiting',
       stopConfirmed: true,
       awaitingReview: false,
@@ -2692,7 +2696,8 @@ describe('supervisor decision bridge', () => {
   });
 
   it('requires a task source before autonomously sending next work', () => {
-    useStore.getState().patchSupervisor({ taskGoal: '' });
+    const currentConfig = useStore.getState().supervisor.lanes[0].config!;
+    useStore.getState().updateLane('lane-a', { config: { ...currentConfig, taskGoal: '' } });
 
     expect(decide({ next: '运行相关单元测试' })).toMatchObject({
       ok: false,
@@ -3291,8 +3296,8 @@ describe('supervisor decision bridge', () => {
 
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'pause', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: expect.stringContaining('已暂停') });
-    expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false });
-    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'paused', enabled: true });
+    expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: true });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'paused' });
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
 
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'stop', actor: 'ou-user' }))
@@ -3350,8 +3355,7 @@ describe('supervisor decision bridge', () => {
         ],
       },
     }]);
-    useStore.getState().setSupervisorLanes([
-      ...useStore.getState().supervisor.lanes,
+    useStore.getState().setProjectSupervisorLanes([
       {
         ...lane(),
         id: 'lane-project',
@@ -3395,7 +3399,7 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'pause-all', actor: 'ou-user' })).toMatchObject({ ok: true });
     expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false });
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'paused' });
-    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.enabled).toBe(true);
+    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.controlState).toBe('active');
 
     expect(remoteControl({ action: 'stop', actor: 'ou-user' })).toMatchObject({
       ok: true,
@@ -3403,7 +3407,7 @@ describe('supervisor decision bridge', () => {
     });
     expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false });
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'stopped' });
-    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.enabled).toBe(true);
+    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.controlState).toBe('active');
   });
 
   it('adds a new supervised terminal from Feishu without replacing the active session', () => {
@@ -3424,15 +3428,14 @@ describe('supervisor decision bridge', () => {
       },
     }]);
     useStore.getState().patchSupervisor({ supervisorWorkspaceId: 'ws-control' as any });
-    useStore.getState().setSupervisorLanes([
-      ...useStore.getState().supervisor.lanes,
+    useStore.getState().setOrdinarySupervisorLanes([
+      ...useStore.getState().supervisor.lanes.filter((item) => !item.projectManagerProjectId),
       {
         ...lane(),
         id: 'lane-old-b',
         label: 'worker B',
         surfaceId: 'worker-b' as any,
         supervisorSurfaceId: 'supervisor-old-b' as any,
-        enabled: false,
         controlState: 'stopped',
       },
     ]);

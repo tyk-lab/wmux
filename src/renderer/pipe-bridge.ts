@@ -616,10 +616,8 @@ export function isSupervisorProposalAllowed(outcome: string, proposalKind: strin
 
 /** A supervisor may advance work only from a continuation/rework or a human proposal. */
 export function isSupervisorNextAllowed(
-  _mode: string,
   outcome: string,
   next: string,
-  _autonomous = false,
 ): boolean {
   return !next || outcome === 'continue' || outcome === 'rework' || outcome === 'needs-human';
 }
@@ -1130,7 +1128,7 @@ interface RemoteTerminalTaskResult {
 }
 
 function publicDecisionTaskGoal(session: SupervisorSession, lane: SupervisorLane): string {
-  const configuredGoal = effectiveSupervisorTaskGoal(session, lane);
+  const configuredGoal = effectiveSupervisorTaskGoal(lane);
   if (configuredGoal) return configuredGoal.slice(0, 800);
   const currentTask = lane.currentTask?.trim() || '';
   const privatePlanningMarker = /(?:^|[\n。；;])\s*(?:下一步|方案\s*[A-Za-z0-9一二三四五六七八九十]+|AI\s*建议|推荐方案)\s*[：:]?/u;
@@ -1430,7 +1428,7 @@ function closeStoppedSupervisorSurfaces(lanes: SupervisorLane[]): void {
 }
 
 function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
-  const config = effectiveSupervisorLaneConfig(useStore.getState().supervisor, lane);
+  const config = effectiveSupervisorLaneConfig(lane);
   return [
     '# 项目监督 AI · 首次启动任务终端',
     '',
@@ -1583,8 +1581,8 @@ function startRemoteSupervisor(
         workScopeOverride: DEFAULT_SUPERVISOR_WORK_SCOPE,
         forbiddenActionsOverride: [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
       } : {}),
-      enabled: true,
-      steps: [], maxAutoSteps: 0, autoStepsUsed: 0, awaitingStopCheck: false, stopConfirmed: false,
+      controlState: 'active',
+      awaitingStopCheck: false, stopConfirmed: false,
       awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
     }, supervisorSurfaceId);
     return retainedSession || projectTaskBootstrap ? { ...lane, awaitingReview: true } : lane;
@@ -1594,9 +1592,6 @@ function startRemoteSupervisor(
       if (lane.supervisorSurfaceId) store.closeSurface(supervisorWorkspace.id, targetPaneId, lane.supervisorSurfaceId);
     }
     return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
-  }
-  if (projectManagedStart && store.supervisor.mode !== 'unified') {
-    store.patchSupervisor({ mode: 'unified' });
   }
   if (!retainedSession && previousLanes.length > 0) {
     for (const lane of previousLanes) {
@@ -1615,7 +1610,17 @@ function startRemoteSupervisor(
     }
     closeStoppedSupervisorSurfaces(supersededStoppedLanes);
     const retainedLanes = previousLanes.filter((lane) => !supersededStoppedLanes.includes(lane));
-    store.setSupervisorLanes([...retainedLanes, ...lanes]);
+    if (projectManagedStart) {
+      store.setProjectSupervisorLanes([
+        ...retainedLanes.filter(isProjectManagedSupervisorLane),
+        ...lanes,
+      ]);
+    } else {
+      store.setOrdinarySupervisorLanes([
+        ...retainedLanes.filter((lane) => !isProjectManagedSupervisorLane(lane)),
+        ...lanes,
+      ]);
+    }
     const session = useStore.getState().supervisor;
     for (const lane of lanes) {
       remoteAudit(session, lane, 'supervisor.remote-command', {
@@ -1639,23 +1644,28 @@ function startRemoteSupervisor(
   }
   if (!projectManagedStart) {
     store.patchSupervisor({
-      mode: 'unified', taskGoal: params.taskGoal || '', taskDescription: params.taskDescription || '', preconditions: params.preconditions || '',
-      stopWhen: params.stopWhen, stopWhenKind: params.stopWhenKind, planFilePath: params.planFile || '', planFileContent: '',
-      supervisorLaunchCmd: launchCmd, supervisorModel, supervisorReasoningEffort, maxAutoSteps: 0,
+      supervisorLaunchCmd: launchCmd, supervisorModel, supervisorReasoningEffort,
       maxAutoDecisions: params.autonomous ? null : store.supervisor.maxAutoDecisions, autonomous: params.autonomous,
       autonomyPermissions: [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
       workScope: DEFAULT_SUPERVISOR_WORK_SCOPE,
       forbiddenActions: [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
     });
   }
-  store.setSupervisorLanes(lanes);
-  store.startSupervisor();
+  if (projectManagedStart) {
+    store.setProjectSupervisorLanes(lanes);
+    store.startProjectSupervisor(lanes.map((lane) => lane.id));
+  } else {
+    store.setOrdinarySupervisorLanes(lanes);
+    store.startOrdinarySupervisor();
+  }
   const session = useStore.getState().supervisor;
-  for (const lane of session.lanes) remoteAudit(session, lane, 'supervisor.remote-command', { action: previousLanes.length > 0 ? 'restart' : 'start', terminals: params.terminals, autonomous: params.autonomous, actor: params.actor || 'unknown' });
+  for (const lane of lanes) remoteAudit(session, lane, 'supervisor.remote-command', { action: previousLanes.length > 0 ? 'restart' : 'start', terminals: params.terminals, autonomous: params.autonomous, actor: params.actor || 'unknown' });
   window.setTimeout(() => {
     const current = useStore.getState().supervisor;
     const states = (window as any).__wmux_getAgentStates?.() || {};
+    const startedLaneIds = new Set(lanes.map((lane) => lane.id));
     for (const lane of current.lanes) {
+      if (!startedLaneIds.has(lane.id)) continue;
       if (!lane.supervisorSurfaceId) continue;
       sendToSurface(lane.supervisorSurfaceId, projectAwareSupervisorBriefing(
         current,
@@ -1795,7 +1805,9 @@ function closeRemoteTerminal(params: { terminal: string; actor?: string }): { ok
     if (laneWasSupervised) {
       store.stopSupervisorLane(lane.id, `由飞书关闭任务终端 ${lane.label} 并解除监督绑定`);
     } else {
-      store.setSupervisorLanes(store.supervisor.lanes.filter((item) => item.id !== lane.id));
+      store.setOrdinarySupervisorLanes(
+        store.supervisor.lanes.filter((item) => !isProjectManagedSupervisorLane(item) && item.id !== lane.id),
+      );
     }
     closeStoppedSupervisorSurfaces([lane]);
   }
@@ -2532,7 +2544,7 @@ function projectManagerSessionView(session: ProjectManagerSession): ProjectManag
     ...session,
     managedSupervisors: lanes.map((lane) => {
       const item = session.workItems.find((candidate) => candidate.id === lane.projectWorkItemId);
-      const config = effectiveSupervisorLaneConfig(supervisor, lane);
+      const config = effectiveSupervisorLaneConfig(lane);
       return {
         laneId: lane.id,
         label: lane.label,
@@ -3856,7 +3868,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         currentTask: item.contract.objective,
         awaitingReview: false,
         config: {
-          ...effectiveSupervisorLaneConfig(useStore.getState().supervisor, currentLane),
+          ...effectiveSupervisorLaneConfig(currentLane),
           taskGoal: item.contract.objective,
           taskDescription: [item.contract.description, contractBriefing].filter(Boolean).join('\n\n'),
           preconditions: [...projectPreconditions, ...item.contract.preconditions].join('；'),
@@ -4479,7 +4491,7 @@ export function initPipeBridge(): void {
         const workItem = updated?.workItems.find((item) => item.id === lane.projectWorkItemId);
         latestStore.updateLane(lane.id, {
           config: {
-            ...effectiveSupervisorLaneConfig(latestStore.supervisor, lane),
+            ...effectiveSupervisorLaneConfig(lane),
             preconditions: [...preconditions, ...(workItem?.contract.preconditions || [])].join('；'),
           },
         });
@@ -4923,7 +4935,7 @@ export function initPipeBridge(): void {
     }
     const autonomous = effectiveSupervisorAutonomous(session, lane);
     const remoteSshControl = isRemoteSshControlledLane(lane, store.workspaces);
-    const laneConfig = effectiveSupervisorLaneConfig(session, lane);
+    const laneConfig = effectiveSupervisorLaneConfig(lane);
     if (lane.autoDecisionLimitReached && !autonomous) {
       return { ok: false, error: '已达到自动判断上限，等待人工审阅后继续' };
     }
@@ -4949,12 +4961,11 @@ export function initPipeBridge(): void {
     if (proposalKind === 'route-adjustment' && !next) {
       return { ok: false, error: 'route-adjustment 必须携带明确的低风险 --next' };
     }
-    if (!isSupervisorNextAllowed(session.mode, outcome, next, autonomous)) {
+    if (!isSupervisorNextAllowed(outcome, next)) {
       return { ok: false, error: '只有 continue、rework 或 needs-human 可以携带 --next' };
     }
     if (
-      session.mode === 'unified'
-      && (outcome === 'continue' || outcome === 'rework')
+      (outcome === 'continue' || outcome === 'rework')
       && !next
       && !permissionCommand
       && !permissionResponse
@@ -4992,11 +5003,9 @@ export function initPipeBridge(): void {
       return { ok: false, error: '工作范围设为“仅计划文件定义范围”，但当前没有计划文件；请补充计划文件或使用 needs-human' };
     }
     const hasTaskContext = !!(
-      effectiveSupervisorTaskGoal(session, lane)
+      effectiveSupervisorTaskGoal(lane)
       || lane.currentTask?.trim()
       || laneConfig.planFilePath.trim()
-      || (session.mode !== 'unified' && session.directInstructions?.trim())
-      || (session.mode !== 'unified' && session.goal?.trim())
     );
     if (next && outcome !== 'needs-human' && !hasTaskContext) {
       return { ok: false, error: '当前没有任务目标、已捕获任务或计划文件；可继续停止裁决，但自主发送下一步必须交给人工' };
@@ -5357,7 +5366,6 @@ export function initPipeBridge(): void {
         && lane.awaitingDirectionAfterWaitingResume
         && laneConfig.waitForNextDirection) {
         store.updateLane(lane.id, {
-          enabled: true,
           controlState: 'waiting',
           awaitingStopCheck: false,
           stopConfirmed: true,
@@ -5531,7 +5539,7 @@ export function initPipeBridge(): void {
             ...remoteTerminalActivity(terminal.surfaceId),
           })),
           session: ordinaryActive || ordinaryPaused
-            ? { sessionId: state.sessionId, stopWhen: state.stopWhen, autonomous: state.autonomous }
+            ? { sessionId: state.sessionId, autonomous: state.autonomous }
             : null,
           pendingApprovals: state.pendingApprovals
             .filter((approval) => ordinaryLaneIds.has(approval.laneId))

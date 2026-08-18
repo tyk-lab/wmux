@@ -7,7 +7,6 @@ import {
   effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   effectiveSupervisorWorkScope,
-  modeLabel,
   stopWhenKindLabel,
   supervisorTabTitle,
 } from '../../supervisor/protocol';
@@ -79,7 +78,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
   const resumeOrdinarySupervisor = useStore((s) => s.resumeOrdinarySupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
-  const updateStep = useStore((s) => s.updateStep);
   const updateLane = useStore((s) => s.updateLane);
   const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
@@ -127,7 +125,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
     ))
   ));
   const pendingCount = visiblePendingApprovals.length;
-  const mode = supervisor.mode || 'unified';
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
   const supervisorThinkingLabel = supervisorLauncher === 'codex' ? '推理程度' : 'Thinking';
@@ -287,11 +284,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
           proposalKind: item.proposalKind || 'important',
           text: adoptedPlan,
         });
-      } else {
-        const step = lane?.steps.find((s) => s.status === 'pending');
-        if (step) {
-          updateStep(item.laneId, step.id, { status: 'in_progress', dispatchedAt: Date.now() });
-        }
       }
       appendSupervisorLog(
         item.laneId,
@@ -579,26 +571,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         : 1;
     }
     patchSupervisor({
-      mode: 'unified',
       autonomous: false,
       autonomyPermissions: normalizeSupervisorAutonomyPermissions(supervisor.autonomyPermissions),
       workScope: normalizedScope === 'plan-defined' && ordinaryLanes.some(
-        (lane) => !effectiveSupervisorLaneConfig(supervisor, lane).planFilePath.trim(),
+        (lane) => !effectiveSupervisorLaneConfig(lane).planFilePath.trim(),
       )
         ? 'task-files'
         : normalizedScope,
       forbiddenActions: normalizeSupervisorForbiddenActions(supervisor.forbiddenActions),
-      taskGoal: supervisor.taskGoal?.trim()
-        || supervisor.goal?.trim()
-        || supervisor.directInstructions?.trim()
-        || '',
-      stopWhen: supervisor.stopWhen?.trim() || supervisor.doneWhen?.trim() || '',
-      directInstructions: '',
-      goal: '',
-      allowPaths: '',
-      denyNotes: '',
-      doneWhen: '',
-      maxAutoSteps: 0,
       maxAutoDecisions: normalizedDecisionLimit,
     });
     setOrdinarySupervisorLanes(ordinaryLanes.map((lane) =>
@@ -699,7 +679,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
         <span className="sup-panel__title">AI 监督</span>
         <span className="sup-panel__status">{statusLabel}</span>
         <span className="sup-panel__meta-right">
-          {modeLabel(mode)} · {enabled.length} 通道{waiting.length > 0 ? ` · ${waiting.length} 待续` : ''}{supervisor.autonomous ? ' · 全自动' : ''}
+          {enabled.length} 通道{waiting.length > 0 ? ` · ${waiting.length} 待续` : ''}{supervisor.autonomous ? ' · 全自动' : ''}
           {pendingCount > 0 ? ` · ${pendingCount} 待批` : ''}
         </span>
       </button>
@@ -754,7 +734,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
             {supervisor.lanes.map((lane) => {
               const laneProjectManaged = isProjectManagedSupervisorLane(lane);
               const laneControlState = supervisorLaneControlState(lane);
-              const laneConfig = effectiveSupervisorLaneConfig(supervisor, lane);
+              const laneConfig = effectiveSupervisorLaneConfig(lane);
               const lanePermissions = effectiveSupervisorAutonomyPermissions(supervisor, lane);
               const laneAutonomous = effectiveSupervisorAutonomous(supervisor, lane);
               const laneForbiddenActions = effectiveSupervisorForbiddenActions(supervisor, lane);
@@ -764,9 +744,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                 || Array.isArray(lane.forbiddenActionsOverride)
                 || !!lane.workScopeOverride;
               const planFileName = laneConfig.planFilePath.split(/[\\/]/).pop() || '';
-              const open = lane.steps.find(
-                (s) => s.status === 'pending' || s.status === 'in_progress',
-              );
               const stoppedLaneExpanded = expandedStoppedLaneIds.has(lane.id);
               const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;
               const laneStatusLabel = laneControlState === 'waiting'
@@ -824,9 +801,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                         ? ' · 已达停止条件'
                       : lane.awaitingStopCheck
                         ? ' · 待核对停止条件'
-                        : open
-                          ? ` · ${open.status === 'in_progress' ? '执行中' : '待执行'}`
-                          : ' · 监控中'}
+                        : ' · 监控中'}
                   </div>
                   {!!lane.pendingSupervisorDeliveries?.length && (
                     <div className="sup-panel__lane-supervisor">

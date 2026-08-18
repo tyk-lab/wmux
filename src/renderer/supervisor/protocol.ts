@@ -4,9 +4,7 @@ import {
   type StopWhenKind,
   type SupervisorLane,
   type SupervisorLaneConfig,
-  type SupervisorMode,
   type SupervisorSession,
-  type SupervisorStep,
 } from '../store/supervisor-slice';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
@@ -21,21 +19,6 @@ import {
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
-
-export function modeLabel(mode: SupervisorMode): string {
-  if (mode === 'unified') return '统一监督';
-  return mode === 'direct' ? '直接注入（旧会话）' : '目标追逐（旧会话）';
-}
-
-export function modeDescription(mode: SupervisorMode): string {
-  if (mode === 'unified') {
-    return '监督 AI 读取启动信息和终端证据，可自主发送原目标内低风险下一步；复杂或高影响问题交给用户。';
-  }
-  if (mode === 'direct') {
-    return '指令原样注入。每轮任务结束后，监督 AI 读取终端证据，并把「停止条件」作为参考作出后续裁决。';
-  }
-  return '按目标自行决策续跑；每轮任务结束后，监督 AI 结合终端证据和完成/停止条件参考决定后续动作。';
-}
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -86,18 +69,15 @@ export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
 }
 
-export function effectiveSupervisorTaskGoal(session: SupervisorSession, lane: SupervisorLane): string {
-  if (lane.config) return lane.config.taskGoal?.trim() || '';
-  return lane.taskGoalOverride?.trim() || session.taskGoal?.trim() || '';
+export function effectiveSupervisorTaskGoal(lane: SupervisorLane): string {
+  return effectiveSupervisorLaneConfig(lane).taskGoal.trim();
 }
 
-export function effectiveSupervisorStopWhen(session: SupervisorSession, lane: SupervisorLane): string {
-  if (lane.config) return lane.config.stopWhen?.trim() || '';
-  return lane.stopWhenOverride?.trim() || session.stopWhen.trim();
+export function effectiveSupervisorStopWhen(lane: SupervisorLane): string {
+  return effectiveSupervisorLaneConfig(lane).stopWhen.trim();
 }
 
 export function effectiveSupervisorLaneConfig(
-  session: SupervisorSession,
   lane: SupervisorLane,
 ): SupervisorLaneConfig {
   if (lane.config) {
@@ -122,21 +102,14 @@ export function effectiveSupervisorLaneConfig(
     };
   }
   return {
-    taskGoal: lane.taskGoalOverride?.trim() || session.taskGoal || '',
-    taskDescription: session.taskDescription || '',
-    preconditions: session.preconditions || '',
-    stopWhen: lane.stopWhenOverride?.trim() || session.stopWhen || '',
-    stopWhenKind: session.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+    taskGoal: '',
+    taskDescription: '',
+    preconditions: '',
+    stopWhen: '',
+    stopWhenKind: 'concrete',
     waitForNextDirection: false,
-    planFilePath: session.planFilePath || '',
+    planFilePath: '',
   };
-}
-
-export function effectiveSupervisorStopWhenKind(
-  session: SupervisorSession,
-  lane: SupervisorLane,
-): StopWhenKind {
-  return effectiveSupervisorLaneConfig(session, lane).stopWhenKind;
 }
 
 export function effectiveSupervisorAutonomyPermissions(
@@ -197,8 +170,8 @@ export function supervisorLaneBriefingChanged(
   if (!previousLane?.supervisorSurfaceId
     || previousLane.supervisorSurfaceId !== nextLane.supervisorSurfaceId) return true;
 
-  const previousConfig = effectiveSupervisorLaneConfig(previousSession, previousLane);
-  const nextConfig = effectiveSupervisorLaneConfig(nextSession, nextLane);
+  const previousConfig = effectiveSupervisorLaneConfig(previousLane);
+  const nextConfig = effectiveSupervisorLaneConfig(nextLane);
   const textFields = [
     'taskGoal',
     'taskDescription',
@@ -222,8 +195,7 @@ export function supervisorLaneBriefingChanged(
         .map((item) => item.trim()),
     )) return true;
 
-  return previousSession.mode !== nextSession.mode
-    || effectiveSupervisorAutonomous(previousSession, previousLane)
+  return effectiveSupervisorAutonomous(previousSession, previousLane)
       !== effectiveSupervisorAutonomous(nextSession, nextLane)
     || previousSession.maxAutoDecisions !== nextSession.maxAutoDecisions
     || effectiveSupervisorWorkScope(previousSession, previousLane)
@@ -374,42 +346,7 @@ function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane)
   ];
 }
 
-/**
- * Build text injected into a worker terminal.
- * direct → verbatim step.prompt only.
- * goal-chase → short decision prompt tied to goal (not a wall of protocol).
- */
-export function buildInjectedPrompt(opts: {
-  session: Pick<
-    SupervisorSession,
-    'mode' | 'goal' | 'allowPaths' | 'denyNotes' | 'doneWhen' | 'stopWhen'
-  >;
-  lane: Pick<SupervisorLane, 'id' | 'label' | 'surfaceId'>;
-  step: Pick<SupervisorStep, 'id' | 'title' | 'prompt'>;
-  stepIndex: number;
-  stepCount: number;
-}): string {
-  const { session, step } = opts;
-  const body = (step.prompt || '').trim();
-
-  if (session.mode === 'direct') {
-    // Verbatim — no frame, no stop-condition spam (stopWhen is for the scheduler + human notify).
-    return body;
-  }
-
-  // goal-chase: compact decision packet
-  const lines = [
-    body || '请根据下列目标，自行决策并推进最小下一步；若无法决策，明确说明卡点并停止等待人工。',
-  ];
-  if (session.goal.trim()) lines.unshift(`目标: ${session.goal.trim()}`);
-  if (session.allowPaths.trim()) lines.push(`允许: ${session.allowPaths.trim()}`);
-  if (session.denyNotes.trim()) lines.push(`禁止: ${session.denyNotes.trim()}`);
-  if (session.doneWhen.trim()) lines.push(`完成条件: ${session.doneWhen.trim()}`);
-  lines.push('做完本决策步即停；需要人类决策时说明原因并等待。');
-  return lines.join('\n');
-}
-
-/** Briefing for the AI supervisor terminal (both modes). */
+/** Briefing for one dedicated AI supervisor terminal. */
 export function buildSupervisorBriefing(
   session: SupervisorSession,
   laneState: { lane: SupervisorLane; state: string },
@@ -438,9 +375,9 @@ export function buildSupervisorBriefing(
     `任务终端 Agent 活动状态: ${taskAgentState}${state === 'unknown' ? '（原始值 unknown）' : ''}`,
     '状态说明: 任务终端 Agent 活动状态与监督通道状态相互独立；unknown 只表示没有可信 Agent 状态报告，不得据此断言监督通道异常或任务尚未启动，应先 read-screen 核对终端正文。',
   ].join('\n');
-  const taskGoal = effectiveSupervisorTaskGoal(session, lane);
+  const taskGoal = effectiveSupervisorTaskGoal(lane);
   const currentTask = lane.currentTask?.trim() || '';
-  const laneConfig = effectiveSupervisorLaneConfig(session, lane);
+  const laneConfig = effectiveSupervisorLaneConfig(lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
   const decisionOwner = isProjectManagedSupervisorLane(lane) ? 'project-manager' as const : 'user' as const;
   const decisionOwnerLabel = decisionOwner === 'project-manager' ? '项目管理 AI' : '用户';
@@ -517,7 +454,6 @@ export function buildSupervisorBriefing(
     !taskGoal
       && !currentTask
       && !planFilePath
-      && (session.mode === 'unified' || (!session.directInstructions.trim() && !session.goal.trim()))
       ? '当前缺少可核对的任务来源：仍可判断停止条件，但不得自主发送 --next；需要推进时使用 needs-human。'
       : '自主推进只能围绕上述目标、当前任务或计划文件，不得自行扩展任务。',
     '',
@@ -554,10 +490,9 @@ export function buildSupervisorBriefing(
     : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
   const postDecisionRule = decisionBoundary.length + 4;
 
-  if (session.mode === 'unified') {
-    const kind = laneConfig.stopWhenKind;
-    return [
-      '# AI 监督 · 统一监督',
+  const kind = laneConfig.stopWhenKind;
+  return [
+      '# AI 监督',
       '',
       autonomous
         ? `本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
@@ -605,177 +540,23 @@ export function buildSupervisorBriefing(
         : `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；允许时，自动权限确认可附 --permission-command 与 --permission-response。`,
       '',
     ].join('\n');
-  }
-
-  if (session.mode === 'direct') {
-    const kind = laneConfig.stopWhenKind;
-    return [
-      '# AI 监督 · 直接注入',
-      '',
-      '工作终端由调度器**原样注入**用户指令。每轮终端任务结束后，你必须先观察证据，再决定继续、返工、完成或交给人工。',
-      '',
-      '## 停止条件参考（用于裁决，不是机械开关）',
-      stopWhenJudgmentGuide(kind, effectiveStopWhen),
-      completionBehavior,
-      '',
-      ...taskContextBlock,
-      ...taskWorkModeBlock,
-      ...stopContextBlock,
-      ...preconditionsBlock,
-      ...planBlock,
-      ...policyBlock,
-      ...restoredHistoryBlock,
-      ...contextRecoveryBlock,
-      '## 用户指令队列（已/将注入，勿改写内容）',
-      session.directInstructions.trim() || '（见各通道步骤）',
-      '',
-      '## 监控终端',
-      worker,
-      '',
-      '## 本轮裁决流程',
-      decisionReadStep,
-      `2. 条件仅作参考；${decisionEvidence}`,
-      '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
-      '',
-      '## 规则',
-      '1. 指令跑完 ≠ 停止条件满足。',
-      '2. 终端任务结束后先 read-screen，再根据证据和参考条件提交 continue / rework / complete / needs-human。',
-      autonomyPermissions.includes('same-route-next')
-        ? '3. 仍需推进时，continue / rework 的 --next 只能是同路线的低风险下一步。'
-        : '3. 本会话未授权原路线 --next；仍需推进时使用 needs-human。',
-      ...decisionBoundary.map((line, index) => `${index + 4}. ${line}`),
-      `${postDecisionRule}. 你只监督此终端。每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录 continue/rework/complete/needs-human；该命令成功时静默。`,
-      `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide`,
-      '',
-    ].join('\n');
-  }
-
-  const kind = session.stopWhenKind || 'concrete';
-  return [
-    '# AI 监督 · 目标追逐',
-    '',
-    '你只负责管理下列一个工作终端：每轮终端任务结束后，先读取证据，再结合目标和完成参考决定继续、返工、完成或交给人工。',
-    '',
-    ...taskContextBlock,
-    ...taskWorkModeBlock,
-    '## 目标',
-    session.goal.trim() || '（未设置）',
-    '',
-    ...stopContextBlock,
-    ...preconditionsBlock,
-    ...planBlock,
-    ...policyBlock,
-    ...restoredHistoryBlock,
-    ...contextRecoveryBlock,
-    '## 完成/停止条件参考（用于裁决，不是机械开关）',
-    stopWhenJudgmentGuide(kind, session.doneWhen),
-    '',
-    '## 约束',
-    `允许: ${session.allowPaths.trim() || '（尽量最小改动）'}`,
-    `禁止: ${session.denyNotes.trim() || '（无）'}`,
-    '',
-    '## 监控终端',
-    worker,
-    '',
-    '## 本轮裁决流程',
-    decisionReadStep,
-    `2. 条件仅作参考；${decisionEvidence}`,
-    '3. 通过 CLI 裁决后，简短说明依据和下一步；不要把说明当成状态变更。',
-    '',
-    '## 规则',
-    `1. 只管理 ${lane.surfaceId}，不要读取、总结或裁决其他终端。`,
-    '2. 只可使用下方“自主权限”中已勾选的能力；需用户独有信息、业务取舍或存在高影响风险 → 说明卡点并 needs-human；不要瞎猜。',
-    '3. 证据足以收尾 → 提交 complete；证据不足时优先在原路线内 continue / rework 补证，只有无低风险路径才 needs-human。',
-    ...decisionBoundary.map((line, index) => `${index + 4}. ${line}`),
-    `${postDecisionRule}. 可用: wmux agent-state / wmux read-screen / wmux supervisor decide`,
-    '',
-  ].join('\n');
 }
 
-/** Idle packet for supervisor AI terminal (goal-chase). */
-export function buildIdleHint(opts: {
-  lane: SupervisorLane;
-  state: string;
-  goal: string;
-  doneWhen: string;
-  stopWhenKind?: StopWhenKind;
-  autonomyPermissions?: readonly SupervisorAutonomyPermission[];
-}): string {
-  const permissions = opts.autonomyPermissions || DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
-  const nextGuidance = permissions.includes('same-route-next')
-    ? '原路线低风险推进可携带 --next'
-    : '未授权原路线 --next';
-  const routeGuidance = permissions.includes('route-adjustment')
-    ? '小范围可逆调整可标记 route-adjustment'
-    : '路线调整必须 needs-human';
-  return [
-    `[空闲裁决] ${opts.lane.label} (${opts.lane.surfaceId}) state=${opts.state}`,
-    `完成参考: ${opts.doneWhen.trim() || '（未设置）'}`,
-    `请 read-screen 后提交 continue / rework / complete / needs-human；${nextGuidance}，${routeGuidance}。`,
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-/**
- * Ask supervisor AI to judge stop/done condition.
- * Used by direct (stopWhen) and goal-chase (doneWhen).
- */
-export function buildStopCheckHint(opts: {
-  lane: SupervisorLane;
-  stopWhen: string;
-  stopWhenKind: StopWhenKind;
-  state: string;
-  /** direct | goal-chase wording */
-  mode?: SupervisorMode;
-  autonomyPermissions?: readonly SupervisorAutonomyPermission[];
-}): string {
-  const mode = opts.mode || 'unified';
-  const title =
-    mode === 'unified'
-      ? '[请结合停止参考作出裁决 · 统一监督]'
-      : mode === 'goal-chase' ? '[请结合完成参考作出裁决 · 目标追逐]' : '[请结合停止参考作出裁决 · 直接注入]';
-  const reference = opts.stopWhen;
-  const permissions = opts.autonomyPermissions || DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS;
-  const maySendNext = permissions.includes('same-route-next');
-  const mayAdjustRoute = permissions.includes('route-adjustment');
-  const action = mode === 'unified'
-    ? `可收尾用 complete；${maySendNext ? '原目标内低风险下一步可用 continue / rework 携带 --next' : '未授权原路线 --next'}；${mayAdjustRoute ? '小范围可逆调整附 route-adjustment' : '路线调整必须 needs-human'}，复杂或高影响问题用 needs-human。`
-    : mode === 'goal-chase'
-    ? `可收尾用 complete；${maySendNext ? '低风险推进可用 continue / rework 携带 --next' : '未授权原路线 --next'}；${mayAdjustRoute ? '小范围可逆调整可标记 route-adjustment' : '路线调整必须 needs-human'}。`
-    : `可收尾用 complete；${maySendNext ? '队列已空但仍需推进时，同路线低风险步骤可用 continue / rework 加 --next' : '未授权原路线 --next'}；其他建议用 needs-human。`;
-
-  return [
-    `${title} 通道=${opts.lane.label} (${opts.lane.surfaceId}) agentState=${opts.state}`,
-    `条件参考: ${reference.trim() || '（未设置）'}`,
-    '请先 read-screen；根据当前证据调用 wmux supervisor decide 提交裁决。',
-    action,
-  ].join('\n');
-}
-
-/** Human-facing stop notification body. */
+/** Human-facing supervisor attention notification. */
 export function buildUserNotifyText(opts: {
-  mode: SupervisorMode;
   reason: string;
   laneLabel?: string;
   stopWhen?: string;
-  doneWhen?: string;
   detail?: string;
 }): string {
   const parts = [
-    `AI 监督 · ${modeLabel(opts.mode)}`,
+    'AI 监督',
     opts.laneLabel ? `通道: ${opts.laneLabel}` : '',
     `原因: ${opts.reason}`,
     opts.detail || '',
   ];
-  if (opts.mode === 'direct' && opts.stopWhen?.trim()) {
-    parts.push(`请确认停止条件是否满足: ${opts.stopWhen.trim()}`);
-  }
-  if (opts.mode === 'unified' && opts.stopWhen?.trim()) {
+  if (opts.stopWhen?.trim()) {
     parts.push(`停止条件参考: ${opts.stopWhen.trim()}`);
-  }
-  if (opts.mode === 'goal-chase' && opts.doneWhen?.trim()) {
-    parts.push(`完成条件参考: ${opts.doneWhen.trim()}`);
   }
   parts.push('请你处理。');
   return parts.filter(Boolean).join('\n');

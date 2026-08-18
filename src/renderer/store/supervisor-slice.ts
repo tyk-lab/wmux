@@ -10,9 +10,6 @@ import {
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
 
-/** Legacy values remain readable for saved sessions; new sessions are unified. */
-export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
-
 /**
  * How the supervisor AI should interpret stopWhen:
  * - direction: a heading / desired end-state (e.g. "auth 可登录"); judge if work is on track / done enough
@@ -20,17 +17,7 @@ export type SupervisorMode = 'unified' | 'direct' | 'goal-chase';
  */
 export type StopWhenKind = 'direction' | 'concrete';
 
-export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
 export type SupervisorLaneControlState = 'active' | 'paused' | 'waiting' | 'stopped';
-
-export interface SupervisorStep {
-  id: string;
-  title?: string;
-  prompt: string;
-  status: StepStatus;
-  dispatchedAt?: number;
-  completedAt?: number;
-}
 
 export interface SupervisorDecision {
   ts: number;
@@ -100,19 +87,11 @@ export interface SupervisorLane {
   projectDir?: string;
   /** Immutable work-scope root captured when this supervision session starts. */
   scopeRoot?: string;
-  enabled: boolean;
-  /** Independent runtime control; missing legacy values derive from enabled. */
-  controlState?: SupervisorLaneControlState;
-  steps: SupervisorStep[];
-  /** goal-chase: max autonomous decision injects for this lane. */
-  maxAutoSteps: number;
-  autoStepsUsed: number;
-  /**
-   * direct mode: instruction queue drained; waiting for stop-condition judgment
-   * (supervisor AI / human). Injection stays paused until confirmed or new steps.
-   */
+  /** Authoritative lifecycle state for this independently owned lane. */
+  controlState: SupervisorLaneControlState;
+  /** A completed decision is awaiting stop-condition confirmation. */
   awaitingStopCheck: boolean;
-  /** direct mode: stop condition confirmed — no more injects for this lane. */
+  /** The stop condition has been confirmed; no further work may be injected. */
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
@@ -142,10 +121,6 @@ export interface SupervisorLane {
   forbiddenActionsOverride?: SupervisorForbiddenAction[];
   /** Optional per-terminal work scope; project-managed lanes never inherit ordinary-mode settings. */
   workScopeOverride?: SupervisorWorkScope;
-  /** @deprecated Compatibility with sessions created before per-terminal configuration. */
-  taskGoalOverride?: string;
-  /** @deprecated Compatibility with sessions created before per-terminal configuration. */
-  stopWhenOverride?: string;
   /** Hook lifecycle facts retained until the dedicated supervisor terminal accepts them. */
   pendingSupervisorDeliveries?: SupervisorDelivery[];
   /** In-memory timeline for this lane; durable copies are written to its audit stream. */
@@ -160,10 +135,6 @@ export interface SupervisorLane {
 }
 
 export type ApprovalSource =
-  | 'plan'
-  | 'manual'
-  | 'idle-hint'
-  | 'goal-chase'
   | 'supervisor-route'
   | 'supervisor-important'
   | 'supervisor-context-recovery';
@@ -196,7 +167,6 @@ export interface SupervisorSession {
   active: boolean;
   /** Paused sessions retain their lanes, pending decisions, and session identity. */
   paused: boolean;
-  mode: SupervisorMode;
   /** Current-session-only authority for AI decisions and safe terminal confirmations. */
   autonomous: boolean;
   /** Explicit capabilities granted to the supervisor; hard safety gates still apply. */
@@ -206,38 +176,6 @@ export interface SupervisorSession {
   /** User-selected project constraints in addition to the non-overridable safety boundary. */
   forbiddenActions: SupervisorForbiddenAction[];
 
-  /** Optional shared task goal; a lane may override it. */
-  taskGoal: string;
-  /** Optional context that clarifies the stopping condition for the supervisor only. */
-  taskDescription: string;
-  /** Environment facts the user has already confirmed for the supervisor only. */
-  preconditions: string;
-
-  /**
-   * direct: raw multi-line instructions (also mirrored into lane.steps on start).
-   * Kept on session so the setup dialog can re-open cleanly.
-   */
-  directInstructions: string;
-  /**
-   * direct mode: end condition. Injection stops only after this is confirmed
-   * (human or supervisor AI), not merely when the instruction queue is empty.
-   * May be a direction or a concrete predicate — see stopWhenKind.
-   */
-  stopWhen: string;
-  stopWhenKind: StopWhenKind;
-
-  /** goal-chase fields */
-  goal: string;
-  allowPaths: string;
-  denyNotes: string;
-  doneWhen: string;
-  /** User-selected plan, supplied to dedicated supervisors but never worker terminals. */
-  planFilePath: string;
-  planFileContent: string;
-  /** Restore the latest unambiguous audit summary into a new dedicated supervisor. */
-  restoreAuditHistory: boolean;
-  /** Legacy goal-chase setting kept for saved sessions. */
-  maxAutoSteps: number;
   /** Per-terminal AI decision limit before a human must review and resume; null means unlimited. */
   maxAutoDecisions: number | null;
 
@@ -252,9 +190,7 @@ export interface SupervisorSession {
   pendingApprovals: PendingApproval[];
   log: SupervisorLogEntry[];
   pollMs: number;
-  idleStableMs: number;
   submitEnter: boolean;
-  allowUnknown: boolean;
   setupOpen: boolean;
 }
 
@@ -263,16 +199,14 @@ export interface SupervisorSlice {
   openSupervisorSetup: () => void;
   closeSupervisorSetup: () => void;
   patchSupervisor: (partial: Partial<SupervisorSession>) => void;
-  setSupervisorLanes: (lanes: SupervisorLane[]) => void;
   /** Replace ordinary lanes while preserving every project-managed lane and its pending decisions. */
   setOrdinarySupervisorLanes: (lanes: SupervisorLane[]) => void;
-  startSupervisor: () => void;
+  /** Replace project lanes while preserving every ordinary lane and its pending decisions. */
+  setProjectSupervisorLanes: (lanes: SupervisorLane[]) => void;
   startOrdinarySupervisor: () => void;
-  pauseSupervisor: (detail?: string) => void;
+  startProjectSupervisor: (laneIds: string[]) => void;
   pauseOrdinarySupervisor: (detail?: string) => void;
-  resumeSupervisor: () => void;
   resumeOrdinarySupervisor: () => void;
-  stopSupervisor: (detail?: string) => void;
   stopOrdinarySupervisor: (detail?: string) => void;
   pauseSupervisorLane: (laneId: string, detail?: string) => void;
   resumeSupervisorLane: (laneId: string, detail?: string) => void;
@@ -284,14 +218,11 @@ export interface SupervisorSlice {
   cancelPending: (id: string, detail?: string) => PendingApproval | null;
   rejectPending: (id: string) => void;
   updateLane: (laneId: string, patch: Partial<SupervisorLane>) => void;
-  updateStep: (laneId: string, stepId: string, patch: Partial<SupervisorStep>) => void;
-  /** Drop the current in-memory session so the next run starts with clean context. */
-  resetSupervisorSession: () => void;
   /** Drop ordinary supervision state without changing project-managed lanes. */
   resetOrdinarySupervisorSession: () => void;
-  /** direct: human/AI confirms end condition — stop injects for this lane. */
+  /** Human/AI confirms the configured end condition. */
   confirmStopCondition: (laneId: string) => void;
-  /** direct: end condition not met — keep watching; allow further injects if steps added. */
+  /** End condition not met — keep watching for a new task or supervisor decision. */
   rejectStopCondition: (laneId: string) => void;
 }
 
@@ -302,25 +233,10 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     sessionId: '',
     active: false,
     paused: false,
-    mode: 'unified',
     autonomous: false,
     autonomyPermissions: [...DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS],
     workScope: DEFAULT_SUPERVISOR_WORK_SCOPE,
     forbiddenActions: [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
-    taskGoal: '',
-    taskDescription: '',
-    preconditions: '',
-    directInstructions: '',
-    stopWhen: '',
-    stopWhenKind: 'concrete',
-    goal: '',
-    allowPaths: '',
-    denyNotes: '',
-    doneWhen: '',
-    planFilePath: '',
-    planFileContent: '',
-    restoreAuditHistory: false,
-    maxAutoSteps: 3,
     maxAutoDecisions: null,
     lanes: [],
     supervisorLaunchCmd: 'pi',
@@ -329,9 +245,7 @@ export function createDefaultSupervisorSession(): SupervisorSession {
     pendingApprovals: [],
     log: [],
     pollMs: 4000,
-    idleStableMs: 8000,
     submitEnter: true,
-    allowUnknown: false,
     setupOpen: false,
   };
 }
@@ -404,10 +318,7 @@ export function clearSupervisorLaneContext(
     ...lane,
     managementSessionId: `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     supervisorSurfaceId: supervisorSurfaceId === lane.surfaceId ? null : supervisorSurfaceId,
-    enabled: true,
     controlState: 'active',
-    steps: [],
-    autoStepsUsed: 0,
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
@@ -437,9 +348,9 @@ export function isSurfaceSupervised(
 }
 
 export function supervisorLaneControlState(
-  lane: Pick<SupervisorLane, 'enabled' | 'controlState'>,
+  lane: Pick<SupervisorLane, 'controlState'>,
 ): SupervisorLaneControlState {
-  return lane.controlState || (lane.enabled ? 'active' : 'stopped');
+  return lane.controlState;
 }
 
 /** A dedicated supervisor can never be the worker terminal it controls. */
@@ -470,9 +381,9 @@ export function normalizeSupervisorLaneBinding(lane: SupervisorLane): Supervisor
   };
 }
 
-/** Paused lanes remain bound; stopped lanes are historical compatibility data only. */
+/** Paused and waiting lanes remain bound; stopped lanes can be selected for a fresh supervisor. */
 export function isSupervisorLaneBound(
-  lane: Pick<SupervisorLane, 'enabled' | 'controlState'>,
+  lane: Pick<SupervisorLane, 'controlState'>,
 ): boolean {
   return supervisorLaneControlState(lane) !== 'stopped';
 }
@@ -530,9 +441,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   patchSupervisor(partial) {
     set((s) => ({ supervisor: { ...s.supervisor, ...partial } }));
   },
-  setSupervisorLanes(lanes) {
-    set((s) => ({ supervisor: { ...s.supervisor, lanes: lanes.map(normalizeSupervisorLaneBinding) } }));
-  },
   setOrdinarySupervisorLanes(lanes) {
     set((s) => {
       const projectLanes = s.supervisor.lanes.filter(isProjectManagedSupervisorLane);
@@ -542,41 +450,13 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       return { supervisor: { ...s.supervisor, lanes: [...projectLanes, ...ordinaryLanes] } };
     });
   },
-  startSupervisor() {
+  setProjectSupervisorLanes(lanes) {
     set((s) => {
-      const lanes = s.supervisor.lanes.map((rawLane) => {
-        const lane = normalizeSupervisorLaneBinding(rawLane);
-        return {
-          ...lane,
-          controlState: supervisorLaneControlState(lane),
-          managementSessionId: lane.managementSessionId
-            || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          ...(s.supervisor.mode === 'unified' && supervisorLaneControlState(lane) === 'active'
-            ? { awaitingReview: true }
-            : {}),
-          resumeAfterCancelledDecision: false,
-        };
-      });
-      return {
-        supervisor: {
-          ...s.supervisor,
-          lanes,
-          sessionId: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          active: true,
-          paused: false,
-          setupOpen: false,
-          pendingApprovals: [],
-          log: [
-            {
-              ts: Date.now(),
-              laneId: '-',
-              action: '启动',
-              detail: `统一监督 通道=${s.supervisor.lanes.filter((lane) => supervisorLaneControlState(lane) === 'active').length}`,
-            },
-            ...s.supervisor.log,
-          ].slice(0, MAX_LOG),
-        },
-      };
+      const ordinaryLanes = s.supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
+      const projectLanes = lanes
+        .filter(isProjectManagedSupervisorLane)
+        .map(normalizeSupervisorLaneBinding);
+      return { supervisor: { ...s.supervisor, lanes: [...ordinaryLanes, ...projectLanes] } };
     });
   },
   startOrdinarySupervisor() {
@@ -597,7 +477,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         const lane = normalizeSupervisorLaneBinding(rawLane);
         return {
           ...lane,
-          enabled: true,
           controlState: 'active' as const,
           managementSessionId: lane.managementSessionId
             || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -625,23 +504,34 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
-  pauseSupervisor(detail) {
+  startProjectSupervisor(laneIds) {
     set((s) => {
-      if (!s.supervisor.active) return s;
+      const targetIds = new Set(laneIds);
+      if (targetIds.size === 0) return s;
+      const lanes = s.supervisor.lanes.map((rawLane) => {
+        if (!targetIds.has(rawLane.id) || !isProjectManagedSupervisorLane(rawLane)) return rawLane;
+        const lane = normalizeSupervisorLaneBinding(rawLane);
+        return {
+          ...lane,
+          controlState: 'active' as const,
+          managementSessionId: lane.managementSessionId
+            || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          awaitingReview: true,
+          resumeAfterCancelledDecision: false,
+        };
+      });
+      if (!lanes.some((lane, index) => lane !== s.supervisor.lanes[index])) return s;
       return {
         supervisor: {
           ...s.supervisor,
-          active: false,
-          paused: true,
-          log: [
-            {
-              ts: Date.now(),
-              laneId: '-',
-              action: '暂停',
-              detail: detail || '监督会话已暂停，可继续原会话',
-            },
-            ...s.supervisor.log,
-          ].slice(0, MAX_LOG),
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
+          sessionId: s.supervisor.sessionId
+            || `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          setupOpen: false,
+          log: [{
+            ts: Date.now(), laneId: '-', action: '启动项目监督', detail: `项目监督 通道=${targetIds.size}`,
+          }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };
     });
@@ -672,35 +562,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
-  resumeSupervisor() {
-    set((s) => {
-      if (!s.supervisor.paused || !s.supervisor.sessionId) return s;
-      const pendingLaneIds = new Set(s.supervisor.pendingApprovals.map((item) => item.laneId));
-      const lanes = s.supervisor.lanes.map((lane) => (
-        lane.resumeAfterCancelledDecision && !pendingLaneIds.has(lane.id)
-          ? { ...lane, awaitingReview: false, resumeAfterCancelledDecision: false }
-          : lane
-      ));
-      return {
-        supervisor: {
-          ...s.supervisor,
-          lanes,
-          active: true,
-          paused: false,
-          setupOpen: false,
-          log: [
-            {
-              ts: Date.now(),
-              laneId: '-',
-              action: '继续',
-              detail: '继续原监督会话',
-            },
-            ...s.supervisor.log,
-          ].slice(0, MAX_LOG),
-        },
-      };
-    });
-  },
   resumeOrdinarySupervisor() {
     set((s) => {
       const ordinaryLaneIds = new Set(
@@ -713,7 +574,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         if (!ordinaryLaneIds.has(lane.id) || supervisorLaneControlState(lane) !== 'paused') return lane;
         return {
           ...lane,
-          enabled: true,
           controlState: 'active' as const,
           awaitingReview: lane.resumeAfterCancelledDecision && !pendingLaneIds.has(lane.id)
             ? false
@@ -735,33 +595,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       };
     });
   },
-  stopSupervisor(detail) {
-    set((s) => ({
-      supervisor: {
-        ...s.supervisor,
-        lanes: s.supervisor.lanes.map((lane) => ({
-          ...lane,
-          enabled: false,
-          controlState: 'stopped',
-          autonomousOverride: undefined,
-        })),
-        active: false,
-        paused: false,
-        // Autonomous authority is deliberately non-resumable: stopping ends
-        // the consent scope, so a later session must be enabled explicitly.
-        autonomous: false,
-        log: [
-          {
-            ts: Date.now(),
-            laneId: '-',
-            action: '停止',
-            detail: detail || '调度已停止',
-          },
-          ...s.supervisor.log,
-        ].slice(0, MAX_LOG),
-      },
-    }));
-  },
   stopOrdinarySupervisor(detail) {
     set((s) => {
       const ordinaryLaneIds = new Set(
@@ -773,7 +606,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       const lanes = s.supervisor.lanes.map((lane) => ordinaryLaneIds.has(lane.id)
         ? {
             ...lane,
-            enabled: false,
             controlState: 'stopped' as const,
             autonomousOverride: undefined,
           }
@@ -797,12 +629,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lane = s.supervisor.lanes.find((item) => item.id === laneId);
       if (!lane || supervisorLaneControlState(lane) !== 'active') return s;
+      const lanes = s.supervisor.lanes.map((item) => item.id === laneId
+        ? { ...item, controlState: 'paused' as const }
+        : item);
       return {
         supervisor: {
           ...s.supervisor,
-          lanes: s.supervisor.lanes.map((item) => item.id === laneId
-            ? { ...item, controlState: 'paused' }
-            : item),
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
           log: [{
             ts: Date.now(), laneId, action: '暂停通道', detail: detail || `${lane.label} 已暂停`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
@@ -814,12 +648,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lane = s.supervisor.lanes.find((item) => item.id === laneId);
       if (!lane || supervisorLaneControlState(lane) !== 'paused') return s;
+      const lanes = s.supervisor.lanes.map((item) => item.id === laneId
+        ? { ...item, controlState: 'active' as const }
+        : item);
       return {
         supervisor: {
           ...s.supervisor,
-          lanes: s.supervisor.lanes.map((item) => item.id === laneId
-            ? { ...item, enabled: true, controlState: 'active' }
-            : item),
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
           log: [{
             ts: Date.now(), laneId, action: '继续通道', detail: detail || `${lane.label} 已继续`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
@@ -841,9 +677,10 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       return {
         supervisor: {
           ...s.supervisor,
+          ...supervisorRuntimeFlags(lanes),
           lanes,
           pendingApprovals: s.supervisor.pendingApprovals.filter((item) => item.laneId !== laneId),
-          ...(hasRetainedLane ? {} : { active: false, paused: false, autonomous: false }),
+          ...(hasRetainedLane ? {} : { autonomous: false }),
           log: [{
             ts: Date.now(), laneId, action: '停止通道', detail: detail || `${lane.label} 已停止并解除终端绑定`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
@@ -960,38 +797,20 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     });
   },
   updateLane(laneId, patch) {
-    set((s) => ({
-      supervisor: {
-        ...s.supervisor,
-        lanes: s.supervisor.lanes.map((l) => (
-          l.id === laneId ? normalizeSupervisorLaneBinding({ ...l, ...patch }) : l
-        )),
-      },
-    }));
-  },
-  updateStep(laneId, stepId, patch) {
-    set((s) => ({
-      supervisor: {
-        ...s.supervisor,
-        lanes: s.supervisor.lanes.map((l) => {
-          if (l.id !== laneId) return l;
-          return {
-            ...l,
-            steps: l.steps.map((st) => (st.id === stepId ? { ...st, ...patch } : st)),
-          };
-        }),
-      },
-    }));
-  },
-  resetSupervisorSession() {
-    set((s) => ({
-      supervisor: {
-        ...createDefaultSupervisorSession(),
-        // The pinned session shell is UI chrome, not task context. Keep it so
-        // “start over” opens a clean configuration in the same fixed session.
-        supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
-      },
-    }));
+    set((s) => {
+      const lanes = s.supervisor.lanes.map((lane) => (
+        lane.id === laneId ? normalizeSupervisorLaneBinding({ ...lane, ...patch }) : lane
+      ));
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...(patch.controlState !== undefined && s.supervisor.sessionId
+            ? supervisorRuntimeFlags(lanes)
+            : {}),
+          lanes,
+        },
+      };
+    });
   },
   resetOrdinarySupervisorSession() {
     set((s) => {
@@ -1023,30 +842,29 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const target = s.supervisor.lanes.find((lane) => lane.id === laneId);
       const waitForNextDirection = target?.config?.waitForNextDirection === true;
+      const lanes = s.supervisor.lanes.map((lane) =>
+        lane.id === laneId
+          ? {
+              ...lane,
+              awaitingStopCheck: false,
+              stopConfirmed: true,
+              autoDecisionLimitReached: false,
+              controlState: waitForNextDirection ? 'waiting' as const : 'stopped' as const,
+              ...(waitForNextDirection ? { awaitingReview: false } : { autonomousOverride: undefined }),
+            }
+          : lane,
+      );
       return {
         supervisor: {
           ...s.supervisor,
-          lanes: s.supervisor.lanes.map((lane) =>
-            lane.id === laneId
-              ? {
-                  ...lane,
-                  awaitingStopCheck: false,
-                  stopConfirmed: true,
-                  autoDecisionLimitReached: false,
-                  enabled: waitForNextDirection,
-                  controlState: waitForNextDirection ? 'waiting' as const : 'stopped' as const,
-                  ...(waitForNextDirection ? { awaitingReview: false } : { autonomousOverride: undefined }),
-                }
-              : lane,
-          ),
+          ...supervisorRuntimeFlags(lanes),
+          lanes,
           log: [
             {
               ts: Date.now(),
               laneId,
               action: waitForNextDirection ? '停止条件确认，进入待续' : '停止条件确认',
               detail: target?.config?.stopWhen?.trim()
-                || target?.stopWhenOverride?.trim()
-                || s.supervisor.stopWhen.trim()
                 || (waitForNextDirection ? '已确认达到结束条件，等待下一步方向' : '已确认达到结束条件，停止注入'),
             },
             ...s.supervisor.log,
@@ -1054,12 +872,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         },
       };
     });
-    const remaining = get().supervisor.lanes.filter(
-      (lane) => supervisorLaneControlState(lane) !== 'stopped',
-    );
-    if (remaining.length === 0) {
-      get().stopSupervisor('全部通道已达停止条件');
-    }
   },
   rejectStopCondition(laneId) {
     set((s) => ({

@@ -39,7 +39,6 @@ export function resumeWaitingLaneFromSupervisorInput(
 
   const store = useStore.getState();
   store.updateLane(lane.id, {
-    enabled: true,
     controlState: 'active',
     awaitingStopCheck: false,
     stopConfirmed: false,
@@ -93,7 +92,6 @@ export function handleSupervisorUserSubmit(surfaceId: string): boolean {
     awaitingReview: false,
     awaitingStopCheck: false,
     stopConfirmed: false,
-    enabled: true,
     controlState: 'active',
     resumeAfterCancelledDecision: false,
     autoDecisionLimitReached: false,

@@ -20,7 +20,7 @@ function session(overrides: Partial<SupervisorSession> = {}): SupervisorSession 
       label: 'worker',
       surfaceId: 'worker-a',
       supervisorSurfaceId: 'supervisor-a',
-      enabled: true,
+      controlState: 'active',
     }],
     ...overrides,
   } as SupervisorSession;
@@ -77,7 +77,7 @@ describe('supervisor generic input guard', () => {
     expect(evaluateSupervisorGenericInput(session({ active: false }), 'supervisor-a', 'worker-a'))
       .toMatchObject({ supervisedCaller: true, blocked: true });
     const disabled = session();
-    disabled.lanes[0].enabled = false;
+    disabled.lanes[0].controlState = 'stopped';
     expect(evaluateSupervisorGenericInput(disabled, 'supervisor-a', 'worker-a'))
       .toMatchObject({ supervisedCaller: true, blocked: true });
   });

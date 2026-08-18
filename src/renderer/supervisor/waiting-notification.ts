@@ -18,10 +18,10 @@ export function announceSupervisorWaitingForDirection(
   const lane = store.supervisor.lanes.find((candidate) => candidate.id === previousLane.id);
   if (!lane || supervisorLaneControlState(lane) !== 'waiting') return false;
 
-  const config = effectiveSupervisorLaneConfig(store.supervisor, lane);
+  const config = effectiveSupervisorLaneConfig(lane);
   appendSupervisorRecord(store.supervisor, lane, 'supervisor.waiting-for-direction', {
     reason,
-    taskGoal: effectiveSupervisorTaskGoal(store.supervisor, lane),
+    taskGoal: effectiveSupervisorTaskGoal(lane),
     stopWhen: config.stopWhen,
   });
 

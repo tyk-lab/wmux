@@ -8,10 +8,7 @@ const workerLane = (): SupervisorLane => ({
   label: 'worker',
   surfaceId: 'worker-user' as any,
   supervisorSurfaceId: 'supervisor-user' as any,
-  enabled: true,
-  steps: [],
-  maxAutoSteps: 0,
-  autoStepsUsed: 0,
+  controlState: 'active',
   awaitingStopCheck: true,
   stopConfirmed: false,
   awaitingReview: true,
@@ -34,9 +31,10 @@ describe('supervisor user input precedence', () => {
       value: { wmux: {} },
     });
     const store = useStore.getState();
-    store.resetSupervisorSession();
-    store.setSupervisorLanes([workerLane()]);
-    store.startSupervisor();
+    store.setProjectSupervisorLanes([]);
+    store.resetOrdinarySupervisorSession();
+    store.setOrdinarySupervisorLanes([workerLane()]);
+    store.startOrdinarySupervisor();
     store.enqueueApproval({
       laneId: 'lane-user',
       surfaceId: 'worker-user' as any,
@@ -50,7 +48,8 @@ describe('supervisor user input precedence', () => {
   });
 
   afterEach(() => {
-    useStore.getState().resetSupervisorSession();
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
     Reflect.deleteProperty(globalThis, 'window');
   });
 
@@ -74,7 +73,6 @@ describe('supervisor user input precedence', () => {
   it('resumes a waiting lane and resets completion state when the user submits a new direction', () => {
     const store = useStore.getState();
     store.updateLane('lane-user', {
-      enabled: true,
       controlState: 'waiting',
       stopConfirmed: true,
       awaitingReview: false,
@@ -84,7 +82,6 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: true,
       controlState: 'active',
       stopConfirmed: false,
       awaitingStopCheck: false,
@@ -98,7 +95,6 @@ describe('supervisor user input precedence', () => {
     const store = useStore.getState();
     store.rejectPending(store.supervisor.pendingApprovals[0].id);
     store.updateLane('lane-user', {
-      enabled: true,
       controlState: 'waiting',
       stopConfirmed: true,
       awaitingReview: false,
@@ -107,7 +103,6 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('supervisor-user')).toBe(true);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
-      enabled: true,
       controlState: 'active',
       stopConfirmed: false,
       awaitingStopCheck: false,
