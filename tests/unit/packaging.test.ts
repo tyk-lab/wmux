@@ -18,8 +18,9 @@ describe('electron-builder packaging', () => {
   );
   const extraResources: Array<{ from: string; to: string; filter?: string[] }> = config.extraResources;
 
-  it('ships every compiled CLI module outside the asar', () => {
+  it('ships every compiled CLI module and its shared dependencies outside the asar', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli', to: 'cli', filter: ['*.js'] });
+    expect(extraResources).toContainEqual({ from: 'dist/shared', to: 'shared', filter: ['*.js'] });
   });
 
   it('ships the project management orchestration skill outside the asar', () => {
