@@ -168,9 +168,12 @@ export default function ProjectManagerDialog() {
   const [recoveryStatus, setRecoveryStatus] = useState<'unchecked' | 'checking' | 'prompt' | 'done'>('unchecked');
   const [recoveryCandidates, setRecoveryCandidates] = useState<ProjectRecoveryCandidate[]>([]);
   const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
+  const [recoveryDeleteCandidate, setRecoveryDeleteCandidate] = useState<ProjectRecoveryCandidate | null>(null);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
   const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('conversation');
+  const goalRef = useRef<HTMLTextAreaElement | null>(null);
+  const recoveryDeleteCancelRef = useRef<HTMLButtonElement | null>(null);
   const clarificationRef = useRef<HTMLElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
   const conversation = useMemo(() => session?.events.filter((event) => (
@@ -228,6 +231,22 @@ export default function ProjectManagerDialog() {
   useEffect(() => {
     if (open) setActiveView('conversation');
   }, [open, session?.id]);
+
+  useEffect(() => {
+    if (!open) setRecoveryDeleteCandidate(null);
+  }, [open]);
+
+  useEffect(() => {
+    if (!recoveryDeleteCandidate) return undefined;
+    recoveryDeleteCancelRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setRecoveryDeleteCandidate(null);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [recoveryDeleteCandidate]);
 
   useEffect(() => {
     if (!open) return;
@@ -356,11 +375,6 @@ export default function ProjectManagerDialog() {
 
   const deleteRecoveryCandidate = async (candidate: ProjectRecoveryCandidate) => {
     if (busy) return;
-    if (!window.confirm([
-      `将永久删除“${candidate.goal}”的历史项目管理记录和管理日志。`,
-      `项目目录标识：${candidate.projectDir}`,
-      '项目目录、代码和业务文件不会删除；删除后无法从此页面恢复。是否继续？',
-    ].join('\n'))) return;
     setBusy(true);
     setNotice('');
     setConfigNotice('');
@@ -369,11 +383,15 @@ export default function ProjectManagerDialog() {
       const remaining = recoveryCandidates.filter((item) => item.id !== candidate.id);
       setRecoveryCandidates(remaining);
       setSelectedRecoveryIds((current) => current.filter((id) => id !== candidate.id));
-      if (remaining.length === 0) setRecoveryStatus('done');
+      if (remaining.length === 0) {
+        setRecoveryStatus('done');
+        window.requestAnimationFrame(() => goalRef.current?.focus({ preventScroll: true }));
+      }
       setConfigNotice(result.message || '历史项目管理记录已删除。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
+      setRecoveryDeleteCandidate(null);
       setBusy(false);
     }
   };
@@ -705,7 +723,7 @@ export default function ProjectManagerDialog() {
                           className="confirm-dialog__btn confirm-dialog__btn--danger project-manager-dialog__recovery-delete"
                           disabled={busy}
                           aria-label={`删除历史项目记录：${candidate.goal}`}
-                          onClick={() => void deleteRecoveryCandidate(candidate)}
+                          onClick={() => setRecoveryDeleteCandidate(candidate)}
                         >删除记录</button>
                       </div>
                     ))}
@@ -865,7 +883,7 @@ export default function ProjectManagerDialog() {
                 <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void pickProjectDirectory()}>选择目录</button>
               </div>
               <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目标</div>
-              <textarea className="supervisor-dialog__textarea" rows={3} value={goal} onChange={(event) => {
+              <textarea ref={goalRef} className="supervisor-dialog__textarea" rows={3} value={goal} onChange={(event) => {
                 setGoal(event.target.value);
                 setNotice('');
               }} placeholder="描述项目管理 AI 要追逐的上层目标" />
@@ -1107,6 +1125,36 @@ export default function ProjectManagerDialog() {
           <button type="button" className="confirm-dialog__btn" onClick={close}>关闭</button>
           {!awaitingRecovery && (creating || !session) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : '添加项目'}</button>}
         </div>
+
+        {recoveryDeleteCandidate && (
+          <div className="confirm-dialog__overlay project-manager-dialog__delete-confirm-overlay" onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) setRecoveryDeleteCandidate(null);
+          }}>
+            <div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="确认删除历史项目记录">
+              <div className="confirm-dialog__title">确认删除历史项目记录？</div>
+              <div className="confirm-dialog__message project-manager-dialog__delete-confirm-message">
+                <div>将永久删除“{recoveryDeleteCandidate.goal}”的历史项目管理记录和管理日志。</div>
+                <div>项目目录标识：{recoveryDeleteCandidate.projectDir}</div>
+                <div>项目目录、代码和业务文件不会删除；删除后无法从此页面恢复。</div>
+              </div>
+              <div className="confirm-dialog__actions">
+                <button
+                  ref={recoveryDeleteCancelRef}
+                  type="button"
+                  className="confirm-dialog__btn"
+                  disabled={busy}
+                  onClick={() => setRecoveryDeleteCandidate(null)}
+                >取消</button>
+                <button
+                  type="button"
+                  className="confirm-dialog__btn confirm-dialog__btn--danger"
+                  disabled={busy}
+                  onClick={() => void deleteRecoveryCandidate(recoveryDeleteCandidate)}
+                >{busy ? '正在删除…' : '确认删除'}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

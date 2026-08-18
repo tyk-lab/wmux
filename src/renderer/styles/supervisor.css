@@ -326,6 +326,16 @@
   padding-inline: 10px;
 }
 
+.project-manager-dialog__delete-confirm-overlay {
+  z-index: 1300;
+}
+
+.project-manager-dialog__delete-confirm-message {
+  display: grid;
+  gap: 7px;
+  overflow-wrap: anywhere;
+}
+
 .project-manager-dialog__recovery-list label {
   display: flex;
   align-items: flex-start;

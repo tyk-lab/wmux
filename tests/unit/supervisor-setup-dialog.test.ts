@@ -56,6 +56,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
     expect(projectManagerDialogSource).toContain("action: 'delete-recovery-project'");
     expect(projectManagerDialogSource).toContain('删除记录');
+    expect(projectManagerDialogSource).toContain('确认删除历史项目记录？');
+    expect(projectManagerDialogSource).toContain('recoveryDeleteCancelRef.current?.focus()');
     expect(projectManagerDialogSource).toContain('删除后无法从此页面恢复');
     expect(projectManagerDialogSource).toContain('计划文件（可选，最多');
     expect(projectManagerDialogSource).toContain('选择计划文件');
@@ -105,6 +107,17 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('ordinarySupervisorLanes.filter(isSupervisorLaneBound)');
     expect(dialogSource).toContain('setSelected(new Set(importPlan.selectedSurfaceIds))');
     expect(dialogSource).toContain('for (const surfaceId of importedSurfaceIds)');
+  });
+
+  it('uses an in-app confirmation so deleting the last recovery record preserves renderer focus', () => {
+    const deleteRecoveryHandler = projectManagerDialogSource.match(
+      /const deleteRecoveryCandidate = async[\s\S]*?^  };/m,
+    )?.[0] || '';
+
+    expect(deleteRecoveryHandler).not.toContain('window.confirm');
+    expect(deleteRecoveryHandler).toContain('goalRef.current?.focus({ preventScroll: true })');
+    expect(projectManagerDialogSource).toContain('role="alertdialog"');
+    expect(projectManagerDialogSource).toContain("onClick={() => void deleteRecoveryCandidate(recoveryDeleteCandidate)}");
   });
 
   it('isolates ordinary setup and lifecycle controls from project-managed supervision', () => {
