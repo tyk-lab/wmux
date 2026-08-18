@@ -9,6 +9,7 @@ import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
 import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
 import { cleanupProjectJsonInput, resolveProjectJsonInput } from './project-command';
+import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -162,7 +163,10 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
   if (!surfaceId || !outcome) throw new Error('--surface and --outcome are required');
-  const nextInput = resolveSupervisorNextInput(args);
+  const nextInput = resolveSupervisorNextInput(
+    args,
+    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+  );
 
   const result = await sendV2('supervisor.decide', {
     surfaceId,
@@ -209,6 +213,13 @@ async function resolveProjectScopedJsonInput(args: string[], projectId: string) 
 async function cmdProject(args: string[]): Promise<void> {
   const sub = args[1];
   const projectId = getFlag(args, '--project') || '';
+  if (!projectId && sub && sub !== 'status' && sub !== 'start'
+    && sub !== 'pause-all' && sub !== 'resume-all') {
+    const portfolio = await sendV2('project.status', { projectId: '' });
+    if (projectCommandNeedsExplicitId(sub, projectId, Array.isArray(portfolio?.projects) ? portfolio.projects : [])) {
+      throw new Error(`存在多个项目，project ${sub} 必须显式指定 --project <id>`);
+    }
+  }
   if (sub === 'status' || sub === 'logs' || sub === 'terminals') {
     print(await sendV2(`project.${sub}`, { projectId }));
     return;
@@ -1055,8 +1066,9 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
-            project update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            project update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            project-specific commands use --project <id> (required when multiple projects exist)
             task-terminal-start and task-terminal-rotate are reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
