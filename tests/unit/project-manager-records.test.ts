@@ -51,7 +51,7 @@ describe('project manager records', () => {
     expect(readLatestProjectManagerSession('E:\\other', appData)).toBeNull();
   });
 
-  it('restores legacy snapshots without prerequisites or plan files as empty lists', () => {
+  it('restores incomplete snapshots as unaccepted definitions that require alignment', () => {
     const appData = root();
     const directory = path.join(appData, 'project-manager');
     fs.mkdirSync(directory, { recursive: true });
@@ -62,6 +62,7 @@ describe('project manager records', () => {
 
     expect(readLatestProjectManagerSession('E:\\repo', appData)?.preconditions).toEqual([]);
     expect(readLatestProjectManagerSession('E:\\repo', appData)?.planFiles).toEqual([]);
+    expect(readLatestProjectManagerSession('E:\\repo', appData)?.acceptedRequirementsVersion).toBe(0);
   });
 
   it('persists plan snapshots and a pending user clarification for recovery', () => {

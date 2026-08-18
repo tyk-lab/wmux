@@ -31,6 +31,12 @@ import {
 } from '../utils/terminal-buffer-cache';
 import { handleShiftEnter, isShiftEnter, isTerminalCtrlC, shouldBroadcastTerminalInput } from './terminal-keys';
 import { isConEmuSubcommand } from './osc9';
+import {
+  markTerminalRuntimeExited,
+  markTerminalRuntimeFailed,
+  markTerminalRuntimeReady,
+  terminalRuntimeStatus,
+} from '../terminal-runtime-lifecycle';
 import '@xterm/xterm/css/xterm.css';
 
 declare global {
@@ -101,20 +107,103 @@ function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): 
   const state = useStore.getState();
   const workspace = state.workspaces.find((candidate) => treeHasSurface(candidate.splitTree, surfaceId));
   const surface = workspace ? findSurfaceRef(workspace.splitTree, surfaceId) : null;
-  if (!workspace || !surface?.projectManagerTerminal) return;
-  const text = `项目管理 AI 运行时不可用：${detail}`;
-  state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title: '项目管理 AI 已停止' });
+  if (!workspace || !surface) return;
+  const lane = state.supervisor.lanes.find((candidate) => (
+    candidate.supervisorSurfaceId === surfaceId || candidate.surfaceId === surfaceId
+  ));
+  const role = surface.projectManagerTerminal
+    ? 'manager'
+    : lane?.supervisorSurfaceId === surfaceId
+      ? 'supervisor'
+      : lane?.surfaceId === surfaceId
+        ? 'task'
+        : surface.userRecordsTerminal
+          ? 'user-records'
+          : null;
+  if (!role) return;
+  const roleLabel = role === 'manager'
+    ? '项目管理 AI'
+    : role === 'supervisor'
+      ? 'AI 监督'
+      : role === 'task'
+        ? '任务终端 AI'
+        : '用户记录终端';
+  const text = `${roleLabel}运行时不可用：${detail}`;
+  const title = `${roleLabel}已停止`;
+  state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title });
   window.wmux?.notification?.fire({
     surfaceId: surface.id,
-    title: '项目管理 AI 已停止',
+    title,
     text,
   });
-  for (const session of state.projectManagers.filter((candidate) => !['completed', 'stopped'].includes(candidate.status))) {
-    state.appendProjectManagerEvent({
-      kind: 'manager-runtime-failed',
+
+  const projectSessions = role === 'manager'
+    ? state.projectManagers.filter((candidate) => !['completed', 'stopped'].includes(candidate.status))
+    : lane?.projectManagerProjectId
+      ? state.projectManagers.filter((candidate) => candidate.id === lane.projectManagerProjectId)
+      : [];
+  for (const session of projectSessions) {
+    const kind = role === 'manager'
+      ? 'manager-runtime-failed'
+      : role === 'supervisor'
+        ? 'supervisor-runtime-failed'
+        : 'task-runtime-failed';
+    if (lane) {
+      state.pauseSupervisorLane(lane.id, text);
+      if (lane.projectWorkItemId) {
+        state.applyProjectManagerAction({
+          type: 'update-work-item',
+          workItemId: lane.projectWorkItemId,
+          patch: {
+            status: 'waiting-decision',
+            latestBlocker: text,
+          },
+        }, session.id);
+      }
+    } else {
+      for (const projectLane of state.supervisor.lanes.filter((candidate) => (
+        candidate.projectManagerProjectId === session.id
+      ))) {
+        state.pauseSupervisorLane(projectLane.id, text);
+      }
+    }
+    const currentSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+    if (currentSession && currentSession.status !== 'paused') {
+      state.applyProjectManagerAction({ type: 'pause-project', reason: text }, session.id);
+    }
+    const event = state.appendProjectManagerEvent({
+      kind,
+      workItemId: lane?.projectWorkItemId,
       summary: text,
-      payload: { surfaceId, detail },
+      payload: { surfaceId, detail, laneId: lane?.id },
     }, session.id);
+    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+    void window.wmux?.projectManager?.saveSession?.(updated);
+    if (event) {
+      void window.wmux?.projectManager?.appendRecord?.({
+        sessionId: session.id,
+        projectDir: session.projectDir,
+        type: event.kind,
+        payload: { message: event.summary, surfaceId, detail, laneId: lane?.id },
+      });
+    }
+  }
+
+  if (lane && !lane.projectManagerProjectId && state.supervisor.sessionId && lane.projectDir) {
+    state.pauseSupervisorLane(lane.id, text);
+    void window.wmux?.supervisor?.appendRecord?.({
+      sessionId: lane.managementSessionId || state.supervisor.sessionId,
+      projectDir: lane.projectDir,
+      type: role === 'supervisor' ? 'supervisor.runtime-failed' : 'task.runtime-failed',
+      terminal: {
+        surfaceId,
+        paneId: lane.paneId,
+        workspaceId: lane.workspaceId,
+        workspaceTitle: lane.workspaceTitle,
+        label: lane.label,
+      },
+      payload: { detail, laneId: lane.id },
+    });
   }
 }
 
@@ -805,6 +894,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     let startupTrustConfirmed = false;
     let startupTrustPollTimer: ReturnType<typeof setInterval> | undefined;
     let startupTrustPollTimeout: ReturnType<typeof setTimeout> | undefined;
+    let runtimeReadyTimer: ReturnType<typeof setTimeout> | undefined;
 
     const startupInputScreenText = (): string => {
       try {
@@ -846,6 +936,19 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
         if (disposed) return;
         startupInputOutput = `${startupInputOutput}${data}`.slice(-12_000);
+        if (
+          !startupInputRef.current
+          && !runtimeReadyTimer
+          && terminalRuntimeStatus(id)?.state === 'starting'
+        ) {
+          // A created surface is not an AI runtime yet. Require observable
+          // process output and a short stability window so command-not-found
+          // exits cannot be reported as successful startup.
+          runtimeReadyTimer = setTimeout(() => {
+            runtimeReadyTimer = undefined;
+            if (terminalRuntimeStatus(id)?.state === 'starting') markTerminalRuntimeReady(id);
+          }, 300);
+        }
         maybeConfirmStartupTrust(id);
         // Track SGR/button mouse enable (?1006h, ?1000h, ?1002h, ?1003h) and disable
         // so the wheel handler can distinguish tmux from a plain shell after remount.
@@ -859,16 +962,24 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // Wire PTY exit → inform user; also auto-heal a stuck "Running" badge
       // (see clearStuckRunningState).
       const unsubExit = window.wmux.pty.onExit(id, (code: number) => {
+        if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
+        runtimeReadyTimer = undefined;
         terminal.writeln('\r\n\x1b[2m[process exited]\x1b[0m');
         clearStuckRunningState(id);
         if (sshProfileId) detachExitedSshWorkspace(id);
-        notifyProjectManagerRuntimeFailure(id, `进程已退出（代码 ${code}）`);
+        const detail = `进程已退出（代码 ${code}）`;
+        markTerminalRuntimeExited(id, detail);
+        notifyProjectManagerRuntimeFailure(id, detail);
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).
         useStore.getState().setSurfaceProgress(id, null);
       });
 
       cleanupFnsRef.current.push(unsubData, unsubExit);
+      cleanupFnsRef.current.push(() => {
+        if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
+        runtimeReadyTimer = undefined;
+      });
 
       // Flush any resize that arrived before this PTY was ready
       if (pendingResizeDims) {
@@ -889,6 +1000,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         startupTrustPollTimeout = setTimeout(stopStartupTrustPolling, 30_000);
         cleanupFnsRef.current.push(stopStartupTrustPolling);
       }
+      const startupStillPending = terminalRuntimeStatus(id)?.state === 'starting';
+      if (!startupInputRef.current && !startupStillPending) markTerminalRuntimeReady(id);
     };
 
     // Fallback path for quick-launch startup commands on shells where the main
@@ -924,9 +1037,13 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }).then((delivered) => {
         if (delivered) {
           clearStartupInputForSurface(id);
+          markTerminalRuntimeReady(id);
           return;
         }
         startupInputScheduledSurfaceIds.delete(id);
+        const detail = '首条启动指令未能可靠写入终端';
+        markTerminalRuntimeFailed(id, detail);
+        notifyProjectManagerRuntimeFailure(id, detail);
         terminal.writeln('\r\n\x1b[31m[首条任务发送失败：终端暂不可写，请稍后重新发送]\x1b[0m');
         console.warn(`[terminal] startup input delivery failed for ${id}`);
       });
@@ -993,9 +1110,17 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             })
             .catch((err: unknown) => {
               terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
-              if (surfaceId) notifyProjectManagerRuntimeFailure(surfaceId, `无法创建终端：${String(err)}`);
+              if (surfaceId) {
+                const detail = `无法创建终端：${String(err)}`;
+                markTerminalRuntimeFailed(surfaceId, detail);
+                notifyProjectManagerRuntimeFailure(surfaceId, detail);
+              }
             });
         }
+      }).catch((err: unknown) => {
+        const detail = `无法检查终端运行状态：${String(err)}`;
+        markTerminalRuntimeFailed(surfaceId, detail);
+        notifyProjectManagerRuntimeFailure(surfaceId, detail);
       });
     } else {
       // No surfaceId hint — always create new PTY
@@ -1009,7 +1134,11 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         })
         .catch((err: unknown) => {
           terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
-          if (surfaceId) notifyProjectManagerRuntimeFailure(surfaceId, `无法创建终端：${String(err)}`);
+          if (surfaceId) {
+            const detail = `无法创建终端：${String(err)}`;
+            markTerminalRuntimeFailed(surfaceId, detail);
+            notifyProjectManagerRuntimeFailure(surfaceId, detail);
+          }
         });
     }
 

@@ -148,6 +148,21 @@ describe('supervisor session restore', () => {
     expect(restored.surfaces.map((surface) => surface.id)).toEqual(['user-shell']);
   });
 
+  it('does not auto-relaunch a closed user-records Agent conversation', () => {
+    const result = omitNonRestorableWorkspaces([{
+      id: 'ws-user-records' as any,
+      splitTree: leaf([{
+        id: 'user-records' as any,
+        type: 'terminal',
+        userRecordsTerminal: true,
+        startupCommands: ['codex'],
+        startupInput: '$user-data-management',
+      }]),
+    }]);
+
+    expect(result.workspaces).toEqual([]);
+  });
+
   it('omits SSH workspaces and remaps the active local workspace', () => {
     const result = omitNonRestorableWorkspaces([
       {

@@ -30,6 +30,10 @@ export type ProjectManagerEventKind =
   | 'recovery-restored'
   | 'manager-runtime-restarted'
   | 'manager-runtime-failed'
+  | 'supervisor-runtime-failed'
+  | 'task-runtime-failed'
+  | 'requirements-quiesce-failed'
+  | 'requirements-quiesced'
   | 'manager-delivery-failed'
   | 'user-clarification-requested'
   | 'user-clarification-answered'
@@ -238,10 +242,9 @@ export function projectAcceptedRequirementsVersion(
   if (Number.isFinite(session.acceptedRequirementsVersion)) {
     return Math.max(0, Math.trunc(session.acceptedRequirementsVersion || 0));
   }
-  // Legacy active projects predate versioned constraints and are treated as
-  // having accepted their persisted definition. Waiting projects still pass
-  // through their existing alignment/recovery gates before they can resume.
-  return session.status === 'active' ? projectRequirementsVersion(session) : 0;
+  // Missing acceptance is never interpreted as authorization to execute. Old
+  // snapshots may still be inspected, but must pass alignment before resuming.
+  return 0;
 }
 
 export type ProjectManagerAction =

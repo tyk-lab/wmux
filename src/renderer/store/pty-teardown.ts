@@ -17,12 +17,14 @@
  * stays testable in Node.
  */
 import { SplitNode, SurfaceRef, WorkspaceInfo } from '../../shared/types';
+import { disposeTerminalRuntimeStatus } from '../terminal-runtime-lifecycle';
 
 /** Kill the PTY backing a single terminal surface. Idempotent — the main-process
  *  `PtyManager.kill` no-ops on an unknown/already-dead id, so double-calls (e.g.
  *  a legacy UI kill + the store kill) are harmless. */
 export function killSurfacePty(surface: Pick<SurfaceRef, 'id' | 'type'>): void {
   if (surface.type !== 'terminal') return;
+  disposeTerminalRuntimeStatus(surface.id);
   try {
     (globalThis as { window?: { wmux?: { pty?: { kill?: (id: string) => void } } } }).window
       ?.wmux?.pty?.kill?.(surface.id);

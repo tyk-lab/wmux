@@ -9,6 +9,7 @@ export function shouldInitializeWorkspaceLayout(existingWorkspaceCount: number):
 export function isTransientSupervisorSurface(surface: SurfaceRef): boolean {
   return surface.type === 'supervisor'
     || surface.transientSupervisor === true
+    || surface.userRecordsTerminal === true
     || !!surface.projectManagerProjectId;
 }
 

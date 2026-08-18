@@ -213,18 +213,6 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2(`project.${sub}`, { projectId }));
     return;
   }
-  if (sub === 'terminal-create') {
-    const input = await resolveProjectScopedJsonInput(args, projectId);
-    let success = false;
-    try {
-      const result = await sendV2('project.terminal.create', { ...input.value, projectId });
-      success = result?.ok !== false;
-      print(result);
-    } finally {
-      cleanupProjectJsonInput(input, success);
-    }
-    return;
-  }
   if (sub === 'start') {
     const goal = getFlag(args, '--goal') || '';
     const preconditions = getFlag(args, '--preconditions') || '';
@@ -293,6 +281,14 @@ async function cmdProject(args: string[]): Promise<void> {
       throw new Error('project task-terminal-start requires --project and --task');
     }
     print(await sendV2('project.task-terminal.start', { workItemId, projectId }));
+    return;
+  }
+  if (sub === 'task-terminal-rotate') {
+    const workItemId = getFlag(args, '--task') || '';
+    if (!projectId || !workItemId) {
+      throw new Error('project task-terminal-rotate requires --project and --task');
+    }
+    print(await sendV2('project.task-terminal.rotate', { workItemId, projectId }));
     return;
   }
   if (sub === 'inspect') {
@@ -369,7 +365,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-create|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <start|update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1059,9 +1055,9 @@ Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complet
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project start --goal <text> --preconditions <a;b> --done-when <a;b> [--project-dir <path>]
-            project update|alignment-confirm|status|logs|terminals|task-create|task-update|record|supervise|task-terminal-start|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            project update|alignment-confirm|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|task-terminal-start|task-terminal-rotate|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
-            task-terminal-start is reserved for the dedicated project supervisor
+            task-terminal-start and task-terminal-rotate are reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

@@ -243,4 +243,78 @@ describe('PipeServer', () => {
       expect(parsed.result).toEqual({ ok: true });
     }
   });
+
+  it('binds a surface capability to its real caller identity', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'surface-secret' ? 'surf-manager' : undefined,
+    );
+    let received: any;
+    server.on('v2', (req, respond) => {
+      received = req;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const response = await connectAndSend(pipe, JSON.stringify({
+      method: 'project.status',
+      params: { callerSurfaceId: 'surf-forged' },
+      id: 9,
+      token: 'surface-secret',
+    }));
+    expect(JSON.parse(response).result).toEqual({ ok: true });
+    expect(received.params.callerSurfaceId).toBe('surf-manager');
+  });
+
+  it('does not let the instance-wide token impersonate a project AI surface', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'surface-secret' ? 'surf-manager' : undefined,
+    );
+    let handlerCalled = false;
+    server.on('v2', (_req, respond) => {
+      handlerCalled = true;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const response = await connectAndSend(pipe, JSON.stringify({
+      method: 'project.status',
+      params: { callerSurfaceId: 'surf-manager' },
+      id: 10,
+      token: 'instance-secret',
+    }));
+    expect(JSON.parse(response).error?.code).toBe(-32001);
+    expect(handlerCalled).toBe(false);
+  });
+
+  it('rejects V1 spoofing with another surface capability', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'surface-secret' ? 'surf-owner' : undefined,
+    );
+    const commands: any[] = [];
+    server.on('v1', (cmd) => commands.push(cmd));
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    expect(await connectAndSend(
+      pipe,
+      'auth surface-secret report_pwd surf-other C:\\forged',
+    )).toBe('unauthorized');
+    expect(commands).toEqual([]);
+    expect(await connectAndSend(
+      pipe,
+      'auth surface-secret report_pwd surf-owner C:\\valid',
+    )).toBe('ok');
+    expect(commands[0]).toMatchObject({ surfaceId: 'surf-owner', args: ['C:\\valid'] });
+  });
 });

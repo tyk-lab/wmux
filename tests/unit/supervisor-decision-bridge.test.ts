@@ -15,6 +15,10 @@ import {
   USER_RECORDS_TERMINAL_NAME,
   USER_RECORDS_TERMINAL_STARTUP_INPUT,
 } from '../../src/shared/user-records-terminal';
+import {
+  clearTerminalRuntimeStatus,
+  markTerminalRuntimeReady,
+} from '../../src/renderer/terminal-runtime-lifecycle';
 
 function lane(): SupervisorLane {
   return {
@@ -1444,9 +1448,9 @@ describe('supervisor decision bridge', () => {
 
   it('lets the project manager pause one project for clarification and accepts the first desktop or Feishu answer', async () => {
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
-    await remote({ action: 'start', projectDir: 'E:\\question-a', goal: '项目 A', doneWhen: ['A 完成'] });
+    await remote({ action: 'start', projectDir: 'E:\\question-a', goal: '实现项目 A 的登录配置', doneWhen: ['登录配置测试通过'] });
     const first = useStore.getState().projectManager!;
-    await remote({ action: 'start', projectDir: 'E:\\question-b', goal: '项目 B', doneWhen: ['B 完成'] });
+    await remote({ action: 'start', projectDir: 'E:\\question-b', goal: '实现项目 B 的登录配置', doneWhen: ['登录配置测试通过'] });
     const second = useStore.getState().projectManager!;
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
 
@@ -1500,7 +1504,8 @@ describe('supervisor decision bridge', () => {
     }));
   });
 
-  it('automatically sends recommended requirement options when an underspecified project is first created', async () => {
+  it('lets project AI assess requirements first and asks only when it tries to execute underspecified work', async () => {
+    useStore.getState().closeProjectManagerDialog();
     const project = {
       projectDir: 'C:\\Users\\tyk\\Desktop\\新建文件夹 (2)',
       goal: '测试相关功能',
@@ -1519,38 +1524,31 @@ describe('supervisor decision bridge', () => {
       restored: false,
       session: {
         status: 'waiting',
-        pendingUserQuestion: {
-          question: expect.stringContaining('产品形态'),
-          recommendedOptionId: 'local-web',
-          options: [
-            expect.objectContaining({ id: 'local-web', label: '本地网页系统', description: expect.stringContaining('推荐方案') }),
-            expect.objectContaining({ id: 'desktop-app', label: '桌面单机应用' }),
-            expect.objectContaining({ id: 'command-line', label: '命令行原型' }),
-          ],
-        },
+      },
+    });
+    expect(result.session.pendingUserQuestion).toBeUndefined();
+    expect(useStore.getState().projectManagerDialogOpen).toBe(false);
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'task-create', callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: useStore.getState().projectManager?.id,
+    })).resolves.toMatchObject({
+      ok: false,
+      question: {
+        question: expect.stringContaining('产品形态'),
+        recommendedOptionId: 'local-web',
+        options: [
+          expect.objectContaining({ id: 'local-web', label: '本地网页系统', description: expect.stringContaining('推荐方案') }),
+          expect.objectContaining({ id: 'desktop-app', label: '桌面单机应用' }),
+          expect.objectContaining({ id: 'command-line', label: '命令行原型' }),
+        ],
       },
     });
     expect(useStore.getState().projectManagerDialogOpen).toBe(true);
     expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       type: 'user-clarification-requested',
-      payload: expect.objectContaining({
-        question: expect.objectContaining({ recommendedOptionId: 'local-web' }),
-      }),
     }));
-
-    const pending = useStore.getState().projectManager?.pendingUserQuestion;
-    await expect(remote({
-      action: 'answer-question', projectId: useStore.getState().projectManager?.id, questionId: pending?.id,
-      optionId: 'local-web', answer: '本地网页系统', source: 'feishu',
-    })).resolves.toMatchObject({ ok: true, session: { status: 'waiting', pendingUserQuestion: undefined } });
-    const request = (globalThis.window as any).__wmux_projectManagerRequest;
-    await expect(request({
-      action: 'resume', callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
-      projectId: useStore.getState().projectManager?.id, reason: '直接恢复',
-    })).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining('先执行 wmux project update'),
-    });
   });
 
   it('reuses a persisted initial alignment decision when restoring a project', async () => {
@@ -1678,9 +1676,9 @@ describe('supervisor decision bridge', () => {
     }));
   });
 
-  it('does not start a new requirement check merely because an existing project is restored', async () => {
+  it('does not interrupt a restored project until its project AI attempts execution', async () => {
     const persisted = {
-      id: 'pm-legacy-recovery', projectDir: 'E:\\legacy-recovery',
+      id: 'pm-unaccepted-recovery', projectDir: 'E:\\unaccepted-recovery',
       goal: '测试相关功能', preconditions: ['无'], planFiles: [], doneWhen: ['做个管理系统'],
       status: 'active' as const, workItems: [], events: [], createdAt: 1, updatedAt: 2,
     };
@@ -1739,6 +1737,8 @@ describe('supervisor decision bridge', () => {
       preconditions: ['环境安全'],
       planFiles: [],
       doneWhen: ['完成'],
+      requirementsVersion: 1,
+      acceptedRequirementsVersion: 1,
       status: 'active',
       taskTerminalSurfaceId: 'old-worker',
       workItems: [{
@@ -1796,15 +1796,7 @@ describe('supervisor decision bridge', () => {
     expect(JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries))
       .toContain('所有旧 AI 监督、任务终端及其 surfaceId 都已失效');
 
-    const managerSurfaceId = useStore.getState().projectManager?.managerSurfaceId;
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
-    await expect(request({
-      action: 'terminal-create', callerSurfaceId: managerSurfaceId, projectId: 'pm-recover',
-      workItemId: 'recover_task', name: '恢复任务 · 续作', task: '核对后运行剩余测试', cwd: 'E:\\recover-project',
-    })).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining('由新建 AI 监督启动项目专属任务终端'),
-    });
     const { created, lane } = await startTaskThroughDedicatedSupervisor('pm-recover', 'recover_task');
     const recoveredSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
@@ -2059,6 +2051,37 @@ describe('supervisor decision bridge', () => {
     ]);
   });
 
+  it('does not globally resume a portfolio-paused project whose requirements changed', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start', projectDir: 'E:\\portfolio-gate', goal: '完成明确的项目目标',
+      preconditions: ['测试环境可用'], doneWhen: ['相关回归测试全部通过'],
+    });
+    const projectId = started.session.id;
+    await confirmAndResumeProject(projectId);
+
+    await expect(remote({ action: 'pause-all-projects', reason: '用户临时暂停全部项目' }))
+      .resolves.toMatchObject({ ok: true, affectedProjects: [projectId] });
+    const paused = useStore.getState().projectManagers.find((project) => project.id === projectId)!;
+    useStore.getState().restoreProjectManagers([{
+      ...paused,
+      requirementsVersion: 2,
+      acceptedRequirementsVersion: 1,
+    }], projectId);
+
+    await expect(remote({ action: 'resume-all-projects', reason: '用户尝试全局恢复' }))
+      .resolves.toMatchObject({
+        ok: true,
+        affectedProjects: [],
+        blockedProjects: [projectId],
+      });
+    expect(useStore.getState().projectManager).toMatchObject({
+      id: projectId,
+      status: 'paused',
+      pausedByPortfolio: true,
+    });
+  });
+
   it('replaces one project direction through the UI bridge and accepts later manager revisions', async () => {
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     const firstStart = await remote({
@@ -2193,6 +2216,10 @@ describe('supervisor decision bridge', () => {
       status: 'waiting', requirementsVersion: 2, acceptedRequirementsVersion: 1,
       workItems: [{ id: 'rotation_task', status: 'waiting-decision' }],
     });
+    expect(useStore.getState().projectManager?.events).toContainEqual(expect.objectContaining({
+      kind: 'requirements-quiesce-failed',
+      workItemId: 'rotation_task',
+    }));
     await expect(remote({
       action: 'resume', projectId: useStore.getState().projectManager?.id,
       reason: '用户尝试直接恢复',
@@ -2205,9 +2232,26 @@ describe('supervisor decision bridge', () => {
       .toBe('paused');
 
     await expect(request({
+      action: 'resume', callerSurfaceId: managerSurfaceId,
+      projectId: useStore.getState().projectManager?.id,
+      reason: '项目管理 AI 已按新前置条件完成重新规划',
+    })).resolves.toMatchObject({ ok: true });
+
+    const rotationRequested = await request({
       action: 'terminal-rotate', callerSurfaceId: managerSurfaceId,
+      projectId: useStore.getState().projectManager?.id,
       summary: '已完成核心实现；下一步只需运行相关测试并检查 diff。',
-    })).resolves.toMatchObject({ ok: true, oldSurfaceId: initialTask.surfaceId, surfaceId: expect.any(String) });
+    });
+    expect(rotationRequested).toMatchObject({ ok: true, pending: true, laneId: previousLane?.id });
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.id === initialTask.surfaceId)).toBe(true);
+    const rotated = await request({
+      action: 'task-terminal-rotate', callerSurfaceId: previousLane?.supervisorSurfaceId,
+      projectId: useStore.getState().projectManager?.id,
+      workItemId: 'rotation_task',
+    });
+    expect(rotated).toMatchObject({ ok: true, oldSurfaceId: initialTask.surfaceId, surfaceId: expect.any(String) });
     const reboundLane = useStore.getState().supervisor.lanes.find((lane) => lane.id === previousLane?.id);
     expect(reboundLane?.surfaceId).not.toBe(initialTask.surfaceId);
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
@@ -2221,6 +2265,72 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.id === 'worker-a')).toBe(true);
+  });
+
+  it('closes an unbound task terminal when requirements change during startup', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\startup-race', goal: '完成启动竞态验证',
+      preconditions: ['测试环境已准备'], doneWhen: ['启动竞态回归测试通过'],
+    });
+    const session = useStore.getState().projectManager!;
+    await confirmAndResumeProject(session.id);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'task-create', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      workItem: {
+        id: 'startup_race', title: '启动竞态', status: 'planned', dependencies: [],
+        contract: {
+          objective: '验证启动期间的需求变更', description: '', preconditions: [],
+          scope: { root: 'E:\\startup-race', allowPaths: [], denyPaths: [], forbiddenActions: [] },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false },
+          stopWhen: ['回归测试通过'], validation: ['运行聚焦测试'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      },
+    });
+    await expect(request({
+      action: 'task-supervise', callerSurfaceId: session.managerSurfaceId,
+      projectId: session.id, workItemId: 'startup_race',
+    })).resolves.toMatchObject({ ok: true, waitingForSupervisorTaskTerminal: true });
+    const pendingLane = useStore.getState().supervisor.lanes.find((lane) => (
+      lane.projectManagerProjectId === session.id && lane.projectWorkItemId === 'startup_race'
+    ))!;
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => true);
+
+    const starting = request({
+      action: 'task-terminal-start', callerSurfaceId: pendingLane.supervisorSurfaceId,
+      projectId: session.id, workItemId: 'startup_race',
+    });
+    await vi.waitFor(() => {
+      const candidate = useStore.getState().workspaces.flatMap((workspace) => (
+        workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+      )).find((surface) => surface.projectManagerWorkItemId === 'startup_race');
+      expect(candidate).toBeDefined();
+    });
+    const startingSurfaceId = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.projectManagerWorkItemId === 'startup_race')!.id;
+
+    await expect(remote({
+      action: 'update-preconditions', projectId: session.id,
+      preconditions: ['启动后新增的安全条件必须重新确认'],
+    })).resolves.toMatchObject({ ok: true });
+    markTerminalRuntimeReady(startingSurfaceId);
+
+    await expect(starting).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('需求版本已变化'),
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting',
+      workItems: [{ id: 'startup_race', workerSurfaceId: undefined }],
+    });
+    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBeUndefined();
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.id === startingSurfaceId)).toBe(false);
+    clearTerminalRuntimeStatus(startingSurfaceId);
+    delete (globalThis.window as any).wmux.pty.has;
   });
 
   it('deletes only the selected project and closes its managed supervisor chain', async () => {
@@ -3472,7 +3582,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.controlState).toBe('active');
   });
 
-  it('adds a new supervised terminal from Feishu without replacing the active session', () => {
+  it('adds a new supervised terminal from Feishu without replacing the active session', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-control' as any,
       title: 'Work',
@@ -3526,8 +3636,8 @@ describe('supervisor decision bridge', () => {
       awaitingReview: true,
       config: { stopWhen: '新增终端测试通过' },
     });
-    expect(writes.mock.calls.some(([surfaceId, text]) => (
+    await vi.waitFor(() => expect(writes.mock.calls.some(([surfaceId, text]) => (
       surfaceId === after.lanes[1].supervisorSurfaceId && String(text).includes('新增终端测试通过')
-    ))).toBe(true);
+    ))).toBe(true));
   });
 });

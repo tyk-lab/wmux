@@ -46,6 +46,7 @@ function treeHasSshSurface(tree: any): boolean {
 function isTransientSupervisorSurface(surface: any): boolean {
   return surface?.type === 'supervisor'
     || surface?.transientSupervisor === true
+    || surface?.userRecordsTerminal === true
     || typeof surface?.projectManagerProjectId === 'string';
 }
 

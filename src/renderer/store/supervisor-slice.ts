@@ -74,6 +74,9 @@ export interface SupervisorLane {
   projectManagerProjectId?: string;
   /** The project supervisor is running, but it has not created its dedicated task terminal yet. */
   projectTaskStartupPending?: boolean;
+  /** Project manager requested context rotation; only this lane's supervisor may execute it. */
+  projectTaskRotationPending?: boolean;
+  projectTaskRotationSummary?: string;
   label: string;
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */
@@ -447,7 +450,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       const ordinaryLanes = lanes
         .filter((lane) => !isProjectManagedSupervisorLane(lane))
         .map(normalizeSupervisorLaneBinding);
-      return { supervisor: { ...s.supervisor, lanes: [...projectLanes, ...ordinaryLanes] } };
+      const nextLanes = [...projectLanes, ...ordinaryLanes];
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...(s.supervisor.sessionId ? supervisorRuntimeFlags(nextLanes) : {}),
+          lanes: nextLanes,
+        },
+      };
     });
   },
   setProjectSupervisorLanes(lanes) {
@@ -456,7 +466,14 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       const projectLanes = lanes
         .filter(isProjectManagedSupervisorLane)
         .map(normalizeSupervisorLaneBinding);
-      return { supervisor: { ...s.supervisor, lanes: [...ordinaryLanes, ...projectLanes] } };
+      const nextLanes = [...ordinaryLanes, ...projectLanes];
+      return {
+        supervisor: {
+          ...s.supervisor,
+          ...(s.supervisor.sessionId ? supervisorRuntimeFlags(nextLanes) : {}),
+          lanes: nextLanes,
+        },
+      };
     });
   },
   startOrdinarySupervisor() {

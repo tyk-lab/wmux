@@ -102,7 +102,7 @@ describe('session-persistence', () => {
     expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
   });
 
-  it('removes transient supervisor surfaces and legacy direct SSH workspaces', () => {
+  it('removes transient AI runtimes and legacy direct SSH workspaces', () => {
     const local = {
       id: 'ws-local', title: 'Local', pinned: false, shell: 'pwsh.exe', splitTree: {
         type: 'leaf', paneId: 'pane-local', activeSurfaceIndex: 1,
@@ -112,6 +112,10 @@ describe('session-persistence', () => {
           {
             id: 'project-task-terminal', type: 'terminal', projectManagerProjectId: 'pm-a',
             startupCommands: ['codex'], startupInput: '不应在重启后自动重放',
+          },
+          {
+            id: 'user-records-terminal', type: 'terminal', userRecordsTerminal: true,
+            startupCommands: ['codex'], startupInput: '$user-data-management',
           },
         ],
       },

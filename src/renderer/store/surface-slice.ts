@@ -187,7 +187,6 @@ interface ClosedSurface {
   startupInput?: string;
   transientSupervisor?: boolean;
   projectManagerTerminal?: boolean;
-  userRecordsTerminal?: boolean;
   projectManagerProjectId?: string;
   projectManagerWorkItemId?: string;
   projectManagerAgent?: 'codex' | 'kimi' | 'grok';
@@ -202,7 +201,12 @@ function pushClosedSurface(surface: SurfaceRef): void {
   // Diff is a derived working-tree view; reopening a stale one is noise.
   // Project-manager runtimes carry caller authority. A runtime replaced after
   // a config change must never be resurrected through Ctrl+Shift+T.
-  if (surface.type === 'diff' || surface.projectManagerTerminal || surface.projectManagerProjectId) return;
+  if (
+    surface.type === 'diff'
+    || surface.projectManagerTerminal
+    || surface.userRecordsTerminal
+    || surface.projectManagerProjectId
+  ) return;
   closedSurfaceStack.push({
     type: surface.type,
     colorScheme: surface.colorScheme,
@@ -213,7 +217,6 @@ function pushClosedSurface(surface: SurfaceRef): void {
     startupInput: surface.startupInput,
     transientSupervisor: surface.transientSupervisor,
     projectManagerTerminal: surface.projectManagerTerminal,
-    userRecordsTerminal: surface.userRecordsTerminal,
     projectManagerProjectId: surface.projectManagerProjectId,
     projectManagerWorkItemId: surface.projectManagerWorkItemId,
     projectManagerAgent: surface.projectManagerAgent,
@@ -539,7 +542,6 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.startupInput ? { startupInput: restored.startupInput } : {}),
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
-      ...(restored.userRecordsTerminal ? { userRecordsTerminal: true } : {}),
       ...(restored.projectManagerProjectId ? { projectManagerProjectId: restored.projectManagerProjectId } : {}),
       ...(restored.projectManagerWorkItemId ? { projectManagerWorkItemId: restored.projectManagerWorkItemId } : {}),
       ...(restored.projectManagerAgent ? { projectManagerAgent: restored.projectManagerAgent } : {}),

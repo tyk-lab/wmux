@@ -308,6 +308,16 @@ function sendSurfaceInputReliably(
   })();
 }
 
+/** Reliable control-plane delivery without the worker draft-empty assertion. */
+export function sendToSurfaceReliably(
+  surfaceId: string,
+  text: string,
+  submitEnter: boolean,
+  captureBeforeSubmit?: () => string,
+): Promise<{ beforeSubmitScreen?: string }> | void {
+  return sendSurfaceInputReliably(surfaceId, text, submitEnter, captureBeforeSubmit);
+}
+
 export function sendTaskToSurfaceReliably(
   surfaceId: string,
   text: string,

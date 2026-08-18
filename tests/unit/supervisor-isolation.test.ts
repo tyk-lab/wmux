@@ -1004,6 +1004,27 @@ describe('supervisor isolation', () => {
     expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
   });
 
+  it('recomputes aggregate flags when project and ordinary lane sets change independently', () => {
+    const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane()]);
+    store.getState().startOrdinarySupervisor();
+    store.getState().pauseSupervisorLane('lane-a');
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: true });
+
+    store.getState().setProjectSupervisorLanes([lane({
+      id: 'lane-project',
+      surfaceId: 'worker-project' as any,
+      supervisorSurfaceId: 'supervisor-project' as any,
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'task-a',
+      controlState: 'active',
+    })]);
+    expect(store.getState().supervisor).toMatchObject({ active: true, paused: false });
+
+    store.getState().setProjectSupervisorLanes([]);
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: true });
+  });
+
   it('treats stopped lanes as unbound while paused lanes remain bound', () => {
     expect(isSupervisorLaneBound(lane({ controlState: 'paused' }))).toBe(true);
     expect(isSupervisorLaneBound(lane({ controlState: 'stopped' }))).toBe(false);

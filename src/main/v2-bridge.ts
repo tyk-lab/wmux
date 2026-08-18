@@ -132,10 +132,6 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminals' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
-  'project.terminal.create': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'terminal-create' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
   'project.task.create': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-create' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -150,6 +146,10 @@ const SPECS: Record<string, BridgeSpec> = {
   },
   'project.task-terminal.start': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-start' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.task-terminal.rotate': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-rotate' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.supervisor.inspect': {

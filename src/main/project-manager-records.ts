@@ -157,8 +157,7 @@ function readProjectManagerSessions(
                 planFiles: parsed.session.planFiles || [],
                 pendingManagerDeliveries: parsed.session.pendingManagerDeliveries || [],
                 requirementsVersion: parsed.session.requirementsVersion || 1,
-                acceptedRequirementsVersion: parsed.session.acceptedRequirementsVersion
-                  ?? (parsed.session.status === 'active' ? parsed.session.requirementsVersion || 1 : 0),
+                acceptedRequirementsVersion: parsed.session.acceptedRequirementsVersion ?? 0,
               } satisfies ProjectManagerSession
             : null;
         } catch {

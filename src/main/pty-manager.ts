@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { execFileSync, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { SurfaceId } from '../shared/types';
-import { getPipePath, readPipeToken } from '../shared/instance';
+import { getPipePath, tokensMatch } from '../shared/instance';
 
 // ─── Shell resolution ──────────────────────────────────────────────────────
 // Validates that a shell executable exists before spawning.
@@ -261,6 +261,8 @@ interface PtyEntry {
   sshProfileId?: string;
   passwordInjected: boolean;
   authOutputTail: string;
+  /** Per-surface pipe capability. Child processes never receive the instance-wide token. */
+  authToken: string;
 }
 
 export interface CreateOptions {
@@ -356,7 +358,7 @@ export class PtyManager {
       WMUX: '1',
       WMUX_SURFACE_ID: id,
       WMUX_PIPE: getPipePath(),
-      WMUX_PIPE_TOKEN: readPipeToken(),
+      WMUX_PIPE_TOKEN: uuidv4(),
       WMUX_CLI: cliPath,
     };
 
@@ -450,6 +452,7 @@ export class PtyManager {
       sshProfileId: options.sshProfileId,
       passwordInjected: false,
       authOutputTail: '',
+      authToken: env.WMUX_PIPE_TOKEN,
     };
 
     ptyProcess.onData((data) => {
@@ -641,7 +644,16 @@ export class PtyManager {
   }
 
   has(id: SurfaceId): boolean {
-    return this.ptys.has(id);
+    return this.ptys.get(id)?.alive === true;
+  }
+
+  /** Resolve the live surface that owns a per-surface pipe capability. */
+  surfaceIdForAuthToken(token: string): SurfaceId | undefined {
+    if (!token) return undefined;
+    for (const [surfaceId, entry] of this.ptys) {
+      if (entry.alive && tokensMatch(token, entry.authToken)) return surfaceId;
+    }
+    return undefined;
   }
 
   onData(id: SurfaceId, callback: (data: string) => void): () => void {

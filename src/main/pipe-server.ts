@@ -29,6 +29,10 @@ const PUBLIC_V2_METHODS = new Set<string>([
   'system.capabilities',
 ]);
 
+function requiresSurfaceCapability(method: string): boolean {
+  return method.startsWith('project.') || method === 'supervisor.decide';
+}
+
 export interface V2Response {
   result?: any;
   error?: { code: number; message: string };
@@ -39,11 +43,17 @@ export class PipeServer extends EventEmitter {
   private server: net.Server | null = null;
   private pipePath: string;
   private authToken: string;
+  private surfaceForAuthToken: (token: string) => string | undefined;
 
-  constructor(pipePath = '\\\\.\\pipe\\wmux', authToken = '') {
+  constructor(
+    pipePath = '\\\\.\\pipe\\wmux',
+    authToken = '',
+    surfaceForAuthToken: (token: string) => string | undefined = () => undefined,
+  ) {
     super();
     this.pipePath = pipePath;
     this.authToken = authToken;
+    this.surfaceForAuthToken = surfaceForAuthToken;
   }
 
   start(): void {
@@ -111,11 +121,16 @@ export class PipeServer extends EventEmitter {
     // unauthenticated local process must not be able to spoof them (issue
     // #72). Only `ping` (read-only liveness probe) stays public.
     let authed = false;
+    let authenticatedSurfaceId: string | undefined;
     if (line.startsWith('auth ')) {
       const rest = line.substring(5);
       const tokenEnd = rest.indexOf(' ');
       const token = tokenEnd === -1 ? rest : rest.substring(0, tokenEnd);
       authed = !!this.authToken && tokensMatch(token, this.authToken);
+      if (!authed) {
+        authenticatedSurfaceId = this.surfaceForAuthToken(token);
+        authed = !!authenticatedSurfaceId;
+      }
       line = tokenEnd === -1 ? '' : rest.substring(tokenEnd + 1).trim();
     }
 
@@ -158,6 +173,10 @@ export class PipeServer extends EventEmitter {
       socket.write('unauthorized\n');
       return;
     }
+    if (authenticatedSurfaceId && surfaceId !== authenticatedSurfaceId) {
+      socket.write('unauthorized\n');
+      return;
+    }
 
     const v1Command: V1Command = { command, surfaceId, args };
     this.emit('v1', v1Command);
@@ -178,15 +197,38 @@ export class PipeServer extends EventEmitter {
     // Authenticate privileged methods. Only read-only discovery methods
     // (identify/capabilities) are exempt so instance detection keeps working
     // without a token. -32001 signals "unauthorized" to clients.
+    let authenticatedSurfaceId: string | undefined;
     if (!PUBLIC_V2_METHODS.has(request.method)) {
       if (!this.authToken) {
         respondError(-32001, 'Unauthorized: pipe auth token not initialized');
         return;
       }
-      if (!tokensMatch(request.token || '', this.authToken)) {
+      const requestToken = request.token || '';
+      const instanceAuthenticated = tokensMatch(requestToken, this.authToken);
+      authenticatedSurfaceId = instanceAuthenticated
+        ? undefined
+        : this.surfaceForAuthToken(requestToken);
+      if (!instanceAuthenticated && !authenticatedSurfaceId) {
         respondError(-32001, 'Unauthorized: missing or invalid token');
         return;
       }
+      if (requiresSurfaceCapability(request.method) && !authenticatedSurfaceId) {
+        respondError(-32001, 'Unauthorized: this method requires a live surface capability');
+        return;
+      }
+    }
+
+    // A surface capability is the caller identity. Never trust an ID supplied
+    // by a child process, because every AI can enumerate public surface IDs.
+    if (authenticatedSurfaceId) {
+      request.params = {
+        ...(request.params || {}),
+        callerSurfaceId: authenticatedSurfaceId,
+        ...(request.method.startsWith('browser.') ? { caller: authenticatedSurfaceId } : {}),
+        ...(request.method === 'supervisor.decide'
+          ? { supervisorSurfaceId: authenticatedSurfaceId }
+          : {}),
+      };
     }
 
     // Emit the V2 request and let handlers respond

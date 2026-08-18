@@ -2402,11 +2402,51 @@ export class FeishuSupervisorService {
       this.enqueueAuditRecord(record);
       return;
     }
+    if (record.type === 'supervisor.runtime-failed' || record.type === 'task.runtime-failed') {
+      void this.enqueueDecisionOperation(() => this.sendDecisionText([
+        'wmux AI 监督运行时告警',
+        `终端：${auditValue('terminal', record.terminal.label)}`,
+        `故障角色：${record.type === 'supervisor.runtime-failed' ? 'AI 监督' : '任务终端 AI'}`,
+        `详情：${auditPayloadText(record, 'detail', '运行时已停止或启动失败')}`,
+        '该监督通道已暂停，需在 wmux 中重新建立运行时后再继续。',
+      ].join('\n')));
+      this.enqueueAuditRecord(record);
+      return;
+    }
     this.enqueueAuditRecord(record);
   }
 
   onProjectManagerRecord(record: ProjectManagerRecord): void {
     if (!this.channel) return;
+    if ([
+      'manager-runtime-failed',
+      'supervisor-runtime-failed',
+      'task-runtime-failed',
+      'manager-delivery-failed',
+      'requirements-quiesce-failed',
+    ].includes(record.type)) {
+      const role = record.type === 'manager-runtime-failed'
+        ? '项目管理 AI'
+        : record.type === 'supervisor-runtime-failed'
+          ? 'AI 监督'
+          : record.type === 'task-runtime-failed'
+            ? '任务终端 AI'
+            : record.type === 'requirements-quiesce-failed'
+              ? '需求变更停机确认'
+              : '项目管理消息投递';
+      const message = String(record.payload?.message || record.payload?.detail || '运行时或控制链路不可用').trim();
+      const targetChatId = this.config?.projectManagerChatId || this.decisionChatId;
+      if (targetChatId) {
+        void this.enqueueDecisionOperation(() => this.sendText([
+          'wmux 项目管理告警',
+          `项目：${record.sessionId}`,
+          `故障环节：${role}`,
+          `详情：${message.slice(0, 1200)}`,
+          '相关项目与监督链已保持暂停，请在 wmux 中处理后再恢复。',
+        ].join('\n'), targetChatId));
+      }
+      return;
+    }
     if (record.type === 'user-clarification-requested') {
       const question = record.payload?.question;
       if (!question || typeof question !== 'object') return;
