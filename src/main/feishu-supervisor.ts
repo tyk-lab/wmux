@@ -89,7 +89,8 @@ interface WaitingDecisionCard {
 type PendingDecisionMessage =
   | { kind: 'approval'; approvalId: string; record: SupervisorRecord }
   | { kind: 'waiting'; record: SupervisorRecord }
-  | { kind: 'text'; text: string };
+  | { kind: 'text'; text: string }
+  | { kind: 'project-clarification'; projectId: string; question: FeishuProjectClarification };
 
 export function isFeishuApprovalCardContext(
   card: Pick<ApprovalCard, 'messageId' | 'chatId'> | undefined,
@@ -709,6 +710,7 @@ interface ResolvedCardAction {
   approval_id?: string;
   decision?: string;
   flow?: string;
+  view?: string;
   terminal?: string;
   session_target?: string;
   nonce?: string;
@@ -891,6 +893,32 @@ interface FeishuProjectClarification {
   recommendedOptionId?: string;
 }
 
+export type ProjectManagerCardView = 'overview' | 'chat' | 'decisions' | 'activity';
+
+function projectManagerStatusLabel(status?: string): string {
+  if (status === 'active') return '运行中';
+  if (status === 'paused') return '已暂停';
+  if (status === 'waiting') return '等待决策';
+  if (status === 'waiting-decision') return '等待决策';
+  if (status === 'waiting-dependencies') return '等待依赖';
+  if (status === 'planned') return '待开始';
+  if (status === 'running') return '执行中';
+  if (status === 'validating') return '验证中';
+  if (status === 'failed') return '失败';
+  if (status === 'completed') return '已完成';
+  if (status === 'stopped') return '已停止';
+  return '尚未建立';
+}
+
+function projectManagerStatusMarker(status?: string): string {
+  if (status === 'active') return '🟢';
+  if (status === 'waiting') return '🟠';
+  if (status === 'paused') return '⏸️';
+  if (status === 'completed') return '✅';
+  if (status === 'stopped') return '⏹️';
+  return '⚪';
+}
+
 export function buildProjectClarificationCard(
   projectId: string,
   question: FeishuProjectClarification,
@@ -936,135 +964,120 @@ export function buildProjectClarificationCard(
   );
 }
 
-export function buildProjectManagerConversationCard(
+export function buildProjectManagerPortfolioCard(
   session?: FeishuProjectManagerView | null,
   notice?: ControlNotice,
-  showLogs = false,
 ): object {
-  const workItems = Array.isArray(session?.workItems) ? session.workItems : [];
-  const waiting = workItems.filter((item) => item?.status === 'waiting-decision').length;
   const projects = Array.isArray(session?.projects) ? session.projects : [];
   const activeProjects = projects.filter((project) => !['completed', 'stopped'].includes(String(project.status || ''))).length
     || (session && !['completed', 'stopped'].includes(String(session.status || '')) ? 1 : 0);
   const canPausePortfolio = projects.some((project) => project.status === 'active' || project.status === 'waiting');
   const canResumePortfolio = projects.some((project) => project.status === 'paused' && project.pausedByPortfolio === true);
-  const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
-  // Keep the card comfortably below Feishu's payload limit even when the
-  // optional 20-entry processing log is expanded.
-  const conversation = Array.isArray(session?.conversation) ? session.conversation.slice(-6) : [];
-  const pendingQuestion = session?.pendingUserQuestion;
-  const status = session?.status === 'active'
-    ? '运行中'
-    : session?.status === 'paused'
-      ? '已暂停'
-      : session?.status === 'waiting'
-        ? '等待决策'
-        : session?.status === 'completed'
-          ? '已完成'
-          : session?.status === 'stopped'
-            ? '已停止'
-            : '尚未建立项目会话';
-  const logs = Array.isArray(session?.events) ? session.events.slice(-20).reverse() : [];
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'wmux · 项目管理 AI' }, template: 'blue' },
+    header: { title: { tag: 'plain_text', content: 'wmux · 项目组合' }, template: 'blue' },
     body: {
       elements: [
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
-        { tag: 'markdown', content: '**用户 / 专用飞书会话 ↔ 项目管理 AI ↔ 最多 3 个不同目录 → 每项目 1 个监督 AI → 1 个任务终端**' },
-        { tag: 'markdown', content: `**项目组合：${activeProjects}/3 个活动项目**\n**项目状态：${status}** · 工作项 ${workItems.length} 个 · 正在管理的监督 AI ${supervisors.length} 个 · 待上层决策 ${waiting} 项` },
-        ...(projects.length > 0 ? [
-          { tag: 'markdown', content: '**项目列表**' },
-          ...projects.flatMap((project) => [
-            { tag: 'div', text: { tag: 'plain_text', content: `${project.id === session?.projectId ? '▶ ' : ''}${String(project.goal || '未命名项目').slice(0, 180)}\n${String(project.projectDir || '')}\n状态：${String(project.status || 'unknown')}` } },
-            ...responsiveButtonRows([cardButton({ wmux_action: 'project_ai_select', projectId: project.id || '' }, project.id === session?.projectId ? '当前项目' : '查看项目')]),
-          ]),
-        ] : []),
-        ...(session?.goal ? [{ tag: 'div', text: { tag: 'plain_text', content: `当前目标：${String(session.goal).slice(0, 1000)}` } }] : []),
-        ...(session?.projectDir ? [{ tag: 'div', text: { tag: 'plain_text', content: `项目目录：${String(session.projectDir).slice(0, 1000)}` } }] : []),
-        ...(pendingQuestion ? [{
-          tag: 'markdown',
-          content: `⚠️ **等待用户确认**\n${pendingQuestion.question}${pendingQuestion.context ? `\n\n${pendingQuestion.context}` : ''}`.slice(0, 1800),
-        }] : []),
-        ...(supervisors.length > 0 ? [
-          { tag: 'markdown', content: '**正在管理的监督 AI**' },
-          ...supervisors.map((lane) => ({ tag: 'div', text: { tag: 'plain_text', content: `${lane.label || '监督 AI'} · ${lane.status || 'unknown'} · ${lane.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}\n任务终端：${lane.workerSurfaceId || '恢复中'}` } })),
-        ] : []),
-        ...(workItems.length > 0 ? [
-          { tag: 'markdown', content: '**工作项决策记录**' },
-          ...workItems.slice(-5).map((item) => {
-            const execution = item.contract?.execution;
-            const budget = item.contract?.budget;
-            return {
-              tag: 'div',
-              text: {
-                tag: 'plain_text',
-                content: [
-                  `${item.title || '未命名工作项'} · ${item.status || 'unknown'} · ${execution?.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}`,
-                  execution?.modeReason ? `模式理由：${execution.modeReason}` : '',
-                  `预算：决策 ${item.decisionsUsed || 0}/${budget?.maxDecisions || '-'} · 重试 ${item.attempts || 0}/${budget?.maxTaskRetries || '-'}`,
-                  `执行证据：${item.latestEvidence || '暂无'}`,
-                  `阻塞原因：${item.latestBlocker || '无'}`,
-                  item.latestContextSummary ? `上下文总结：${item.latestContextSummary}` : '',
-                ].filter(Boolean).join('\n').slice(0, 1000),
-              },
-            };
-          }),
-        ] : []),
-        { tag: 'markdown', content: `**与项目管理 AI 对话 · ${session?.goal ? String(session.goal).slice(0, 80) : '当前项目'}**` },
-        ...(conversation.length > 0
-          ? conversation.map((event) => ({
-              tag: 'div',
-              text: {
-                tag: 'plain_text',
-                content: `${event.kind === 'user-message' ? '🔵 你 · 询问' : '🟣 项目管理 AI · 回复'}  ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${String(event.summary || '').slice(0, 1000)}`,
-              },
-            }))
-          : [{ tag: 'div', text: { tag: 'plain_text', content: '暂无对话。下方消息只会进入当前选中项目。' } }]),
-        {
-          tag: 'form',
-          name: 'wmux_project_ai_conversation_form',
-          elements: [
-            {
-              tag: 'input', element_id: 'project_ai_message', name: 'project_ai_message', required: true,
-              input_type: 'multiline_text', rows: 5, max_length: 1000,
-              label: { tag: 'plain_text', content: '直接与项目管理 AI 对话' },
-              placeholder: { tag: 'plain_text', content: '说明项目目标、讨论方案、调整优先级，或要求暂停/改线。项目管理 AI 会自行管理下层监督 AI。' },
-            },
-            formButton('wmux_form_project_ai_message', '发送给项目管理 AI', 'primary', { wmux_action: 'form_project_ai_message', projectId: session?.projectId || '' }),
-          ],
-        },
-        ...(showLogs ? [
-          { tag: 'hr' },
-          { tag: 'markdown', content: `**项目管理 AI 处理日志（最近 ${logs.length} 条）**` },
-          ...(logs.length > 0
-            ? logs.map((event) => ({
-                tag: 'div',
-                text: {
-                  tag: 'plain_text',
-                  content: `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · ${String(event.kind || 'event')} · ${String(event.summary || '').slice(0, 800)}`,
-                },
-              }))
-            : [{ tag: 'div', text: { tag: 'plain_text', content: '暂无项目管理 AI 处理日志。' } }]),
-        ] : []),
+        { tag: 'markdown', content: `**${activeProjects}/3 个活动项目** · 选择项目进入工作台，与项目 AI 对话、查看决策或管理状态。` },
+        ...(projects.length > 0 ? projects.flatMap((project) => [
+          {
+            tag: 'markdown',
+            content: [
+              `${projectManagerStatusMarker(project.status)} **${String(project.goal || '未命名项目').slice(0, 180)}**`,
+              `状态：${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
+              project.projectDir ? `目录：${String(project.projectDir).slice(0, 240)}` : '',
+            ].filter(Boolean).join('\n'),
+          },
+          ...responsiveButtonRows([cardButton({ wmux_action: 'project_ai_workspace', projectId: project.id || '' }, project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台', 'primary')]),
+        ]) : [{ tag: 'markdown', content: '暂无活动项目。请先在桌面端添加项目，或直接向项目管理 AI 发起新项目。' }]),
         { tag: 'hr' },
         ...responsiveButtonRows([
-          cardButton({ wmux_action: 'project_ai_refresh', projectId: session?.projectId || '' }, '刷新状态'),
-          cardButton({ wmux_action: showLogs ? 'project_ai_refresh' : 'project_ai_logs', projectId: session?.projectId || '' }, showLogs ? '收起日志' : '查看处理日志'),
+          ...(canPausePortfolio ? [cardButton({ wmux_action: 'project_ai_pause_all' }, '暂停全部项目')] : []),
+          ...(canResumePortfolio ? [cardButton({ wmux_action: 'project_ai_resume_all' }, '恢复全部项目', 'primary')] : []),
+          cardButton({ wmux_action: 'menu', flow: 'home' }, '返回控制首页'),
+        ]),
+      ],
+    },
+  };
+}
+
+export function buildProjectManagerConversationCard(
+  session?: FeishuProjectManagerView | null,
+  notice?: ControlNotice,
+  view: ProjectManagerCardView = 'overview',
+): object {
+  const workItems = Array.isArray(session?.workItems) ? session.workItems : [];
+  const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
+  const conversation = Array.isArray(session?.conversation) ? session.conversation.slice(-10) : [];
+  const pendingQuestion = session?.pendingUserQuestion;
+  const status = projectManagerStatusLabel(session?.status);
+  const logs = Array.isArray(session?.events) ? session.events.slice(-20).reverse() : [];
+  const latestReply = [...conversation].reverse().find((event) => event.kind === 'manager-reply');
+  const waiting = workItems.filter((item) => item?.status === 'waiting-decision').length;
+  const nav = responsiveButtonRows([
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'overview' }, '概览', view === 'overview' ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'chat' }, '与 AI 对话', view === 'chat' ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'decisions' }, `决策${pendingQuestion || waiting > 0 ? ' · 待处理' : ''}`, view === 'decisions' ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'activity' }, '处理日志', view === 'activity' ? 'primary' : 'default'),
+  ]);
+  const overviewElements: object[] = [
+    { tag: 'markdown', content: `**${projectManagerStatusMarker(session?.status)} ${status}** · 工作项 ${workItems.length} · 监督 AI ${supervisors.length} · 待决 ${waiting}` },
+    ...(latestReply ? [{ tag: 'markdown', content: `**项目 AI 最新回复**\n${String(latestReply.summary || '').slice(0, 1200)}` }] : [{ tag: 'markdown', content: '项目 AI 暂无回复。可进入“与 AI 对话”确认进度或补充要求。' }]),
+    ...(pendingQuestion ? [{ tag: 'markdown', content: `⚠️ **等待你的决策**\n${pendingQuestion.question.slice(0, 1000)}${pendingQuestion.recommendedOptionId ? '\n请在飞书决策卡或桌面项目对话中选择方案。' : ''}` }] : []),
+    ...(workItems.length > 0 ? [{ tag: 'markdown', content: `**当前执行**\n${workItems.slice(-3).map((item) => `${projectManagerStatusMarker(item.status)} ${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}${item.latestBlocker ? `\n阻塞：${item.latestBlocker}` : ''}`).join('\n')}`.slice(0, 1600) }] : []),
+    ...(supervisors.length > 0 ? [{ tag: 'markdown', content: `**监督链**\n${supervisors.map((lane) => `${lane.label || '监督 AI'} · ${projectManagerStatusLabel(lane.status)} · 任务端 ${lane.workerSurfaceId || '恢复中'}`).join('\n')}`.slice(0, 1200) }] : []),
+  ];
+  const chatElements: object[] = [
+    { tag: 'markdown', content: '**与项目管理 AI 对话**\n对话只进入当前项目；已确认的目标、范围和验收细节会写回项目配置。' },
+    ...(conversation.length > 0 ? conversation.map((event) => ({
+      tag: 'markdown', content: `${event.kind === 'user-message' ? '🔵 **你**' : '🟣 **项目管理 AI**'} · ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${String(event.summary || '').slice(0, 1000)}`,
+    })) : [{ tag: 'markdown', content: '暂无对话。可以询问进度、确认细节、调整优先级或说明新约束。' }]),
+    {
+      tag: 'form', name: 'wmux_project_ai_conversation_form', elements: [
+        { tag: 'input', element_id: 'project_ai_message', name: 'project_ai_message', required: true, input_type: 'multiline_text', rows: 5, max_length: 1000, label: { tag: 'plain_text', content: '发送给项目管理 AI' }, placeholder: { tag: 'plain_text', content: '询问进度、确认细节、调整优先级或说明新约束。' } },
+        formButton('wmux_form_project_ai_message', '发送并等待项目 AI 回复', 'primary', { wmux_action: 'form_project_ai_message', projectId: session?.projectId || '' }),
+      ],
+    },
+  ];
+  const decisionElements: object[] = [
+    { tag: 'markdown', content: '**项目决策与执行依据**\n项目 AI 会自行处理技术方案和原目标内重规划；这里只展示需要关注的决策、证据和阻塞。' },
+    ...(pendingQuestion ? [{ tag: 'markdown', content: [
+      '⚠️ **当前等待你的决策**', pendingQuestion.question, pendingQuestion.context || '',
+      pendingQuestion.options.map((option) => `${option.id === pendingQuestion.recommendedOptionId ? '推荐：' : ''}${option.label}${option.description ? ` · ${option.description}` : ''}`).join('\n'),
+    ].filter(Boolean).join('\n').slice(0, 1800) }] : [{ tag: 'markdown', content: '✅ 当前没有待你确认的项目决策。' }]),
+    ...(workItems.length > 0 ? workItems.slice(-8).map((item) => ({ tag: 'markdown', content: [
+      `**${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}**`,
+      `决策 ${item.decisionsUsed || 0}/${item.contract?.budget?.maxDecisions || '-'} · 重试 ${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
+      item.latestEvidence ? `证据：${item.latestEvidence}` : '', item.latestBlocker ? `阻塞：${item.latestBlocker}` : '',
+    ].filter(Boolean).join('\n').slice(0, 1000) })) : []),
+  ];
+  const activityElements: object[] = [
+    { tag: 'markdown', content: `**处理日志（最近 ${logs.length} 条）**\n记录项目 AI 的任务拆分、决策、监督状态和恢复动作。` },
+    ...(logs.length > 0 ? logs.map((event) => ({ tag: 'markdown', content: `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · **${String(event.kind || 'event')}**\n${String(event.summary || '').slice(0, 900)}` })) : [{ tag: 'markdown', content: '暂无处理日志。' }]),
+  ];
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: `wmux · ${session?.goal ? String(session.goal).slice(0, 40) : '项目工作台'}` }, template: pendingQuestion ? 'orange' : 'blue' },
+    body: {
+      elements: [
+        ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
+        { tag: 'markdown', content: `**${session?.goal || '未选择项目'}**${session?.projectDir ? `\n${session.projectDir}` : ''}`.slice(0, 1200) },
+        ...nav,
+        { tag: 'hr' },
+        ...(view === 'chat' ? chatElements : view === 'decisions' ? decisionElements : view === 'activity' ? activityElements : overviewElements),
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'project_ai_workspace', projectId: session?.projectId || '' }, '刷新工作台'),
           ...(session?.status === 'active' || session?.status === 'waiting'
             ? [cardButton({ wmux_action: 'project_ai_pause', projectId: session?.projectId || '' }, '暂停项目')]
             : []),
           ...(session?.status === 'paused' || session?.status === 'waiting'
             ? [cardButton({ wmux_action: 'project_ai_resume', projectId: session?.projectId || '' }, '恢复项目', 'primary')]
             : []),
-          ...(canPausePortfolio
-            ? [cardButton({ wmux_action: 'project_ai_pause_all' }, '暂停全部项目')]
-            : []),
-          ...(canResumePortfolio
-            ? [cardButton({ wmux_action: 'project_ai_resume_all' }, '恢复全部项目', 'primary')]
-            : []),
-          cardButton({ wmux_action: 'menu', flow: 'home' }, '返回控制首页'),
+          cardButton({ wmux_action: 'project_ai_portfolio' }, '返回项目组合'),
         ]),
       ],
     },
@@ -2243,7 +2256,7 @@ export class FeishuSupervisorService {
     cardMessageId?: string;
     projectId?: string;
   }>();
-  private readonly projectQuestionCards = new Map<string, { messageId: string; chatId: string }>();
+  private readonly projectQuestionCards = new Map<string, { messageId: string; chatId: string; resolving?: boolean }>();
   private readonly projectQuestionResolutions = new Map<string, string>();
   /** Configured decision DM, falling back to the most recent allowlisted DM. */
   private decisionChatId: string | undefined = this.config?.decisionChatId;
@@ -2370,15 +2383,14 @@ export class FeishuSupervisorService {
       if (!question || typeof question !== 'object') return;
       const candidate = question as unknown as FeishuProjectClarification;
       if (!candidate.id || !candidate.question || !Array.isArray(candidate.options)) return;
-      const chatId = this.config?.projectManagerChatId;
-      if (!chatId) return;
-      void this.sendProjectClarification(record.sessionId, candidate, chatId);
+      void this.enqueueDecisionOperation(() => this.sendProjectClarification(record.sessionId, candidate));
       return;
     }
     if (record.type === 'user-clarification-answered') {
       const questionId = String(record.payload?.questionId || record.payload?.correlationId || '').trim();
       if (!questionId) return;
       const resolution = String(record.payload?.answer || record.payload?.message || '用户已答复').trim();
+      this.removePendingProjectClarification(questionId);
       this.projectQuestionResolutions.set(questionId, resolution);
       void this.resolveProjectClarification(questionId, resolution);
       return;
@@ -2404,10 +2416,17 @@ export class FeishuSupervisorService {
   private async sendProjectClarification(
     projectId: string,
     question: FeishuProjectClarification,
-    chatId: string,
   ): Promise<void> {
+    const chatId = this.decisionChatId || this.config?.projectManagerChatId;
+    if (!this.channel || !chatId) {
+      this.queuePendingDecision({ kind: 'project-clarification', projectId, question });
+      return;
+    }
     const messageId = await this.sendControlCard(buildProjectClarificationCard(projectId, question), chatId);
-    if (!messageId) return;
+    if (!messageId) {
+      this.queuePendingDecision({ kind: 'project-clarification', projectId, question });
+      return;
+    }
     this.projectQuestionCards.set(question.id, { messageId, chatId });
     const resolved = this.projectQuestionResolutions.get(question.id);
     if (resolved) await this.resolveProjectClarification(question.id, resolved);
@@ -2415,7 +2434,8 @@ export class FeishuSupervisorService {
 
   private async resolveProjectClarification(questionId: string, resolution: string): Promise<void> {
     const card = this.projectQuestionCards.get(questionId);
-    if (!card || !this.channel) return;
+    if (!card || !this.channel || card.resolving) return;
+    card.resolving = true;
     await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
       'wmux · 项目确认已提交',
       `答复：${resolution}\n\n项目仍保持暂停，等待项目管理 AI 决定下一步。`,
@@ -2516,7 +2536,7 @@ export class FeishuSupervisorService {
       await this.handleWaitingDecisionCardAction(event, value);
       return;
     }
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_terminal_escape' || value?.wmux_action === 'form_terminal_interrupt' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_portfolio' || value?.wmux_action === 'project_ai_workspace' || value?.wmux_action === 'project_ai_view' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_terminal_escape' || value?.wmux_action === 'form_terminal_interrupt' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
         // Never execute an action from an old schema. Only issue a new control
@@ -2646,12 +2666,7 @@ export class FeishuSupervisorService {
         answer,
       }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
       if (!failedResult(result)) {
-        await this.replaceControlCard(event, buildSupervisorResultCard(
-          'wmux · 项目确认已提交',
-          `答复：${answer}\n\n项目仍保持暂停，等待项目管理 AI 决定下一步。`,
-          true,
-        ));
-        this.projectQuestionCards.delete(value.questionId);
+        await this.resolveProjectClarification(value.questionId, answer);
       } else {
         await this.sendText(summary(result), event.chatId);
       }
@@ -2682,17 +2697,26 @@ export class FeishuSupervisorService {
       await this.replaceControlCard(event, buildProjectManagerConversationCard(view, {
         text: failedResult(result) ? summary(result) : '消息已发送；项目管理 AI 会在当前飞书会话直接回复。',
         success: !failedResult(result),
-      }));
+      }, 'chat'));
       return !failedResult(result);
     }
-    if (value.wmux_action === 'project_ai_select') {
+    if (value.wmux_action === 'project_ai_portfolio') {
+      const view = await this.loadProjectManagerView(event.operator.openId);
+      await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view));
+      return true;
+    }
+    if (value.wmux_action === 'project_ai_select' || value.wmux_action === 'project_ai_workspace') {
       const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
       await this.replaceControlCard(event, buildProjectManagerConversationCard(view));
       return true;
     }
-    if (value.wmux_action === 'project_ai_refresh' || value.wmux_action === 'project_ai_logs') {
-      const view = await this.loadProjectManagerView(event.operator.openId, value.wmux_action === 'project_ai_logs', value.projectId);
-      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, undefined, value.wmux_action === 'project_ai_logs'));
+    if (value.wmux_action === 'project_ai_view' || value.wmux_action === 'project_ai_refresh' || value.wmux_action === 'project_ai_logs') {
+      const requested = value.wmux_action === 'project_ai_view' ? value.view : value.wmux_action === 'project_ai_logs' ? 'activity' : 'overview';
+      const cardView: ProjectManagerCardView = ['overview', 'chat', 'decisions', 'activity'].includes(String(requested))
+        ? requested as ProjectManagerCardView
+        : 'overview';
+      const view = await this.loadProjectManagerView(event.operator.openId, cardView === 'activity', value.projectId);
+      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, undefined, cardView));
       return true;
     }
     if (value.wmux_action === 'project_ai_pause' || value.wmux_action === 'project_ai_resume') {
@@ -2706,7 +2730,7 @@ export class FeishuSupervisorService {
       const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
       await this.replaceControlCard(event, buildProjectManagerConversationCard(view, {
         text: summary(result), success: !failedResult(result),
-      }));
+      }, 'overview'));
       return !failedResult(result);
     }
     if (value.wmux_action === 'project_ai_pause_all' || value.wmux_action === 'project_ai_resume_all') {
@@ -2717,7 +2741,7 @@ export class FeishuSupervisorService {
       }, { openId: event.operator.openId, source: 'card' })
         .catch((err) => ({ error: String(err?.message || err) }));
       const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
-      await this.replaceControlCard(event, buildProjectManagerConversationCard(view, {
+      await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view, {
         text: summary(result), success: !failedResult(result),
       }));
       return !failedResult(result);
@@ -3227,7 +3251,7 @@ export class FeishuSupervisorService {
   private async handleControlMenu(event: Lark.CardActionEvent, flow: string): Promise<void> {
     if (flow === 'project-manager') {
       const view = await this.loadProjectManagerView(event.operator.openId);
-      await this.replaceControlCard(event, buildProjectManagerConversationCard(view));
+      await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view));
       return;
     }
     if (flow === 'create-task') {
@@ -3399,7 +3423,7 @@ export class FeishuSupervisorService {
     const card = buildProjectManagerConversationCard(view, {
       text: '项目管理 AI 已回复，对话已保存到当前项目。',
       success: true,
-    });
+    }, 'chat');
     try {
       await this.channel.updateCard(target.cardMessageId, card);
       this.controlCards.set(target.cardMessageId, target.chatId);
@@ -3537,8 +3561,18 @@ export class FeishuSupervisorService {
 
   private queuePendingDecision(message: PendingDecisionMessage): void {
     if (message.kind === 'approval') this.removePendingApproval(message.approvalId);
+    if (message.kind === 'project-clarification') this.removePendingProjectClarification(message.question.id);
     this.pendingDecisionMessages.push(message);
     if (this.pendingDecisionMessages.length > 100) this.pendingDecisionMessages.shift();
+  }
+
+  private removePendingProjectClarification(questionId: string): void {
+    for (let index = this.pendingDecisionMessages.length - 1; index >= 0; index -= 1) {
+      const pending = this.pendingDecisionMessages[index];
+      if (pending.kind === 'project-clarification' && pending.question.id === questionId) {
+        this.pendingDecisionMessages.splice(index, 1);
+      }
+    }
   }
 
   private removePendingApproval(approvalId: string): void {
@@ -3556,6 +3590,7 @@ export class FeishuSupervisorService {
     for (const message of pending) {
       if (message.kind === 'approval') await this.sendApproval(message.record);
       else if (message.kind === 'waiting') await this.sendWaitingDecision(message.record);
+      else if (message.kind === 'project-clarification') await this.sendProjectClarification(message.projectId, message.question);
       else await this.sendDecisionText(message.text);
     }
   }

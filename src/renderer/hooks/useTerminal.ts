@@ -10,7 +10,7 @@ import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
 import { disconnectWorkspaceSsh } from '../store/pty-teardown';
-import { SplitNode, ThemeConfig } from '../../shared/types';
+import { SplitNode, SurfaceRef, ThemeConfig } from '../../shared/types';
 import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
 import { attachVisibleRenderer, RendererHandle } from '../utils/terminal-renderer';
@@ -90,6 +90,32 @@ function clearStuckRunningState(surfaceId: string): void {
   try {
     useStore.getState().setSurfaceShellState(surfaceId, null);
   } catch { /* best-effort: badge reset is non-critical */ }
+}
+
+function findSurfaceRef(node: SplitNode, surfaceId: string): SurfaceRef | null {
+  if (node.type === 'leaf') return node.surfaces.find((surface) => surface.id === surfaceId) || null;
+  return findSurfaceRef(node.children[0], surfaceId) || findSurfaceRef(node.children[1], surfaceId);
+}
+
+function notifyProjectManagerRuntimeFailure(surfaceId: string, detail: string): void {
+  const state = useStore.getState();
+  const workspace = state.workspaces.find((candidate) => treeHasSurface(candidate.splitTree, surfaceId));
+  const surface = workspace ? findSurfaceRef(workspace.splitTree, surfaceId) : null;
+  if (!workspace || !surface?.projectManagerTerminal) return;
+  const text = `项目管理 AI 运行时不可用：${detail}`;
+  state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title: '项目管理 AI 已停止' });
+  window.wmux?.notification?.fire({
+    surfaceId: surface.id,
+    title: '项目管理 AI 已停止',
+    text,
+  });
+  for (const session of state.projectManagers.filter((candidate) => !['completed', 'stopped'].includes(candidate.status))) {
+    state.appendProjectManagerEvent({
+      kind: 'manager-runtime-failed',
+      summary: text,
+      payload: { surfaceId, detail },
+    }, session.id);
+  }
 }
 
 const startupInputScheduledSurfaceIds = new Set<string>();
@@ -832,10 +858,11 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
 
       // Wire PTY exit → inform user; also auto-heal a stuck "Running" badge
       // (see clearStuckRunningState).
-      const unsubExit = window.wmux.pty.onExit(id, (_code: number) => {
+      const unsubExit = window.wmux.pty.onExit(id, (code: number) => {
         terminal.writeln('\r\n\x1b[2m[process exited]\x1b[0m');
         clearStuckRunningState(id);
         if (sshProfileId) detachExitedSshWorkspace(id);
+        notifyProjectManagerRuntimeFailure(id, `进程已退出（代码 ${code}）`);
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).
         useStore.getState().setSurfaceProgress(id, null);
@@ -964,7 +991,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
               runStartupCommands(created.id, !!created.startupCommandsConsumed);
               runStartupInput(created.id);
             })
-            .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
+            .catch((err: unknown) => {
+              terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
+              if (surfaceId) notifyProjectManagerRuntimeFailure(surfaceId, `无法创建终端：${String(err)}`);
+            });
         }
       });
     } else {
@@ -977,7 +1007,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           runStartupCommands(created.id, !!created.startupCommandsConsumed);
           runStartupInput(created.id);
         })
-        .catch((err: unknown) => terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`));
+        .catch((err: unknown) => {
+          terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
+          if (surfaceId) notifyProjectManagerRuntimeFailure(surfaceId, `无法创建终端：${String(err)}`);
+        });
     }
 
     // Wire xterm input → PTY

@@ -69,6 +69,7 @@ describe('project manager records', () => {
     const pendingUserQuestion = {
       id: 'question-1',
       category: 'manual-intervention' as const,
+      reasonCode: 'physical-action' as const,
       workItemId: 'wol_validation',
       blocker: '需要用户进入 BIOS 进行真机验收',
       question: '是否允许覆盖现有配置？',
@@ -86,6 +87,9 @@ describe('project manager records', () => {
         sizeBytes: 8, mtimeMs: 10, capturedAt: 11,
       }],
       pendingUserQuestion,
+      requirementsVersion: 3,
+      acceptedRequirementsVersion: 2,
+      pendingManagerDeliveries: [{ id: 'delivery-1', text: '请按新条件重新规划', createdAt: 13 }],
     };
 
     saveProjectManagerSession(saved, appData);
@@ -93,8 +97,12 @@ describe('project manager records', () => {
     expect(readLatestProjectManagerSession('E:\\repo', appData)).toMatchObject({
       planFiles: [{ name: 'requirements.md', content: '# 需求' }],
       pendingUserQuestion: {
-        id: 'question-1', previousStatus: 'active', category: 'manual-intervention', workItemId: 'wol_validation',
+        id: 'question-1', previousStatus: 'active', category: 'manual-intervention',
+        reasonCode: 'physical-action', workItemId: 'wol_validation',
       },
+      requirementsVersion: 3,
+      acceptedRequirementsVersion: 2,
+      pendingManagerDeliveries: [{ id: 'delivery-1', text: '请按新条件重新规划' }],
     });
   });
 

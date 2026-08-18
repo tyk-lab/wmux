@@ -43,6 +43,21 @@ describe('project manager bundled skill', () => {
     expect(fs.existsSync(path.join(path.dirname(result.skillPath), 'agents', 'openai.yaml'))).toBe(true);
   });
 
+  it('creates a portable runtime directory under app data when no project directory is supplied', () => {
+    const root = temporaryDirectory();
+    const runtime = createBundledSkill(root, false);
+
+    const result = ensureProjectManagerSkill({
+      ...runtime,
+      isPackaged: false,
+      appDataDir: path.join(root, 'app-data'),
+    });
+
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(result.runtimeDir).toBe(path.join(root, 'app-data', 'project-manager', 'runtime'));
+    expect(fs.existsSync(result.skillPath)).toBe(true);
+  });
+
   it('preserves an existing project skill', () => {
     const root = temporaryDirectory();
     const projectDir = path.join(root, 'project');

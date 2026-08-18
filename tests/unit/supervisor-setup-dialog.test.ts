@@ -42,12 +42,13 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('通过会话内 /effort 调整');
     expect(projectManagerDialogSource).toContain('项目前置条件（每行一项）');
-    expect(projectManagerDialogSource).toContain("action: 'update-preconditions'");
-    expect(projectManagerDialogSource).toContain('项目级前置条件');
+    expect(projectManagerDialogSource).toContain("action: 'update-definition'");
+    expect(projectManagerDialogSource).toContain('项目目标与需求');
+    expect(projectManagerDialogSource).toContain('保存需求变更');
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
-    expect(projectManagerDialogSource).toContain('恢复上次项目');
-    expect(projectManagerDialogSource).toContain('本次不恢复');
+    expect(projectManagerDialogSource).toContain('恢复所选项目');
+    expect(projectManagerDialogSource).toContain('暂不恢复');
     expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
     expect(projectManagerDialogSource).toContain("'restore-projects'");
     expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
@@ -55,7 +56,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('选择计划文件');
     expect(projectManagerDialogSource).toContain('添加路径');
     expect(projectManagerDialogSource).toContain('pendingUserQuestion');
-    expect(projectManagerDialogSource).toContain('项目管理 AI 需要你确认');
+    expect(projectManagerDialogSource).toContain('项目阻塞，需要你指示');
+    expect(projectManagerDialogSource).toContain('项目管理 AI 邀请你对齐需求');
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
     expect(projectManagerDialogSource).toContain('当前项目：{session.goal}');

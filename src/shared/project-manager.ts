@@ -29,6 +29,8 @@ export type ProjectManagerEventKind =
   | 'terminal-rotated'
   | 'recovery-restored'
   | 'manager-runtime-restarted'
+  | 'manager-runtime-failed'
+  | 'manager-delivery-failed'
   | 'user-clarification-requested'
   | 'user-clarification-answered'
   | 'requirements-alignment-required'
@@ -58,11 +60,24 @@ export interface ProjectManagerQuestionOption {
   description?: string;
 }
 
+export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
+  'physical-action',
+  'credentials',
+  'access-grant',
+  'business-choice',
+  'destructive-action',
+  'production-action',
+] as const;
+
+export type ProjectManagerManualInterventionReasonCode =
+  typeof PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES[number];
+
 export interface ProjectManagerUserQuestion {
   id: string;
   category?: 'clarification' | 'manual-intervention';
   workItemId?: string;
   blocker?: string;
+  reasonCode?: ProjectManagerManualInterventionReasonCode;
   question: string;
   context: string;
   options: ProjectManagerQuestionOption[];
@@ -177,6 +192,12 @@ export interface ProjectManagerEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface ProjectManagerPendingDelivery {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
 export interface ProjectManagerSession {
   id: string;
   projectDir: string;
@@ -186,6 +207,10 @@ export interface ProjectManagerSession {
   /** User-selected, size-limited text snapshots that supplement the stated requirements. */
   planFiles: ProjectPlanFileSnapshot[];
   doneWhen: string[];
+  /** Monotonic version of user-owned goals, prerequisites, plans, and completion criteria. */
+  requirementsVersion?: number;
+  /** Latest requirements version explicitly accepted by the project manager through resume. */
+  acceptedRequirementsVersion?: number;
   status: ProjectManagerSessionStatus;
   /** True only when the project was paused by the portfolio-level control. */
   pausedByPortfolio?: boolean;
@@ -195,10 +220,28 @@ export interface ProjectManagerSession {
   feishuChatId?: string;
   recoveryState?: 'ready' | 'checking';
   pendingUserQuestion?: ProjectManagerUserQuestion;
+  /** Manager-bound messages that have not yet been written to the manager terminal. */
+  pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
   workItems: ProjectWorkItem[];
   events: ProjectManagerEvent[];
   createdAt: number;
   updatedAt: number;
+}
+
+export function projectRequirementsVersion(session: Pick<ProjectManagerSession, 'requirementsVersion'>): number {
+  return Math.max(1, Math.trunc(session.requirementsVersion || 1));
+}
+
+export function projectAcceptedRequirementsVersion(
+  session: Pick<ProjectManagerSession, 'requirementsVersion' | 'acceptedRequirementsVersion' | 'status'>,
+): number {
+  if (Number.isFinite(session.acceptedRequirementsVersion)) {
+    return Math.max(0, Math.trunc(session.acceptedRequirementsVersion || 0));
+  }
+  // Legacy active projects predate versioned constraints and are treated as
+  // having accepted their persisted definition. Waiting projects still pass
+  // through their existing alignment/recovery gates before they can resume.
+  return session.status === 'active' ? projectRequirementsVersion(session) : 0;
 }
 
 export type ProjectManagerAction =
@@ -227,7 +270,13 @@ export type ProjectManagerAction =
   | { type: 'update-work-item'; workItemId: string; patch: Partial<ProjectWorkItem> }
   | { type: 'record-execution'; workItemId: string; record: ProjectExecutionRecord }
   | { type: 'pause-project'; reason: string; source?: 'project' | 'portfolio' }
-  | { type: 'resume-project'; reason: string; source?: 'project' | 'portfolio' }
+  | {
+    type: 'resume-project';
+    reason: string;
+    source?: 'project' | 'portfolio';
+    /** Only the authenticated project-manager protocol may accept a new requirements version. */
+    acceptRequirementsVersion?: boolean;
+  }
   | { type: 'complete-project'; evidence: string }
   | { type: 'stop-project'; reason: string; emergency?: boolean }
   | { type: 'reply'; correlationId?: string; message: string };

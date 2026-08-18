@@ -1,23 +1,29 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  PROJECT_MANAGER_TERMINAL_CWD,
   projectManagerSkillRelativePath,
   type ProjectManagerRuntimeAgent,
 } from '../shared/project-manager-terminal';
+import { getAppDataDir } from '../shared/instance';
 
 interface ProjectManagerSkillRuntime {
   appPath: string;
   isPackaged: boolean;
   resourcesPath: string;
   projectDir?: string;
+  appDataDir?: string;
 }
 
 export interface ProjectManagerSkillResult {
   ok: boolean;
   created: boolean;
   skillPath: string;
+  runtimeDir: string;
   error?: string;
+}
+
+export function projectManagerRuntimeDirectory(appDataDir = getAppDataDir()): string {
+  return path.join(appDataDir, 'project-manager', 'runtime');
 }
 
 function bundledSkillDirectory(runtime: ProjectManagerSkillRuntime): string {
@@ -31,18 +37,19 @@ export function ensureProjectManagerSkill(
   runtime: ProjectManagerSkillRuntime,
   agent: ProjectManagerRuntimeAgent = 'codex',
 ): ProjectManagerSkillResult {
-  const projectDir = runtime.projectDir || PROJECT_MANAGER_TERMINAL_CWD;
+  const projectDir = runtime.projectDir || projectManagerRuntimeDirectory(runtime.appDataDir);
   const skillPath = path.join(projectDir, projectManagerSkillRelativePath(agent));
   try {
+    if (!runtime.projectDir) fs.mkdirSync(projectDir, { recursive: true });
     if (!fs.statSync(projectDir).isDirectory()) {
-      return { ok: false, created: false, skillPath, error: `项目管理终端目录不存在：${projectDir}` };
+      return { ok: false, created: false, skillPath, runtimeDir: projectDir, error: `项目管理终端目录不存在：${projectDir}` };
     }
   } catch {
-    return { ok: false, created: false, skillPath, error: `项目管理终端目录不存在：${projectDir}` };
+    return { ok: false, created: false, skillPath, runtimeDir: projectDir, error: `无法创建项目管理终端目录：${projectDir}` };
   }
 
   try {
-    if (fs.statSync(skillPath).isFile()) return { ok: true, created: false, skillPath };
+    if (fs.statSync(skillPath).isFile()) return { ok: true, created: false, skillPath, runtimeDir: projectDir };
   } catch { /* Missing or incomplete target skill: restore it from bundled resources. */ }
 
   const sourceDir = bundledSkillDirectory(runtime);
@@ -56,12 +63,13 @@ export function ensureProjectManagerSkill(
       errorOnExist: false,
     });
     if (!fs.statSync(skillPath).isFile()) throw new Error('target SKILL.md missing after copy');
-    return { ok: true, created: true, skillPath };
+    return { ok: true, created: true, skillPath, runtimeDir: projectDir };
   } catch (error) {
     return {
       ok: false,
       created: false,
       skillPath,
+      runtimeDir: projectDir,
       error: `无法创建 manage-project 技能：${String((error as Error)?.message || error)}`,
     };
   }

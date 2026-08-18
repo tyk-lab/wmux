@@ -59,6 +59,10 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.category === undefined || ['clarification', 'manual-intervention'].includes(String(question.category)))
     && (question.workItemId === undefined || typeof question.workItemId === 'string')
     && (question.blocker === undefined || typeof question.blocker === 'string')
+    && (question.reasonCode === undefined || [
+      'physical-action', 'credentials', 'access-grant', 'business-choice',
+      'destructive-action', 'production-action',
+    ].includes(String(question.reasonCode)))
     && typeof question.question === 'string'
     && typeof question.context === 'string'
     && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
@@ -83,6 +87,18 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.preconditions !== undefined && !isStringArray(session.preconditions))
     || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
     || (session.pendingUserQuestion !== undefined && !isPendingUserQuestion(session.pendingUserQuestion))
+    || (session.pendingManagerDeliveries !== undefined && (
+      !Array.isArray(session.pendingManagerDeliveries)
+      || session.pendingManagerDeliveries.length > 100
+      || session.pendingManagerDeliveries.some((delivery) => (
+        !delivery || typeof delivery !== 'object'
+        || typeof delivery.id !== 'string'
+        || typeof delivery.text !== 'string'
+        || !Number.isFinite(delivery.createdAt)
+      ))
+    ))
+    || (session.requirementsVersion !== undefined && (!Number.isFinite(session.requirementsVersion) || Number(session.requirementsVersion) < 1))
+    || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')
@@ -129,13 +145,21 @@ function readProjectManagerSessions(
   try {
     return fs.readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isFile() && SESSION_ID.test(path.basename(entry.name, '.json')) && entry.name.endsWith('.json'))
-      .map((entry) => {
+      .map<ProjectManagerSession | null>((entry) => {
         try {
           const filePath = path.join(directory, entry.name);
           if (fs.statSync(filePath).size > MAX_SESSION_BYTES) return null;
           const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { version?: unknown; session?: unknown };
           return parsed.version === 1 && isProjectManagerSession(parsed.session)
-            ? { ...parsed.session, preconditions: parsed.session.preconditions || [], planFiles: parsed.session.planFiles || [] }
+            ? {
+                ...parsed.session,
+                preconditions: parsed.session.preconditions || [],
+                planFiles: parsed.session.planFiles || [],
+                pendingManagerDeliveries: parsed.session.pendingManagerDeliveries || [],
+                requirementsVersion: parsed.session.requirementsVersion || 1,
+                acceptedRequirementsVersion: parsed.session.acceptedRequirementsVersion
+                  ?? (parsed.session.status === 'active' ? parsed.session.requirementsVersion || 1 : 0),
+              } satisfies ProjectManagerSession
             : null;
         } catch {
           return null;

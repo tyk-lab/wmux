@@ -33,7 +33,6 @@ import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-
 import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
   PROJECT_MANAGER_TERMINAL_AGENT,
-  PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
   PROJECT_MANAGER_TERMINAL_STARTUP_INPUT,
 } from '../shared/project-manager-terminal';
@@ -120,8 +119,8 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
         name,
         task,
         agent,
-        cwd: PROJECT_MANAGER_TERMINAL_CWD,
-        displayPath: PROJECT_MANAGER_TERMINAL_CWD,
+        cwd: skill.runtimeDir,
+        displayPath: skill.runtimeDir,
       };
     } else {
       const selectedCwd = command.cwd?.trim();

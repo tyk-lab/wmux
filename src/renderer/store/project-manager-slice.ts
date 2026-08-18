@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import {
+  projectRequirementsVersion,
   type ProjectManagerAction,
   type ProjectManagerEvent,
   type ProjectManagerSession,
@@ -105,6 +106,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       preconditions: options.preconditions || [],
       planFiles: options.planFiles || [],
       doneWhen: options.doneWhen,
+      requirementsVersion: 1,
+      acceptedRequirementsVersion: 0,
       status: 'active',
       recoveryState: 'ready',
       managerSurfaceId: options.managerSurfaceId,
@@ -218,6 +221,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         planFiles: session.planFiles.map((file) => ({ path: file.path, name: file.name })),
         doneWhen: session.doneWhen,
       };
+      const nextRequirementsVersion = projectRequirementsVersion(session) + 1;
       const workItems = session.workItems.map((item) => {
         if (action.mode === 'replace' && !['completed', 'stopped'].includes(item.status)) {
           return {
@@ -227,7 +231,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
             updatedAt: now,
           };
         }
-        if (['running', 'validating'].includes(item.status)) {
+        if (!['completed', 'stopped'].includes(item.status)) {
           return {
             ...item,
             status: 'waiting-decision' as const,
@@ -243,8 +247,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         preconditions,
         planFiles: action.planFiles,
         doneWhen,
+        requirementsVersion: nextRequirementsVersion,
         workItems,
-        status: session.status === 'active' ? 'waiting' : session.status,
+        status: 'waiting',
+        pausedByPortfolio: false,
       };
       eventInput = {
         kind: 'project-definition-updated',
@@ -252,6 +258,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         payload: {
           source: action.source,
           mode: action.mode,
+          requirementsVersion: nextRequirementsVersion,
           previous,
           next: {
             goal,
@@ -266,11 +273,29 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (preconditions.length === 0) {
         return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
       }
-      next = { ...session, preconditions };
+      const nextRequirementsVersion = projectRequirementsVersion(session) + 1;
+      const workItems = session.workItems.map((item) => (
+        ['completed', 'stopped'].includes(item.status)
+          ? item
+          : {
+              ...item,
+              status: 'waiting-decision' as const,
+              latestBlocker: '项目前置条件已更新，等待项目管理 AI 按新条件重新核对任务安全性和可执行性',
+              updatedAt: now,
+            }
+      ));
+      next = {
+        ...session,
+        preconditions,
+        requirementsVersion: nextRequirementsVersion,
+        workItems,
+        status: 'waiting',
+        pausedByPortfolio: false,
+      };
       eventInput = {
         kind: 'project-preconditions-updated',
         summary: action.reason || `更新项目前置条件：${preconditions.join('；')}`,
-        payload: { preconditions },
+        payload: { preconditions, requirementsVersion: nextRequirementsVersion },
       };
     } else if (action.type === 'request-user-clarification') {
       if (session.pendingUserQuestion) {
@@ -347,7 +372,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
       eventInput = { kind: 'project-paused', summary: action.reason || '项目已暂停' };
     } else if (action.type === 'resume-project') {
-      next = { ...session, status: 'active', pausedByPortfolio: false };
+      next = {
+        ...session,
+        status: 'active',
+        pausedByPortfolio: false,
+        ...(action.acceptRequirementsVersion
+          ? { acceptedRequirementsVersion: projectRequirementsVersion(session) }
+          : {}),
+      };
       eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
     } else if (action.type === 'complete-project') {
       const required = session.workItems.filter((item) => item.status !== 'stopped');

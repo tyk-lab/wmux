@@ -98,6 +98,7 @@ describe('project-manager slice', () => {
     useStore.getState().startProjectManager({
       projectDir: 'E:\\repo', goal: '控制设备', preconditions: ['设备已断电'], doneWhen: ['验收通过'],
     });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('hardware-check') });
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-project-preconditions',
@@ -106,6 +107,22 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.preconditions).toEqual([
       '设备已接入受控电源', '安全限值已经人工确认',
     ]);
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting',
+      requirementsVersion: 2,
+      acceptedRequirementsVersion: 0,
+      workItems: [{
+        id: 'hardware-check',
+        status: 'waiting-decision',
+        latestBlocker: expect.stringContaining('前置条件'),
+      }],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '已按新条件重新规划', acceptRequirementsVersion: true,
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'active', requirementsVersion: 2, acceptedRequirementsVersion: 2,
+    });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-project-preconditions', preconditions: [],
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能为空') });

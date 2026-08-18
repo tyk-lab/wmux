@@ -1,5 +1,5 @@
 export const PROJECT_MANAGER_TERMINAL_NAME = '项目管理终端';
-export const PROJECT_MANAGER_TERMINAL_CWD = 'K:\\sync_code\\Link_Folder_108952\\toolbox\\build\\windows\\x64\\runner\\Release';
+export const PROJECT_MANAGER_RUNTIME_PATH_SUFFIX = ['project-manager', 'runtime'] as const;
 
 export type ProjectManagerRuntimeAgent = 'codex' | 'kimi' | 'grok';
 export type ProjectSupervisorRuntimeAgent = ProjectManagerRuntimeAgent | 'pi';
@@ -88,7 +88,8 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '提问前先基于现有需求给出 2-4 个可执行且互斥的建议方案，在 description 中说明各自范围、收益和代价，并设置 recommendedOptionId 明确推荐项及理由；同时允许用户自定义答复。',
   '若控制层提示“需求对齐门禁已由控制层执行”，说明兜底推荐问题已经发到桌面和飞书；不得重复提问或自行恢复。收到答复后必须先用 wmux project update 写回目标、范围和可验证完成条件。',
   '若需求已经充分，写入 JSON，包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason，并执行 wmux project alignment-confirm --project <项目ID> --json-file <文件>；控制层记录结论后才允许显式恢复项目。',
-  '一次只问一个关键问题。收到桌面或飞书答复前保持该项目等待，其他项目继续；收到答复后吸收为项目约束，若仍有会改变方案的歧义则继续下一轮结构化提问，全部对齐后再明确决定恢复、重规划、继续等待或停止。',
+  '一次只问一个关键问题。收到桌面或飞书答复前保持该项目等待，其他项目继续；收到答复后吸收为项目约束，若仍有会改变方案的歧义则继续下一轮结构化提问，全部对齐后再明确决定恢复、重规划、继续等待或停止。该门禁只在项目首次启动阶段生效；首次对齐结论已记录后，项目执行中的暂停、进度检查或普通重规划不得再次触发需求对齐确认。',
+  '项目执行中，项目管理 AI 拥有技术方案、任务路由、依赖调整、有限重试和原目标内重规划的决策权。不得为普通技术取舍、实现细节或可逆调整向用户确认；只有无法自行处理、必须人工操作、需要凭据/权限、涉及业务取舍或高风险不可逆动作时，才执行 wmux project ask，并且必须使用 category=manual-intervention、workItemId、blocker 和 reasonCode。reasonCode 仅允许 physical-action、credentials、access-grant、business-choice、destructive-action、production-action。该问题会同步到桌面和与 AI 监督用户决策相同的飞书决策通道；用户任选项目管理 AI 给出的方案或填写自定义答复后，卡片会自动关闭。',
 ].join('\n');
 
 export function projectManagerStartupInput(agent: ProjectManagerRuntimeAgent, skillPath: string): string {

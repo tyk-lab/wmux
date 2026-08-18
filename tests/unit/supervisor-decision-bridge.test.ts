@@ -5,7 +5,6 @@ import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
 import {
   DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
-  PROJECT_MANAGER_TERMINAL_CWD,
   PROJECT_MANAGER_TERMINAL_NAME,
 } from '../../src/shared/project-manager-terminal';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
@@ -80,7 +79,10 @@ describe('supervisor decision bridge', () => {
           pty: { write: writes },
           notification: { fire: vi.fn() },
           projectManager: {
-            ensureSkill: vi.fn(async () => ({ ok: true })),
+            ensureSkill: vi.fn(async () => ({
+              ok: true,
+              runtimeDir: 'E:\\wmux-data\\project-manager\\runtime',
+            })),
             saveSession: vi.fn(async () => ({ ok: true })),
             appendRecord: vi.fn(async () => ({ ok: true })),
             deleteSession: vi.fn(async () => ({ deleted: true })),
@@ -1205,7 +1207,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.supervisorWorkspaceId).toBe(controlWorkspace?.id);
     expect(surface).toMatchObject({
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
-      cwd: PROJECT_MANAGER_TERMINAL_CWD,
+      cwd: 'E:\\wmux-data\\project-manager\\runtime',
       projectManagerTerminal: true,
       projectManagerAgent: 'codex',
       projectManagerModel: '',
@@ -1430,6 +1432,94 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).wmux.projectManager.appendRecord).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'requirements-alignment-required' }),
     );
+  });
+
+  it('does not reopen requirements alignment when a started project is paused for a requirement-related reason', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\aligned-pause', goal: '实现认证模块',
+      preconditions: ['测试环境可用'], doneWhen: ['认证测试通过'],
+    })).resolves.toMatchObject({ ok: true, session: { status: 'waiting' } });
+    const session = useStore.getState().projectManager!;
+    await confirmAndResumeProject(session.id);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'pause', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      reason: '实现中发现需求范围仍有不足，先暂停重新规划',
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'project-paused' } });
+
+    const paused = useStore.getState().projectManager!;
+    expect(paused.status).toBe('paused');
+    expect(paused.pendingUserQuestion).toBeUndefined();
+    expect(paused.events.filter((event) => (
+      event.kind === 'requirements-alignment-required' || event.kind === 'requirements-alignment-confirmed'
+    ))).toHaveLength(2);
+  });
+
+  it('only permits scoped manual intervention questions after initial alignment', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\manual-question', goal: '实现认证模块',
+      preconditions: ['测试环境可用'], doneWhen: ['认证测试通过'],
+    });
+    const session = useStore.getState().projectManager!;
+    await confirmAndResumeProject(session.id);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'user-question', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      question: '是否采用方案 A？',
+      options: [{ id: 'a', label: '方案 A', description: '实现成本较低。' }, { id: 'b', label: '方案 B', description: '扩展性更高。' }],
+      recommendedOptionId: 'a',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('category=manual-intervention'),
+    });
+
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        id: 'manual-check', title: '现场检查', status: 'waiting-decision', dependencies: [],
+        attempts: 0, decisionsUsed: 0, updatedAt: 1, executionHistory: [],
+        contract: {
+          objective: '完成现场检查', description: '', preconditions: [],
+          scope: { root: 'E:\\manual-question', allowPaths: [], denyPaths: [], forbiddenActions: [] },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false },
+          stopWhen: ['现场检查完成'], validation: ['用户确认现场结果'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      },
+    }, session.id);
+    await expect(request({
+      action: 'user-question', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      category: 'manual-intervention', question: '请用户完成现场检查。',
+      workItemId: 'manual-check', blocker: '必须由用户在设备旁确认指示灯状态',
+      reasonCode: 'unsupported-reason',
+      options: [
+        { id: 'done', label: '已经完成', description: '现场操作已完成，可以继续项目。' },
+        { id: 'blocked', label: '暂时无法完成', description: '保留阻塞并继续等待人工处理。' },
+      ],
+      recommendedOptionId: 'done',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('reasonCode') });
+
+    (globalThis.window as any).wmux.notification.fire.mockClear();
+    await expect(request({
+      action: 'user-question', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      category: 'manual-intervention', question: '请确认设备指示灯是否为绿色。',
+      context: '终端 AI 无法观察实体设备。', workItemId: 'manual-check',
+      blocker: '必须由用户在设备旁确认指示灯状态', reasonCode: 'physical-action',
+      options: [
+        { id: 'green', label: '指示灯为绿色', description: '现场状态正常，可以继续后续验证。' },
+        { id: 'other', label: '不是绿色', description: '现场状态异常，项目保持暂停并重新诊断。' },
+      ],
+      recommendedOptionId: 'green',
+    })).resolves.toMatchObject({
+      ok: true,
+      question: { category: 'manual-intervention', workItemId: 'manual-check', reasonCode: 'physical-action' },
+    });
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要你的处理',
+    }));
   });
 
   it('does not start a new requirement check merely because an existing project is restored', async () => {
@@ -1861,8 +1951,20 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.preconditions).toEqual([
       '设备现已接入受控电源', '断电保护已经人工验证',
     ]);
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting', requirementsVersion: 2, acceptedRequirementsVersion: 1,
+      workItems: [{ id: 'rotation_task', status: 'waiting-decision' }],
+    });
+    await expect(remote({
+      action: 'resume', projectId: useStore.getState().projectManager?.id,
+      reason: '用户尝试直接恢复',
+    })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('项目管理 AI 重新规划'),
+    });
     expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === previousLane?.id)?.config?.preconditions)
       .toContain('断电保护已经人工验证');
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === previousLane?.id)?.controlState)
+      .toBe('paused');
 
     await expect(request({
       action: 'terminal-rotate', callerSurfaceId: managerSurfaceId,
@@ -2144,6 +2246,9 @@ describe('supervisor decision bridge', () => {
     const store = useStore.getState();
     store.startProjectManager({ projectDir: 'E:\\repo', goal: '完成认证', doneWhen: ['认证测试通过'] });
     store.applyProjectManagerAction({
+      type: 'resume-project', reason: '测试已完成项目需求对齐', acceptRequirementsVersion: true,
+    });
+    store.applyProjectManagerAction({
       type: 'create-work-item',
       workItem: {
         id: 'auth', title: '认证', status: 'running', dependencies: [], attempts: 0, decisionsUsed: 0,
@@ -2185,6 +2290,9 @@ describe('supervisor decision bridge', () => {
     const store = useStore.getState();
     store.startProjectManager({ projectDir: 'E:\\repo', goal: '完成认证', doneWhen: ['认证测试通过'] });
     store.applyProjectManagerAction({
+      type: 'resume-project', reason: '测试已完成项目需求对齐', acceptRequirementsVersion: true,
+    });
+    store.applyProjectManagerAction({
       type: 'create-work-item',
       workItem: {
         id: 'auth', title: '认证', status: 'running', dependencies: [], attempts: 0, decisionsUsed: 0,
@@ -2207,6 +2315,9 @@ describe('supervisor decision bridge', () => {
   it('rejects a project-managed supervisor decision outside the task contract', () => {
     const store = useStore.getState();
     store.startProjectManager({ projectDir: 'E:\\repo', goal: '完成认证', doneWhen: ['认证测试通过'] });
+    store.applyProjectManagerAction({
+      type: 'resume-project', reason: '测试已完成项目需求对齐', acceptRequirementsVersion: true,
+    });
     store.applyProjectManagerAction({
       type: 'create-work-item',
       workItem: {
