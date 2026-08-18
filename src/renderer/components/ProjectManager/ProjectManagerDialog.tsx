@@ -37,6 +37,12 @@ const STATUS_LABELS: Record<string, string> = {
   stopped: '已停止',
 };
 
+function taskWorkModeLabel(mode: string | undefined): string {
+  if (mode === 'multi-thread') return '多线程';
+  if (mode === 'adaptive') return '自适应线程';
+  return '单线程';
+}
+
 type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
 
 const PROJECT_ALERT_KINDS = new Set([
@@ -854,7 +860,7 @@ export default function ProjectManagerDialog() {
                 setDoneWhen(event.target.value);
                 setNotice('');
               }} placeholder={'相关功能实现并验证\n关键测试通过\n高风险或未验证项已明确报告'} />
-              <div className="supervisor-dialog__hint">项目管理 AI 会选择单/多线程模式，明确各线程职责、任务边界、决策权、停止条件和防死循环预算。</div>
+              <div className="supervisor-dialog__hint">项目管理 AI 会选择单线程、固定多线程或自适应线程模式，明确线程上限、并行/串行边界、决策权、停止条件和防死循环预算。</div>
             </section> : (
             <>
               {activeView === 'execution' && <section className="project-manager-dialog__summary">
@@ -960,10 +966,13 @@ export default function ProjectManagerDialog() {
                       <article key={lane.id}>
                         <div><strong>{lane.label}</strong><em>{STATUS_LABELS[supervisorLaneControlState(lane)] || supervisorLaneControlState(lane)}</em></div>
                         <p>监督终端：{lane.supervisorSurfaceId || '恢复中'} · 任务终端：{lane.projectTaskStartupPending ? '等待监督 AI 创建' : lane.surfaceId}</p>
-                        <p>工作项：{item?.title || lane.projectWorkItemId || '未绑定'} · {execution?.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}</p>
+                        <p>工作项：{item?.title || lane.projectWorkItemId || '未绑定'} · {taskWorkModeLabel(execution?.taskWorkMode)}</p>
                         {execution?.modeReason && <p>模式理由：{execution.modeReason}</p>}
                         {execution?.taskWorkMode === 'multi-thread' && (
                           <p>主线程：{execution.mainThreadResponsibility}；子线程：{execution.childThreadResponsibilities.join('；')}</p>
+                        )}
+                        {execution?.taskWorkMode === 'adaptive' && (
+                          <p>主线程：{execution.mainThreadResponsibility}；内部子线程上限：{execution.maxChildThreads}；必须串行：{execution.serializedOperations?.join('；')}</p>
                         )}
                       </article>
                     );
@@ -981,7 +990,8 @@ export default function ProjectManagerDialog() {
                       <details key={item.id}>
                         <summary><strong>{item.title}</strong><span>{STATUS_LABELS[item.status] || item.status}</span></summary>
                         <dl>
-                          <dt>执行模式</dt><dd>{execution?.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}{execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
+                          <dt>执行模式</dt><dd>{taskWorkModeLabel(execution?.taskWorkMode)}{execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
+                          {execution?.taskWorkMode === 'adaptive' && <><dt>自适应边界</dt><dd>最多 {execution.maxChildThreads} 个内部子线程；可并行：{execution.parallelizableOperations?.join('；')}；必须串行：{execution.serializedOperations?.join('；')}</dd></>}
                           <dt>决策预算</dt><dd>{item.decisionsUsed}/{item.contract.budget.maxDecisions}；重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>

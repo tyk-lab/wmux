@@ -31,6 +31,7 @@ import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
 import {
   normalizeTaskChildThreadResponsibilities,
+  normalizeTaskMaxChildThreads,
   normalizeTaskWorkMode,
 } from '../../../shared/supervisor-work-mode';
 import {
@@ -759,6 +760,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
               const laneProjectManaged = isProjectManagedSupervisorLane(lane);
               const laneControlState = supervisorLaneControlState(lane);
               const laneConfig = effectiveSupervisorLaneConfig(lane);
+              const laneTaskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
               const lanePermissions = effectiveSupervisorAutonomyPermissions(supervisor, lane);
               const laneAutonomous = effectiveSupervisorAutonomous(supervisor, lane);
               const laneForbiddenActions = effectiveSupervisorForbiddenActions(supervisor, lane);
@@ -841,9 +843,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId 
                     </div>
                   )}
                   <div className="sup-panel__lane-task">
-                    工作模式: {normalizeTaskWorkMode(laneConfig.taskWorkMode) === 'multi-thread'
+                    工作模式: {laneTaskWorkMode === 'multi-thread'
                       ? `多线程工程（主线程 + ${normalizeTaskChildThreadResponsibilities(laneConfig.childThreadResponsibilities).length} 个子线程）`
-                      : '单线程工作'}
+                      : laneTaskWorkMode === 'adaptive'
+                        ? `自适应线程（最多 ${normalizeTaskMaxChildThreads(laneConfig.maxChildThreads)} 个内部子线程）`
+                        : '单线程工作'}
                   </div>
                   <div className="sup-panel__lane-task" title={laneConfig.stopWhen}>
                     停止({stopWhenKindLabel(laneConfig.stopWhenKind)}): {laneConfig.stopWhen}
