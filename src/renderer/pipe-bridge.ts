@@ -3012,6 +3012,7 @@ function projectAlignmentQuestionInput(session: ProjectManagerSession): Record<s
 
 const deletingProjectManagerSessions = new Set<string>();
 let projectManagerRecoveryChoice: 'pending' | 'restore' | 'skip' = 'pending';
+let projectManagerRecoveryMutationInFlight = false;
 
 function projectSessionForParams(params: any): ProjectManagerSession | null {
   const state = useStore.getState();
@@ -5188,6 +5189,7 @@ export function initPipeBridge(): void {
   projectManagerDeliveryScheduled = false;
   deletingProjectManagerSessions.clear();
   projectManagerRecoveryChoice = 'pending';
+  projectManagerRecoveryMutationInFlight = false;
   for (const timer of projectProgressTimers.values()) globalThis.clearTimeout(timer);
   projectProgressTimers.clear();
   projectProgressChecks.clear();
@@ -5236,71 +5238,118 @@ export function initPipeBridge(): void {
       };
     }
     if (action === 'restore-projects') {
-      if (store.projectManagers.length > 0) {
+      if (projectManagerRecoveryMutationInFlight) {
+        return { ok: false, error: '历史项目记录正在恢复或删除，请等待当前操作完成' };
+      }
+      projectManagerRecoveryMutationInFlight = true;
+      try {
+        if (store.projectManagers.length > 0) {
+          projectManagerRecoveryChoice = 'restore';
+          return {
+            ok: true,
+            restored: true,
+            projects: store.projectManagers.map(projectManagerSessionView),
+            message: '当前项目组合已经恢复。',
+          };
+        }
+        const listActiveSessions = (window as any).wmux?.projectManager?.listActiveSessions;
+        if (typeof listActiveSessions !== 'function') {
+          return { ok: false, error: '项目恢复接口尚未就绪，请重启 wmux 后再试' };
+        }
+        const persisted = await listActiveSessions();
+        const available = Array.isArray(persisted) ? persisted : [];
+        const requestedIds = Array.isArray(params?.projectIds)
+          ? [...new Set(params.projectIds.map((value: unknown) => String(value).trim()).filter(Boolean))]
+          : [];
+        const candidates = requestedIds.length > 0
+          ? available.filter((session: ProjectManagerSession) => requestedIds.includes(session.id))
+          : available;
+        if (requestedIds.length > 0 && candidates.length !== requestedIds.length) {
+          return { ok: false, error: '部分所选历史项目已失效，请刷新恢复列表后重试。' };
+        }
+        if (candidates.length === 0) {
+          projectManagerRecoveryChoice = 'skip';
+          return { ok: true, restored: false, projects: [], message: '没有可恢复的项目。' };
+        }
         projectManagerRecoveryChoice = 'restore';
+        const recoveredSessions = candidates.map((session: ProjectManagerSession) => (
+          restoredProjectManagerSession(session)
+        ));
+        useStore.getState().restoreProjectManagers(recoveredSessions, recoveredSessions[0]?.id);
+        for (const session of recoveredSessions) {
+          await (window as any).wmux?.projectManager?.saveSession?.(session);
+        }
+        const failures: string[] = [];
+        for (const session of recoveredSessions) {
+          const runtime = await ensureProjectManagerRuntime(session.id, { recoveredAfterRestart: true });
+          if (runtime.ok) continue;
+          failures.push(`${session.goal}：${runtime.error || '项目 AI 启动失败'}`);
+          useStore.getState().appendProjectManagerEvent({
+            kind: 'manager-runtime-failed',
+            summary: runtime.error || '项目 AI 启动失败',
+          }, session.id);
+          useStore.getState().applyProjectManagerAction({
+            type: 'pause-project',
+            reason: runtime.error || '项目 AI 启动失败',
+          }, session.id);
+          await (window as any).wmux?.projectManager?.saveSession?.(
+            useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+          );
+        }
+        store = useStore.getState();
         return {
           ok: true,
-          restored: true,
+          restored: store.projectManagers.length > 0,
           projects: store.projectManagers.map(projectManagerSessionView),
-          message: '当前项目组合已经恢复。',
+          message: failures.length > 0
+            ? `已恢复 ${store.projectManagers.length} 个项目；${failures.length} 个项目的专属项目 AI 启动失败并已暂停。`
+            : `已恢复 ${store.projectManagers.length} 个项目，并分别启动专属项目 AI。`,
+          ...(failures.length > 0 ? { warnings: failures } : {}),
         };
+      } finally {
+        projectManagerRecoveryMutationInFlight = false;
+      }
+    }
+    if (action === 'delete-recovery-project') {
+      const projectId = String(params?.projectId || '').trim();
+      if (!projectId) return { ok: false, error: '必须指定要删除的历史项目记录' };
+      if (store.projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending') {
+        return { ok: false, error: '历史项目恢复阶段已经结束，不能从候选列表删除记录' };
+      }
+      if (projectManagerRecoveryMutationInFlight || deletingProjectManagerSessions.has(projectId)) {
+        return { ok: false, error: '历史项目记录正在恢复或删除，请等待当前操作完成' };
       }
       const listActiveSessions = (window as any).wmux?.projectManager?.listActiveSessions;
-      if (typeof listActiveSessions !== 'function') {
-        return { ok: false, error: '项目恢复接口尚未就绪，请重启 wmux 后再试' };
+      const deleteSession = (window as any).wmux?.projectManager?.deleteSession;
+      if (typeof listActiveSessions !== 'function' || typeof deleteSession !== 'function') {
+        return { ok: false, error: '项目记录删除接口尚未就绪，请重启 wmux 后再试' };
       }
-      const persisted = await listActiveSessions();
-      const available = Array.isArray(persisted) ? persisted : [];
-      const requestedIds = Array.isArray(params?.projectIds)
-        ? [...new Set(params.projectIds.map((value: unknown) => String(value).trim()).filter(Boolean))]
-        : [];
-      const candidates = requestedIds.length > 0
-        ? available.filter((session: ProjectManagerSession) => requestedIds.includes(session.id))
-        : available;
-      if (requestedIds.length > 0 && candidates.length !== requestedIds.length) {
-        return { ok: false, error: '部分所选历史项目已失效，请刷新恢复列表后重试。' };
+      projectManagerRecoveryMutationInFlight = true;
+      deletingProjectManagerSessions.add(projectId);
+      try {
+        const persisted = await listActiveSessions();
+        const candidate = Array.isArray(persisted)
+          ? persisted.find((session: ProjectManagerSession) => session.id === projectId)
+          : undefined;
+        if (!candidate) return { ok: false, error: '该历史项目记录已经不存在，请刷新恢复列表' };
+        if (useStore.getState().projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending') {
+          return { ok: false, error: '历史项目恢复状态已经变化，已取消删除' };
+        }
+        await deleteSession(projectId);
+        return {
+          ok: true,
+          deletedProjectId: projectId,
+          message: '历史项目管理记录已删除；项目目录、代码和业务文件未删除。',
+        };
+      } finally {
+        deletingProjectManagerSessions.delete(projectId);
+        projectManagerRecoveryMutationInFlight = false;
       }
-      if (candidates.length === 0) {
-        projectManagerRecoveryChoice = 'skip';
-        return { ok: true, restored: false, projects: [], message: '没有可恢复的项目。' };
-      }
-      projectManagerRecoveryChoice = 'restore';
-      const recoveredSessions = candidates.map((session: ProjectManagerSession) => (
-        restoredProjectManagerSession(session)
-      ));
-      useStore.getState().restoreProjectManagers(recoveredSessions, recoveredSessions[0]?.id);
-      for (const session of recoveredSessions) {
-        await (window as any).wmux?.projectManager?.saveSession?.(session);
-      }
-      const failures: string[] = [];
-      for (const session of recoveredSessions) {
-        const runtime = await ensureProjectManagerRuntime(session.id, { recoveredAfterRestart: true });
-        if (runtime.ok) continue;
-        failures.push(`${session.goal}：${runtime.error || '项目 AI 启动失败'}`);
-        useStore.getState().appendProjectManagerEvent({
-          kind: 'manager-runtime-failed',
-          summary: runtime.error || '项目 AI 启动失败',
-        }, session.id);
-        useStore.getState().applyProjectManagerAction({
-          type: 'pause-project',
-          reason: runtime.error || '项目 AI 启动失败',
-        }, session.id);
-        await (window as any).wmux?.projectManager?.saveSession?.(
-          useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
-        );
-      }
-      store = useStore.getState();
-      return {
-        ok: true,
-        restored: store.projectManagers.length > 0,
-        projects: store.projectManagers.map(projectManagerSessionView),
-        message: failures.length > 0
-          ? `已恢复 ${store.projectManagers.length} 个项目；${failures.length} 个项目的专属项目 AI 启动失败并已暂停。`
-          : `已恢复 ${store.projectManagers.length} 个项目，并分别启动专属项目 AI。`,
-        ...(failures.length > 0 ? { warnings: failures } : {}),
-      };
     }
     if (action === 'skip-project-recovery') {
+      if (projectManagerRecoveryMutationInFlight) {
+        return { ok: false, error: '历史项目记录正在恢复或删除，请等待当前操作完成' };
+      }
       projectManagerRecoveryChoice = 'skip';
       return {
         ok: true,

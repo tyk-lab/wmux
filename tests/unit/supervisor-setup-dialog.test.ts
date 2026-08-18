@@ -54,6 +54,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
     expect(projectManagerDialogSource).toContain("'restore-projects'");
     expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
+    expect(projectManagerDialogSource).toContain("action: 'delete-recovery-project'");
+    expect(projectManagerDialogSource).toContain('删除记录');
+    expect(projectManagerDialogSource).toContain('删除后无法从此页面恢复');
     expect(projectManagerDialogSource).toContain('计划文件（可选，最多');
     expect(projectManagerDialogSource).toContain('选择计划文件');
     expect(projectManagerDialogSource).toContain('添加路径');

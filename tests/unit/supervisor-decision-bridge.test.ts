@@ -2094,6 +2094,43 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
   });
 
+  it('deletes one un-restored historical project record without loading its AI runtime', async () => {
+    const persisted = {
+      id: 'pm-delete-history', projectDir: 'E:\\delete-history', goal: '待删除历史项目',
+      preconditions: ['环境安全'], doneWhen: ['完成'], status: 'paused',
+      workItems: [], events: [], createdAt: 10, updatedAt: 20,
+    };
+    let records = [persisted];
+    const projectManagerApi = (globalThis.window as any).wmux.projectManager;
+    projectManagerApi.listActiveSessions.mockImplementation(async () => records);
+    projectManagerApi.deleteSession.mockImplementation(async (projectId: string) => {
+      records = records.filter((candidate) => candidate.id !== projectId);
+      return { deleted: true };
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'delete-recovery-project', projectId: persisted.id,
+    })).resolves.toMatchObject({
+      ok: true,
+      deletedProjectId: persisted.id,
+      message: expect.stringContaining('项目目录、代码和业务文件未删除'),
+    });
+    expect(projectManagerApi.deleteSession).toHaveBeenCalledWith(persisted.id);
+    expect(useStore.getState().projectManagers).toEqual([]);
+    await expect(remote({ action: 'recovery-candidates' })).resolves.toMatchObject({
+      ok: true,
+      candidates: [],
+      recoveryChoice: 'pending',
+    });
+    await expect(remote({
+      action: 'delete-recovery-project', projectId: persisted.id,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已经不存在'),
+    });
+  });
+
   it('restores only the historical projects explicitly selected by the user', async () => {
     const persisted = [
       {

@@ -354,6 +354,30 @@ export default function ProjectManagerDialog() {
     setNotice('');
   };
 
+  const deleteRecoveryCandidate = async (candidate: ProjectRecoveryCandidate) => {
+    if (busy) return;
+    if (!window.confirm([
+      `将永久删除“${candidate.goal}”的历史项目管理记录和管理日志。`,
+      `项目目录标识：${candidate.projectDir}`,
+      '项目目录、代码和业务文件不会删除；删除后无法从此页面恢复。是否继续？',
+    ].join('\n'))) return;
+    setBusy(true);
+    setNotice('');
+    setConfigNotice('');
+    try {
+      const result = await invoke({ action: 'delete-recovery-project', projectId: candidate.id });
+      const remaining = recoveryCandidates.filter((item) => item.id !== candidate.id);
+      setRecoveryCandidates(remaining);
+      setSelectedRecoveryIds((current) => current.filter((id) => id !== candidate.id));
+      if (remaining.length === 0) setRecoveryStatus('done');
+      setConfigNotice(result.message || '历史项目管理记录已删除。');
+    } catch (error) {
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const start = async () => {
     const projectPreconditions = conditionLines(preconditions);
     const conditions = conditionLines(doneWhen);
@@ -663,18 +687,27 @@ export default function ProjectManagerDialog() {
                   <div className="project-manager-dialog__recovery-summary">已选择 {selectedRecoveryIds.length} 个项目</div>
                   <div className="project-manager-dialog__recovery-list">
                     {recoveryCandidates.map((candidate) => (
-                      <label key={candidate.id} data-selected={selectedRecoveryIds.includes(candidate.id) ? '1' : '0'}>
-                        <input
-                          type="checkbox"
-                          checked={selectedRecoveryIds.includes(candidate.id)}
-                          onChange={() => toggleRecoveryCandidate(candidate.id)}
-                        />
-                        <span>
-                          <strong>{candidate.goal}</strong>
-                          <small>{candidate.projectDir}</small>
-                          <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · 最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
-                        </span>
-                      </label>
+                      <div key={candidate.id} className="project-manager-dialog__recovery-item">
+                        <label data-selected={selectedRecoveryIds.includes(candidate.id) ? '1' : '0'}>
+                          <input
+                            type="checkbox"
+                            checked={selectedRecoveryIds.includes(candidate.id)}
+                            onChange={() => toggleRecoveryCandidate(candidate.id)}
+                          />
+                          <span>
+                            <strong>{candidate.goal}</strong>
+                            <small>{candidate.projectDir}</small>
+                            <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · 最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          className="confirm-dialog__btn confirm-dialog__btn--danger project-manager-dialog__recovery-delete"
+                          disabled={busy}
+                          aria-label={`删除历史项目记录：${candidate.goal}`}
+                          onClick={() => void deleteRecoveryCandidate(candidate)}
+                        >删除记录</button>
+                      </div>
                     ))}
                   </div>
                   <div className="project-manager-dialog__recovery-actions">

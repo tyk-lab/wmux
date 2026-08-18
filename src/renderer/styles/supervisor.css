@@ -314,6 +314,18 @@
   font-weight: 600;
 }
 
+.project-manager-dialog__recovery-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.project-manager-dialog__recovery-delete {
+  min-width: 72px;
+  padding-inline: 10px;
+}
+
 .project-manager-dialog__recovery-list label {
   display: flex;
   align-items: flex-start;
