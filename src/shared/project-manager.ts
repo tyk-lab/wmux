@@ -132,6 +132,18 @@ export interface ProjectSupervisorAuthority {
   lowRiskRetries: boolean;
   targetedTests: boolean;
   internalThreads: boolean;
+  /** Keep executing the bounded workflow until its stop condition or a real boundary is reached. */
+  continuousExecution?: boolean;
+  /** Allow the supervisor to answer eligible local permission prompts without returning to the user. */
+  permissionConfirm?: boolean;
+  /** Exact executable prefixes eligible for permission confirmation; an empty list grants no custom command. */
+  allowedCommandPrefixes?: string[];
+  /** Human-readable physical subjects covered by the current requirements version. */
+  authorizedDevices?: string[];
+  /** Human-readable environments covered by the current requirements version. */
+  authorizedEnvironments?: string[];
+  /** Human-readable operation classes the task may carry through as one workflow. */
+  authorizedOperations?: string[];
 }
 
 export interface ProjectTaskExecutionPlan {
@@ -139,6 +151,14 @@ export interface ProjectTaskExecutionPlan {
   modeReason: string;
   mainThreadResponsibility: string;
   childThreadResponsibilities: string[];
+  /** Hard upper bound for task-AI-owned child threads in adaptive mode. */
+  maxChildThreads?: number;
+  /** Whether the dedicated supervisor may approve a task AI thread proposal within this contract. */
+  supervisorMayApproveThreads?: boolean;
+  /** Operations that may be split after the supervisor validates independence and ownership. */
+  parallelizableOperations?: string[];
+  /** Shared-resource or high-coupling operations that must remain on the main thread. */
+  serializedOperations?: string[];
 }
 
 export interface ProjectSupervisorContract {

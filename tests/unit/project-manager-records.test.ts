@@ -10,7 +10,10 @@ import {
   readProjectManagerRuntimeSurfaceIds,
   saveProjectManagerSession,
 } from '../../src/main/project-manager-records';
-import type { ProjectManagerSession } from '../../src/shared/project-manager';
+import {
+  DEFAULT_PROJECT_EXECUTION_BUDGET,
+  type ProjectManagerSession,
+} from '../../src/shared/project-manager';
 
 const roots: string[] = [];
 
@@ -105,6 +108,60 @@ describe('project manager records', () => {
       acceptedRequirementsVersion: 2,
       pendingManagerDeliveries: [{ id: 'delivery-1', text: '请按新条件重新规划' }],
     });
+  });
+
+  it('restores a complete adaptive thread contract', () => {
+    const appData = root();
+    const saved: ProjectManagerSession = {
+      ...session('pm-adaptive', 20),
+      workItems: [{
+        id: 'adaptive-task',
+        title: '自适应任务',
+        status: 'planned',
+        dependencies: [],
+        attempts: 0,
+        decisionsUsed: 0,
+        updatedAt: 20,
+        executionHistory: [],
+        contract: {
+          objective: '完成自适应任务',
+          description: '',
+          preconditions: [],
+          scope: { root: 'E:\\repo', allowPaths: ['src'], denyPaths: [], forbiddenActions: [] },
+          authority: {
+            technicalChoices: true,
+            lowRiskRetries: true,
+            targetedTests: true,
+            internalThreads: true,
+            continuousExecution: true,
+            permissionConfirm: false,
+          },
+          execution: {
+            taskWorkMode: 'adaptive',
+            modeReason: '先探测安全拆分边界',
+            mainThreadResponsibility: '集成并验证',
+            childThreadResponsibilities: [],
+            maxChildThreads: 2,
+            supervisorMayApproveThreads: true,
+            parallelizableOperations: ['只读分析'],
+            serializedOperations: ['硬件重上电', '最终验证'],
+          },
+          stopWhen: ['验证完成'],
+          validation: ['检查结果'],
+          budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      }],
+    };
+
+    saveProjectManagerSession(saved, appData);
+
+    expect(readLatestProjectManagerSession('E:\\repo', appData)?.workItems[0].contract.execution)
+      .toMatchObject({
+        taskWorkMode: 'adaptive',
+        maxChildThreads: 2,
+        supervisorMayApproveThreads: true,
+        serializedOperations: ['硬件重上电', '最终验证'],
+      });
   });
 
   it('restores every active project while keeping only the latest session per directory', () => {

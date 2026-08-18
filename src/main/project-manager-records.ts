@@ -5,6 +5,10 @@ import {
   normalizedProjectDirectoryKey,
   type ProjectManagerSession,
 } from '../shared/project-manager';
+import {
+  MAX_TASK_CHILD_THREADS,
+  MAX_TASK_OPERATION_BOUNDARIES,
+} from '../shared/supervisor-work-mode';
 
 export interface ProjectManagerRecord {
   sessionId: string;
@@ -36,6 +40,47 @@ function validateIdentity(sessionId: string, projectDir: string): void {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isProjectTaskExecutionPlan(value: unknown, internalThreads: boolean): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const execution = value as Record<string, unknown>;
+  const mode = String(execution.taskWorkMode);
+  if (
+    !['single-thread', 'multi-thread', 'adaptive'].includes(mode)
+    || typeof execution.modeReason !== 'string'
+    || execution.modeReason.trim().length === 0
+    || typeof execution.mainThreadResponsibility !== 'string'
+    || execution.mainThreadResponsibility.trim().length === 0
+    || !isStringArray(execution.childThreadResponsibilities)
+    || execution.childThreadResponsibilities.length > MAX_TASK_CHILD_THREADS
+  ) return false;
+  if (mode !== 'single-thread' && !internalThreads) return false;
+  const maxChildThreads = execution.maxChildThreads;
+  if (maxChildThreads !== undefined && (
+    typeof maxChildThreads !== 'number'
+    || !Number.isInteger(maxChildThreads)
+    || maxChildThreads < 1
+    || maxChildThreads > MAX_TASK_CHILD_THREADS
+  )) return false;
+  if (execution.supervisorMayApproveThreads !== undefined
+    && typeof execution.supervisorMayApproveThreads !== 'boolean') return false;
+  if (execution.parallelizableOperations !== undefined
+    && (!isStringArray(execution.parallelizableOperations)
+      || execution.parallelizableOperations.length > MAX_TASK_OPERATION_BOUNDARIES)) return false;
+  if (execution.serializedOperations !== undefined
+    && (!isStringArray(execution.serializedOperations)
+      || execution.serializedOperations.length > MAX_TASK_OPERATION_BOUNDARIES)) return false;
+  return mode !== 'adaptive' || (
+    typeof maxChildThreads === 'number'
+    && Number.isInteger(maxChildThreads)
+    && execution.supervisorMayApproveThreads === true
+    && isStringArray(execution.parallelizableOperations)
+    && execution.parallelizableOperations.length > 0
+    && isStringArray(execution.serializedOperations)
+    && execution.serializedOperations.length > 0
+    && execution.childThreadResponsibilities.length === 0
+  );
 }
 
 function isPlanFileSnapshot(value: unknown): boolean {
@@ -127,12 +172,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && ['maxDecisions', 'maxContinuousMinutes', 'maxIdenticalFailures', 'maxNoProgressRounds',
         'maxTaskRetries', 'maxSameTestRuns', 'maxFullSuiteRunsPerVersion']
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)
-      && (!execution || (
-        ['single-thread', 'multi-thread'].includes(String(execution.taskWorkMode))
-        && typeof execution.modeReason === 'string'
-        && typeof execution.mainThreadResponsibility === 'string'
-        && isStringArray(execution.childThreadResponsibilities)
-      ));
+      && (!execution || isProjectTaskExecutionPlan(execution, authority?.internalThreads === true));
   });
 }
 
