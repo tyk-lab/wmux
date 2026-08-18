@@ -30,6 +30,17 @@ describe('electron-builder packaging', () => {
     ))).toBe(true);
   });
 
+  it('keeps dedicated supervisor instructions as an application prompt, not an agent skill', () => {
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/prompts/supervisor-protocol.md',
+    ))).toBe(true);
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/skills/supervise-task/SKILL.md',
+    ))).toBe(false);
+  });
+
   it('keeps installer-only main-process modules out of normal CLI startup', () => {
     const cliSource = fs.readFileSync(path.join(__dirname, '../../src/cli/wmux.ts'), 'utf8');
     expect(cliSource).not.toMatch(/^import[\s\S]*?from '\.\.\/main\/install-agent-hooks';/m);

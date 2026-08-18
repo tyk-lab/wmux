@@ -1,4 +1,0 @@
-interface:
-  display_name: "Supervise Task"
-  short_description: "Evidence-based wmux task supervision"
-  default_prompt: "Use $supervise-task to supervise this wmux task with evidence-based decisions."
