@@ -563,7 +563,7 @@ supervisor_model: k3`)).toEqual({
         { ts: 2, kind: 'user-message', summary: '当前主要做什么？' },
         { ts: 3, kind: 'manager-reply', summary: '先完成认证接口回归。' },
       ],
-    }, undefined, true));
+    }, undefined, 'overview'));
     const projectManagerClosedLogs = JSON.stringify(buildProjectManagerConversationCard({ status: 'active' }));
     const laneControl = JSON.stringify(buildSupervisorLaneControlCard([
       { ...terminals[0], supervised: true, supervisionState: 'active' },
@@ -699,6 +699,80 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('pause-lane');
     expect(laneControl).toContain('resume-lane');
     expect(laneControl).toContain('stop-lane');
+  });
+
+  it('项目管理 AI 对话默认折叠较早记录并可在原卡片展开和收起', () => {
+    const session = {
+      projectId: 'pm-a', status: 'active', goal: '完成认证功能',
+      conversation: [
+        { ts: 1, kind: 'manager-reply', summary: '较早的项目回复一' },
+        { ts: 2, kind: 'manager-reply', summary: '较早的项目回复二' },
+        { ts: 3, kind: 'user-message', summary: '现在进展如何？' },
+        { ts: 4, kind: 'manager-reply', summary: '最新进展：认证回归进行中。' },
+      ],
+    };
+
+    const collapsed = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'chat'));
+    expect(collapsed).toContain('较早对话已折叠');
+    expect(collapsed).toContain('展开近期对话（2）');
+    expect(collapsed).not.toContain('较早的项目回复一');
+    expect(collapsed).not.toContain('较早的项目回复二');
+    expect(collapsed).toContain('现在进展如何？');
+    expect(collapsed).toContain('最新进展：认证回归进行中。');
+    expect(collapsed).toContain('"view":"chat-expanded"');
+    expect(collapsed).toContain('wmux_project_ai_conversation_form');
+
+    const expanded = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'chat-expanded'));
+    expect(expanded).toContain('已展开近期对话');
+    expect(expanded).toContain('较早的项目回复一');
+    expect(expanded).toContain('较早的项目回复二');
+    expect(expanded).toContain('收起近期对话');
+    expect(expanded).toContain('"view":"chat"');
+    expect(expanded).toContain('wmux_project_ai_conversation_form');
+  });
+
+  it('项目管理 AI 的决策和日志只有限展开近期内容并提示桌面端查看完整记录', () => {
+    const workItems = Array.from({ length: 8 }, (_, index) => ({
+      title: `工作项 ${index + 1}`,
+      status: 'running',
+      latestEvidence: index === 7 ? `最新证据 ${'证'.repeat(500)} 证据末尾` : `证据 ${index + 1}`,
+    }));
+    const events = Array.from({ length: 8 }, (_, index) => ({
+      ts: index + 1,
+      kind: 'work-item-updated',
+      summary: index === 7 ? `日志 8 ${'长'.repeat(700)} 日志末尾` : `日志 ${index + 1}`,
+    }));
+    const session = { projectId: 'pm-a', status: 'active', goal: '完成认证功能', workItems, events };
+
+    const collapsedDecisions = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'decisions'));
+    expect(collapsedDecisions).toContain('当前显示最近 3/6 项');
+    expect(collapsedDecisions).toContain('展开近期工作项（6）');
+    expect(collapsedDecisions).toContain('工作项 8');
+    expect(collapsedDecisions).not.toContain('工作项 5');
+
+    const expandedDecisions = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'decisions-expanded'));
+    expect(expandedDecisions).toContain('已展开近期工作项');
+    expect(expandedDecisions).toContain('更早 2 项请在桌面端查看');
+    expect(expandedDecisions).toContain('工作项 3');
+    expect(expandedDecisions).not.toContain('工作项 2');
+    expect(expandedDecisions).not.toContain('证据末尾');
+    expect(expandedDecisions).toContain('内容已截断，请在桌面端查看完整内容');
+    expect(expandedDecisions).toContain('收起近期工作项');
+
+    const collapsedLogs = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'activity'));
+    expect(collapsedLogs).toContain('当前显示 3/8 条');
+    expect(collapsedLogs).toContain('展开近期日志（6）');
+    expect(collapsedLogs).toContain('日志 8');
+    expect(collapsedLogs).not.toContain('日志 5');
+
+    const expandedLogs = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'activity-expanded'));
+    expect(expandedLogs).toContain('已展开近期日志');
+    expect(expandedLogs).toContain('更早 2 条请在桌面端查看');
+    expect(expandedLogs).toContain('日志 3');
+    expect(expandedLogs).not.toContain('日志 2');
+    expect(expandedLogs).not.toContain('日志末尾');
+    expect(expandedLogs).toContain('内容已截断，请在桌面端查看完整内容');
+    expect(expandedLogs).toContain('收起近期日志');
   });
 
   it('将任务终端选择、最新界面和发送输入渲染为统一控制卡片', () => {

@@ -902,7 +902,16 @@ interface FeishuProjectClarification {
   recommendedOptionId?: string;
 }
 
-export type ProjectManagerCardView = 'overview' | 'chat' | 'decisions' | 'activity';
+export type ProjectManagerCardView = 'overview' | 'chat' | 'chat-expanded' | 'decisions' | 'decisions-expanded' | 'activity' | 'activity-expanded';
+
+const FEISHU_PROJECT_RECENT_ITEM_LIMIT = 6;
+const FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT = 3;
+
+function compactProjectCardText(value: unknown, maxLength: number): string {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n…（内容已截断，请在桌面端查看完整内容）`;
+}
 
 function projectManagerStatusLabel(status?: string): string {
   if (status === 'active') return '运行中';
@@ -973,6 +982,49 @@ export function buildProjectClarificationCard(
   );
 }
 
+export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): object {
+  const role = record.type === 'manager-runtime-failed'
+    ? '项目管理 AI'
+    : record.type === 'supervisor-runtime-failed'
+      ? '项目专属监督'
+      : record.type === 'task-runtime-failed'
+        ? '任务终端 AI'
+        : record.type === 'requirements-quiesce-failed'
+          ? '需求变更停机确认'
+          : '项目管理消息投递';
+  const detail = String(record.payload?.message || record.payload?.detail || '运行时或控制链路不可用').trim();
+  const suggestion = record.type === 'manager-runtime-failed'
+    ? '在 wmux 中重建项目管理 AI 运行时；恢复后会使用结构化项目记录继续。'
+    : record.type === 'supervisor-runtime-failed'
+      ? '打开该项目的专属监督，重建监督 AI 后再恢复项目。'
+      : record.type === 'task-runtime-failed'
+        ? '由项目管理 AI 重建任务终端和监督链，不要向普通终端直接补发任务。'
+        : record.type === 'requirements-quiesce-failed'
+          ? '先确认旧监督链与任务终端已停止，再保存需求变更并重新规划。'
+          : '检查项目管理 AI 运行时与控制链路，确认消息已送达后再恢复。';
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: 'wmux · 项目需要处理' },
+      subtitle: { tag: 'plain_text', content: role },
+      template: 'red',
+    },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `🔴 **项目执行链已暂停**\n项目：\`${record.sessionId}\`\n故障环节：**${role}**` },
+        { tag: 'markdown', content: `**告警详情**\n${compactProjectCardText(detail, 1200)}` },
+        { tag: 'markdown', content: `**建议处理**\n${suggestion}\n\n处理完成前不会由普通 AI 监督接管该项目。` },
+        { tag: 'hr' },
+        ...responsiveButtonRows([
+          cardButton({ wmux_action: 'project_ai_workspace', projectId: record.sessionId }, '打开项目工作台', 'primary'),
+          cardButton({ wmux_action: 'project_ai_portfolio' }, '查看项目组合'),
+        ]),
+      ],
+    },
+  };
+}
+
 export function buildProjectManagerPortfolioCard(
   session?: FeishuProjectManagerView | null,
   notice?: ControlNotice,
@@ -1019,29 +1071,67 @@ export function buildProjectManagerConversationCard(
 ): object {
   const workItems = Array.isArray(session?.workItems) ? session.workItems : [];
   const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
-  const conversation = Array.isArray(session?.conversation) ? session.conversation.slice(-10) : [];
+  const allConversation = Array.isArray(session?.conversation) ? session.conversation : [];
+  const conversation = allConversation.slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT);
   const pendingQuestion = session?.pendingUserQuestion;
   const status = projectManagerStatusLabel(session?.status);
-  const logs = Array.isArray(session?.events) ? session.events.slice(-20).reverse() : [];
+  const allLogs = Array.isArray(session?.events) ? session.events : [];
+  const recentLogs = allLogs.slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT).reverse();
   const latestReply = [...conversation].reverse().find((event) => event.kind === 'manager-reply');
   const waiting = workItems.filter((item) => item?.status === 'waiting-decision').length;
+  const chatView = view === 'chat' || view === 'chat-expanded';
+  const chatHistoryExpanded = view === 'chat-expanded';
+  const decisionView = view === 'decisions' || view === 'decisions-expanded';
+  const decisionsExpanded = view === 'decisions-expanded';
+  const activityView = view === 'activity' || view === 'activity-expanded';
+  const activityExpanded = view === 'activity-expanded';
+  let collapsedConversationStart = Math.max(0, conversation.length - 1);
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    if (conversation[index]?.kind !== 'user-message') continue;
+    if (conversation.length - index <= 3) collapsedConversationStart = index;
+    break;
+  }
+  const hiddenConversationCount = collapsedConversationStart;
+  const visibleConversation = chatHistoryExpanded
+    ? conversation
+    : conversation.slice(collapsedConversationStart);
+  const recentWorkItems = workItems.slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT).reverse();
+  const visibleWorkItems = decisionsExpanded
+    ? recentWorkItems
+    : recentWorkItems.slice(0, FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT);
+  const visibleLogs = activityExpanded
+    ? recentLogs
+    : recentLogs.slice(0, FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT);
   const nav = responsiveButtonRows([
     cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'overview' }, '概览', view === 'overview' ? 'primary' : 'default'),
-    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'chat' }, '与 AI 对话', view === 'chat' ? 'primary' : 'default'),
-    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'decisions' }, `决策${pendingQuestion || waiting > 0 ? ' · 待处理' : ''}`, view === 'decisions' ? 'primary' : 'default'),
-    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'activity' }, '处理日志', view === 'activity' ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'chat' }, '与 AI 对话', chatView ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'decisions' }, `决策${pendingQuestion || waiting > 0 ? ' · 待处理' : ''}`, decisionView ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'activity' }, '处理日志', activityView ? 'primary' : 'default'),
   ]);
   const overviewElements: object[] = [
     { tag: 'markdown', content: `**${projectManagerStatusMarker(session?.status)} ${status}** · 工作项 ${workItems.length} · 监督 AI ${supervisors.length} · 待决 ${waiting}` },
-    ...(latestReply ? [{ tag: 'markdown', content: `**项目 AI 最新回复**\n${String(latestReply.summary || '').slice(0, 1200)}` }] : [{ tag: 'markdown', content: '项目 AI 暂无回复。可进入“与 AI 对话”确认进度或补充要求。' }]),
-    ...(pendingQuestion ? [{ tag: 'markdown', content: `⚠️ **等待你的决策**\n${pendingQuestion.question.slice(0, 1000)}${pendingQuestion.recommendedOptionId ? '\n请在飞书决策卡或桌面项目对话中选择方案。' : ''}` }] : []),
-    ...(workItems.length > 0 ? [{ tag: 'markdown', content: `**当前执行**\n${workItems.slice(-3).map((item) => `${projectManagerStatusMarker(item.status)} ${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}${item.latestBlocker ? `\n阻塞：${item.latestBlocker}` : ''}`).join('\n')}`.slice(0, 1600) }] : []),
-    ...(supervisors.length > 0 ? [{ tag: 'markdown', content: `**监督链**\n${supervisors.map((lane) => `${lane.label || '监督 AI'} · ${projectManagerStatusLabel(lane.status)} · 任务端 ${lane.workerSurfaceId || '恢复中'}`).join('\n')}`.slice(0, 1200) }] : []),
+    ...(latestReply ? [{ tag: 'markdown', content: `**项目 AI 最新回复**\n${compactProjectCardText(latestReply.summary, 900)}` }] : [{ tag: 'markdown', content: '项目 AI 暂无回复。可进入“与 AI 对话”确认进度或补充要求。' }]),
+    ...(pendingQuestion ? [{ tag: 'markdown', content: `⚠️ **等待你的决策**\n${compactProjectCardText(pendingQuestion.question, 800)}${pendingQuestion.recommendedOptionId ? '\n请在飞书决策卡或桌面项目对话中选择方案。' : ''}` }] : []),
+    ...(workItems.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**当前执行**\n${workItems.slice(-3).map((item) => `${projectManagerStatusMarker(item.status)} ${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}${item.latestBlocker ? `\n阻塞：${item.latestBlocker}` : ''}`).join('\n')}`, 1400) }] : []),
+    ...(supervisors.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**监督链**\n${supervisors.map((lane) => `${lane.label || '监督 AI'} · ${projectManagerStatusLabel(lane.status)} · 任务端 ${lane.workerSurfaceId || '恢复中'}`).join('\n')}`, 1000) }] : []),
   ];
   const chatElements: object[] = [
     { tag: 'markdown', content: '**与项目管理 AI 对话**\n对话只进入当前项目；已确认的目标、范围和验收细节会写回项目配置。' },
-    ...(conversation.length > 0 ? conversation.map((event) => ({
-      tag: 'markdown', content: `${event.kind === 'user-message' ? '🔵 **你**' : '🟣 **项目管理 AI**'} · ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${String(event.summary || '').slice(0, 1000)}`,
+    ...(hiddenConversationCount > 0 ? [
+      {
+        tag: 'markdown',
+        content: chatHistoryExpanded
+          ? `**已展开近期对话** · 最近 ${conversation.length} 条\n飞书最多展示最近 ${FEISHU_PROJECT_RECENT_ITEM_LIMIT} 条，完整对话请在桌面端查看。`
+          : `**较早对话已折叠** · ${hiddenConversationCount} 条近期对话\n当前仅显示最近一轮；完整对话请在桌面端查看。`,
+      },
+      ...responsiveButtonRows([cardButton({
+        wmux_action: 'project_ai_view',
+        projectId: session?.projectId || '',
+        view: chatHistoryExpanded ? 'chat' : 'chat-expanded',
+      }, chatHistoryExpanded ? '收起近期对话' : `展开近期对话（${hiddenConversationCount}）`)]),
+    ] : []),
+    ...(visibleConversation.length > 0 ? visibleConversation.map((event) => ({
+      tag: 'markdown', content: `${event.kind === 'user-message' ? '🔵 **你**' : '🟣 **项目管理 AI**'} · ${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })}\n${compactProjectCardText(event.summary, 700)}`,
     })) : [{ tag: 'markdown', content: '暂无对话。可以询问进度、确认细节、调整优先级或说明新约束。' }]),
     {
       tag: 'form', name: 'wmux_project_ai_conversation_form', elements: [
@@ -1051,20 +1141,38 @@ export function buildProjectManagerConversationCard(
     },
   ];
   const decisionElements: object[] = [
-    { tag: 'markdown', content: '**项目决策与执行依据**\n项目 AI 会自行处理技术方案和原目标内重规划；这里只展示需要关注的决策、证据和阻塞。' },
-    ...(pendingQuestion ? [{ tag: 'markdown', content: [
+    { tag: 'markdown', content: `**项目决策与执行依据**\n项目 AI 会自行处理技术方案和原目标内重规划；飞书最多展开最近 ${FEISHU_PROJECT_RECENT_ITEM_LIMIT} 个工作项，完整记录请在桌面端查看。` },
+    ...(pendingQuestion ? [{ tag: 'markdown', content: compactProjectCardText([
       '⚠️ **当前等待你的决策**', pendingQuestion.question, pendingQuestion.context || '',
       pendingQuestion.options.map((option) => `${option.id === pendingQuestion.recommendedOptionId ? '推荐：' : ''}${option.label}${option.description ? ` · ${option.description}` : ''}`).join('\n'),
-    ].filter(Boolean).join('\n').slice(0, 1800) }] : [{ tag: 'markdown', content: '✅ 当前没有待你确认的项目决策。' }]),
-    ...(workItems.length > 0 ? workItems.slice(-8).map((item) => ({ tag: 'markdown', content: [
+    ].filter(Boolean).join('\n'), 1500) }] : [{ tag: 'markdown', content: '✅ 当前没有待你确认的项目决策。' }]),
+    ...(recentWorkItems.length > FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT ? [
+      { tag: 'markdown', content: decisionsExpanded
+        ? `**已展开近期工作项** · 最近 ${recentWorkItems.length} 项${workItems.length > recentWorkItems.length ? `\n更早 ${workItems.length - recentWorkItems.length} 项请在桌面端查看。` : ''}`
+        : `**较早工作项已折叠** · 当前显示最近 ${visibleWorkItems.length}/${recentWorkItems.length} 项` },
+      ...responsiveButtonRows([cardButton({
+        wmux_action: 'project_ai_view', projectId: session?.projectId || '',
+        view: decisionsExpanded ? 'decisions' : 'decisions-expanded',
+      }, decisionsExpanded ? '收起近期工作项' : `展开近期工作项（${recentWorkItems.length}）`)]),
+    ] : []),
+    ...(visibleWorkItems.length > 0 ? visibleWorkItems.map((item) => ({ tag: 'markdown', content: compactProjectCardText([
       `**${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}**`,
       `决策 ${item.decisionsUsed || 0}/${item.contract?.budget?.maxDecisions || '-'} · 重试 ${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
-      item.latestEvidence ? `证据：${item.latestEvidence}` : '', item.latestBlocker ? `阻塞：${item.latestBlocker}` : '',
-    ].filter(Boolean).join('\n').slice(0, 1000) })) : []),
+      item.latestEvidence ? `证据：${compactProjectCardText(item.latestEvidence, 350)}` : '', item.latestBlocker ? `阻塞：${compactProjectCardText(item.latestBlocker, 350)}` : '',
+    ].filter(Boolean).join('\n'), 900) })) : []),
   ];
   const activityElements: object[] = [
-    { tag: 'markdown', content: `**处理日志（最近 ${logs.length} 条）**\n记录项目 AI 的任务拆分、决策、监督状态和恢复动作。` },
-    ...(logs.length > 0 ? logs.map((event) => ({ tag: 'markdown', content: `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · **${String(event.kind || 'event')}**\n${String(event.summary || '').slice(0, 900)}` })) : [{ tag: 'markdown', content: '暂无处理日志。' }]),
+    { tag: 'markdown', content: `**处理日志** · 当前显示 ${visibleLogs.length}/${allLogs.length} 条\n飞书默认显示最近 ${FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT} 条，最多展开最近 ${FEISHU_PROJECT_RECENT_ITEM_LIMIT} 条；完整日志请在桌面端查看。` },
+    ...(recentLogs.length > FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT ? [
+      { tag: 'markdown', content: activityExpanded
+        ? `**已展开近期日志** · 最近 ${recentLogs.length} 条${allLogs.length > recentLogs.length ? `\n更早 ${allLogs.length - recentLogs.length} 条请在桌面端查看。` : ''}`
+        : `**较早日志已折叠** · ${recentLogs.length - visibleLogs.length} 条近期日志` },
+      ...responsiveButtonRows([cardButton({
+        wmux_action: 'project_ai_view', projectId: session?.projectId || '',
+        view: activityExpanded ? 'activity' : 'activity-expanded',
+      }, activityExpanded ? '收起近期日志' : `展开近期日志（${recentLogs.length}）`)]),
+    ] : []),
+    ...(visibleLogs.length > 0 ? visibleLogs.map((event) => ({ tag: 'markdown', content: `${new Date(Number(event.ts) || Date.now()).toLocaleString('zh-CN', { hour12: false })} · **${String(event.kind || 'event')}**\n${compactProjectCardText(event.summary, 500)}` })) : [{ tag: 'markdown', content: '暂无处理日志。' }]),
   ];
   return {
     schema: '2.0',
@@ -1076,7 +1184,7 @@ export function buildProjectManagerConversationCard(
         { tag: 'markdown', content: `**${session?.goal || '未选择项目'}**${session?.projectDir ? `\n${session.projectDir}` : ''}`.slice(0, 1200) },
         ...nav,
         { tag: 'hr' },
-        ...(view === 'chat' ? chatElements : view === 'decisions' ? decisionElements : view === 'activity' ? activityElements : overviewElements),
+        ...(chatView ? chatElements : decisionView ? decisionElements : activityView ? activityElements : overviewElements),
         { tag: 'hr' },
         ...responsiveButtonRows([
           cardButton({ wmux_action: 'project_ai_workspace', projectId: session?.projectId || '' }, '刷新工作台'),
@@ -2425,25 +2533,11 @@ export class FeishuSupervisorService {
       'manager-delivery-failed',
       'requirements-quiesce-failed',
     ].includes(record.type)) {
-      const role = record.type === 'manager-runtime-failed'
-        ? '项目管理 AI'
-        : record.type === 'supervisor-runtime-failed'
-          ? 'AI 监督'
-          : record.type === 'task-runtime-failed'
-            ? '任务终端 AI'
-            : record.type === 'requirements-quiesce-failed'
-              ? '需求变更停机确认'
-              : '项目管理消息投递';
-      const message = String(record.payload?.message || record.payload?.detail || '运行时或控制链路不可用').trim();
       const targetChatId = this.config?.projectManagerChatId || this.decisionChatId;
       if (targetChatId) {
-        void this.enqueueDecisionOperation(() => this.sendText([
-          'wmux 项目管理告警',
-          `项目：${record.sessionId}`,
-          `故障环节：${role}`,
-          `详情：${message.slice(0, 1200)}`,
-          '相关项目与监督链已保持暂停，请在 wmux 中处理后再恢复。',
-        ].join('\n'), targetChatId));
+        void this.enqueueDecisionOperation(async () => {
+          await this.sendControlCard(buildProjectRuntimeAlertCard(record), targetChatId);
+        });
       }
       return;
     }
@@ -2781,10 +2875,10 @@ export class FeishuSupervisorService {
     }
     if (value.wmux_action === 'project_ai_view' || value.wmux_action === 'project_ai_refresh' || value.wmux_action === 'project_ai_logs') {
       const requested = value.wmux_action === 'project_ai_view' ? value.view : value.wmux_action === 'project_ai_logs' ? 'activity' : 'overview';
-      const cardView: ProjectManagerCardView = ['overview', 'chat', 'decisions', 'activity'].includes(String(requested))
+      const cardView: ProjectManagerCardView = ['overview', 'chat', 'chat-expanded', 'decisions', 'decisions-expanded', 'activity', 'activity-expanded'].includes(String(requested))
         ? requested as ProjectManagerCardView
         : 'overview';
-      const view = await this.loadProjectManagerView(event.operator.openId, cardView === 'activity', value.projectId);
+      const view = await this.loadProjectManagerView(event.operator.openId, cardView === 'activity' || cardView === 'activity-expanded', value.projectId);
       await this.replaceControlCard(event, buildProjectManagerConversationCard(view, undefined, cardView));
       return true;
     }

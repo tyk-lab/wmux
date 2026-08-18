@@ -1284,7 +1284,11 @@ describe('飞书人工决策单聊路由', () => {
       },
       'pm-b': {
         id: 'pm-b', status: 'paused', goal: '项目 B', workItems: [],
-        events: [{ ts: 2, kind: 'user-message', summary: 'B 项目询问' }, { ts: 3, kind: 'manager-reply', summary: 'B 项目回复' }],
+        events: [
+          { ts: 1, kind: 'manager-reply', summary: 'B 项目较早回复' },
+          { ts: 2, kind: 'user-message', summary: 'B 项目询问' },
+          { ts: 3, kind: 'manager-reply', summary: 'B 项目回复' },
+        ],
       },
     };
     const control = vi.fn(async (command: { action: string; projectId?: 'pm-a' | 'pm-b' }) => ({
@@ -1342,11 +1346,24 @@ describe('飞书人工决策单聊路由', () => {
     const selectedCard = JSON.stringify(updateCard.mock.calls[2][1]);
     expect(selectedCard).toContain('B 项目询问');
     expect(selectedCard).toContain('B 项目回复');
+    expect(selectedCard).not.toContain('B 项目较早回复');
+    expect(selectedCard).toContain('展开近期对话（1）');
     expect(selectedCard).not.toContain('A 项目回复');
     expect(control).toHaveBeenCalledWith(
       { action: 'project-status', projectId: 'pm-b' },
       { openId: 'ou-allowed', source: 'card' },
     );
+
+    const expandNonce = /"wmux_action":"project_ai_view"[^}]*"view":"chat-expanded"[^}]*"nonce":"([^"]+)"/.exec(selectedCard)?.[1];
+    expect(expandNonce).toBeTruthy();
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_view', projectId: 'pm-b', view: 'chat-expanded', nonce: expandNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    const expandedCard = JSON.stringify(updateCard.mock.calls[3][1]);
+    expect(expandedCard).toContain('B 项目较早回复');
+    expect(expandedCard).toContain('收起近期对话');
   });
 
   it('项目管理 AI 对话卡可查看处理日志并暂停和恢复项目', async () => {
@@ -1361,7 +1378,14 @@ describe('飞书人工决策单聊路由', () => {
         };
       }
       if (command.action === 'project-logs') {
-        return { ok: true, events: [{ ts: 1, kind: 'work-item-created', summary: '创建认证任务' }] };
+        return {
+          ok: true,
+          events: Array.from({ length: 8 }, (_, index) => ({
+            ts: index + 1,
+            kind: 'work-item-created',
+            summary: index === 7 ? '创建认证任务' : `处理日志 ${index + 1}`,
+          })),
+        };
       }
       if (command.action === 'project-pause') status = 'paused';
       if (command.action === 'project-resume') status = 'active';
@@ -1406,16 +1430,31 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
     const logsCard = JSON.stringify(updateCard.mock.calls[2][1]);
     expect(logsCard).toContain('创建认证任务');
-    const pauseNonce = /"wmux_action":"project_ai_pause"[^}]*"nonce":"([^"]+)"/.exec(logsCard)?.[1];
+    expect(logsCard).not.toContain('处理日志 5');
+    expect(logsCard).toContain('展开近期日志（6）');
+    const expandLogsNonce = /"wmux_action":"project_ai_view"[^}]*"view":"activity-expanded"[^}]*"nonce":"([^"]+)"/.exec(logsCard)?.[1];
+    expect(expandLogsNonce).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_view', projectId: 'pm-a', view: 'activity-expanded', nonce: expandLogsNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    const expandedLogsCard = JSON.stringify(updateCard.mock.calls[3][1]);
+    expect(expandedLogsCard).toContain('处理日志 3');
+    expect(expandedLogsCard).not.toContain('处理日志 2');
+    expect(expandedLogsCard).toContain('完整日志请在桌面端查看');
+    expect(expandedLogsCard).toContain('收起近期日志');
+    const pauseNonce = /"wmux_action":"project_ai_pause"[^}]*"nonce":"([^"]+)"/.exec(expandedLogsCard)?.[1];
     expect(pauseNonce).toBeTruthy();
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { value: currentControlValue({ wmux_action: 'project_ai_pause', nonce: pauseNonce }) }, raw: {},
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
     expect(control.mock.calls.some(([command]) => command.action === 'project-pause')).toBe(true);
-    const pausedCard = JSON.stringify(updateCard.mock.calls[3][1]);
+    const pausedCard = JSON.stringify(updateCard.mock.calls[4][1]);
     expect(pausedCard).toContain('已暂停');
     const resumeNonce = /"wmux_action":"project_ai_resume"[^}]*"nonce":"([^"]+)"/.exec(pausedCard)?.[1];
     expect(resumeNonce).toBeTruthy();
@@ -1424,9 +1463,9 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { value: currentControlValue({ wmux_action: 'project_ai_resume', nonce: resumeNonce }) }, raw: {},
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(6));
     expect(control.mock.calls.some(([command]) => command.action === 'project-resume')).toBe(true);
-    const resumedCard = JSON.stringify(updateCard.mock.calls[4][1]);
+    const resumedCard = JSON.stringify(updateCard.mock.calls[5][1]);
     expect(resumedCard).toContain('运行中');
     const portfolioNonce = /"wmux_action":"project_ai_portfolio"[^}]*"nonce":"([^"]+)"/.exec(resumedCard)?.[1];
     expect(portfolioNonce).toBeTruthy();
@@ -1434,8 +1473,8 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { value: currentControlValue({ wmux_action: 'project_ai_portfolio', nonce: portfolioNonce }) }, raw: {},
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(6));
-    const portfolioAfterResume = JSON.stringify(updateCard.mock.calls[5][1]);
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(7));
+    const portfolioAfterResume = JSON.stringify(updateCard.mock.calls[6][1]);
     const pauseAllNonce = /"wmux_action":"project_ai_pause_all"[^}]*"nonce":"([^"]+)"/.exec(portfolioAfterResume)?.[1];
     expect(pauseAllNonce).toBeTruthy();
 
@@ -1443,9 +1482,9 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { value: currentControlValue({ wmux_action: 'project_ai_pause_all', nonce: pauseAllNonce }) }, raw: {},
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(7));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(8));
     expect(control.mock.calls.some(([command]) => command.action === 'project-pause-all')).toBe(true);
-    const globallyPausedCard = JSON.stringify(updateCard.mock.calls[6][1]);
+    const globallyPausedCard = JSON.stringify(updateCard.mock.calls[7][1]);
     const resumeAllNonce = /"wmux_action":"project_ai_resume_all"[^}]*"nonce":"([^"]+)"/.exec(globallyPausedCard)?.[1];
     expect(resumeAllNonce).toBeTruthy();
 
@@ -1453,7 +1492,7 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
       action: { value: currentControlValue({ wmux_action: 'project_ai_resume_all', nonce: resumeAllNonce }) }, raw: {},
     });
-    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(8));
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(9));
     expect(control.mock.calls.some(([command]) => command.action === 'project-resume-all')).toBe(true);
   });
 
@@ -2070,6 +2109,29 @@ describe('飞书人工决策单聊路由', () => {
 
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     expect(send.mock.calls[0]).toEqual(['oc-project', { text: '已暂停，我们先比较两个方案。' }]);
+  });
+
+  it('项目运行故障发送带处理入口的红色项目告警卡，而不是普通文本', async () => {
+    vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project-alert');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-alert', projectDir: 'E:\\repo', type: 'supervisor-runtime-failed',
+      payload: { message: '项目专属监督启动失败' },
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toBe('oc-project-alert');
+    const payload = send.mock.calls[0][1] as { card?: unknown; text?: string };
+    const card = JSON.stringify(payload.card);
+    expect(payload.text).toBeUndefined();
+    expect(card).toContain('wmux · 项目需要处理');
+    expect(card).toContain('"template":"red"');
+    expect(card).toContain('项目专属监督启动失败');
+    expect(card).toContain('打开项目工作台');
+    expect(card).toContain('"projectId":"pm-alert"');
+    expect(card).toContain('普通 AI 监督接管');
   });
 
   it('项目人工介入阻塞推送到专用飞书群，答复进入对应项目且不自动恢复', async () => {
