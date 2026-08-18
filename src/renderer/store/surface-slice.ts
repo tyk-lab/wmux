@@ -25,6 +25,7 @@ export interface SurfaceSlice {
       startupCommands?: string[];
       startupInput?: string;
       transientSupervisor?: boolean;
+      projectSupervisorProjectId?: string;
       projectManagerTerminal?: boolean;
       userRecordsTerminal?: boolean;
       projectManagerProjectId?: string;
@@ -205,6 +206,7 @@ function pushClosedSurface(surface: SurfaceRef): void {
     surface.type === 'diff'
     || surface.projectManagerTerminal
     || surface.userRecordsTerminal
+    || surface.projectSupervisorProjectId
     || surface.projectManagerProjectId
   ) return;
   closedSurfaceStack.push({
@@ -250,6 +252,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.startupCommands?.length ? { startupCommands: options.startupCommands } : {}),
       ...(options?.startupInput ? { startupInput: options.startupInput } : {}),
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
+      ...(options?.projectSupervisorProjectId ? { projectSupervisorProjectId: options.projectSupervisorProjectId } : {}),
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(options?.userRecordsTerminal ? { userRecordsTerminal: true } : {}),
       ...(options?.projectManagerProjectId ? { projectManagerProjectId: options.projectManagerProjectId } : {}),

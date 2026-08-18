@@ -69,8 +69,11 @@ import {
   effectiveSupervisorLaneConfig,
   effectiveSupervisorTaskGoal,
   effectiveSupervisorWorkScope,
+  PROJECT_MANAGER_WORKSPACE_TITLE,
+  PROJECT_SUPERVISOR_WORKSPACE_TITLE,
   SUPERVISOR_TAB_TITLE,
   SUPERVISOR_WORKSPACE_TITLE,
+  projectSupervisorWorkspaceTitle,
   supervisorTabTitle,
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
@@ -1390,10 +1393,13 @@ function createRemoteDirectTerminalTask(
 
     const store = useStore.getState();
     const previousWorkspaceId = store.activeWorkspaceId;
-    let controlWorkspace = store.workspaces.find((workspace) => workspace.transientSupervisorWorkspace === true);
+    let controlWorkspace = store.workspaces.find((workspace) => (
+      workspace.transientSupervisorWorkspace === true
+      && workspace.title === PROJECT_MANAGER_WORKSPACE_TITLE
+    ));
     if (!controlWorkspace) {
       const workspaceId = store.createWorkspace({
-        title: SUPERVISOR_WORKSPACE_TITLE,
+        title: PROJECT_MANAGER_WORKSPACE_TITLE,
         pinned: true,
         transientSupervisorWorkspace: true,
         splitTree: createLeaf(undefined, 'supervisor'),
@@ -1403,9 +1409,8 @@ function createRemoteDirectTerminalTask(
     }
     const targetPaneId = controlWorkspace ? getAllPaneIds(controlWorkspace.splitTree)[0] : undefined;
     if (!controlWorkspace || !targetPaneId) return { ok: false, error: '无法创建项目调度控制层运行时。', message: '' };
-    if (store.supervisor.supervisorWorkspaceId !== controlWorkspace.id) {
-      store.patchSupervisor({ supervisorWorkspaceId: controlWorkspace.id });
-    }
+    const placeholderSurfaceId = findLeaf(controlWorkspace.splitTree, targetPaneId)?.surfaces
+      .find((surface) => surface.type === 'supervisor')?.id;
     const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort);
     const surfaceId = store.addSurface(controlWorkspace.id, targetPaneId, 'terminal', {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
@@ -1418,6 +1423,9 @@ function createRemoteDirectTerminalTask(
       ...launch,
     });
     if (!surfaceId) return { ok: false, error: '无法创建项目管理 AI 运行时。', message: '' };
+    if (placeholderSurfaceId) {
+      store.closeSurface(controlWorkspace.id, targetPaneId, placeholderSurfaceId);
+    }
     markTerminalRuntimeStarting(surfaceId);
     return {
       ok: true,
@@ -1623,19 +1631,67 @@ function startRemoteSupervisor(
   if (!params.stopWhen.trim()) return { ok: false, error: '停止条件不能为空。', message: '' };
   if (candidates.some((candidate) => !candidate.projectDir)) return { ok: false, error: '所选终端缺少项目目录，无法写入审计记录。', message: '' };
 
-  let supervisorWorkspace = store.workspaces.find((workspace) => workspace.id === store.supervisor.supervisorWorkspaceId);
+  const project = projectManagedStart
+    ? store.projectManagers.find((candidate) => candidate.id === params.projectManagerProjectId)
+    : undefined;
+  const previousActiveWorkspaceId = store.activeWorkspaceId;
+  const workspaceHasProjectRuntime = (workspace: typeof store.workspaces[number], projectId?: string): boolean => (
+    getAllPaneIds(workspace.splitTree).some((paneId) => (
+      findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => (
+        projectId
+          ? surface.projectSupervisorProjectId === projectId
+          : !!surface.projectManagerTerminal || !!surface.projectSupervisorProjectId
+      ))
+    ))
+  );
+  let supervisorWorkspace = projectManagedStart
+    ? store.workspaces.find((workspace) => (
+        workspace.transientSupervisorWorkspace === true
+        && workspaceHasProjectRuntime(workspace, params.projectManagerProjectId)
+      ))
+    : store.workspaces.find((workspace) => (
+        workspace.id === store.supervisor.supervisorWorkspaceId
+        && !workspaceHasProjectRuntime(workspace)
+        && workspace.title === SUPERVISOR_WORKSPACE_TITLE
+      ));
   if (!supervisorWorkspace) {
     const workspaceId = store.createWorkspace({
-      title: SUPERVISOR_WORKSPACE_TITLE,
+      title: projectManagedStart
+        ? projectSupervisorWorkspaceTitle(project?.goal || '', params.projectManagerProjectId || '')
+        : SUPERVISOR_WORKSPACE_TITLE,
       pinned: true,
       transientSupervisorWorkspace: true,
       splitTree: createLeaf(undefined, 'supervisor'),
     });
-    store.patchSupervisor({ supervisorWorkspaceId: workspaceId });
     supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+    const projectControlPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
+    const projectControlSurfaceId = projectManagedStart && supervisorWorkspace && projectControlPaneId
+      ? findLeaf(supervisorWorkspace.splitTree, projectControlPaneId)?.surfaces
+        .find((surface) => surface.type === 'supervisor')?.id
+      : undefined;
+    if (projectControlSurfaceId && projectControlPaneId) {
+      store.updateSurface(supervisorWorkspace!.id, projectControlPaneId, projectControlSurfaceId, {
+        customTitle: PROJECT_SUPERVISOR_WORKSPACE_TITLE,
+        projectSupervisorProjectId: params.projectManagerProjectId,
+      });
+      supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+    }
+    if (!projectManagedStart) store.patchSupervisor({ supervisorWorkspaceId: workspaceId });
   }
   const targetPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
   if (!supervisorWorkspace || !targetPaneId) return { ok: false, error: '无法创建专属监督工作区。', message: '' };
+  let projectControlSurfaceId = projectManagedStart
+    ? findLeaf(supervisorWorkspace.splitTree, targetPaneId)?.surfaces.find((surface) => (
+        surface.type === 'supervisor'
+        && surface.projectSupervisorProjectId === params.projectManagerProjectId
+      ))?.id
+    : undefined;
+  if (projectManagedStart && !projectControlSurfaceId) {
+    projectControlSurfaceId = store.addSurface(supervisorWorkspace.id, targetPaneId, 'supervisor', {
+      customTitle: PROJECT_SUPERVISOR_WORKSPACE_TITLE,
+      projectSupervisorProjectId: params.projectManagerProjectId,
+    }) || undefined;
+  }
 
   const launchCmd = params.supervisorLaunchCmd !== undefined
     ? params.supervisorLaunchCmd
@@ -1654,6 +1710,9 @@ function startRemoteSupervisor(
       cwd: candidate.projectDir,
       startupCommands: launch ? [launch] : undefined,
       transientSupervisor: true,
+      ...(projectManagedStart ? {
+        projectSupervisorProjectId: params.projectManagerProjectId,
+      } : {}),
     });
     if (supervisorSurfaceId) markTerminalRuntimeStarting(supervisorSurfaceId);
     const lane = clearSupervisorLaneContext({
@@ -1699,6 +1758,16 @@ function startRemoteSupervisor(
       if (lane.supervisorSurfaceId) store.closeSurface(supervisorWorkspace.id, targetPaneId, lane.supervisorSurfaceId);
     }
     return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
+  }
+  if (projectManagedStart && projectControlSurfaceId) {
+    const refreshedWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === supervisorWorkspace!.id);
+    const controlIndex = refreshedWorkspace
+      ? findLeaf(refreshedWorkspace.splitTree, targetPaneId)?.surfaces.findIndex((surface) => surface.id === projectControlSurfaceId) ?? -1
+      : -1;
+    if (controlIndex >= 0) store.selectSurface(supervisorWorkspace.id, targetPaneId, controlIndex);
+    if (previousActiveWorkspaceId && previousActiveWorkspaceId !== supervisorWorkspace.id) {
+      store.selectWorkspace(previousActiveWorkspaceId);
+    }
   }
   if (!retainedSession && previousLanes.length > 0) {
     for (const lane of previousLanes) {
@@ -2745,6 +2814,14 @@ function teardownManagedProject(session: ProjectManagerSession): void {
 
   for (const lane of lanes) store.stopSupervisorLane(lane.id, '项目已删除并解除监督绑定');
   closeStoppedSupervisorSurfaces(lanes);
+  for (const workspace of [...useStore.getState().workspaces]) {
+    const ownsProjectSupervisor = getAllPaneIds(workspace.splitTree).some((paneId) => (
+      findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => (
+        surface.projectSupervisorProjectId === session.id
+      ))
+    ));
+    if (ownsProjectSupervisor) store.closeWorkspace(workspace.id);
+  }
   for (const surfaceId of workerSurfaceIds) {
     const terminal = remoteTerminalList().find((candidate) => candidate.surfaceId === surfaceId);
     if (terminal) store.closeSurface(terminal.workspaceId, terminal.paneId, terminal.surfaceId);

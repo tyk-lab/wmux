@@ -69,6 +69,15 @@ export function stopWhenJudgmentGuide(kind: StopWhenKind, stopWhen: string): str
 export const SUPERVISOR_TAB_TITLE = 'AI 监督';
 /** Pinned workspace where the full supervisor session is expanded. */
 export const SUPERVISOR_WORKSPACE_TITLE = 'AI 监督';
+/** Runtime workspace for the portfolio-level Project AI. It is never an ordinary-supervision entrypoint. */
+export const PROJECT_MANAGER_WORKSPACE_TITLE = '项目 AI 控制台';
+/** Prefix for a project-owned supervisor workspace. */
+export const PROJECT_SUPERVISOR_WORKSPACE_TITLE = '项目专属监督';
+
+export function projectSupervisorWorkspaceTitle(projectGoal: string, projectId: string): string {
+  const label = projectGoal.trim().replace(/\s+/gu, ' ').slice(0, 24) || projectId.slice(0, 8);
+  return `${PROJECT_SUPERVISOR_WORKSPACE_TITLE} · ${label}`;
+}
 
 export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;

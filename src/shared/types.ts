@@ -86,6 +86,8 @@ export interface SurfaceRef {
   startupInput?: string;
   /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
   transientSupervisor?: boolean;
+  /** Project-owned supervisor UI/runtime. Kept separate from project task-terminal ownership. */
+  projectSupervisorProjectId?: string;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
   projectManagerTerminal?: boolean;
   /** Singleton user-records terminal created from the Feishu special-terminal entrypoint. */

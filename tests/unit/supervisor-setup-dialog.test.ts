@@ -108,10 +108,16 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('setOrdinarySupervisorLanes(result.lanes)');
     expect(dialogSource).toContain('startOrdinarySupervisor()');
     expect(dialogSource).toContain('stopOrdinarySupervisor()');
-    expect(panelSource).toContain('普通监督配置和控制不会修改这些通道');
+    expect(panelSource).toContain('普通监督的配置、暂停和停止操作均不会修改这里');
     expect(panelSource).toContain('isProjectManagedSupervisorLane(lane)');
     expect(panelSource).toContain('stopOrdinarySupervisor()');
     expect(panelSource).toContain('resetOrdinarySupervisorSession()');
+    expect(panelSource).toContain("surface.type === 'supervisor' && surface.projectSupervisorProjectId");
+    expect(panelSource).toContain("scopedProjectId ? '项目专属监督' : 'AI 监督'");
+    expect(pipeBridgeSource).toContain('PROJECT_MANAGER_WORKSPACE_TITLE');
+    expect(pipeBridgeSource).toContain('projectSupervisorWorkspaceTitle');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__alert');
   });
 
   it('configures task-terminal work mode with one to three child threads', () => {
@@ -164,7 +170,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain("? `运行中 · ${waiting.length} 待续`");
     expect(panelSource).toContain('data-waiting={waiting.length > 0');
     expect(panelSource).toContain('当前有 {ordinaryWaiting.length} 个普通监督通道处于待续状态');
-    expect(panelSource).toContain('当前有 {projectWaiting.length} 个项目监督通道待续');
+    expect(panelSource).toContain('当前项目有 {waiting.length} 个监督通道待续');
+    expect(panelSource).toContain('普通监督不会接管');
     expect(panelSource).toContain('data-control-state={laneControlState}');
   });
 });

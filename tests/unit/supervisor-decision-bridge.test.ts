@@ -19,6 +19,10 @@ import {
   clearTerminalRuntimeStatus,
   markTerminalRuntimeReady,
 } from '../../src/renderer/terminal-runtime-lifecycle';
+import {
+  PROJECT_MANAGER_WORKSPACE_TITLE,
+  PROJECT_SUPERVISOR_WORKSPACE_TITLE,
+} from '../../src/renderer/supervisor/protocol';
 
 function lane(): SupervisorLane {
   return {
@@ -1333,12 +1337,12 @@ describe('supervisor decision bridge', () => {
 
     const workspaces = useStore.getState().workspaces;
     const taskWorkspace = workspaces.find((workspace) => workspace.title === '被监督项目');
-    const controlWorkspace = workspaces.find((workspace) => workspace.transientSupervisorWorkspace === true);
+    const controlWorkspace = workspaces.find((workspace) => workspace.title === PROJECT_MANAGER_WORKSPACE_TITLE);
     const controlLeaf = controlWorkspace?.splitTree.type === 'leaf' ? controlWorkspace.splitTree : undefined;
     const surface = controlLeaf?.surfaces.find((item) => item.projectManagerTerminal === true);
     expect(taskWorkspace).toBeTruthy();
     expect(controlWorkspace).toBeTruthy();
-    expect(useStore.getState().supervisor.supervisorWorkspaceId).toBe(controlWorkspace?.id);
+    expect(useStore.getState().supervisor.supervisorWorkspaceId).not.toBe(controlWorkspace?.id);
     expect(surface).toMatchObject({
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       cwd: 'E:\\wmux-data\\project-manager\\runtime',
@@ -2001,6 +2005,26 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({ ok: true });
     const first = await startTaskThroughDedicatedSupervisor(projectId, 'first_task');
     expect(useStore.getState().supervisor).toMatchObject(ordinarySettings);
+    const projectSupervisorWorkspace = useStore.getState().workspaces.find((workspace) => (
+      workspace.title === `${PROJECT_SUPERVISOR_WORKSPACE_TITLE} · 顺序完成两个任务`
+    ));
+    const projectSupervisorSurfaces = projectSupervisorWorkspace?.splitTree.type === 'leaf'
+      ? projectSupervisorWorkspace.splitTree.surfaces
+      : [];
+    expect(projectSupervisorWorkspace).toBeTruthy();
+    expect(projectSupervisorWorkspace?.splitTree.type === 'leaf'
+      ? projectSupervisorWorkspace.splitTree.surfaces[projectSupervisorWorkspace.splitTree.activeSurfaceIndex]
+      : undefined).toMatchObject({ type: 'supervisor', projectSupervisorProjectId: projectId });
+    expect(useStore.getState().activeWorkspaceId).not.toBe(projectSupervisorWorkspace?.id);
+    expect(projectSupervisorSurfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'supervisor', projectSupervisorProjectId: projectId }),
+      expect.objectContaining({
+        id: first.lane?.supervisorSurfaceId,
+        transientSupervisor: true,
+        projectSupervisorProjectId: projectId,
+      }),
+    ]));
+    expect(useStore.getState().supervisor.supervisorWorkspaceId).not.toBe(projectSupervisorWorkspace?.id);
     await expect(request({
       action: 'task-update', callerSurfaceId: managerSurfaceId, projectId,
       workItemId: 'first_task', patch: { status: 'completed', latestEvidence: '第一项验证通过' },
