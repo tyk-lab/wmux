@@ -333,6 +333,11 @@ describe('supervisor decision bridge', () => {
     const listResult = remoteControl({ action: 'list' });
     const listed = JSON.parse(listResult.message).terminals.find((terminal: any) => terminal.surfaceId === 'worker-a');
     expect(listed).toMatchObject({ activityState: 'working', activityUpdatedAt: agentState.updatedAt });
+    const monitoringTerminals = JSON.parse(remoteControl({ action: 'terminal-list', mode: 'ordinary' }).message).terminals;
+    expect(monitoringTerminals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surfaceId: 'worker-a', terminalMode: 'ordinary', agentRole: 'task-ai' }),
+      expect.objectContaining({ surfaceId: 'supervisor-a', terminalMode: 'ordinary', agentRole: 'supervisor-ai', supervisionState: 'active' }),
+    ]));
 
     expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '继续执行', actor: 'ou-user' }))
       .toMatchObject({ ok: false, code: 'terminal_busy', terminal: { activityState: 'working' } });
@@ -391,6 +396,85 @@ describe('supervisor decision bridge', () => {
     expect(listed.map((terminal: any) => terminal.surfaceId)).toEqual(['worker-a']);
     expect(remoteControl({ action: 'terminal-screen', terminal: 'orphan-supervisor', lines: 40 }))
       .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
+  });
+
+  it('separates project AI runtime monitoring from ordinary supervisor terminal controls', () => {
+    const store = useStore.getState();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-monitor', workItemId: 'task-monitor' });
+    store.restoreProjectManager({
+      ...project,
+      projectName: '监控项目',
+      managerSurfaceId: 'project-manager-a' as any,
+    });
+    store.setProjectSupervisorLanes([{
+      ...lane(),
+      id: 'project-lane',
+      label: '项目任务',
+      surfaceId: 'project-task-a' as any,
+      supervisorSurfaceId: 'project-supervisor-a' as any,
+      projectManagerProjectId: 'pm-monitor',
+      projectWorkItemId: 'task-monitor',
+    }]);
+    store.replaceAllWorkspaces([{
+      id: 'ws-project-monitor' as any,
+      title: '项目执行空间',
+      cwd: 'E:\\repo',
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-project-monitor' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          {
+            id: 'project-manager-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '项目 AI 控制台',
+            projectManagerTerminal: true, projectManagerProjectId: 'pm-monitor',
+          },
+          {
+            id: 'project-supervisor-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: 'AI 监督 · 项目任务',
+            transientSupervisor: true, projectSupervisorProjectId: 'pm-monitor',
+          },
+          {
+            id: 'project-task-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '任务 AI · 项目任务',
+            projectManagerProjectId: 'pm-monitor', projectManagerWorkItemId: 'task-monitor',
+          },
+        ],
+      },
+    }]);
+    for (const surfaceId of ['project-manager-a', 'project-supervisor-a', 'project-task-a']) {
+      surfaceTerminalRegistry.set(surfaceId, {
+        buffer: {
+          active: {
+            baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+            getLine: () => ({ translateToString: () => `Agent ${surfaceId} 正常运行` }),
+          },
+        },
+      } as any);
+      markTerminalRuntimeReady(surfaceId);
+    }
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    const ordinary = JSON.parse(remoteControl({ action: 'list' }).message).terminals;
+    expect(ordinary).toEqual([]);
+    const projectTerminals = JSON.parse(remoteControl({ action: 'terminal-list', mode: 'project' }).message).terminals;
+    expect(projectTerminals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surfaceId: 'project-manager-a', agentRole: 'project-ai', projectName: '监控项目', runtimeState: 'ready' }),
+      expect.objectContaining({ surfaceId: 'project-supervisor-a', agentRole: 'supervisor-ai', projectId: 'pm-monitor' }),
+      expect.objectContaining({ surfaceId: 'project-task-a', agentRole: 'task-ai', workItemId: 'task-monitor' }),
+    ]));
+    expect(remoteControl({ action: 'terminal-screen', terminal: 'project-supervisor-a', mode: 'project', lines: 40 }))
+      .toMatchObject({
+        ok: true,
+        terminal: {
+          surfaceId: 'project-supervisor-a', terminalMode: 'project', agentRole: 'supervisor-ai', projectId: 'pm-monitor',
+        },
+      });
+    expect(remoteControl({ action: 'terminal-screen', terminal: 'project-supervisor-a', lines: 40 }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
+    expect(JSON.parse(remoteControl({ action: 'terminal-list', mode: 'ordinary' }).message).terminals)
+      .toEqual([]);
+
+    for (const surfaceId of ['project-manager-a', 'project-supervisor-a', 'project-task-a']) {
+      surfaceTerminalRegistry.delete(surfaceId);
+      clearTerminalRuntimeStatus(surfaceId);
+    }
   });
 
   it('sends Feishu direction information only to the active dedicated supervisor terminal', () => {

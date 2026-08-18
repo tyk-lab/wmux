@@ -20,7 +20,8 @@ import {
 export type FeishuSupervisorCommand =
   | { action: 'list' }
   | { action: 'logs' }
-  | { action: 'terminal-screen'; terminal: string; lines?: number }
+  | { action: 'terminal-list'; mode: 'ordinary' | 'project' }
+  | { action: 'terminal-screen'; terminal: string; lines?: number; mode?: 'ordinary' | 'project' }
   | { action: 'supervisor-screen'; terminal: string; lines?: number }
   | { action: 'decision-context'; approvalId: string; terminal: string; lines?: number }
   | { action: 'create-task'; name: string; task: string; agent?: 'codex' | 'kimi' | 'grok'; preset?: 'user-records'; cwd?: string; displayPath?: string; anchorWorkspace?: string; anchorTerminal?: string }
@@ -330,6 +331,8 @@ function failedResult(value: unknown): boolean {
 }
 
 type FeishuTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
+type FeishuTerminalControlMode = 'ordinary' | 'project';
+type FeishuTerminalAgentRole = 'project-ai' | 'supervisor-ai' | 'task-ai';
 
 interface FeishuListTerminal {
   surfaceId: string;
@@ -347,6 +350,14 @@ interface FeishuListTerminal {
   policyOverridden?: boolean;
   activityState?: FeishuTerminalActivityState;
   activityUpdatedAt?: number;
+  terminalMode?: FeishuTerminalControlMode;
+  agentRole?: FeishuTerminalAgentRole;
+  projectId?: string;
+  projectName?: string;
+  workItemId?: string;
+  workItemTitle?: string;
+  runtimeState?: 'starting' | 'ready' | 'failed' | 'exited';
+  runtimeDetail?: string;
 }
 
 interface FeishuListSession {
@@ -370,7 +381,10 @@ interface FeishuListResult {
 }
 
 interface FeishuTerminalScreenResult {
-  terminal: Pick<FeishuListTerminal, 'surfaceId' | 'label' | 'workspace' | 'cwd' | 'activityState' | 'activityUpdatedAt'>;
+  terminal: Pick<FeishuListTerminal,
+  'surfaceId' | 'label' | 'workspace' | 'cwd' | 'activityState' | 'activityUpdatedAt'
+  | 'terminalMode' | 'agentRole' | 'projectId' | 'projectName' | 'workItemId' | 'workItemTitle'
+  | 'runtimeState' | 'runtimeDetail'>;
   text: string;
   question?: string;
   answer?: string;
@@ -606,7 +620,7 @@ function supervisorTerminalOptions(terminals: FeishuListTerminal[]): Array<{ tex
 
 let controlActionSequence = 0;
 
-export const FEISHU_CONTROL_CARD_VERSION = '16';
+export const FEISHU_CONTROL_CARD_VERSION = '17';
 
 function nextControlActionNonce(): string {
   controlActionSequence = (controlActionSequence + 1) % Number.MAX_SAFE_INTEGER;
@@ -719,6 +733,7 @@ interface ResolvedCardAction {
   flow?: string;
   view?: string;
   terminal?: string;
+  terminal_mode?: string;
   session_target?: string;
   nonce?: string;
   wmux_card_version?: string;
@@ -741,7 +756,45 @@ interface PendingBusyTaskConfirmation {
 function isReusableControlAction(value: ResolvedCardAction): boolean {
   if (value.wmux_action === 'stop_lane_confirm' || value.wmux_action === 'terminal_screen') return true;
   return value.wmux_action === 'menu'
-    && ['create-task', 'special-terminal', 'start', 'send', 'send-supervisor', 'terminal-screen', 'terminal-control', 'close-terminal', 'manage', 'status', 'detail-status', 'logs', 'stop-confirm'].includes(value.flow || '');
+    && ['create-task', 'special-terminal', 'start', 'send', 'send-supervisor', 'terminal-screen', 'terminal-control', 'ordinary-terminal-control', 'project-terminal-control', 'close-terminal', 'manage', 'status', 'detail-status', 'logs', 'stop-confirm'].includes(value.flow || '');
+}
+
+const TERMINAL_AGENT_ROLE_LABELS: Record<FeishuTerminalAgentRole, string> = {
+  'project-ai': '项目 AI',
+  'supervisor-ai': '专属监督 AI',
+  'task-ai': '任务 AI',
+};
+
+function projectTerminalRuntimeText(terminal: FeishuListTerminal): string {
+  if (terminal.runtimeState === 'failed') return `运行失败${terminal.runtimeDetail ? ` · ${terminal.runtimeDetail}` : ''}`;
+  if (terminal.runtimeState === 'exited') return `已退出${terminal.runtimeDetail ? ` · ${terminal.runtimeDetail}` : ''}`;
+  if (terminal.runtimeState === 'starting') return '启动中';
+  return terminalActivityText(terminal);
+}
+
+function projectTerminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  return terminals.map((terminal) => {
+    const role = terminal.agentRole ? TERMINAL_AGENT_ROLE_LABELS[terminal.agentRole] : '项目终端';
+    const task = terminal.workItemTitle ? ` · ${terminal.workItemTitle}` : '';
+    return {
+      text: {
+        tag: 'plain_text',
+        content: `${terminal.projectName || terminal.projectId || '未知项目'} · ${role}${task} · ${projectTerminalRuntimeText(terminal)}`.slice(0, 100),
+      },
+      value: terminal.surfaceId,
+    };
+  });
+}
+
+function ordinaryMonitoringTerminalOptions(terminals: FeishuListTerminal[]): Array<{ text: { tag: 'plain_text'; content: string }; value: string }> {
+  const baseOptions = terminalOptions(terminals);
+  return terminals.map((terminal, index) => ({
+    text: {
+      tag: 'plain_text',
+      content: `${terminal.agentRole === 'supervisor-ai' ? '普通监督 AI' : '普通任务 AI'} · ${baseOptions[index].text.content} · ${projectTerminalRuntimeText(terminal)}`.slice(0, 100),
+    },
+    value: terminal.surfaceId,
+  }));
 }
 
 export function resolveFeishuCardAction(value: unknown, name?: string): ResolvedCardAction {
@@ -766,6 +819,9 @@ export function resolveFeishuCardAction(value: unknown, name?: string): Resolved
   if (name === 'wmux_form_terminal_send') return { ...rawValue, wmux_action: 'form_terminal_send' };
   if (name === 'wmux_form_terminal_escape') return { ...rawValue, wmux_action: 'form_terminal_escape' };
   if (name === 'wmux_form_terminal_interrupt') return { ...rawValue, wmux_action: 'form_terminal_interrupt' };
+  if (name === 'wmux_form_project_terminal_refresh') return { ...rawValue, wmux_action: 'form_project_terminal_refresh' };
+  if (name === 'wmux_form_project_terminal_expand') return { ...rawValue, wmux_action: 'form_project_terminal_expand' };
+  if (name === 'wmux_form_project_terminal_collapse') return { ...rawValue, wmux_action: 'form_project_terminal_collapse' };
   if (name === 'wmux_form_close_terminal') return { ...rawValue, wmux_action: 'form_close_terminal' };
   if (name === 'wmux_form_lane_control') return { ...rawValue, wmux_action: 'form_lane_control' };
   const waitingDecision = /^wmux_waiting_(keep|resume|submit|stop)$/.exec(name || '')?.[1];
@@ -802,11 +858,16 @@ export function buildSupervisorControlMenuCard(
   const terminalOperations = [
     cardButton({ wmux_action: 'menu', flow: 'create-task' }, '添加终端任务', 'primary'),
     cardButton({ wmux_action: 'menu', flow: 'special-terminal' }, '创建特别终端'),
+    ...(allowTerminalScreen
+      ? [
+          cardButton({ wmux_action: 'menu', flow: 'ordinary-terminal-control' }, '普通监督终端'),
+          cardButton({ wmux_action: 'menu', flow: 'project-terminal-control' }, '项目 AI 模式终端'),
+        ]
+      : state?.totalTerminals !== 0
+        ? [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')]
+        : []),
     ...(state?.totalTerminals !== 0
       ? [
-          ...(allowTerminalScreen
-            ? [cardButton({ wmux_action: 'menu', flow: 'terminal-control' }, '终端控制')]
-            : [cardButton({ wmux_action: 'menu', flow: 'send' }, '发送任务')]),
           cardButton({ wmux_action: 'menu', flow: 'close-terminal' }, '关闭终端', 'danger'),
         ]
       : []),
@@ -1381,17 +1442,23 @@ export function buildSupervisorMessageCard(terminals: FeishuListTerminal[], allo
   );
 }
 
-/** Private-chat form for selecting a task terminal to inspect and control. */
-export function buildTerminalScreenSelectCard(terminals: FeishuListTerminal[]): object {
+/** Private-chat form with explicit ordinary/project isolation. */
+export function buildTerminalScreenSelectCard(
+  terminals: FeishuListTerminal[],
+  mode: FeishuTerminalControlMode = 'ordinary',
+): object {
+  const projectMode = mode === 'project';
   return buildFormCard(
-    'wmux · 终端控制',
+    projectMode ? 'wmux · 项目 AI 模式终端' : 'wmux · 普通监督终端',
     'blue',
-    '选择一个任务终端，在同一张卡中查看核心输出、刷新界面或发送多行任务。界面内容可能包含敏感信息，因此只允许白名单用户在单聊中使用。',
+    projectMode
+      ? '选择项目 AI、专属监督 AI 或任务 AI 查看核心输出和运行状态。此入口只读；调整项目方向请返回项目工作台，避免绕过项目 AI 的分层决策。'
+      : '选择普通监督模式的任务 AI 或专属监督 AI，查看核心输出并按角色发送任务或监督信息。界面内容可能包含敏感信息，因此只允许白名单用户在单聊中使用。',
     'wmux_terminal_control_select_form',
     [
-      { tag: 'markdown', content: '**任务终端**' },
-      { tag: 'select_static', element_id: 'control_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要控制的终端' }, options: terminalOptions(terminals, true) },
-      formButton('wmux_form_terminal_control', '打开终端控制', 'primary', { wmux_action: 'form_terminal_control' }),
+      { tag: 'markdown', content: projectMode ? '**项目 AI 模式终端**' : '**普通监督模式终端**' },
+      { tag: 'select_static', element_id: 'control_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: projectMode ? '选择要监控的项目终端' : '选择要控制的普通终端' }, options: projectMode ? projectTerminalOptions(terminals) : ordinaryMonitoringTerminalOptions(terminals) },
+      formButton('wmux_form_terminal_control', projectMode ? '打开终端监控' : '打开终端控制', 'primary', { wmux_action: 'form_terminal_control', terminal_mode: mode }),
     ],
     controlHomeFooter(),
   );
@@ -1408,10 +1475,12 @@ function buildTerminalControlCard(
   draft: string,
   notice: string,
   expanded: boolean,
-  target: 'task' | 'supervisor',
+  target: 'task' | 'supervisor' | 'project',
+  sourceMode?: FeishuTerminalControlMode,
 ): object {
   const supervisorTarget = target === 'supervisor';
-  const actionStem = supervisorTarget ? 'supervisor' : 'terminal';
+  const projectTarget = target === 'project';
+  const actionStem = supervisorTarget ? 'supervisor' : projectTarget ? 'project_terminal' : 'terminal';
   const inputName = supervisorTarget ? 'message' : 'task';
   const capturedAt = new Date(result.capturedAt).toLocaleString('zh-CN', { hour12: false });
   const taskInputId = nextControlElementIdentity('input').elementId;
@@ -1423,6 +1492,12 @@ function buildTerminalControlCard(
   const pathSummary = result.terminal.cwd?.trim()
     ? `\n路径：${compactTerminalControlPath(result.terminal.cwd)}`
     : '';
+  const projectRole = result.terminal.agentRole
+    ? TERMINAL_AGENT_ROLE_LABELS[result.terminal.agentRole]
+    : '项目终端';
+  const runtimeSummary = projectTarget
+    ? projectTerminalRuntimeText(result.terminal as FeishuListTerminal)
+    : terminalActivityText(result.terminal as FeishuListTerminal);
   const coreElements = [
     {
       tag: 'markdown',
@@ -1434,36 +1509,62 @@ function buildTerminalControlCard(
         expanded ? `wmux_form_${actionStem}_collapse` : `wmux_form_${actionStem}_expand`,
         expanded ? '收起回复' : '展开完整回复',
         'default',
-        { wmux_action: expanded ? `form_${actionStem}_collapse` : `form_${actionStem}_expand`, terminal: result.terminal.surfaceId },
+        {
+          wmux_action: expanded ? `form_${actionStem}_collapse` : `form_${actionStem}_expand`,
+          terminal: result.terminal.surfaceId,
+          ...(projectTarget ? { terminal_mode: 'project' } : sourceMode ? { terminal_mode: sourceMode } : {}),
+        },
       ),
     ]) : []),
   ];
   return buildFormCard(
-    supervisorTarget ? 'wmux · AI 监督终端（管家）' : 'wmux · 终端控制',
+    supervisorTarget ? 'wmux · AI 监督终端（管家）' : projectTarget ? 'wmux · 项目 AI 模式终端' : 'wmux · 普通监督终端',
     'blue',
-    `${notice ? `${notice}\n\n` : ''}${supervisorTarget ? `**AI监督终端（管家） · 负责：${result.terminal.label}**` : `**${result.terminal.label}**`}\n工作区：${result.terminal.workspace}${pathSummary}\n状态：${terminalActivityText(result.terminal as FeishuListTerminal)}\n抓取时间：${capturedAt} · ${result.lines} 行`,
-    supervisorTarget ? 'wmux_supervisor_terminal_control_form' : 'wmux_terminal_control_form',
+    `${notice ? `${notice}\n\n` : ''}${supervisorTarget
+      ? `**AI监督终端（管家） · 负责：${result.terminal.label}**`
+      : projectTarget
+        ? `**${result.terminal.projectName || result.terminal.projectId || '未知项目'} · ${projectRole}${result.terminal.workItemTitle ? ` · ${result.terminal.workItemTitle}` : ''}**`
+        : `**${result.terminal.label}**`}\n工作区：${result.terminal.workspace}${pathSummary}\n状态：${runtimeSummary}\n抓取时间：${capturedAt} · ${result.lines} 行`,
+    supervisorTarget ? 'wmux_supervisor_terminal_control_form' : projectTarget ? 'wmux_project_terminal_control_form' : 'wmux_terminal_control_form',
     [
       ...coreElements,
       { tag: 'hr' },
-      {
-        tag: 'input', element_id: taskInputId, name: inputName, input_type: 'multiline_text', rows: 5, max_length: 1000,
-        label: { tag: 'plain_text', content: supervisorTarget ? '监督方向信息（可选）' : '发送内容（可选）' },
-        placeholder: { tag: 'plain_text', content: supervisorTarget ? '补充重点、纠正方向或调整监督方式' : '填写要发送给终端的完整任务' },
-        ...(draft ? { default_value: draft } : {}),
-      },
-      {
-        tag: 'column_set', flex_mode: 'none', columns: [
-          { tag: 'column', width: 'weighted', weight: 1, elements: [formButton(`wmux_form_${actionStem}_refresh`, '刷新界面', 'default', { wmux_action: `form_${actionStem}_refresh`, terminal: result.terminal.surfaceId })] },
-          { tag: 'column', width: 'weighted', weight: 1, elements: [formButton(`wmux_form_${actionStem}_send`, supervisorTarget ? '发送监督信息' : '发送内容', 'primary', { wmux_action: `form_${actionStem}_send`, terminal: result.terminal.surfaceId })] },
-        ],
-      },
-      ...(!supervisorTarget ? responsiveButtonRows([
+      ...(projectTarget ? [
+        { tag: 'markdown', content: '此页只读监控。需要调整方向、需求或优先级时，请进入对应项目工作台与项目 AI 对话。' },
+        ...responsiveButtonRows([
+          formButton('wmux_form_project_terminal_refresh', '刷新界面', 'primary', { wmux_action: 'form_project_terminal_refresh', terminal: result.terminal.surfaceId, terminal_mode: 'project' }),
+          ...(result.terminal.projectId ? [
+            formButton('wmux_form_project_terminal_workspace', '打开项目工作台', 'default', {
+              wmux_action: 'project_ai_workspace',
+              projectId: result.terminal.projectId,
+            }),
+          ] : []),
+        ]),
+      ] : [
+        {
+          tag: 'input', element_id: taskInputId, name: inputName, input_type: 'multiline_text', rows: 5, max_length: 1000,
+          label: { tag: 'plain_text', content: supervisorTarget ? '监督方向信息（可选）' : '发送内容（可选）' },
+          placeholder: { tag: 'plain_text', content: supervisorTarget ? '补充重点、纠正方向或调整监督方式' : '填写要发送给终端的完整任务' },
+          ...(draft ? { default_value: draft } : {}),
+        },
+        {
+          tag: 'column_set', flex_mode: 'none', columns: [
+            { tag: 'column', width: 'weighted', weight: 1, elements: [formButton(`wmux_form_${actionStem}_refresh`, '刷新界面', 'default', { wmux_action: `form_${actionStem}_refresh`, terminal: result.terminal.surfaceId, ...(sourceMode ? { terminal_mode: sourceMode } : {}) })] },
+            { tag: 'column', width: 'weighted', weight: 1, elements: [formButton(`wmux_form_${actionStem}_send`, supervisorTarget ? '发送监督信息' : '发送内容', 'primary', { wmux_action: `form_${actionStem}_send`, terminal: result.terminal.surfaceId, ...(sourceMode ? { terminal_mode: sourceMode } : {}) })] },
+          ],
+        },
+      ]),
+      ...(!supervisorTarget && !projectTarget ? responsiveButtonRows([
         formButton('wmux_form_terminal_escape', '发送 Esc（中断输出）', 'danger', { wmux_action: 'form_terminal_escape', terminal: result.terminal.surfaceId }),
         formButton('wmux_form_terminal_interrupt', '发送 Ctrl+C（中断进程）', 'danger', { wmux_action: 'form_terminal_interrupt', terminal: result.terminal.surfaceId }),
       ]) : []),
       ...responsiveButtonRows([
-        formButton(`wmux_form_${actionStem}_other`, supervisorTarget ? '选择其他监督终端' : '选择其他终端', 'default', { wmux_action: 'menu', flow: supervisorTarget ? 'send-supervisor' : 'terminal-control' }),
+        formButton(`wmux_form_${actionStem}_other`, supervisorTarget ? '选择其他监督终端' : '选择其他终端', 'default', {
+          wmux_action: 'menu',
+          flow: supervisorTarget
+            ? sourceMode === 'ordinary' ? 'ordinary-terminal-control' : 'send-supervisor'
+            : projectTarget ? 'project-terminal-control' : 'ordinary-terminal-control',
+        }),
         formButton(`wmux_form_${actionStem}_home`, '返回控制首页', 'default', { wmux_action: 'menu', flow: 'status' }),
       ]),
     ],
@@ -1476,8 +1577,19 @@ export function buildTerminalScreenCard(result: FeishuTerminalScreenResult, draf
 }
 
 /** Dedicated supervisor-terminal snapshot, refresh, and message controls share one form. */
-export function buildSupervisorTerminalScreenCard(result: FeishuTerminalScreenResult, draft = '', notice = '', expanded = false): object {
-  return buildTerminalControlCard(result, draft, notice, expanded, 'supervisor');
+export function buildSupervisorTerminalScreenCard(
+  result: FeishuTerminalScreenResult,
+  draft = '',
+  notice = '',
+  expanded = false,
+  sourceMode?: FeishuTerminalControlMode,
+): object {
+  return buildTerminalControlCard(result, draft, notice, expanded, 'supervisor', sourceMode);
+}
+
+/** Project-mode terminals are observable from Feishu but remain read-only. */
+export function buildProjectTerminalScreenCard(result: FeishuTerminalScreenResult, notice = '', expanded = false): object {
+  return buildTerminalControlCard(result, '', notice, expanded, 'project');
 }
 
 export function buildCloseTerminalSelectCard(terminals: FeishuListTerminal[]): object {
@@ -1817,6 +1929,20 @@ function parseListResult(value: unknown): FeishuListResult | null {
         activityUpdatedAt: typeof terminal.activityUpdatedAt === 'number' && Number.isFinite(terminal.activityUpdatedAt)
           ? terminal.activityUpdatedAt
           : undefined,
+        terminalMode: ['ordinary', 'project'].includes(String(terminal.terminalMode))
+          ? terminal.terminalMode as FeishuTerminalControlMode
+          : 'ordinary',
+        agentRole: ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(terminal.agentRole))
+          ? terminal.agentRole as FeishuTerminalAgentRole
+          : undefined,
+        projectId: typeof terminal.projectId === 'string' ? terminal.projectId : undefined,
+        projectName: typeof terminal.projectName === 'string' ? terminal.projectName : undefined,
+        workItemId: typeof terminal.workItemId === 'string' ? terminal.workItemId : undefined,
+        workItemTitle: typeof terminal.workItemTitle === 'string' ? terminal.workItemTitle : undefined,
+        runtimeState: ['starting', 'ready', 'failed', 'exited'].includes(String(terminal.runtimeState))
+          ? terminal.runtimeState as FeishuListTerminal['runtimeState']
+          : undefined,
+        runtimeDetail: typeof terminal.runtimeDetail === 'string' ? terminal.runtimeDetail : undefined,
       }];
     });
     const session = isObject(parsed.session) && typeof parsed.session.sessionId === 'string'
@@ -1856,6 +1982,20 @@ function parseTerminalScreenResult(value: unknown): FeishuTerminalScreenResult |
       activityUpdatedAt: typeof terminal.activityUpdatedAt === 'number' && Number.isFinite(terminal.activityUpdatedAt)
         ? terminal.activityUpdatedAt
         : undefined,
+      terminalMode: ['ordinary', 'project'].includes(String(terminal.terminalMode))
+        ? terminal.terminalMode as FeishuTerminalControlMode
+        : 'ordinary',
+      agentRole: ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(terminal.agentRole))
+        ? terminal.agentRole as FeishuTerminalAgentRole
+        : undefined,
+      projectId: typeof terminal.projectId === 'string' ? terminal.projectId : undefined,
+      projectName: typeof terminal.projectName === 'string' ? terminal.projectName : undefined,
+      workItemId: typeof terminal.workItemId === 'string' ? terminal.workItemId : undefined,
+      workItemTitle: typeof terminal.workItemTitle === 'string' ? terminal.workItemTitle : undefined,
+      runtimeState: ['starting', 'ready', 'failed', 'exited'].includes(String(terminal.runtimeState))
+        ? terminal.runtimeState as FeishuListTerminal['runtimeState']
+        : undefined,
+      runtimeDetail: typeof terminal.runtimeDetail === 'string' ? terminal.runtimeDetail : undefined,
     },
     text: value.text.slice(0, 1_200),
     question: typeof value.question === 'string' && value.question.trim()
@@ -2751,7 +2891,7 @@ export class FeishuSupervisorService {
       await this.handleWaitingDecisionCardAction(event, value);
       return;
     }
-    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_portfolio' || value?.wmux_action === 'project_ai_workspace' || value?.wmux_action === 'project_ai_view' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_create_user_records_terminal' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_terminal_escape' || value?.wmux_action === 'form_terminal_interrupt' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
+    if (value?.wmux_action === 'menu' || value?.wmux_action === 'form_project_ai_message' || value?.wmux_action === 'project_clarification_option' || value?.wmux_action === 'form_project_clarification' || value?.wmux_action === 'project_ai_select' || value?.wmux_action === 'project_ai_portfolio' || value?.wmux_action === 'project_ai_workspace' || value?.wmux_action === 'project_ai_view' || value?.wmux_action === 'project_ai_refresh' || value?.wmux_action === 'project_ai_logs' || value?.wmux_action === 'project_ai_pause' || value?.wmux_action === 'project_ai_resume' || value?.wmux_action === 'project_ai_pause_all' || value?.wmux_action === 'project_ai_resume_all' || value?.wmux_action === 'form_create_task' || value?.wmux_action === 'form_create_user_records_terminal' || value?.wmux_action === 'form_start' || value?.wmux_action === 'form_send' || value?.wmux_action === 'form_terminal_control' || value?.wmux_action === 'form_terminal_refresh' || value?.wmux_action === 'form_terminal_expand' || value?.wmux_action === 'form_terminal_collapse' || value?.wmux_action === 'form_terminal_send' || value?.wmux_action === 'form_terminal_escape' || value?.wmux_action === 'form_terminal_interrupt' || value?.wmux_action === 'form_project_terminal_refresh' || value?.wmux_action === 'form_project_terminal_expand' || value?.wmux_action === 'form_project_terminal_collapse' || value?.wmux_action === 'form_send_supervisor' || value?.wmux_action === 'form_supervisor_screen' || value?.wmux_action === 'form_supervisor_refresh' || value?.wmux_action === 'form_supervisor_expand' || value?.wmux_action === 'form_supervisor_collapse' || value?.wmux_action === 'form_supervisor_send' || value?.wmux_action === 'form_terminal_screen' || value?.wmux_action === 'terminal_screen' || value?.wmux_action === 'inspect_close_terminal' || value?.wmux_action === 'form_close_terminal' || value?.wmux_action === 'confirm_close_terminal' || value?.wmux_action === 'form_lane_control' || value?.wmux_action === 'lane_control' || value?.wmux_action === 'stop_lane_confirm' || value?.wmux_action === 'confirm_stop_lane' || value?.wmux_action === 'confirm_busy_send') {
       if (value.wmux_card_version !== FEISHU_CONTROL_CARD_VERSION) {
         console.info(`[feishu] obsolete control card replaced: version=${value.wmux_card_version || 'missing'}`);
         // Never execute an action from an old schema. Only issue a new control
@@ -2965,7 +3105,20 @@ export class FeishuSupervisorService {
       return this.showTerminalScreen(event, value.terminal || '');
     }
     if (value.wmux_action === 'form_terminal_control') {
-      return this.showTerminalScreen(event, form.terminal || '');
+      return value.terminal_mode === 'project'
+        ? this.showProjectTerminalScreen(event, form.terminal || '')
+        : value.terminal_mode === 'ordinary'
+          ? this.showOrdinaryMonitoringTerminal(event, form.terminal || '')
+          : this.showTerminalScreen(event, form.terminal || '');
+    }
+    if (value.wmux_action === 'form_project_terminal_refresh') {
+      return this.showProjectTerminalScreen(event, value.terminal || '');
+    }
+    if (value.wmux_action === 'form_project_terminal_expand') {
+      return this.showProjectTerminalScreen(event, value.terminal || '', '', true);
+    }
+    if (value.wmux_action === 'form_project_terminal_collapse') {
+      return this.showProjectTerminalScreen(event, value.terminal || '');
     }
     if (value.wmux_action === 'form_terminal_refresh') {
       return this.showTerminalScreen(event, value.terminal || '', form.task || '');
@@ -3015,16 +3168,16 @@ export class FeishuSupervisorService {
       return this.showSupervisorScreen(event, form.terminal || '', form.message || '');
     }
     if (value.wmux_action === 'form_supervisor_refresh') {
-      return this.showSupervisorScreen(event, value.terminal || '', form.message || '');
+      return this.showSupervisorScreen(event, value.terminal || '', form.message || '', '', false, value.terminal_mode === 'ordinary' ? 'ordinary' : undefined);
     }
     if (value.wmux_action === 'form_supervisor_expand') {
-      return this.showSupervisorScreen(event, value.terminal || '', form.message || '', '', true);
+      return this.showSupervisorScreen(event, value.terminal || '', form.message || '', '', true, value.terminal_mode === 'ordinary' ? 'ordinary' : undefined);
     }
     if (value.wmux_action === 'form_supervisor_collapse') {
-      return this.showSupervisorScreen(event, value.terminal || '', form.message || '');
+      return this.showSupervisorScreen(event, value.terminal || '', form.message || '', '', false, value.terminal_mode === 'ordinary' ? 'ordinary' : undefined);
     }
     if (value.wmux_action === 'form_supervisor_send') {
-      return this.sendSupervisorMessageFromControlCard(event, value.terminal || '', form.message || '');
+      return this.sendSupervisorMessageFromControlCard(event, value.terminal || '', form.message || '', value.terminal_mode === 'ordinary' ? 'ordinary' : undefined);
     }
     if (value.wmux_action === 'inspect_close_terminal' || value.wmux_action === 'form_close_terminal') {
       const terminal = value.terminal || form.terminal || '';
@@ -3313,6 +3466,59 @@ export class FeishuSupervisorService {
     return !!await this.replaceControlCard(event, buildTerminalScreenCard(screen, draft, notice, expanded));
   }
 
+  private async showOrdinaryMonitoringTerminal(event: Lark.CardActionEvent, terminal: string): Promise<boolean> {
+    if (!this.allowsTerminalScreen(event.chatId)) {
+      await this.sendText('普通监督模式终端可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
+      return false;
+    }
+    if (!terminal) {
+      await this.sendText('请先选择要查看的普通监督模式终端。', event.chatId);
+      return false;
+    }
+    const result = await this.control({
+      action: 'terminal-screen', terminal, lines: FEISHU_TERMINAL_CAPTURE_LINES, mode: 'ordinary',
+    }, {
+      openId: event.operator.openId,
+      source: 'card',
+    }).catch((err) => ({ error: String(err?.message || err) }));
+    const screen = parseTerminalScreenResult(result);
+    if (!screen || screen.terminal.terminalMode !== 'ordinary') {
+      await this.sendText(`普通监督模式终端读取失败：${summary(result)}`, event.chatId);
+      return false;
+    }
+    return !!await this.replaceControlCard(event, screen.terminal.agentRole === 'supervisor-ai'
+      ? buildSupervisorTerminalScreenCard(screen, '', '', false, 'ordinary')
+      : buildTerminalScreenCard(screen));
+  }
+
+  private async showProjectTerminalScreen(
+    event: Lark.CardActionEvent,
+    terminal: string,
+    notice = '',
+    expanded = false,
+  ): Promise<boolean> {
+    if (!this.allowsTerminalScreen(event.chatId)) {
+      await this.sendText('项目 AI 模式终端可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
+      return false;
+    }
+    if (!terminal) {
+      await this.sendText('请先选择要监控的项目 AI 模式终端。', event.chatId);
+      return false;
+    }
+    const result = await this.control({
+      action: 'terminal-screen', terminal, lines: FEISHU_TERMINAL_CAPTURE_LINES, mode: 'project',
+    }, {
+      openId: event.operator.openId,
+      source: 'card',
+    }).catch((err) => ({ error: String(err?.message || err) }));
+    const screen = parseTerminalScreenResult(result);
+    if (!screen || screen.terminal.terminalMode !== 'project') {
+      await this.sendText(`项目 AI 模式终端读取失败：${summary(result)}`, event.chatId);
+      return false;
+    }
+    return !!await this.replaceControlCard(event, buildProjectTerminalScreenCard(screen, notice, expanded));
+  }
+
   private async handleWaitingDecisionCardAction(
     event: Lark.CardActionEvent,
     value: ResolvedCardAction,
@@ -3368,7 +3574,14 @@ export class FeishuSupervisorService {
     }
   }
 
-  private async showSupervisorScreen(event: Lark.CardActionEvent, terminal: string, draft = '', notice = '', expanded = false): Promise<boolean> {
+  private async showSupervisorScreen(
+    event: Lark.CardActionEvent,
+    terminal: string,
+    draft = '',
+    notice = '',
+    expanded = false,
+    sourceMode?: FeishuTerminalControlMode,
+  ): Promise<boolean> {
     if (!this.allowsTerminalScreen(event.chatId)) {
       await this.sendText('AI 监督终端界面可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
       return false;
@@ -3386,13 +3599,14 @@ export class FeishuSupervisorService {
       await this.sendText(`AI 监督终端界面读取失败：${summary(result)}`, event.chatId);
       return false;
     }
-    return !!await this.replaceControlCard(event, buildSupervisorTerminalScreenCard(screen, draft, notice, expanded));
+    return !!await this.replaceControlCard(event, buildSupervisorTerminalScreenCard(screen, draft, notice, expanded, sourceMode));
   }
 
   private async sendSupervisorMessageFromControlCard(
     event: Lark.CardActionEvent,
     terminal: string,
     message: string,
+    sourceMode?: FeishuTerminalControlMode,
   ): Promise<boolean> {
     if (!terminal || !message) {
       await this.sendText('请先选择 AI 监督终端（管家）并填写监督方向信息。', event.chatId);
@@ -3411,6 +3625,8 @@ export class FeishuSupervisorService {
       terminal,
       '',
       `✅ ${summary(result)} AI 回复可能尚未生成，请稍后点击“刷新界面”。`,
+      false,
+      sourceMode,
     );
     return true;
   }
@@ -3503,11 +3719,19 @@ export class FeishuSupervisorService {
         : this.buildControlMenuCard(event.chatId, undefined, { text: summary(result), success: false }));
       return;
     }
-    if ((flow === 'terminal-screen' || flow === 'terminal-control') && !this.allowsTerminalScreen(event.chatId)) {
+    const terminalControlFlow = ['terminal-screen', 'terminal-control', 'ordinary-terminal-control', 'project-terminal-control'].includes(flow);
+    if (terminalControlFlow && !this.allowsTerminalScreen(event.chatId)) {
       await this.sendText('任务终端界面可能包含敏感信息，仅支持白名单用户单聊查看。', event.chatId);
       return;
     }
-    const result = await this.control({ action: 'list' }, { openId: event.operator.openId, source: 'card' })
+    const result = await this.control(
+      flow === 'project-terminal-control'
+        ? { action: 'terminal-list', mode: 'project' }
+        : flow === 'ordinary-terminal-control'
+          ? { action: 'terminal-list', mode: 'ordinary' }
+        : { action: 'list' },
+      { openId: event.operator.openId, source: 'card' },
+    )
       .catch((err) => ({ error: String(err?.message || err) }));
     const list = parseListResult(result);
     if (!list) {
@@ -3548,14 +3772,20 @@ export class FeishuSupervisorService {
       await this.replaceControlCard(event, buildSupervisorMessageCard(candidates, this.allowsTerminalScreen(event.chatId)));
       return;
     }
-    if (flow === 'terminal-screen' || flow === 'terminal-control') {
+    if (terminalControlFlow) {
       if (list.terminals.length === 0) {
         await this.replaceControlCard(event, this.buildControlMenuCard(event.chatId, controlStateFromList(list), {
-          text: '暂无可查看的任务终端。请先在 wmux 中创建工作终端。', success: false,
+          text: flow === 'project-terminal-control'
+            ? '暂无项目 AI 模式终端。请先在项目中心启动或恢复一个项目。'
+            : '暂无普通监督模式终端。请先在 wmux 中创建工作终端。',
+          success: false,
         }));
         return;
       }
-      await this.replaceControlCard(event, buildTerminalScreenSelectCard(list.terminals));
+      await this.replaceControlCard(event, buildTerminalScreenSelectCard(
+        list.terminals,
+        flow === 'project-terminal-control' ? 'project' : 'ordinary',
+      ));
       return;
     }
     if (flow === 'close-terminal') {

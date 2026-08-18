@@ -1183,6 +1183,21 @@ interface RemoteTaskTerminalLocation {
   surface: SurfaceRef;
 }
 
+type RemoteProjectTerminalRole = 'project-ai' | 'supervisor-ai' | 'task-ai';
+
+interface RemoteProjectTerminalLocation extends RemoteTaskTerminalLocation {
+  role: RemoteProjectTerminalRole;
+  projectId: string;
+  projectName: string;
+  workItemId?: string;
+  workItemTitle?: string;
+}
+
+interface RemoteOrdinaryMonitoringTerminal extends RemoteTaskTerminalLocation {
+  role: 'supervisor-ai' | 'task-ai';
+  lane?: SupervisorLane;
+}
+
 type RemoteTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
 
 interface RemoteTerminalTaskResult {
@@ -1366,6 +1381,94 @@ function locateRemoteTaskSession(
   return terminal
     ? { terminal }
     : { error: '目标任务终端不存在、已关闭或属于项目管理模式。' };
+}
+
+/** Project runtimes are deliberately absent from ordinary terminal controls. */
+function remoteProjectTerminalList(): RemoteProjectTerminalLocation[] {
+  const store = useStore.getState();
+  const terminals: RemoteProjectTerminalLocation[] = [];
+  for (const workspace of store.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      for (const surface of findLeaf(workspace.splitTree, paneId)?.surfaces || []) {
+        if (surface.type !== 'terminal') continue;
+        const role: RemoteProjectTerminalRole | undefined = surface.projectManagerTerminal
+          ? 'project-ai'
+          : surface.projectSupervisorProjectId
+            ? 'supervisor-ai'
+            : surface.projectManagerProjectId
+              ? 'task-ai'
+              : undefined;
+        const projectId = role === 'supervisor-ai'
+          ? surface.projectSupervisorProjectId
+          : surface.projectManagerProjectId;
+        if (!role || !projectId) continue;
+        const project = store.projectManagers.find((candidate) => candidate.id === projectId);
+        const lane = store.supervisor.lanes.find((candidate) => (
+          candidate.projectManagerProjectId === projectId
+          && (candidate.surfaceId === surface.id || candidate.supervisorSurfaceId === surface.id)
+        ));
+        const workItemId = surface.projectManagerWorkItemId || lane?.projectWorkItemId;
+        const workItem = project?.workItems.find((candidate) => candidate.id === workItemId);
+        terminals.push({
+          ...remoteTaskTerminalLocation(surface, paneId, workspace),
+          role,
+          projectId,
+          projectName: project ? projectDisplayName(project) : projectId,
+          workItemId,
+          workItemTitle: workItem?.title || lane?.label,
+        });
+      }
+    }
+  }
+  return terminals;
+}
+
+function remoteSurfaceTerminalLocation(surfaceId: string): RemoteTaskTerminalLocation | undefined {
+  const store = useStore.getState();
+  for (const workspace of store.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      const surface = findLeaf(workspace.splitTree, paneId)?.surfaces.find((candidate) => (
+        candidate.id === surfaceId && candidate.type === 'terminal'
+      ));
+      if (surface) return remoteTaskTerminalLocation(surface, paneId, workspace);
+    }
+  }
+  return undefined;
+}
+
+/** The ordinary-mode monitor includes both worker Agents and their dedicated supervisors. */
+function remoteOrdinaryMonitoringTerminalList(): RemoteOrdinaryMonitoringTerminal[] {
+  const state = useStore.getState().supervisor;
+  const ordinaryLanes = state.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
+  const laneByTaskSurface = new Map(ordinaryLanes.map((lane) => [lane.surfaceId, lane]));
+  const taskTerminals: RemoteOrdinaryMonitoringTerminal[] = remoteTerminalList()
+    .filter((terminal) => (
+      !terminal.surface.projectManagerProjectId
+      && !terminal.surface.projectManagerWorkItemId
+    ))
+    .map((terminal) => ({
+      ...terminal,
+      role: 'task-ai',
+      lane: laneByTaskSurface.get(terminal.surfaceId),
+    }));
+  const supervisorTerminals = ordinaryLanes.flatMap((lane): RemoteOrdinaryMonitoringTerminal[] => {
+    const surfaceId = dedicatedSupervisorSurfaceId(lane);
+    if (!surfaceId) return [];
+    const terminal = remoteSurfaceTerminalLocation(surfaceId);
+    return terminal ? [{ ...terminal, role: 'supervisor-ai', lane }] : [];
+  });
+  return [...taskTerminals, ...supervisorTerminals];
+}
+
+function locateRemoteProjectTerminal(surfaceId: string): {
+  terminal?: RemoteProjectTerminalLocation;
+  error?: string;
+} {
+  if (!surfaceId) return { error: '缺少项目模式终端 ID。' };
+  const terminal = remoteProjectTerminalList().find((candidate) => candidate.surfaceId === surfaceId);
+  return terminal
+    ? { terminal }
+    : { error: '目标不属于项目 AI 模式、已经关闭或已被新运行时替代；请刷新终端列表。' };
 }
 
 function currentUserRecordsTerminal(): RemoteTaskTerminalLocation | undefined {
@@ -7251,6 +7354,67 @@ export function initPipeBridge(): void {
         }),
       };
     }
+    if (action === 'terminal-list') {
+      if (!['ordinary', 'project'].includes(String(params?.mode))) {
+        return { ok: false, error: '终端列表模式无效。' };
+      }
+      const projectMode = params.mode === 'project';
+      const terminals = projectMode
+        ? remoteProjectTerminalList().map((terminal) => {
+            const runtime = terminalRuntimeStatus(terminal.surfaceId);
+            const activity = remoteTerminalActivity(terminal.surfaceId);
+            return {
+              surfaceId: terminal.surfaceId,
+              label: terminal.label,
+              workspaceId: terminal.workspaceId,
+              workspace: terminal.workspaceTitle,
+              cwd: terminal.cwd,
+              supervised: terminal.role !== 'project-ai',
+              supervisionState: 'none',
+              ...activity,
+              terminalMode: 'project',
+              agentRole: terminal.role,
+              projectId: terminal.projectId,
+              projectName: terminal.projectName,
+              workItemId: terminal.workItemId,
+              workItemTitle: terminal.workItemTitle,
+              runtimeState: runtime?.state,
+              runtimeDetail: runtime?.detail,
+            };
+          })
+        : remoteOrdinaryMonitoringTerminalList().map((terminal) => {
+            const runtime = terminalRuntimeStatus(terminal.surfaceId);
+            const activity = remoteTerminalActivity(terminal.surfaceId);
+            const laneState = terminal.lane ? supervisorLaneControlState(terminal.lane) : 'none';
+            const publicLaneState = laneState === 'waiting' ? 'active' : laneState;
+            return {
+              surfaceId: terminal.surfaceId,
+              label: terminal.role === 'supervisor-ai' ? terminal.lane?.label || terminal.label : terminal.label,
+              workspaceId: terminal.workspaceId,
+              workspace: terminal.workspaceTitle,
+              cwd: terminal.cwd,
+              supervised: !!terminal.lane && publicLaneState !== 'stopped',
+              restartable: publicLaneState === 'stopped',
+              supervisionState: publicLaneState,
+              managementSessionId: terminal.lane?.managementSessionId || null,
+              ...activity,
+              terminalMode: 'ordinary',
+              agentRole: terminal.role,
+              runtimeState: runtime?.state,
+              runtimeDetail: runtime?.detail,
+            };
+          });
+      return {
+        ok: true,
+        message: JSON.stringify({
+          active: false,
+          paused: false,
+          terminals,
+          session: null,
+          pendingApprovals: [],
+        }),
+      };
+    }
     if (action === 'logs') {
       const state = useStore.getState().supervisor;
       const ordinaryLanes = state.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
@@ -7276,6 +7440,78 @@ export function initPipeBridge(): void {
     }
     if (action === 'terminal-screen') {
       const terminalId = String(params?.terminal || '');
+      if (params?.mode === 'project') {
+        const located = locateRemoteProjectTerminal(terminalId);
+        const terminal = located.terminal;
+        if (!terminal) return { ok: false, error: located.error };
+        const requestedLines = Number(params?.lines);
+        const lines = Number.isFinite(requestedLines)
+          ? Math.min(Math.max(Math.floor(requestedLines), 1), 100)
+          : 40;
+        const screen = readTerminalScreen(terminal.surfaceId, lines);
+        if (screen.error) return { ok: false, error: screen.error };
+        const activity = remoteTerminalActivity(terminal.surfaceId);
+        const conversation = terminalSupervisorCoreExcerpt(screen.text || '', terminal.label, activity.activityState);
+        const runtime = terminalRuntimeStatus(terminal.surfaceId);
+        return {
+          ok: true,
+          terminal: {
+            surfaceId: terminal.surfaceId,
+            label: terminal.label,
+            workspace: terminal.workspaceTitle,
+            cwd: terminal.cwd,
+            terminalMode: 'project',
+            agentRole: terminal.role,
+            projectId: terminal.projectId,
+            projectName: terminal.projectName,
+            workItemId: terminal.workItemId,
+            workItemTitle: terminal.workItemTitle,
+            runtimeState: runtime?.state,
+            runtimeDetail: runtime?.detail,
+            ...activity,
+          },
+          ...conversation,
+          lines: screen.lines || 0,
+          capturedAt: Date.now(),
+        };
+      }
+      if (params?.mode === 'ordinary') {
+        const terminal = remoteOrdinaryMonitoringTerminalList()
+          .find((candidate) => candidate.surfaceId === terminalId);
+        if (!terminal) {
+          return { ok: false, error: '目标不属于普通监督模式、已经关闭或已被新运行时替代；请刷新终端列表。' };
+        }
+        const requestedLines = Number(params?.lines);
+        const lines = Number.isFinite(requestedLines)
+          ? Math.min(Math.max(Math.floor(requestedLines), 1), 100)
+          : 40;
+        const screen = readTerminalScreen(terminal.surfaceId, lines);
+        if (screen.error) return { ok: false, error: screen.error };
+        const activity = remoteTerminalActivity(terminal.surfaceId);
+        const label = terminal.role === 'supervisor-ai' ? terminal.lane?.label || terminal.label : terminal.label;
+        const conversation = terminalSupervisorCoreExcerpt(screen.text || '', label, activity.activityState);
+        const runtime = terminalRuntimeStatus(terminal.surfaceId);
+        return {
+          ok: true,
+          terminal: {
+            surfaceId: terminal.role === 'supervisor-ai' ? terminal.lane?.surfaceId || terminal.surfaceId : terminal.surfaceId,
+            label,
+            workspace: terminal.workspaceTitle,
+            cwd: terminal.cwd,
+            terminalMode: 'ordinary',
+            agentRole: terminal.role,
+            runtimeState: runtime?.state,
+            runtimeDetail: runtime?.detail,
+            ...activity,
+          },
+          ...conversation,
+          lines: screen.lines || 0,
+          capturedAt: Date.now(),
+        };
+      }
+      if (params?.mode !== undefined) {
+        return { ok: false, error: '终端读取模式无效。' };
+      }
       const located = locateRemoteTaskTerminal(terminalId);
       const terminal = located.terminal;
       if (!terminal) {

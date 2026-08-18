@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, projectManagerViewFromStatusResult, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildProjectTerminalScreenCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, projectManagerViewFromStatusResult, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 import { USER_RECORDS_TERMINAL_DIRECTORY } from '../../src/shared/user-records-terminal';
 
@@ -587,7 +587,10 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('添加终端任务');
     expect(menu).toContain('创建特别终端');
     expect(menu).toContain('启动监督');
-    expect(menu).toContain('终端控制');
+    expect(menu).toContain('普通监督终端');
+    expect(menu).toContain('ordinary-terminal-control');
+    expect(menu).toContain('项目 AI 模式终端');
+    expect(menu).toContain('project-terminal-control');
     expect(menu).toContain('关闭终端');
     expect(menu).toContain('**项目中心**');
     expect(menu).toContain('进入项目中心');
@@ -605,7 +608,7 @@ supervisor_model: k3`)).toEqual({
     expect(projectManager).not.toContain('task_name');
     expect(JSON.stringify(buildSupervisorControlMenuCard({
       active: false, paused: false, totalTerminals: 1, availableTerminals: 1, supervisedTerminals: 0, pendingApprovals: 0,
-    }, undefined, false))).not.toContain('终端控制');
+    }, undefined, false))).not.toContain('普通监督终端');
     expect(activeMenu).toContain('管理监督');
     expect(activeMenu).toContain('发送监督信息');
     expect(pausedMenu).not.toContain('发送监督信息');
@@ -804,6 +807,24 @@ supervisor_model: k3`)).toEqual({
       activityState: 'working' as const, activityUpdatedAt: Date.now(),
     };
     const selectCard = JSON.stringify(buildTerminalScreenSelectCard([terminal]));
+    const projectTerminal = {
+      ...terminal,
+      terminalMode: 'project' as const,
+      agentRole: 'supervisor-ai' as const,
+      projectId: 'pm-a',
+      projectName: '认证项目',
+      workItemId: 'auth-tests',
+      workItemTitle: '认证回归测试',
+      runtimeState: 'ready' as const,
+    };
+    const projectSelectCard = JSON.stringify(buildTerminalScreenSelectCard([projectTerminal], 'project'));
+    const projectScreenCard = JSON.stringify(buildProjectTerminalScreenCard({
+      terminal: projectTerminal,
+      text: '项目监督原始输出',
+      answer: '正在核对任务 AI 的测试证据。',
+      lines: 20,
+      capturedAt: Date.now(),
+    }));
     const screenCardObject = buildTerminalScreenCard({
       terminal,
       text: 'PS E:\\repo> npm test\nTests 1 failed',
@@ -862,11 +883,22 @@ supervisor_model: k3`)).toEqual({
     const taskInput = form.elements.find((element: any) => element.name === 'task');
     const clearedTaskInput = clearedForm.elements.find((element: any) => element.name === 'task');
 
-    expect(selectCard).toContain('终端控制');
+    expect(selectCard).toContain('普通监督终端');
     expect(selectCard).toContain('select_static');
     expect(selectCard).toContain('wmux_form_terminal_control');
     expect(selectCard).toContain('surf-a');
     expect(selectCard).toContain('只允许白名单用户在单聊中使用');
+    expect(projectSelectCard).toContain('项目 AI 模式终端');
+    expect(projectSelectCard).toContain('认证项目 · 专属监督 AI · 认证回归测试');
+    expect(projectSelectCard).toContain('"terminal_mode":"project"');
+    expect(projectScreenCard).toContain('认证项目 · 专属监督 AI · 认证回归测试');
+    expect(projectScreenCard).toContain('正在核对任务 AI 的测试证据。');
+    expect(projectScreenCard).toContain('此页只读监控');
+    expect(projectScreenCard).toContain('form_project_terminal_refresh');
+    expect(projectScreenCard).toContain('打开项目工作台');
+    expect(projectScreenCard).toContain('project_ai_workspace');
+    expect(projectScreenCard).not.toContain('发送内容');
+    expect(projectScreenCard).not.toContain('发送 Ctrl+C');
     expect(screenCard).toContain('Agent 回复');
     expect(screenCard).toContain('路径：E:\\\\…\\\\常用工具环境部署\\\\codex环境部署');
     expect(screenCard).not.toContain('sync_file\\\\work\\\\ai相关');
@@ -903,6 +935,13 @@ supervisor_model: k3`)).toEqual({
       lines: 1,
       capturedAt: Date.now(),
     }, '先检查测试结果'));
+    const ordinarySupervisorScreenCard = JSON.stringify(buildSupervisorTerminalScreenCard({
+      terminal,
+      text: '普通监督入口的专属监督输出',
+      answer: '继续监督普通任务 AI。',
+      lines: 1,
+      capturedAt: Date.now(),
+    }, '', '', false, 'ordinary'));
     expect(supervisorScreenCard).toContain('AI 监督终端（管家）');
     expect(supervisorScreenCard).toContain('AI监督终端（管家） · 负责：Codex worker');
     expect(supervisorScreenCard).not.toContain('正在核对任务终端的最新证据');
@@ -911,6 +950,8 @@ supervisor_model: k3`)).toEqual({
     expect(supervisorScreenCard).toContain('form_supervisor_refresh');
     expect(supervisorScreenCard).toContain('form_supervisor_send');
     expect(supervisorScreenCard).toContain('选择其他监督终端');
+    expect(ordinarySupervisorScreenCard).toContain('ordinary-terminal-control');
+    expect(ordinarySupervisorScreenCard).toContain('"terminal_mode":"ordinary"');
     expect(collapsedConversationCard).toContain('展开完整回复');
     expect(collapsedConversationCard).not.toContain('仅展开时可见');
     expect(expandedConversationCard).toContain('仅展开时可见');

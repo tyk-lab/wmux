@@ -1697,23 +1697,24 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-screen', content: '帮助', chatType: 'p2p',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).toContain('终端控制');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('普通监督终端');
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('项目 AI 模式终端');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'terminal-control', nonce: 'open-screen' }) }, raw: {},
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'ordinary-terminal-control', nonce: 'open-screen' }) }, raw: {},
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('wmux_form_terminal_control');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { name: 'wmux_form_terminal_control', value: currentControlValue({ wmux_action: 'form_terminal_control', nonce: 'submit-screen' }) },
+      action: { name: 'wmux_form_terminal_control', value: currentControlValue({ wmux_action: 'form_terminal_control', terminal_mode: 'ordinary', nonce: 'submit-screen' }) },
       raw: { action: { form_value: { terminal: 'surf-screen' } } },
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
     expect(control).toHaveBeenCalledWith(
-      { action: 'terminal-screen', terminal: 'surf-screen', lines: 100 },
+      { action: 'terminal-screen', terminal: 'surf-screen', lines: 100, mode: 'ordinary' },
       { openId: 'ou-allowed', source: 'card' },
     );
     expect(JSON.stringify(updateCard.mock.calls[1][1])).not.toContain('你的提问');
@@ -1807,6 +1808,175 @@ describe('飞书人工决策单聊路由', () => {
     expect(control.mock.calls.filter(([command]) => command.action === 'send')).toHaveLength(1);
   });
 
+  it('从普通入口打开专属监督后刷新仍保留统一终端入口', async () => {
+    const listMessage = JSON.stringify({
+      active: true,
+      paused: false,
+      terminals: [{
+        surfaceId: 'ordinary-supervisor-a', label: '普通任务', workspace: 'AI 监督', supervised: true,
+        supervisionState: 'active', terminalMode: 'ordinary', agentRole: 'supervisor-ai', activityState: 'idle',
+      }],
+      session: null,
+      pendingApprovals: [],
+    });
+    let screenVersion = 0;
+    const control = vi.fn(async (command: { action: string; terminal?: string; mode?: string }) => {
+      if (command.action === 'terminal-list') return { ok: true, message: listMessage };
+      if (command.action === 'terminal-screen' && command.mode === 'ordinary') {
+        screenVersion += 1;
+        return {
+          ok: true,
+          terminal: {
+            surfaceId: 'ordinary-worker-a', label: '普通任务', workspace: 'AI 监督',
+            terminalMode: 'ordinary', agentRole: 'supervisor-ai', activityState: 'idle',
+          },
+          text: '', answer: `普通监督输出-${screenVersion}`, lines: 20, capturedAt: Date.now(),
+        };
+      }
+      if (command.action === 'supervisor-screen') {
+        screenVersion += 1;
+        return {
+          ok: true,
+          terminal: { surfaceId: 'ordinary-worker-a', label: '普通任务', workspace: 'AI 监督', activityState: 'idle' },
+          text: '', answer: `普通监督输出-${screenVersion}`, lines: 20, capturedAt: Date.now(),
+        };
+      }
+      return { ok: false, error: '未预期的命令' };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-ordinary-supervisor', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'ordinary-terminal-control', nonce: 'open-ordinary-supervisor' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_control', value: currentControlValue({ wmux_action: 'form_terminal_control', terminal_mode: 'ordinary', nonce: 'show-ordinary-supervisor' }) },
+      raw: { action: { form_value: { terminal: 'ordinary-supervisor-a' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    const firstScreenCard = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(firstScreenCard).toContain('普通监督输出-1');
+    expect(firstScreenCard).toContain('ordinary-terminal-control');
+    expect(firstScreenCard).toContain('"terminal_mode":"ordinary"');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_supervisor_refresh', value: currentControlValue({ wmux_action: 'form_supervisor_refresh', terminal: 'ordinary-worker-a', terminal_mode: 'ordinary', nonce: 'refresh-ordinary-supervisor' }) },
+      raw: { action: { form_value: {} } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'supervisor-screen', terminal: 'ordinary-worker-a', lines: 100 },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+    const refreshedCard = JSON.stringify(updateCard.mock.calls[2][1]);
+    expect(refreshedCard).toContain('普通监督输出-2');
+    expect(refreshedCard).toContain('ordinary-terminal-control');
+    expect(refreshedCard).toContain('"terminal_mode":"ordinary"');
+  });
+
+  it('从独立入口只读监控项目 AI、专属监督和任务 AI 终端', async () => {
+    const ordinaryList = JSON.stringify({
+      active: false, paused: false, terminals: [], session: null, pendingApprovals: [],
+    });
+    const projectList = JSON.stringify({
+      active: false,
+      paused: false,
+      terminals: [{
+        surfaceId: 'project-supervisor-a',
+        label: 'AI 监督 · 认证回归',
+        workspace: '项目执行空间',
+        cwd: 'E:\\repo',
+        supervised: true,
+        terminalMode: 'project',
+        agentRole: 'supervisor-ai',
+        projectId: 'pm-a',
+        projectName: '认证项目',
+        workItemId: 'auth-tests',
+        workItemTitle: '认证回归测试',
+        runtimeState: 'ready',
+        activityState: 'idle',
+        activityUpdatedAt: 1,
+      }],
+      session: null,
+      pendingApprovals: [],
+    });
+    let screenVersion = 0;
+    const control = vi.fn(async (command: { action: string; mode?: string; terminal?: string; lines?: number }) => {
+      if (command.action === 'terminal-list') return { ok: true, message: projectList };
+      if (command.action === 'terminal-screen' && command.mode === 'project') {
+        screenVersion += 1;
+        return {
+          ok: true,
+          terminal: {
+            surfaceId: 'project-supervisor-a', label: 'AI 监督 · 认证回归', workspace: '项目执行空间', cwd: 'E:\\repo',
+            terminalMode: 'project', agentRole: 'supervisor-ai', projectId: 'pm-a', projectName: '认证项目',
+            workItemId: 'auth-tests', workItemTitle: '认证回归测试', runtimeState: 'ready',
+            activityState: 'idle', activityUpdatedAt: 1,
+          },
+          text: `raw-${screenVersion}`,
+          answer: `项目监督状态-${screenVersion}`,
+          lines: 20,
+          capturedAt: Date.now(),
+        };
+      }
+      return { ok: true, message: ordinaryList };
+    });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-project-terminal', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'project-terminal-control', nonce: 'open-project-terminals' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'terminal-list', mode: 'project' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+    const selectCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(selectCard).toContain('认证项目 · 专属监督 AI · 认证回归测试');
+    expect(selectCard).toContain('"terminal_mode":"project"');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_terminal_control', value: currentControlValue({ wmux_action: 'form_terminal_control', terminal_mode: 'project', nonce: 'show-project-terminal' }) },
+      raw: { action: { form_value: { terminal: 'project-supervisor-a' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'terminal-screen', terminal: 'project-supervisor-a', lines: 100, mode: 'project' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+    const monitorCard = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(monitorCard).toContain('项目监督状态-1');
+    expect(monitorCard).toContain('此页只读监控');
+    expect(monitorCard).toContain('form_project_terminal_refresh');
+    expect(monitorCard).toContain('打开项目工作台');
+    expect(monitorCard).not.toContain('发送内容');
+    expect(monitorCard).not.toContain('form_terminal_interrupt');
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_project_terminal_refresh', value: currentControlValue({ wmux_action: 'form_project_terminal_refresh', terminal: 'project-supervisor-a', terminal_mode: 'project', nonce: 'refresh-project-terminal' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('项目监督状态-2');
+    expect(control.mock.calls.some(([command]) => ['send', 'terminal-escape', 'terminal-interrupt'].includes(command.action))).toBe(false);
+  });
+
   it('未知会话中的旧版控制卡不执行操作且只提示重新打开', async () => {
     const control = vi.fn(async () => ({
       ok: true,
@@ -1894,7 +2064,8 @@ describe('飞书人工决策单聊路由', () => {
       chatId: 'oc-control', senderId: 'ou-allowed', messageId: 'om-group-screen', content: '帮助', chatType: 'group',
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(send.mock.calls[0][1])).not.toContain('终端控制');
+    expect(JSON.stringify(send.mock.calls[0][1])).not.toContain('普通监督终端');
+    expect(JSON.stringify(send.mock.calls[0][1])).not.toContain('项目 AI 模式终端');
 
     handlers.cardAction({
       chatId: 'oc-control', messageId: 'om-1', operator: { openId: 'ou-allowed' },
