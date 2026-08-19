@@ -6205,7 +6205,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           store.applyProjectManagerAction({
             type: 'update-work-item',
             workItemId: item.id,
-            patch: { status: 'running', latestBlocker: undefined },
+            // A higher-level Project AI decision starts a new continuous-time
+            // window. Keep decision/retry counters intact so resume cannot
+            // bypass the stage's finite autonomy budget.
+            patch: { status: 'running', latestBlocker: undefined, startedAt: Date.now() },
           }, session.id);
           store.appendProjectManagerEvent({
             kind: 'supervisor-direction',

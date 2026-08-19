@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureProjectManagerSkill } from '../../src/main/project-manager-skill';
 
 const temporaryDirectories: string[] = [];
@@ -56,6 +56,57 @@ describe('project manager bundled skill', () => {
     expect(result).toMatchObject({ ok: true, created: true });
     expect(result.runtimeDir).toBe(path.join(root, 'app-data', 'project-manager', 'runtime'));
     expect(fs.existsSync(result.skillPath)).toBe(true);
+  });
+
+  it('updates the application-owned portable skill when bundled instructions change', () => {
+    const root = temporaryDirectory();
+    const runtime = createBundledSkill(root, false);
+    const appDataDir = path.join(root, 'app-data');
+    const first = ensureProjectManagerSkill({
+      ...runtime,
+      isPackaged: false,
+      appDataDir,
+    });
+    const sourceDir = path.join(runtime.appPath, 'resources', 'skills', 'manage-project');
+    fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), 'updated stage budget: 12/90/3\n', 'utf8');
+    fs.writeFileSync(path.join(sourceDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "Updated"\n', 'utf8');
+
+    const updated = ensureProjectManagerSkill({
+      ...runtime,
+      isPackaged: false,
+      appDataDir,
+    });
+
+    expect(first).toMatchObject({ ok: true, created: true });
+    expect(updated).toMatchObject({ ok: true, created: false, updated: true });
+    expect(fs.readFileSync(updated.skillPath, 'utf8')).toContain('12/90/3');
+    expect(fs.readFileSync(path.join(path.dirname(updated.skillPath), 'agents', 'openai.yaml'), 'utf8'))
+      .toContain('Updated');
+  });
+
+  it('reports an application-owned skill update failure instead of accepting stale instructions', () => {
+    const root = temporaryDirectory();
+    const runtime = createBundledSkill(root, false);
+    const appDataDir = path.join(root, 'app-data');
+    const first = ensureProjectManagerSkill({ ...runtime, isPackaged: false, appDataDir });
+    fs.writeFileSync(
+      path.join(runtime.appPath, 'resources', 'skills', 'manage-project', 'SKILL.md'),
+      'new bundled instructions\n',
+      'utf8',
+    );
+    const copy = vi.spyOn(fs, 'cpSync').mockImplementationOnce(() => {
+      throw new Error('simulated update denial');
+    });
+
+    try {
+      const result = ensureProjectManagerSkill({ ...runtime, isPackaged: false, appDataDir });
+      expect(first.ok).toBe(true);
+      expect(result).toMatchObject({ ok: false, created: false });
+      expect(result.error).toContain('无法更新 manage-project 技能');
+      expect(fs.readFileSync(result.skillPath, 'utf8')).not.toContain('new bundled instructions');
+    } finally {
+      copy.mockRestore();
+    }
   });
 
   it('preserves an existing project skill', () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { DEFAULT_PROJECT_EXECUTION_BUDGET } from '../../src/shared/project-manager';
 
 /**
  * Guards against runtime-referenced files missing from the packaged app.
@@ -29,6 +30,16 @@ describe('electron-builder packaging', () => {
       __dirname,
       '../../resources/skills/manage-project/SKILL.md',
     ))).toBe(true);
+  });
+
+  it('keeps the project skill example aligned with the runtime stage budget defaults', () => {
+    const skill = fs.readFileSync(path.join(
+      __dirname,
+      '../../resources/skills/manage-project/SKILL.md',
+    ), 'utf8');
+    const budgetBlock = skill.match(/"budget":\s*(\{[^}]+\})/u)?.[1];
+    expect(budgetBlock).toBeTruthy();
+    expect(JSON.parse(budgetBlock || '{}')).toEqual(DEFAULT_PROJECT_EXECUTION_BUDGET);
   });
 
   it('keeps dedicated supervisor instructions as an application prompt, not an agent skill', () => {

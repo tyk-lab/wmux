@@ -97,11 +97,11 @@ Example work item:
     "stopWhen": ["认证用例通过", "没有越界修改"],
     "validation": ["npm test -- auth", "检查相关 diff"],
     "budget": {
-      "maxDecisions": 6,
-      "maxContinuousMinutes": 30,
+      "maxDecisions": 12,
+      "maxContinuousMinutes": 90,
       "maxIdenticalFailures": 2,
       "maxNoProgressRounds": 2,
-      "maxTaskRetries": 2,
+      "maxTaskRetries": 3,
       "maxSameTestRuns": 2,
       "maxFullSuiteRunsPerVersion": 1
     }

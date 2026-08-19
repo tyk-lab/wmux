@@ -760,6 +760,9 @@ supervisor_model: k3`)).toEqual({
     const workItems = Array.from({ length: 8 }, (_, index) => ({
       title: `工作项 ${index + 1}`,
       status: 'running',
+      decisionsUsed: index,
+      attempts: index === 7 ? 2 : 0,
+      contract: { budget: { maxDecisions: 12, maxContinuousMinutes: 90, maxTaskRetries: 3 } },
       latestEvidence: index === 7 ? `最新证据 ${'证'.repeat(500)} 证据末尾` : `证据 ${index + 1}`,
     }));
     const events = Array.from({ length: 8 }, (_, index) => ({
@@ -773,6 +776,7 @@ supervisor_model: k3`)).toEqual({
     expect(collapsedDecisions).toContain('当前显示最近 3/6 项');
     expect(collapsedDecisions).toContain('展开近期工作项（6）');
     expect(collapsedDecisions).toContain('工作项 8');
+    expect(collapsedDecisions).toContain('阶段预算：裁决 7/12 · 连续窗口 90 分钟 · 任务重试 2/3');
     expect(collapsedDecisions).not.toContain('工作项 5');
 
     const expandedDecisions = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'decisions-expanded'));

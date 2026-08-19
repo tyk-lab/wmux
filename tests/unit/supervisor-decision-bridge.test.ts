@@ -4331,6 +4331,13 @@ describe('supervisor decision bridge', () => {
         },
       },
     ]);
+    const previousContinuousWindowStartedAt = Date.now() - 91 * 60_000;
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'decision_task',
+      patch: { startedAt: previousContinuousWindowStartedAt },
+    }, projectId);
+    const budgetUsageBeforeResume = useStore.getState().projectManagers.find((project) => project.id === projectId)
+      ?.workItems.find((item) => item.id === 'decision_task');
     const reopened = await request({
       action: 'task-update', callerSurfaceId: session.managerSurfaceId, projectId,
       workItemId: 'decision_task', patch: {
@@ -4348,6 +4355,15 @@ describe('supervisor decision bridge', () => {
     });
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
       .toMatchObject({ controlState: 'active', stopConfirmed: false, projectTaskContractPending: true });
+    expect(useStore.getState().projectManagers.find((project) => project.id === projectId)
+      ?.workItems.find((item) => item.id === 'decision_task')).toMatchObject({
+        startedAt: expect.any(Number),
+        decisionsUsed: budgetUsageBeforeResume?.decisionsUsed,
+        attempts: budgetUsageBeforeResume?.attempts,
+      });
+    expect(useStore.getState().projectManagers.find((project) => project.id === projectId)
+      ?.workItems.find((item) => item.id === 'decision_task')?.startedAt)
+      .toBeGreaterThan(previousContinuousWindowStartedAt);
     expect((globalThis.window as any).wmux.pty.stageInputFile)
       .toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[项目 AI 续接阶段目标'));
   });
