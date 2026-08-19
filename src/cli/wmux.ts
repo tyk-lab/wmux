@@ -282,6 +282,18 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.task.supervise', { workItemId, projectId }));
     return;
   }
+  if (sub === 'orientation-confirm') {
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.orientation.confirm', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
   if (sub === 'progress-sync') {
     print(await sendV2('project.progress.sync', {
       projectId,
@@ -417,7 +429,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1109,8 +1121,8 @@ Supervisor:  supervisor context
                           [--evidence <text> --context-summary <text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)

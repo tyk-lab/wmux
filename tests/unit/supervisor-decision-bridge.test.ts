@@ -38,6 +38,35 @@ import {
   PROJECT_MANAGER_WORKSPACE_TITLE,
 } from '../../src/renderer/supervisor/protocol';
 
+async function confirmProjectOrientation(projectId: string): Promise<void> {
+  const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
+  const request = (globalThis.window as any).__wmux_projectManagerRequest;
+  const activeGoalId = session?.activeGoalId;
+  const workItems = (session?.workItems || []).filter((item) => item.status !== 'stopped').map((item) => ({
+    workItemId: item.id,
+    disposition: item.status === 'completed'
+      ? 'retain-completed'
+      : item.goalId === activeGoalId
+        && item.requirementsVersion === session?.requirementsVersion
+        && item.authorizationVersion === session?.authorizationVersion
+        ? 'verify'
+        : 'pause',
+    basis: item.status === 'completed' ? '已有完成证据需要保留' : '按当前目标和目录重新核对任务',
+    nextAction: item.status === 'completed' ? '作为后续规划证据' : '建立当前任务基线后继续或暂缓',
+  }));
+  await expect(request({
+    action: 'orientation-confirm', callerSurfaceId: session?.managerSurfaceId, projectId,
+    requirementsVersion: session?.orientation?.requirementsVersion,
+    authorizationVersion: session?.orientation?.authorizationVersion,
+    snapshotFingerprint: session?.orientation?.snapshotFingerprint,
+    requestedAt: session?.orientation?.requestedAt,
+    summary: '已核对当前测试目标、目录快照和全部工作项状态',
+    knownFacts: ['当前目录快照与测试状态已经读取'],
+    unknowns: [],
+    workItems,
+  })).resolves.toMatchObject({ ok: true, orientation: { status: 'ready' } });
+}
+
 function lane(): SupervisorLane {
   return {
     id: 'lane-a',
@@ -68,6 +97,7 @@ async function confirmAndResumeProject(projectId: string): Promise<void> {
     acceptanceSummary: (session?.doneWhen || []).join('；') || '按项目完成条件验收',
     reason: '测试场景已明确目标、目录边界和可验证完成标准',
   })).resolves.toMatchObject({ ok: true });
+  await confirmProjectOrientation(projectId);
   await expect(request({
     action: 'goal-plan', callerSurfaceId: session?.managerSurfaceId, projectId,
     reason: '测试阶段计划',
@@ -118,6 +148,13 @@ function bindProjectLaneToWorkItem(options: {
     progressSync: {
       status: 'ready', checkedAt: 1, snapshotFingerprint: 'test-progress',
       summary: '测试项目现状已同步', changeCount: 0,
+    },
+    orientation: {
+      status: 'ready', requirementsVersion: 1, authorizationVersion: 1,
+      snapshotFingerprint: 'test-progress', reason: '测试项目认知已确认',
+      requestedAt: 1, summary: '测试项目状态已知', knownFacts: ['测试事实'], unknowns: [],
+      workItems: [{ workItemId, disposition: 'continue', basis: '当前测试工作项', nextAction: '继续测试' }],
+      acknowledgedAt: 1,
     },
     status: 'active',
     workItems: [{
@@ -724,9 +761,58 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.progressSync).toMatchObject({
       status: 'ready', acknowledgement: expect.stringContaining('可复用实现'),
     });
+    expect(useStore.getState().projectManager?.orientation).toMatchObject({
+      status: 'required', snapshotFingerprint: 'external-progress-2',
+    });
+    const requiredOrientation = useStore.getState().projectManager!.orientation!;
+    await expect(request({
+      action: 'task-supervise', callerSurfaceId: managerSurfaceId,
+      projectId: project.id, workItemId: 'task-a',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('认知基线') });
+    await expect(request({
+      action: 'orientation-confirm', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      requirementsVersion: requiredOrientation.requirementsVersion,
+      authorizationVersion: requiredOrientation.authorizationVersion,
+      snapshotFingerprint: requiredOrientation.snapshotFingerprint,
+      requestedAt: requiredOrientation.requestedAt - 1,
+      summary: '旧认知请求不应生效', knownFacts: ['旧状态'], unknowns: [],
+      workItems: [{ workItemId: 'task-a', disposition: 'verify', basis: '旧状态', nextAction: '不执行' }],
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('认知请求版本已变化') });
+    await expect(request({
+      action: 'orientation-confirm', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      requirementsVersion: requiredOrientation.requirementsVersion,
+      authorizationVersion: requiredOrientation.authorizationVersion,
+      snapshotFingerprint: requiredOrientation.snapshotFingerprint,
+      requestedAt: requiredOrientation.requestedAt,
+      summary: '已审查外部进度', knownFacts: ['外部路径发生变化'], unknowns: [], workItems: [],
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('未覆盖工作项') });
+    await expect(request({
+      action: 'orientation-confirm', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      requirementsVersion: requiredOrientation.requirementsVersion,
+      authorizationVersion: requiredOrientation.authorizationVersion,
+      snapshotFingerprint: requiredOrientation.snapshotFingerprint,
+      requestedAt: requiredOrientation.requestedAt,
+      summary: '已把外部进度纳入当前任务安排',
+      knownFacts: ['当前快照包含外部实现和测试变更'],
+      unknowns: ['变化语义仍由新任务基线复核'],
+      workItems: [{
+        workItemId: 'task-a', disposition: 'verify',
+        basis: '目录在中断期间发生变化，不能沿用旧基线', nextAction: '建立新任务基线后继续',
+      }],
+    })).resolves.toMatchObject({ ok: true, orientation: { status: 'ready' } });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      status: 'planned', baseline: { status: 'required' },
+    });
+    await expect(request({
+      action: 'orientation-confirm', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      summary: '重复确认不应改写工作项', knownFacts: ['重复调用'], unknowns: [],
+      workItems: [{ workItemId: 'task-a', disposition: 'stop', basis: '不应生效', nextAction: '不应停止' }],
+    })).resolves.toMatchObject({ ok: true, orientation: { status: 'ready' } });
+    expect(useStore.getState().projectManager?.workItems[0].status).toBe('planned');
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'progress-sync-required' }),
       expect.objectContaining({ kind: 'progress-sync-acknowledged' }),
+      expect.objectContaining({ kind: 'project-orientation-confirmed' }),
     ]));
   });
 
@@ -2003,6 +2089,7 @@ describe('supervisor decision bridge', () => {
       acceptanceSummary: '相关测试通过且结果可复核',
       reason: '目标、范围和验收标准均已明确',
     })).resolves.toMatchObject({ ok: true, event: { kind: 'requirements-alignment-confirmed' } });
+    await confirmProjectOrientation(project.id);
     await expect(projectRequest({
       action: 'goal-plan', callerSurfaceId: surface?.id,
       projectId: useStore.getState().projectManager?.id,
@@ -2679,6 +2766,7 @@ describe('supervisor decision bridge', () => {
 
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
     expect(current?.status).toBe('paused');
+    expect(current?.orientation).toMatchObject({ status: 'required' });
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a')?.controlState)
       .toBe('paused');
     expect(current?.events).toEqual(expect.arrayContaining([
@@ -2688,6 +2776,11 @@ describe('supervisor decision bridge', () => {
         payload: expect.objectContaining({ changeSignal: 'prerequisite-change' }),
       }),
     ]));
+    await expect((globalThis.window as any).__wmux_projectManagerRequest({
+      action: 'alignment-confirm', callerSurfaceId: current?.managerSurfaceId, projectId: project.id,
+      goalUnderstanding: '仍按旧目标执行', scopeSummary: '仍按旧范围执行',
+      acceptanceSummary: '仍按旧条件验收', reason: '试图跳过用户变更写回',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('先执行 wmux project update') });
   });
 
   it('previews persisted projects without starting AI and restores them only after an explicit choice', async () => {
@@ -2772,6 +2865,22 @@ describe('supervisor decision bridge', () => {
       acknowledge: true,
       summary: '已核对当前工作树，保留核心实现并重新执行剩余针对性验证',
     })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'orientation-confirm',
+      callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: 'pm-recover',
+      requirementsVersion: useStore.getState().projectManager?.orientation?.requirementsVersion,
+      authorizationVersion: useStore.getState().projectManager?.orientation?.authorizationVersion,
+      snapshotFingerprint: useStore.getState().projectManager?.orientation?.snapshotFingerprint,
+      requestedAt: useStore.getState().projectManager?.orientation?.requestedAt,
+      summary: '已核对恢复记录、当前目录与待续任务，保留既有实现并重新验证',
+      knownFacts: ['核心实现已有持久证据', '旧运行时绑定已经失效'],
+      unknowns: ['当前工作树语义仍需新任务基线复核'],
+      workItems: [{
+        workItemId: 'recover_task', disposition: 'verify',
+        basis: '应用重启且目录存在新进度，不能沿用旧基线', nextAction: '由新监督建立当前工作树基线后续作',
+      }],
+    })).resolves.toMatchObject({ ok: true, orientation: { status: 'ready' } });
     const { created, lane } = await startTaskThroughDedicatedSupervisor('pm-recover', 'recover_task');
     const recoveredSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
@@ -2795,10 +2904,44 @@ describe('supervisor decision bridge', () => {
     expect(recoveryDeliveries).toContain('已完成核心实现');
     expect(lane?.surfaceId).toBe(created.surfaceId);
     expect(useStore.getState().projectManager?.workItems[0].workerSurfaceId).toBe(created.surfaceId);
+    expect(useStore.getState().projectManager?.recoveryState).toBe('checking');
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      'worker-a': agentState,
+      [created.surfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() },
+    });
+    surfaceTerminalRegistry.set(created.surfaceId, {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const decideRecovered = (globalThis.window as any).__wmux_supervisorDecide;
+    const recoveryInvestigation = await Promise.resolve(decideRecovered({
+      surfaceId: created.surfaceId,
+      supervisorSurfaceId: lane?.supervisorSurfaceId,
+      outcome: 'continue',
+      reason: '建立恢复后的当前工作树基线',
+      next: '[项目基线调查] 只读检查当前工作树、相关入口、测试约定和共享资源边界；以 [项目基线报告] 返回',
+      executionAction: 'readonly-project-baseline',
+    }));
+    expect(recoveryInvestigation, JSON.stringify(recoveryInvestigation)).toMatchObject({ ok: true });
+    await expect(Promise.resolve(decideRecovered({
+      surfaceId: created.surfaceId,
+      supervisorSurfaceId: lane?.supervisorSurfaceId,
+      outcome: 'continue',
+      reason: '审核恢复后的项目基线',
+      next: '[批准项目基线] 当前工作树与恢复证据已核对，继续剩余验证',
+      executionAction: 'approve-project-baseline',
+      workspaceVersion: 'head:recovered,status:known',
+      evidence: '已审核当前工作树、入口、测试约定、既有变更和恢复证据',
+    }))).resolves.toMatchObject({ ok: true });
     expect(useStore.getState().projectManager?.recoveryState).toBe('ready');
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'recovery-restored', summary: expect.stringContaining('建立新 AI 监督') }),
+      expect.objectContaining({ kind: 'recovery-restored', summary: expect.stringContaining('审核当前任务基线') }),
     ]));
+    surfaceTerminalRegistry.delete(created.surfaceId);
   });
 
   it('can skip persisted projects for the current run without deleting them', async () => {
@@ -3177,6 +3320,12 @@ describe('supervisor decision bridge', () => {
       preconditions: ['测试环境可用'], doneWhen: ['新目标验收通过'], reason: '用户切换主目标',
     })).resolves.toMatchObject({ ok: true });
     await expect(request({
+      action: 'alignment-confirm', callerSurfaceId: managerSurfaceId, projectId,
+      goalUnderstanding: '按新目标交付可验收结果', scopeSummary: '仅处理当前项目目录',
+      acceptanceSummary: '新目标验收通过', reason: '新目标、范围和验收已经明确',
+    })).resolves.toMatchObject({ ok: true });
+    await confirmProjectOrientation(projectId);
+    await expect(request({
       action: 'goal-plan', callerSurfaceId: managerSurfaceId, projectId,
       subgoals: [{
         id: 'new_goal_stage', title: '新目标阶段', outcome: '形成新目标结果',
@@ -3447,6 +3596,13 @@ describe('supervisor decision bridge', () => {
         rebindCurrentRequirements: true,
       },
     })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'alignment-confirm', callerSurfaceId: managerSurfaceId,
+      projectId: useStore.getState().projectManager?.id,
+      goalUnderstanding: '继续完成当前轮换项目', scopeSummary: '仅限当前轮换项目目录和已绑定设备',
+      acceptanceSummary: '按更新后的前置条件完成测试', reason: '新前置条件、授权边界和验收均已明确',
+    })).resolves.toMatchObject({ ok: true });
+    await confirmProjectOrientation(projectId);
     await expect(request({
       action: 'resume', callerSurfaceId: managerSurfaceId,
       projectId: useStore.getState().projectManager?.id,

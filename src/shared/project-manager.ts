@@ -33,6 +33,16 @@ export type ProjectContinuationBoundary =
   | 'external-prerequisite'
   | 'high-risk-boundary';
 
+export const PROJECT_ORIENTATION_DISPOSITIONS = [
+  'continue',
+  'verify',
+  'pause',
+  'stop',
+  'retain-completed',
+] as const;
+
+export type ProjectOrientationDisposition = typeof PROJECT_ORIENTATION_DISPOSITIONS[number];
+
 export type ProjectManagerEventKind =
   | 'user-message'
   | 'work-item-created'
@@ -57,6 +67,8 @@ export type ProjectManagerEventKind =
   | 'progress-snapshot'
   | 'progress-sync-required'
   | 'progress-sync-acknowledged'
+  | 'project-orientation-required'
+  | 'project-orientation-confirmed'
   | 'requirements-quiesce-failed'
   | 'requirements-quiesced'
   | 'manager-delivery-failed'
@@ -270,6 +282,28 @@ export interface ProjectProgressSyncState {
   acknowledgement?: string;
 }
 
+export interface ProjectOrientationWorkItemReview {
+  workItemId: string;
+  disposition: ProjectOrientationDisposition;
+  basis: string;
+  nextAction: string;
+}
+
+/** Project-AI-owned semantic understanding, bound to one immutable workspace snapshot and requirement revision. */
+export interface ProjectOrientationState {
+  status: 'required' | 'ready';
+  requirementsVersion: number;
+  authorizationVersion: number;
+  snapshotFingerprint: string;
+  reason: string;
+  requestedAt: number;
+  summary?: string;
+  knownFacts?: string[];
+  unknowns?: string[];
+  workItems?: ProjectOrientationWorkItemReview[];
+  acknowledgedAt?: number;
+}
+
 export interface ProjectProgressDiff {
   baselineMissing: boolean;
   changed: boolean;
@@ -460,6 +494,8 @@ export interface ProjectManagerSession {
   progressSnapshot?: ProjectProgressSnapshot;
   /** Blocks stale task dispatch until the project AI has reviewed a changed recovery snapshot. */
   progressSync?: ProjectProgressSyncState;
+  /** Blocks project-level planning and dispatch until the project AI records a structured understanding. */
+  orientation?: ProjectOrientationState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
   /** Manager-bound messages that have not yet been written to the manager terminal. */
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
@@ -494,6 +530,7 @@ export function projectAcceptedRequirementsVersion(
 
 const MAX_PROJECT_PROGRESS_ENTRIES = 500;
 const MAX_PROJECT_PROGRESS_TEXT = 12_000;
+const MAX_PROJECT_ORIENTATION_ITEMS = 200;
 
 export function normalizeProjectProgressSnapshot(value: unknown): ProjectProgressSnapshot | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -556,6 +593,94 @@ export function normalizeProjectProgressSyncState(value: unknown): ProjectProgre
       ? { acknowledgement: raw.acknowledgement.trim().slice(0, 4000) }
       : {}),
   };
+}
+
+export function normalizeProjectOrientationState(value: unknown): ProjectOrientationState | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectOrientationState>;
+  if (!['required', 'ready'].includes(String(raw.status))
+    || !Number.isFinite(raw.requirementsVersion) || Number(raw.requirementsVersion) < 1
+    || !Number.isFinite(raw.authorizationVersion) || Number(raw.authorizationVersion) < 1
+    || typeof raw.snapshotFingerprint !== 'string' || !raw.snapshotFingerprint.trim()
+    || typeof raw.reason !== 'string' || !raw.reason.trim()
+    || !Number.isFinite(raw.requestedAt)) return undefined;
+  const stringList = (input: unknown, maximum: number): string[] | undefined => {
+    if (!Array.isArray(input) || input.length > maximum || input.some((entry) => typeof entry !== 'string')) {
+      return undefined;
+    }
+    return input.map((entry) => entry.trim().slice(0, 4000)).filter(Boolean);
+  };
+  const knownFacts = raw.knownFacts === undefined ? undefined : stringList(raw.knownFacts, 100);
+  const unknowns = raw.unknowns === undefined ? undefined : stringList(raw.unknowns, 100);
+  if ((raw.knownFacts !== undefined && knownFacts === undefined)
+    || (raw.unknowns !== undefined && unknowns === undefined)) return undefined;
+  let workItems: ProjectOrientationWorkItemReview[] | undefined;
+  if (raw.workItems !== undefined) {
+    if (!Array.isArray(raw.workItems) || raw.workItems.length > MAX_PROJECT_ORIENTATION_ITEMS) return undefined;
+    workItems = raw.workItems.flatMap((value) => {
+      if (!value || typeof value !== 'object') return [];
+      const item = value as Partial<ProjectOrientationWorkItemReview>;
+      if (typeof item.workItemId !== 'string' || !item.workItemId.trim()
+        || !PROJECT_ORIENTATION_DISPOSITIONS.includes(item.disposition as ProjectOrientationDisposition)
+        || typeof item.basis !== 'string' || !item.basis.trim()
+        || typeof item.nextAction !== 'string' || !item.nextAction.trim()) return [];
+      return [{
+        workItemId: item.workItemId.trim().slice(0, 200),
+        disposition: item.disposition as ProjectOrientationDisposition,
+        basis: item.basis.trim().slice(0, 4000),
+        nextAction: item.nextAction.trim().slice(0, 4000),
+      }];
+    });
+    if (workItems.length !== raw.workItems.length) return undefined;
+  }
+  const normalized: ProjectOrientationState = {
+    status: raw.status as ProjectOrientationState['status'],
+    requirementsVersion: Math.max(1, Math.trunc(Number(raw.requirementsVersion))),
+    authorizationVersion: Math.max(1, Math.trunc(Number(raw.authorizationVersion))),
+    snapshotFingerprint: raw.snapshotFingerprint.trim().slice(0, 200),
+    reason: raw.reason.trim().slice(0, 2000),
+    requestedAt: Number(raw.requestedAt),
+    ...(typeof raw.summary === 'string' && raw.summary.trim()
+      ? { summary: raw.summary.trim().slice(0, MAX_PROJECT_PROGRESS_TEXT) }
+      : {}),
+    ...(knownFacts ? { knownFacts } : {}),
+    ...(unknowns ? { unknowns } : {}),
+    ...(workItems ? { workItems } : {}),
+    ...(Number.isFinite(raw.acknowledgedAt) ? { acknowledgedAt: Number(raw.acknowledgedAt) } : {}),
+  };
+  if (normalized.status === 'ready' && (
+    !normalized.summary
+    || !normalized.knownFacts?.length
+    || !normalized.workItems
+    || !Number.isFinite(normalized.acknowledgedAt)
+  )) return undefined;
+  return normalized;
+}
+
+export function requiredProjectOrientation(
+  session: Pick<ProjectManagerSession, 'requirementsVersion' | 'authorizationVersion' | 'progressSnapshot' | 'orientation'>,
+  reason: string,
+  requestedAt = Date.now(),
+): ProjectOrientationState {
+  return {
+    status: 'required',
+    requirementsVersion: projectRequirementsVersion(session),
+    authorizationVersion: projectAuthorizationVersion(session),
+    snapshotFingerprint: session.progressSnapshot?.fingerprint || 'capture-pending',
+    reason: reason.trim().slice(0, 2000) || '项目现状需要重新建立认知基线',
+    requestedAt: Math.max(requestedAt, (session.orientation?.requestedAt || 0) + 1),
+  };
+}
+
+export function projectOrientationReady(
+  session: Pick<ProjectManagerSession, 'requirementsVersion' | 'authorizationVersion' | 'progressSnapshot' | 'orientation'>,
+): boolean {
+  const orientation = session.orientation;
+  return orientation?.status === 'ready'
+    && orientation.requirementsVersion === projectRequirementsVersion(session)
+    && orientation.authorizationVersion === projectAuthorizationVersion(session)
+    && !!session.progressSnapshot?.fingerprint
+    && orientation.snapshotFingerprint === session.progressSnapshot.fingerprint;
 }
 
 export function diffProjectProgressSnapshots(
@@ -686,6 +811,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
+    orientation: normalizeProjectOrientationState(session.orientation),
     pendingSupervisorTransitions: (Array.isArray(session.pendingSupervisorTransitions)
       ? session.pendingSupervisorTransitions
       : [])

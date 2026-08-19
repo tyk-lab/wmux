@@ -3,6 +3,7 @@ import {
   activeProjectSubgoals,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
+  projectOrientationReady,
   projectRequirementsVersion,
   projectTaskBaselineApproved,
   projectWorkItemReady,
@@ -270,6 +271,7 @@ export function readyProjectWorkItems(session: ProjectManagerSession): ProjectWo
 export type ProjectProgressObligationKind =
   | 'align-requirements'
   | 'sync-progress'
+  | 'orient-project'
   | 'reconcile-stale-work'
   | 'plan-work'
   | 'dispatch-work'
@@ -304,6 +306,9 @@ export function projectProgressObligation(
   }
   if (session.progressSync?.status === 'review-required') {
     return { kind: 'sync-progress', summary: '项目外部进度尚未复核，需要先同步当前工作区事实再继续派发' };
+  }
+  if (!projectOrientationReady(session)) {
+    return { kind: 'orient-project', summary: '项目认知基线尚未绑定当前需求、授权和目录快照，需要先复核现状再规划或派发' };
   }
   const activeGoal = activeProjectGoal(session);
   const activeGoalItems = session.workItems.filter((item) => (

@@ -127,6 +127,10 @@ describe('project manager records', () => {
         snapshotFingerprint: 'progress-fingerprint', summary: '检测到外部实现进度',
         changeCount: 1, reason: '软件恢复',
       },
+      orientation: {
+        status: 'required' as const, requirementsVersion: 3, authorizationVersion: 1,
+        snapshotFingerprint: 'progress-fingerprint', reason: '软件恢复后复核现状', requestedAt: 16,
+      },
     };
 
     saveProjectManagerSession(saved, appData);
@@ -152,6 +156,10 @@ describe('project manager records', () => {
       },
       progressSync: {
         status: 'review-required', snapshotFingerprint: 'progress-fingerprint', changeCount: 1,
+      },
+      orientation: {
+        status: 'required', requirementsVersion: 3,
+        snapshotFingerprint: 'progress-fingerprint', reason: '软件恢复后复核现状',
       },
     });
   });

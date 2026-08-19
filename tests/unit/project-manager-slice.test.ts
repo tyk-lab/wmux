@@ -93,6 +93,35 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.events[0]).toMatchObject({ kind: 'work-item-created', workItemId: 'auth' });
   });
 
+  it('requires a project orientation at creation and invalidates it when prerequisites change', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['测试环境可用'], doneWhen: ['验收通过'],
+    });
+    expect(project.orientation).toMatchObject({
+      status: 'required', requirementsVersion: 1, authorizationVersion: 1,
+      snapshotFingerprint: 'capture-pending',
+    });
+    useStore.getState().restoreProjectManager({
+      ...project,
+      progressSnapshot: {
+        version: 1, capturedAt: 1, mode: 'git', fingerprint: 'snapshot-1', entries: [], truncated: false,
+      },
+      orientation: {
+        status: 'ready', requirementsVersion: 1, authorizationVersion: 1,
+        snapshotFingerprint: 'snapshot-1', reason: '已复核', requestedAt: 1,
+        summary: '项目状态已知', knownFacts: ['环境可用'], unknowns: [], workItems: [], acknowledgedAt: 2,
+      },
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-preconditions', preconditions: ['设备已上电且允许测试'], reason: '用户更新条件',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.orientation).toMatchObject({
+      status: 'required', requirementsVersion: 2, authorizationVersion: 2,
+      snapshotFingerprint: 'snapshot-1',
+    });
+  });
+
   it('keeps project baseline approval under control-plane ownership and resets it on contract changes', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });

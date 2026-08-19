@@ -66,7 +66,15 @@ function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['st
   });
   return {
     ...normalized,
+    progressSnapshot: {
+      version: 1, capturedAt: 1, mode: 'git', fingerprint: 'test', entries: [], truncated: false,
+    },
     progressSync: { status: 'ready', checkedAt: 1, snapshotFingerprint: 'test', changeCount: 0 },
+    orientation: {
+      status: 'ready', requirementsVersion: 1, authorizationVersion: 1,
+      snapshotFingerprint: 'test', reason: '测试基线', requestedAt: 1,
+      summary: '测试项目状态已知', knownFacts: ['测试事实'], unknowns: [], workItems: [], acknowledgedAt: 1,
+    },
   };
 }
 
@@ -124,12 +132,17 @@ describe('project-manager engine', () => {
     const unaligned = session([]);
     unaligned.acceptedRequirementsVersion = 0;
     expect(projectProgressObligation(unaligned)).toMatchObject({ kind: 'align-requirements' });
+    const unoriented = session([]);
+    unoriented.orientation = { ...unoriented.orientation!, status: 'required' };
+    expect(projectProgressObligation(unoriented)).toMatchObject({ kind: 'orient-project' });
     const stale = session([item('stale-stage', 'planned')]);
     stale.authorizationVersion = 2;
+    stale.orientation = { ...stale.orientation!, authorizationVersion: 2 };
     expect(projectProgressObligation(stale)).toMatchObject({ kind: 'reconcile-stale-work' });
 
     const mixed = session([item('current-stage', 'completed'), item('old-stage', 'planned')]);
     mixed.authorizationVersion = 2;
+    mixed.orientation = { ...mixed.orientation!, authorizationVersion: 2 };
     mixed.workItems[0].authorizationVersion = 2;
     expect(projectProgressObligation(mixed)).toMatchObject({ kind: 'reconcile-stale-work' });
   });

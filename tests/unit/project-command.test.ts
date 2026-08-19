@@ -67,6 +67,7 @@ describe('project command scope', () => {
     expect(projectCommandNeedsExplicitId('task-create', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('supervisor-decide', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('goal-plan', '', projects)).toBe(true);
+    expect(projectCommandNeedsExplicitId('orientation-confirm', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('task-create', 'project-a', projects)).toBe(false);
   });
 

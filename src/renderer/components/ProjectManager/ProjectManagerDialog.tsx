@@ -14,6 +14,7 @@ import {
   type ProjectManagementAgentConfig,
 } from '../../../shared/project-manager-terminal';
 import type { SplitNode } from '../../../shared/types';
+import { projectDefinitionLines as conditionLines } from '../../project-manager/definition-lines';
 import { useStore } from '../../store';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import { modelOptionsFor } from '../../supervisor/model-catalog';
@@ -84,10 +85,6 @@ function projectActivityLabel(session: {
   if (current.status === 'running' || current.status === 'validating') return '监督中';
   if (current.workerSurfaceId) return '派遣中';
   return '规划中';
-}
-
-function conditionLines(value: string): string[] {
-  return value.split(/\r?\n|；/u).map((item) => item.trim()).filter(Boolean);
 }
 
 const PROJECT_AGENT_ROWS = [
@@ -837,6 +834,19 @@ export default function ProjectManagerDialog() {
                 <pre className="project-manager-dialog__pre">{session.progressSync.summary}</pre>
               </details>
               <div className="supervisor-dialog__hint">这是项目 AI 的内部复核，不需要用户逐步确认；只有出现业务选择、权限或高风险冲突时才会单独询问。</div>
+            </section>
+          )}
+
+          {session?.orientation?.status === 'required' && !creating && (
+            <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label="项目 AI 正在复核项目现状">
+              <div className="supervisor-dialog__group-title">项目 AI 正在建立当前认知基线</div>
+              <div className="supervisor-dialog__warning">在确认当前目标、权限边界、目录进度和每个未停止工作项之前，控制层不会允许项目 AI 规划、恢复或派发任务。</div>
+              <details>
+                <summary>查看触发原因和绑定版本</summary>
+                <div className="supervisor-dialog__hint">{session.orientation.reason}</div>
+                <div className="supervisor-dialog__hint">需求 R{session.orientation.requirementsVersion} · 授权 A{session.orientation.authorizationVersion} · 快照 {session.orientation.snapshotFingerprint}</div>
+              </details>
+              <div className="supervisor-dialog__hint">这是项目 AI 的内部复核，不需要用户逐步确认；只有发现真实业务冲突、越权或人工前置条件时才会单独询问。</div>
             </section>
           )}
 

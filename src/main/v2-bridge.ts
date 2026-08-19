@@ -124,6 +124,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'alignment-confirm' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.orientation.confirm': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'orientation-confirm' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.logs': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'logs' })})`,
     requireResult: 'Project manager bridge is unavailable',

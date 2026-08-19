@@ -6,6 +6,7 @@ import {
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
+  requiredProjectOrientation,
   requiredProjectTaskBaseline,
   type ProjectManagerAction,
   type ProjectManagerEvent,
@@ -156,6 +157,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       acceptedRequirementsVersion: 0,
       status: 'active',
       recoveryState: 'ready',
+      orientation: {
+        status: 'required',
+        requirementsVersion: 1,
+        authorizationVersion: 1,
+        snapshotFingerprint: 'capture-pending',
+        reason: '项目首次创建，需要先建立项目认知基线',
+        requestedAt: now,
+      },
       managerSurfaceId: options.managerSurfaceId,
       feishuChatId: options.feishuChatId,
       workItems: [],
@@ -346,6 +355,16 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         pausedByPortfolio: false,
         pendingUserQuestion: undefined,
       };
+      next = {
+        ...next,
+        orientation: requiredProjectOrientation(
+          next,
+          action.mode === 'pivot'
+            ? '用户切换了项目主目标，需要按新目标重新建立项目认知基线'
+            : '项目目标、范围或验收条件已变更，需要重新建立项目认知基线',
+          now,
+        ),
+      };
       eventInput = {
         kind: 'project-definition-updated',
         summary: action.reason || `${action.source === 'user' ? '用户' : '项目 AI'}${action.mode === 'pivot' ? '切换新的主目标' : '调整当前主目标'}`,
@@ -480,6 +499,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         status: 'waiting',
         pausedByPortfolio: false,
         pendingUserQuestion: undefined,
+      };
+      next = {
+        ...next,
+        orientation: requiredProjectOrientation(
+          next,
+          '项目前置条件和授权边界已变更，需要重新建立项目认知基线',
+          now,
+        ),
       };
       eventInput = {
         kind: 'project-preconditions-updated',

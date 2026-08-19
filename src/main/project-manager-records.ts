@@ -3,6 +3,7 @@ import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
   normalizeProjectManagerSession,
+  normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
   type ProjectManagerSession,
@@ -229,6 +230,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
     || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
     || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
+    || (session.orientation !== undefined && !normalizeProjectOrientationState(session.orientation))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')
