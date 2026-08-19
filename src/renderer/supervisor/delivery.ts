@@ -28,7 +28,17 @@ export function enqueueSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   delivery: SupervisorDelivery,
 ): SupervisorDelivery[] {
-  const current = pending || [];
+  const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
+  const current = terminalLifecycle
+    ? (pending || []).filter((candidate) => {
+        const sameTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
+          ? candidate.turnId === delivery.turnId
+          : candidate.task === delivery.task;
+        const obsoleteProbe = candidate.kind === 'liveness-probe'
+          || (candidate.kind === 'worker-status' && sameTurn);
+        return candidate.stage === 'pasted' || !obsoleteProbe;
+      })
+    : pending || [];
   const previous = current[current.length - 1];
   const sameTurn = previous?.turnId !== undefined && delivery.turnId !== undefined
     ? previous.turnId === delivery.turnId
@@ -41,6 +51,28 @@ export function enqueueSupervisorDelivery(
     return current;
   }
   return [...current, delivery];
+}
+
+/**
+ * Pick the oldest currently deliverable fact instead of letting an idle-only
+ * liveness probe block a later lifecycle event while state detection is stale.
+ */
+export function nextDeliverableSupervisorDelivery(
+  pending: SupervisorDelivery[] | undefined,
+  supervisorState: unknown,
+): SupervisorDelivery | undefined {
+  const queue = pending || [];
+  const pasted = queue.find((delivery) => delivery.stage === 'pasted');
+  if (pasted) {
+    return pasted.kind === 'liveness-probe'
+      ? supervisorState === 'idle' ? pasted : undefined
+      : canDeliverToSupervisor(supervisorState) ? pasted : undefined;
+  }
+  return queue.find((delivery) => (
+    delivery.kind === 'liveness-probe'
+      ? supervisorState === 'idle'
+      : canDeliverToSupervisor(supervisorState)
+  ));
 }
 
 /** A busy or blocked supervisor must finish its current turn before receiving another command. */

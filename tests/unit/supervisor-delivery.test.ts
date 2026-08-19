@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
+  nextDeliverableSupervisorDelivery,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
@@ -62,6 +63,22 @@ describe('supervisor delivery queue', () => {
     expect(canDeliverToSupervisor('blocked')).toBe(false);
     expect(canDeliverToSupervisor('idle')).toBe(true);
     expect(canDeliverToSupervisor('unknown')).toBe(true);
+  });
+
+  it('does not let an idle-only liveness probe block a later lifecycle fact', () => {
+    const liveness = {
+      id: 'probe', kind: 'liveness-probe' as const, task: '检查状态',
+      text: '请检查', createdAt: 1, stage: 'pending' as const,
+    };
+    const completed = event('end', 'task-end', '运行测试', 2);
+
+    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'unknown')?.id).toBe('end');
+    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'idle')?.id).toBe('probe');
+    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'working')).toBeUndefined();
+    expect(enqueueSupervisorDelivery([liveness], completed).map((item) => item.id)).toEqual(['end']);
+    expect(nextDeliverableSupervisorDelivery([
+      { ...liveness, stage: 'pasted' }, completed,
+    ], 'unknown')).toBeUndefined();
   });
 
   it('wakes only for terminal states that require a supervisor decision', () => {

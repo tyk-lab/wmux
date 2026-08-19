@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--execution-action <text> --command <text> --error <text> --workspace-version <hash> --test-command <text> --test-result <text> --changed-files <a,b> --evidence <text> --full-suite --retry] [--verbose]';
+export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>] [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--execution-action <text> --command <text> --error <text> --workspace-version <hash> --test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text> --evidence <text> --context-summary <text> --full-suite --retry] [--verbose]';
 
 const MAX_INLINE_NEXT_CHARS = 4_000;
 const MAX_NEXT_FILE_CHARS = 64_000;

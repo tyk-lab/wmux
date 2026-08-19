@@ -32,6 +32,9 @@ const WORK_ITEM_STATUSES = new Set([
 ]);
 const GOAL_STATUSES = new Set(['transitioning', 'active', 'achieved', 'superseded', 'abandoned']);
 const SUBGOAL_STATUSES = new Set(['planned', 'active', 'blocked', 'achieved', 'obsolete']);
+const CONTINUATION_BOUNDARIES = new Set([
+  'project-owned-decision', 'external-prerequisite', 'high-risk-boundary',
+]);
 
 function recordsDirectory(appDataDir = getAppDataDir()): string {
   return path.join(appDataDir, 'project-manager');
@@ -210,7 +213,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
         || typeof transition.id !== 'string'
         || typeof transition.laneId !== 'string'
         || (transition.workItemId !== undefined && typeof transition.workItemId !== 'string')
-        || !['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle']
+        || !['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle', 'project-action-required']
           .includes(String(transition.kind))
         || typeof transition.eventType !== 'string' || !transition.eventType.trim()
         || typeof transition.summary !== 'string' || !transition.summary.trim()
@@ -258,6 +261,17 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && isStringArray(scope?.allowPaths) && isStringArray(scope?.denyPaths) && isStringArray(scope?.forbiddenActions)
       && ['technicalChoices', 'lowRiskRetries', 'targetedTests', 'internalThreads']
         .every((key) => typeof authority?.[key] === 'boolean')
+      && (authority?.routeAdjustments === undefined || typeof authority.routeAdjustments === 'boolean')
+      && (authority?.continuousExecution === undefined || typeof authority.continuousExecution === 'boolean')
+      && (authority?.permissionConfirm === undefined || typeof authority.permissionConfirm === 'boolean')
+      && (authority?.continuationBoundary === undefined
+        || CONTINUATION_BOUNDARIES.has(String(authority.continuationBoundary)))
+      && !(authority?.continuousExecution === false && authority.continuationBoundary === undefined)
+      && !(authority?.continuousExecution === true && authority.continuationBoundary !== undefined)
+      && (authority?.allowedCommandPrefixes === undefined || isStringArray(authority.allowedCommandPrefixes))
+      && (authority?.authorizedDevices === undefined || isStringArray(authority.authorizedDevices))
+      && (authority?.authorizedEnvironments === undefined || isStringArray(authority.authorizedEnvironments))
+      && (authority?.authorizedOperations === undefined || isStringArray(authority.authorizedOperations))
       && ['maxDecisions', 'maxContinuousMinutes', 'maxIdenticalFailures', 'maxNoProgressRounds',
         'maxTaskRetries', 'maxSameTestRuns', 'maxFullSuiteRunsPerVersion']
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)

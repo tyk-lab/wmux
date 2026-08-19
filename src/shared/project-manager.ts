@@ -20,6 +20,19 @@ export type ProjectWorkItemStatus =
   | 'failed'
   | 'stopped';
 
+export type ProjectEscalationBoundary =
+  | 'contract-change'
+  | 'cross-item-coordination'
+  | 'external-blocker'
+  | 'user-only-information'
+  | 'high-risk-action'
+  | 'budget-exhausted';
+
+export type ProjectContinuationBoundary =
+  | 'project-owned-decision'
+  | 'external-prerequisite'
+  | 'high-risk-boundary';
+
 export type ProjectManagerEventKind =
   | 'user-message'
   | 'work-item-created'
@@ -47,6 +60,7 @@ export type ProjectManagerEventKind =
   | 'requirements-quiesce-failed'
   | 'requirements-quiesced'
   | 'manager-delivery-failed'
+  | 'manager-delivery-restored'
   | 'user-clarification-requested'
   | 'user-clarification-answered'
   | 'requirements-alignment-required'
@@ -145,10 +159,14 @@ export interface ProjectWorkScope {
 export interface ProjectSupervisorAuthority {
   technicalChoices: boolean;
   lowRiskRetries: boolean;
+  /** Permit bounded implementation-route adjustments independently from retry authority. */
+  routeAdjustments?: boolean;
   targetedTests: boolean;
   internalThreads: boolean;
   /** Keep executing the bounded workflow until its stop condition or a real boundary is reached. */
   continuousExecution?: boolean;
+  /** Required when continuousExecution is disabled so one-step delegation cannot become the default. */
+  continuationBoundary?: ProjectContinuationBoundary;
   /** Allow the supervisor to answer eligible local permission prompts without returning to the user. */
   permissionConfirm?: boolean;
   /** Exact executable prefixes eligible for permission confirmation; an empty list grants no custom command. */
@@ -198,6 +216,11 @@ export interface ProjectExecutionRecord {
   workspaceVersion: string;
   testCommand?: string;
   fullSuite?: boolean;
+  changedFiles?: string[];
+  testResult?: string;
+  diffSummary?: string;
+  evidenceSummary?: string;
+  escalationBoundary?: ProjectEscalationBoundary;
 }
 
 export type ProjectTaskBaselineStatus = 'required' | 'investigating' | 'approved';
@@ -207,6 +230,8 @@ export interface ProjectTaskBaseline {
   status: ProjectTaskBaselineStatus;
   requirementsVersion: number;
   requestedAt?: number;
+  /** Initial read-only investigation plus at most one targeted supplement. */
+  investigationRounds?: number;
   workspaceVersion?: string;
   evidence?: string;
   approvedAt?: number;
@@ -324,6 +349,52 @@ export interface ProjectManagerEvent {
   payload?: Record<string, unknown>;
 }
 
+export type ProjectManagerEventSummary = Pick<ProjectManagerEvent, 'kind' | 'ts' | 'payload'>;
+
+/**
+ * A project event needs user attention when it is an explicit terminal
+ * blocker, or when the producer marks a non-failure event as non-recoverable.
+ */
+export function projectManagerEventNeedsUserAttention(
+  event: Pick<ProjectManagerEvent, 'kind' | 'payload'> | { kind: string; payload?: Record<string, unknown> },
+): boolean {
+  return event.payload?.attentionRequired === true || event.kind.endsWith('-failed');
+}
+
+/** Returns the newest alert that has not been followed by a recovery event. */
+export function activeProjectManagerAttentionEvent<T extends ProjectManagerEventSummary>(
+  events: readonly T[],
+): T | undefined {
+  const resolvedKinds = new Set<string>();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.kind === 'project-completed' || event.kind === 'project-stopped') return undefined;
+    if (event.kind === 'project-resumed') {
+      resolvedKinds.add('project-paused');
+      resolvedKinds.add('guard-triggered');
+    } else if (event.kind === 'manager-runtime-restarted') {
+      resolvedKinds.add('manager-runtime-failed');
+      resolvedKinds.add('manager-delivery-failed');
+    } else if (event.kind === 'manager-delivery-restored') {
+      resolvedKinds.add('manager-delivery-failed');
+    } else if (event.kind === 'recovery-restored') {
+      resolvedKinds.add('manager-runtime-failed');
+      resolvedKinds.add('supervisor-runtime-failed');
+      resolvedKinds.add('task-runtime-failed');
+    } else if (event.kind === 'requirements-quiesced') {
+      resolvedKinds.add('requirements-quiesce-failed');
+    }
+    const explicitResolvedKinds = event.payload?.resolvedAttentionKinds;
+    if (Array.isArray(explicitResolvedKinds)) {
+      for (const kind of explicitResolvedKinds) {
+        if (typeof kind === 'string' && kind.trim()) resolvedKinds.add(kind.trim());
+      }
+    }
+    if (projectManagerEventNeedsUserAttention(event) && !resolvedKinds.has(event.kind)) return event;
+  }
+  return undefined;
+}
+
 export interface ProjectManagerPendingDelivery {
   id: string;
   text: string;
@@ -337,7 +408,8 @@ export type ProjectSupervisorTransitionKind =
   | 'direction-needed'
   | 'decision-required'
   | 'supervisor-unavailable'
-  | 'supervisor-idle';
+  | 'supervisor-idle'
+  | 'project-action-required';
 
 /** Durable actionable state handoff from one project's dedicated supervisor. */
 export interface ProjectSupervisorTransition {
@@ -622,7 +694,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         !!transition
         && typeof transition.id === 'string' && !!transition.id.trim()
         && typeof transition.laneId === 'string' && !!transition.laneId.trim()
-        && ['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle']
+        && ['stage-complete', 'direction-needed', 'decision-required', 'supervisor-unavailable', 'supervisor-idle', 'project-action-required']
           .includes(String(transition.kind))
         && typeof transition.eventType === 'string' && !!transition.eventType.trim()
         && typeof transition.summary === 'string' && !!transition.summary.trim()
@@ -693,6 +765,7 @@ export type ProjectManagerAction =
   | { type: 'create-work-item'; workItem: ProjectWorkItem }
   | { type: 'update-work-item'; workItemId: string; patch: Partial<ProjectWorkItem> }
   | { type: 'start-work-item-baseline'; workItemId: string }
+  | { type: 'reset-work-item-baseline'; workItemId: string; reason: string }
   | {
     type: 'approve-work-item-baseline';
     workItemId: string;
@@ -706,7 +779,13 @@ export type ProjectManagerAction =
     reason?: string;
   }
   | { type: 'record-execution'; workItemId: string; record: ProjectExecutionRecord }
-  | { type: 'pause-project'; reason: string; source?: 'project' | 'portfolio' }
+  | {
+    type: 'pause-project';
+    reason: string;
+    source?: 'user' | 'manager' | 'portfolio' | 'runtime' | 'system';
+    /** Project-AI pauses caused by a material blocker must be surfaced to the user. */
+    attentionRequired?: boolean;
+  }
   | {
     type: 'resume-project';
     reason: string;

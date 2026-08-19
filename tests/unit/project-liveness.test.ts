@@ -3,7 +3,8 @@ import {
   PROJECT_LIVENESS_CONTROL_GRACE_MS,
   PROJECT_LIVENESS_IDLE_PROBE_MS,
   PROJECT_LIVENESS_PROBE_REPORT_MS,
-  PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS,
+  PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS,
+  PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS,
   evaluateProjectLiveness,
   normalizeProjectActivityFingerprintText,
 } from '../../src/renderer/project-manager/liveness';
@@ -35,7 +36,7 @@ describe('project execution-chain liveness', () => {
     const decision = evaluateProjectLiveness({
       runtime: initial,
       fingerprint: 'v1',
-      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS - 1,
+      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS - 1,
       supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 0,
     });
     expect(decision.action).toBe('none');
@@ -45,7 +46,7 @@ describe('project execution-chain liveness', () => {
   it('escalates a semantically silent working supervisor through Esc, Ctrl+C, then one report', () => {
     const escaped = evaluateProjectLiveness({
       runtime: initial, fingerprint: 'v1',
-      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS,
+      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS,
       supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 0,
     });
     expect(escaped.action).toBe('escape-supervisor');
@@ -67,6 +68,15 @@ describe('project execution-chain liveness', () => {
       runtime: reported.runtime, fingerprint: 'v1', now: reported.runtime.attentionReportedAt! + 60_000,
       supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 1,
     }).action).toBe('none');
+  });
+
+  it('interrupts sooner when the worker is idle than while useful task work is active', () => {
+    const decision = evaluateProjectLiveness({
+      runtime: initial, fingerprint: 'v1',
+      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS,
+      supervisorState: 'working', workerState: 'idle', pendingSupervisorDeliveries: 0,
+    });
+    expect(decision.action).toBe('escape-supervisor');
   });
 
   it('queues one probe for an idle chain and reports only if the probe remains unanswered', () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   initPipeBridge,
   permissionCommandMatchesEvidence,
+  projectContractAutonomyPermissions,
   projectMessageChangeSignal,
   readTerminalScreen,
   terminalConversationExcerpt,
@@ -359,6 +360,16 @@ describe('supervisor decision bridge', () => {
     Reflect.deleteProperty(globalThis, 'window');
   });
 
+  it('does not derive route-adjustment authority from retry authority', () => {
+    const project = bindProjectLaneToWorkItem();
+    const contract = project.workItems[0].contract;
+    expect(projectContractAutonomyPermissions(contract)).not.toContain('route-adjustment');
+    expect(projectContractAutonomyPermissions({
+      ...contract,
+      authority: { ...contract.authority, routeAdjustments: true },
+    })).toContain('route-adjustment');
+  });
+
   it('reports task terminal activity and rejects an unconfirmed busy send', () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-control' as any,
@@ -382,6 +393,9 @@ describe('supervisor decision bridge', () => {
       expect.objectContaining({ surfaceId: 'worker-a', terminalMode: 'ordinary', agentRole: 'task-ai' }),
       expect.objectContaining({ surfaceId: 'supervisor-a', terminalMode: 'ordinary', agentRole: 'supervisor-ai', supervisionState: 'active' }),
     ]));
+
+    expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '错误项目模式', mode: 'project' }))
+      .toMatchObject({ ok: false });
 
     expect(remoteControl({ action: 'send', terminal: 'worker-a', task: '继续执行', actor: 'ou-user' }))
       .toMatchObject({ ok: false, code: 'terminal_busy', terminal: { activityState: 'working' } });
@@ -830,6 +844,32 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ ok: false, error: expect.stringContaining('专属监督 AI 终端') });
     expect(JSON.parse(remoteControl({ action: 'terminal-list', mode: 'ordinary' }).message).terminals)
       .toEqual([]);
+
+    surfaceTerminalRegistry.set('project-manager-a', {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    writes.mockClear();
+    expect(remoteControl({ action: 'send', terminal: 'project-manager-a', task: '绕过模式隔离' }))
+      .toMatchObject({ ok: false });
+    const projectSend = remoteControl({
+      action: 'send', terminal: 'project-manager-a', task: '用户通过飞书直接补充项目背景', mode: 'project', actor: 'ou-user',
+    });
+    expect(projectSend.error).toBeUndefined();
+    expect(projectSend).toMatchObject({ ok: true });
+    expect(writes).toHaveBeenCalledWith('project-manager-a', '用户通过飞书直接补充项目背景');
+    expect(remoteControl({
+      action: 'terminal-escape', terminal: 'project-supervisor-a', mode: 'project', actor: 'ou-user',
+    })).toMatchObject({ ok: true });
+    expect(writes).toHaveBeenLastCalledWith('project-supervisor-a', '\x1b');
+    expect(remoteControl({
+      action: 'terminal-interrupt', terminal: 'project-task-a', mode: 'project', actor: 'ou-user',
+    })).toMatchObject({ ok: true });
+    expect(writes).toHaveBeenLastCalledWith('project-task-a', '\x03');
 
     for (const surfaceId of ['project-manager-a', 'project-supervisor-a', 'project-task-a']) {
       surfaceTerminalRegistry.delete(surfaceId);
@@ -1985,11 +2025,30 @@ describe('supervisor decision bridge', () => {
     await expect(projectRequest({
       action: 'task-create', callerSurfaceId: surface?.id,
       workItem: {
+        id: 'missing_boundary', title: '错误单步合同', status: 'planned', dependencies: [],
+        contract: {
+          objective: '不允许退化成逐步授权', description: '', preconditions: [],
+          scope: { root: 'E:\\repo', allowPaths: [], denyPaths: [], forbiddenActions: [] },
+          authority: {
+            technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false,
+            continuousExecution: false, permissionConfirm: false,
+          },
+          stopWhen: ['不执行'], validation: ['不执行'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('continuationBoundary'),
+    });
+
+    await expect(projectRequest({
+      action: 'task-create', callerSurfaceId: surface?.id,
+      workItem: {
         id: 'external_auth', title: '错误绑定', status: 'planned', dependencies: [], workerSurfaceId: 'worker-a',
         contract: {
           objective: '不应接管现有终端', description: '', preconditions: [],
           scope: { root: 'E:\\repo', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['不执行'], validation: ['不执行'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -2005,7 +2064,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成认证', description: '', preconditions: [],
           scope: { root: 'E:\\repo', allowPaths: ['src/auth'], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['认证测试通过'], validation: ['npm test -- auth'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -2318,6 +2377,38 @@ describe('supervisor decision bridge', () => {
     );
   });
 
+  it('persists and publishes a project AI runtime failure during recovery', async () => {
+    const persisted = {
+      id: 'pm-runtime-failure', projectDir: 'E:\\runtime-failure',
+      goal: '恢复认证项目', preconditions: ['测试环境可用'], planFiles: [], doneWhen: ['认证测试通过'],
+      status: 'active' as const, workItems: [], events: [], createdAt: 1, updatedAt: 2,
+    };
+    const projectManagerApi = (globalThis.window as any).wmux.projectManager;
+    projectManagerApi.listActiveSessions.mockResolvedValue([persisted]);
+    projectManagerApi.ensureSkill.mockResolvedValueOnce({ ok: false, error: '项目 AI skill 无法准备' });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await remote({ action: 'recovery-candidates' });
+    await expect(remote({ action: 'restore-projects', projectIds: [persisted.id] })).resolves.toMatchObject({
+      ok: true,
+      projects: [{ id: persisted.id, status: 'paused' }],
+      warnings: [expect.stringContaining('项目 AI skill 无法准备')],
+    });
+    expect(projectManagerApi.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: persisted.id,
+      type: 'manager-runtime-failed',
+      payload: expect.objectContaining({ message: '项目 AI skill 无法准备' }),
+    }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目运行异常',
+      text: expect.stringContaining('项目 AI skill 无法准备'),
+    }));
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'project-paused', payload: { source: 'runtime', attentionRequired: false } }),
+      expect.objectContaining({ kind: 'manager-runtime-failed', summary: '项目 AI skill 无法准备' }),
+    ]));
+  });
+
   it('does not reopen requirements alignment when a started project is paused for a requirement-related reason', async () => {
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     await expect(remote({
@@ -2331,7 +2422,21 @@ describe('supervisor decision bridge', () => {
     await expect(request({
       action: 'pause', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
       reason: '实现中发现需求范围仍有不足，先暂停重新规划',
-    })).resolves.toMatchObject({ ok: true, event: { kind: 'project-paused' } });
+    })).resolves.toMatchObject({
+      ok: true,
+      event: {
+        kind: 'project-paused',
+        payload: { source: 'manager', attentionRequired: true },
+      },
+    });
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'project-paused',
+      payload: expect.objectContaining({ source: 'manager', attentionRequired: true }),
+    }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要处理',
+      text: expect.stringContaining('实现中发现需求范围仍有不足'),
+    }));
 
     const paused = useStore.getState().projectManager!;
     expect(paused.status).toBe('paused');
@@ -2369,7 +2474,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成现场检查', description: '', preconditions: [],
           scope: { root: 'E:\\manual-question', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['现场检查完成'], validation: ['用户确认现场结果'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -2611,7 +2716,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成恢复任务', description: '从持久化检查点续作', preconditions: [],
           scope: { root: 'E:\\recover-project', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['针对性测试通过'], validation: ['检查 diff'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       }],
@@ -2679,6 +2784,8 @@ describe('supervisor decision bridge', () => {
       startupInput: recoveredSurface?.startupInput,
     });
     expect(recoveredLaunch).toContain('项目任务 AI 冷启动');
+    expect(recoveredLaunch).toContain('[项目执行身份｜控制层已绑定]');
+    expect(recoveredLaunch).toContain('需求版本：R1');
     expect(recoveredLaunch).not.toContain('old-worker');
     const recoveryDeliveries = JSON.stringify([
       ...writes.mock.calls,
@@ -2849,7 +2956,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '按配置启动任务终端', description: '', preconditions: [],
           scope: { root: 'E:\\configured-repo', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['配置生效'], validation: ['检查运行配置'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -2902,7 +3009,7 @@ describe('supervisor decision bridge', () => {
       contract: {
         objective: `完成 ${id}`, description: '', preconditions: [],
         scope: { root: 'E:\\sequential-project', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-        authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+        authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
         stopWhen: [`${id} 完成`], validation: [`验证 ${id}`], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       },
     });
@@ -2992,6 +3099,53 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'requirements-quiesced', payload: expect.objectContaining({ recoveredAfterFailure: true }) }),
     ]));
+
+    approveProjectWorkItemBaseline(projectId, 'second_task');
+    await expect(request({
+      action: 'task-update', callerSurfaceId: managerSurfaceId, projectId,
+      workItemId: 'second_task', patch: {
+        status: 'paused',
+        latestContextSummary: '执行身份暂不可用，已保留现有证据等待后续恢复。',
+        latestBlocker: '缺少外部执行身份，但不阻塞独立工作项。',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'task-create', callerSurfaceId: managerSurfaceId, projectId,
+      workItem: workItem('blocked_by_paused', ['second_task']),
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'task-supervise', callerSurfaceId: managerSurfaceId, projectId, workItemId: 'blocked_by_paused',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('依赖任务尚未完成') });
+    await expect(request({
+      action: 'task-create', callerSurfaceId: managerSurfaceId, projectId,
+      workItem: workItem('independent_task'),
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'task-supervise', callerSurfaceId: managerSurfaceId, projectId, workItemId: 'independent_task',
+    })).resolves.toMatchObject({ ok: true, reused: true, laneId: first.lane?.id });
+
+    expect(useStore.getState().projectManager?.workItems.find((item) => item.id === 'second_task'))
+      .toMatchObject({
+        status: 'paused', workerSurfaceId: undefined, supervisorLaneId: undefined,
+        baseline: { status: 'required' },
+      });
+    expect(useStore.getState().projectManager?.workItems.find((item) => item.id === 'independent_task'))
+      .toMatchObject({ status: 'running', workerSurfaceId: first.created.surfaceId, supervisorLaneId: first.lane?.id });
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === first.lane?.id))
+      .toMatchObject({ projectWorkItemId: 'independent_task', surfaceId: first.created.surfaceId });
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.id === first.created.surfaceId)).toMatchObject({
+      projectManagerProjectId: projectId,
+      projectManagerWorkItemId: 'independent_task',
+    });
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'supervisor-direction',
+        workItemId: 'second_task',
+        summary: expect.stringContaining('暂缓工作项并释放执行链'),
+      }),
+    ]));
   });
 
   it('does not resume an old-goal supervisor lane before the new goal is explicitly dispatched', async () => {
@@ -3011,7 +3165,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '执行旧目标', description: '', preconditions: [],
           scope: { root: 'E:\\goal-pivot', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['旧目标完成'], validation: ['检查旧目标结果'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -3136,7 +3290,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '实现旧方向', description: '', preconditions: [],
           scope: { root: 'E:\\direction-a', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['完成'], validation: ['检查'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -3217,7 +3371,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '继续既有实现', description: '', preconditions: [],
           scope: { root: 'E:\\rotation', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['测试通过'], validation: ['运行相关测试'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -3423,7 +3577,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '验证启动期间的需求变更', description: '', preconditions: [],
           scope: { root: 'E:\\startup-race', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['回归测试通过'], validation: ['运行聚焦测试'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -3501,7 +3655,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '验证删除', description: '', preconditions: [],
           scope: { root: 'E:\\delete-project', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['完成'], validation: ['检查'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -3808,16 +3962,84 @@ describe('supervisor decision bridge', () => {
   });
 
   it('routes project-managed approvals internally without notifying the user', () => {
-    bindProjectLaneToWorkItem();
+    const project = bindProjectLaneToWorkItem();
+
+    expect(decide({
+      outcome: 'needs-human', proposalKind: 'important',
+      reason: '尝试使用未分类升级', impact: '不应通过',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('--escalation-boundary') });
 
     expect(decide({
       outcome: 'needs-human',
       proposalKind: 'important',
-      next: '需要项目管理 AI 选择下一条技术路线',
-      reason: '两条路线都在任务边界内',
+      escalationBoundary: 'contract-change',
+      next: '需要项目管理 AI 调整任务合同后选择下一条技术路线',
+      reason: '现有两条路线都需要修改任务合同范围',
+      impact: '监督 AI 无权扩大任务合同的文件范围',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0]
+      .decisionsUsed).toBe(1);
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
     expect((globalThis.window as any).wmux.notification.fire).not.toHaveBeenCalled();
+  });
+
+  it('accepts budget-exhausted only as the final counted stage decision', () => {
+    const project = bindProjectLaneToWorkItem();
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: project.workItems[0].id,
+      patch: { decisionsUsed: project.workItems[0].contract.budget.maxDecisions - 2 },
+    }, project.id);
+    const escalation = {
+      outcome: 'needs-human', proposalKind: 'important', escalationBoundary: 'budget-exhausted',
+      reason: '阶段自主裁决预算即将耗尽', impact: '需要项目 AI 重规划后续阶段',
+    };
+    expect(decide(escalation)).toMatchObject({
+      ok: false, error: expect.stringContaining('预算尚未耗尽'),
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: project.workItems[0].id,
+      patch: { decisionsUsed: project.workItems[0].contract.budget.maxDecisions - 1 },
+    }, project.id);
+    expect(decide(escalation)).toMatchObject({ ok: true, outcome: 'needs-human' });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0]
+      .decisionsUsed).toBe(project.workItems[0].contract.budget.maxDecisions);
+  });
+
+  it('notifies the user when an exhausted execution budget pauses project progress', async () => {
+    const project = bindProjectLaneToWorkItem();
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: project.workItems[0].id,
+      patch: { decisionsUsed: project.workItems[0].contract.budget.maxDecisions },
+    }, project.id);
+    const appendRecord = (globalThis.window as any).wmux.projectManager.appendRecord as ReturnType<typeof vi.fn>;
+
+    expect(decide({
+      next: '继续执行合同内剩余工作',
+      executionAction: 'implementation',
+      workspaceVersion: 'head:test',
+      evidence: '当前仍有未完成工作',
+      contextSummary: '决策预算已耗尽',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('连续自主决策上限'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0]
+      .decisionsUsed).toBe(project.workItems[0].contract.budget.maxDecisions);
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events.find((event) => (
+      event.kind === 'guard-triggered' && event.payload?.attentionRequired === true
+    )))
+      .toMatchObject({
+        kind: 'guard-triggered',
+        payload: { decision: 'pause', attentionRequired: true },
+      });
+    await vi.waitFor(() => expect(appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'guard-triggered',
+      payload: expect.objectContaining({ decision: 'pause', attentionRequired: true }),
+    })));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目执行护栏需要处理',
+    }));
   });
 
   it('allows one safe proactive follow-up from a project supervisor without a pending review round', () => {
@@ -4141,7 +4363,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '验证项目监督待决项可由项目管理 AI 闭合', description: '', preconditions: [],
           scope: { root: 'E:\\project-decision', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['互锁解除'], validation: ['检查监督状态'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -4166,8 +4388,10 @@ describe('supervisor decision bridge', () => {
     expect(decide({
       outcome: 'needs-human',
       proposalKind: 'important',
+      escalationBoundary: 'contract-change',
       next: '在既有范围内采用候选方案并补充聚焦验证',
       reason: '需要项目管理 AI 选择项目内技术路线',
+      impact: '选择会改变当前任务合同的实现路线',
       alternatives: '方案 A：补充聚焦验证；方案 B：调整内部实现',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
     const approval = useStore.getState().supervisor.pendingApprovals[0];
@@ -4235,8 +4459,10 @@ describe('supervisor decision bridge', () => {
     expect(decide({
       outcome: 'needs-human',
       proposalKind: 'important',
+      escalationBoundary: 'external-blocker',
       next: '重新选择聚焦验证方案',
-      reason: '旧证据需要重新核对',
+      reason: '外部测试环境已失效，旧证据需要重新核对',
+      impact: '当前任务无法在本地恢复该外部环境',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
     const expiredApproval = useStore.getState().supervisor.pendingApprovals[0];
     expiredApproval.createdAt = Date.now() - 25 * 60 * 60 * 1000;
@@ -4261,8 +4487,10 @@ describe('supervisor decision bridge', () => {
     expect(decide({
       outcome: 'needs-human',
       proposalKind: 'context-recovery',
+      escalationBoundary: 'external-blocker',
       next: '恢复步骤：\n1. 读取既有检查结果。\n2. 只执行尚未完成的聚焦验证。',
       reason: '需要确认恢复上下文',
+      impact: '旧任务上下文已经丢失，监督 AI 无法验证隐含状态',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
     const recoveryApproval = useStore.getState().supervisor.pendingApprovals[0];
     writes.mockClear();
@@ -4282,6 +4510,9 @@ describe('supervisor decision bridge', () => {
       outcome: 'complete',
       reason: '聚焦验证已经通过',
       evidence: '相关回归测试通过且 diff 已核对',
+      testResult: '相关回归测试全部通过',
+      changedFiles: ['src/auth.ts'],
+      workspaceVersion: 'head:test,diff:auth-v2',
     })).toMatchObject({ ok: true, outcome: 'complete', waiting: true, handoff: true });
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
       .toMatchObject({ controlState: 'waiting' });
@@ -4450,12 +4681,31 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ transitionId: first.transitionId }),
     ]));
+    const revised = await remote({
+      ...handoff,
+      summary: '阶段测试已经通过，并补充最终 diff 证据',
+      payload: { ...handoff.payload, evidence: '定向测试 12/12 通过；diff-check 通过' },
+    });
+    expect(revised.transitionId).toBe(first.transitionId);
+    expect(useStore.getState().projectManager?.pendingSupervisorTransitions[0]).toMatchObject({
+      id: first.transitionId,
+      notificationCount: 2,
+      evidence: '定向测试 12/12 通过；diff-check 通过',
+    });
 
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({
       action: 'transition-ack', callerSurfaceId: managerSurfaceId, projectId: project.id,
       transitionId: first.transitionId, resolution: 'accepted',
       summary: '阶段证据充分，已验收并准备下一阶段目标',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('尚未进入完成状态') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'task-a', patch: { status: 'completed' },
+    }, project.id);
+    await expect(request({
+      action: 'transition-ack', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      transitionId: first.transitionId, resolution: 'accepted',
+      summary: '阶段证据充分，工作项已完成并准备下一阶段目标',
     })).resolves.toMatchObject({ ok: true, resolution: 'accepted' });
     expect(useStore.getState().projectManager?.pendingSupervisorTransitions).toEqual([]);
     expect(useStore.getState().projectManager?.pendingManagerDeliveries
@@ -4499,7 +4749,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成认证', description: '', preconditions: [],
           scope: { root: 'E:\\repo', allowPaths: ['src/auth'], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['认证测试通过'], validation: ['npm test -- auth'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -4529,7 +4779,9 @@ describe('supervisor decision bridge', () => {
     store.updateLane('lane-a', { awaitingReview: true });
     expect(decide(retry)).toMatchObject({ ok: false, error: expect.stringContaining('相同动作和错误') });
     expect(writes).toHaveBeenCalledTimes(2);
-    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({ status: 'waiting-decision' });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      status: 'waiting-decision', attempts: 2,
+    });
   });
 
   it('requires evidence before a project-managed supervisor can complete work', () => {
@@ -4546,7 +4798,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成认证', description: '', preconditions: [],
           scope: { root: 'E:\\repo', allowPaths: [], denyPaths: [], forbiddenActions: [] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['认证测试通过'], validation: ['npm test -- auth'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },
@@ -4577,7 +4829,7 @@ describe('supervisor decision bridge', () => {
         contract: {
           objective: '完成认证', description: '', preconditions: [],
           scope: { root: 'E:\\repo', allowPaths: ['src/auth'], denyPaths: ['src/payments'], forbiddenActions: ['git push'] },
-          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, permissionConfirm: false },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['认证测试通过'], validation: ['npm test -- auth'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
         },
       },

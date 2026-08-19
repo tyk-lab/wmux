@@ -87,18 +87,31 @@ describe('project execution anti-loop guard', () => {
     })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('相同动作和错误') });
   });
 
-  it('allows the same command after the workspace version changes', () => {
+  it('allows the same command after the workspace version and changed-file evidence agree', () => {
     const history = [
       createProjectExecutionRecord(proposal({ now: 1_000 })),
       createProjectExecutionRecord(proposal({ now: 2_000 })),
     ];
     expect(evaluateProjectExecutionGuard({
       history,
-      proposal: proposal({ workspaceVersion: 'diff-b', now: 3_000 }),
+      proposal: proposal({ workspaceVersion: 'diff-b', changedFiles: ['src/auth.ts'], now: 3_000 }),
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: 2,
       startedAt: 500,
     }).decision).toBe('allow');
+  });
+
+  it('rejects a changed self-reported version without material evidence', () => {
+    const history = [
+      createProjectExecutionRecord(proposal({ workspaceVersion: 'claimed-a', now: 1_000 })),
+      createProjectExecutionRecord(proposal({ workspaceVersion: 'claimed-b', now: 2_000 })),
+    ];
+    expect(evaluateProjectExecutionGuard({
+      history,
+      proposal: proposal({ workspaceVersion: 'claimed-c', now: 3_000 }),
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 2,
+    })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('相同动作和错误') });
   });
 
   it('prevents repeating a full suite for the same work version', () => {
@@ -107,6 +120,19 @@ describe('project execution anti-loop guard', () => {
     expect(evaluateProjectExecutionGuard({
       history,
       proposal: { ...fullSuite, now: 2_000 },
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 1,
+    })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('全量测试') });
+  });
+
+  it('does not let an unsubstantiated version label bypass the full-suite limit', () => {
+    const first = proposal({
+      command: 'npm test', testCommand: 'npm test', fullSuite: true,
+      workspaceVersion: 'claimed-a', changedFiles: [],
+    });
+    expect(evaluateProjectExecutionGuard({
+      history: [createProjectExecutionRecord(first)],
+      proposal: { ...first, workspaceVersion: 'claimed-b', now: 2_000 },
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: 1,
     })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('全量测试') });

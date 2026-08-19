@@ -632,6 +632,29 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (dependencyError) return { ok: false, error: dependencyError };
       next = updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
+    } else if (action.type === 'reset-work-item-baseline') {
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (['completed', 'stopped'].includes(existing.status)) {
+        return { ok: false, error: '已经结束的任务不能重置项目基线' };
+      }
+      const reason = action.reason.trim().slice(0, 1200);
+      if (!reason) return { ok: false, error: '重置项目基线必须说明原因' };
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        baseline: requiredProjectTaskBaseline(
+          item.requirementsVersion || projectRequirementsVersion(session),
+        ),
+        updatedAt: now,
+      }));
+      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      next = updated;
+      eventInput = {
+        kind: 'work-item-updated',
+        workItemId: action.workItemId,
+        summary: `重置任务工作区基线：${action.workItemId}；${reason}`,
+        payload: { baselineReset: true, reason },
+      };
     } else if (action.type === 'start-work-item-baseline') {
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
@@ -641,12 +664,19 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (existing.requirementsVersion !== projectRequirementsVersion(session)) {
         return { ok: false, error: '任务尚未绑定当前需求版本，不能发起项目基线调查' };
       }
+      const previousInvestigationRounds = existing.baseline?.status === 'investigating'
+        ? Math.max(1, Math.trunc(existing.baseline.investigationRounds || 1))
+        : 0;
+      if (previousInvestigationRounds >= 2) {
+        return { ok: false, error: '项目基线已经完成初次调查和一次定向补查；必须基于现有报告批准、暂缓或上报明确阻塞，不能继续重复调查' };
+      }
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
         baseline: {
           status: 'investigating',
           requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
           requestedAt: now,
+          investigationRounds: previousInvestigationRounds + 1,
         },
         updatedAt: now,
       }));
@@ -679,6 +709,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         baseline: {
           status: 'approved',
           requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
+          investigationRounds: item.baseline?.investigationRounds,
           workspaceVersion,
           evidence,
           approvedAt: now,
@@ -743,7 +774,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = { kind: 'supervisor-decision', workItemId: action.workItemId, summary: `记录监督决策：${action.workItemId}` };
     } else if (action.type === 'pause-project') {
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
-      eventInput = { kind: 'project-paused', summary: action.reason || '项目已暂停' };
+      eventInput = {
+        kind: 'project-paused',
+        summary: action.reason || '项目已暂停',
+        payload: {
+          source: action.source || 'user',
+          attentionRequired: action.attentionRequired === true,
+        },
+      };
     } else if (action.type === 'resume-project') {
       const activeGoal = activeProjectGoal(session);
       next = {

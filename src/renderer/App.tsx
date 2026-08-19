@@ -61,8 +61,8 @@ import {
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
-  canDeliverToSupervisor,
   enqueueSupervisorDelivery,
+  nextDeliverableSupervisorDelivery,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_READY_EVENT,
@@ -83,6 +83,7 @@ import {
   clearSupervisorProviderLimitAlert,
   reportSupervisorProviderLimit,
 } from './supervisor/provider-limit';
+import { projectBaselineProgressDirective } from './project-manager/engine';
 import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import {
   dedicatedSupervisorSurfaceId,
@@ -536,6 +537,10 @@ function handleSupervisorHookEvent(event: any): void {
         hasPendingDecision,
         pendingDeliveries: (freshLane.pendingSupervisorDeliveries || []).length,
       })) {
+        const projectWorkItem = freshLane.projectManagerProjectId && freshLane.projectWorkItemId
+          ? store.projectManagers.find((project) => project.id === freshLane.projectManagerProjectId)
+            ?.workItems.find((item) => item.id === freshLane.projectWorkItemId)
+          : undefined;
         appendSupervisorRecord(session, freshLane, 'supervisor.idle-unreported', {
           event: lifecycle,
           reason: '专属监督回合已结束，但没有提交继续、阶段交接、暂停或待决状态',
@@ -549,8 +554,11 @@ function handleSupervisorHookEvent(event: any): void {
           [
             '[监督回合未完成状态交接｜立即补报]',
             '你的 Agent 回合已经结束，但控制层没有收到 continue/rework、阶段完成、暂停或待决事件。',
+            projectWorkItem ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}` : '',
+            buildSupervisorWakeRoleAnchor(freshLane.surfaceId),
             '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
-          ].join('\n'),
+            '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
+          ].filter(Boolean).join('\n'),
         );
       }
     }
@@ -1131,14 +1139,14 @@ export default function App() {
         if (!pty?.has || !pty.writeChecked) return;
         const session = useStore.getState().supervisor;
         for (const lane of session.lanes) {
-          let delivery = lane.pendingSupervisorDeliveries?.[0];
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-          if (supervisorLaneControlState(lane) !== 'active' || !delivery || !supervisorSurfaceId) continue;
+          if (supervisorLaneControlState(lane) !== 'active' || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
-          const canDeliver = delivery.kind === 'liveness-probe'
-            ? supervisorState === 'idle'
-            : canDeliverToSupervisor(supervisorState);
-          if (!canDeliver) continue;
+          let delivery = nextDeliverableSupervisorDelivery(
+            lane.pendingSupervisorDeliveries,
+            supervisorState,
+          );
+          if (!delivery) continue;
           const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
             scheduleRetry();
@@ -1226,7 +1234,7 @@ export default function App() {
           store.appendSupervisorLog(lane.id, '监督通知已送达', supervisorDeliveryLabel(delivery.kind));
         }
       } catch {
-        // Keep the head event queued and retry only while delivery work exists.
+        // Keep the undelivered event queued and retry only while delivery work exists.
         scheduleRetry();
       } finally {
         supervisorDeliveryInFlightRef.current = false;

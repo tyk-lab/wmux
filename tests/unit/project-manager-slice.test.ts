@@ -118,6 +118,18 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'start-work-item-baseline', workItemId: 'baseline-task',
     })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
+      status: 'investigating', investigationRounds: 1,
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'start-work-item-baseline', workItemId: 'baseline-task',
+    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
+      status: 'investigating', investigationRounds: 2,
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'start-work-item-baseline', workItemId: 'baseline-task',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能继续重复调查') });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'approve-work-item-baseline', workItemId: 'baseline-task',
       workspaceVersion: 'head:a,status:clean', evidence: '已审核入口、工作树与测试约定',
@@ -435,7 +447,16 @@ describe('project-manager slice', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') });
-    useStore.getState().applyProjectManagerAction({ type: 'pause-project', reason: '讨论方案' });
+    const paused = useStore.getState().applyProjectManagerAction({
+      type: 'pause-project', reason: '运行链无进展', source: 'manager', attentionRequired: true,
+    });
+    expect(paused).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'project-paused',
+        payload: { source: 'manager', attentionRequired: true },
+      },
+    });
     expect(useStore.getState().projectManager?.status).toBe('paused');
     useStore.getState().applyProjectManagerAction({ type: 'resume-project', reason: '继续' });
     expect(useStore.getState().projectManager?.status).toBe('active');

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  activeProjectManagerAttentionEvent,
   activeProjectGoal,
   activeProjectSubgoals,
   MAX_PROJECT_PLAN_FILES,
@@ -55,20 +56,14 @@ function taskWorkModeLabel(mode: string | undefined): string {
 type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
 type ProjectWorkItemIntervention = 'skip' | 'close';
 
-const PROJECT_ALERT_KINDS = new Set([
-  'manager-runtime-failed',
-  'supervisor-runtime-failed',
-  'task-runtime-failed',
-  'manager-delivery-failed',
-  'requirements-quiesce-failed',
-]);
-
 const PROJECT_ALERT_LABELS: Record<string, string> = {
   'manager-runtime-failed': '项目管理 AI 运行时故障',
   'supervisor-runtime-failed': '项目专属监督故障',
   'task-runtime-failed': '任务终端 AI 故障',
   'manager-delivery-failed': '项目管理消息投递失败',
   'requirements-quiesce-failed': '需求变更停机确认失败',
+  'guard-triggered': '项目执行护栏已停止推进',
+  'project-paused': '项目 AI 主动暂停',
 };
 
 function projectActivityLabel(session: {
@@ -222,14 +217,7 @@ export default function ProjectManagerDialog() {
   const goalHistory = useMemo(() => [...(session?.goals || [])].sort((left, right) => right.sequence - left.sequence), [session?.goals]);
   const activeAlert = useMemo(() => {
     if (!session) return null;
-    const latestAlert = [...session.events].reverse().find((event) => PROJECT_ALERT_KINDS.has(event.kind));
-    if (!latestAlert) return null;
-    const latestRecovery = [...session.events].reverse().find((event) => (
-      event.kind === 'project-resumed'
-      || event.kind === 'manager-runtime-restarted'
-      || event.kind === 'recovery-restored'
-    ));
-    return latestRecovery && latestRecovery.ts >= latestAlert.ts ? null : latestAlert;
+    return activeProjectManagerAttentionEvent(session.events) || null;
   }, [session]);
   const message = session ? messageDrafts[session.id] || '' : '';
   const lastConversationEvent = conversation.at(-1);

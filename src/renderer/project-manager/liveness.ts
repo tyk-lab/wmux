@@ -2,7 +2,10 @@ export type ProjectAgentActivityState = 'idle' | 'working' | 'blocked' | 'unknow
 
 export const PROJECT_LIVENESS_IDLE_PROBE_MS = 6 * 60_000;
 export const PROJECT_LIVENESS_WORKER_PROBE_MS = 10 * 60_000;
-export const PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS = 30 * 60_000;
+export const PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS = 20 * 60_000;
+export const PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS = 45 * 60_000;
+/** Compatibility alias for callers that only need the idle-worker threshold. */
+export const PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS = PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS;
 export const PROJECT_LIVENESS_BLOCKED_REPORT_MS = 10 * 60_000;
 export const PROJECT_LIVENESS_PROBE_REPORT_MS = 12 * 60_000;
 export const PROJECT_LIVENESS_CONTROL_GRACE_MS = 5 * 60_000;
@@ -86,7 +89,10 @@ export function evaluateProjectLiveness(options: {
       }
       return { action: 'none', runtime, silentForMs };
     }
-    if (silentForMs >= PROJECT_LIVENESS_SUPERVISOR_WORKING_GRACE_MS) {
+    const workingGraceMs = workerState === 'working'
+      ? PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS
+      : PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS;
+    if (silentForMs >= workingGraceMs) {
       runtime.escapeSentAt = now;
       return { action: 'escape-supervisor', runtime, silentForMs };
     }

@@ -1,17 +1,13 @@
 import React from 'react';
-import { activeProjectGoal, projectDisplayName } from '../../../shared/project-manager';
+import {
+  activeProjectGoal,
+  activeProjectManagerAttentionEvent,
+  projectDisplayName,
+} from '../../../shared/project-manager';
 import { useStore } from '../../store';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
-
-const PROJECT_ALERT_KINDS = new Set([
-  'manager-runtime-failed',
-  'supervisor-runtime-failed',
-  'task-runtime-failed',
-  'manager-delivery-failed',
-  'requirements-quiesce-failed',
-]);
 
 export default function ProjectManagerPanel() {
   const session = useStore((state) => state.projectManager);
@@ -47,15 +43,7 @@ export default function ProjectManagerPanel() {
         })
       : []
   ))[0];
-  const latestAlert = [...session.events].reverse().find((event) => PROJECT_ALERT_KINDS.has(event.kind));
-  const latestRecovery = [...session.events].reverse().find((event) => (
-    event.kind === 'project-resumed'
-    || event.kind === 'manager-runtime-restarted'
-    || event.kind === 'recovery-restored'
-  ));
-  const activeAlert = latestAlert && (!latestRecovery || latestAlert.ts > latestRecovery.ts)
-    ? latestAlert
-    : null;
+  const activeAlert = activeProjectManagerAttentionEvent(session.events) || null;
 
   const control = (action: 'pause' | 'resume') => {
     void (window as any).__wmux_projectManagerRemoteControl?.({

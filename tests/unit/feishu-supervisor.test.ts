@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildProjectTerminalScreenCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, projectManagerViewFromStatusResult, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
+import { buildApprovalCard, buildBusyTaskConfirmationCard, buildCloseTerminalConfirmationCard, buildCloseTerminalSelectCard, buildDirectTerminalTaskCard, buildProjectClarificationCard, buildProjectManagerConversationCard, buildProjectManagerPortfolioCard, buildProjectTerminalScreenCard, buildFeishuAuditAlertCard, buildFeishuAuditStatusCard, buildSpecialTerminalCard, buildSupervisorControlMenuCard, buildSupervisorLaneControlCard, buildSupervisorLogCard, buildSupervisorManagementCard, buildSupervisorMessageCard, buildSupervisorResultCard, buildSupervisorSendTaskCard, buildSupervisorStartCard, buildSupervisorStatusCard, buildSupervisorStopConfirmationCard, buildSupervisorTerminalScreenCard, buildTerminalScreenCard, buildTerminalScreenSelectCard, buildWaitingDecisionCard, formatFeishuSupervisorAuditEvent, formatFeishuSupervisorResponse, isFeishuSupervisorActorAllowed, isFeishuSupervisorHelp, loadFeishuEnvironment, parseFeishuCardFormValues, parseFeishuDotEnv, parseFeishuSupervisorCommand, parseLegacyFeishuEnv, parseReferencedFeishuEnv, projectManagerViewFromStatusResult, reduceFeishuAuditTerminalStatus, resolveFeishuCardAction, resolveFeishuEnvFilePointer } from '../../src/main/feishu-supervisor';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 import { USER_RECORDS_TERMINAL_DIRECTORY } from '../../src/shared/user-records-terminal';
 
@@ -709,6 +709,7 @@ supervisor_model: k3`)).toEqual({
       session: {
         id: 'pm-a', projectDir: 'E:\\repo', projectName: '认证项目', projectScope: '仅认证模块',
         activeGoalId: 'goal-2', status: 'active', goal: '完成第二阶段认证',
+        attentionKind: 'task-runtime-failed', attentionReason: '任务终端 AI 运行时不可用',
         goals: [{ id: 'goal-2', sequence: 2, statement: '完成第二阶段认证', status: 'active' }],
         subgoals: [{ id: 'integration', goalId: 'goal-2', title: '集成验收', outcome: '完成集成', status: 'planned', order: 1 }],
         workItems: [{ goalId: 'goal-2', subgoalId: 'integration', title: '集成任务', status: 'planned' }],
@@ -719,6 +720,7 @@ supervisor_model: k3`)).toEqual({
 
     expect(view).toMatchObject({
       projectId: 'pm-a', projectName: '认证项目', projectScope: '仅认证模块', activeGoalId: 'goal-2',
+      attentionKind: 'task-runtime-failed', attentionReason: '任务终端 AI 运行时不可用',
       goals: [expect.objectContaining({ id: 'goal-2', sequence: 2 })],
       subgoals: [expect.objectContaining({ id: 'integration', goalId: 'goal-2' })],
       workItems: [expect.objectContaining({ goalId: 'goal-2', subgoalId: 'integration' })],
@@ -897,12 +899,17 @@ supervisor_model: k3`)).toEqual({
     expect(projectSelectCard).toContain('"terminal_mode":"project"');
     expect(projectScreenCard).toContain('认证项目 · 专属监督 AI · 认证回归测试');
     expect(projectScreenCard).toContain('正在核对任务 AI 的测试证据。');
-    expect(projectScreenCard).toContain('此页只读监控');
+    expect(projectScreenCard).toContain('这是直接终端控制');
     expect(projectScreenCard).toContain('form_project_terminal_refresh');
     expect(projectScreenCard).toContain('打开项目工作台');
     expect(projectScreenCard).toContain('project_ai_workspace');
-    expect(projectScreenCard).not.toContain('发送内容');
-    expect(projectScreenCard).not.toContain('发送 Ctrl+C');
+    expect(projectScreenCard).toContain('发送内容');
+    expect(projectScreenCard).toContain('form_project_terminal_send');
+    expect(projectScreenCard).toContain('发送 Esc');
+    expect(projectScreenCard).toContain('form_project_terminal_escape');
+    expect(projectScreenCard).toContain('发送 Ctrl+C');
+    expect(projectScreenCard).toContain('form_project_terminal_interrupt');
+    expect(projectScreenCard).toContain('"terminal_mode":"project"');
     expect(screenCard).toContain('Agent 回复');
     expect(screenCard).toContain('路径：E:\\\\…\\\\常用工具环境部署\\\\codex环境部署');
     expect(screenCard).not.toContain('sync_file\\\\work\\\\ai相关');
@@ -1292,5 +1299,25 @@ supervisor_model: k3`)).toEqual({
     expect(response).toContain('监督会话：已暂停（会话已保留）');
     expect(response).toContain('状态：已暂停（会话已保留）');
     expect(response).toContain('会话 ID：sup-paused');
+  });
+
+  it('项目中心展示项目 AI 异常暂停的原因和处理标记', () => {
+    const card = JSON.stringify(buildProjectManagerPortfolioCard({
+      projectId: 'pm-alert',
+      projects: [{
+        id: 'pm-alert',
+        projectName: '认证项目',
+        status: 'paused',
+        goal: '完成认证回归',
+        attentionKind: 'project-paused',
+        attentionReason: '监督运行链连续无进展，等待重建运行时',
+        pauseReason: '监督运行链连续无进展，等待重建运行时',
+        pauseAttentionRequired: true,
+      }],
+    }));
+
+    expect(card).toContain('状态：已暂停');
+    expect(card).toContain('⚠️ 需要处理');
+    expect(card).toContain('监督运行链连续无进展');
   });
 });

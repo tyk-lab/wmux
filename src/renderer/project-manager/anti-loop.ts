@@ -1,4 +1,5 @@
 import type {
+  ProjectEscalationBoundary,
   ProjectExecutionBudget,
   ProjectExecutionRecord,
 } from '../../shared/project-manager';
@@ -16,6 +17,7 @@ export interface ProjectExecutionProposal {
   testCommand?: string;
   testResult?: string;
   fullSuite?: boolean;
+  escalationBoundary?: ProjectEscalationBoundary;
   now: number;
 }
 
@@ -44,20 +46,31 @@ export function createProjectExecutionRecord(
 ): ProjectExecutionRecord {
   const changedFiles = [...(proposal.changedFiles || [])].map(normalizeText).sort();
   const workspaceVersion = normalizeText(proposal.workspaceVersion) || 'unknown';
+  const testResult = normalizeText(proposal.testResult).slice(0, 2_000);
+  const diffSummary = normalizeText(proposal.diffSummary).slice(0, 4_000);
+  const evidenceSummary = normalizeText(proposal.evidence).slice(0, 4_000);
+  const materialWorkspaceVersion = changedFiles.length > 0 || testResult
+    ? workspaceVersion
+    : 'no-material-change';
   return {
     ts: proposal.now,
     actionSignature: signature([proposal.action, proposal.command || '']),
     commandSignature: signature([proposal.command || proposal.action]),
     errorSignature: proposal.error ? signature([proposal.error]) : '',
     progressSignature: signature([
-      workspaceVersion,
+      materialWorkspaceVersion,
       changedFiles.join('|'),
-      proposal.testResult || '',
+      testResult,
       proposal.error || '',
     ]),
     workspaceVersion,
     testCommand: proposal.testCommand ? normalizeText(proposal.testCommand) : undefined,
     fullSuite: proposal.fullSuite === true,
+    ...(changedFiles.length > 0 ? { changedFiles: changedFiles.slice(0, 100) } : {}),
+    ...(testResult ? { testResult } : {}),
+    ...(diffSummary ? { diffSummary } : {}),
+    ...(evidenceSummary ? { evidenceSummary } : {}),
+    ...(proposal.escalationBoundary ? { escalationBoundary: proposal.escalationBoundary } : {}),
   };
 }
 
@@ -71,6 +84,14 @@ function consecutiveCount(
     count += 1;
   }
   return count;
+}
+
+function sameMaterialWorkVersion(
+  left: ProjectExecutionRecord,
+  right: ProjectExecutionRecord,
+): boolean {
+  return left.workspaceVersion === right.workspaceVersion
+    || ((left.changedFiles?.length || 0) === 0 && (right.changedFiles?.length || 0) === 0);
 }
 
 export function evaluateProjectExecutionGuard(options: {
@@ -97,7 +118,7 @@ export function evaluateProjectExecutionGuard(options: {
     const identicalFailures = consecutiveCount(history, (entry) => (
       entry.actionSignature === record.actionSignature
       && entry.errorSignature === record.errorSignature
-      && entry.workspaceVersion === record.workspaceVersion
+      && sameMaterialWorkVersion(entry, record)
     ));
     if (identicalFailures >= budget.maxIdenticalFailures) {
       return {
@@ -111,7 +132,7 @@ export function evaluateProjectExecutionGuard(options: {
   if (record.testCommand) {
     const sameTestRuns = history.filter((entry) => (
       entry.testCommand === record.testCommand
-      && entry.workspaceVersion === record.workspaceVersion
+      && sameMaterialWorkVersion(entry, record)
     )).length;
     if (sameTestRuns >= budget.maxSameTestRuns) {
       return {
@@ -122,7 +143,7 @@ export function evaluateProjectExecutionGuard(options: {
     }
     if (record.fullSuite) {
       const fullSuiteRuns = history.filter((entry) => (
-        entry.fullSuite === true && entry.workspaceVersion === record.workspaceVersion
+        entry.fullSuite === true && sameMaterialWorkVersion(entry, record)
       )).length;
       if (fullSuiteRuns >= budget.maxFullSuiteRunsPerVersion) {
         return {

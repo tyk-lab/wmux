@@ -222,6 +222,62 @@ describe('project manager records', () => {
       });
   });
 
+  it('rejects a non-continuous contract without a real continuation boundary', () => {
+    const appData = root();
+    const base = normalizeProjectManagerSession(session('pm-boundary', 20));
+    const workItem = {
+      id: 'bounded-task',
+      goalId: base.activeGoalId,
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      baseline: { status: 'required' as const, requirementsVersion: 1 },
+      title: '边界任务',
+      status: 'planned' as const,
+      dependencies: [],
+      attempts: 0,
+      decisionsUsed: 0,
+      updatedAt: 20,
+      executionHistory: [],
+      contract: {
+        objective: '完成边界任务',
+        description: '',
+        preconditions: [],
+        scope: { root: 'E:\\repo', allowPaths: ['src'], denyPaths: [], forbiddenActions: [] },
+        authority: {
+          technicalChoices: true,
+          lowRiskRetries: true,
+          routeAdjustments: true,
+          targetedTests: true,
+          internalThreads: false,
+          continuousExecution: false,
+          permissionConfirm: false,
+        },
+        stopWhen: ['验证完成'],
+        validation: ['检查结果'],
+        budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      },
+    };
+    const invalid = normalizeProjectManagerSession({ ...base, workItems: [workItem] });
+    expect(() => saveProjectManagerSession(invalid, appData)).toThrow('invalid project manager session payload');
+
+    const valid = normalizeProjectManagerSession({
+      ...base,
+      workItems: [{
+        ...workItem,
+        contract: {
+          ...workItem.contract,
+          authority: { ...workItem.contract.authority, continuationBoundary: 'project-owned-decision' as const },
+        },
+      }],
+    });
+    expect(() => saveProjectManagerSession(valid, appData)).not.toThrow();
+    expect(recoveredSession(appData, valid.id)?.workItems[0].contract.authority).toMatchObject({
+      routeAdjustments: true,
+      continuousExecution: false,
+      continuationBoundary: 'project-owned-decision',
+    });
+  });
+
   it('persists repeated stage ids in separate main goals and rejects cyclic stage plans', () => {
     const appData = root();
     const base = normalizeProjectManagerSession(session('pm-goals', 20));

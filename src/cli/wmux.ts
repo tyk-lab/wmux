@@ -176,6 +176,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     next: nextInput.text,
     nextFile: nextInput.fileReference || '',
     proposalKind: getFlag(args, '--proposal-kind') || '',
+    escalationBoundary: getFlag(args, '--escalation-boundary') || '',
     impact: getFlag(args, '--impact') || '',
     alternatives: getFlag(args, '--alternatives') || '',
     permissionCommand: getFlag(args, '--permission-command') || '',
@@ -187,7 +188,9 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     testCommand: getFlag(args, '--test-command') || '',
     testResult: getFlag(args, '--test-result') || '',
     changedFiles: (getFlag(args, '--changed-files') || '').split(',').map((item) => item.trim()).filter(Boolean),
+    diffSummary: getFlag(args, '--diff-summary') || '',
     evidence: getFlag(args, '--evidence') || '',
+    contextSummary: getFlag(args, '--context-summary') || '',
     fullSuite: args.includes('--full-suite'),
     retry: args.includes('--retry'),
   });
@@ -1093,10 +1096,12 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
 Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]
+                          [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
                           [--execution-action <text> --command <text> --error <text> --workspace-version <hash>]
-                          [--test-command <text> --test-result <text> --changed-files <a,b> --evidence <text>]
+                          [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]
+                          [--evidence <text> --context-summary <text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project update|alignment-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply

@@ -1883,7 +1883,7 @@ describe('飞书人工决策单聊路由', () => {
     expect(refreshedCard).toContain('"terminal_mode":"ordinary"');
   });
 
-  it('从独立入口只读监控项目 AI、专属监督和任务 AI 终端', async () => {
+  it('从独立入口监控并控制项目 AI、专属监督和任务 AI 终端', async () => {
     const ordinaryList = JSON.stringify({
       active: false, paused: false, terminals: [], session: null, pendingApprovals: [],
     });
@@ -1962,11 +1962,13 @@ describe('飞书人工决策单聊路由', () => {
     );
     const monitorCard = JSON.stringify(updateCard.mock.calls[1][1]);
     expect(monitorCard).toContain('项目监督状态-1');
-    expect(monitorCard).toContain('此页只读监控');
+    expect(monitorCard).toContain('这是直接终端控制');
     expect(monitorCard).toContain('form_project_terminal_refresh');
     expect(monitorCard).toContain('打开项目工作台');
-    expect(monitorCard).not.toContain('发送内容');
-    expect(monitorCard).not.toContain('form_terminal_interrupt');
+    expect(monitorCard).toContain('发送内容');
+    expect(monitorCard).toContain('form_project_terminal_send');
+    expect(monitorCard).toContain('form_project_terminal_escape');
+    expect(monitorCard).toContain('form_project_terminal_interrupt');
 
     handlers.cardAction({
       chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
@@ -1974,7 +1976,39 @@ describe('飞书人工决策单聊路由', () => {
     });
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
     expect(JSON.stringify(updateCard.mock.calls[2][1])).toContain('项目监督状态-2');
-    expect(control.mock.calls.some(([command]) => ['send', 'terminal-escape', 'terminal-interrupt'].includes(command.action))).toBe(false);
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_project_terminal_send', value: currentControlValue({ wmux_action: 'form_project_terminal_send', terminal: 'project-supervisor-a', terminal_mode: 'project', nonce: 'send-project-terminal' }) },
+      raw: { action: { form_value: { task: '继续核对认证回归' } } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(4));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'send', terminal: 'project-supervisor-a', task: '继续核对认证回归', mode: 'project' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_project_terminal_escape', value: currentControlValue({ wmux_action: 'form_project_terminal_escape', terminal: 'project-supervisor-a', terminal_mode: 'project', nonce: 'escape-project-terminal' }) },
+      raw: { action: { form_value: {} } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(5));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'terminal-escape', terminal: 'project-supervisor-a', mode: 'project' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { name: 'wmux_form_project_terminal_interrupt', value: currentControlValue({ wmux_action: 'form_project_terminal_interrupt', terminal: 'project-supervisor-a', terminal_mode: 'project', nonce: 'interrupt-project-terminal' }) },
+      raw: { action: { form_value: {} } },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(6));
+    expect(control).toHaveBeenCalledWith(
+      { action: 'terminal-interrupt', terminal: 'project-supervisor-a', mode: 'project' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
   });
 
   it('未知会话中的旧版控制卡不执行操作且只提示重新打开', async () => {
@@ -2303,6 +2337,47 @@ describe('飞书人工决策单聊路由', () => {
     expect(card).toContain('打开项目工作台');
     expect(card).toContain('"projectId":"pm-alert"');
     expect(card).toContain('普通 AI 监督接管');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-paused', projectDir: 'E:\\repo', type: 'project-paused',
+      payload: {
+        message: '监督运行链连续无进展，项目 AI 已暂停并等待重建',
+        source: 'manager',
+        attentionRequired: true,
+      },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    const pauseAlert = JSON.stringify((send.mock.calls[1][1] as { card?: unknown }).card);
+    expect(pauseAlert).toContain('项目 AI 主动暂停');
+    expect(pauseAlert).toContain('监督运行链连续无进展');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-manual', projectDir: 'E:\\repo', type: 'project-paused',
+      payload: { message: '用户手动暂停', source: 'user', attentionRequired: false },
+    });
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(2);
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-guard', projectDir: 'E:\\repo', type: 'guard-triggered',
+      payload: { message: '已达到连续自主决策上限', decision: 'pause', attentionRequired: true },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify((send.mock.calls[2][1] as { card?: unknown }).card)).toContain('项目执行护栏');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-replan', projectDir: 'E:\\repo', type: 'guard-triggered',
+      payload: { message: '需要换一条执行路线', decision: 'replan' },
+    });
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(3);
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-future', projectDir: 'E:\\repo', type: 'future-control-failed',
+      payload: { message: '新增控制链异常' },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(4));
+    expect(JSON.stringify((send.mock.calls[3][1] as { card?: unknown }).card)).toContain('新增控制链异常');
   });
 
   it('项目人工介入阻塞推送到专用飞书群，答复进入对应项目且不自动恢复', async () => {

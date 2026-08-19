@@ -4,10 +4,12 @@ import {
   PROJECT_TASK_BASELINE_INVESTIGATION_MARKER,
   PROJECT_TASK_BASELINE_REPORT_MARKER,
   PROJECT_TASK_EXECUTION_ENVELOPE_MARKER,
+  buildProjectExecutionIdentityBlock,
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
   prepareProjectTaskDelivery,
   projectPermissionAuthorizationError,
+  projectProgressObligation,
   projectTaskBaselineViolation,
   projectContractViolation,
   projectCompletionState,
@@ -57,10 +59,15 @@ function item(id: string, status: ProjectWorkItem['status'], dependencies: strin
 }
 
 function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['status'] = 'active'): ProjectManagerSession {
-  return normalizeProjectManagerSession({
+  const normalized = normalizeProjectManagerSession({
     id: 'pm-1', projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['环境已准备'], planFiles: [], doneWhen: ['全部测试通过'], status,
+    requirementsVersion: 1, authorizationVersion: 1, acceptedRequirementsVersion: 1,
     workItems, events: [], createdAt: 1, updatedAt: 1,
   });
+  return {
+    ...normalized,
+    progressSync: { status: 'ready', checkedAt: 1, snapshotFingerprint: 'test', changeCount: 0 },
+  };
 }
 
 describe('project-manager engine', () => {
@@ -103,10 +110,42 @@ describe('project-manager engine', () => {
     expect(projectCompletionState(session([item('a', 'completed')]))).toBe('ready-for-validation');
   });
 
+  it('keeps paused work unfinished and derives one concrete progress obligation', () => {
+    const paused = session([item('blocked-stage', 'paused')]);
+    expect(projectCompletionState(paused)).toBe('blocked');
+    expect(projectProgressObligation(paused)).toMatchObject({
+      kind: 'resume-paused', workItemId: 'blocked-stage',
+    });
+
+    expect(projectProgressObligation(session([]))).toMatchObject({ kind: 'plan-work' });
+    expect(projectProgressObligation(session([item('ready-stage', 'planned')]))).toMatchObject({
+      kind: 'dispatch-work', workItemId: 'ready-stage',
+    });
+    const unaligned = session([]);
+    unaligned.acceptedRequirementsVersion = 0;
+    expect(projectProgressObligation(unaligned)).toMatchObject({ kind: 'align-requirements' });
+    const stale = session([item('stale-stage', 'planned')]);
+    stale.authorizationVersion = 2;
+    expect(projectProgressObligation(stale)).toMatchObject({ kind: 'reconcile-stale-work' });
+
+    const mixed = session([item('current-stage', 'completed'), item('old-stage', 'planned')]);
+    mixed.authorizationVersion = 2;
+    mixed.workItems[0].authorizationVersion = 2;
+    expect(projectProgressObligation(mixed)).toMatchObject({ kind: 'reconcile-stale-work' });
+  });
+
   it('builds a bounded supervisor briefing with anti-loop instructions', () => {
+    const executionIdentity = {
+      projectId: 'project-auth',
+      goalId: 'goal-auth',
+      workItemId: 'auth',
+      requirementsVersion: 3,
+      authorizationVersion: 2,
+    };
     const text = buildProjectSupervisorBriefing({
       workItemId: 'auth',
       contract: item('auth', 'planned').contract,
+      executionIdentity,
       projectGoal: '交付完整认证能力',
       stage: {
         title: '认证闭环',
@@ -129,6 +168,29 @@ describe('project-manager engine', () => {
     expect(text).toContain('内容过长时自动改用受控临时文件投递');
     expect(text).toContain('项目基线：待审核');
     expect(text).toContain(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
+    expect(text).toContain(buildProjectExecutionIdentityBlock(executionIdentity));
+    expect(text).toContain('暂缓当前工作项并推进不依赖项');
+  });
+
+  it('binds one revision-scoped execution identity into the task contract', () => {
+    const contract = item('auth', 'planned').contract;
+    const executionIdentity = {
+      projectId: 'project-auth',
+      goalId: 'goal-auth',
+      workItemId: 'auth',
+      requirementsVersion: 3,
+      authorizationVersion: 2,
+    };
+    const prepared = prepareProjectTaskDelivery(
+      contract,
+      '继续当前合同',
+      true,
+      executionIdentity,
+    );
+    expect(prepared.delivery).toContain('[项目执行身份｜控制层已绑定]');
+    expect(prepared.delivery).toContain('需求版本：R3');
+    expect(prepared.delivery).toContain('授权版本：A2');
+    expect(prepared.delivery).toContain('不得等待旧身份或自行恢复旧会话');
   });
 
   it('builds one continuous execution envelope instead of a micro-step', () => {
@@ -163,7 +225,9 @@ describe('project-manager engine', () => {
       outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 只读查看相关结构`,
     })).toBeNull();
 
-    task.baseline = { status: 'investigating', requirementsVersion: 1, requestedAt: 2 };
+    task.baseline = {
+      status: 'investigating', requirementsVersion: 1, requestedAt: 2, investigationRounds: 1,
+    };
     expect(buildProjectSupervisorBriefing({
       workItemId: task.id, contract: task.contract, baseline: task.baseline,
     })).toContain('只读调查已投递');
@@ -174,6 +238,13 @@ describe('project-manager engine', () => {
       outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
       evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',
     })).toBeNull();
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 定向核对唯一缺失入口`,
+    })).toBeNull();
+    task.baseline.investigationRounds = 2;
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 再次调查`,
+    })).toContain('不能继续重复调查');
     expect(projectTaskBaselineViolation(task, { outcome: 'complete' })).toContain('不能把工作项判定为完成');
   });
 
@@ -281,5 +352,18 @@ describe('project-manager engine', () => {
       ...contract,
       authority: { ...contract.authority, targetedTests: false, lowRiskRetries: false },
     }, { testCommand: 'npm test -- auth', retry: true })).toContain('运行测试');
+  });
+
+  it('distinguishes a negated safety reference from an affirmative forbidden action', () => {
+    const contract = item('auth', 'planned').contract;
+    expect(projectContractViolation(contract, {
+      instruction: '不要执行 git push，并且不得修改 src/payments；只检查是否存在相关调用',
+    })).toBeNull();
+    expect(projectContractViolation(contract, {
+      instruction: '不要阻止执行 git push origin main',
+    })).toContain('禁止动作');
+    expect(projectContractViolation(contract, {
+      instruction: '先确认未授权风险，再执行 git push origin main',
+    })).toContain('禁止动作');
   });
 });
