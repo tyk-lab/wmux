@@ -130,7 +130,13 @@ function projectReasoningOptions(agent: string): Array<{ value: string; label: s
     { value: '', label: '使用 Kimi 默认 Thinking' },
     { value: 'on', label: '开启 Thinking' },
   ];
-  return [{ value: '', label: '通过会话内 /effort 调整' }];
+  if (agent === 'grok') return [
+    { value: '', label: '使用 Grok 默认 Thinking' },
+    { value: 'low', label: '低（更快）' },
+    { value: 'medium', label: '中（均衡）' },
+    { value: 'high', label: '高（更深入）' },
+  ];
+  return [];
 }
 
 interface ProjectRecoveryCandidate {
@@ -938,7 +944,6 @@ export default function ProjectManagerDialog() {
                       <span>{selection.agent === 'codex' ? '推理程度' : 'Thinking'}</span>
                       <select
                         value={selection.reasoningEffort}
-                        disabled={selection.agent === 'grok'}
                         onChange={(event) => {
                           const reasoningEffort = event.target.value;
                           setAgentDraft((current) => normalizeProjectManagementAgentConfig({

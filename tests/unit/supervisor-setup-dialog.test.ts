@@ -44,7 +44,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
-    expect(projectManagerDialogSource).toContain('通过会话内 /effort 调整');
+    expect(projectManagerDialogSource).toContain('使用 Grok 默认 Thinking');
+    expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
+    expect(dialogSource).toContain('GROK_THINKING_OPTIONS');
+    expect(dialogSource).toContain('Grok Thinking');
     expect(projectManagerDialogSource).toContain('项目前置条件（每行一项）');
     expect(projectManagerDialogSource).toContain('视为当前需求版本中用户已确认的事实');
     expect(projectManagerDialogSource).toContain('不会逐步重复确认');

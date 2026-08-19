@@ -21,6 +21,15 @@ describe('supervisor model catalog', () => {
     ]);
   });
 
+  it('offers actual Grok models instead of treating Grok Build as a model', () => {
+    expect(modelOptionsFor('grok')).toEqual([
+      { value: 'grok-4.6', label: 'Grok 4.6（推荐）' },
+      { value: 'grok-4.5', label: 'Grok 4.5' },
+    ]);
+    expect(modelOptionsFor('pi').map((option) => option.value)).toContain('xai/grok-4.6');
+    expect(modelOptionsFor('pi').map((option) => option.value)).not.toContain('xai/grok-build-0.1');
+  });
+
   it('adds a custom model after validation without duplicating IDs', () => {
     const catalog = addCustomSupervisorModel({}, 'pi', ' vendor/new-model ');
     const next = addCustomSupervisorModel(catalog, 'pi', 'VENDOR/NEW-MODEL');

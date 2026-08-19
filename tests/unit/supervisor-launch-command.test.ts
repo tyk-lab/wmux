@@ -36,9 +36,21 @@ describe('supervisor launch command', () => {
       .toBe("kimi --model 'k3' --thinking");
   });
 
-  it('adds a selected Grok Build model with its supported short flag', () => {
+  it('adds a selected Grok model with the Grok Build CLI short flag', () => {
+    expect(buildSupervisorLaunchCommand('grok', 'grok-4.6', 'high'))
+      .toBe("grok -m 'grok-4.6' --reasoning-effort 'high'");
+  });
+
+  it('keeps an explicitly configured Grok reasoning effort unchanged', () => {
+    expect(buildSupervisorLaunchCommand('grok --effort low', 'grok-4.6', 'high'))
+      .toBe("grok --effort low -m 'grok-4.6'");
+  });
+
+  it('migrates obsolete Grok model IDs before launching', () => {
     expect(buildSupervisorLaunchCommand('grok', 'grok-build'))
-      .toBe("grok -m 'grok-build'");
+      .toBe("grok -m 'grok-4.6'");
+    expect(buildSupervisorLaunchCommand('pi', 'xai/grok-build-0.1', 'medium'))
+      .toBe("pi --model 'xai/grok-4.6' --thinking 'medium'");
   });
 
   it('adds the selected Pi model and Thinking level', () => {
@@ -53,6 +65,8 @@ describe('supervisor launch command', () => {
       .toBe("pi --model 'kimi-coding/k3' --thinking 'medium'");
     expect(buildSupervisorLaunchCommand('pi', 'grok-4.5', 'medium'))
       .toBe("pi --model 'xai/grok-4.5' --thinking 'medium'");
+    expect(buildSupervisorLaunchCommand('pi', 'grok-4.6', 'medium'))
+      .toBe("pi --model 'xai/grok-4.6' --thinking 'medium'");
   });
 
   it('keeps explicit Pi model and Thinking options unchanged', () => {
@@ -105,7 +119,7 @@ describe('supervisor launch command', () => {
   it('disables memory, subagents and web search for a dedicated Grok supervisor', () => {
     const command = buildSupervisorLaunchCommand(
       'grok --no-memory',
-      'grok-build',
+      'grok-4.6',
       '',
       { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: 'lane-grok' },
     );

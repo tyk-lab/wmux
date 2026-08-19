@@ -45,7 +45,7 @@ function qualifyPiModel(model: string): string {
   if (/^(?:k3|k3-256k|kimi-for-coding(?:-highspeed)?)$/i.test(model)) {
     return `kimi-coding/${model}`;
   }
-  if (/^(?:grok-4\.3|grok-4\.5|grok-build-0\.1)$/i.test(model)) {
+  if (/^grok-4\.(?:3|5|6)$/i.test(model)) {
     return `xai/${model}`;
   }
   return model;
@@ -126,7 +126,12 @@ export function buildSupervisorLaunchCommand(
 ): string {
   const command = launchCommand.trim();
   const launcher = detectSupervisorLauncher(command);
-  const selectedModel = launcher === 'pi' ? qualifyPiModel(model.trim()) : model.trim();
+  const rawModel = model.trim();
+  const selectedModel = launcher === 'pi'
+    ? qualifyPiModel(rawModel === 'xai/grok-build-0.1' ? 'xai/grok-4.6' : rawModel)
+    : launcher === 'grok' && rawModel === 'grok-build'
+      ? 'grok-4.6'
+      : rawModel;
   const selectedEffort = reasoningEffort.trim();
   if (!command) return command;
   const modelFlag = launcher === 'grok' ? '-m' : '--model';
@@ -143,6 +148,11 @@ export function buildSupervisorLaunchCommand(
   }
   if (launcher === 'kimi' && selectedEffort === 'on' && !/(?:^|\s)--thinking(?:\s|$)/i.test(command)) {
     configuredCommand = `${modelCommand} --thinking`;
+  }
+  if (launcher === 'grok'
+    && selectedEffort
+    && !/(?:^|\s)--(?:reasoning-)?effort(?:\s|=)/i.test(command)) {
+    configuredCommand = `${modelCommand} --reasoning-effort ${quotePowerShellArgument(selectedEffort)}`;
   }
   if (launcher === 'pi' && selectedEffort && !/(?:^|\s)--thinking(?:\s|=)/i.test(command)) {
     configuredCommand = `${modelCommand} --thinking ${quotePowerShellArgument(selectedEffort)}`;

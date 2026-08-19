@@ -39,6 +39,8 @@ describe('interactive Agent launch', () => {
       startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
     });
+    expect(buildInteractiveAgentLaunch('grok', '执行首条任务', 'grok-4.6', 'medium').startupCommands[0])
+      .toMatch(/^grok -m 'grok-4\.6' --reasoning-effort 'medium' -- /);
   });
 
   it('detects only wmux automated Codex and Kimi startup flows', () => {

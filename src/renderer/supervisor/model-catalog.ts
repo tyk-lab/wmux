@@ -33,7 +33,7 @@ export const BUILTIN_SUPERVISOR_MODEL_OPTIONS: Record<
     { value: 'kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
   ],
   grok: [
-    { value: 'grok-build', label: 'Grok Build（推荐）' },
+    { value: 'grok-4.6', label: 'Grok 4.6（推荐）' },
     { value: 'grok-4.5', label: 'Grok 4.5' },
   ],
   pi: [
@@ -44,9 +44,9 @@ export const BUILTIN_SUPERVISOR_MODEL_OPTIONS: Record<
     { value: 'kimi-coding/k3-256k', label: 'Kimi K3 · 256k' },
     { value: 'kimi-coding/kimi-for-coding', label: 'Kimi K2.7 Code' },
     { value: 'kimi-coding/kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
-    { value: 'xai/grok-4.3', label: 'Grok 4.3' },
+    { value: 'xai/grok-4.6', label: 'Grok 4.6' },
     { value: 'xai/grok-4.5', label: 'Grok 4.5' },
-    { value: 'xai/grok-build-0.1', label: 'Grok Build 0.1' },
+    { value: 'xai/grok-4.3', label: 'Grok 4.3' },
   ],
 };
 

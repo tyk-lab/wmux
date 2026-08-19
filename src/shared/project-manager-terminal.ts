@@ -41,8 +41,17 @@ export function normalizeProjectAgentReasoningEffort(agent: string, value: unkno
       ? ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'off']
       : agent === 'kimi'
         ? ['on']
+        : agent === 'grok'
+          ? ['low', 'medium', 'high']
         : [];
   return allowed.includes(effort) ? effort : projectAgentDefaultReasoningEffort(agent);
+}
+
+function normalizeProjectAgentModel(agent: string, value: unknown): string {
+  const model = String(value || '').trim();
+  if (agent === 'grok' && model === 'grok-build') return 'grok-4.6';
+  if (agent === 'pi' && model === 'xai/grok-build-0.1') return 'xai/grok-4.6';
+  return model;
 }
 
 export function normalizeProjectManagementAgentConfig(
@@ -59,17 +68,17 @@ export function normalizeProjectManagementAgentConfig(
   return {
     manager: {
       agent: normalizedManagerAgent,
-      model: String(value?.manager?.model || '').trim(),
+      model: normalizeProjectAgentModel(normalizedManagerAgent, value?.manager?.model),
       reasoningEffort: normalizeProjectAgentReasoningEffort(normalizedManagerAgent, value?.manager?.reasoningEffort, ''),
     },
     supervisor: {
       agent: normalizedSupervisorAgent,
-      model: String(value?.supervisor?.model || '').trim(),
+      model: normalizeProjectAgentModel(normalizedSupervisorAgent, value?.supervisor?.model),
       reasoningEffort: normalizeProjectAgentReasoningEffort(normalizedSupervisorAgent, value?.supervisor?.reasoningEffort),
     },
     task: {
       agent: normalizedTaskAgent,
-      model: String(value?.task?.model || '').trim(),
+      model: normalizeProjectAgentModel(normalizedTaskAgent, value?.task?.model),
       reasoningEffort: normalizeProjectAgentReasoningEffort(normalizedTaskAgent, value?.task?.reasoningEffort, ''),
     },
   };

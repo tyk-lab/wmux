@@ -100,6 +100,12 @@ const PI_THINKING_OPTIONS = [
   { value: 'minimal', label: '最小' },
   { value: 'off', label: '关闭' },
 ];
+const GROK_THINKING_OPTIONS = [
+  { value: '', label: '使用 Grok 默认 Thinking 设置' },
+  { value: 'low', label: '低（更快）' },
+  { value: 'medium', label: '中（均衡）' },
+  { value: 'high', label: '高（更深入）' },
+];
 const CUSTOM_OPTION = '__custom__';
 const DEFAULT_MODEL_OPTION = '__default__';
 
@@ -2271,8 +2277,30 @@ export default function SupervisorSetupDialog() {
               )}
               {launcherKind === 'grok' && (
                 <section className="supervisor-dialog__section">
-                  <div className="supervisor-dialog__label">Grok Build 推理设置</div>
-                  <div className="supervisor-dialog__hint">推理强度由会话内 `/effort` 设置，不传入其他启动器的参数。</div>
+                  <div className="supervisor-dialog__label">Grok Thinking</div>
+                  <div className="supervisor-dialog__default-agent-row">
+                    <select
+                      className="supervisor-dialog__input"
+                      value={reasoningEffort}
+                      disabled={sessionRetained}
+                      onChange={(event) => setReasoningEffort(event.target.value)}
+                    >
+                      {GROK_THINKING_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}{selectedAgentDefaults?.supervisorReasoningEffort === option.value ? '（当前默认）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      disabled={sessionRetained || !selectedDefaultAgent || reasoningIsDefault}
+                      onClick={saveCurrentReasoningAsDefault}
+                      title="将当前 Thinking 设置用作 Grok 以后新建监督会话的默认选择"
+                    >
+                      {reasoningIsDefault ? '已为默认' : '设为默认'}
+                    </button>
+                  </div>
                 </section>
               )}
 
