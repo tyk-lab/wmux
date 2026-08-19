@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
-import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectOptions, SshConnectionProfile, SshFileEntry, SshHostKeyPrompt } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf, replaceSoleTerminalSurface } from './store/split-utils';
 import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from './dev-ports';
@@ -10,6 +10,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
+import SshHostKeyDialog from './components/Ssh/SshHostKeyDialog';
 import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree } from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -701,6 +702,12 @@ export default function App() {
     workspaceId: WorkspaceId;
     profile: SshConnectionProfile;
     errorMessage?: string;
+  } | null>(null);
+  const [sshHostKeyRequest, setSshHostKeyRequest] = useState<{
+    workspaceId: WorkspaceId;
+    profile: SshConnectionProfile;
+    password?: string;
+    prompt: SshHostKeyPrompt;
   } | null>(null);
   const sshWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const autoReconnectedSshWorkspaceIdsRef = useRef<Set<string>>(new Set());
@@ -1520,6 +1527,7 @@ export default function App() {
     workspaceId: WorkspaceId,
     profile: SshConnectionProfile,
     password?: string,
+    options?: SshConnectOptions,
   ): Promise<boolean> => {
     updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: undefined });
     const existingWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
@@ -1527,10 +1535,18 @@ export default function App() {
       updateSplitTree(workspaceId, attachSshProfileId(existingWorkspace.splitTree, profile.id));
     }
     try {
-      const result = await window.wmux?.ssh?.connect?.(workspaceId, profile, password);
+      const result = await window.wmux?.ssh?.connect?.(workspaceId, profile, password, options);
       if (!result?.ok) {
         const errorMessage = result?.error || 'SSH 连接失败';
-        if (result?.passwordRequired) {
+        if (result?.hostKeyConfirmation) {
+          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
+          setSshHostKeyRequest({
+            workspaceId,
+            profile,
+            password,
+            prompt: result.hostKeyConfirmation,
+          });
+        } else if (result?.passwordRequired) {
           updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
           setSshPasswordRequest({ workspaceId, profile, errorMessage });
         } else {
@@ -1553,6 +1569,7 @@ export default function App() {
       }
       updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connected' });
       setSshPasswordRequest((request) => request?.workspaceId === workspaceId ? null : request);
+      setSshHostKeyRequest((request) => request?.workspaceId === workspaceId ? null : request);
       return true;
     } catch (reason) {
       const errorMessage = reason instanceof Error ? reason.message : String(reason);
@@ -1852,6 +1869,24 @@ export default function App() {
           sshPasswordRequest.workspaceId,
           sshPasswordRequest.profile,
           password,
+        )}
+      />}
+      {sshHostKeyRequest && <SshHostKeyDialog
+        prompt={sshHostKeyRequest.prompt}
+        onCancel={() => {
+          updateWorkspaceMetadata(sshHostKeyRequest.workspaceId, {
+            sshConnectionState: 'error',
+            sshConnectionError: sshHostKeyRequest.prompt.changed
+              ? '已拒绝变化的主机密钥'
+              : '已取消主机密钥确认',
+          });
+          setSshHostKeyRequest(null);
+        }}
+        onAccept={() => connectSshWorkspace(
+          sshHostKeyRequest.workspaceId,
+          sshHostKeyRequest.profile,
+          sshHostKeyRequest.password,
+          { acceptHostKey: sshHostKeyRequest.prompt },
         )}
       />}
       <Titlebar

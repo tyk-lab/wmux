@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { TextDecoder } from 'util';
 import {
   Client,
@@ -17,10 +17,17 @@ import {
   SshConnectionProfile,
   SshFileEntry,
   SshFileListResult,
+  SshHostKeyPrompt,
   SshTextFileResult,
   SshTextFileWriteResult,
 } from '../shared/types';
+import {
+  inspectKnownHostKey,
+  parseSshHostPublicKey,
+} from './ssh-known-hosts';
 import { nextAvailableLocalPath } from './ssh-transfer-cache';
+
+export { hashKnownHostKey } from './ssh-known-hosts';
 
 type SshSession = { client: Client; sftp: SFTPWrapper };
 
@@ -35,29 +42,6 @@ function expandHome(filePath: string, homeDirectory = os.homedir()): string {
 function parsePort(value: string | undefined): number | undefined {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : undefined;
-}
-
-/** Returns SHA-256 host fingerprints already trusted by the user's OpenSSH client. */
-export function hashKnownHostKey(encodedKey: string): string {
-  return createHash('sha256').update(Buffer.from(encodedKey, 'base64')).digest('hex');
-}
-
-export function readKnownHostFingerprints(host: string, port: number): Set<string> {
-  const knownHostsPath = path.join(os.homedir(), '.ssh', 'known_hosts');
-  const expectedHosts = new Set(port === 22 ? [host] : [`[${host}]:${port}`]);
-  const fingerprints = new Set<string>();
-  try {
-    for (const line of fs.readFileSync(knownHostsPath, 'utf8').split(/\r?\n/)) {
-      const [hosts, _algorithm, encodedKey] = line.trim().split(/\s+/);
-      if (!hosts || !encodedKey || hosts.startsWith('|')) continue;
-      if (!hosts.split(',').some((entry) => expectedHosts.has(entry))) continue;
-      // ssh2 passes hostHash values to hostVerifier as lowercase hexadecimal.
-      fingerprints.add(hashKnownHostKey(encodedKey));
-    }
-  } catch {
-    // Missing known_hosts is normal on a fresh machine; the verifier will reject it.
-  }
-  return fingerprints;
 }
 
 /** Reads the simple per-host fields needed to turn OpenSSH entries into editable wmux presets. */
@@ -241,6 +225,60 @@ export class SshPasswordAuthenticationError extends SshAuthenticationError {
   }
 }
 
+export class SshUntrustedHostKeyError extends Error {
+  readonly host: string;
+  readonly port: number;
+  readonly algorithm: string;
+  readonly encodedKey: string;
+  readonly fingerprint: string;
+  readonly knownAs: string[];
+  readonly changed: boolean;
+  readonly revoked: boolean;
+
+  constructor(
+    message: string,
+    details: {
+      host: string;
+      port: number;
+      algorithm: string;
+      encodedKey: string;
+      fingerprint: string;
+      knownAs: string[];
+      changed: boolean;
+      revoked?: boolean;
+    },
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'SshUntrustedHostKeyError';
+    this.host = details.host;
+    this.port = details.port;
+    this.algorithm = details.algorithm;
+    this.encodedKey = details.encodedKey;
+    this.fingerprint = details.fingerprint;
+    this.knownAs = details.knownAs;
+    this.changed = details.changed;
+    this.revoked = details.revoked === true;
+  }
+
+  toPrompt(): SshHostKeyPrompt {
+    return {
+      host: this.host,
+      port: this.port,
+      algorithm: this.algorithm,
+      encodedKey: this.encodedKey,
+      fingerprint: this.fingerprint,
+      knownAs: this.knownAs,
+      changed: this.changed,
+    };
+  }
+}
+
+export interface SshConnectConfigOptions {
+  knownHostsPath?: string;
+  onUntrustedHostKey?: (error: SshUntrustedHostKeyError) => void;
+}
+
 function isAuthenticationFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const level = (error as Error & { level?: string }).level;
@@ -252,7 +290,11 @@ function isSshPasswordPrompt(prompt: string): boolean {
   return /(?:password\s*[:：]|密码\s*[:：])\s*$/i.test(prompt);
 }
 
-export function buildSshConnectConfig(profile: SshConnectionProfile, password?: string): ConnectConfig {
+export function buildSshConnectConfig(
+  profile: SshConnectionProfile,
+  password?: string,
+  options: SshConnectConfigOptions = {},
+): ConnectConfig {
   const config: ConnectConfig = {
     host: profile.host,
     port: profile.port,
@@ -272,9 +314,54 @@ export function buildSshConnectConfig(profile: SshConnectionProfile, password?: 
     config.tryKeyboard = true;
     config.authHandler = ['password', 'keyboard-interactive'];
   }
-  const trustedFingerprints = readKnownHostFingerprints(profile.host, profile.port);
-  config.hostHash = 'sha256';
-  config.hostVerifier = (fingerprint: string) => trustedFingerprints.has(fingerprint);
+  // Keep the raw host key so an unknown host can be confirmed and written back
+  // to known_hosts. Hashing first would make first-connect unrecoverable.
+  config.hostVerifier = (key: Buffer) => {
+    let parsed;
+    try {
+      parsed = parseSshHostPublicKey(key);
+    } catch {
+      return false;
+    }
+    const inspection = inspectKnownHostKey(
+      profile.host,
+      profile.port,
+      parsed.encodedKey,
+      options.knownHostsPath,
+    );
+    if (inspection.status === 'trusted') return true;
+    if (inspection.status === 'revoked') {
+      options.onUntrustedHostKey?.(new SshUntrustedHostKeyError(
+        `主机 ${profile.host} 的密钥已被吊销，拒绝连接`,
+        {
+          host: profile.host,
+          port: profile.port,
+          algorithm: parsed.algorithm,
+          encodedKey: parsed.encodedKey,
+          fingerprint: inspection.fingerprint,
+          knownAs: inspection.knownAs,
+          changed: false,
+          revoked: true,
+        },
+      ));
+      return false;
+    }
+    options.onUntrustedHostKey?.(new SshUntrustedHostKeyError(
+      inspection.status === 'changed'
+        ? `主机 ${profile.host} 的 SSH 密钥已变化，请确认这仍是你要连接的机器`
+        : `尚未信任 ${profile.host} 的主机密钥，请确认指纹后继续`,
+      {
+        host: profile.host,
+        port: profile.port,
+        algorithm: parsed.algorithm,
+        encodedKey: parsed.encodedKey,
+        fingerprint: inspection.fingerprint,
+        knownAs: inspection.knownAs,
+        changed: inspection.status === 'changed',
+      },
+    ));
+    return false;
+  };
   return config;
 }
 
@@ -429,6 +516,7 @@ export class SshManager {
     client.on('error', () => this.disconnect(workspaceId));
     let sftp: SFTPWrapper;
     let agentError: Error | undefined;
+    let untrustedHostKey: SshUntrustedHostKeyError | undefined;
     try {
       sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
         const answerKeyboardInteractive = (
@@ -467,13 +555,16 @@ export class SshManager {
           });
         });
         try {
-          client.connect(buildSshConnectConfig(profile, password));
+          client.connect(buildSshConnectConfig(profile, password, {
+            onUntrustedHostKey: (error) => { untrustedHostKey = error; },
+          }));
         } catch (error) {
           fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
     } catch (error) {
       try { client.end(); } catch { /* connection already closed */ }
+      if (untrustedHostKey) throw untrustedHostKey;
       if (profile.authMethod === 'password' && isAuthenticationFailure(error)) {
         throw new SshPasswordAuthenticationError('SSH 密码无效，请重新输入', { cause: error });
       }

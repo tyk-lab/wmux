@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectResult } from '../shared/types';
+import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectOptions, SshConnectResult } from '../shared/types';
 import { observePtyData, clearActivity } from './claude-observer';
 import { clearAgentState } from './agent-state';
 import { isAuthorizedSshPasswordLaunch, PtyManager, type SshPasswordEndpoint } from './pty-manager';
@@ -40,8 +40,13 @@ import {
   SshAuthenticationError,
   SshManager,
   SshPasswordAuthenticationError,
+  SshUntrustedHostKeyError,
   parseOpenSshConfig,
 } from './ssh-manager';
+import {
+  appendKnownHostKey,
+  formatOpenSshFingerprint,
+} from './ssh-known-hosts';
 import { SshCredentialStore } from './ssh-credential-store';
 import {
   SshTransferCache,
@@ -312,9 +317,30 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     workspaceId: string,
     profile: SshConnectionProfile,
     suppliedPassword?: string,
+    connectOptions?: SshConnectOptions,
   ): Promise<SshConnectResult> => {
     const passwordProfile = asPasswordProfile(profile);
     const endpoint = credentialEndpoint(passwordProfile);
+    const toConnectResult = (error: unknown): SshConnectResult | undefined => {
+      if (error instanceof SshUntrustedHostKeyError) {
+        if (error.revoked) return { ok: false, error: error.message };
+        return { ok: false, hostKeyConfirmation: error.toPrompt(), error: error.message };
+      }
+      return undefined;
+    };
+    if (connectOptions?.acceptHostKey) {
+      const accepted = connectOptions.acceptHostKey;
+      if (!accepted.algorithm || !accepted.encodedKey
+        || formatOpenSshFingerprint(accepted.encodedKey) !== accepted.fingerprint) {
+        return { ok: false, error: '主机密钥确认无效' };
+      }
+      appendKnownHostKey(
+        passwordProfile.host.trim(),
+        Number(passwordProfile.port),
+        accepted.algorithm,
+        accepted.encodedKey,
+      );
+    }
     const connectWithPassword = async (password: string): Promise<SshConnectResult> => {
       try {
         await sshManager.connect(workspaceId, passwordProfile, password);
@@ -328,6 +354,8 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
           passwordProfiles.delete(profile.id);
           return { ok: false, passwordRequired: true, error: error.message };
         }
+        const hostKeyResult = toConnectResult(error);
+        if (hostKeyResult) return hostKeyResult;
         throw error;
       }
     };
@@ -340,6 +368,8 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         passwordProfiles.delete(profile.id);
         return { ok: true, authMethod: profile.authMethod };
       } catch (error) {
+        const hostKeyResult = toConnectResult(error);
+        if (hostKeyResult) return hostKeyResult;
         if (error instanceof SshAuthenticationError) {
           const cachedPassword = sshCredentialStore.get(profile.id, endpoint);
           if (cachedPassword) return connectWithPassword(cachedPassword);
@@ -383,6 +413,9 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       return { ok: true };
     } catch (error) {
       if (error instanceof SshPasswordAuthenticationError) {
+        return { ok: false, error: error.message };
+      }
+      if (error instanceof SshUntrustedHostKeyError) {
         return { ok: false, error: error.message };
       }
       throw error;

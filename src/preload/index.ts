@@ -298,8 +298,8 @@ contextBridge.exposeInMainWorld('wmux', {
   ssh: {
     importConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_IMPORT_CONFIG),
     pickKey: () => ipcRenderer.invoke(IPC_CHANNELS.SSH_PICK_KEY),
-    connect: (workspaceId: string, profile: any, password?: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.SSH_CONNECT, workspaceId, profile, password),
+    connect: (workspaceId: string, profile: any, password?: string, options?: { acceptHostKey?: any }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_CONNECT, workspaceId, profile, password, options),
     disconnect: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SSH_DISCONNECT, workspaceId),
     credentialStatus: (profile: any) => ipcRenderer.invoke(IPC_CHANNELS.SSH_CREDENTIAL_STATUS, profile),
     updateCredential: (profile: any, password: string) =>

@@ -18,7 +18,9 @@ import {
   SshAuthenticationError,
   SshManager,
   SshPasswordAuthenticationError,
+  SshUntrustedHostKeyError,
 } from '../../src/main/ssh-manager';
+import { parseSshHostPublicKey } from '../../src/main/ssh-known-hosts';
 
 const temporaryDirectories: string[] = [];
 
@@ -130,6 +132,39 @@ describe('password authentication', () => {
     expect(config.tryKeyboard).toBe(true);
     expect(config.agent).toBeUndefined();
     expect(config.privateKey).toBeUndefined();
+    expect(config.hostHash).toBeUndefined();
+    expect(typeof config.hostVerifier).toBe('function');
+  });
+
+  it('asks the UI to confirm an unknown host key instead of silently rejecting it', () => {
+    const sshDirectory = createSshDirectory();
+    const knownHostsPath = path.join(sshDirectory, 'known_hosts');
+    let untrusted: SshUntrustedHostKeyError | undefined;
+    const config = buildSshConnectConfig({
+      id: 'profile-a',
+      name: 'pi',
+      host: '10.0.1.182',
+      port: 22,
+      username: 'pi',
+      authMethod: 'password',
+    }, 'secret', {
+      knownHostsPath,
+      onUntrustedHostKey: (error) => { untrusted = error; },
+    });
+    const name = Buffer.from('ssh-ed25519');
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(name.length);
+    const key = Buffer.concat([header, name, Buffer.from('new-device')]);
+
+    expect((config.hostVerifier as (value: Buffer) => boolean)(key)).toBe(false);
+    expect(untrusted).toBeInstanceOf(SshUntrustedHostKeyError);
+    expect(untrusted?.changed).toBe(false);
+    expect(untrusted?.toPrompt()).toMatchObject({
+      host: '10.0.1.182',
+      algorithm: 'ssh-ed25519',
+      encodedKey: parseSshHostPublicKey(key).encodedKey,
+      fingerprint: expect.stringMatching(/^SHA256:/),
+    });
   });
 });
 

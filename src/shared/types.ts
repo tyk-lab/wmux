@@ -57,9 +57,24 @@ export type SshTextFileWriteResult =
   | { ok: true; mtimeMs: number }
   | { conflict: true; currentMtimeMs: number };
 
+export interface SshHostKeyPrompt {
+  host: string;
+  port: number;
+  algorithm: string;
+  encodedKey: string;
+  fingerprint: string;
+  knownAs: string[];
+  changed: boolean;
+}
+
+export interface SshConnectOptions {
+  acceptHostKey?: Pick<SshHostKeyPrompt, 'algorithm' | 'encodedKey' | 'fingerprint'>;
+}
+
 export interface SshConnectResult {
   ok: boolean;
   passwordRequired?: boolean;
+  hostKeyConfirmation?: SshHostKeyPrompt;
   authMethod?: SshAuthMethod;
   error?: string;
 }
