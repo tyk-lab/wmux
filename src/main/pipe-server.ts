@@ -30,8 +30,16 @@ const PUBLIC_V2_METHODS = new Set<string>([
 ]);
 
 function requiresSurfaceCapability(method: string): boolean {
-  return method.startsWith('project.') || method.startsWith('supervisor.');
+  return method === 'role.context'
+    || method.startsWith('project.')
+    || method.startsWith('supervisor.');
 }
+
+export type SurfaceCapabilityAuthorizer = (
+  surfaceId: string,
+  method: string,
+  params: Record<string, any>,
+) => Promise<{ allowed: boolean; reason?: string }>;
 
 export interface V2Response {
   result?: any;
@@ -44,16 +52,19 @@ export class PipeServer extends EventEmitter {
   private pipePath: string;
   private authToken: string;
   private surfaceForAuthToken: (token: string) => string | undefined;
+  private authorizeSurfaceCapability: SurfaceCapabilityAuthorizer;
 
   constructor(
     pipePath = '\\\\.\\pipe\\wmux',
     authToken = '',
     surfaceForAuthToken: (token: string) => string | undefined = () => undefined,
+    authorizeSurfaceCapability: SurfaceCapabilityAuthorizer = async () => ({ allowed: true }),
   ) {
     super();
     this.pipePath = pipePath;
     this.authToken = authToken;
     this.surfaceForAuthToken = surfaceForAuthToken;
+    this.authorizeSurfaceCapability = authorizeSurfaceCapability;
   }
 
   start(): void {
@@ -75,7 +86,7 @@ export class PipeServer extends EventEmitter {
           if (line.startsWith('{')) {
             try {
               const request = JSON.parse(line) as V2Request;
-              this.handleV2(request, socket);
+              void this.handleV2(request, socket);
             } catch {
               socket.write(JSON.stringify({ error: { code: -32700, message: 'Parse error' } }) + '\n');
             }
@@ -183,7 +194,7 @@ export class PipeServer extends EventEmitter {
     socket.write('ok\n');
   }
 
-  private handleV2(request: V2Request, socket: net.Socket): void {
+  private async handleV2(request: V2Request, socket: net.Socket): Promise<void> {
     const respond = (result: any) => {
       const response: V2Response = { result, id: request.id };
       socket.write(JSON.stringify(response) + '\n');
@@ -229,6 +240,21 @@ export class PipeServer extends EventEmitter {
           ? { supervisorSurfaceId: authenticatedSurfaceId }
           : {}),
       };
+      let authorization: { allowed: boolean; reason?: string };
+      try {
+        authorization = await this.authorizeSurfaceCapability(
+          authenticatedSurfaceId,
+          request.method,
+          request.params,
+        );
+      } catch (error) {
+        respondError(-32003, `Surface capability authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      if (!authorization.allowed) {
+        respondError(-32003, authorization.reason || 'Forbidden for current surface capability');
+        return;
+      }
     }
 
     // Emit the V2 request and let handlers respond

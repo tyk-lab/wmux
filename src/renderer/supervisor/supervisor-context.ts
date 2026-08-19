@@ -12,6 +12,7 @@ import {
   type SupervisorLane,
   type SupervisorSession,
 } from '../store/supervisor-slice';
+import { detectSupervisorLauncher } from './launch-command';
 
 export interface SupervisorProjectContext {
   projectId: string;
@@ -24,6 +25,11 @@ export interface SupervisorProjectContext {
   maxDecisions?: number;
   attempts?: number;
   maxTaskRetries?: number;
+  projectStatus?: string;
+  workItemStatus?: string;
+  bindingCurrent?: boolean;
+  baselineApproved?: boolean;
+  dependencyError?: string;
 }
 
 export interface SupervisorConditionalCommand {
@@ -44,11 +50,16 @@ export interface SupervisorRuntimeContext {
     workItemId?: string;
     requirementsVersion?: number;
     authorizationVersion?: number;
+    agent?: string;
+    model?: string;
+    reasoningEffort?: string;
   };
   state: {
     lane: string;
     task: string;
     autonomous: boolean;
+    decision: 'ready' | 'not-awaiting-review' | 'blocked';
+    decisionBlockers: string[];
   };
   permissions: {
     autonomy: SupervisorAutonomyPermission[];
@@ -71,6 +82,57 @@ export interface SupervisorRuntimeContext {
     projectAttempts?: number;
     projectRetriesRemaining?: number;
   };
+}
+
+export interface SupervisorDecisionPreflight {
+  blockers: string[];
+  baseReady: boolean;
+  reviewReady: boolean;
+  proactiveProjectReady: boolean;
+  decisionReady: boolean;
+}
+
+/** Shared global preflight; action text, evidence and scope still receive deeper guards at execution. */
+export function evaluateSupervisorDecisionPreflight(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  options: {
+    taskState?: string;
+    project?: SupervisorProjectContext;
+    outcome?: 'continue' | 'rework' | 'complete' | 'needs-human';
+    hasNext?: boolean;
+    permissionRequested?: boolean;
+  } = {},
+): SupervisorDecisionPreflight {
+  const projectManaged = !!lane.projectManagerProjectId;
+  const laneState = supervisorLaneControlState(lane);
+  const autonomous = typeof lane.autonomousOverride === 'boolean'
+    ? lane.autonomousOverride
+    : session.autonomous === true;
+  const pendingApproval = session.pendingApprovals.some((approval) => approval.laneId === lane.id);
+  const blockers = [
+    !session.active ? '监督会话未启动' : '',
+    session.paused ? '监督会话已暂停' : '',
+    laneState !== 'active' ? `监督通道为 ${laneState}` : '',
+    projectManaged && options.project?.bindingCurrent !== true
+      ? options.project?.dependencyError || '项目、目标、工作项或合同版本绑定已失效'
+      : '',
+    pendingApproval && (!options.outcome || options.outcome !== 'needs-human')
+      ? '当前通道已有待决审批'
+      : '',
+    lane.autoDecisionLimitReached && !autonomous ? '已达到自动裁决上限' : '',
+  ].filter(Boolean);
+  const baseReady = blockers.length === 0;
+  const reviewReady = baseReady && lane.awaitingReview === true;
+  const proactiveProjectReady = baseReady
+    && projectManaged
+    && autonomous;
+  const decisionReady = !options.outcome
+    ? reviewReady || proactiveProjectReady
+    : options.outcome === 'continue' || options.outcome === 'rework'
+      ? reviewReady || (proactiveProjectReady && options.hasNext === true && !options.permissionRequested)
+      : reviewReady;
+  return { blockers, baseReady, reviewReady, proactiveProjectReady, decisionReady };
 }
 
 function effectivePermissions(
@@ -100,7 +162,11 @@ function effectiveForbiddenActions(
 export function buildSupervisorRuntimeContext(
   session: SupervisorSession,
   lane: SupervisorLane,
-  options: { taskState?: string; project?: SupervisorProjectContext } = {},
+  options: {
+    taskState?: string;
+    permissionBlocked?: boolean;
+    project?: SupervisorProjectContext;
+  } = {},
 ): SupervisorRuntimeContext {
   const permissions = effectivePermissions(session, lane);
   const projectManaged = !!lane.projectManagerProjectId;
@@ -110,15 +176,34 @@ export function buildSupervisorRuntimeContext(
   const autoDecisionsUsed = Math.max(0, lane.autoDecisionsUsed || 0);
   const maxAutoDecisions = session.maxAutoDecisions;
   const project = options.project;
-  const sameRouteAvailable = laneActive && permissions.includes('same-route-next');
-  const permissionConfirmationAvailable = laneActive
+  const autonomous = typeof lane.autonomousOverride === 'boolean'
+    ? lane.autonomousOverride
+    : session.autonomous === true;
+  const preflight = evaluateSupervisorDecisionPreflight(session, lane, options);
+  const decisionBlockers = preflight.blockers;
+  const baseDecisionReady = preflight.baseReady;
+  const reviewReady = preflight.reviewReady;
+  const proactiveProjectReady = preflight.proactiveProjectReady;
+  const sameRouteAvailable = (reviewReady || proactiveProjectReady)
+    && options.taskState !== 'working'
+    && (project?.maxDecisions === undefined
+      || project.decisionsUsed === undefined
+      || project.decisionsUsed < project.maxDecisions)
+    && permissions.includes('same-route-next');
+  const permissionConfirmationAvailable = reviewReady
+    && options.permissionBlocked === true
+    && lane.remoteSshControl !== true
     && permissions.includes('permission-confirm')
     && (!project?.authority || project.authority.permissionConfirm === true);
+  const projectBudgetExhausted = project?.maxDecisions !== undefined
+    && project.decisionsUsed !== undefined
+    && project.decisionsUsed >= project.maxDecisions;
+  const terminalOutcomeAvailable = reviewReady && options.taskState !== 'working';
   const decisionOutcomes: SupervisorRuntimeContext['commands']['decisionOutcomes'] = laneActive
     ? [
         ...(sameRouteAvailable ? ['continue', 'rework'] as const : []),
-        'complete',
-        'needs-human',
+        ...(terminalOutcomeAvailable && !projectBudgetExhausted ? ['complete'] as const : []),
+        ...(terminalOutcomeAvailable ? ['needs-human'] as const : []),
       ]
     : [];
   const conditional: SupervisorConditionalCommand[] = [
@@ -136,23 +221,24 @@ export function buildSupervisorRuntimeContext(
     },
     {
       command: `wmux project task-terminal-start --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}`,
-      available: laneActive && projectManaged && lane.projectTaskStartupPending === true,
+      available: baseDecisionReady && projectManaged && lane.projectTaskStartupPending === true,
       condition: '仅在项目监督启动阶段、真实任务终端尚未创建时执行一次',
     },
     {
       command: `wmux project task-terminal-rotate --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}`,
-      available: laneActive && projectManaged && lane.projectTaskRotationPending === true,
+      available: baseDecisionReady && projectManaged && lane.projectTaskRotationPending === true,
       condition: '仅在项目 AI 已登记当前工作项的上下文轮换请求后执行',
     },
     {
       command: `wmux project task-terminal-control --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'} --key <escape|interrupt> --reason <证据>`,
-      available: laneActive
+      available: baseDecisionReady
         && projectManaged
         && lane.projectTaskStartupPending !== true
         && options.taskState === 'working',
       condition: '仅按项目执行链活性检查规则处理持续无语义输出的 working 任务',
     },
   ];
+  const supervisorLauncher = detectSupervisorLauncher(session.supervisorLaunchCmd);
 
   return {
     ok: true,
@@ -170,13 +256,26 @@ export function buildSupervisorRuntimeContext(
       ...(project?.authorizationVersion !== undefined
         ? { authorizationVersion: project.authorizationVersion }
         : {}),
+      ...(session.supervisorLaunchCmd.trim() ? {
+        agent: supervisorLauncher === 'other'
+          ? session.supervisorLaunchCmd.trim()
+          : supervisorLauncher,
+      } : {}),
+      ...(session.supervisorModel.trim() ? { model: session.supervisorModel.trim() } : {}),
+      ...(session.supervisorReasoningEffort.trim()
+        ? { reasoningEffort: session.supervisorReasoningEffort.trim() }
+        : {}),
     },
     state: {
       lane: laneState,
       task: options.taskState || 'unknown',
-      autonomous: typeof lane.autonomousOverride === 'boolean'
-        ? lane.autonomousOverride
-        : session.autonomous === true,
+      autonomous,
+      decision: baseDecisionReady
+        ? decisionOutcomes.length > 0
+          ? 'ready'
+          : 'not-awaiting-review'
+        : 'blocked',
+      decisionBlockers,
     },
     permissions: {
       autonomy: permissions,
@@ -194,11 +293,12 @@ export function buildSupervisorRuntimeContext(
     },
     commands: {
       available: [
+        'wmux context',
         'wmux supervisor context',
         `wmux read-screen --surface ${targetSurfaceId}`,
         `wmux agent-state --surface ${targetSurfaceId}`,
         'wmux supervisor decide --help',
-        ...(laneActive
+        ...(decisionOutcomes.length > 0
           ? [`wmux supervisor decide --surface ${targetSurfaceId} --outcome <结果>`]
           : []),
       ],
@@ -246,10 +346,13 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       ? `项目绑定: ${context.identity.projectId} / ${context.identity.goalId || '（目标待绑定）'} / ${context.identity.workItemId || '（工作项待绑定）'}`
       : '项目绑定: 无（普通监督模式）',
     `自主权限: ${context.permissions.autonomy.join('、') || '无'}`,
+    `裁决状态: ${context.state.decision}${context.state.decisionBlockers.length > 0
+      ? `（${context.state.decisionBlockers.join('；')}）`
+      : ''}`,
     `可用裁决: ${context.commands.decisionOutcomes.join('、')}`,
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
-    '实时查询: 每次唤醒先运行 wmux supervisor context；其返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',
+    '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',
     '以上信息只说明当前允许提交的监督动作，不授予直接实现、测试、跨终端输入或其他项目管理权限。',
     '',
   ];

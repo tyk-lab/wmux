@@ -82,6 +82,7 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
 }
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
+  '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。',
   '首次启动项目时只执行一次需求充分性检查；恢复时沿用持久化结论或待确认问题，不得重复对齐。',
   '存在会改变方案的实质歧义时，禁止只在项目管理终端输出问题后等待；必须执行 wmux project ask --project <项目ID>，使用 category=clarification，一次只问一个问题，提供 2-4 个互斥方案并设置 recommendedOptionId。',
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
@@ -91,13 +92,27 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',
 ].join('\n');
 
+export function projectManagerRoleAnchor(projectId: string): string {
+  return [
+    '[项目 AI 角色锚点｜控制层]',
+    `你是项目 ${projectId} 的专属项目 AI，只能管理这一个项目。`,
+    '先运行 wmux context 获取实时身份、状态、权限和命令；该结果由当前终端 capability 绑定，不接受手工指定项目身份。',
+    '不得直接修改项目交付文件、执行实现/测试，或使用通用 send/send-key 控制监督 AI 与任务 AI。',
+  ].join('\n');
+}
+
+export function withProjectManagerRoleAnchor(text: string, projectId: string): string {
+  const anchor = projectManagerRoleAnchor(projectId);
+  return text.startsWith(anchor) ? text : `${anchor}\n\n${text}`;
+}
+
 export function projectManagerStartupInput(
   agent: ProjectManagerRuntimeAgent,
   skillPath: string,
   projectId: string,
 ): string {
   const projectAnchor = [
-    `你是项目 ${projectId} 的专属项目 AI，只能管理这一个项目。`,
+    projectManagerRoleAnchor(projectId),
     `启动后先运行 wmux project status --project ${projectId}；不得读取、比较、暂停、恢复或决定其他项目。`,
     '项目列表、批量暂停/恢复和运行时路由属于无决策权的项目中心，不属于你的职责。',
   ].join('\n');

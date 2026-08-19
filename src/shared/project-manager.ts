@@ -528,6 +528,45 @@ export function projectAcceptedRequirementsVersion(
   return 0;
 }
 
+export type ProjectRequirementsAlignmentPhase =
+  | 'required'
+  | 'confirmed-awaiting-plan-or-resume'
+  | 'accepted'
+  | 'needs-definition-update';
+
+/**
+ * Keep the conversational alignment decision separate from execution-version
+ * acceptance. `alignment-confirm` records the former, while an authenticated
+ * project-AI resume records the latter after orientation and planning gates.
+ */
+export function projectRequirementsAlignmentPhase(
+  session: Pick<
+    ProjectManagerSession,
+    'requirementsVersion' | 'acceptedRequirementsVersion' | 'status' | 'events'
+  >,
+): ProjectRequirementsAlignmentPhase {
+  let latestRequired = -1;
+  let latestConfirmed = -1;
+  let latestDefinition = -1;
+  let latestChangeMessage = -1;
+  session.events.forEach((event, index) => {
+    if (event.kind === 'requirements-alignment-required') latestRequired = index;
+    if (event.kind === 'requirements-alignment-confirmed') latestConfirmed = index;
+    if (event.kind === 'project-definition-updated') latestDefinition = index;
+    if (event.kind === 'user-message' && typeof event.payload?.changeSignal === 'string') {
+      latestChangeMessage = index;
+    }
+  });
+  if (latestChangeMessage > latestDefinition) return 'needs-definition-update';
+  if (latestRequired > latestConfirmed) return 'required';
+  if (projectAcceptedRequirementsVersion(session) === projectRequirementsVersion(session)) {
+    return 'accepted';
+  }
+  return latestConfirmed >= 0
+    ? 'confirmed-awaiting-plan-or-resume'
+    : 'required';
+}
+
 const MAX_PROJECT_PROGRESS_ENTRIES = 500;
 const MAX_PROJECT_PROGRESS_TEXT = 12_000;
 const MAX_PROJECT_ORIENTATION_ITEMS = 200;

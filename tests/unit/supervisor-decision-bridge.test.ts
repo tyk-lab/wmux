@@ -37,6 +37,8 @@ import {
   effectiveSupervisorAutonomyPermissions,
   PROJECT_MANAGER_WORKSPACE_TITLE,
 } from '../../src/renderer/supervisor/protocol';
+import { ORDINARY_TASK_ROLE_ANCHOR } from '../../src/renderer/role-context';
+import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervisor-engine';
 
 async function confirmProjectOrientation(projectId: string): Promise<void> {
   const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
@@ -405,6 +407,48 @@ describe('supervisor decision bridge', () => {
       ...contract,
       authority: { ...contract.authority, routeAdjustments: true },
     })).toContain('route-adjustment');
+  });
+
+  it('routes unified context by the caller surface role without trusting supplied IDs', () => {
+    const project = bindProjectLaneToWorkItem();
+    useStore.getState().restoreProjectManager({ ...project, managerSurfaceId: 'manager-a' });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-context' as any,
+      title: 'Project',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-context' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          {
+            id: 'manager-a' as any, type: 'terminal', projectManagerTerminal: true,
+            projectManagerProjectId: project.id,
+          },
+          {
+            id: 'worker-a' as any, type: 'terminal', projectManagerProjectId: project.id,
+            projectManagerWorkItemId: project.workItems[0].id,
+          },
+          { id: 'supervisor-a' as any, type: 'terminal', transientSupervisor: true },
+        ],
+      },
+    }]);
+    const context = (globalThis.window as any).__wmux_roleContext;
+
+    expect(context({ callerSurfaceId: 'manager-a', projectId: 'forged' })).toMatchObject({
+      role: 'project-ai', identity: { projectId: project.id, managerSurfaceId: 'manager-a' },
+    });
+    expect(context({ callerSurfaceId: 'supervisor-a', projectId: 'forged' })).toMatchObject({
+      role: 'project-supervisor', identity: { supervisorSurfaceId: 'supervisor-a' },
+    });
+    expect(context({ callerSurfaceId: 'worker-a', projectId: 'forged' })).toMatchObject({
+      role: 'project-task', identity: { projectId: project.id, workItemId: project.workItems[0].id },
+    });
+    useStore.getState().stopSupervisorLane('lane-a', '验证失效绑定');
+    expect(context({ callerSurfaceId: 'worker-a' })).toMatchObject({
+      ok: false, error: expect.stringContaining('绑定不完整'),
+    });
+    expect((globalThis.window as any).__wmux_authorizeSurfaceCapability({
+      callerSurfaceId: 'worker-a', method: 'surface.close', params: { surfaceId: 'supervisor-a' },
+    })).toMatchObject({ knownSurface: true, managed: true, allowed: false });
+    expect(context({ callerSurfaceId: 'unbound', projectId: project.id })).toMatchObject({ ok: false });
   });
 
   it('reports task terminal activity and rejects an unconfirmed busy send', () => {
@@ -2089,6 +2133,12 @@ describe('supervisor decision bridge', () => {
       acceptanceSummary: '相关测试通过且结果可复核',
       reason: '目标、范围和验收标准均已明确',
     })).resolves.toMatchObject({ ok: true, event: { kind: 'requirements-alignment-confirmed' } });
+    expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: surface?.id }))
+      .toMatchObject({
+        ok: true,
+        role: 'project-ai',
+        state: { requirementsAlignment: 'confirmed-awaiting-plan-or-resume' },
+      });
     await confirmProjectOrientation(project.id);
     await expect(projectRequest({
       action: 'goal-plan', callerSurfaceId: surface?.id,
@@ -3890,10 +3940,15 @@ describe('supervisor decision bridge', () => {
     });
   }
 
+  const ordinaryTaskDelivery = (next: string) => prepareTerminalPasteInput(
+    `${ORDINARY_TASK_ROLE_ANCHOR}\n\n${next}`,
+    false,
+  );
+
   it('injects one safe next step from ordinary supervision', () => {
     expect(decide({ next: '运行相关单元测试' })).toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledTimes(1);
-    expect(writes).toHaveBeenCalledWith('worker-a', '运行相关单元测试');
+    expect(writes).toHaveBeenCalledWith('worker-a', ordinaryTaskDelivery('运行相关单元测试'));
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
   });
@@ -4003,7 +4058,7 @@ describe('supervisor decision bridge', () => {
       delivery: { confirmed: true, agentState: 'working' },
     });
     expect(writeReliable.mock.calls).toEqual([
-      ['worker-a', next],
+      ['worker-a', ordinaryTaskDelivery(next)],
       ['worker-a', '\r'],
     ]);
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(false);
@@ -4020,7 +4075,7 @@ describe('supervisor decision bridge', () => {
 
     await expect(decide({ next: '先检查实现\n再运行测试' })).resolves.toMatchObject({ ok: true });
     expect(writeReliable.mock.calls).toEqual([
-      ['worker-a', '先检查实现 再运行测试'],
+      ['worker-a', ordinaryTaskDelivery('先检查实现\n再运行测试')],
       ['worker-a', '\r'],
     ]);
   });
@@ -4035,7 +4090,7 @@ describe('supervisor decision bridge', () => {
 
     await expect(decide({ next: '先检查实现\n再运行测试' })).resolves.toMatchObject({ ok: true });
     expect(writeReliable.mock.calls).toEqual([
-      ['worker-a', '先检查实现 再运行测试'],
+      ['worker-a', ordinaryTaskDelivery('先检查实现\n再运行测试')],
       ['worker-a', '\r'],
     ]);
   });
@@ -4050,7 +4105,7 @@ describe('supervisor decision bridge', () => {
       error: expect.stringContaining('agent-state'),
       delivery: { confirmed: false, agentState: 'idle', screenChanged: false },
     });
-    expect(writeReliable).toHaveBeenCalledWith('worker-a', '运行相关单元测试');
+    expect(writeReliable).toHaveBeenCalledWith('worker-a', ordinaryTaskDelivery('运行相关单元测试'));
     expect(writeReliable).toHaveBeenCalledWith('worker-a', '\r');
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
       awaitingReview: true,
@@ -4078,7 +4133,7 @@ describe('supervisor decision bridge', () => {
   it('serializes decisions while one delivery is still in flight', async () => {
     let acceptBody: ((accepted: boolean) => void) | undefined;
     const writeReliable = vi.fn((_surfaceId: string, data: string) => {
-      if (data === '第一条裁决') {
+      if (data === ordinaryTaskDelivery('第一条裁决')) {
         return new Promise<boolean>((resolve) => { acceptBody = resolve; });
       }
       if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
@@ -4095,7 +4150,7 @@ describe('supervisor decision bridge', () => {
     acceptBody?.(true);
     await expect(first).resolves.toMatchObject({ ok: true });
     expect(writeReliable.mock.calls).toEqual([
-      ['worker-a', '第一条裁决'],
+      ['worker-a', ordinaryTaskDelivery('第一条裁决')],
       ['worker-a', '\r'],
     ]);
   });
@@ -4210,7 +4265,11 @@ describe('supervisor decision bridge', () => {
       ok: true,
       outcome: 'continue',
     });
-    expect(writes).toHaveBeenCalledWith('worker-a', '执行终审补证并输出可复核证据');
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('执行终审补证并输出可复核证据'),
+    );
+    expect(String(writes.mock.calls[0]?.[1] || '')).toContain('wmux context');
 
     expect(decide({ next: '执行终审补证并输出可复核证据' })).toMatchObject({
       ok: false,
@@ -4609,7 +4668,11 @@ describe('supervisor decision bridge', () => {
     writes.mockClear();
     expect(decide({ outcome: 'continue', next: '执行最小聚焦验证并报告证据' }))
       .toMatchObject({ ok: true, outcome: 'continue' });
-    expect(writes).toHaveBeenCalledWith('worker-a', '执行最小聚焦验证并报告证据');
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('执行最小聚焦验证并报告证据'),
+    );
+    expect(String(writes.mock.calls[0]?.[1] || '')).toContain('wmux context');
 
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
     expect(decide({
@@ -5134,7 +5197,10 @@ describe('supervisor decision bridge', () => {
       proposalKind: 'route-adjustment',
       next: '选择方案 A：保留现有接口，改用已有适配器并运行本地测试',
     })).toMatchObject({ ok: true });
-    expect(writes).toHaveBeenCalledWith('worker-a', '选择方案 A：保留现有接口，改用已有适配器并运行本地测试');
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      ordinaryTaskDelivery('选择方案 A：保留现有接口，改用已有适配器并运行本地测试'),
+    );
 
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
     expect(decide({ next: '再次选择方案 A' })).toMatchObject({ ok: false });
@@ -5260,7 +5326,10 @@ describe('supervisor decision bridge', () => {
   it('allows users to clear optional forbidden selections without weakening hard safety', () => {
     useStore.getState().patchSupervisor({ forbiddenActions: [] });
     expect(decide({ next: '执行 npm install example-package' })).toMatchObject({ ok: true });
-    expect(writes).toHaveBeenCalledWith('worker-a', '执行 npm install example-package');
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      ordinaryTaskDelivery('执行 npm install example-package'),
+    );
 
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
     expect(decide({ next: 'git push origin main' })).toMatchObject({ ok: false });

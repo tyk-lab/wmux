@@ -99,7 +99,7 @@ export function buildSupervisorWakeRoleAnchor(surfaceId: string): string {
     '【监督角色锚点】你是此任务终端的专属监督，不是任务执行者。',
     `仅检查任务终端 ${target}；除 briefing 指定的计划文件和工程 .wmux/tmp 裁决草稿外，不读取其他上下文。`,
     '不得修改交付文件、执行实现或测试、创建子代理、调用无关技能，也不得直接控制其他终端。',
-    '先运行 wmux supervisor context 获取当前 capability 绑定的身份、权限、预算和命令；不得沿用记忆中的旧授权。',
+    '先运行 wmux context 获取当前 capability 绑定的身份、权限、预算和命令；不得沿用记忆中的旧授权。',
     `再运行 wmux read-screen --surface ${target}；本次只形成一个裁决并用 wmux supervisor decide 提交，仅按 briefing 的单次投递核验处理未送达，成功后立即结束本回合。`,
   ].join('\n');
 }
@@ -121,7 +121,7 @@ export function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
     `停止条件：${config.stopWhen || '（缺失）'}`,
     '',
     '启动顺序（只能执行一次）：',
-    '1. 运行 wmux supervisor context，确认 role=project-supervisor、项目/工作项绑定和 task-terminal-start 条件命令可用。',
+    '1. 运行 wmux context，确认 role=project-supervisor、项目/工作项绑定和 task-terminal-start 条件命令可用。',
     `2. 运行 wmux project task-terminal-start --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}。`,
     '3. 该受控命令只接受本监督终端调用，会在当前项目执行会话中创建新的任务 AI；不会新建第三个会话，也不会选择、复用或依赖用户现有终端。',
     '4. 命令成功后立即结束当前回合，不要使用通用终端发送接口投递任务。控制层随后会发送绑定真实任务终端后的正式监督协议。',

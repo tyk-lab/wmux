@@ -26,6 +26,32 @@ function firstWindow(): BrowserWindow | null {
 }
 
 const S = (v: any) => JSON.stringify(v);
+const WINDOW_ROUTE_TIMEOUT_MS = 750;
+
+function withWindowRouteTimeout(value: Promise<unknown>): Promise<unknown> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), WINDOW_ROUTE_TIMEOUT_MS);
+    value.then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
+async function windowForCallerSurface(surfaceId: string): Promise<BrowserWindow | null> {
+  const candidates = BrowserWindow.getAllWindows().filter((candidate) => !candidate.isDestroyed());
+  const ownership = await Promise.all(candidates.map((candidate) => withWindowRouteTimeout(
+    candidate.webContents.executeJavaScript(`window.__wmux_hasSurface?.(${S(surfaceId)})`),
+  )));
+  const index = ownership.findIndex(Boolean);
+  return index >= 0 ? candidates[index] : null;
+}
 
 const SPECS: Record<string, BridgeSpec> = {
   'workspace.create': {
@@ -111,6 +137,10 @@ const SPECS: Record<string, BridgeSpec> = {
   'supervisor.context': {
     js: (p) => `window.__wmux_supervisorContext?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
+  },
+  'role.context': {
+    js: (p) => `window.__wmux_roleContext?.(${S(p || {})})`,
+    requireResult: 'No managed AI role for this terminal',
   },
   'project.status': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
@@ -225,7 +255,17 @@ const SPECS: Record<string, BridgeSpec> = {
 function runBridge(spec: BridgeSpec, params: any, respond: Respond, respondError: RespondError): void {
   (async () => {
     try {
-      const win = firstWindow();
+      let win: BrowserWindow | null = null;
+      const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
+      if (callerSurfaceId) {
+        win = await windowForCallerSurface(callerSurfaceId);
+        if (!win) {
+          respondError(-32000, 'Caller surface is not mounted in an active window');
+          return;
+        }
+      } else {
+        win = firstWindow();
+      }
       if (!win) {
         if (spec.emptyOnNoWindow !== undefined) { respond(spec.emptyOnNoWindow); return; }
         respondError(-32000, 'No window');

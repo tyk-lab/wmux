@@ -327,6 +327,60 @@ describe('PipeServer', () => {
     expect(received.params.callerSurfaceId).toBe('surf-supervisor');
   });
 
+  it('requires a live surface capability for unified role context', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'role-secret' ? 'surf-role-owner' : undefined,
+    );
+    let received: any;
+    server.on('v2', (req, respond) => {
+      received = req;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const rejected = await connectAndSend(pipe, JSON.stringify({
+      method: 'role.context', params: {}, id: 13, token: 'instance-secret',
+    }));
+    expect(JSON.parse(rejected).error?.code).toBe(-32001);
+
+    const accepted = await connectAndSend(pipe, JSON.stringify({
+      method: 'role.context', params: { callerSurfaceId: 'forged' }, id: 14, token: 'role-secret',
+    }));
+    expect(JSON.parse(accepted).result).toEqual({ ok: true });
+    expect(received.params.callerSurfaceId).toBe('surf-role-owner');
+  });
+
+  it('rejects a surface-capability request denied by the live role authorizer', async () => {
+    const pipe = uniquePipe();
+    const authorize = async (_surfaceId: string, method: string) => ({
+      allowed: method === 'role.context',
+      reason: 'role policy denied',
+    });
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'surface-secret' ? 'task-a' : undefined,
+      authorize,
+    );
+    let handled = false;
+    server.on('v2', (_req, respond) => {
+      handled = true;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const response = await connectAndSend(pipe, JSON.stringify({
+      method: 'surface.close', params: { surfaceId: 'other' }, id: 15, token: 'surface-secret',
+    }));
+    expect(JSON.parse(response).error).toMatchObject({ code: -32003, message: 'role policy denied' });
+    expect(handled).toBe(false);
+  });
+
   it('rejects V1 spoofing with another surface capability', async () => {
     const pipe = uniquePipe();
     server = new PipeServer(

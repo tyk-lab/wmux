@@ -3,6 +3,7 @@ import { registerIpcHandlers, agentManager, ptyManager, setupAgentPtyForwarding,
 import { notifySupervisorTerminalInput, supervisorGenericInputBlockReason } from './supervisor-input-guard';
 import { handleBrowserV2 } from './v2-browser';
 import { handleBridgeV2 } from './v2-bridge';
+import { authorizeSurfaceCapabilityRequest } from './surface-capability-guard';
 import { distributeAgents } from './agent-manager';
 import { PipeServer } from './pipe-server';
 import { PortScanner } from './port-scanner';
@@ -339,6 +340,7 @@ const pipeServer = new PipeServer(
   getPipePath(),
   pipeToken,
   (token) => ptyManager.surfaceIdForAuthToken(token),
+  authorizeSurfaceCapabilityRequest,
 );
 const portScanner = new PortScanner();
 const cdpProxy = new CDPProxy();

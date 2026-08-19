@@ -10,6 +10,7 @@ import { withSurfaceCaller } from './surface-caller';
 import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
 import { cleanupProjectJsonInput, resolveProjectJsonInput } from './project-command';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
+import { requireSuccessfulContext } from './context-result';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -113,6 +114,10 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
   });
 }
 
+function printContextResult(result: any): void {
+  print(requireSuccessfulContext(result));
+}
+
 // Simple flag helpers shared across commands.
 function getFlag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -154,7 +159,7 @@ async function cmdBrowser(args: string[]): Promise<void> {
 
 async function cmdSupervisor(args: string[]): Promise<void> {
   if (args[1] === 'context') {
-    print(await sendV2('supervisor.context', {}));
+    printContextResult(await sendV2('supervisor.context', {}));
     return;
   }
   if (isSupervisorDecideHelp(args)) {
@@ -894,6 +899,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   ping: async () => console.log(await sendV1('ping')),
   identify: async () => print(await sendV2('system.identify')),
   capabilities: async () => print(await sendV2('system.capabilities')),
+  context: async () => printContextResult(await sendV2('role.context', {})),
   'list-windows': async () => print(await sendV2('window.list')),
   'focus-window': async (args) => print(await sendV2('window.focus', { id: args[1] })),
   'new-window': async () => print(await sendV2('window.create')),
@@ -1085,7 +1091,7 @@ function printUsage() {
 
 Usage: wmux <command> [options]
 
-System:     ping, identify, capabilities, list-windows, focus-window <id>, new-window
+System:     ping, identify, capabilities, context, list-windows, focus-window <id>, new-window
 Workspace:  new-workspace, close-workspace, select-workspace, rename-workspace, list-workspaces
 Remote:     ssh [ssh options] <user@host> [--title T]   (remote terminal in a new workspace)
             bridge [--port P] [--host H]   (expose this wmux's pipe over TCP, default 127.0.0.1:9787)

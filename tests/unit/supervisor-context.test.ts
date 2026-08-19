@@ -52,6 +52,7 @@ describe('supervisor runtime context', () => {
         maxDecisions: 12,
         attempts: 1,
         maxTaskRetries: 3,
+        bindingCurrent: true,
       },
     });
 
@@ -79,9 +80,10 @@ describe('supervisor runtime context', () => {
 
   it('does not advertise continue, rework, or permission confirmation without grants', () => {
     const session = createDefaultSupervisorSession();
+    session.active = true;
     session.autonomyPermissions = [];
     session.maxAutoDecisions = 5;
-    const context = buildSupervisorRuntimeContext(session, lane({ autoDecisionsUsed: 2 }), {
+    const context = buildSupervisorRuntimeContext(session, lane({ autoDecisionsUsed: 2, awaitingReview: true }), {
       taskState: 'idle',
     });
 
@@ -95,6 +97,7 @@ describe('supervisor runtime context', () => {
 
   it('removes decision commands while the lane is paused', () => {
     const session = createDefaultSupervisorSession();
+    session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({ controlState: 'paused' }), {
       taskState: 'idle',
     });
@@ -109,11 +112,13 @@ describe('supervisor runtime context', () => {
 
   it('does not advertise project permission confirmation when the contract denies it', () => {
     const session = createDefaultSupervisorSession();
+    session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({
       projectManagerProjectId: 'project-a',
       projectWorkItemId: 'work-a',
       autonomyPermissionsOverride: ['permission-confirm'],
     }), {
+      taskState: 'blocked',
       project: {
         projectId: 'project-a',
         workItemId: 'work-a',
@@ -124,6 +129,7 @@ describe('supervisor runtime context', () => {
           internalThreads: false,
           permissionConfirm: false,
         },
+        bindingCurrent: true,
       },
     });
 
@@ -132,14 +138,48 @@ describe('supervisor runtime context', () => {
     ))?.available).toBe(false);
   });
 
+  it('advertises permission confirmation only for a real permission-blocked state', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    session.autonomyPermissions = ['permission-confirm'];
+    const context = buildSupervisorRuntimeContext(
+      session,
+      lane({ awaitingReview: true }),
+      { taskState: 'blocked', permissionBlocked: true },
+    );
+
+    expect(context.commands.conditional.find((item) => (
+      item.command.includes('--permission-command')
+    ))?.available).toBe(true);
+  });
+
   it('renders a compact capability card with the live context command', () => {
     const session = createDefaultSupervisorSession();
-    const context = buildSupervisorRuntimeContext(session, lane(), { taskState: 'idle' });
+    session.active = true;
+    const context = buildSupervisorRuntimeContext(session, lane({ awaitingReview: true }), { taskState: 'idle' });
     const card = buildSupervisorCapabilityCard(context).join('\n');
 
     expect(card).toContain('监督身份与能力快照');
     expect(card).toContain('唯一任务终端: task-a');
     expect(card).toContain('wmux supervisor context');
     expect(card).toContain('不授予直接实现、测试、跨终端输入');
+  });
+
+  it('does not advertise decisions when the session, review, approval, or project binding blocks them', () => {
+    const inactive = createDefaultSupervisorSession();
+    const inactiveContext = buildSupervisorRuntimeContext(inactive, lane({ awaitingReview: true }), {
+      taskState: 'idle',
+    });
+    expect(inactiveContext.commands.decisionOutcomes).toEqual([]);
+    expect(inactiveContext.state.decisionBlockers).toContain('监督会话未启动');
+
+    const pending = createDefaultSupervisorSession();
+    pending.active = true;
+    pending.pendingApprovals = [{ id: 'approval-a', laneId: 'lane-a' }] as any;
+    const pendingContext = buildSupervisorRuntimeContext(pending, lane({ awaitingReview: true }), {
+      taskState: 'idle',
+    });
+    expect(pendingContext.commands.decisionOutcomes).toEqual([]);
+    expect(pendingContext.state.decisionBlockers).toContain('当前通道已有待决审批');
   });
 });

@@ -42,6 +42,7 @@ import {
   PROJECT_MANAGER_TERMINAL_NAME,
   PROJECT_MANAGER_ALIGNMENT_GATE,
   projectManagerStartupInput,
+  withProjectManagerRoleAnchor,
   type ProjectManagerRuntimeAgent,
 } from '../shared/project-manager-terminal';
 import {
@@ -83,7 +84,16 @@ import {
   supervisorTabTitle,
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
-import { buildSupervisorRuntimeContext } from './supervisor/supervisor-context';
+import {
+  buildSupervisorRuntimeContext,
+  evaluateSupervisorDecisionPreflight,
+} from './supervisor/supervisor-context';
+import {
+  ORDINARY_TASK_ROLE_ANCHOR,
+  authorizeManagedRoleV2,
+  buildProjectAiRuntimeContext,
+  buildTaskAiRuntimeContext,
+} from './role-context';
 import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
 import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 import {
@@ -102,6 +112,7 @@ import {
   projectManagerEventNeedsUserAttention,
   projectOrientationReady,
   projectAcceptedRequirementsVersion,
+  projectRequirementsAlignmentPhase,
   projectRequirementsVersion,
   projectTaskBaselineApproved,
   requiredProjectOrientation,
@@ -3707,10 +3718,15 @@ function normalizeProjectManagerUserQuestion(
 type ProjectRequirementAlignmentState = 'sufficient' | 'needs-question' | 'needs-definition-update';
 
 function projectRequirementsAlignmentPending(session: ProjectManagerSession): boolean {
-  const latestRequired = [...session.events].reverse().find((event) => event.kind === 'requirements-alignment-required');
-  if (!latestRequired) return false;
-  const latestConfirmed = [...session.events].reverse().find((event) => event.kind === 'requirements-alignment-confirmed');
-  return !latestConfirmed || latestRequired.ts > latestConfirmed.ts;
+  if (projectRequirementsAlignmentPhase(session) === 'needs-definition-update') return true;
+  const latestRequiredIndex = session.events.reduce((latest, event, index) => (
+    event.kind === 'requirements-alignment-required' ? index : latest
+  ), -1);
+  if (latestRequiredIndex < 0) return false;
+  const latestConfirmedIndex = session.events.reduce((latest, event, index) => (
+    event.kind === 'requirements-alignment-confirmed' ? index : latest
+  ), -1);
+  return latestRequiredIndex > latestConfirmedIndex;
 }
 
 function projectRequirementAlignmentState(session: ProjectManagerSession): ProjectRequirementAlignmentState {
@@ -4166,7 +4182,13 @@ function hydrateProjectManagerDeliveries(sessions: readonly ProjectManagerSessio
     for (const delivery of session.pendingManagerDeliveries || []) {
       if (queued.has(delivery.id)) continue;
       queued.add(delivery.id);
-      pendingProjectManagerDeliveries.push({ ...delivery, sessionId: session.id, attempts: 0, alerted: false });
+      pendingProjectManagerDeliveries.push({
+        ...delivery,
+        text: withProjectManagerRoleAnchor(delivery.text, session.id),
+        sessionId: session.id,
+        attempts: 0,
+        alerted: false,
+      });
     }
   }
   flushProjectManagerDeliveries();
@@ -4179,7 +4201,7 @@ function queueProjectManagerDelivery(
 ): void {
   const delivery: PendingProjectManagerDelivery = {
     id: `pm-delivery-${uuid()}`,
-    text,
+    text: withProjectManagerRoleAnchor(text, sessionId),
     createdAt: Date.now(),
     ...(options.transitionId ? { transitionId: options.transitionId } : {}),
     sessionId,
@@ -8250,8 +8272,68 @@ export function initPipeBridge(): void {
     return readTerminalScreen(id, lines ?? 50);
   };
 
-  w.__wmux_supervisorContext = (params: any) => {
-    const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
+  const surfaceInCurrentWindow = (surfaceId: string) => {
+    const state = useStore.getState();
+    for (const workspace of state.workspaces) {
+      for (const paneId of getAllPaneIds(workspace.splitTree)) {
+        const surface = findLeaf(workspace.splitTree, paneId)?.surfaces
+          .find((candidate) => candidate.id === surfaceId);
+        if (surface) return surface;
+      }
+    }
+    return undefined;
+  };
+
+  w.__wmux_hasSurface = (surfaceId: string) => !!surfaceInCurrentWindow(String(surfaceId || ''));
+
+  w.__wmux_authorizeSurfaceCapability = (request: any) => {
+    const callerSurfaceId = String(request?.callerSurfaceId || '').trim();
+    const surface = surfaceInCurrentWindow(callerSurfaceId);
+    if (!surface) return { knownSurface: false };
+    const state = useStore.getState();
+    const supervisorLane = state.supervisor.lanes.find(
+      (lane) => lane.supervisorSurfaceId === callerSurfaceId,
+    );
+    const managerProject = state.projectManagers.find((project) => (
+      project.managerSurfaceId === callerSurfaceId
+      && surface.projectManagerTerminal === true
+      && surface.projectManagerProjectId === project.id
+    ));
+    const taskLane = state.supervisor.lanes.find((lane) => lane.surfaceId === callerSurfaceId);
+    const projectTask = surface.projectManagerProjectId
+      ? state.projectManagers.find((project) => project.id === surface.projectManagerProjectId)
+      : undefined;
+    const projectWorkItem = projectTask?.workItems.find((item) => (
+      item.id === surface.projectManagerWorkItemId && item.workerSurfaceId === callerSurfaceId
+    ));
+    const binding = supervisorLane || surface.transientSupervisor || surface.projectSupervisorProjectId ? {
+      role: supervisorLane?.projectManagerProjectId || surface.projectSupervisorProjectId
+        ? 'project-supervisor' as const
+        : 'supervisor' as const,
+      callerSurfaceId,
+      targetSurfaceId: supervisorLane?.surfaceId,
+      projectId: supervisorLane?.projectManagerProjectId || surface.projectSupervisorProjectId,
+      workItemId: supervisorLane?.projectWorkItemId,
+    } : managerProject || surface.projectManagerTerminal ? {
+      role: 'project-ai' as const,
+      callerSurfaceId,
+      projectId: managerProject?.id || surface.projectManagerProjectId,
+    } : taskLane || projectWorkItem || surface.projectManagerProjectId ? {
+      role: projectWorkItem || surface.projectManagerProjectId ? 'project-task' as const : 'task' as const,
+      callerSurfaceId,
+      targetSurfaceId: callerSurfaceId,
+      projectId: projectTask?.id || surface.projectManagerProjectId,
+      workItemId: projectWorkItem?.id || surface.projectManagerWorkItemId,
+    } : null;
+    if (!binding) return { knownSurface: true, managed: false, allowed: true };
+    return {
+      knownSurface: true,
+      managed: true,
+      ...authorizeManagedRoleV2(binding, String(request?.method || ''), request?.params || {}),
+    };
+  };
+
+  const supervisorContextForCaller = (callerSurfaceId: string) => {
     const state = useStore.getState();
     const lane = state.supervisor.lanes.find((item) => (
       item.supervisorSurfaceId === callerSurfaceId
@@ -8271,9 +8353,11 @@ export function initPipeBridge(): void {
     )) {
       return { ok: false, error: '项目监督绑定不完整、已过期或与工作项不一致，无法生成可执行能力清单' };
     }
-    const taskState = String(w.__wmux_getAgentStates?.()?.[lane.surfaceId]?.state || 'unknown');
+    const taskAgentState = (w.__wmux_getAgentStates?.()?.[lane.surfaceId] || undefined) as SupervisorAgentStateView | undefined;
+    const taskState = String(taskAgentState?.state || 'unknown');
     return buildSupervisorRuntimeContext(state.supervisor, lane, {
       taskState,
+      permissionBlocked: isPermissionBlockedState(taskAgentState),
       ...(project && workItem ? {
         project: {
           projectId: project.id,
@@ -8286,9 +8370,119 @@ export function initPipeBridge(): void {
           maxDecisions: workItem.contract.budget.maxDecisions,
           attempts: workItem.attempts,
           maxTaskRetries: workItem.contract.budget.maxTaskRetries,
+          projectStatus: project.status,
+          workItemStatus: workItem.status,
+          bindingCurrent: project.status === 'active'
+            && projectAcceptedRequirementsVersion(project) === projectRequirementsVersion(project)
+            && workItem.goalId === activeProjectGoal(project).id
+            && !['completed', 'stopped'].includes(workItem.status)
+            && workItem.requirementsVersion === projectRequirementsVersion(project)
+            && workItem.authorizationVersion === projectAuthorizationVersion(project)
+            && !projectWorkItemSubgoalDependencyError(project, workItem),
+          baselineApproved: projectTaskBaselineApproved(workItem),
+          dependencyError: projectWorkItemSubgoalDependencyError(project, workItem) || undefined,
         },
       } : {}),
     });
+  };
+
+  const roleContextForCaller = (callerSurfaceId: string) => {
+    if (!callerSurfaceId) {
+      return { ok: false, error: 'wmux context 只能在带有实时 surface capability 的 wmux 终端中运行' };
+    }
+    const state = useStore.getState();
+    const supervisorLane = state.supervisor.lanes.find((item) => (
+      item.supervisorSurfaceId === callerSurfaceId
+      && supervisorLaneControlState(item) !== 'stopped'
+    ));
+    if (supervisorLane) return supervisorContextForCaller(callerSurfaceId);
+
+    const managerProject = state.projectManagers.find((item) => item.managerSurfaceId === callerSurfaceId);
+    const managerTerminal = managerProject
+      ? projectManagerTerminal({ surfaceId: callerSurfaceId, projectId: managerProject.id })
+      : null;
+    if (managerProject && managerTerminal) {
+      const pendingSupervisorApprovals = state.supervisor.pendingApprovals.filter((approval) => {
+        const lane = state.supervisor.lanes.find((item) => item.id === approval.laneId);
+        return lane?.projectManagerProjectId === managerProject.id;
+      }).length;
+      return buildProjectAiRuntimeContext(managerProject, {
+        pendingSupervisorApprovals,
+        runtime: {
+          agent: managerTerminal.surface.projectManagerAgent,
+          model: managerTerminal.surface.projectManagerModel,
+          reasoningEffort: managerTerminal.surface.projectManagerReasoningEffort,
+        },
+      });
+    }
+
+    const taskTerminal = locateRemoteTaskTerminal(callerSurfaceId).terminal;
+    if (!taskTerminal) {
+      return { ok: false, error: '当前 surface 不是可识别的项目 AI、监督 AI 或受监督任务 AI 终端' };
+    }
+    const taskLane = state.supervisor.lanes.find((item) => (
+      item.surfaceId === callerSurfaceId
+      && supervisorLaneControlState(item) !== 'stopped'
+    ));
+    const projectId = taskLane?.projectManagerProjectId
+      || taskTerminal.surface.projectManagerProjectId;
+    if (taskLane?.projectManagerProjectId
+      && taskTerminal.surface.projectManagerProjectId
+      && taskLane.projectManagerProjectId !== taskTerminal.surface.projectManagerProjectId) {
+      return { ok: false, error: '任务终端与监督 lane 的项目绑定不一致，无法生成任务上下文' };
+    }
+    const project = projectId
+      ? state.projectManagers.find((item) => item.id === projectId)
+      : undefined;
+    const workItemId = taskLane?.projectWorkItemId
+      || taskTerminal.surface.projectManagerWorkItemId;
+    if (taskLane?.projectWorkItemId
+      && taskTerminal.surface.projectManagerWorkItemId
+      && taskLane.projectWorkItemId !== taskTerminal.surface.projectManagerWorkItemId) {
+      return { ok: false, error: '任务终端与监督 lane 的工作项绑定不一致，无法生成任务上下文' };
+    }
+    const workItem = project?.workItems.find((item) => (
+      item.id === workItemId && item.workerSurfaceId === callerSurfaceId
+    ));
+    if (projectId && (
+      !project
+      || !workItem
+      || !taskLane
+      || workItem.supervisorLaneId !== taskLane.id
+    )) {
+      return { ok: false, error: '项目任务终端绑定不完整、已过期或与工作项不一致，无法生成任务上下文' };
+    }
+    const taskState = String(w.__wmux_getAgentStates?.()?.[callerSurfaceId]?.state || 'unknown');
+    if (project && workItem) {
+      return buildTaskAiRuntimeContext({
+        callerSurfaceId,
+        taskState,
+        lane: taskLane,
+        project,
+        workItem,
+        runtime: {
+          agent: taskTerminal.surface.projectManagerAgent,
+          model: taskTerminal.surface.projectManagerModel,
+          reasoningEffort: taskTerminal.surface.projectManagerReasoningEffort,
+        },
+      });
+    }
+    if (taskLane) {
+      return buildTaskAiRuntimeContext({ callerSurfaceId, taskState, lane: taskLane });
+    }
+    return { ok: false, error: '当前终端未绑定活动监督 lane 或项目工作项，无法确认任务 AI 身份' };
+  };
+
+  w.__wmux_roleContext = (params: any) => (
+    roleContextForCaller(String(params?.callerSurfaceId || '').trim())
+  );
+
+  w.__wmux_supervisorContext = (params: any) => {
+    const context = roleContextForCaller(String(params?.callerSurfaceId || '').trim());
+    if (context.ok === false) return context;
+    return 'role' in context && (context.role === 'supervisor' || context.role === 'project-supervisor')
+      ? context
+      : { ok: false, error: '当前终端不是活动监督 lane 绑定的监督 AI，无法读取监督上下文' };
   };
 
   // The dedicated supervisor terminal records its judgment through a silent CLI
@@ -8557,10 +8751,17 @@ export function initPipeBridge(): void {
       && !!next
       && !permissionCommand
       && !permissionResponse;
-    if (!lane.awaitingReview && !proactiveProjectFollowUp) {
+    const preflight = evaluateSupervisorDecisionPreflight(session, lane, {
+      taskState: agentState?.state || 'unknown',
+      ...(projectManagedLane ? { project: { projectId: projectSession!.id, workItemId: projectWorkItem!.id, bindingCurrent: true } } : {}),
+      outcome,
+      hasNext: !!next,
+      permissionRequested: !!permissionCommand || !!permissionResponse,
+    });
+    if (!preflight.decisionReady) {
       return { ok: false, error: lane.projectManagerProjectId
-        ? '当前没有待裁决轮次；项目专属监督仅可在任务终端非运行时，携带明确的低风险 --next 主动提交 continue/rework'
-        : '当前没有待裁决轮次；请等待工作终端任务结束或权限阻塞通知' };
+        ? `${preflight.blockers[0] || '当前没有待裁决轮次'}；项目专属监督仅可在任务终端非运行时，携带明确的低风险 --next 主动提交 continue/rework`
+        : `${preflight.blockers[0] || '当前没有待裁决轮次'}；请等待工作终端任务结束或权限阻塞通知` };
     }
     if (proactiveProjectFollowUp && lane.decisions?.[0]?.outcome === outcome
       && lane.decisions[0].next.trim() === next && !retryRequested) {
@@ -9265,14 +9466,16 @@ export function initPipeBridge(): void {
 
     if (next) {
       const beforeScreen = terminalScreenTail(lane.surfaceId);
-      const deliveryText = preparedProjectTask?.delivery ?? (nextFile
+      const unanchoredDeliveryText = nextFile
         ? [
             '[wmux 临时任务文件]',
             `请先使用文件读取工具完整读取当前项目内的 ${nextFile}。`,
             '文件内容是本轮完整任务指令；读取完成后直接执行，不要将全文再次粘贴到终端。',
             `确认读取成功后，只删除这一个临时文件：${nextFile}。`,
           ].join('\n')
-        : next);
+        : next;
+      const deliveryText = preparedProjectTask?.delivery
+        ?? `${ORDINARY_TASK_ROLE_ANCHOR}\n\n${unanchoredDeliveryText}`;
       supervisorDeliveriesInFlight.add(lane.id);
       try {
         const pendingDelivery = sendTaskToSurfaceReliably(
