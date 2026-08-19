@@ -66,6 +66,7 @@ import {
   type SupervisorSession,
 } from './store/supervisor-slice';
 import {
+  buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
   buildSupervisorWakeRoleAnchor,
   effectiveSupervisorAutonomyPermissions,
@@ -82,6 +83,7 @@ import {
   supervisorTabTitle,
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand } from './supervisor/launch-command';
+import { buildSupervisorRuntimeContext } from './supervisor/supervisor-context';
 import { buildInteractiveAgentLaunch, type InteractiveAgent } from './utils/interactive-agent-launch';
 import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 import {
@@ -1744,31 +1746,6 @@ function closeStoppedSupervisorSurfaces(lanes: SupervisorLane[]): void {
     }
     if (location) useStore.getState().closeSurface(location.workspaceId, location.paneId, supervisorSurfaceId);
   }
-}
-
-function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
-  const config = effectiveSupervisorLaneConfig(lane);
-  return [
-    '# 项目监督 AI · 首次启动任务终端',
-    '',
-    '项目管理 AI 已先启动你，但尚未创建任务终端。你必须亲自启动本工作项的专属任务终端；项目管理 AI 不会把任务直接投递到既有终端。',
-    '身份重置：你现在只担任下面项目与工作项的专属监督。旧监督 lane、旧任务终端和旧对话身份均无效；不要搜索、等待或尝试恢复它们。',
-    `项目 ID：${lane.projectManagerProjectId || '（缺失）'}`,
-    `工作项 ID：${lane.projectWorkItemId || '（缺失）'}`,
-    `预留任务通道 ID：${lane.surfaceId}`,
-    `项目目录：${lane.projectDir || '（缺失）'}`,
-    `任务目标：${config.taskGoal || '（缺失）'}`,
-    config.taskDescription ? `任务与恢复上下文：\n${config.taskDescription}` : '',
-    config.preconditions ? `前置条件：${config.preconditions}` : '',
-    `停止条件：${config.stopWhen || '（缺失）'}`,
-    '',
-    '启动顺序（只能执行一次）：',
-    `1. 运行 wmux project task-terminal-start --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}。`,
-    '2. 该受控命令只接受本监督终端调用，会在当前项目执行会话中创建新的任务 AI；不会新建第三个会话，也不会选择、复用或依赖用户现有终端。',
-    '3. 命令成功后立即结束当前回合，不要使用通用终端发送接口投递任务。控制层随后会发送绑定真实任务终端后的正式监督协议。',
-    '',
-    `若启动命令失败，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome needs-human --proposal-kind important --reason "任务终端启动失败：<具体错误>" --impact "监督 AI 无法建立项目任务运行时" 上报项目管理 AI；不要直接询问用户，也不要自行改用现有终端。`,
-  ].filter(Boolean).join('\n');
 }
 
 function projectAwareSupervisorBriefing(
@@ -7996,6 +7973,47 @@ export function initPipeBridge(): void {
     const id = surfaceId || w.__wmux_getActiveSurfaceId?.();
     if (!id) return { error: 'No active surface' };
     return readTerminalScreen(id, lines ?? 50);
+  };
+
+  w.__wmux_supervisorContext = (params: any) => {
+    const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
+    const state = useStore.getState();
+    const lane = state.supervisor.lanes.find((item) => (
+      item.supervisorSurfaceId === callerSurfaceId
+      && supervisorLaneControlState(item) !== 'stopped'
+    ));
+    if (!callerSurfaceId || !lane) {
+      return { ok: false, error: '当前终端不是活动监督 lane 绑定的监督 AI，无法读取监督上下文' };
+    }
+    const project = lane.projectManagerProjectId
+      ? state.projectManagers.find((item) => item.id === lane.projectManagerProjectId)
+      : undefined;
+    const workItem = project?.workItems.find((item) => item.id === lane.projectWorkItemId);
+    if (lane.projectManagerProjectId && (
+      !project
+      || !workItem
+      || workItem.supervisorLaneId !== lane.id
+    )) {
+      return { ok: false, error: '项目监督绑定不完整、已过期或与工作项不一致，无法生成可执行能力清单' };
+    }
+    const taskState = String(w.__wmux_getAgentStates?.()?.[lane.surfaceId]?.state || 'unknown');
+    return buildSupervisorRuntimeContext(state.supervisor, lane, {
+      taskState,
+      ...(project && workItem ? {
+        project: {
+          projectId: project.id,
+          goalId: workItem.goalId,
+          workItemId: workItem.id,
+          requirementsVersion: workItem.requirementsVersion ?? projectRequirementsVersion(project),
+          authorizationVersion: workItem.authorizationVersion ?? projectAuthorizationVersion(project),
+          authority: workItem.contract.authority,
+          decisionsUsed: workItem.decisionsUsed,
+          maxDecisions: workItem.contract.budget.maxDecisions,
+          attempts: workItem.attempts,
+          maxTaskRetries: workItem.contract.budget.maxTaskRetries,
+        },
+      } : {}),
+    });
   };
 
   // The dedicated supervisor terminal records its judgment through a silent CLI

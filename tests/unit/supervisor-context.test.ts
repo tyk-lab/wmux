@@ -1,0 +1,145 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createDefaultSupervisorSession,
+  type SupervisorLane,
+} from '../../src/renderer/store/supervisor-slice';
+import {
+  buildSupervisorCapabilityCard,
+  buildSupervisorRuntimeContext,
+} from '../../src/renderer/supervisor/supervisor-context';
+
+function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
+  return {
+    id: 'lane-a',
+    label: '任务 A',
+    surfaceId: 'task-a' as any,
+    supervisorSurfaceId: 'supervisor-a' as any,
+    controlState: 'active',
+    awaitingStopCheck: false,
+    stopConfirmed: false,
+    ...partial,
+  };
+}
+
+describe('supervisor runtime context', () => {
+  it('reports the capability-bound project identity, contract authority, and budget', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const projectLane = lane({
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'work-a',
+      projectTaskStartupPending: true,
+      autonomyPermissionsOverride: ['same-route-next', 'permission-confirm'],
+    });
+
+    const context = buildSupervisorRuntimeContext(session, projectLane, {
+      taskState: 'unknown',
+      project: {
+        projectId: 'project-a',
+        goalId: 'goal-a',
+        workItemId: 'work-a',
+        requirementsVersion: 3,
+        authorizationVersion: 4,
+        authority: {
+          technicalChoices: true,
+          lowRiskRetries: true,
+          targetedTests: true,
+          internalThreads: false,
+          permissionConfirm: true,
+          allowedCommandPrefixes: ['npm test'],
+        },
+        decisionsUsed: 2,
+        maxDecisions: 12,
+        attempts: 1,
+        maxTaskRetries: 3,
+      },
+    });
+
+    expect(context.role).toBe('project-supervisor');
+    expect(context.identity).toMatchObject({
+      supervisorSurfaceId: 'supervisor-a',
+      targetSurfaceId: 'task-a',
+      projectId: 'project-a',
+      goalId: 'goal-a',
+      workItemId: 'work-a',
+      requirementsVersion: 3,
+      authorizationVersion: 4,
+    });
+    expect(context.permissions.projectAuthority?.allowedCommandPrefixes).toEqual(['npm test']);
+    expect(context.budget).toMatchObject({
+      projectDecisionsUsed: 2,
+      projectDecisionsRemaining: 10,
+      projectAttempts: 1,
+      projectRetriesRemaining: 2,
+    });
+    expect(context.commands.conditional.find((item) => (
+      item.command.includes('task-terminal-start')
+    ))?.available).toBe(true);
+  });
+
+  it('does not advertise continue, rework, or permission confirmation without grants', () => {
+    const session = createDefaultSupervisorSession();
+    session.autonomyPermissions = [];
+    session.maxAutoDecisions = 5;
+    const context = buildSupervisorRuntimeContext(session, lane({ autoDecisionsUsed: 2 }), {
+      taskState: 'idle',
+    });
+
+    expect(context.role).toBe('supervisor');
+    expect(context.commands.decisionOutcomes).toEqual(['complete', 'needs-human']);
+    expect(context.commands.conditional.find((item) => (
+      item.command.includes('--permission-command')
+    ))?.available).toBe(false);
+    expect(context.budget.autoDecisionsRemaining).toBe(3);
+  });
+
+  it('removes decision commands while the lane is paused', () => {
+    const session = createDefaultSupervisorSession();
+    const context = buildSupervisorRuntimeContext(session, lane({ controlState: 'paused' }), {
+      taskState: 'idle',
+    });
+
+    expect(context.state.lane).toBe('paused');
+    expect(context.commands.decisionOutcomes).toEqual([]);
+    expect(context.commands.available).not.toContain(
+      'wmux supervisor decide --surface task-a --outcome <结果>',
+    );
+    expect(context.commands.available).toContain('wmux supervisor context');
+  });
+
+  it('does not advertise project permission confirmation when the contract denies it', () => {
+    const session = createDefaultSupervisorSession();
+    const context = buildSupervisorRuntimeContext(session, lane({
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'work-a',
+      autonomyPermissionsOverride: ['permission-confirm'],
+    }), {
+      project: {
+        projectId: 'project-a',
+        workItemId: 'work-a',
+        authority: {
+          technicalChoices: true,
+          lowRiskRetries: true,
+          targetedTests: false,
+          internalThreads: false,
+          permissionConfirm: false,
+        },
+      },
+    });
+
+    expect(context.commands.conditional.find((item) => (
+      item.command.includes('--permission-command')
+    ))?.available).toBe(false);
+  });
+
+  it('renders a compact capability card with the live context command', () => {
+    const session = createDefaultSupervisorSession();
+    const context = buildSupervisorRuntimeContext(session, lane(), { taskState: 'idle' });
+    const card = buildSupervisorCapabilityCard(context).join('\n');
+
+    expect(card).toContain('监督身份与能力快照');
+    expect(card).toContain('唯一任务终端: task-a');
+    expect(card).toContain('wmux supervisor context');
+    expect(card).toContain('不授予直接实现、测试、跨终端输入');
+  });
+});

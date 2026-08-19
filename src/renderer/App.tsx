@@ -50,6 +50,7 @@ import {
   type LaneRuntime,
 } from './supervisor/supervisor-engine';
 import {
+  buildUnacknowledgedSupervisorIdlePrompt,
   buildUserNotifyText,
   buildSupervisorWakeRoleAnchor,
   effectiveSupervisorAutonomyPermissions,
@@ -551,14 +552,12 @@ function handleSupervisorHookEvent(event: any): void {
           freshLane,
           'liveness-probe',
           freshLane.currentTask || freshLane.projectWorkItemId || '当前项目任务',
-          [
-            '[监督回合未完成状态交接｜立即补报]',
-            '你的 Agent 回合已经结束，但控制层没有收到 continue/rework、阶段完成、暂停或待决事件。',
-            projectWorkItem ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}` : '',
-            buildSupervisorWakeRoleAnchor(freshLane.surfaceId),
-            '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
-            '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
-          ].filter(Boolean).join('\n'),
+          buildUnacknowledgedSupervisorIdlePrompt(
+            freshLane,
+            projectWorkItem
+              ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
+              : '',
+          ),
         );
       }
     }

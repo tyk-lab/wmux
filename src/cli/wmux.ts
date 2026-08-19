@@ -153,12 +153,16 @@ async function cmdBrowser(args: string[]): Promise<void> {
 }
 
 async function cmdSupervisor(args: string[]): Promise<void> {
+  if (args[1] === 'context') {
+    print(await sendV2('supervisor.context', {}));
+    return;
+  }
   if (isSupervisorDecideHelp(args)) {
     console.log(SUPERVISOR_DECIDE_USAGE);
     return;
   }
   if (args[1] !== 'decide') {
-    throw new Error(SUPERVISOR_DECIDE_USAGE);
+    throw new Error(`Usage: wmux supervisor <context|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -1093,7 +1097,8 @@ Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
-Supervisor:  supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
+Supervisor:  supervisor context
+             supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]
                           [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]

@@ -108,6 +108,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
+  'supervisor.context': {
+    js: (p) => `window.__wmux_supervisorContext?.(${S(p || {})})`,
+    requireResult: 'No active supervisor lane for this terminal',
+  },
   'project.status': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
     requireResult: 'Project manager bridge is unavailable',

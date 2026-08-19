@@ -22,6 +22,10 @@ import {
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
 import supervisorProtocolSource from '../../../resources/prompts/supervisor-protocol.md?raw';
+import {
+  buildSupervisorCapabilityCard,
+  buildSupervisorRuntimeContext,
+} from './supervisor-context';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
 
@@ -95,8 +99,59 @@ export function buildSupervisorWakeRoleAnchor(surfaceId: string): string {
     '【监督角色锚点】你是此任务终端的专属监督，不是任务执行者。',
     `仅检查任务终端 ${target}；除 briefing 指定的计划文件和工程 .wmux/tmp 裁决草稿外，不读取其他上下文。`,
     '不得修改交付文件、执行实现或测试、创建子代理、调用无关技能，也不得直接控制其他终端。',
-    `先运行 wmux read-screen --surface ${target}；本次只形成一个裁决并用 wmux supervisor decide 提交，仅按 briefing 的单次投递核验处理未送达，成功后立即结束本回合。`,
+    '先运行 wmux supervisor context 获取当前 capability 绑定的身份、权限、预算和命令；不得沿用记忆中的旧授权。',
+    `再运行 wmux read-screen --surface ${target}；本次只形成一个裁决并用 wmux supervisor decide 提交，仅按 briefing 的单次投递核验处理未送达，成功后立即结束本回合。`,
   ].join('\n');
+}
+
+export function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
+  const config = effectiveSupervisorLaneConfig(lane);
+  return [
+    '# 项目监督 AI · 首次启动任务终端',
+    '',
+    '项目管理 AI 已先启动你，但尚未创建任务终端。你必须亲自启动本工作项的专属任务终端；项目管理 AI 不会把任务直接投递到既有终端。',
+    '身份重置：你现在只担任下面项目与工作项的专属监督。旧监督 lane、旧任务终端和旧对话身份均无效；不要搜索、等待或尝试恢复它们。',
+    `项目 ID：${lane.projectManagerProjectId || '（缺失）'}`,
+    `工作项 ID：${lane.projectWorkItemId || '（缺失）'}`,
+    `预留任务通道 ID：${lane.surfaceId}`,
+    `项目目录：${lane.projectDir || '（缺失）'}`,
+    `任务目标：${config.taskGoal || '（缺失）'}`,
+    config.taskDescription ? `任务与恢复上下文：\n${config.taskDescription}` : '',
+    config.preconditions ? `前置条件：${config.preconditions}` : '',
+    `停止条件：${config.stopWhen || '（缺失）'}`,
+    '',
+    '启动顺序（只能执行一次）：',
+    '1. 运行 wmux supervisor context，确认 role=project-supervisor、项目/工作项绑定和 task-terminal-start 条件命令可用。',
+    `2. 运行 wmux project task-terminal-start --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}。`,
+    '3. 该受控命令只接受本监督终端调用，会在当前项目执行会话中创建新的任务 AI；不会新建第三个会话，也不会选择、复用或依赖用户现有终端。',
+    '4. 命令成功后立即结束当前回合，不要使用通用终端发送接口投递任务。控制层随后会发送绑定真实任务终端后的正式监督协议。',
+    '',
+    `若启动命令失败，使用 wmux supervisor decide --surface ${lane.surfaceId} --outcome needs-human --proposal-kind important --reason "任务终端启动失败：<具体错误>" --impact "监督 AI 无法建立项目任务运行时" 上报项目管理 AI；不要直接询问用户，也不要自行改用现有终端。`,
+  ].filter(Boolean).join('\n');
+}
+
+export function buildUnacknowledgedSupervisorIdlePrompt(
+  lane: SupervisorLane,
+  baselineDirective = '',
+): string {
+  const header = [
+    '[监督回合未完成状态交接｜立即补报]',
+    '你的 Agent 回合已经结束，但控制层没有收到 continue/rework、阶段完成、暂停或待决事件。',
+    baselineDirective,
+  ];
+  if (lane.projectTaskStartupPending) {
+    return [
+      ...header,
+      '真实任务终端尚未创建；不要对预留任务通道执行 read-screen，也不要搜索或复用其他终端。请重新执行下面的首次启动协议。',
+      buildProjectTaskStartupBriefing(lane),
+    ].filter(Boolean).join('\n');
+  }
+  return [
+    ...header,
+    buildSupervisorWakeRoleAnchor(lane.surfaceId),
+    '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
+    '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
+  ].filter(Boolean).join('\n');
 }
 
 export function effectiveSupervisorTaskGoal(lane: SupervisorLane): string {
@@ -577,6 +632,11 @@ export function buildSupervisorBriefing(
     ];
   }
   const policyBlock = structuredPolicyBlock(session, lane);
+  const capabilityBlock = buildSupervisorCapabilityCard(buildSupervisorRuntimeContext(
+    session,
+    lane,
+    { taskState: state },
+  ));
   const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
     : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
@@ -593,6 +653,7 @@ export function buildSupervisorBriefing(
         ? `本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
         : `本终端启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给${decisionOwnerLabel}。`,
       '',
+      ...capabilityBlock,
       ...taskContextBlock,
       ...taskWorkModeBlock,
       ...stopContextBlock,

@@ -294,6 +294,39 @@ describe('PipeServer', () => {
     expect(handlerCalled).toBe(false);
   });
 
+  it('requires a live surface capability for supervisor context and binds its caller', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'supervisor-secret' ? 'surf-supervisor' : undefined,
+    );
+    let received: any;
+    server.on('v2', (req, respond) => {
+      received = req;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const rejected = await connectAndSend(pipe, JSON.stringify({
+      method: 'supervisor.context',
+      params: { callerSurfaceId: 'surf-forged' },
+      id: 11,
+      token: 'instance-secret',
+    }));
+    expect(JSON.parse(rejected).error?.code).toBe(-32001);
+
+    const accepted = await connectAndSend(pipe, JSON.stringify({
+      method: 'supervisor.context',
+      params: { callerSurfaceId: 'surf-forged' },
+      id: 12,
+      token: 'supervisor-secret',
+    }));
+    expect(JSON.parse(accepted).result).toEqual({ ok: true });
+    expect(received.params.callerSurfaceId).toBe('surf-supervisor');
+  });
+
   it('rejects V1 spoofing with another surface capability', async () => {
     const pipe = uniquePipe();
     server = new PipeServer(

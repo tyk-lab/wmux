@@ -30,7 +30,7 @@ const PUBLIC_V2_METHODS = new Set<string>([
 ]);
 
 function requiresSurfaceCapability(method: string): boolean {
-  return method.startsWith('project.') || method === 'supervisor.decide';
+  return method.startsWith('project.') || method.startsWith('supervisor.');
 }
 
 export interface V2Response {

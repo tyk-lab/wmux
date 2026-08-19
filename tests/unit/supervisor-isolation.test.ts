@@ -31,7 +31,9 @@ import type { DefaultSupervisorAgent } from '../../src/shared/types';
 import { DEFAULT_WORKSPACE_PREFS, type WorkspacePrefs } from '../../src/renderer/store/settings-slice';
 import {
   autonomousDecisionBoundary,
+  buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
+  buildUnacknowledgedSupervisorIdlePrompt,
   buildSupervisorWakeRoleAnchor,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
@@ -65,6 +67,32 @@ describe('supervisor wake role anchor', () => {
     expect(text).toContain('wmux read-screen --surface worker-a');
     expect(text).toContain('不得修改交付文件');
     expect(text).toContain('本次只形成一个裁决');
+  });
+
+  it('retries the controlled task-terminal startup instead of reading a reserved surface', () => {
+    const pendingLane = lane({
+      surfaceId: 'project-task-pending-1' as any,
+      projectTaskStartupPending: true,
+      projectManagerProjectId: 'pm-1',
+      projectWorkItemId: 'task-1',
+      projectDir: 'E:\\project',
+      config: { taskGoal: '完成任务', stopWhen: '测试通过' },
+    });
+
+    const startup = buildProjectTaskStartupBriefing(pendingLane);
+    const retry = buildUnacknowledgedSupervisorIdlePrompt(pendingLane, '当前推进门槛：基线待调查');
+
+    expect(startup).toContain('wmux project task-terminal-start --project pm-1 --task task-1');
+    expect(retry).toContain(startup);
+    expect(retry).toContain('真实任务终端尚未创建');
+    expect(retry).not.toContain('wmux read-screen --surface project-task-pending-1');
+  });
+
+  it('keeps the normal read-screen handoff after a real task terminal is bound', () => {
+    const retry = buildUnacknowledgedSupervisorIdlePrompt(lane(), '');
+
+    expect(retry).toContain('wmux read-screen --surface worker-a');
+    expect(retry).not.toContain('首次启动任务终端');
   });
 });
 
