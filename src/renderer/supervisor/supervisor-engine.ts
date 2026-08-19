@@ -178,12 +178,12 @@ function terminalPasteInput(_surfaceId: string, text: string, submitEnter: boole
 
 export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;
 
-export function stagedTerminalInputPrompt(reference: string): string {
+export function stagedTerminalInputPrompt(reference: string, filePath = reference): string {
   return [
     '[wmux 临时投递文件]',
-    `请先使用文件读取工具完整读取当前工作目录内的 ${reference}。`,
+    `请先使用文件读取工具完整读取此路径：${filePath}。`,
     '文件内容是本轮完整指令；读取后直接执行，不要将全文重新粘贴到终端。',
-    `确认读取成功后，只删除这一个临时文件：${reference}。`,
+    `确认读取成功后，只删除这一个临时文件：${filePath}。`,
   ].join('\n');
 }
 
@@ -193,12 +193,21 @@ function stageOversizedTerminalInput(surfaceId: string, text: string): Promise<s
     return Promise.reject(new Error('当前版本不支持大文段临时文件投递；已拒绝全文写入终端'));
   }
   return Promise.resolve(pty.stageInputFile(surfaceId, text)).then(
-    (staged: { reference?: string }) => {
+    (staged: { reference?: string; filePath?: string }) => {
       const reference = String(staged?.reference || '');
       if (!/^\.wmux\/tmp\/terminal-input-[A-Za-z0-9._-]+\.txt$/u.test(reference)) {
         throw new Error('临时投递文件返回了非法路径');
       }
-      return stagedTerminalInputPrompt(reference);
+      const filePath = String(staged?.filePath || '').trim();
+      const normalizedFilePath = filePath.replace(/\\/gu, '/');
+      if (filePath && (
+        /[\r\n]/u.test(filePath)
+        || !/^(?:[A-Za-z]:\/|\/\/)/u.test(normalizedFilePath)
+        || !normalizedFilePath.toLocaleLowerCase().endsWith(`/${reference.toLocaleLowerCase()}`)
+      )) {
+        throw new Error('临时投递文件返回了非法绝对路径');
+      }
+      return stagedTerminalInputPrompt(reference, filePath || reference);
     },
   );
 }

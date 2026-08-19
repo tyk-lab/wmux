@@ -41,8 +41,10 @@ describe('supervisor surface input delivery', () => {
 
   it('stages oversized text and writes only a short file-reference prompt', async () => {
     const write = vi.fn();
+    const filePath = 'E:\\project\\.wmux\\tmp\\terminal-input-1234-abcd1234.txt';
     const stageInputFile = vi.fn().mockResolvedValue({
       reference: '.wmux/tmp/terminal-input-1234-abcd1234.txt',
+      filePath,
     });
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
@@ -58,13 +60,29 @@ describe('supervisor surface input delivery', () => {
     const longText = 'x'.repeat(4_001);
     await sendToSurface('supervisor-a', longText, true);
 
-    const prompt = stagedTerminalInputPrompt('.wmux/tmp/terminal-input-1234-abcd1234.txt');
+    const prompt = stagedTerminalInputPrompt('.wmux/tmp/terminal-input-1234-abcd1234.txt', filePath);
     expect(stageInputFile).toHaveBeenCalledWith('supervisor-a', longText);
     expect(write.mock.calls).toEqual([
       ['supervisor-a', prompt.replace(/\n/gu, ' ')],
       ['supervisor-a', '\r'],
     ]);
     expect(write).not.toHaveBeenCalledWith('supervisor-a', longText);
+  });
+
+  it('rejects a staged absolute path that does not match its trusted reference', async () => {
+    const write = vi.fn();
+    const stageInputFile = vi.fn().mockResolvedValue({
+      reference: '.wmux/tmp/terminal-input-1234-abcd1234.txt',
+      filePath: 'E:\\other\\terminal-input-1234-abcd1234.txt',
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { wmux: { pty: { write, stageInputFile } } },
+    });
+
+    await expect(sendToSurface('supervisor-a', 'x'.repeat(4_001), true))
+      .rejects.toThrow('非法绝对路径');
+    expect(write).not.toHaveBeenCalled();
   });
 
   it('cancels the delayed AI Enter and clears its draft when user text arrives', () => {

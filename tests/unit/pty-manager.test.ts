@@ -132,6 +132,31 @@ describe('PtyManager', () => {
     await expect(manager.writeReliable('missing' as SurfaceId, 'text')).resolves.toBe(false);
   });
 
+  it('returns the absolute path of a staged input file', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-stage-input-'));
+    const manager = makeManager();
+    const { id } = manager.create({ shell: TEST_SHELL, cwd, env: TEST_ENV });
+    try {
+      const staged = manager.stageInputFile(id, '完整监督指令');
+
+      expect(staged.reference).toMatch(/^\.wmux\/tmp\/terminal-input-.+\.txt$/u);
+      expect(path.isAbsolute(staged.filePath)).toBe(true);
+      expect(staged.filePath).toBe(path.join(fs.realpathSync(cwd), ...staged.reference.split('/')));
+      expect(fs.readFileSync(staged.filePath, 'utf8')).toBe('完整监督指令');
+    } finally {
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 2_000);
+        const unsubscribe = manager.onExit(id, () => {
+          clearTimeout(timeout);
+          unsubscribe();
+          resolve();
+        });
+        manager.kill(id);
+      });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('resize does not throw', async () => {
     const manager = makeManager();
     const { id } = manager.create({

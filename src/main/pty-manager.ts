@@ -552,7 +552,7 @@ export class PtyManager {
   }
 
   /** Persist oversized AI input beside the target local terminal instead of pasting it through ConPTY. */
-  stageInputFile(id: SurfaceId, content: string): { reference: string } {
+  stageInputFile(id: SurfaceId, content: string): { reference: string; filePath: string } {
     const entry = this.ptys.get(id);
     if (!entry || !entry.alive) throw new Error('目标终端不存在或已退出');
     if (entry.sshProfileId) throw new Error('SSH 远程终端不能读取本地 .wmux/tmp/ 临时文件');
@@ -570,7 +570,7 @@ export class PtyManager {
     const fileName = `terminal-input-${Date.now()}-${uuidv4().slice(0, 8)}.txt`;
     const filePath = path.join(realTempRoot, fileName);
     fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    return { reference: `.wmux/tmp/${fileName}` };
+    return { reference: `.wmux/tmp/${fileName}`, filePath };
   }
 
   private writeChunked(entry: PtyEntry, data: string): Promise<boolean> {

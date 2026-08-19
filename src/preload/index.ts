@@ -15,7 +15,10 @@ contextBridge.exposeInMainWorld('wmux', {
     writeReliable: (id: string, data: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_WRITE_RELIABLE, id, data) as Promise<boolean>,
     stageInputFile: (id: string, content: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, id, content) as Promise<{ reference: string }>,
+      ipcRenderer.invoke(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, id, content) as Promise<{
+        reference: string;
+        filePath: string;
+      }>,
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.send(IPC_CHANNELS.PTY_RESIZE, id, cols, rows),
     kill: (id: string) =>
