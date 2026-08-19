@@ -9,6 +9,18 @@ import {
 } from '../../src/renderer/supervisor/model-catalog';
 
 describe('supervisor model catalog', () => {
+  it('offers every supported Codex model to project-mode Agent selectors', () => {
+    expect(modelOptionsFor('codex').map((option) => option.value)).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.4-codex-spark',
+    ]);
+  });
+
   it('adds a custom model after validation without duplicating IDs', () => {
     const catalog = addCustomSupervisorModel({}, 'pi', ' vendor/new-model ');
     const next = addCustomSupervisorModel(catalog, 'pi', 'VENDOR/NEW-MODEL');

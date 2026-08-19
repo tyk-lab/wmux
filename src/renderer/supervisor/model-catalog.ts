@@ -21,6 +21,10 @@ export const BUILTIN_SUPERVISOR_MODEL_OPTIONS: Record<
     { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol（复杂监督）' },
     { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra（均衡）' },
     { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna（快速、重复性监督）' },
+    { value: 'gpt-5.5', label: 'GPT-5.5（复杂编码与研究）' },
+    { value: 'gpt-5.4', label: 'GPT-5.4（日常编码）' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini（轻量、快速）' },
+    { value: 'gpt-5.4-codex-spark', label: 'GPT-5.4 Codex Spark（超快速编码）' },
   ],
   kimi: [
     { value: 'k3', label: 'Kimi K3（长上下文）' },
