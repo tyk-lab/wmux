@@ -87,8 +87,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
     expect(projectManagerDialogSource).toContain('恢复所选项目');
+    expect(projectManagerDialogSource).toContain('本次恢复使用的 Agent 配置');
+    expect(projectManagerDialogSource).toContain('可在恢复前重新选择');
+    expect(projectManagerDialogSource).toContain('agentConfig: normalizeProjectManagementAgentConfig(agentDraft)');
     expect(projectManagerDialogSource).toContain('暂不恢复');
     expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
+    expect(projectManagerDialogSource).toContain('恢复时升级到最新执行协议');
     expect(projectManagerDialogSource).toContain("'restore-projects'");
     expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
     expect(projectManagerDialogSource).toContain("action: 'delete-recovery-project'");

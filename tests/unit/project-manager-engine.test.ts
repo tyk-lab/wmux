@@ -177,7 +177,7 @@ describe('project-manager engine', () => {
     expect(text).toContain('当前需求版本内由监督 AI 和任务 AI 持续继承');
     expect(text).toContain('不得把同一条件拆成逐步确认');
     expect(text).toContain(PROJECT_TASK_EXECUTION_ENVELOPE_MARKER);
-    expect(text).toContain('--next 只填写本轮实际执行动作');
+    expect(text).toContain('--next 只填写本轮实际执行批次');
     expect(text).toContain('内容过长时自动改用受控临时文件投递');
     expect(text).toContain('项目基线：待审核');
     expect(text).toContain(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
@@ -213,7 +213,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('目标：完成 auth');
     expect(text).toContain('停止条件：认证测试通过');
     expect(text).toContain('验证要求：npm test -- auth');
-    expect(text).toContain('连续工作流推进到停止条件');
+    expect(text).toContain('每个回合连续完成一个有意义、可验证的执行批次');
+    expect(text).toContain('不得在整个阶段内绕过监督检查点');
     expect(text).toContain(PROJECT_TASK_BASELINE_REPORT_MARKER);
     expect(text).toContain('任何写入');
   });

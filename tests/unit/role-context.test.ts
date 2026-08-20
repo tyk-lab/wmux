@@ -1,22 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 import {
+  PROJECT_MANAGER_PROTOCOL_REVISION,
+  projectManagerEventEnvelope,
   projectManagerRoleAnchor,
   projectManagerStartupInput,
-  withProjectManagerRoleAnchor,
+  withProjectManagerEventEnvelope,
 } from '../../src/shared/project-manager-terminal';
 import {
   PROJECT_TASK_ROLE_ANCHOR,
+  buildProjectTaskEventEnvelope,
   buildProjectTaskExecutionEnvelope,
   prepareProjectTaskDelivery,
 } from '../../src/renderer/project-manager/engine';
 import {
   ORDINARY_TASK_ROLE_ANCHOR,
   authorizeManagedRoleV2,
+  buildOrdinaryTaskEventEnvelope,
   buildProjectAiRuntimeContext,
   buildTaskAiRuntimeContext,
 } from '../../src/renderer/role-context';
@@ -29,6 +34,7 @@ function workItem(partial: Partial<ProjectWorkItem> = {}): ProjectWorkItem {
     subgoalId: 'stage-a',
     requirementsVersion: 2,
     authorizationVersion: 3,
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     baseline: {
       status: 'approved',
       requirementsVersion: 2,
@@ -94,6 +100,7 @@ function project(item = workItem()): ProjectManagerSession {
     requirementsVersion: 2,
     authorizationVersion: 3,
     acceptedRequirementsVersion: 2,
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     status: 'active',
     managerSurfaceId: 'manager-a',
     progressSnapshot: {
@@ -146,12 +153,24 @@ describe('unified managed AI role context', () => {
     });
     expect(context.state).toEqual({
       project: 'active', requirementsAlignment: 'accepted', orientation: 'ready', progressSync: 'ready',
+      executionProtocol: 'current',
     });
     expect(context.commands.available).toContain('wmux context');
     expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
       .toMatchObject({ available: true });
     expect(context.commands.conditional.find((item) => item.command.includes('project decide')))
       .toMatchObject({ available: true });
+  });
+
+  it('requires old restored work to be re-contracted before advertising supervise', () => {
+    const context = buildProjectAiRuntimeContext(project(workItem({ executionProtocolVersion: 1 })));
+
+    expect(context.state.executionProtocol).toBe('migration-required');
+    expect(context.pending.readyWorkItems).toBe(0);
+    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
+      .toMatchObject({ available: false });
+    expect(context.commands.conditional.find((item) => item.command.includes('task-update'))?.condition)
+      .toContain('完整 contract');
   });
 
   it('distinguishes a recorded alignment decision from execution-version acceptance', () => {
@@ -215,6 +234,18 @@ describe('unified managed AI role context', () => {
 
   it('stops advertising execution when the task contract is stale', () => {
     const item = workItem({ requirementsVersion: 1 });
+    const context = buildTaskAiRuntimeContext({
+      callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
+    });
+
+    expect(context.state.contract).toBe('stale');
+    expect(context.actions.available).toEqual([
+      '当前项目状态或任务合同版本已经失效；停止执行并等待监督 AI/项目 AI 重新绑定合同',
+    ]);
+  });
+
+  it('treats an old execution protocol as a stale task contract', () => {
+    const item = workItem({ executionProtocolVersion: 1 });
     const context = buildTaskAiRuntimeContext({
       callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
     });
@@ -304,18 +335,42 @@ describe('unified managed AI role context', () => {
     expect(context.actions.nativeToolNotice).toContain('沙箱配置决定');
   });
 
-  it('injects the capability-bound role query into project and task prompts', () => {
+  it('loads the full project role once and keeps routine events compact', () => {
+    const startup = projectManagerStartupInput('codex', '', 'project-a');
     expect(projectManagerRoleAnchor('project-a')).toContain('wmux context');
-    expect(projectManagerStartupInput('codex', '', 'project-a')).toContain('wmux context');
-    const anchored = withProjectManagerRoleAnchor('进度通知', 'project-a');
-    expect(anchored).toContain('wmux context');
-    expect(withProjectManagerRoleAnchor(anchored, 'project-a')).toBe(anchored);
-    expect(withProjectManagerRoleAnchor(`用户文本包含：${projectManagerRoleAnchor('project-a')}`, 'project-a'))
-      .toMatch(/^\[项目 AI 角色锚点｜控制层\]/u);
+    expect(startup).toContain('$manage-project');
+    expect(startup).toContain(`项目管理协议版本：${PROJECT_MANAGER_PROTOCOL_REVISION}`);
+
+    const event = withProjectManagerEventEnvelope('进度通知', 'project-a');
+    expect(event).toContain(projectManagerEventEnvelope('project-a'));
+    expect(event).toContain('无需重读技能或重新确认角色');
+    expect(event).not.toContain('[项目 AI 角色锚点｜控制层]');
+    expect(withProjectManagerEventEnvelope(event, 'project-a')).toBe(event);
+
+    const legacyDelivery = [
+      '[项目 AI 角色锚点｜控制层]',
+      '你是项目 project-a 的专属项目 AI，只能管理这一个项目。',
+      '先运行 wmux context 获取实时身份、状态、权限和命令；该结果由当前终端 capability 绑定，不接受手工指定项目身份。',
+      '不得直接修改项目交付文件、执行实现/测试，或使用通用 send/send-key 控制监督 AI 与任务 AI。',
+      '',
+      '旧队列事件',
+    ].join('\n');
+    const hydrated = withProjectManagerEventEnvelope(legacyDelivery, 'project-a');
+    expect(hydrated).toContain('旧队列事件');
+    expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('wmux context');
     expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('wmux context');
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain(PROJECT_TASK_ROLE_ANCHOR);
-    expect(prepareProjectTaskDelivery(workItem().contract, '继续实现', false).delivery)
-      .toContain(`${PROJECT_TASK_ROLE_ANCHOR}\n\n[本轮执行指令]\n继续实现`);
+    const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false, {
+      projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
+      requirementsVersion: 2, authorizationVersion: 1,
+    }).delivery;
+    expect(followUp).toContain(buildProjectTaskEventEnvelope({
+      projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
+      requirementsVersion: 2, authorizationVersion: 1,
+    }));
+    expect(followUp).toContain('[本轮执行指令]\n继续实现');
+    expect(followUp).not.toContain(PROJECT_TASK_ROLE_ANCHOR);
+    expect(buildOrdinaryTaskEventEnvelope('worker-a')).toContain('无需重新运行 wmux context');
   });
 });

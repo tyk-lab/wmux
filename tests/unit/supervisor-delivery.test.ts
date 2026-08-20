@@ -6,6 +6,7 @@ import {
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
+  unacknowledgedSupervisorIdleAction,
 } from '../../src/renderer/supervisor/delivery';
 
 const event = (id: string, kind: 'task-start' | 'task-end', task: string, turnId?: number) => ({
@@ -106,5 +107,12 @@ describe('supervisor delivery queue', () => {
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, hasPendingDecision: true })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, pendingDeliveries: 1 })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, providerLimited: true })).toBe(false);
+  });
+
+  it('retries one unreported supervisor turn locally before escalating once', () => {
+    expect(unacknowledgedSupervisorIdleAction(undefined)).toBe('retry-local');
+    expect(unacknowledgedSupervisorIdleAction(1)).toBe('escalate-project');
+    expect(unacknowledgedSupervisorIdleAction(2)).toBe('ignore');
+    expect(unacknowledgedSupervisorIdleAction(3)).toBe('ignore');
   });
 });

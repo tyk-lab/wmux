@@ -34,7 +34,7 @@ import {
   buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
   buildUnacknowledgedSupervisorIdlePrompt,
-  buildSupervisorWakeRoleAnchor,
+  buildSupervisorWakeEventEnvelope,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -59,14 +59,15 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   };
 }
 
-describe('supervisor wake role anchor', () => {
-  it('resets the supervisor role and binds one decision to one task surface', () => {
-    const text = buildSupervisorWakeRoleAnchor('worker-a');
+describe('supervisor wake event envelope', () => {
+  it('refreshes live authority without restating the supervisor role', () => {
+    const text = buildSupervisorWakeEventEnvelope('worker-a');
 
-    expect(text).toContain('专属监督，不是任务执行者');
+    expect(text).toContain('[监督事件｜控制层｜surface=worker-a｜protocol=');
     expect(text).toContain('wmux read-screen --surface worker-a');
-    expect(text).toContain('不得修改交付文件');
-    expect(text).toContain('本次只形成一个裁决');
+    expect(text).toContain('wmux context 只刷新');
+    expect(text).toContain('无需重读协议、重新确认角色或复述身份');
+    expect(text).not.toContain('专属监督，不是任务执行者');
   });
 
   it('retries the controlled task-terminal startup instead of reading a reserved surface', () => {

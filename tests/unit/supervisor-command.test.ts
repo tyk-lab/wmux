@@ -2,7 +2,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from '../../src/cli/supervisor-command';
+import {
+  cleanupSupervisorNextInput,
+  cleanupSupervisorStagePlanInput,
+  isSupervisorDecideHelp,
+  resolveSupervisorNextInput,
+  resolveSupervisorStagePlanInput,
+  SUPERVISOR_DECIDE_USAGE,
+} from '../../src/cli/supervisor-command';
 
 const tempDirs: string[] = [];
 
@@ -27,8 +34,31 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--surface <id>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--outcome <continue|rework|complete|needs-human>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--remaining-work <none|text>');
+  });
+
+  it('reads and cleans a structured supervisor stage plan from .wmux/tmp', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'stage-plan.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      selectedRoute: '保持当前路线',
+      milestones: [{ id: 'verify', title: '验证', outcome: '验证通过', status: 'active' }],
+    }), 'utf8');
+
+    const input = resolveSupervisorStagePlanInput([
+      'supervisor', 'decide', '--stage-plan-file', '.wmux/tmp/stage-plan.json',
+    ], project);
+
+    expect(input.value).toMatchObject({ selectedRoute: '保持当前路线' });
+    expect(input.fileReference).toBe('.wmux/tmp/stage-plan.json');
+    cleanupSupervisorStagePlanInput(input, true);
+    expect(fs.existsSync(draftPath)).toBe(false);
   });
 
   it('reads long next text only from .wmux/tmp and removes it through the cleanup callback', () => {

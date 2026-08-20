@@ -577,6 +577,24 @@ describe('project-manager slice', () => {
     }, session.id)).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
   });
 
+  it('keeps rejected execution attempts without consuming the decision budget', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '认证', doneWhen: ['通过'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') }, session.id);
+    const record = {
+      ts: Date.now(), actionSignature: 'action', commandSignature: 'command', errorSignature: 'error',
+      progressSignature: 'progress', workspaceVersion: 'head:test',
+    };
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'record-execution', workItemId: 'auth', record, consumeDecision: false,
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManagers[0].workItems[0]).toMatchObject({
+      decisionsUsed: 0,
+      executionHistory: [record],
+    });
+  });
+
   it('requires completed work and project-level evidence before completion', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });

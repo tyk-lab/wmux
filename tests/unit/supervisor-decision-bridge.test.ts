@@ -18,6 +18,7 @@ import {
 } from '../../src/shared/project-manager-terminal';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
 import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   type ProjectManagerSession,
   type ProjectProgressSnapshot,
@@ -37,7 +38,10 @@ import {
   effectiveSupervisorAutonomyPermissions,
   PROJECT_MANAGER_WORKSPACE_TITLE,
 } from '../../src/renderer/supervisor/protocol';
-import { ORDINARY_TASK_ROLE_ANCHOR } from '../../src/renderer/role-context';
+import {
+  ORDINARY_TASK_ROLE_ANCHOR,
+  buildOrdinaryTaskEventEnvelope,
+} from '../../src/renderer/role-context';
 import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervisor-engine';
 
 async function confirmProjectOrientation(projectId: string): Promise<void> {
@@ -146,6 +150,7 @@ function bindProjectLaneToWorkItem(options: {
     doneWhen: ['相关测试通过'],
     requirementsVersion: 1,
     acceptedRequirementsVersion: 1,
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     progressSnapshot: progressSnapshot(),
     progressSync: {
       status: 'ready', checkedAt: 1, snapshotFingerprint: 'test-progress',
@@ -163,12 +168,14 @@ function bindProjectLaneToWorkItem(options: {
       id: workItemId,
       requirementsVersion: 1,
       authorizationVersion: 1,
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       baseline: options.baselineRequired
         ? { status: 'required', requirementsVersion: 1 }
         : {
             status: 'approved', requirementsVersion: 1, workspaceVersion: 'head:test',
             evidence: '测试夹具已提供项目基线', approvedAt: 1,
           },
+      supervisorPlanRequired: false,
       title: workItemId,
       status: 'running',
       dependencies: [],
@@ -2209,8 +2216,11 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
       attempts: 0,
       decisionsUsed: 0,
+      supervisorPlanRequired: true,
       baseline: { status: 'required', requirementsVersion: 1 },
     });
+    expect(useStore.getState().projectManager?.workItems[0].contract.stopWhen)
+      .toEqual(['认证测试通过', '相关测试通过']);
     await expect(projectRequest({
       action: 'task-update', callerSurfaceId: surface?.id, workItemId: 'auth',
       patch: {
@@ -2785,6 +2795,9 @@ describe('supervisor decision bridge', () => {
     await vi.waitFor(() => expect(writeReliable).toHaveBeenCalledTimes(2));
 
     const body = String(writeReliable.mock.calls[0]?.[1] || '');
+    expect(body).toContain('[项目事件｜控制层｜project=');
+    expect(body).toContain('无需重读技能或重新确认角色');
+    expect(body).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(body).toContain('桌面项目管理消息');
     expect(body).toContain('继续保持暂停，等待新的复核结果。');
     expect(body).not.toMatch(/[\r\n]/u);
@@ -2843,17 +2856,29 @@ describe('supervisor decision bridge', () => {
       doneWhen: ['完成'],
       requirementsVersion: 1,
       acceptedRequirementsVersion: 1,
+      executionProtocolVersion: 1,
       status: 'active',
       taskTerminalSurfaceId: 'old-worker',
       workItems: [{
         id: 'recover_task', title: '恢复任务', status: 'running', dependencies: [],
         requirementsVersion: 1,
+        executionProtocolVersion: 1,
         baseline: {
           status: 'approved', requirementsVersion: 1, workspaceVersion: 'head:before-restart',
           evidence: '重启前已审核项目基线', approvedAt: 15,
         },
         workerSurfaceId: 'old-worker', supervisorLaneId: 'old-lane', attempts: 1, decisionsUsed: 2,
         startedAt: 12, updatedAt: 18, executionHistory: [],
+        supervisorPlanRequired: true,
+        supervisorPlan: {
+          revision: 1,
+          selectedRoute: '旧的细粒度恢复路线',
+          milestones: [{
+            id: 'old_micro_step', title: '旧微步骤', outcome: '执行一条旧指令', status: 'active',
+          }],
+          expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
+          remainingWork: ['继续旧微步骤'], updatedAt: 17,
+        },
         latestContextSummary: '已完成核心实现，剩余针对性测试。',
         latestEvidence: 'src/core.ts 已修改并通过静态检查。',
         contract: {
@@ -2880,32 +2905,63 @@ describe('supervisor decision bridge', () => {
     await expect(remote({ action: 'recovery-candidates' })).resolves.toMatchObject({
       ok: true,
       recoveryChoice: 'pending',
-      candidates: [{ id: 'pm-recover', projectDir: 'E:\\recover-project', goal: '继续上次项目' }],
+      candidates: [{
+        id: 'pm-recover', projectDir: 'E:\\recover-project', goal: '继续上次项目',
+        executionProtocolVersion: 1, requiresProtocolMigration: true,
+      }],
     });
     expect(useStore.getState().projectManagers).toEqual([]);
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.projectManagerTerminal)).toBe(false);
 
-    await expect(remote({ action: 'restore-projects' })).resolves.toMatchObject({
+    const recoveredAgentConfig = {
+      manager: { agent: 'grok', model: 'grok-4.6', reasoningEffort: 'high' },
+      supervisor: { agent: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
+      task: { agent: 'kimi', model: 'k3', reasoningEffort: 'on' },
+    };
+    await expect(remote({
+      action: 'restore-projects', agentConfig: recoveredAgentConfig,
+    })).resolves.toMatchObject({
       ok: true, restored: true, projects: [{ id: 'pm-recover' }],
+      agentConfig: recoveredAgentConfig,
     });
+    expect(useStore.getState().workspacePrefs.projectManagementAgents).toEqual(recoveredAgentConfig);
     expect(useStore.getState().projectManager).toMatchObject({
       id: 'pm-recover', managerSurfaceId: expect.any(String), recoveryState: 'checking',
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       progressSync: { status: 'review-required' },
       taskTerminalSurfaceId: undefined,
       workItems: [{
         id: 'recover_task', status: 'waiting-decision', workerSurfaceId: undefined,
         supervisorLaneId: undefined, startedAt: undefined,
         baseline: { status: 'required', requirementsVersion: 1 },
+        executionProtocolVersion: 1,
+        supervisorPlan: undefined,
+        supervisorPlanRequired: true,
+        latestBlocker: expect.stringContaining('完整阶段合同'),
         latestContextSummary: expect.stringContaining('核心实现'),
       }],
     });
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.projectManagerTerminal)).toBe(true);
+    const recoveredManagerSurface = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.id === useStore.getState().projectManager?.managerSurfaceId);
+    expect(recoveredManagerSurface).toMatchObject({
+      projectManagerAgent: 'grok',
+      projectManagerModel: 'grok-4.6',
+      projectManagerReasoningEffort: 'high',
+    });
+    expect((globalThis.window as any).wmux.projectManager.ensureSkill).toHaveBeenCalledWith('grok');
     expect(JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries))
       .toContain('旧项目 AI、监督 AI、任务 AI 及其 surfaceId 都已失效');
+    expect(JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries))
+      .toContain('执行协议迁移');
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'execution-protocol-migrated' }),
+    ]));
 
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({
@@ -2931,13 +2987,57 @@ describe('supervisor decision bridge', () => {
         basis: '应用重启且目录存在新进度，不能沿用旧基线', nextAction: '由新监督建立当前工作树基线后续作',
       }],
     })).resolves.toMatchObject({ ok: true, orientation: { status: 'ready' } });
+    await expect(request({
+      action: 'task-supervise',
+      callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: 'pm-recover', workItemId: 'recover_task',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('执行协议') });
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: 'pm-recover', workItemId: 'recover_task',
+      patch: { executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION },
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('控制层维护') });
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: 'pm-recover', workItemId: 'recover_task',
+      patch: {
+        status: 'completed', contract: persisted.workItems[0].contract,
+        latestEvidence: '试图沿用旧证据直接完成',
+      },
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('非完成状态') });
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: useStore.getState().projectManager?.managerSurfaceId,
+      projectId: 'pm-recover', workItemId: 'recover_task',
+      patch: { status: 'planned', contract: persisted.workItems[0].contract },
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'work-item-updated' } });
+    expect(useStore.getState().projectManager?.workItems).toEqual([
+      expect.objectContaining({
+        id: 'recover_task', status: 'planned',
+        executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+        attempts: 0, decisionsUsed: 0, executionHistory: [],
+        baseline: { status: 'required', requirementsVersion: 1 },
+        supervisorPlan: undefined,
+        latestBlocker: undefined,
+        latestEvidence: expect.stringContaining('src/core.ts'),
+      }),
+    ]);
     const { created, lane } = await startTaskThroughDedicatedSupervisor('pm-recover', 'recover_task');
     const recoveredSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).find((surface) => surface.id === created.surfaceId);
     expect(recoveredSurface).toMatchObject({
       projectManagerProjectId: 'pm-recover', projectManagerWorkItemId: 'recover_task',
+      customTitle: 'Kimi直连 · 恢复任务',
+      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
     });
+    const recoveredSupervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).find((surface) => surface.id === lane?.supervisorSurfaceId);
+    expect(recoveredSupervisorSurface?.startupCommands?.[0]).toContain("--model 'gpt-5.6-terra'");
+    expect(recoveredSupervisorSurface?.startupCommands?.[0]).toContain("model_reasoning_effort='high'");
     const recoveredLaunch = JSON.stringify({
       startupCommands: recoveredSurface?.startupCommands,
       startupInput: recoveredSurface?.startupInput,
@@ -2986,6 +3086,15 @@ describe('supervisor decision bridge', () => {
       executionAction: 'approve-project-baseline',
       workspaceVersion: 'head:recovered,status:known',
       evidence: '已审核当前工作树、入口、测试约定、既有变更和恢复证据',
+      stagePlanFile: '.wmux/tmp/recovery-plan.json',
+      stagePlan: {
+        selectedRoute: '沿恢复证据继续剩余验证',
+        milestones: [{ id: 'finish_recovery', title: '完成恢复验证', outcome: '剩余验证形成可复核结论', status: 'active' }],
+        expectedPaths: [],
+        targetedValidation: [],
+        serializedBoundaries: ['最终验证串行执行'],
+        remainingWork: ['完成剩余验证'],
+      },
     }))).resolves.toMatchObject({ ok: true });
     expect(useStore.getState().projectManager?.recoveryState).toBe('ready');
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
@@ -3250,6 +3359,21 @@ describe('supervisor decision bridge', () => {
     ]));
     expect(useStore.getState().supervisor.supervisorWorkspaceId).not.toBe(projectSupervisorWorkspace?.id);
     approveProjectWorkItemBaseline(projectId, 'first_task');
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'first_task', patch: {
+        status: 'validating',
+        supervisorPlan: {
+          revision: 1,
+          selectedRoute: '完成第一阶段并复核验证证据',
+          milestones: [{
+            id: 'finish_first', title: '完成第一阶段', outcome: '第一阶段验证通过',
+            status: 'completed', evidence: '第一项验证通过',
+          }],
+          expectedPaths: [], targetedValidation: [], serializedBoundaries: [], remainingWork: [],
+          updatedAt: Date.now(),
+        },
+      },
+    }, projectId);
     await expect(request({
       action: 'task-update', callerSurfaceId: managerSurfaceId, projectId,
       workItemId: 'first_task', patch: { status: 'completed', latestEvidence: '第一项验证通过' },
@@ -3940,8 +4064,8 @@ describe('supervisor decision bridge', () => {
     });
   }
 
-  const ordinaryTaskDelivery = (next: string) => prepareTerminalPasteInput(
-    `${ORDINARY_TASK_ROLE_ANCHOR}\n\n${next}`,
+  const ordinaryTaskDelivery = (next: string, first = true) => prepareTerminalPasteInput(
+    `${first ? ORDINARY_TASK_ROLE_ANCHOR : buildOrdinaryTaskEventEnvelope('worker-a')}\n\n${next}`,
     false,
   );
 
@@ -3949,8 +4073,19 @@ describe('supervisor decision bridge', () => {
     expect(decide({ next: '运行相关单元测试' })).toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledTimes(1);
     expect(writes).toHaveBeenCalledWith('worker-a', ordinaryTaskDelivery('运行相关单元测试'));
+    expect(useStore.getState().supervisor.lanes[0].taskRoleAnchorPending).toBe(false);
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a compact event envelope after the ordinary task role was loaded once', () => {
+    expect(decide({ next: '检查当前实现' })).toMatchObject({ ok: true, outcome: 'continue' });
+    useStore.getState().updateLane('lane-a', { awaitingReview: true });
+
+    expect(decide({ next: '运行相关单元测试' })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(writes).toHaveBeenCalledTimes(2);
+    expect(writes).toHaveBeenNthCalledWith(2, 'worker-a', ordinaryTaskDelivery('运行相关单元测试', false));
+    expect(String(writes.mock.calls[1][1])).not.toContain(ORDINARY_TASK_ROLE_ANCHOR);
   });
 
   it('fails closed when a project lane cannot prove its exact project and work-item binding', () => {
@@ -4620,6 +4755,18 @@ describe('supervisor decision bridge', () => {
     const managerNotice = String(deliveredNotice || queuedNotice || '');
     expect(managerNotice).toContain(`--approval ${approval.id}`);
     expect(managerNotice).toContain('--selection');
+    const decisionTransition = useStore.getState().projectManagers
+      .find((project) => project.id === projectId)?.pendingSupervisorTransitions
+      ?.find((transition) => transition.kind === 'decision-required');
+    expect(decisionTransition).toBeDefined();
+    await expect(request({
+      action: 'transition-ack', callerSurfaceId: session.managerSurfaceId, projectId,
+      transitionId: decisionTransition?.id, resolution: 'replanned',
+      summary: '只在文字中采纳方案但尚未关闭待决项',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('必须先执行 wmux project decide'),
+    });
     expect(decide({ outcome: 'continue', next: '尝试绕过待决项继续' })).toMatchObject({
       ok: false,
       error: expect.stringContaining('待项目管理 AI 处理的决策项'),
@@ -4666,7 +4813,17 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ status: 'running', latestBlocker: undefined });
 
     writes.mockClear();
-    expect(decide({ outcome: 'continue', next: '执行最小聚焦验证并报告证据' }))
+    expect(decide({
+      outcome: 'continue',
+      next: '执行最小聚焦验证并报告证据',
+      stagePlanFile: '.wmux/tmp/manager-decision-plan.json',
+      stagePlan: {
+        selectedRoute: '保留当前方案并补充最小聚焦验证',
+        milestones: [{ id: 'focused_validation', title: '聚焦验证', outcome: '形成可复核验证证据', status: 'active' }],
+        expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
+        remainingWork: ['完成聚焦验证'],
+      },
+    }))
       .toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledWith(
       'worker-a',
@@ -4732,6 +4889,19 @@ describe('supervisor decision bridge', () => {
       testResult: '相关回归测试全部通过',
       changedFiles: ['src/auth.ts'],
       workspaceVersion: 'head:test,diff:auth-v2',
+      completionStopWhen: '1,2',
+      completionValidation: '1',
+      remainingWork: 'none',
+      stagePlanFile: '.wmux/tmp/manager-decision-complete.json',
+      stagePlan: {
+        selectedRoute: '保留当前方案并补充最小聚焦验证',
+        milestones: [{
+          id: 'focused_validation', title: '聚焦验证', outcome: '形成可复核验证证据',
+          status: 'completed', evidence: '相关回归测试通过且 diff 已核对',
+        }],
+        expectedPaths: ['src/auth.ts'], targetedValidation: [], serializedBoundaries: [],
+        remainingWork: [],
+      },
     })).toMatchObject({ ok: true, outcome: 'complete', waiting: true, handoff: true });
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
       .toMatchObject({ controlState: 'waiting' });
@@ -4788,6 +4958,7 @@ describe('supervisor decision bridge', () => {
     }, projectId);
     const budgetUsageBeforeResume = useStore.getState().projectManagers.find((project) => project.id === projectId)
       ?.workItems.find((item) => item.id === 'decision_task');
+    useStore.getState().updateLane('lane-a', { unreportedIdleRecoveryAttempts: 2 });
     const reopened = await request({
       action: 'task-update', callerSurfaceId: session.managerSurfaceId, projectId,
       workItemId: 'decision_task', patch: {
@@ -4804,7 +4975,10 @@ describe('supervisor decision bridge', () => {
       ok: true, recovered: true, resumedFromWaiting: true, laneId: 'lane-a',
     });
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
-      .toMatchObject({ controlState: 'active', stopConfirmed: false, projectTaskContractPending: true });
+      .toMatchObject({
+        controlState: 'active', stopConfirmed: false, projectTaskContractPending: true,
+        unreportedIdleRecoveryAttempts: 0,
+      });
     expect(useStore.getState().projectManagers.find((project) => project.id === projectId)
       ?.workItems.find((item) => item.id === 'decision_task')).toMatchObject({
         startedAt: expect.any(Number),
@@ -4964,6 +5138,7 @@ describe('supervisor decision bridge', () => {
       type: 'create-work-item',
       workItem: {
         id: 'auth', title: '认证', status: 'running', dependencies: [], attempts: 0, decisionsUsed: 0,
+        supervisorPlanRequired: false,
         startedAt: Date.now(), updatedAt: Date.now(), executionHistory: [], workerSurfaceId: 'worker-a', supervisorLaneId: 'lane-a',
         contract: {
           objective: '完成认证', description: '', preconditions: [],
@@ -4999,7 +5174,7 @@ describe('supervisor decision bridge', () => {
     expect(decide(retry)).toMatchObject({ ok: false, error: expect.stringContaining('相同动作和错误') });
     expect(writes).toHaveBeenCalledTimes(2);
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
-      status: 'waiting-decision', attempts: 2,
+      status: 'waiting-decision', attempts: 2, decisionsUsed: 2,
     });
   });
 
@@ -5013,6 +5188,7 @@ describe('supervisor decision bridge', () => {
       type: 'create-work-item',
       workItem: {
         id: 'auth', title: '认证', status: 'running', dependencies: [], attempts: 0, decisionsUsed: 0,
+        supervisorPlanRequired: false,
         startedAt: Date.now(), updatedAt: Date.now(), executionHistory: [], workerSurfaceId: 'worker-a', supervisorLaneId: 'lane-a',
         contract: {
           objective: '完成认证', description: '', preconditions: [],
@@ -5034,6 +5210,91 @@ describe('supervisor decision bridge', () => {
     });
   });
 
+  it('keeps an internal milestone inside the supervisor until the full stage checklist is complete', () => {
+    bindProjectLaneToWorkItem({ continuousExecution: true });
+
+    expect(decide({
+      outcome: 'complete',
+      executionAction: 'complete-p1-qualification',
+      evidence: 'P1 资格验证通过；下一步执行 P2',
+      contextSummary: 'P1 已通过，下一步 P2 尚未执行',
+      workspaceVersion: 'head:test,diff:p1',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('普通 P0/P1/P2'),
+    });
+    expect(useStore.getState().projectManager?.pendingSupervisorTransitions || []).toHaveLength(0);
+    expect(useStore.getState().projectManager?.pendingManagerDeliveries || []).toHaveLength(0);
+
+    expect(decide({
+      outcome: 'continue',
+      next: '继续执行 P2，并在完成全部阶段验证后汇总证据',
+      executionAction: 'continue-p2-qualification',
+      evidence: 'P1 资格验证通过',
+      contextSummary: 'P1 已完成，P2 是合同内明确下一步',
+      workspaceVersion: 'head:test,diff:p1',
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('继续执行 P2'),
+    );
+    expect(useStore.getState().projectManager?.pendingSupervisorTransitions || []).toHaveLength(0);
+  });
+
+  it('treats waiting for the next prompt as ready for the next supervised batch', () => {
+    bindProjectLaneToWorkItem({ continuousExecution: true });
+    agentState = {
+      state: 'blocked',
+      blockedReason: 'Waiting for your next prompt',
+      blockedVersion: 7,
+      updatedAt: Date.now(),
+    };
+
+    expect(decide({
+      outcome: 'continue',
+      next: '继续执行合同内下一批并报告证据',
+      executionAction: 'continue-next-batch',
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(writes).toHaveBeenCalledWith('worker-a', expect.stringContaining('继续执行合同内下一批'));
+  });
+
+  it('allows completion from an agent waiting for the next prompt and reuses prior test evidence', () => {
+    const project = bindProjectLaneToWorkItem({ continuousExecution: true });
+    const priorRecord = {
+      ts: 1,
+      actionSignature: 'test-action',
+      commandSignature: 'test-command',
+      errorSignature: '',
+      progressSignature: 'test-progress',
+      workspaceVersion: 'head:test',
+      testCommand: 'npm test -- auth',
+      testResult: 'passed',
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: project.workItems[0].id,
+      patch: { executionHistory: [priorRecord, { ...priorRecord, ts: 2 }] },
+    }, project.id);
+    agentState = {
+      state: 'blocked',
+      blockedReason: 'Waiting for next prompt',
+      blockedVersion: 9,
+      updatedAt: Date.now(),
+    };
+
+    expect(decide({
+      outcome: 'complete',
+      reason: '全部验收已满足',
+      executionAction: 'complete-stage',
+      evidence: '既有定向测试已通过，相关 diff 已复核',
+      testCommand: 'npm test -- auth',
+      testResult: 'passed',
+      workspaceVersion: 'head:test',
+      completionStopWhen: '1',
+      completionValidation: '1',
+      remainingWork: 'none',
+    })).toMatchObject({ ok: true, outcome: 'complete', waiting: true });
+  });
+
   it('rejects a project-managed supervisor decision outside the task contract', () => {
     const store = useStore.getState();
     store.startProjectManager({ projectDir: 'E:\\repo', goal: '完成认证', preconditions: ['无额外物理前置条件'], doneWhen: ['认证测试通过'] });
@@ -5044,6 +5305,7 @@ describe('supervisor decision bridge', () => {
       type: 'create-work-item',
       workItem: {
         id: 'auth', title: '认证', status: 'running', dependencies: [], attempts: 0, decisionsUsed: 0,
+        supervisorPlanRequired: false,
         startedAt: Date.now(), updatedAt: Date.now(), executionHistory: [], workerSurfaceId: 'worker-a', supervisorLaneId: 'lane-a',
         contract: {
           objective: '完成认证', description: '', preconditions: [],
@@ -5065,6 +5327,13 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('禁止路径') });
     expect(writes).not.toHaveBeenCalled();
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({ status: 'waiting-decision' });
+    expect(useStore.getState().projectManager?.pendingSupervisorTransitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'project-action-required',
+        eventType: 'supervisor.contract-violation',
+        workItemId: 'auth',
+      }),
+    ]));
   });
 
   it('notifies the user when a completed lane enters waiting for a new direction', () => {
