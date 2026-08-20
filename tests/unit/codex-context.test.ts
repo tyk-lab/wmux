@@ -5,6 +5,8 @@ import path from 'path';
 import {
   applyCodexProjectTrust,
   applyWmuxCodexHooks,
+  canSafelyBypassCodexHookTrust,
+  containsOnlyWmuxCodexHooks,
   ensureCodexProjectTrusted,
 } from '../../src/main/codex-context';
 
@@ -25,6 +27,34 @@ describe('applyWmuxCodexHooks', () => {
     }, SCRIPT);
     expect(next.hooks.Stop).toHaveLength(2);
     expect(next.hooks.Stop[0].hooks[0].command).toBe('python stop.py');
+  });
+
+  it('only allows automated trust bypass when every configured Hook belongs to wmux', () => {
+    const wmuxOnly = applyWmuxCodexHooks({}, SCRIPT);
+    const withUserHook = applyWmuxCodexHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'python stop.py' }] }],
+      },
+    }, SCRIPT);
+
+    expect(containsOnlyWmuxCodexHooks(wmuxOnly, SCRIPT)).toBe(true);
+    expect(containsOnlyWmuxCodexHooks(withUserHook, SCRIPT)).toBe(false);
+    expect(containsOnlyWmuxCodexHooks({ hooks: { Stop: [{ hooks: [] }] } }, SCRIPT)).toBe(false);
+    expect(containsOnlyWmuxCodexHooks(applyWmuxCodexHooks({}, 'C:/custom/wmux-hook.js'), SCRIPT)).toBe(false);
+  });
+
+  it('fails closed when the installed Hook file is missing or malformed', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-hook-trust-'));
+    const hooksPath = path.join(directory, 'hooks.json');
+    try {
+      expect(canSafelyBypassCodexHookTrust(hooksPath, SCRIPT)).toBe(false);
+      fs.writeFileSync(hooksPath, '{invalid', 'utf-8');
+      expect(canSafelyBypassCodexHookTrust(hooksPath, SCRIPT)).toBe(false);
+      fs.writeFileSync(hooksPath, JSON.stringify(applyWmuxCodexHooks({}, SCRIPT)), 'utf-8');
+      expect(canSafelyBypassCodexHookTrust(hooksPath, SCRIPT)).toBe(true);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

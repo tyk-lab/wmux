@@ -5,6 +5,7 @@ import type {
   SupervisorRestoreSource,
   SupervisorSession,
 } from '../store/supervisor-slice';
+import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
 import { supervisorDeliveryLabel } from './delivery';
 
 const MAX_VALUE = 1_200;
@@ -53,6 +54,28 @@ function compact(value: unknown): unknown {
 function payloadText(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function payloadStagePlan(payload: Record<string, unknown>): ProjectSupervisorStagePlan | undefined {
+  const value = payload.stagePlan;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const plan = value as Partial<ProjectSupervisorStagePlan>;
+  if (!Number.isFinite(plan.revision)
+    || typeof plan.selectedRoute !== 'string'
+    || !Array.isArray(plan.milestones)
+    || !Array.isArray(plan.expectedPaths)
+    || !Array.isArray(plan.targetedValidation)
+    || !Array.isArray(plan.serializedBoundaries)
+    || !Array.isArray(plan.remainingWork)
+    || !Number.isFinite(plan.updatedAt)) return undefined;
+  if (!plan.milestones.every((milestone) => (
+    !!milestone
+    && typeof milestone.id === 'string'
+    && typeof milestone.title === 'string'
+    && typeof milestone.outcome === 'string'
+    && ['planned', 'active', 'completed'].includes(String(milestone.status))
+  ))) return undefined;
+  return plan as ProjectSupervisorStagePlan;
 }
 
 function timestamp(ts: number): string {
@@ -249,6 +272,7 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
       const reason = payloadText(event.payload || {}, 'reason');
       const next = payloadText(event.payload || {}, 'next');
       const proposalKind = payloadText(event.payload || {}, 'proposalKind');
+      const plan = payloadStagePlan(event.payload || {});
       decisions.unshift({
         ts: event.ts,
         task: currentTask || '（任务未上报）',
@@ -256,6 +280,7 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
         ...(proposalKind ? { proposalKind: proposalKind as SupervisorDecision['proposalKind'] } : {}),
         reason,
         next,
+        ...(plan ? { plan } : {}),
       });
       const proposal = proposalTitle(proposalKind);
       const proposalLabel = proposal ? `（${proposal}）` : '';

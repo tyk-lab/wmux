@@ -182,6 +182,35 @@ describe('supervisor runtime context', () => {
     expect(card).toContain('不授予直接实现、测试、跨终端输入');
   });
 
+  it('exposes an ordinary supervisor plan from its latest structured decision', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const ordinaryLane = lane({
+      decisions: [{
+        ts: 1,
+        task: '修复配置缺失崩溃',
+        outcome: 'continue',
+        reason: '任务具体，可直接监督执行',
+        next: '完成修复并运行定向测试',
+        plan: {
+          revision: 1,
+          selectedRoute: '聚焦修复后定向验证',
+          milestones: [{ id: 'fix', title: '修复并验证', outcome: '形成测试证据', status: 'active' }],
+          expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
+          remainingWork: ['完成修复'], updatedAt: 1,
+        },
+      }],
+    });
+    const context = buildSupervisorRuntimeContext(session, ordinaryLane, { taskState: 'idle' });
+
+    expect(context.plan).toMatchObject({
+      revision: 1,
+      selectedRoute: '聚焦修复后定向验证',
+      milestones: [{ id: 'fix', status: 'active' }],
+    });
+    expect(buildSupervisorCapabilityCard(context).join('\n')).toContain('路线=聚焦修复后定向验证');
+  });
+
   it('does not advertise decisions when the session, review, approval, or project binding blocks them', () => {
     const inactive = createDefaultSupervisorSession();
     const inactiveContext = buildSupervisorRuntimeContext(inactive, lane({ awaitingReview: true }), {

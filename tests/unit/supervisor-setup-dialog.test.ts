@@ -156,6 +156,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('关闭此项');
     expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭的理由');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-decisions');
+    expect(projectManagerDialogSource).toContain('监督 AI 当前路线');
+    expect(projectManagerDialogSource).toContain('监督 AI 下一步');
+    expect(projectManagerDialogSource).toContain('监督执行进度');
+    expect(projectManagerDialogSource).toContain('buildSupervisorPlanView');
     expect(supervisorCssSource).toMatch(
       /\.project-manager-dialog__work-item-decisions\s*\{[\s\S]*?max-height:[\s\S]*?overflow-y:\s*auto;/,
     );

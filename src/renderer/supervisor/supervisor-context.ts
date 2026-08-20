@@ -251,6 +251,8 @@ export function buildSupervisorRuntimeContext(
     },
   ];
   const supervisorLauncher = detectSupervisorLauncher(session.supervisorLaunchCmd);
+  const currentPlan = project?.supervisorPlan
+    || lane.decisions?.find((decision) => decision.plan)?.plan;
 
   return {
     ok: true,
@@ -344,16 +346,16 @@ export function buildSupervisorRuntimeContext(
           : Math.max(0, project.maxTaskRetries - project.attempts),
       } : {}),
     },
-    ...(project?.supervisorPlan ? {
+    ...(currentPlan ? {
       plan: {
-        revision: project.supervisorPlan.revision,
-        selectedRoute: project.supervisorPlan.selectedRoute,
-        milestones: project.supervisorPlan.milestones.map((milestone) => ({
+        revision: currentPlan.revision,
+        selectedRoute: currentPlan.selectedRoute,
+        milestones: currentPlan.milestones.map((milestone) => ({
           id: milestone.id,
           status: milestone.status,
           outcome: milestone.outcome,
         })),
-        remainingWork: [...project.supervisorPlan.remainingWork],
+        remainingWork: [...currentPlan.remainingWork],
       },
     } : {}),
   };
@@ -381,7 +383,7 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       ? `监督阶段计划: r${context.plan.revision}；路线=${context.plan.selectedRoute}；剩余=${context.plan.remainingWork.join('、') || '无'}`
       : context.role === 'project-supervisor'
         ? '监督阶段计划: 基线批准时必须用 --stage-plan-file 建立，随后由监督 AI 自主维护'
-        : '',
+        : '监督阶段计划: 根据用户任务用 --stage-plan-file 建立；具体任务保留一个 milestone，复杂任务按真实阶段拆分',
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
     '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',

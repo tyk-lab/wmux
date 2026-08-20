@@ -611,6 +611,18 @@ export function buildSupervisorBriefing(
       : '自主推进只能围绕上述目标、当前任务或计划文件，不得自行扩展任务。',
     '',
   ];
+  const supervisorPlanBlock = [
+    '## 监督 AI 自己的执行规划',
+    projectManaged
+      ? '上级工作项由项目 AI 下发；你负责在其硬边界内选择具体执行路线，并维护监督执行项。'
+      : '上级任务由用户提供；你负责根据任务粒度选择具体执行路线，并维护监督执行项。',
+    '任务已经具体且可一次完成时，不要机械拆分：使用一个 milestone，界面会显示“直接监督执行”。只有存在真实阶段依赖、中间验证、风险边界或可并行工作时，才使用多个 milestones，界面显示“分阶段监督执行”。',
+    projectManaged
+      ? '项目基线批准时必须通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。'
+      : '取得足够任务上下文后的首次 continue/rework 应通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。没有正式计划前，控制台只把当前裁决显示为“形成正式路线中”。',
+    '计划 JSON 包含 selectedRoute、milestones（1-12 项，每项含 id/title/outcome/status）、expectedPaths、targetedValidation、serializedBoundaries 和 remainingWork。计划必须保持在当前任务、工作范围、禁止事项和授权边界内。',
+    '',
+  ];
   const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
   const mainThreadResponsibility = normalizeTaskThreadResponsibility(
     laneConfig.mainThreadResponsibility,
@@ -697,6 +709,7 @@ export function buildSupervisorBriefing(
       '',
       ...capabilityBlock,
       ...taskContextBlock,
+      ...supervisorPlanBlock,
       ...taskWorkModeBlock,
       ...stopContextBlock,
       ...preconditionsBlock,

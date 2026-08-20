@@ -9,6 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
+import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -26,6 +27,8 @@ export interface SupervisorDecision {
   proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery' | 'direction-needed';
   reason: string;
   next: string;
+  /** Supervisor-owned execution plan snapshot; one milestone means direct execution. */
+  plan?: ProjectSupervisorStagePlan;
 }
 
 /** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */

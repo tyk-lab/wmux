@@ -1366,6 +1366,60 @@ describe('飞书人工决策单聊路由', () => {
     expect(expandedCard).toContain('收起近期对话');
   });
 
+  it('飞书项目中心可展开历史项目且批量操作后保留展开状态', async () => {
+    const projectView = {
+      ok: true,
+      message: '已暂停 1 个项目',
+      session: { id: 'pm-active', status: 'active', goal: '推进活动项目', workItems: [] },
+      projects: [
+        { id: 'pm-active', projectName: '活动项目', status: 'active', goal: '推进活动项目' },
+        { id: 'pm-history', projectName: '历史归档项目', status: 'completed', goal: '已完成目标' },
+      ],
+    };
+    const control = vi.fn(async () => projectView);
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    handlers.message({
+      chatId: 'oc-dm-a', senderId: 'ou-allowed', messageId: 'om-help-project-history', content: '帮助', chatType: 'p2p',
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'menu', flow: 'project-manager', nonce: 'open-project-history' }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    const collapsedCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(collapsedCard).toContain('历史项目已折叠 · 1');
+    expect(collapsedCard).not.toContain('历史归档项目');
+    const expandNonce = /"wmux_action":"project_ai_portfolio","view":"all"[^}]*"nonce":"([^"]+)"/.exec(collapsedCard)?.[1];
+    expect(expandNonce).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_portfolio', view: 'all', nonce: expandNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(2));
+    const expandedCard = JSON.stringify(updateCard.mock.calls[1][1]);
+    expect(expandedCard).toContain('历史归档项目');
+    expect(expandedCard).toContain('收起历史项目');
+    const pauseNonce = /"wmux_action":"project_ai_pause_all","view":"all"[^}]*"nonce":"([^"]+)"/.exec(expandedCard)?.[1];
+    expect(pauseNonce).toBeTruthy();
+
+    handlers.cardAction({
+      chatId: 'oc-dm-a', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: { value: currentControlValue({ wmux_action: 'project_ai_pause_all', view: 'all', nonce: pauseNonce }) }, raw: {},
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(3));
+    const refreshedCard = JSON.stringify(updateCard.mock.calls[2][1]);
+    expect(refreshedCard).toContain('已暂停 1 个项目');
+    expect(refreshedCard).toContain('历史归档项目');
+    expect(control).toHaveBeenCalledWith(
+      { action: 'project-pause-all', reason: '用户通过飞书全局暂停项目组合' },
+      { openId: 'ou-allowed', source: 'card' },
+    );
+  });
+
   it('项目管理 AI 对话卡可查看处理日志并暂停和恢复项目', async () => {
     let status = 'active';
     let pausedByPortfolio = false;

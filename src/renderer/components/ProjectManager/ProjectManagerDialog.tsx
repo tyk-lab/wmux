@@ -19,6 +19,7 @@ import { openProjectManagerConsole } from '../../project-manager/console-surface
 import { useStore } from '../../store';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import { modelOptionsFor } from '../../supervisor/model-catalog';
+import { buildSupervisorPlanView } from '../../supervisor/status-summary';
 import '../../styles/supervisor.css';
 
 function firstTerminalDirectory(tree: SplitNode): string {
@@ -1333,6 +1334,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
                   {currentWorkItems.map((item) => {
                     const execution = item.contract.execution;
+                    const itemLane = managedLanes.find((lane) => lane.id === item.supervisorLaneId);
+                    const supervisorPlanView = buildSupervisorPlanView({
+                      source: 'project-ai',
+                      task: item.title,
+                      plan: item.supervisorPlan,
+                      latestDecision: itemLane?.decisions?.[0],
+                      baselineStatus: item.baseline?.status,
+                    });
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
                     const latestIntervention = [...decisions].reverse().find((event) => (
                       event.kind === 'user-work-item-intervention'
@@ -1367,6 +1376,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>执行模式</dt><dd>{taskWorkModeLabel(execution?.taskWorkMode)}{execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
                           {execution?.taskWorkMode === 'adaptive' && <><dt>自适应边界</dt><dd>最多 {execution.maxChildThreads} 个内部子线程；可并行：{execution.parallelizableOperations?.join('；')}；必须串行：{execution.serializedOperations?.join('；')}</dd></>}
                           <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
+                          <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
+                          <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
+                          <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
+                          <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : '等待形成正式路线'}</dd>
                           <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>

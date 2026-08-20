@@ -29,6 +29,7 @@ import {
   supervisorDecisionOptions,
 } from '../../supervisor/decision-options';
 import {
+  buildSupervisorPlanView,
   summarizeSupervisorPlan,
   summarizeTaskExecution,
   type SupervisorTaskAgentState,
@@ -105,14 +106,6 @@ const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   rework: '调整当前路线',
   complete: '本轮规划完成',
   'needs-human': '等待人工决定',
-};
-
-const SUPERVISOR_PROPOSAL_KIND_LABELS: Record<string, string> = {
-  'route-adjustment': '小范围路线调整',
-  'route-change': '切换执行路线',
-  important: '重要方案建议',
-  'context-recovery': '恢复上下文',
-  'direction-needed': '等待新方向',
 };
 
 function projectTaskWorkModeLabel(mode: string | undefined): string {
@@ -963,7 +956,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       : laneState === 'paused'
                         ? '已暂停'
                         : PROJECT_WORK_ITEM_STATUS_LABELS[item.status] || item.status;
-                  const milestones = item.supervisorPlan?.milestones || [];
+                  const planView = buildSupervisorPlanView({
+                    source: 'project-ai',
+                    task: item.title,
+                    plan: item.supervisorPlan,
+                    latestDecision: lane.decisions?.[0],
+                    baselineStatus: item.baseline?.status,
+                  });
+                  const taskExecution = summarizeTaskExecution({
+                    controlState: laneState,
+                    currentTask: lane.currentTask || item.title,
+                    awaitingReview: lane.awaitingReview,
+                    stopConfirmed: lane.stopConfirmed,
+                  }, visibleAgentStates[lane.surfaceId]);
                   const supervisorStatusLabel = item.status === 'completed' || item.status === 'stopped'
                     ? '已结束'
                     : laneState === 'active'
@@ -973,15 +978,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           : laneState === 'paused'
                             ? '已暂停'
                             : '已停止';
-                  const planningSummary = item.status === 'completed'
-                    ? '工作项已完成，执行证据已归档'
-                    : item.status === 'stopped'
-                      ? '工作项已关闭，不再继续派遣'
-                      : item.baseline?.status === 'approved'
-                          ? '项目基线已审核，等待监督 AI 提交执行路线'
-                          : item.baseline?.status === 'investigating'
-                            ? '任务 AI 正在只读调查项目基线'
-                            : '等待任务 AI 调查并建立项目基线';
                   return (
                     <article key={lane.id} data-status={item.status} data-active="1">
                       <div className="sup-panel__project-plan-row">
@@ -990,15 +986,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <em>{statusLabel}</em>
                       </div>
                       <div className="sup-panel__project-plan-meta">
-                        <span>来源：项目 AI 工作项</span>
+                        <span>上级任务：{planView.sourceLabel}</span>
                         <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
                         <span>监督：{supervisorStatusLabel}</span>
                         <span>{projectTaskWorkModeLabel(item.contract.execution?.taskWorkMode)}</span>
                       </div>
-                      {item.supervisorPlan ? <>
-                        <div className="sup-panel__project-plan-route"><strong>当前路线</strong><span>{item.supervisorPlan.selectedRoute}</span></div>
+                      <div className="sup-panel__project-plan-route"><strong>监督 AI 当前规划</strong><span>{planView.modeLabel}</span></div>
+                      <div className="sup-panel__project-plan-detail"><strong>当前路线</strong><span>{planView.route}</span></div>
+                      <div className="sup-panel__project-plan-detail"><strong>下一步给任务 AI</strong><span>{planView.nextInstruction}</span></div>
+                      {planView.steps.length > 0 && <>
                         <ol className="sup-panel__project-plan-milestones">
-                          {milestones.map((milestone) => (
+                          {planView.steps.map((milestone) => (
                             <li key={milestone.id} data-status={milestone.status}>
                               <span>{PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS[milestone.status] || milestone.status}</span>
                               <strong>{milestone.title}</strong>
@@ -1007,16 +1005,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             </li>
                           ))}
                         </ol>
-                        {item.supervisorPlan.remainingWork.length > 0 && (
-                          <div className="sup-panel__project-plan-detail"><strong>剩余工作</strong><span>{item.supervisorPlan.remainingWork.join('；')}</span></div>
-                        )}
-                        {item.supervisorPlan.targetedValidation.length > 0 && (
-                          <div className="sup-panel__project-plan-detail"><strong>定向验证</strong><span>{item.supervisorPlan.targetedValidation.join('；')}</span></div>
-                        )}
-                        {item.supervisorPlan.serializedBoundaries.length > 0 && (
-                          <div className="sup-panel__project-plan-detail"><strong>串行边界</strong><span>{item.supervisorPlan.serializedBoundaries.join('；')}</span></div>
-                        )}
-                      </> : <div className="sup-panel__project-plan-progress">尚未形成监督执行路线 · {planningSummary}</div>}
+                      </>}
+                      {item.supervisorPlan?.remainingWork.length ? (
+                        <div className="sup-panel__project-plan-detail"><strong>剩余工作</strong><span>{item.supervisorPlan.remainingWork.join('；')}</span></div>
+                      ) : null}
+                      {item.supervisorPlan?.targetedValidation.length ? (
+                        <div className="sup-panel__project-plan-detail"><strong>定向验证</strong><span>{item.supervisorPlan.targetedValidation.join('；')}</span></div>
+                      ) : null}
+                      {item.supervisorPlan?.serializedBoundaries.length ? (
+                        <div className="sup-panel__project-plan-detail"><strong>串行边界</strong><span>{item.supervisorPlan.serializedBoundaries.join('；')}</span></div>
+                      ) : null}
+                      <div className="sup-panel__project-plan-progress">
+                        任务 AI 执行摘要：{taskExecution.label} · {item.latestEvidence || item.latestContextSummary || taskExecution.detail}
+                      </div>
                       {(item.latestBlocker || item.latestEvidence || item.latestContextSummary) && (
                         <div className="sup-panel__project-plan-latest" data-blocked={item.latestBlocker ? '1' : '0'}>
                           {item.latestBlocker
@@ -1085,6 +1086,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 },
                 visibleAgentStates[lane.surfaceId],
               );
+              const planView = buildSupervisorPlanView({
+                source: laneProjectManaged ? 'project-ai' : 'user',
+                task: lane.currentTask || laneConfig.taskGoal || planFileName,
+                latestDecision,
+              });
               const laneStatusLabel = laneControlState === 'waiting'
                 ? '待续'
                 : lane.stopConfirmed
@@ -1141,13 +1147,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   {!laneProjectManaged && (
                     <>
                       <div className="sup-panel__lane-status-grid" aria-label={`${lane.label} 的规划与执行状态`}>
-                        <div title={planStatus.title}>
-                          <span>下一步规划</span>
-                          <strong>{planStatus.label}</strong>
-                          <small>{planStatus.detail}</small>
+                        <div title={lane.currentTask || laneConfig.taskGoal || planFileName}>
+                          <span>上级任务 · {planView.sourceLabel}</span>
+                          <strong>{lane.currentTask || laneConfig.taskGoal || planFileName || '等待用户任务'}</strong>
+                          <small>{laneConfig.taskDescription || '监督 AI 只在用户给定目标和范围内拆分执行项'}</small>
                         </div>
                         <div title={executionStatus.title}>
-                          <span>任务执行</span>
+                          <span>任务 AI 执行摘要</span>
                           <strong>{executionStatus.label}</strong>
                           <small>{executionStatus.detail}</small>
                         </div>
@@ -1160,58 +1166,66 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       <section className="sup-panel__ordinary-plan" aria-label={`${lane.label} 的监督规划`}>
                         <div className="sup-panel__ordinary-plan-heading">
                           <div>
-                            <span>监督规划</span>
-                            <strong>{latestDecision
-                              ? SUPERVISOR_DECISION_OUTCOME_LABELS[latestDecision.outcome] || latestDecision.outcome
-                              : '等待首次规划'}</strong>
+                            <span>监督 AI 当前规划</span>
+                            <strong>{planView.modeLabel}</strong>
                           </div>
                           <em>{(lane.decisions || []).length} 次更新</em>
                         </div>
-                        {latestDecision ? (
-                          <>
-                            <div className="sup-panel__ordinary-plan-grid">
-                              <div>
-                                <span>当前路线 / 方案</span>
-                                <strong>{latestDecision.proposalKind
-                                  ? SUPERVISOR_PROPOSAL_KIND_LABELS[latestDecision.proposalKind] || latestDecision.proposalKind
-                                  : SUPERVISOR_DECISION_OUTCOME_LABELS[latestDecision.outcome] || latestDecision.outcome}</strong>
-                                <small>{latestDecision.reason || '监督 AI 未附选择理由'}</small>
-                              </div>
-                              <div>
-                                <span>下一步安排</span>
-                                <strong>{latestDecision.next || (latestDecision.outcome === 'complete' ? '等待新的任务方向' : '监督 AI 未附具体下一步')}</strong>
-                                <small>{latestDecision.task || lane.currentTask || laneConfig.taskGoal || '任务尚未上报'}</small>
-                              </div>
+                        <>
+                          <div className="sup-panel__ordinary-plan-grid">
+                            <div>
+                              <span>当前路线</span>
+                              <strong>{planView.route}</strong>
+                              <small>{latestDecision?.reason || planStatus.title}</small>
                             </div>
-                            {(lane.decisions || []).length > 0 && (
-                              <section className="sup-panel__ordinary-plan-history" aria-label={`${lane.label} 的监督决策链`}>
-                                <div className="sup-panel__ordinary-plan-history-heading">
-                                  <strong>监督决策链</strong>
-                                  <span>最近 {Math.min(6, lane.decisions?.length || 0)} 次</span>
-                                </div>
-                                <div className="sup-panel__ordinary-plan-history-list">
-                                  {(lane.decisions || []).slice(0, 6).map((decision, index) => (
-                                    <article key={`${decision.ts}-${index}`}>
-                                      <header>
-                                        <strong>{SUPERVISOR_DECISION_OUTCOME_LABELS[decision.outcome] || decision.outcome}</strong>
-                                        <time>{new Date(decision.ts).toLocaleString('zh-CN', { hour12: false })}</time>
-                                      </header>
-                                      <div>负责任务：{decision.task || '任务尚未上报'}</div>
-                                      <p>决策依据：{decision.reason || '未附选择理由'}</p>
-                                      <small><b>→ 指示任务 AI</b>{decision.next || '未附下一步安排'}</small>
-                                    </article>
-                                  ))}
-                                </div>
-                              </section>
-                            )}
-                          </>
-                        ) : (
-                          <div className="sup-panel__ordinary-plan-empty">
-                            <span>当前任务依据</span>
-                            <strong>{planFileName || lane.currentTask || laneConfig.taskGoal || '尚未收到任务目标或计划文件'}</strong>
-                            <small>监督 AI 提交首次正式裁决后，这里会显示它选择的路线、理由和下一步。</small>
+                            <div>
+                              <span>下一步给任务 AI</span>
+                              <strong>{planView.nextInstruction}</strong>
+                              <small>{planView.mode === 'staged'
+                                ? `执行项 ${planView.completedSteps}/${planView.steps.length}`
+                                : '具体任务不做机械拆分'}</small>
+                            </div>
                           </div>
-                        )}
+                          {planView.steps.length > 0 && (
+                            <ol className="sup-panel__project-plan-milestones sup-panel__ordinary-plan-steps">
+                              {planView.steps.map((step) => (
+                                <li key={step.id} data-status={step.status}>
+                                  <span>{PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS[step.status] || step.status}</span>
+                                  <strong>{step.title}</strong>
+                                  <p>{step.outcome}</p>
+                                  {step.evidence && <small>证据：{step.evidence}</small>}
+                                </li>
+                              ))}
+                            </ol>
+                          )}
+                          {latestDecision ? (
+                            <section className="sup-panel__ordinary-plan-history" aria-label={`${lane.label} 的监督决策链`}>
+                              <div className="sup-panel__ordinary-plan-history-heading">
+                                <strong>监督决策链</strong>
+                                <span>最近 {Math.min(6, lane.decisions?.length || 0)} 次</span>
+                              </div>
+                              <div className="sup-panel__ordinary-plan-history-list">
+                                {(lane.decisions || []).slice(0, 6).map((decision, index) => (
+                                  <article key={`${decision.ts}-${index}`}>
+                                    <header>
+                                      <strong>{SUPERVISOR_DECISION_OUTCOME_LABELS[decision.outcome] || decision.outcome}</strong>
+                                      <time>{new Date(decision.ts).toLocaleString('zh-CN', { hour12: false })}</time>
+                                    </header>
+                                    <div>负责任务：{decision.task || '任务尚未上报'}</div>
+                                    <p>决策依据：{decision.reason || '未附选择理由'}</p>
+                                    <small><b>→ 指示任务 AI</b>{decision.next || '未附下一步安排'}</small>
+                                  </article>
+                                ))}
+                              </div>
+                            </section>
+                          ) : (
+                            <div className="sup-panel__ordinary-plan-empty">
+                              <span>监督规划状态</span>
+                              <strong>等待监督 AI 首次正式裁决</strong>
+                              <small>首次 continue/rework 后会显示直接监督执行或分阶段监督执行。</small>
+                            </div>
+                          )}
+                        </>
                       </section>
                     </>
                   )}

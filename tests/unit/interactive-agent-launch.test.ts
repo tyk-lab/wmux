@@ -43,6 +43,21 @@ describe('interactive Agent launch', () => {
       .toMatch(/^grok -m 'grok-4\.6' --reasoning-effort 'medium' -- /);
   });
 
+  it('bypasses Hook trust only for an explicitly vetted automated Codex runtime', () => {
+    const managedCodex = buildInteractiveAgentLaunch('codex', '启动项目 AI', '', '', {
+      bypassCodexHookTrust: true,
+    });
+    const ordinaryCodex = buildInteractiveAgentLaunch('codex', '启动普通任务');
+    const grok = buildInteractiveAgentLaunch('grok', '启动项目 AI', '', '', {
+      bypassCodexHookTrust: true,
+    });
+
+    expect(managedCodex.startupCommands[0])
+      .toMatch(/^codex --dangerously-bypass-hook-trust -- \(ConvertFrom-Json /);
+    expect(ordinaryCodex.startupCommands[0]).not.toContain('bypass-hook-trust');
+    expect(grok.startupCommands[0]).not.toContain('bypass-hook-trust');
+  });
+
   it('detects only wmux automated task-Agent startup flows', () => {
     const codex = buildInteractiveAgentLaunch('codex', '执行首条任务');
     const kimi = buildInteractiveAgentLaunch('kimi', '执行首条任务');

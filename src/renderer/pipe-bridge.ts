@@ -1259,6 +1259,7 @@ interface RemoteDirectTerminalTask {
   reasoningEffort?: string;
   preset?: 'project-manager' | 'user-records';
   replaceProjectManager?: boolean;
+  bypassCodexHookTrust?: boolean;
   cwd: string;
   displayPath?: string;
   anchorWorkspace?: string;
@@ -1712,7 +1713,9 @@ function createRemoteDirectTerminalTask(
     if (!controlWorkspace || !targetPaneId) return { ok: false, error: '无法创建项目调度控制层运行时。', message: '' };
     const placeholderSurfaceId = findLeaf(controlWorkspace.splitTree, targetPaneId)?.surfaces
       .find((surface) => surface.type === 'supervisor')?.id;
-    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort);
+    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort, {
+      bypassCodexHookTrust: agent === 'codex' && params.bypassCodexHookTrust === true,
+    });
     const surfaceId = store.addSurface(controlWorkspace.id, targetPaneId, 'terminal', {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       shell: 'pwsh.exe',
@@ -2778,7 +2781,8 @@ function projectStageCompletionError(
 
 function normalizeSupervisorStagePlan(
   raw: unknown,
-  workItem: ProjectWorkItem,
+  workItem?: ProjectWorkItem,
+  previousPlan?: ProjectSupervisorStagePlan,
 ): { plan?: ProjectSupervisorStagePlan; error?: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { error: '监督阶段计划必须是 JSON 对象' };
@@ -2822,28 +2826,31 @@ function normalizeSupervisorStagePlan(
   const targetedValidation = projectStringArray(input.targetedValidation);
   const serializedBoundaries = projectStringArray(input.serializedBoundaries);
   const remainingWork = projectStringArray(input.remainingWork);
-  if (workItem.supervisorPlan
+  const existingPlan = workItem?.supervisorPlan || previousPlan;
+  if (workItem?.supervisorPlan
     && workItem.supervisorPlan.selectedRoute !== selectedRoute
     && !workItem.contract.authority.routeAdjustments) {
     return { error: '任务契约未授权监督 AI 调整既定技术路线；请保持 selectedRoute 不变或按 contract-change 升级项目 AI' };
   }
-  const scopeError = projectContractViolation(workItem.contract, {
-    instruction: [
-      selectedRoute,
-      ...milestones.map((milestone) => milestone.outcome),
-      ...serializedBoundaries,
-      ...remainingWork,
-    ].join('\n'),
-    changedFiles: expectedPaths,
-  });
-  if (scopeError) return { error: `监督阶段计划越出项目 AI 给定的硬边界：${scopeError}` };
-  for (const command of targetedValidation) {
-    const validationError = projectContractViolation(workItem.contract, { testCommand: command });
-    if (validationError) return { error: `监督阶段计划中的验证越出硬边界：${validationError}` };
+  if (workItem) {
+    const scopeError = projectContractViolation(workItem.contract, {
+      instruction: [
+        selectedRoute,
+        ...milestones.map((milestone) => milestone.outcome),
+        ...serializedBoundaries,
+        ...remainingWork,
+      ].join('\n'),
+      changedFiles: expectedPaths,
+    });
+    if (scopeError) return { error: `监督阶段计划越出项目 AI 给定的硬边界：${scopeError}` };
+    for (const command of targetedValidation) {
+      const validationError = projectContractViolation(workItem.contract, { testCommand: command });
+      if (validationError) return { error: `监督阶段计划中的验证越出硬边界：${validationError}` };
+    }
   }
   return {
     plan: {
-      revision: (workItem.supervisorPlan?.revision || 0) + 1,
+      revision: (existingPlan?.revision || 0) + 1,
       selectedRoute,
       milestones,
       expectedPaths,
@@ -4203,7 +4210,12 @@ let projectManagerDeliveryGeneration = 0;
 const projectManagerDeliverySurfacesInFlight = new Set<string>();
 const PROJECT_MANAGER_DELIVERY_ALERT_ATTEMPTS = 15;
 const PROJECT_MANAGER_IDLE_SETTLE_MS = 750;
-const PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_MS = 10 * 60_000;
+const PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_DELAYS_MS = [
+  10 * 60_000,
+  30 * 60_000,
+  60 * 60_000,
+  2 * 60 * 60_000,
+] as const;
 const PROJECT_ALIGNMENT_FALLBACK_DELAY_MS = 45_000;
 const PROJECT_TASK_ROTATION_REQUEST_TTL_MS = 5 * 60_000;
 const PROJECT_TASK_CONTROL_ESC_GRACE_MS = 60_000;
@@ -4936,8 +4948,19 @@ function projectSupervisorTransitionText(
     '',
     instruction || '请依据结构化项目状态决定继续、验收、重规划、暂停或恢复；不要绕过专属监督直接指挥任务 AI。',
     `完成相应的 task-update、decide、supervise 或项目状态更新后，执行 wmux project transition-ack --project ${session.id} --transition ${transition.id} --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary "<处理结果和新方向>"。该回执是项目 AI 的内部状态同步，不需要用户确认。`,
-    '未回执前该交接会保留在项目状态中；看门狗只会补投本事件，不再重复询问监督进度。',
+    '未回执前该交接会保留在项目状态中；看门狗只会按逐步退避的间隔补投本事件，不再重复询问监督进度。',
   ].filter(Boolean).join('\n');
+}
+
+export function projectSupervisorTransitionRedeliveryMs(notificationCount: number): number {
+  const normalizedCount = Number.isFinite(notificationCount)
+    ? Math.max(1, Math.trunc(notificationCount))
+    : 1;
+  const index = Math.min(
+    PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_DELAYS_MS.length - 1,
+    normalizedCount - 1,
+  );
+  return PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_DELAYS_MS[index];
 }
 
 function projectTransitionPriority(kind: ProjectSupervisorTransitionKind): number {
@@ -4947,6 +4970,15 @@ function projectTransitionPriority(kind: ProjectSupervisorTransitionKind): numbe
   if (kind === 'project-action-required') return 3;
   if (kind === 'direction-needed') return 4;
   return 5;
+}
+
+function nextProjectSupervisorTransition(
+  session: ProjectManagerSession,
+): ProjectSupervisorTransition | undefined {
+  return [...(session.pendingSupervisorTransitions || [])].sort((left, right) => (
+    projectTransitionPriority(left.kind) - projectTransitionPriority(right.kind)
+      || left.createdAt - right.createdAt
+  ))[0];
 }
 
 function queueProjectSupervisorTransition(options: {
@@ -5010,15 +5042,41 @@ function queueProjectSupervisorTransition(options: {
       && (!nextContextSummary || existing.contextSummary === nextContextSummary);
     if (unchanged) return existing;
     const now = Date.now();
+    const eventTypeChanged = existing.eventType !== options.eventType;
     const updated = {
       ...existing,
       eventType: options.eventType,
       summary: nextSummary,
       ...(nextEvidence ? { evidence: nextEvidence } : {}),
       ...(nextContextSummary ? { contextSummary: nextContextSummary } : {}),
-      notifiedAt: now,
-      notificationCount: existing.notificationCount + 1,
+      ...(eventTypeChanged ? {
+        notifiedAt: now,
+        notificationCount: existing.notificationCount + 1,
+      } : {}),
     };
+    const updatedText = withProjectManagerEventEnvelope(
+      projectSupervisorTransitionText(currentSession, updated, options.instruction),
+      session.id,
+    );
+    if (!eventTypeChanged) {
+      for (const delivery of pendingProjectManagerDeliveries) {
+        if (delivery.sessionId === session.id && delivery.transitionId === existing.id) {
+          delivery.text = updatedText;
+        }
+      }
+      replaceProjectManagerSession({
+        ...currentSession,
+        pendingSupervisorTransitions: pending.map((transition) => (
+          transition.id === existing.id ? updated : transition
+        )),
+        pendingManagerDeliveries: (currentSession.pendingManagerDeliveries || []).map((delivery) => (
+          delivery.transitionId === existing.id ? { ...delivery, text: updatedText } : delivery
+        )),
+        updatedAt: now,
+      });
+      saveProjectManagerSnapshot(session.id);
+      return updated;
+    }
     for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
       const delivery = pendingProjectManagerDeliveries[index];
       if (delivery.sessionId === session.id && delivery.transitionId === existing.id) {
@@ -5107,10 +5165,7 @@ function queueProjectSupervisorAnomaly(
 }
 
 function maintainProjectSupervisorTransition(session: ProjectManagerSession, now: number): boolean {
-  const transition = [...(session.pendingSupervisorTransitions || [])].sort((left, right) => (
-    projectTransitionPriority(left.kind) - projectTransitionPriority(right.kind)
-      || left.createdAt - right.createdAt
-  ))[0];
+  const transition = nextProjectSupervisorTransition(session);
   if (!transition) return false;
   const linkedDelivery = (session.pendingManagerDeliveries || []).some((delivery) => (
     delivery.transitionId === transition.id
@@ -5121,7 +5176,9 @@ function maintainProjectSupervisorTransition(session: ProjectManagerSession, now
     flushProjectManagerDeliveries();
     return true;
   }
-  if (now - transition.notifiedAt < PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_MS) return true;
+  if (now - transition.notifiedAt < projectSupervisorTransitionRedeliveryMs(transition.notificationCount)) {
+    return true;
+  }
   const refreshed = {
     ...transition,
     notifiedAt: now,
@@ -5271,12 +5328,12 @@ function scheduleProjectProgressCheck(sessionId: string, notBeforeAt = 0): void 
   if (existing) globalThis.clearTimeout(existing);
   projectProgressTimers.delete(sessionId);
   const session = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
-  const transition = session?.pendingSupervisorTransitions?.[0];
+  const transition = session ? nextProjectSupervisorTransition(session) : undefined;
   if (!session || session.status !== 'active' || !transition) return;
   const generation = projectManagerDeliveryGeneration;
   const deadlineAt = Math.max(
     notBeforeAt,
-    transition.notifiedAt + PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_MS,
+    transition.notifiedAt + projectSupervisorTransitionRedeliveryMs(transition.notificationCount),
   );
   const timer = globalThis.setTimeout(() => {
     if (generation !== projectManagerDeliveryGeneration) return;
@@ -5284,7 +5341,12 @@ function scheduleProjectProgressCheck(sessionId: string, notBeforeAt = 0): void 
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
     if (!current || current.status !== 'active') return;
     maintainProjectSupervisorTransition(current, Date.now());
-    scheduleProjectProgressCheck(sessionId, Date.now() + PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_MS);
+    const refreshed = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
+    const refreshedTransition = refreshed ? nextProjectSupervisorTransition(refreshed) : undefined;
+    scheduleProjectProgressCheck(
+      sessionId,
+      Date.now() + projectSupervisorTransitionRedeliveryMs(refreshedTransition?.notificationCount || 1),
+    );
   }, Math.max(0, deadlineAt - Date.now()));
   (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
   projectProgressTimers.set(sessionId, timer);
@@ -5343,6 +5405,7 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
     reasoningEffort: selection.reasoningEffort,
     preset: 'project-manager',
     replaceProjectManager: replaceRuntime,
+    bypassCodexHookTrust: skill.bypassCodexHookTrust === true,
     cwd: runtimeDir,
     projectManagerProjectId: initialSession.id,
     actor: 'project-management-control-plane',
@@ -9303,12 +9366,51 @@ export function initPipeBridge(): void {
       return { ok: false, error: projectBaselineError };
     }
     if (params?.stagePlan !== undefined) {
-      if (!projectSession || !projectWorkItem || outcome === 'needs-human' || permissionResponse) {
-        return { ok: false, error: '--stage-plan-file 仅用于项目专属监督的 continue/rework/complete 裁决' };
+      if (outcome === 'needs-human' || permissionResponse) {
+        return { ok: false, error: '--stage-plan-file 仅用于 continue/rework/complete 裁决，不能与人工升级或权限响应混用' };
       }
-      const normalizedPlan = normalizeSupervisorStagePlan(params.stagePlan, projectWorkItem);
+      const previousPlan = projectWorkItem?.supervisorPlan
+        || lane.decisions?.find((decision) => decision.plan)?.plan;
+      const normalizedPlan = normalizeSupervisorStagePlan(
+        params.stagePlan,
+        projectWorkItem,
+        previousPlan,
+      );
       if (!normalizedPlan.plan) return { ok: false, error: normalizedPlan.error };
       proposedSupervisorPlan = normalizedPlan.plan;
+      if (!projectWorkItem) {
+        const ordinaryPlanText = [
+          proposedSupervisorPlan.selectedRoute,
+          ...proposedSupervisorPlan.milestones.map((milestone) => milestone.outcome),
+          ...proposedSupervisorPlan.expectedPaths,
+          ...proposedSupervisorPlan.targetedValidation,
+          ...proposedSupervisorPlan.serializedBoundaries,
+          ...proposedSupervisorPlan.remainingWork,
+        ].join('\n');
+        const planRisk = autonomousActionBlockReason(ordinaryPlanText)
+          || configuredActionBlockReason(
+            ordinaryPlanText,
+            effectiveSupervisorForbiddenActions(session, lane),
+          )
+          || workScopeBlockReason(
+            ordinaryPlanText,
+            effectiveSupervisorWorkScope(session, lane),
+            lane.scopeRoot || lane.projectDir,
+          );
+        if (planRisk) return { ok: false, error: `普通监督阶段计划超出用户任务边界：${planRisk}` };
+      }
+    }
+    const ordinaryCompletionPlan = !projectWorkItem
+      ? proposedSupervisorPlan || lane.decisions?.find((decision) => decision.plan)?.plan
+      : undefined;
+    if (outcome === 'complete' && ordinaryCompletionPlan && (
+      ordinaryCompletionPlan.milestones.some((milestone) => milestone.status !== 'completed')
+      || ordinaryCompletionPlan.remainingWork.length > 0
+    )) {
+      return {
+        ok: false,
+        error: '普通监督阶段计划仍有未完成执行项或剩余工作；请继续推进并更新 --stage-plan-file，不能直接提交 complete',
+      };
     }
     if (projectWorkItem?.supervisorPlanRequired === true && (
       projectBaselineApprovalRequested
@@ -9774,6 +9876,8 @@ export function initPipeBridge(): void {
       }
     }
 
+    const decisionPlan = proposedSupervisorPlan
+      || (!projectWorkItem ? lane.decisions?.find((decision) => decision.plan)?.plan : undefined);
     const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
     const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
@@ -9784,6 +9888,7 @@ export function initPipeBridge(): void {
       impact,
       alternatives,
       escalationBoundary,
+      ...(decisionPlan ? { stagePlan: decisionPlan } : {}),
       ...(outcome === 'complete' ? {
         completionStopWhen,
         completionValidation,
@@ -9804,6 +9909,7 @@ export function initPipeBridge(): void {
           ...(proposalKind ? { proposalKind: proposalKind as SupervisorDecision['proposalKind'] } : {}),
           reason,
           next,
+          ...(decisionPlan ? { plan: decisionPlan } : {}),
         },
         ...(lane.decisions || []),
       ].slice(0, 100),

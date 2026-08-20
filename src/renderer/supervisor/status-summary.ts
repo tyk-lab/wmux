@@ -2,6 +2,7 @@ import type {
   SupervisorDecision,
   SupervisorLaneControlState,
 } from '../store/supervisor-slice';
+import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
 
 export interface SupervisorTaskAgentState {
   state?: string;
@@ -12,6 +13,84 @@ export interface SupervisorStatusSummary {
   label: string;
   detail: string;
   title: string;
+}
+
+export interface SupervisorPlanViewStep {
+  id: string;
+  title: string;
+  outcome: string;
+  status: 'planned' | 'active' | 'completed';
+  evidence?: string;
+}
+
+export interface SupervisorPlanView {
+  sourceLabel: '项目 AI 工作项' | '用户任务';
+  mode: 'forming' | 'direct' | 'staged';
+  modeLabel: string;
+  route: string;
+  nextInstruction: string;
+  steps: SupervisorPlanViewStep[];
+  completedSteps: number;
+}
+
+/** One display model for project-managed and ordinary supervisor consoles. */
+export function buildSupervisorPlanView(options: {
+  source: 'project-ai' | 'user';
+  task: string;
+  plan?: ProjectSupervisorStagePlan;
+  latestDecision?: SupervisorDecision;
+  baselineStatus?: 'required' | 'investigating' | 'approved';
+}): SupervisorPlanView {
+  const plan = options.plan || options.latestDecision?.plan;
+  const task = options.task.trim() || '当前任务';
+  if (plan) {
+    const steps = plan.milestones.map((milestone) => ({ ...milestone }));
+    const mode = steps.length > 1 ? 'staged' as const : 'direct' as const;
+    const activeStep = steps.find((step) => step.status === 'active')
+      || steps.find((step) => step.status === 'planned');
+    return {
+      sourceLabel: options.source === 'project-ai' ? '项目 AI 工作项' : '用户任务',
+      mode,
+      modeLabel: mode === 'staged' ? '分阶段监督执行' : '直接监督执行',
+      route: plan.selectedRoute,
+      nextInstruction: options.latestDecision?.next.trim()
+        || activeStep?.outcome
+        || plan.remainingWork[0]
+        || '等待任务 AI 返回结果后复核',
+      steps,
+      completedSteps: steps.filter((step) => step.status === 'completed').length,
+    };
+  }
+
+  const next = options.latestDecision?.next.trim();
+  const baselineRoute = options.baselineStatus === 'investigating'
+    ? '只读调查当前项目基线，形成可信执行依据'
+    : options.baselineStatus === 'required'
+      ? '等待任务 AI 调查并建立项目基线'
+      : '';
+  const route = options.latestDecision?.reason.trim()
+    || baselineRoute
+    || `尚未形成正式路线；上级任务：${task}`;
+  return {
+    sourceLabel: options.source === 'project-ai' ? '项目 AI 工作项' : '用户任务',
+    mode: 'forming',
+    modeLabel: options.baselineStatus && options.baselineStatus !== 'approved'
+      ? '建立基线中'
+      : options.latestDecision
+        ? '形成正式路线中'
+        : '等待首次规划',
+    route,
+    nextInstruction: next || (options.baselineStatus === 'investigating'
+      ? '等待基线报告，再由监督 AI 审核并形成正式路线'
+      : '等待监督 AI 提交第一条可执行指令'),
+    steps: next ? [{
+      id: `decision-${options.latestDecision?.ts || 0}`,
+      title: '当前执行项',
+      outcome: next,
+      status: 'active',
+    }] : [],
+    completedSteps: 0,
+  };
 }
 
 export function summarizeSupervisorPlan(options: {

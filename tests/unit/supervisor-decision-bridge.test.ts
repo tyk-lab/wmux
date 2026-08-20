@@ -4,6 +4,7 @@ import {
   permissionCommandMatchesEvidence,
   projectContractAutonomyPermissions,
   projectMessageChangeSignal,
+  projectSupervisorTransitionRedeliveryMs,
   readTerminalScreen,
   terminalConversationExcerpt,
   terminalScreenExcerpt,
@@ -376,6 +377,7 @@ describe('supervisor decision bridge', () => {
             ensureSkill: vi.fn(async () => ({
               ok: true,
               runtimeDir: 'E:\\wmux-data\\project-manager\\runtime',
+              bypassCodexHookTrust: true,
             })),
             saveSession: vi.fn(async () => ({ ok: true })),
             captureProgress: vi.fn(async () => ({ ok: true, snapshot: progressSnapshot() })),
@@ -2190,7 +2192,7 @@ describe('supervisor decision bridge', () => {
       projectManagerProjectId: project.id,
       projectManagerAgent: 'codex',
       projectManagerModel: '',
-      startupCommands: [expect.stringMatching(/^codex -- \(ConvertFrom-Json /)],
+      startupCommands: [expect.stringMatching(/^codex --dangerously-bypass-hook-trust -- \(ConvertFrom-Json /)],
     });
     expect(surface?.startupInput).toBeUndefined();
     expect(controlWorkspace?.title).toContain(`${PROJECT_MANAGER_WORKSPACE_TITLE} ·`);
@@ -3351,7 +3353,7 @@ describe('supervisor decision bridge', () => {
       projectManagerAgent: 'codex',
       projectManagerModel: 'gpt-5.6-sol',
       projectManagerReasoningEffort: 'high',
-      startupCommands: [expect.stringMatching(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /)],
+      startupCommands: [expect.stringMatching(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' --dangerously-bypass-hook-trust -- /)],
     });
     expect(runtimes[0].id).not.toBe(before);
     expect(useStore.getState().projectManager?.managerSurfaceId).toBe(runtimes[0].id);
@@ -4275,6 +4277,37 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes[0].taskRoleAnchorPending).toBe(false);
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts and retains an ordinary supervisor execution plan derived from the user task', () => {
+    const plan = {
+      selectedRoute: '先完成聚焦修复，再运行定向测试',
+      milestones: [{
+        id: 'fix_and_test', title: '修复并验证', outcome: '形成修复和测试证据', status: 'active',
+      }],
+      expectedPaths: ['src/config.ts'],
+      targetedValidation: ['npm test -- config'],
+      serializedBoundaries: ['修改完成后再运行测试'],
+      remainingWork: ['完成修复和验证'],
+    };
+
+    expect(decide({
+      next: '修复配置缺失分支并运行定向测试',
+      stagePlanFile: '.wmux/tmp/ordinary-plan.json',
+      stagePlan: plan,
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(useStore.getState().supervisor.lanes[0].decisions?.[0]).toMatchObject({
+      plan: {
+        revision: 1,
+        selectedRoute: plan.selectedRoute,
+        milestones: plan.milestones,
+      },
+    });
+    useStore.getState().updateLane('lane-a', { awaitingReview: true });
+    expect(decide({ outcome: 'complete', next: '' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('仍有未完成执行项'),
+    });
   });
 
   it('rejects a missing or stale ordinary review id before accepting the matching decision', () => {
@@ -5301,6 +5334,9 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ transitionId: first.transitionId }),
     ]));
+    const firstDelivery = useStore.getState().projectManager?.pendingManagerDeliveries
+      ?.find((delivery) => delivery.transitionId === first.transitionId);
+    expect(firstDelivery).toBeDefined();
     const revised = await remote({
       ...handoff,
       summary: '阶段测试已经通过，并补充最终 diff 证据',
@@ -5309,9 +5345,16 @@ describe('supervisor decision bridge', () => {
     expect(revised.transitionId).toBe(first.transitionId);
     expect(useStore.getState().projectManager?.pendingSupervisorTransitions[0]).toMatchObject({
       id: first.transitionId,
-      notificationCount: 2,
+      notificationCount: 1,
       evidence: '定向测试 12/12 通过；diff-check 通过',
     });
+    expect(useStore.getState().projectManager?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: firstDelivery?.id,
+        transitionId: first.transitionId,
+        text: expect.stringContaining('定向测试 12/12 通过；diff-check 通过'),
+      }),
+    ]));
 
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({
@@ -5353,6 +5396,15 @@ describe('supervisor decision bridge', () => {
     });
     expect(lateIdle.transitionId).toBe(completed.transitionId);
     expect(useStore.getState().projectManager?.pendingSupervisorTransitions).toHaveLength(1);
+  });
+
+  it('backs off repeated project supervisor transition reminders', () => {
+    expect(projectSupervisorTransitionRedeliveryMs(1)).toBe(10 * 60_000);
+    expect(projectSupervisorTransitionRedeliveryMs(2)).toBe(30 * 60_000);
+    expect(projectSupervisorTransitionRedeliveryMs(3)).toBe(60 * 60_000);
+    expect(projectSupervisorTransitionRedeliveryMs(4)).toBe(2 * 60 * 60_000);
+    expect(projectSupervisorTransitionRedeliveryMs(20)).toBe(2 * 60 * 60_000);
+    expect(projectSupervisorTransitionRedeliveryMs(Number.NaN)).toBe(10 * 60_000);
   });
 
   it('enforces project anti-loop limits on supervisor decisions', () => {

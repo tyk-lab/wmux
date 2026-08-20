@@ -17,7 +17,11 @@ import { initAutoUpdater, requestUpdateNow, getUpdateState } from './updater';
 import { getLatestUpdate } from './update-checker';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { ensureKimiHooks } from './kimi-context';
-import { ensureCodexHooks, ensureCodexProjectTrusted } from './codex-context';
+import {
+  canSafelyBypassCodexHookTrust,
+  ensureCodexHooks,
+  ensureCodexProjectTrusted,
+} from './codex-context';
 import { ensureGrokHooks } from './grok-context';
 import { ensurePiHooks } from './pi-context';
 import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './agent-activity';
@@ -680,11 +684,14 @@ app.whenReady().then(() => {
   ipcMain.handle('project-manager:delete-session', (_event, sessionId) => deleteProjectManagerSession(String(sessionId || '')));
   ipcMain.handle('project-manager:ensure-skill', (_event, requestedAgent) => {
     const agent = requestedAgent === 'kimi' || requestedAgent === 'grok' ? requestedAgent : 'codex';
-    return ensureProjectManagerSkill({
+    const result = ensureProjectManagerSkill({
       appPath: app.getAppPath(),
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
     }, agent);
+    return agent === 'codex'
+      ? { ...result, bypassCodexHookTrust: result.ok && canSafelyBypassCodexHookTrust() }
+      : result;
   });
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
   ipcMain.handle('project-manager:capture-progress', (_event, request) => {

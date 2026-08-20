@@ -1337,4 +1337,46 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('⚠️ 需要处理');
     expect(card).toContain('监督运行链连续无进展');
   });
+
+  it('项目中心按处理优先级分组并默认折叠历史项目', () => {
+    const view = {
+      projectId: 'pm-running',
+      projects: [
+        { id: 'pm-completed', projectName: '归档完成甲', status: 'completed', goal: '完成历史目标' },
+        { id: 'pm-paused', projectName: '普通暂停项目', status: 'paused', goal: '等待恢复' },
+        { id: 'pm-running', projectName: '运行项目', status: 'active', goal: '推进当前目标' },
+        {
+          id: 'pm-attention', projectName: '需处理项目', status: 'waiting', goal: '等待人工决策',
+          attentionReason: '需要确认发布范围',
+        },
+        {
+          id: 'pm-portfolio-paused', projectName: '批量暂停项目', status: 'paused', goal: '等待批量恢复',
+          pausedByPortfolio: true,
+        },
+        { id: 'pm-stopped', projectName: '归档停止乙', status: 'stopped', goal: '停止历史目标' },
+      ],
+    };
+
+    const collapsed = JSON.stringify(buildProjectManagerPortfolioCard(view));
+    expect(collapsed).toContain('4 个活动项目');
+    expect(collapsed).toContain('1 个需要处理');
+    expect(collapsed).toContain('2 个历史项目');
+    expect(collapsed).toContain('**需要处理 · 1**');
+    expect(collapsed).toContain('**运行中 · 1**');
+    expect(collapsed).toContain('**已暂停 · 2**');
+    expect(collapsed.indexOf('需处理项目')).toBeLessThan(collapsed.indexOf('运行项目'));
+    expect(collapsed.indexOf('运行项目')).toBeLessThan(collapsed.indexOf('普通暂停项目'));
+    expect(collapsed).toContain('历史项目已折叠 · 2');
+    expect(collapsed).toContain('展开历史项目（2）');
+    expect(collapsed).not.toContain('归档完成甲');
+    expect(collapsed).not.toContain('归档停止乙');
+    expect(collapsed).toContain('暂停可运行项目（2）');
+    expect(collapsed).toContain('恢复批量暂停项目（1）');
+
+    const expanded = JSON.stringify(buildProjectManagerPortfolioCard(view, undefined, 'all'));
+    expect(expanded).toContain('**历史项目 · 2**');
+    expect(expanded).toContain('归档完成甲');
+    expect(expanded).toContain('归档停止乙');
+    expect(expanded).toContain('收起历史项目');
+  });
 });

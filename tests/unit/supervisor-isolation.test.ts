@@ -142,6 +142,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain('只监督此终端');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
     expect(text).toContain('# 普通 AI 监督');
+    expect(text).toContain('## 监督 AI 自己的执行规划');
+    expect(text).toContain('上级任务由用户提供');
+    expect(text).toContain('具体且可一次完成时，不要机械拆分');
+    expect(text).toContain('--stage-plan-file');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
     expect(text).not.toContain('# 项目专属 AI 监督');
     expect(text).not.toContain('worker-b');
@@ -1432,7 +1436,15 @@ describe('supervisor isolation', () => {
       sessionId: 'sup-old',
       events: [
         { ts: 1, type: 'worker.task', payload: { task: '修复登录' } },
-        { ts: 2, type: 'supervisor.decision', payload: { outcome: 'rework', proposalKind: 'route-adjustment', reason: '缺少测试', next: '改用现有测试夹具补单测' } },
+        { ts: 2, type: 'supervisor.decision', payload: {
+          outcome: 'rework', proposalKind: 'route-adjustment', reason: '缺少测试', next: '改用现有测试夹具补单测',
+          stagePlan: {
+            revision: 1,
+            selectedRoute: '先补测试，再复核登录流程',
+            milestones: [{ id: 'tests', title: '补充测试', outcome: '覆盖失败分支', status: 'active' }],
+            expectedPaths: [], targetedValidation: [], serializedBoundaries: [], remainingWork: ['补充测试'], updatedAt: 2,
+          },
+        } },
       ],
     });
 
@@ -1445,6 +1457,10 @@ describe('supervisor isolation', () => {
         proposalKind: 'route-adjustment',
         reason: '缺少测试',
         next: '改用现有测试夹具补单测',
+        plan: {
+          selectedRoute: '先补测试，再复核登录流程',
+          milestones: [{ id: 'tests', status: 'active' }],
+        },
       }],
     });
     expect(restored?.restoredHistory).toContain('监督裁决：rework（小范围路线调整）');

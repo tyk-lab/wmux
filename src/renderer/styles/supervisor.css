@@ -2927,6 +2927,10 @@
   white-space: nowrap;
 }
 
+.sup-panel__ordinary-plan-steps {
+  margin-top: 8px;
+}
+
 .sup-panel__ordinary-plan-grid strong {
   font-size: 10px;
 }

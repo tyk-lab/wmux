@@ -993,6 +993,7 @@ interface FeishuProjectClarification {
 }
 
 export type ProjectManagerCardView = 'overview' | 'chat' | 'chat-expanded' | 'decisions' | 'decisions-expanded' | 'activity' | 'activity-expanded';
+export type ProjectManagerPortfolioView = 'active' | 'all';
 
 const FEISHU_PROJECT_RECENT_ITEM_LIMIT = 6;
 const FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT = 3;
@@ -1169,12 +1170,52 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
 export function buildProjectManagerPortfolioCard(
   session?: FeishuProjectManagerView | null,
   notice?: ControlNotice,
+  view: ProjectManagerPortfolioView = 'active',
 ): object {
   const projects = Array.isArray(session?.projects) ? session.projects : [];
-  const activeProjects = projects.filter((project) => !['completed', 'stopped'].includes(String(project.status || ''))).length
-    || (session && !['completed', 'stopped'].includes(String(session.status || '')) ? 1 : 0);
-  const canPausePortfolio = projects.some((project) => project.status === 'active' || project.status === 'waiting');
-  const canResumePortfolio = projects.some((project) => project.status === 'paused' && project.pausedByPortfolio === true);
+  const historicalProjects = projects.filter((project) => ['completed', 'stopped'].includes(String(project.status || '')));
+  const activeProjects = projects.filter((project) => !historicalProjects.includes(project));
+  const attentionProjects = activeProjects.filter((project) => (
+    project.status === 'waiting'
+    || !!project.attentionReason
+    || project.pauseAttentionRequired === true
+  ));
+  const runningProjects = activeProjects.filter((project) => (
+    !attentionProjects.includes(project) && project.status !== 'paused'
+  ));
+  const pausedProjects = activeProjects.filter((project) => (
+    !attentionProjects.includes(project) && project.status === 'paused'
+  ));
+  const pausableProjects = activeProjects.filter((project) => project.status === 'active' || project.status === 'waiting');
+  const resumableProjects = activeProjects.filter((project) => project.status === 'paused' && project.pausedByPortfolio === true);
+  const historyExpanded = view === 'all';
+  const projectElements = (
+    label: string,
+    groupedProjects: typeof projects,
+  ): object[] => groupedProjects.length > 0 ? [
+    { tag: 'markdown', content: `**${label} · ${groupedProjects.length}**` },
+    ...groupedProjects.flatMap((project) => [
+      {
+        tag: 'markdown',
+        content: [
+          `${projectManagerStatusMarker(project.status)} **${String(project.projectName || '未命名项目').slice(0, 100)}**`,
+          `当前主目标：G${project.goals?.find((goal) => goal.id === project.activeGoalId)?.sequence || 1} · ${String(project.goal || '待设置').slice(0, 160)}`,
+          `状态：${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
+          project.attentionReason
+            ? `⚠️ 需要处理：${compactProjectCardText(project.attentionReason, 500)}`
+            : project.status === 'paused' && project.pauseReason
+              ? `${project.pauseAttentionRequired ? '⚠️ ' : ''}暂停原因：${compactProjectCardText(project.pauseReason, 500)}`
+              : '',
+          project.projectDir ? `目录：${String(project.projectDir).slice(0, 240)}` : '',
+        ].filter(Boolean).join('\n'),
+      },
+      ...responsiveButtonRows([cardButton(
+        { wmux_action: 'project_ai_workspace', projectId: project.id || '' },
+        project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台',
+        'primary',
+      )]),
+    ]),
+  ] : [];
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -1182,28 +1223,35 @@ export function buildProjectManagerPortfolioCard(
     body: {
       elements: [
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
-        { tag: 'markdown', content: `**${activeProjects} 个活动项目** · 项目中心只负责入口和状态路由；选择项目进入其独立会话，与专属项目 AI 对话。` },
-        ...(projects.length > 0 ? projects.flatMap((project) => [
-          {
-            tag: 'markdown',
-            content: [
-              `${projectManagerStatusMarker(project.status)} **${String(project.projectName || '未命名项目').slice(0, 100)}**`,
-              `当前主目标：G${project.goals?.find((goal) => goal.id === project.activeGoalId)?.sequence || 1} · ${String(project.goal || '待设置').slice(0, 160)}`,
-              `状态：${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
-              project.attentionReason
-                ? `⚠️ 需要处理：${compactProjectCardText(project.attentionReason, 500)}`
-                : project.status === 'paused' && project.pauseReason
-                ? `${project.pauseAttentionRequired ? '⚠️ ' : ''}暂停原因：${compactProjectCardText(project.pauseReason, 500)}`
-                : '',
-              project.projectDir ? `目录：${String(project.projectDir).slice(0, 240)}` : '',
-            ].filter(Boolean).join('\n'),
-          },
-          ...responsiveButtonRows([cardButton({ wmux_action: 'project_ai_workspace', projectId: project.id || '' }, project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台', 'primary')]),
-        ]) : [{ tag: 'markdown', content: '暂无活动项目。请先在桌面端或飞书项目入口添加项目。' }]),
+        {
+          tag: 'markdown',
+          content: `**${activeProjects.length} 个活动项目** · ${attentionProjects.length} 个需要处理 · ${historicalProjects.length} 个历史项目\n项目中心只负责入口和状态路由；选择项目进入其独立会话，与专属项目 AI 对话。`,
+        },
+        ...(activeProjects.length > 0 ? [
+          ...projectElements('需要处理', attentionProjects),
+          ...projectElements('运行中', runningProjects),
+          ...projectElements('已暂停', pausedProjects),
+        ] : [{ tag: 'markdown', content: '暂无活动项目。请先在桌面端或飞书项目入口添加项目。' }]),
+        ...(historicalProjects.length > 0 ? [
+          ...(historyExpanded
+            ? projectElements('历史项目', historicalProjects)
+            : [{ tag: 'markdown', content: `**历史项目已折叠 · ${historicalProjects.length}**\n已完成和已停止项目默认隐藏。` }]),
+          ...responsiveButtonRows([cardButton(
+            { wmux_action: 'project_ai_portfolio', view: historyExpanded ? 'active' : 'all' },
+            historyExpanded ? '收起历史项目' : `展开历史项目（${historicalProjects.length}）`,
+          )]),
+        ] : []),
         { tag: 'hr' },
         ...responsiveButtonRows([
-          ...(canPausePortfolio ? [cardButton({ wmux_action: 'project_ai_pause_all' }, '暂停全部项目')] : []),
-          ...(canResumePortfolio ? [cardButton({ wmux_action: 'project_ai_resume_all' }, '恢复全部项目', 'primary')] : []),
+          ...(pausableProjects.length > 0 ? [cardButton(
+            { wmux_action: 'project_ai_pause_all', view },
+            `暂停可运行项目（${pausableProjects.length}）`,
+          )] : []),
+          ...(resumableProjects.length > 0 ? [cardButton(
+            { wmux_action: 'project_ai_resume_all', view },
+            `恢复批量暂停项目（${resumableProjects.length}）`,
+            'primary',
+          )] : []),
           cardButton({ wmux_action: 'menu', flow: 'home' }, '返回控制首页'),
         ]),
       ],
@@ -3126,8 +3174,9 @@ export class FeishuSupervisorService {
       return !failedResult(result);
     }
     if (value.wmux_action === 'project_ai_portfolio') {
+      const portfolioView: ProjectManagerPortfolioView = value.view === 'all' ? 'all' : 'active';
       const view = await this.loadProjectManagerView(event.operator.openId);
-      await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view));
+      await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view, undefined, portfolioView));
       return true;
     }
     if (value.wmux_action === 'project_ai_select' || value.wmux_action === 'project_ai_workspace') {
@@ -3160,6 +3209,7 @@ export class FeishuSupervisorService {
     }
     if (value.wmux_action === 'project_ai_pause_all' || value.wmux_action === 'project_ai_resume_all') {
       const pause = value.wmux_action === 'project_ai_pause_all';
+      const portfolioView: ProjectManagerPortfolioView = value.view === 'all' ? 'all' : 'active';
       const result = await this.control({
         action: pause ? 'project-pause-all' : 'project-resume-all',
         reason: pause ? '用户通过飞书全局暂停项目组合' : '用户通过飞书全局恢复项目组合',
@@ -3168,7 +3218,7 @@ export class FeishuSupervisorService {
       const view = await this.loadProjectManagerView(event.operator.openId, false, value.projectId);
       await this.replaceControlCard(event, buildProjectManagerPortfolioCard(view, {
         text: summary(result), success: !failedResult(result),
-      }));
+      }, portfolioView));
       return !failedResult(result);
     }
     if (value.wmux_action === 'terminal_screen') {
