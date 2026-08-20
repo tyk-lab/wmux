@@ -1304,6 +1304,7 @@ describe('supervisor isolation', () => {
       config: {
         taskGoal: '修复登录错误处理', taskDescription: '',
         preconditions: '设备已上电，安全措施已确认。', stopWhen: '认证测试通过',
+        supervisorNotes: '完成阶段成果后，让任务 AI 同步文档并创建本地提交。',
         stopWhenKind: 'concrete', planFilePath: 'D:\\plans\\auth.md',
       },
     }), state: 'idle' });
@@ -1319,6 +1320,10 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('设备已上电');
     expect(briefing).toContain('用户已确认、在当前监督配置内持续有效');
     expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
+    expect(briefing).toContain('注意事项（监督检查点提醒）');
+    expect(briefing).toContain('同步文档并创建本地提交');
+    expect(briefing).toContain('不要仅因事项存在就打断正在工作的任务 AI');
+    expect(briefing).toContain('不能扩大目标、范围、命令权限或风险授权');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
     expect(briefing).toContain('本终端启用有限自主监督');
     expect(briefing).toContain('continue / rework 携带 --next');

@@ -2095,15 +2095,25 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('项目管理 AI 运行时') });
 
     await expect(projectRemoteControl({
-      action: 'start', projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['测试通过'],
+      action: 'start', projectDir: 'E:\\repo', goal: '',
     })).resolves.toMatchObject({
       ok: false,
-      error: expect.stringContaining('preconditions'),
+      error: expect.stringContaining('goal'),
     });
 
     await expect(projectRemoteControl({
-      action: 'start', projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['无额外物理前置条件'], doneWhen: ['测试通过'],
-    })).resolves.toMatchObject({ ok: true, session: { goal: '完成项目', status: 'waiting' } });
+      action: 'start', projectDir: 'E:\\repo', goal: '完成项目',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        projectName: 'repo',
+        projectScope: '仅限项目目录 E:\\repo 内与当前项目直接相关的工作',
+        goal: '完成项目',
+        preconditions: [],
+        doneWhen: [],
+        status: 'waiting',
+      },
+    });
 
     const project = useStore.getState().projectManager!;
     const workspaces = useStore.getState().workspaces;
@@ -2132,14 +2142,30 @@ describe('supervisor decision bridge', () => {
     expect(JSON.parse(supervisorRemoteControl({ action: 'list' }).message).terminals)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ surfaceId: surface?.id })]));
 
-    await expect(projectRequest({
+    const alignmentAssessment = {
       action: 'alignment-confirm', callerSurfaceId: surface?.id,
       projectId: useStore.getState().projectManager?.id,
       goalUnderstanding: '完成当前仓库项目',
       scopeSummary: '仅修改 E:\\repo 内的认证功能',
       acceptanceSummary: '相关测试通过且结果可复核',
       reason: '目标、范围和验收标准均已明确',
-    })).resolves.toMatchObject({ ok: true, event: { kind: 'requirements-alignment-confirmed' } });
+    };
+    await expect(projectRequest(alignmentAssessment)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('先起草前置条件和可验证完成条件'),
+    });
+    await expect(projectRequest({
+      action: 'update-definition', callerSurfaceId: surface?.id,
+      projectId: useStore.getState().projectManager?.id,
+      preconditions: ['无额外物理前置条件'],
+      doneWhen: ['相关测试通过'],
+      mode: 'refine',
+      reason: '项目 AI 补全新建表单中的可选定义',
+    })).resolves.toMatchObject({ ok: true, event: { kind: 'project-definition-updated' } });
+    await expect(projectRequest(alignmentAssessment)).resolves.toMatchObject({
+      ok: true,
+      event: { kind: 'requirements-alignment-confirmed' },
+    });
     expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: surface?.id }))
       .toMatchObject({
         ok: true,
@@ -2217,7 +2243,7 @@ describe('supervisor decision bridge', () => {
       attempts: 0,
       decisionsUsed: 0,
       supervisorPlanRequired: true,
-      baseline: { status: 'required', requirementsVersion: 1 },
+      baseline: { status: 'required', requirementsVersion: 2 },
     });
     expect(useStore.getState().projectManager?.workItems[0].contract.stopWhen)
       .toEqual(['认证测试通过', '相关测试通过']);
@@ -2485,6 +2511,32 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       type: 'user-clarification-requested',
     }));
+  });
+
+  it('does not ask solely because optional draft fields were omitted for a specific goal', async () => {
+    useStore.getState().closeProjectManagerDialog();
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const result = await remote({
+      action: 'start',
+      projectDir: 'E:\\optional-definition',
+      goal: '实现并验证当前仓库的认证模块',
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      session: { preconditions: [], doneWhen: [] },
+    });
+    expect(result.session.pendingUserQuestion).toBeUndefined();
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: result.session.managerSurfaceId,
+      projectId: result.session.id,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('alignment-confirm'),
+    });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
   });
 
   it('reuses a persisted initial alignment decision when restoring a project', async () => {
@@ -3680,7 +3732,9 @@ describe('supervisor decision bridge', () => {
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     await expect(remote({
       action: 'start', projectDir: 'E:\\rotation', goal: '完成轮换项目',
-      preconditions: ['设备已断电并确认安全'], doneWhen: ['测试通过'],
+      preconditions: ['设备已断电并确认安全'],
+      supervisorNotes: ['阶段完成后让任务 AI 同步文档'],
+      doneWhen: ['测试通过'],
     })).resolves.toMatchObject({ ok: true });
     await confirmAndResumeProject(useStore.getState().projectManager!.id);
     const managerSurfaceId = useStore.getState().workspaces.flatMap((workspace) => (
@@ -3693,6 +3747,7 @@ describe('supervisor decision bridge', () => {
         id: 'rotation_task', title: '轮换任务', status: 'planned', dependencies: [],
         contract: {
           objective: '继续既有实现', description: '', preconditions: [],
+          supervisorNotes: ['形成可回滚成果后创建本地提交'],
           scope: { root: 'E:\\rotation', allowPaths: [], denyPaths: [], forbiddenActions: [] },
           authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false, continuousExecution: false, continuationBoundary: 'project-owned-decision', permissionConfirm: false },
           stopWhen: ['测试通过'], validation: ['运行相关测试'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
@@ -3710,18 +3765,25 @@ describe('supervisor decision bridge', () => {
     expect(previousLane?.surfaceId).toBe(initialTask.surfaceId);
     expect(previousLane?.surfaceId).not.toBe('worker-a');
     expect(previousLane?.config?.preconditions).toContain('设备已断电并确认安全');
+    expect(previousLane?.config?.supervisorNotes).toBe([
+      '阶段完成后让任务 AI 同步文档',
+      '形成可回滚成果后创建本地提交',
+    ].join('\n'));
     expect(effectiveSupervisorAutonomyPermissions(
       useStore.getState().supervisor,
       previousLane!,
     )).not.toContain('permission-confirm');
-    expect(writes).toHaveBeenCalledWith(
-      previousLane?.supervisorSurfaceId,
-      expect.stringContaining('[项目级前置条件｜已确认且持续有效]'),
-    );
-    expect(writes).toHaveBeenCalledWith(
-      previousLane?.supervisorSurfaceId,
-      expect.stringContaining('不得每一步重新询问、重新授权或要求重复取证'),
-    );
+    const supervisorBriefings = [
+      ...writes.mock.calls.filter(([surfaceId]) => surfaceId === previousLane?.supervisorSurfaceId)
+        .map(([_surfaceId, text]) => text),
+      ...(globalThis.window as any).wmux.pty.stageInputFile.mock.calls
+        .filter(([surfaceId]: [string]) => surfaceId === previousLane?.supervisorSurfaceId)
+        .map(([_surfaceId, text]: [string, string]) => text),
+    ].join('\n');
+    expect(supervisorBriefings).toContain('[项目级前置条件｜已确认且持续有效]');
+    expect(supervisorBriefings).toContain('不得每一步重新询问、重新授权或要求重复取证');
+    expect(supervisorBriefings).toContain('注意事项（监督检查点提醒）');
+    expect(supervisorBriefings).toContain('形成可回滚成果后创建本地提交');
     const supervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).find((surface) => surface.id === previousLane?.supervisorSurfaceId);

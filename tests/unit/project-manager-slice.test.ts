@@ -265,7 +265,8 @@ describe('project-manager slice', () => {
   it('refines the active main goal and pauses current-goal work for explicit rebinding', () => {
     const useStore = store();
     useStore.getState().startProjectManager({
-      projectDir: 'E:\\repo', goal: '旧目标', preconditions: ['旧前置条件'], doneWhen: ['旧验收'],
+      projectDir: 'E:\\repo', goal: '旧目标', preconditions: ['旧前置条件'],
+      supervisorNotes: ['旧阶段提醒'], doneWhen: ['旧验收'],
     });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('active-task') });
     useStore.getState().applyProjectManagerAction({
@@ -276,6 +277,7 @@ describe('project-manager slice', () => {
       type: 'update-project-definition',
       goal: '调整后的目标',
       preconditions: ['新前置条件'],
+      supervisorNotes: ['阶段完成后同步文档', '形成成果后创建本地提交'],
       planFiles: [{ path: 'E:\\repo\\PLAN.md', name: 'PLAN.md', content: '# 新计划' }],
       doneWhen: ['新验收'],
       source: 'user',
@@ -286,12 +288,20 @@ describe('project-manager slice', () => {
       ok: true,
       event: {
         kind: 'project-definition-updated',
-        payload: { mode: 'refine', previous: { goal: '旧目标' }, next: { goal: '调整后的目标' } },
+        payload: {
+          mode: 'refine',
+          previous: { goal: '旧目标', supervisorNotes: ['旧阶段提醒'] },
+          next: {
+            goal: '调整后的目标',
+            supervisorNotes: ['阶段完成后同步文档', '形成成果后创建本地提交'],
+          },
+        },
       },
     });
     expect(useStore.getState().projectManager).toMatchObject({
       goal: '调整后的目标',
       preconditions: ['新前置条件'],
+      supervisorNotes: ['阶段完成后同步文档', '形成成果后创建本地提交'],
       doneWhen: ['新验收'],
       status: 'waiting',
       workItems: [{ id: 'active-task', status: 'waiting-decision', latestBlocker: expect.stringContaining('重新绑定') }],

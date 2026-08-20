@@ -48,9 +48,18 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
     expect(dialogSource).toContain('GROK_THINKING_OPTIONS');
     expect(dialogSource).toContain('Grok Thinking');
-    expect(projectManagerDialogSource).toContain('项目前置条件（每行一项）');
+    expect(projectManagerDialogSource).toContain('项目前置条件（可选，每行一项）');
+    expect(projectManagerDialogSource).toContain('当前主目标完成条件（可选，每行一项）');
+    expect(projectManagerDialogSource).toContain("setPreconditions('无额外物理前置条件')");
+    const startHandler = projectManagerDialogSource.match(
+      /const start = async \(\) => \{[\s\S]*?^  \};/m,
+    )?.[0] || '';
+    expect(startHandler).toContain('if (!projectDir.trim() || !goal.trim())');
+    expect(startHandler).not.toContain('!projectName.trim()');
+    expect(startHandler).not.toContain('projectPreconditions.length === 0');
+    expect(startHandler).not.toContain('conditions.length === 0');
     expect(projectManagerDialogSource).toContain('视为当前需求版本中用户已确认的事实');
-    expect(projectManagerDialogSource).toContain('不会逐步重复确认');
+    expect(projectManagerDialogSource).toContain('只有硬件、环境、权限或安全差异会实质改变方案时才会向你确认');
     expect(projectManagerDialogSource).toContain("action: 'update-definition'");
     expect(projectManagerDialogSource).toContain('项目身份与当前主目标');
     expect(projectManagerDialogSource).toContain('未确认变更尚未生效');
