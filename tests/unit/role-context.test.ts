@@ -313,6 +313,18 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-b', task: 'work-a',
     }).allowed).toBe(false);
+    expect(authorizeManagedRoleV2(supervisor, 'supervisor.goal.draft', { surfaceId: 'task-a' }).allowed)
+      .toBe(false);
+
+    const ordinarySupervisor = {
+      role: 'supervisor' as const,
+      callerSurfaceId: 'ordinary-supervisor',
+      targetSurfaceId: 'ordinary-task',
+    };
+    expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.goal.draft', { surfaceId: 'ordinary-task' }).allowed)
+      .toBe(true);
+    expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.reply', { surfaceId: 'ordinary-task' }).allowed)
+      .toBe(true);
 
     const manager = { role: 'project-ai' as const, callerSurfaceId: 'manager-a', projectId: 'project-a' };
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-a' }).allowed)

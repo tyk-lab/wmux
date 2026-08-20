@@ -134,6 +134,14 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
+  'supervisor.goal.draft': {
+    js: (p) => `window.__wmux_supervisorGoalDraft?.(${S(p || {})})`,
+    requireResult: 'No goal construction lane for this supervisor',
+  },
+  'supervisor.reply': {
+    js: (p) => `window.__wmux_supervisorReply?.(${S(p || {})})`,
+    requireResult: 'No goal construction lane for this supervisor',
+  },
   'supervisor.context': {
     js: (p) => `window.__wmux_supervisorContext?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
