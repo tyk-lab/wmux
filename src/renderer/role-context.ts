@@ -22,6 +22,7 @@ export const ORDINARY_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
   '先运行 wmux context 获取当前 capability 绑定的任务终端、监督通道、状态和可用 wmux 命令；不得自行指定或操作其他终端。',
   'wmux context 描述的是 wmux 编排权限；Agent 原生工具仍受当前 Agent 和沙箱配置约束。',
+  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出写入项目内日志或证据文件并报告路径，不得只依赖终端滚屏。',
 ].join('\n');
 export const ORDINARY_TASK_PROTOCOL_REVISION = '2';
 

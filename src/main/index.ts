@@ -15,20 +15,21 @@ import { sessionWindows, MAX_RESTORED_WINDOWS } from './session-windows';
 import { WindowManager } from './window-manager';
 import { initAutoUpdater, requestUpdateNow, getUpdateState } from './updater';
 import { getLatestUpdate } from './update-checker';
-import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { ensureKimiHooks } from './kimi-context';
 import { ensureCodexHooks, ensureCodexProjectTrusted } from './codex-context';
 import { ensureGrokHooks } from './grok-context';
 import { ensurePiHooks } from './pi-context';
-import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './claude-observer';
+import { applyExternalActivity, markSubagentStop, markAllAgentsDone } from './agent-activity';
 import { handleAgentStateV2 } from './agent-state-rpc';
-import { applyHookToAgentState, isAgentHookTerminalEvent } from './agent-hook-bridge';
+import { acceptHookEventId, applyHookToAgentState, isAgentHookTerminalEvent } from './agent-hook-bridge';
 import {
   appendSupervisorRecord,
   listSupervisorRestoreCandidates,
+  readSupervisorEvidence,
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
+  saveSupervisorEvidence,
 } from './supervisor-records';
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
 import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirectory } from './feishu-direct-task';
@@ -73,8 +74,8 @@ async function controlSupervisorFromFeishu(command: FeishuSupervisorCommand, act
     if (command.planFile && (!path.isAbsolute(command.planFile) || !fs.existsSync(command.planFile) || !fs.statSync(command.planFile).isFile())) {
       return { ok: false, error: 'plan_file 必须是当前电脑上存在的绝对路径。' };
     }
-    if (command.supervisorLaunchCmd && !['', 'codex', 'claude', 'kimi', 'grok', 'pi', 'opencode'].includes(command.supervisorLaunchCmd.trim())) {
-      return { ok: false, error: 'supervisor_launch_cmd 仅允许 codex、claude、kimi、grok、pi、opencode 或留空。' };
+    if (command.supervisorLaunchCmd && !['', 'codex', 'kimi', 'grok', 'pi', 'opencode'].includes(command.supervisorLaunchCmd.trim())) {
+      return { ok: false, error: 'supervisor_launch_cmd 仅允许 codex、kimi、grok、pi、opencode 或留空。' };
     }
   }
   const target = BrowserWindow.getAllWindows()[0];
@@ -597,19 +598,19 @@ function pushDiffUpdate(file: string): void {
   }
 }
 
-/** One Claude Code hook event, fanned out to every consumer that wants it. */
+/** One lifecycle hook event, fanned out to every consumer that wants it. */
 function handleHookEvent(params: any): void {
-  BrowserWindow.getAllWindows().forEach(w => {
-    if (!w.isDestroyed()) w.webContents.send(IPC_CHANNELS.HOOK_EVENT, params);
-  });
+  if (!acceptHookEventId(params?.hookId)) return;
+  // Commit lifecycle truth before broadcasting the event. AGENT_STATE and
+  // HOOK_EVENT travel over the same webContents IPC channel, so renderers see
+  // Stop -> idle before they queue a task-end review for the supervisor.
   applyHookLifecycle(params);
-
-  // Same events, second consumer: declared agent run state (issue #128). This
-  // is what makes "which pane is parked on me?" work for Claude Code with no
-  // plugin to install — wmux already registers these hooks.
   if (params?.surfaceId && params?.event) {
     applyHookToAgentState(params.surfaceId as SurfaceId, String(params.event), params.message ?? null);
   }
+  BrowserWindow.getAllWindows().forEach(w => {
+    if (!w.isDestroyed()) w.webContents.send(IPC_CHANNELS.HOOK_EVENT, params);
+  });
 
   // Always refresh the diff for Edit/Write, even without a file path.
   if (params?.tool === 'Edit' || params?.tool === 'Write') pushDiffUpdate(params.file || '');
@@ -621,9 +622,6 @@ app.whenReady().then(() => {
   hardenWebContents();
   const loginStartup = initializeLoginStartup(app);
   if (!loginStartup.ok) console.warn('[wmux] Failed to apply login startup setting:', loginStartup.error);
-  ensureClaudeHooks();
-  ensureChromeDevtoolsConfig();
-  ensureOrchestratorPlugin();
   ensureOpencodeContext();
   ensureOpencodePlugin();
   ensureKimiHooks();
@@ -640,6 +638,16 @@ app.whenReady().then(() => {
     feishuSupervisor?.onRecord(record);
     return result;
   });
+  ipcMain.handle('supervisor:save-evidence', (_event, options) => saveSupervisorEvidence(options));
+  ipcMain.handle('supervisor:read-evidence', (_event, options) => readSupervisorEvidence({
+    projectDir: String(options?.projectDir || ''),
+    sessionId: String(options?.sessionId || ''),
+    reviewId: String(options?.reviewId || ''),
+    surfaceId: String(options?.surfaceId || ''),
+    isolationScope: options?.isolationScope,
+    page: Number(options?.page),
+    pageLines: Number(options?.pageLines),
+  }));
   ipcMain.handle('supervisor:read-latest-history', (_event, options) =>
     readLatestSupervisorHistory(String(options?.projectDir || ''), {
       surfaceId: String(options?.surfaceId || ''),

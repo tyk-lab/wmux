@@ -12,7 +12,7 @@ try {
     $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 } catch {}
 
-# wmux CLI shortcut — Claude Code and users can just type: wmux browser open <url>
+# wmux CLI shortcut — agents and users can type: wmux browser open <url>
 # Fallback CLI next to this script, captured at source time ($PSScriptRoot is
 # empty once the function runs in the interactive session). Panes can outlive
 # the wmux instance that spawned them; after an update/move $env:WMUX_CLI

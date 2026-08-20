@@ -72,7 +72,6 @@ export default function WorkspaceSettings() {
         >
           <option value="pi">Pi Agent</option>
           <option value="codex">Codex</option>
-          <option value="claude">Claude Code</option>
           <option value="kimi">Kimi Code</option>
           <option value="grok">Grok Build</option>
           <option value="opencode">OpenCode</option>

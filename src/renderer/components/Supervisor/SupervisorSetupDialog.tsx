@@ -75,7 +75,6 @@ import '../../styles/supervisor.css';
 const SUPERVISOR_LAUNCH_OPTIONS = [
   { value: 'pi', label: 'Pi Agent（推荐）' },
   { value: 'codex', label: 'Codex' },
-  { value: 'claude', label: 'Claude Code' },
   { value: 'kimi', label: 'Kimi Code' },
   { value: 'grok', label: 'Grok Build' },
   { value: 'opencode', label: 'OpenCode' },

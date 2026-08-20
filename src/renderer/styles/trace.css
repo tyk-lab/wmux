@@ -1,7 +1,7 @@
 /* ─── TRACE mode ──────────────────────────────────────────────────────────────
  *
  * Opt-in sidebar presentation (appearancePrefs.uiMode = 'trace'). The workspace
- * is a seated circuit board: a copper bus runs down its left edge, each Claude
+ * is a seated circuit board: a copper bus runs down its left edge, each agent
  * session taps that bus, and current flows only where work is actually
  * happening. Tool calls fire vias. Waves and dependencies are topology, drawn
  * in the same vocabulary as everything else.

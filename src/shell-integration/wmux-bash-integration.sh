@@ -4,7 +4,7 @@
 
 export WMUX=1
 
-# wmux CLI shortcut — Claude Code and users can just type: wmux browser open <url>
+# wmux CLI shortcut — terminal agents and users can just type: wmux browser open <url>
 # Panes can outlive the wmux instance that spawned them; after an update/move
 # $WMUX_CLI points at a deleted file and node crashes with MODULE_NOT_FOUND.
 # Resolve the copy next to this script at source time and fall back to it.

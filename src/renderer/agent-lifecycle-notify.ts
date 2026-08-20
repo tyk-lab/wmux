@@ -16,7 +16,7 @@ export function shouldNotifyAgentLifecycle(supervisorActive: boolean): boolean {
 
 export interface LifecycleNotifyInput {
   kind: LifecycleNotifyKind;
-  /** Product name: Claude / Kimi / Codex / Grok / Pi / OpenCode. */
+  /** Product name: Kimi / Codex / Grok / Pi / OpenCode. */
   agent?: string | null;
   /** Pane label: tab title, cwd folder, wrap --label, … */
   where?: string | null;
@@ -29,7 +29,6 @@ const MAX_MESSAGE = 72;
 /** Known harness names inferred from labels / cwd / metadata. */
 const AGENT_PATTERNS: Array<{ re: RegExp; name: string }> = [
   { re: /\bkimi\b/i, name: 'Kimi' },
-  { re: /\bclaude\b/i, name: 'Claude' },
   { re: /\bcodex\b/i, name: 'Codex' },
   { re: /\bgrok\b/i, name: 'Grok' },
   { re: /\bpi(?:\s+agent)?\b/i, name: 'Pi' },

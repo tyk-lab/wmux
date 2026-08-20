@@ -6,12 +6,12 @@ import { DEFAULT_PROJECT_EXECUTION_BUDGET } from '../../src/shared/project-manag
 /**
  * Guards against runtime-referenced files missing from the packaged app.
  *
- * claude-context.ts writes Claude Code hooks into ~/.claude/settings.json that
- * exec `node <resources>/cli/wmux-hook.js` in installed builds. The script must
+ * Supported agent integrations execute `node <resources>/cli/wmux-hook.js` in
+ * installed builds. The script must
  * live OUTSIDE the asar (bare node can't read asar archives), i.e. it must be
  * listed in electron-builder extraResources. It was missing until v0.29.1:
- * every hook silently failed, so the sidebar never received PostToolUse/Stop
- * events and workspaces stayed pinned on "Running" while Claude idled.
+ * hook events could otherwise fail silently and leave workspaces pinned on
+ * "Running" while the agent idled.
  */
 describe('electron-builder packaging', () => {
   const config = JSON.parse(
@@ -22,6 +22,16 @@ describe('electron-builder packaging', () => {
   it('ships every compiled CLI module and its shared dependencies outside the asar', () => {
     expect(extraResources).toContainEqual({ from: 'dist/cli', to: 'cli', filter: ['*.js'] });
     expect(extraResources).toContainEqual({ from: 'dist/shared', to: 'shared', filter: ['*.js'] });
+  });
+
+  it('ships generic agent instructions without Claude-only resources', () => {
+    expect(extraResources).toContainEqual({
+      from: 'resources/agent-instructions.md',
+      to: 'agent-instructions/agent-instructions.md',
+    });
+    expect(extraResources.some(({ from }) => from.includes('claude'))).toBe(false);
+    expect(extraResources.some(({ from }) => from.includes('wmux-orchestrator'))).toBe(false);
+    expect(fs.existsSync(path.join(__dirname, '../../resources/agent-instructions.md'))).toBe(true);
   });
 
   it('ships the project management orchestration skill outside the asar', () => {

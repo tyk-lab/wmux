@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendSupervisorRecord,
   listSupervisorRestoreCandidates,
+  readSupervisorEvidence,
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
+  saveSupervisorEvidence,
 } from '../../src/main/supervisor-records';
 
 const tempDirs: string[] = [];
@@ -22,6 +24,93 @@ afterEach(() => {
 });
 
 describe('supervisor records', () => {
+  it('persists paged evidence and rejects a different task terminal binding', () => {
+    const project = projectDir();
+    const snapshot = {
+      version: 1 as const,
+      sessionId: 'sup-evidence',
+      reviewId: 'review-123',
+      laneId: 'lane-a',
+      surfaceId: 'surf-a',
+      isolationScope: 'project' as const,
+      task: '验证证据读取',
+      capturedAt: 100,
+      bufferType: 'normal' as const,
+      bufferLines: 4,
+      capturedLines: 4,
+      truncated: false,
+      summary: '摘要',
+      text: ['第一行', '第二行', '第三行', '第四行'].join('\n'),
+    };
+    const saved = saveSupervisorEvidence({ projectDir: project, snapshot });
+
+    expect(saved.path).toBe(path.join(
+      fs.realpathSync(project),
+      '.wmux',
+      'supervisor',
+      'sup-evidence',
+      'evidence',
+      'project',
+      'review-123.json',
+    ));
+    expect(readSupervisorEvidence({
+      projectDir: project,
+      sessionId: 'sup-evidence',
+      reviewId: 'review-123',
+      surfaceId: 'surf-a',
+      isolationScope: 'project',
+      page: 2,
+      pageLines: 2,
+    })).toMatchObject({
+      ok: true,
+      page: 2,
+      totalPages: 2,
+      text: '第三行\n第四行',
+    });
+    expect(readSupervisorEvidence({
+      projectDir: project,
+      sessionId: 'sup-evidence',
+      reviewId: 'review-123',
+      surfaceId: 'surf-b',
+      isolationScope: 'project',
+    })).toEqual({ ok: false, error: 'supervisor evidence binding mismatch' });
+  });
+
+  it('bounds durable evidence retention per supervision scope', () => {
+    const project = projectDir();
+    for (let index = 0; index < 52; index += 1) {
+      saveSupervisorEvidence({
+        projectDir: project,
+        snapshot: {
+          version: 1,
+          sessionId: 'sup-retention',
+          reviewId: `review-${index}`,
+          laneId: 'lane-a',
+          surfaceId: 'surf-a',
+          isolationScope: 'ordinary',
+          task: '保留最近证据',
+          capturedAt: index,
+          bufferType: 'normal',
+          bufferLines: 1,
+          capturedLines: 1,
+          truncated: false,
+          summary: `摘要 ${index}`,
+          text: `证据 ${index}`,
+        },
+      });
+    }
+
+    const evidenceDirectory = path.join(
+      fs.realpathSync(project),
+      '.wmux',
+      'supervisor',
+      'sup-retention',
+      'evidence',
+      'ordinary',
+    );
+    expect(fs.readdirSync(evidenceDirectory)).toHaveLength(50);
+  });
+
   it('keeps duplicate terminal labels distinct by surface id and ignores the audit directory', () => {
     const project = projectDir();
     const shared = {

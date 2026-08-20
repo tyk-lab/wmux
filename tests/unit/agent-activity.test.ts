@@ -7,14 +7,14 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { applyExternalActivity, getActivity, clearActivity } from '../../src/main/claude-observer';
+import { applyExternalActivity, getActivity, clearActivity } from '../../src/main/agent-activity';
 import { SurfaceId } from '../../src/shared/types';
 
 describe('applyExternalActivity', () => {
   const surf = 'surf-test-1' as SurfaceId;
   beforeEach(() => { sendMock.mockClear(); clearActivity(surf); });
 
-  it('merges partial activity and broadcasts on CLAUDE_ACTIVITY', () => {
+  it('merges partial activity and broadcasts an agent activity update', () => {
     applyExternalActivity(surf, { lastTool: 'bash', isDone: false });
     const a = getActivity(surf);
     expect(a?.lastTool).toBe('bash');

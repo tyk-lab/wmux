@@ -3,7 +3,7 @@ import { WorkspaceInfo, SplitNode, PaneId } from '../../../shared/types';
 import { useStore } from '../../store';
 import { aggregateProgress } from '../../store/progress-slice';
 import { agentsForWorkspace, resolveAgentLinger, WorkspaceAgentsView } from '../../store/agent-view';
-import { claudeSessionsForWorkspace, HookActivityEntry } from '../../store/claude-session-view';
+import { agentSessionsForWorkspace, HookActivityEntry } from '../../store/agent-session-view';
 import UnreadBadge from './UnreadBadge';
 import PrStatusIcon from './PrStatusIcon';
 import { traceState, toolChannel } from './trace-signals';
@@ -34,7 +34,7 @@ function getToolLabel(tool: string): string {
   }
 }
 
-/** Detail text of one Claude session sub-line. */
+/** Detail text of one agent session sub-line. */
 function sessionDetailText(session: { working: boolean; blocked: boolean; blockedReason: string | null; tool: string | null }): string {
   // Blocked outranks the tool label: a pane parked on a permission prompt is
   // the one thing the user has to act on, so it must not read as "Idle" just
@@ -60,9 +60,9 @@ interface WorkspaceRowProps {
    *  it isn't the drop target. The marker has to name an edge: drawing it
    *  always above the hovered row lied about every downward move (issue #124). */
   dropEdge?: 'above' | 'below' | null;
-  /** Full hook-activity map — keyed by surface id (per Claude session) or workspace id (legacy). */
+  /** Full hook-activity map — keyed by surface id (per agent session) or workspace id (legacy). */
   hookActivity?: Record<string, HookActivityEntry>;
-  claudeActivity?: Record<string, any>;
+  agentActivity?: Record<string, any>;
   /** surfaceId → declared agent state (issue #128). */
   agentStates?: Record<string, any>;
   onFocusAgentPane?: (paneId: PaneId) => void;
@@ -82,7 +82,7 @@ export default function WorkspaceRow({
   onDragEnd,
   dropEdge = null,
   hookActivity,
-  claudeActivity,
+  agentActivity,
   agentStates,
   onFocusAgentPane,
 }: WorkspaceRowProps) {
@@ -139,22 +139,22 @@ export default function WorkspaceRow({
     return aggregateProgress(entries);
   }, [surfaceProgress, workspace.splitTree]);
 
-  // Find Claude activity for this workspace's surfaces (from PTY observer)
+  // Find explicitly reported activity for this workspace's surfaces.
   const wsActivity = useMemo(() => {
-    if (!claudeActivity) return null;
+    if (!agentActivity) return null;
     const surfaceIds = getAllSurfaceIds(workspace.splitTree);
     for (const sid of surfaceIds) {
-      if (claudeActivity[sid]) return claudeActivity[sid];
+      if (agentActivity[sid]) return agentActivity[sid];
     }
     return null;
-  }, [claudeActivity, workspace.splitTree]);
+  }, [agentActivity, workspace.splitTree]);
 
-  // ── Unified agent list (observer subagents + wmux-spawned agents) ──
+  // ── Unified agent list (reported subagents + wmux-spawned agents) ──
   const agentMeta = useStore((state) => state.agentMeta);
   const doneAtRef = useRef<number | null>(null);
   const wsAgents = useMemo<WorkspaceAgentsView>(() => {
     const now = Date.now();
-    const view = agentsForWorkspace(workspace.splitTree, claudeActivity ?? {}, agentMeta, now);
+    const view = agentsForWorkspace(workspace.splitTree, agentActivity ?? {}, agentMeta, now);
     if (view.lines.length === 0) { doneAtRef.current = null; return EMPTY_AGENTS_VIEW; }
     const linger = resolveAgentLinger(view.running === 0, doneAtRef.current, now);
     // The ref write lives in the memo, not an effect: the linger decision must
@@ -163,22 +163,22 @@ export default function WorkspaceRow({
     // lands on the same state.
     doneAtRef.current = linger.doneAt;
     return linger.visible ? view : EMPTY_AGENTS_VIEW;
-  }, [workspace.splitTree, claudeActivity, agentMeta, tick]);
+  }, [workspace.splitTree, agentActivity, agentMeta, tick]);
   const runningAgentCount = wsAgents.running;
 
-  // How long a tool label persists after the last hook/observer event (ms)
+  // How long a tool label persists after the last hook/activity event (ms)
   const ACTIVITY_TTL = 5000;
 
-  // ── Per-surface Claude sessions (2 claude panes = 2 independent states) ──
+  // ── Per-surface agent sessions ──
   const sessionsView = useMemo(
-    () => claudeSessionsForWorkspace(
+    () => agentSessionsForWorkspace(
       workspace.splitTree,
-      claudeActivity ?? {},
+      agentActivity ?? {},
       hookActivity ?? {},
       Date.now(),
       agentStates ?? {},
     ),
-    [workspace.splitTree, claudeActivity, hookActivity, agentStates, tick],
+    [workspace.splitTree, agentActivity, hookActivity, agentStates, tick],
   );
   const sessions = sessionsView.sessions;
   const workingSessions = sessionsView.working;
@@ -189,8 +189,8 @@ export default function WorkspaceRow({
   // Legacy workspace-keyed entry — only written by hook events with no surfaceId.
   const legacyHook = hookActivity?.[workspace.id];
 
-  // ── Determine if Claude is actively working (recent hook or observer data) ──
-  const isClaudeActive = useMemo(() => {
+  // ── Determine if an agent is actively working ──
+  const isAgentActive = useMemo(() => {
     if (workingSessions > 0) return true;
     const now = Date.now();
     if (legacyHook && now - legacyHook.lastSeen < ACTIVITY_TTL) return true;
@@ -203,7 +203,7 @@ export default function WorkspaceRow({
   // previous sample. The sample is taken inside the memo that already runs on
   // the existing 2s tick — no new timer, no rAF, no per-row interval.
   //
-  // MUST stay below `isClaudeActive`: it reads that binding in its dependency
+  // MUST stay below `isAgentActive`: it reads that binding in its dependency
   // array, and a deps array is a plain array literal evaluated at the call site
   // — only the callback is deferred. Declared above, the read hit the temporal
   // dead zone on *every* render including classic mode, and 0.35.0 shipped with
@@ -217,7 +217,7 @@ export default function WorkspaceRow({
     const ids = getAllSurfaceIds(workspace.splitTree);
     const entries = ids.map((id) => hookActivity?.[id]).filter(Boolean) as HookActivityEntry[];
 
-    // Sum, not first-match: a workspace with several Claude panes has several
+    // Sum, not first-match: a workspace with several agent panes has several
     // counters, and the odometer is a workspace-level odometer.
     const toolCount = entries.reduce((sum, e) => sum + (e.toolCount || 0), 0);
     const lastSeen = entries.reduce((max, e) => Math.max(max, e.lastSeen || 0), 0);
@@ -225,7 +225,7 @@ export default function WorkspaceRow({
 
     const prev = traceRateRef.current;
     const state = traceState({
-      working: workingSessions > 0 || isClaudeActive,
+      working: workingSessions > 0 || isAgentActive,
       tool: active?.tool ?? null,
       toolCount,
       lastSeen,
@@ -236,7 +236,7 @@ export default function WorkspaceRow({
     if (toolCount !== prev.toolCount) traceRateRef.current = { toolCount, at: now };
 
     return { ...state, toolCount };
-  }, [uiMode, workspace.splitTree, hookActivity, sessions, workingSessions, isClaudeActive, tick]);
+  }, [uiMode, workspace.splitTree, hookActivity, sessions, workingSessions, isAgentActive, tick]);
 
   if (rowTrace) {
     // Two numbers, both continuous, both read by CSS. --tr-lit is the staleness
@@ -251,7 +251,7 @@ export default function WorkspaceRow({
     s['--tr-flow-dur'] = `${rowTrace.flowMs}ms`;
   }
 
-  // ── Current tool label (from observer or hooks) ──
+  // ── Current tool label (from activity reports or hooks) ──
   const currentToolLabel = useMemo(() => {
     // Prefer per-session state — first working session with a known tool.
     const active = sessions.find(s => s.working && s.tool);
@@ -266,16 +266,16 @@ export default function WorkspaceRow({
     return null;
   }, [sessions, wsActivity, legacyHook, tick]);
 
-  // ── Detect "Claude was active but stopped" (shell still says running) ──
-  const claudeIsIdle = useMemo(() => {
+  // ── Detect "agent was active but stopped" (shell still says running) ──
+  const agentIsIdle = useMemo(() => {
     if (workspace.shellState !== 'running') return false;
     // Sessions tracked per surface: idle only when EVERY session stopped —
-    // one busy claude pane never reads as workspace-wide idle, and one idle
-    // claude pane never keeps the row on "Running" (the 2-window bug).
+    // one busy pane never reads as workspace-wide idle, and one idle pane never
+    // keeps the row on "Running".
     if (sessions.length > 0) return workingSessions === 0;
-    // Observer saw "Baked for" / "Cost:" — Claude explicitly finished
+    // An explicit activity report marked the agent done.
     if (wsActivity?.isDone) return true;
-    // Hook activity went stale — Claude stopped using tools
+    // Hook activity went stale — the agent stopped using tools.
     if (legacyHook) {
       const now = Date.now();
       return now - legacyHook.lastSeen >= ACTIVITY_TTL;
@@ -283,7 +283,7 @@ export default function WorkspaceRow({
     return false;
   }, [workspace.shellState, sessions, workingSessions, wsActivity, legacyHook, tick]);
 
-  // Busy if any terminal is running (aggregated shellState) or Claude/agents work.
+  // Busy if any terminal is running (aggregated shellState) or agents work.
   const needsAttention = useStore((s) => !!s.workspaceAttention[workspace.id]);
 
   // ── Status text: manual override > tool activity > shell state > default ──
@@ -295,10 +295,10 @@ export default function WorkspaceRow({
     workingSessions,
     blockedSessions,
     currentToolLabel,
-    claudeIsIdle,
+    agentIsIdle,
     shellState: workspace.shellState,
     notificationText: workspace.notificationText,
-  }), [workspace.statusOverride, runningAgentCount, wsAgents, sessions, workingSessions, blockedSessions, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText]);
+  }), [workspace.statusOverride, runningAgentCount, wsAgents, sessions, workingSessions, blockedSessions, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText]);
 
   // ── Status color class ──
   const statusClass = useMemo(() => resolveStatusClass({
@@ -308,10 +308,10 @@ export default function WorkspaceRow({
     workingSessions,
     sessionCount: sessions.length,
     currentToolLabel,
-    claudeIsIdle,
+    agentIsIdle,
     shellState: workspace.shellState,
     notificationText: workspace.notificationText,
-  }), [workspace.statusOverride, blockedSessions, runningAgentCount, workingSessions, sessions.length, currentToolLabel, claudeIsIdle, workspace.shellState, workspace.notificationText]);
+  }), [workspace.statusOverride, blockedSessions, runningAgentCount, workingSessions, sessions.length, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText]);
 
   // ── Context line: "branch* · ~/path/to/dir" ──
   const contextLine = useMemo(() => {
@@ -336,13 +336,13 @@ export default function WorkspaceRow({
         ? 'workspace-row__state-dot--running'
         : 'workspace-row__state-dot--idle';
     }
-    if (isClaudeActive) return 'workspace-row__state-dot--running';
-    if (claudeIsIdle) return 'workspace-row__state-dot--idle';
+    if (isAgentActive) return 'workspace-row__state-dot--running';
+    if (agentIsIdle) return 'workspace-row__state-dot--idle';
     if (workspace.shellState === 'running') return 'workspace-row__state-dot--running';
     if (workspace.shellState === 'interrupted') return 'workspace-row__state-dot--interrupted';
     if (workspace.shellState === 'idle') return 'workspace-row__state-dot--idle';
     return '';
-  }, [workspace.statusOverride, isClaudeActive, claudeIsIdle, workspace.shellState]);
+  }, [workspace.statusOverride, isAgentActive, agentIsIdle, workspace.shellState]);
 
   return (
     <div
@@ -468,8 +468,8 @@ export default function WorkspaceRow({
         {statusText}
       </div>
 
-      {/* Per-Claude-session sub-lines — one per pane running Claude Code,
-          shown as soon as the workspace hosts 2+ sessions (click → focus pane) */}
+      {/* Per-agent-session sub-lines, shown once multiple sessions exist or one
+          requires the user (click → focus pane). */}
       {(sessions.length >= 2 || blockedSessions > 0) && (
         <div className="workspace-row__agents workspace-row__sessions">
           {sessions.map((s, i) => (

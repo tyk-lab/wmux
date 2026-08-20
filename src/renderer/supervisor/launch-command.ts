@@ -64,7 +64,6 @@ function appendFlagIfMissing(command: string, pattern: RegExp, flag: string): st
 
 function isKnownSupervisorLauncher(command: string, launcher: SupervisorLauncherKind): boolean {
   return launcher !== 'other'
-    || matchesLauncherCommand(command, 'claude')
     || matchesLauncherCommand(command, 'opencode');
 }
 

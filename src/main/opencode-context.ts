@@ -33,10 +33,10 @@ function getInstructionsPath(): string {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron');
     if (app.isPackaged) {
-      return path.join(process.resourcesPath, 'claude-instructions', 'claude-instructions.md');
+      return path.join(process.resourcesPath, 'agent-instructions', 'agent-instructions.md');
     }
   } catch { /* not running under Electron */ }
-  return path.join(__dirname, '../../resources/claude-instructions.md');
+  return path.join(__dirname, '../../resources/agent-instructions.md');
 }
 
 function getAgentsMdPath(): string {

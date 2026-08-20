@@ -4,7 +4,7 @@ import { buildGrokWmuxHooksFile } from '../../src/main/grok-context';
 const SCRIPT = 'C:/wmux/resources/cli/wmux-hook.js';
 
 describe('buildGrokWmuxHooksFile', () => {
-  it('emits Claude-compatible hooks for Grok global discovery', () => {
+  it('emits nested lifecycle hooks for Grok global discovery', () => {
     const file = buildGrokWmuxHooksFile(SCRIPT);
     expect(file.hooks.UserPromptSubmit).toBeDefined();
     expect(file.hooks.PostToolUse).toBeDefined();

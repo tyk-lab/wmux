@@ -81,19 +81,25 @@ describe('supervisor status summary', () => {
     expect(panelSource).toMatch(/\{!laneProjectManaged && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
   });
 
-  it('shows every current project work item and its supervisor planning state', () => {
+  it('shows only each project supervisor lane and its own execution plan', () => {
     expect(panelSource).toContain('const scopedProjectWorkItems');
     expect(panelSource).toContain('className="sup-panel__project-plan"');
-    expect(panelSource).toContain('当前监督规划');
+    expect(panelSource).toContain('监督 AI 执行规划');
+    expect(panelSource).toContain('visibleLanes.map((lane)');
+    expect(panelSource).toContain('scopedProjectWorkItems.find((candidate) => candidate.id === lane.projectWorkItemId)');
     expect(panelSource).toContain('item.workerSurfaceId');
     expect(panelSource).toContain('item.supervisorPlan?.milestones');
     expect(panelSource).toContain('item.supervisorPlan.selectedRoute');
+    expect(panelSource).toContain('item.supervisorPlan.remainingWork');
+    expect(panelSource).toContain('item.supervisorPlan.targetedValidation');
+    expect(panelSource).toContain('item.supervisorPlan.serializedBoundaries');
     expect(panelSource).toContain('item.latestBlocker');
     expect(panelSource).toContain('item.latestEvidence');
     expect(panelSource).toContain("? '已结束'");
     expect(panelSource).toContain(": '已停止';");
     expect(panelSource).toContain('工作项已完成，执行证据已归档');
-    expect(panelSource).toContain('打开执行链');
+    expect(panelSource).toContain('打开项目管理');
+    expect(panelSource).toContain('{!scopedProjectId && visibleLogs.length > 0 && (');
   });
 
   it('shows the current route and recent planning trail for ordinary supervision', () => {

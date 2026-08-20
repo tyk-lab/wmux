@@ -819,7 +819,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     });
 
     // Terminal bell (\x07) fallback (issue #53): many in-pane CLI agents —
-    // including Claude Code's default "I'm waiting for you" signal — ring the
+    // including the common "I'm waiting for you" signal — ring the
     // bell rather than emitting an OSC sequence or firing a hook. Surface it as
     // a notification, throttled so a burst of bells (e.g. shell tab-completion
     // with no match) doesn't flood the user.
@@ -893,7 +893,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             const filePath = await window.wmux.clipboard.pasteImage();
             if (filePath && ptyIdRef.current) {
               // Route through terminal.paste so bracketed-paste markers wrap
-              // the path when the app (e.g. Claude Code) has bracketed paste on.
+              // the path when the active TUI has bracketed paste on.
               terminal.paste(filePath);
               handled = true;
             }
@@ -909,7 +909,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         })();
         return false; // Prevent default — we handle paste ourselves
       }
-      // Shift+Enter → newline for TUI apps (Claude Code, etc). See
+      // Shift+Enter → newline for TUI apps. See
       // ./terminal-keys for why this cancels the event as well as returning
       // false (issue #119). Routed through terminal.input() (→ onData) rather
       // than pty.write so broadcast-input mode (issue #64) fans the newline out
@@ -1342,7 +1342,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
   // Routed here so it shares the Ctrl+V path's correctness: Electron's
   // clipboard.readText() (navigator.clipboard garbles non-UTF-8 Windows
   // formats — em dash → "â") and terminal.paste() (honors bracketed-paste
-  // mode, so multi-line paste into Claude Code doesn't submit on the first \n).
+  // mode, so multi-line paste into a TUI doesn't submit on the first \n).
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail;

@@ -31,7 +31,9 @@ export interface ProjectManagerSlice {
   projectManagers: ProjectManagerSession[];
   selectedProjectManagerId: string | null;
   projectManagerDialogOpen: boolean;
+  projectManagerDialogView: 'center' | 'create';
   openProjectManagerDialog: () => void;
+  openProjectManagerCreationDialog: () => void;
   closeProjectManagerDialog: () => void;
   startProjectManager: (options: {
     projectDir: string;
@@ -124,11 +126,15 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
   projectManagers: [],
   selectedProjectManagerId: null,
   projectManagerDialogOpen: false,
+  projectManagerDialogView: 'center',
   openProjectManagerDialog() {
-    set({ projectManagerDialogOpen: true });
+    set({ projectManagerDialogOpen: true, projectManagerDialogView: 'center' });
+  },
+  openProjectManagerCreationDialog() {
+    set({ projectManagerDialogOpen: true, projectManagerDialogView: 'create' });
   },
   closeProjectManagerDialog() {
-    set({ projectManagerDialogOpen: false });
+    set({ projectManagerDialogOpen: false, projectManagerDialogView: 'center' });
   },
   startProjectManager(options) {
     const now = Date.now();

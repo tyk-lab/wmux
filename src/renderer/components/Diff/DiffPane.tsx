@@ -151,7 +151,7 @@ export default function DiffPane({ surfaceId, cwd }: DiffPaneProps) {
     contentRef.current?.scrollTo(0, 0);
   }, [selectedFile, loadDiff]);
 
-  // Listen for immediate updates from Claude Code hooks (faster than polling)
+  // Listen for immediate updates from agent hooks (faster than polling)
   useEffect(() => {
     if (!window.wmux?.diff?.onUpdate) return;
     let debounce: ReturnType<typeof setTimeout>;
@@ -295,7 +295,7 @@ export default function DiffPane({ surfaceId, cwd }: DiffPaneProps) {
             </div>
             <div>Waiting for changes...</div>
             <div className="diff-pane__empty-hint">
-              Diffs will appear here when Claude edits files
+              Diffs will appear here when an agent edits files
             </div>
           </div>
         )}

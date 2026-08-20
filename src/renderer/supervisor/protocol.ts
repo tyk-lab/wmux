@@ -102,7 +102,7 @@ export function buildSupervisorWakeEventEnvelope(
   const target = surfaceId.trim() || '（未指定）';
   const normalizedReviewId = reviewId.trim();
   const reviewInstruction = normalizedReviewId
-    ? `本轮 reviewId=${normalizedReviewId}；提交裁决时必须附 --review-id ${normalizedReviewId}，不得用旧 reviewId 回报新任务回合。`
+    ? `本轮 reviewId=${normalizedReviewId}；先运行 wmux supervisor evidence --review-id ${normalizedReviewId} 读取任务结束瞬间的冻结证据，hasMore=true 时按 nextPage 分页读完；提交裁决时必须附 --review-id ${normalizedReviewId}，不得用旧 reviewId 回报新任务回合。`
     : '';
   return [
     `[监督事件｜控制层｜surface=${target}${normalizedReviewId ? `｜review=${normalizedReviewId}` : ''}｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
@@ -111,7 +111,7 @@ export function buildSupervisorWakeEventEnvelope(
       ? '你负责在项目 AI 给定的硬边界内完成整个阶段成果并维护自己的阶段计划；任务 AI 的检查点只是证据输入，不要把内部里程碑原样转交项目 AI 决定。'
       : '你只负责当前普通监督通道；依据用户配置、任务终端证据和既有裁决处理本轮，不得扩展目标或读取其他终端。',
     reviewInstruction,
-    `再运行 wmux read-screen --surface ${target} 核对新证据；只形成一个裁决并用 wmux supervisor decide 提交，成功后立即结束本回合。`,
+    `再运行 wmux read-screen --surface ${target} --lines 100 核对当前实时状态；冻结证据负责本轮历史，read-screen 不得替代完整证据。只形成一个裁决并用 wmux supervisor decide 提交，成功后立即结束本回合。`,
   ].filter(Boolean).join('\n');
 }
 
@@ -573,8 +573,8 @@ export function buildSupervisorBriefing(
       ]
     : [];
   const decisionReadStep = planFilePath
-    ? `1. 先检查计划文件（${planFilePath}）是否更新；首次使用或更新时重新读取，再 read-screen --surface ${lane.surfaceId} 查看当前证据。`
-    : `1. 先 read-screen --surface ${lane.surfaceId} 查看当前证据。`;
+    ? `1. 收到带 reviewId 的任务事件时，先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据；再检查计划文件（${planFilePath}）是否更新，最后用 read-screen --surface ${lane.surfaceId} --lines 100 核对当前实时状态。`
+    : `1. 收到带 reviewId 的任务事件时，先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据；再用 read-screen --surface ${lane.surfaceId} --lines 100 核对当前实时状态。`;
   const decisionEvidence = planFilePath
     ? '综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。'
     : '综合停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。';
@@ -674,7 +674,7 @@ export function buildSupervisorBriefing(
   const decisionBoundary = autonomous
     ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
     : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
-  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 5 : 4;
+  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 6 : 5;
   const postDecisionRule = decisionBoundary.length + decisionBoundaryStart;
 
   const kind = laneConfig.stopWhenKind;
@@ -731,12 +731,13 @@ export function buildSupervisorBriefing(
       '## 规则',
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
       '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
-      '3. 只有完整阶段的全部停止条件与验证要求均满足且没有剩余工作时才提交 complete，并按项目合同附完整 completion checklist；P0/P1/P2、单条命令、单次测试或任务 AI 回合结束都使用 continue / rework 直接推进。异常、外部阻塞、需要人工/项目级决策或预算耗尽使用 needs-human，不得静默等待。',
+      '3. 任务 AI 每轮结束应提供“[本轮结果]”结构化交接，至少包含完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出必须落到项目内日志或证据文件并报告路径。缺少交接时先结合冻结证据和工程事实补证，不得仅凭屏幕末尾猜测。',
+      '4. 只有完整阶段的全部停止条件与验证要求均满足且没有剩余工作时才提交 complete，并按项目合同附完整 completion checklist；P0/P1/P2、单条命令、单次测试或任务 AI 回合结束都使用 continue / rework 直接推进。异常、外部阻塞、需要人工/项目级决策或预算耗尽使用 needs-human，不得静默等待。',
       ...(isProjectManagedSupervisorLane(lane) ? [
-        '4. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
+        '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
       ] : []),
       ...decisionBoundary.map((line, index) => `${index + decisionBoundaryStart}. ${line}`),
-      `${postDecisionRule}. 每轮结束先 read-screen --surface ${lane.surfaceId}，再用 wmux supervisor decide 记录裁决；该命令成功时静默。`,
+      `${postDecisionRule}. 每轮结束先读取本轮冻结证据（若事件提供 reviewId），再用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态，最后通过 wmux supervisor decide 记录裁决；该命令成功时静默。`,
       lane.remoteSshControl
         ? `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；SSH 远程控制终端不允许自动权限确认。`
         : `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；允许时，自动权限确认可附 --permission-command 与 --permission-response。`,

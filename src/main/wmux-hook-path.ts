@@ -36,7 +36,7 @@ export function resolveWmuxHookScriptPosix(): string {
 }
 
 /**
- * Portable command for Claude/Codex/Grok/Kimi-style hooks.
+ * Portable command for Codex/Grok/Kimi lifecycle hooks.
  * Always quote the path (user dirs often contain spaces). No bash redirects —
  * Windows cmd cannot parse `2>/dev/null || true`.
  *

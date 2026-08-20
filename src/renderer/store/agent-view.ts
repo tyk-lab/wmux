@@ -9,17 +9,17 @@ export interface WorkspaceAgent {
   done: boolean;
   /** Set only for wmux-spawned agents that own a pane — makes the line clickable. */
   paneId?: PaneId;
-  /** Tool-use count of an observer-parsed agent — feeds the "+N more" summary. */
+  /** Tool-use count reported by an agent — feeds the "+N more" summary. */
   toolUses?: number;
 }
 
-/** Observer agent shape (subset of ClaudeActivity from src/main/claude-observer.ts). */
-interface ObserverActivity {
+/** Explicit activity-report shape from src/main/agent-activity.ts. */
+interface ReportedActivity {
   agents: Array<{ name: string; toolUses: number; tokens: string; done: boolean }>;
   lastUpdate: number;
 }
 
-const OBSERVER_TTL_MS = 5 * 60 * 1000; // stale observer data never renders (ghost guard)
+const ACTIVITY_TTL_MS = 5 * 60 * 1000; // stale activity data never renders (ghost guard)
 const MAX_LINES = 4;
 export const AGENT_LINGER_MS = 10_000;
 /** Key of the synthetic "+N more" summary line appended when the list overflows. */
@@ -34,8 +34,8 @@ function collectSurfacePanes(tree: SplitNode, out: Array<{ surfaceId: SurfaceId;
   collectSurfacePanes(tree.children[1], out);
 }
 
-function observerLines(surfaceId: string, activity: ObserverActivity | undefined, now: number): WorkspaceAgent[] {
-  if (!activity || now - activity.lastUpdate > OBSERVER_TTL_MS) return [];
+function reportedAgentLines(surfaceId: string, activity: ReportedActivity | undefined, now: number): WorkspaceAgent[] {
+  if (!activity || now - activity.lastUpdate > ACTIVITY_TTL_MS) return [];
   return activity.agents.map(a => ({
     key: `${surfaceId}:${a.name}`,
     name: a.name,
@@ -55,7 +55,7 @@ function summarize(ordered: WorkspaceAgent[]): WorkspaceAgent[] {
   if (ordered.length <= MAX_LINES) return ordered;
   const shown = ordered.slice(0, MAX_LINES - 1);
   const hidden = ordered.slice(MAX_LINES - 1);
-  // Done observer agents contribute their toolUses too — the summary reads
+  // Done reported agents contribute their toolUses too — the summary reads
   // "work done by hidden agents", not "work in flight".
   const hiddenTools = hidden.reduce((sum, a) => sum + (a.toolUses ?? 0), 0);
   shown.push({
@@ -78,14 +78,14 @@ export interface WorkspaceAgentsView {
 }
 
 /**
- * Merge observer-parsed subagents and wmux-spawned agents of one workspace
+ * Merge explicitly reported subagents and wmux-spawned agents of one workspace
  * into a single display list, running first, capped at MAX_LINES (3 agents +
  * one "+N more" summary when overflowing). `total`/`running` count the full
  * merged list so callers can report real numbers despite the cap.
  */
 export function agentsForWorkspace(
   splitTree: SplitNode,
-  claudeActivity: Record<string, ObserverActivity | undefined>,
+  agentActivity: Record<string, ReportedActivity | undefined>,
   agentMeta: Map<SurfaceId, AgentMeta>,
   now: number,
 ): WorkspaceAgentsView {
@@ -94,7 +94,7 @@ export function agentsForWorkspace(
 
   const merged: WorkspaceAgent[] = [];
   for (const { surfaceId, paneId } of pairs) {
-    merged.push(...observerLines(surfaceId, claudeActivity[surfaceId], now));
+    merged.push(...reportedAgentLines(surfaceId, agentActivity[surfaceId], now));
     const wmux = wmuxLine(surfaceId, paneId, agentMeta.get(surfaceId));
     if (wmux) merged.push(wmux);
   }

@@ -12,13 +12,13 @@ export interface StatusTextInputs {
   workingSessions: number;
   blockedSessions: number;
   currentToolLabel: string | null;
-  claudeIsIdle: boolean;
+  agentIsIdle: boolean;
   shellState?: string;
   notificationText?: string;
 }
 
 /** Priorities 0–2: agent-derived signals. Null → fall through to shell state. */
-export function claudeStatusText(s: StatusTextInputs): string | null {
+export function agentStatusText(s: StatusTextInputs): string | null {
   // Priority 0: user pinned the status by hand (issue #81).
   if (s.statusOverride) {
     return s.statusOverride === 'running' ? 'Running' : 'Idle';
@@ -37,7 +37,7 @@ export function claudeStatusText(s: StatusTextInputs): string | null {
   // Priority 0.75: several tracked sessions — summarize; sub-lines carry detail.
   if (s.sessionCount >= 2) {
     return s.workingSessions > 0
-      ? `Claude · ${s.workingSessions}/${s.sessionCount} running`
+      ? `Agents · ${s.workingSessions}/${s.sessionCount} running`
       : 'Idle';
   }
 
@@ -52,15 +52,15 @@ export function claudeStatusText(s: StatusTextInputs): string | null {
   if (s.currentToolLabel) return s.currentToolLabel;
 
   // Priority 2: agent was active but stopped while shell still "running".
-  if (s.claudeIsIdle) return 'Idle';
+  if (s.agentIsIdle) return 'Idle';
 
   return null;
 }
 
 /** Full chain: agent signals → shell → notification → default Idle. */
 export function resolveStatusText(s: StatusTextInputs): string {
-  const claude = claudeStatusText(s);
-  if (claude) return claude;
+  const agent = agentStatusText(s);
+  if (agent) return agent;
 
   if (s.shellState === 'running') return 'Running';
   if (s.shellState === 'interrupted') return 'Interrupted';
@@ -80,7 +80,7 @@ export function resolveStatusClass(s: {
   workingSessions: number;
   sessionCount: number;
   currentToolLabel: string | null;
-  claudeIsIdle: boolean;
+  agentIsIdle: boolean;
   shellState?: string;
   notificationText?: string;
 }): string {
@@ -96,7 +96,7 @@ export function resolveStatusClass(s: {
     return s.workingSessions > 0 ? 'workspace-row__status--working' : 'workspace-row__status--idle-clear';
   }
   if (s.currentToolLabel) return 'workspace-row__status--working';
-  if (s.claudeIsIdle) return 'workspace-row__status--idle-clear';
+  if (s.agentIsIdle) return 'workspace-row__status--idle-clear';
   if (s.shellState === 'running') return 'workspace-row__status--running';
   if (s.shellState === 'interrupted') return 'workspace-row__status--interrupted';
   if (s.shellState === 'idle') {

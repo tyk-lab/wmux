@@ -75,6 +75,8 @@ describe('supervisor wake event envelope', () => {
 
     expect(text).toContain('review=review-123');
     expect(text).toContain('--review-id review-123');
+    expect(text).toContain('wmux supervisor evidence --review-id review-123');
+    expect(text).toContain('--lines 100');
     expect(text).toContain('当前普通监督通道');
     expect(text).not.toContain('项目 AI 给定的硬边界');
   });
@@ -893,7 +895,6 @@ describe('supervisor isolation', () => {
       supervisorReasoningEffort: 'medium',
     });
     expect(supervisorDefaultsForAgent('codex')).toMatchObject({ supervisorLaunchCmd: 'codex', supervisorModel: '' });
-    expect(supervisorDefaultsForAgent('claude')).toMatchObject({ supervisorLaunchCmd: 'claude', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('kimi')).toMatchObject({ supervisorLaunchCmd: 'kimi', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('grok')).toMatchObject({ supervisorLaunchCmd: 'grok', supervisorModel: '' });
     expect(supervisorDefaultsForAgent('opencode')).toMatchObject({ supervisorLaunchCmd: 'opencode', supervisorModel: '' });
@@ -1334,7 +1335,8 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
     expect(briefing).toContain('每次裁决前先检查文件是否更新');
     expect(briefing).toContain('首次使用或发现更新时才重新读取正文');
-    expect(briefing).toContain('先检查计划文件（D:\\plans\\auth.md）是否更新；首次使用或更新时重新读取');
+    expect(briefing).toContain('先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据');
+    expect(briefing).toContain('再检查计划文件（D:\\plans\\auth.md）是否更新');
     expect(briefing).toContain('综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');

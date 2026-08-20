@@ -60,6 +60,10 @@ import {
 } from '../shared/supervisor-decision-options';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
+  cachedSupervisorEvidencePage,
+  readPersistedSupervisorEvidencePage,
+} from './supervisor/evidence';
+import {
   clearSupervisorLaneContext,
   dedicatedSupervisorSurfaceId,
   isProjectManagedSupervisorLane,
@@ -224,7 +228,17 @@ function sanitizeTerminalTextLine(line: string): string {
   }).join('');
 }
 
-export function readTerminalScreen(surfaceId: string, lines = 50): { text?: string; lines?: number; surfaceId?: string; error?: string } {
+export interface TerminalScreenReadResult {
+  text?: string;
+  lines?: number;
+  surfaceId?: string;
+  bufferType?: 'normal' | 'alternate';
+  bufferLines?: number;
+  truncated?: boolean;
+  error?: string;
+}
+
+export function readTerminalScreen(surfaceId: string, lines = 50): TerminalScreenReadResult {
   const terminal = surfaceTerminalRegistry.get(surfaceId);
   if (!terminal) {
     return { error: `no terminal for surface ${surfaceId} (markdown/browser pane, another window, or closed)` };
@@ -244,7 +258,14 @@ export function readTerminalScreen(surfaceId: string, lines = 50): { text?: stri
     else output.push(text);
   }
   while (output.length && output[output.length - 1] === '') output.pop();
-  return { text: output.join('\n'), lines: output.length, surfaceId };
+  return {
+    text: output.join('\n'),
+    lines: output.length,
+    surfaceId,
+    bufferType: buffer.type,
+    bufferLines: buffer.length,
+    truncated: buffer.type === 'alternate' || start > 0,
+  };
 }
 
 function isTerminalTuiChromeLine(line: string): boolean {
@@ -1273,7 +1294,7 @@ interface RemoteOrdinaryMonitoringTerminal extends RemoteTaskTerminalLocation {
   lane?: SupervisorLane;
 }
 
-type RemoteTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
+export type RemoteTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
 
 interface RemoteTerminalTaskResult {
   ok: boolean;
@@ -1926,18 +1947,18 @@ function startRemoteSupervisor(
       pinned: true,
       ...(projectManagedStart && project?.projectDir ? { cwd: project.projectDir } : {}),
       transientSupervisorWorkspace: true,
-      splitTree: createLeaf(undefined, 'supervisor'),
+      splitTree: createLeaf(undefined, projectManagedStart ? 'project-manager' : 'supervisor'),
     });
     supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
     const projectControlPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
-    const projectControlSurfaceId = projectManagedStart && supervisorWorkspace && projectControlPaneId
+    const projectManagerSurfaceId = projectManagedStart && supervisorWorkspace && projectControlPaneId
       ? findLeaf(supervisorWorkspace.splitTree, projectControlPaneId)?.surfaces
-        .find((surface) => surface.type === 'supervisor')?.id
+        .find((surface) => surface.type === 'project-manager')?.id
       : undefined;
-    if (projectControlSurfaceId && projectControlPaneId) {
-      store.updateSurface(supervisorWorkspace!.id, projectControlPaneId, projectControlSurfaceId, {
-        customTitle: PROJECT_SUPERVISOR_WORKSPACE_TITLE,
-        projectSupervisorProjectId: params.projectManagerProjectId,
+    if (projectManagerSurfaceId && projectControlPaneId) {
+      store.updateSurface(supervisorWorkspace!.id, projectControlPaneId, projectManagerSurfaceId, {
+        customTitle: '项目管理',
+        projectManagerProjectId: params.projectManagerProjectId,
       });
       supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
     }
@@ -8987,6 +9008,46 @@ export function initPipeBridge(): void {
     return 'role' in context && (context.role === 'supervisor' || context.role === 'project-supervisor')
       ? context
       : { ok: false, error: '当前终端不是活动监督 lane 绑定的监督 AI，无法读取监督上下文' };
+  };
+
+  w.__wmux_supervisorEvidence = async (params: any) => {
+    const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
+    const reviewId = String(params?.reviewId || '').trim();
+    if (!callerSurfaceId || !reviewId) {
+      return { ok: false, error: '监督证据读取需要调用方终端和 reviewId' };
+    }
+    const state = useStore.getState().supervisor;
+    const lane = state.lanes.find((candidate) => (
+      dedicatedSupervisorSurfaceId(candidate) === callerSurfaceId
+      && isSupervisorLaneBound(candidate)
+    ));
+    if (!lane) return { ok: false, error: '当前终端不是活动监督 lane 绑定的监督 AI' };
+    const sessionId = lane.managementSessionId || state.sessionId || '';
+    if (!sessionId || !lane.projectDir) {
+      return { ok: false, error: '当前监督 lane 缺少证据会话或项目目录绑定' };
+    }
+    const page = Number(params?.page);
+    const pageLines = Number(params?.pageLines);
+    const isolationScope = supervisorLaneInputIsolationScope(lane);
+    const cached = cachedSupervisorEvidencePage(
+      sessionId,
+      reviewId,
+      lane.surfaceId,
+      isolationScope,
+      page,
+      pageLines,
+    );
+    if (cached) return cached;
+    const persisted = await readPersistedSupervisorEvidencePage({
+      projectDir: lane.projectDir,
+      sessionId,
+      reviewId,
+      surfaceId: lane.surfaceId,
+      isolationScope,
+      page,
+      pageLines,
+    });
+    return persisted || { ok: false, error: '未找到与当前监督 lane 匹配的冻结证据' };
   };
 
   // The dedicated supervisor terminal records its judgment through a silent CLI

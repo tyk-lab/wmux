@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
+import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import {
   buildSupervisorBriefing,
   buildUnacknowledgedSupervisorIdlePrompt,
@@ -93,6 +94,12 @@ const PROJECT_WORK_ITEM_STATUS_LABELS: Record<string, string> = {
   stopped: '已关闭',
 };
 
+const PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS: Record<string, string> = {
+  planned: '待执行',
+  active: '进行中',
+  completed: '已完成',
+};
+
 const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   continue: '沿当前路线继续',
   rework: '调整当前路线',
@@ -138,8 +145,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const selectSurface = useStore((s) => s.selectSurface);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const projectManagers = useStore((s) => s.projectManagers);
-  const selectProjectManager = useStore((s) => s.selectProjectManager);
-  const openProjectManagerDialog = useStore((s) => s.openProjectManagerDialog);
   const workspaces = useStore((s) => s.workspaces);
   const [collapsed, setCollapsed] = useState(false);
   const [expandedStoppedLaneIds, setExpandedStoppedLaneIds] = useState<Set<string>>(() => new Set());
@@ -820,12 +825,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         <div className="sup-panel__empty-copy">
           {scopedProjectId ? '该项目的专属监督正在重建，或当前没有活动工作项。' : '尚未配置普通监督任务。'}
         </div>
-        {!scopedProjectId && <div className="sup-panel__actions">
-          <button type="button" className="sup-panel__btn-primary" onClick={openSupervisorSetup}>配置普通监督</button>
-        </div>}
       </div>
     );
   }
+
+  if (!expanded && ordinaryLanes.length === 0) return null;
 
   if (!expanded) {
     return (
@@ -842,7 +846,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         </button>
         <div className="sup-panel__compact-actions">
           <button type="button" onClick={openSupervisorSession}>打开</button>
-          <button type="button" onClick={openSupervisorSetup}>配置普通监督</button>
           {ordinaryEnabled.length > 0 && (
             <button type="button" onClick={pauseActiveSession}>暂停普通监督</button>
           )}
@@ -854,13 +857,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
               {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
             </button>
           )}
-          {!ordinaryRetained && (
+          {!ordinaryRetained && ordinaryLanes.length > 0 && !missingDedicatedSupervisor && (
             <button
               type="button"
               className="sup-panel__btn-primary"
-              onClick={ordinaryLanes.length === 0 || missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
+              onClick={startFreshSupervisorSession}
             >
-              {ordinaryLanes.length === 0 || missingDedicatedSupervisor ? '配置普通监督' : '启动普通监督新会话'}
+              启动普通监督新会话
             </button>
           )}
         </div>
@@ -927,21 +930,32 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
             <section className="sup-panel__project-plan" aria-label="当前项目监督规划">
               <div className="sup-panel__project-plan-heading">
                 <div>
-                  <strong>当前监督规划</strong>
-                  <span>{scopedProjectWorkItems.length} 个工作项 · {visibleLanes.length} 个监督通道</span>
+                  <strong>监督 AI 执行规划</strong>
+                  <span>{visibleLanes.length} 个监督通道 · 仅展示各通道自行维护的执行路线</span>
                 </div>
                 <button type="button" onClick={() => {
-                  selectProjectManager(scopedProjectId);
-                  openProjectManagerDialog();
-                }}>打开执行链</button>
+                  openProjectManagerConsole(scopedProjectId);
+                }}>打开项目管理</button>
               </div>
               <div className="sup-panel__project-plan-list">
-                {scopedProjectWorkItems.length === 0 && (
-                  <div className="sup-panel__project-plan-empty">项目 AI 尚未为当前目标建立工作项。</div>
+                {visibleLanes.length === 0 && (
+                  <div className="sup-panel__project-plan-empty">当前没有正在运行或保留的项目监督通道。</div>
                 )}
-                {scopedProjectWorkItems.map((item) => {
-                  const itemLane = visibleLanes.find((lane) => lane.projectWorkItemId === item.id);
-                  const laneState = itemLane ? supervisorLaneControlState(itemLane) : null;
+                {visibleLanes.map((lane) => {
+                  const item = scopedProjectWorkItems.find((candidate) => candidate.id === lane.projectWorkItemId);
+                  const laneState = supervisorLaneControlState(lane);
+                  if (!item) {
+                    return (
+                      <article key={lane.id} data-status={laneState} data-active="1">
+                        <div className="sup-panel__project-plan-row">
+                          <span className="sup-panel__project-plan-dot" />
+                          <strong title={lane.label}>{lane.label}</strong>
+                          <em>等待项目工作项</em>
+                        </div>
+                        <div className="sup-panel__project-plan-progress">监督通道正在恢复与项目工作项的绑定。</div>
+                      </article>
+                    );
+                  }
                   const statusLabel = item.status === 'completed' || item.status === 'stopped'
                     ? PROJECT_WORK_ITEM_STATUS_LABELS[item.status]
                     : laneState === 'waiting'
@@ -950,12 +964,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         ? '已暂停'
                         : PROJECT_WORK_ITEM_STATUS_LABELS[item.status] || item.status;
                   const milestones = item.supervisorPlan?.milestones || [];
-                  const completedMilestones = milestones.filter((milestone) => milestone.status === 'completed').length;
                   const supervisorStatusLabel = item.status === 'completed' || item.status === 'stopped'
                     ? '已结束'
-                    : !itemLane
-                      ? '等待派遣'
-                      : laneState === 'active'
+                    : laneState === 'active'
                         ? '已连接'
                         : laneState === 'waiting'
                           ? '待续'
@@ -966,15 +977,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     ? '工作项已完成，执行证据已归档'
                     : item.status === 'stopped'
                       ? '工作项已关闭，不再继续派遣'
-                      : item.supervisorPlan
-                        ? `路线：${item.supervisorPlan.selectedRoute} · 里程碑 ${completedMilestones}/${milestones.length}`
-                        : item.baseline?.status === 'approved'
+                      : item.baseline?.status === 'approved'
                           ? '项目基线已审核，等待监督 AI 提交执行路线'
                           : item.baseline?.status === 'investigating'
                             ? '任务 AI 正在只读调查项目基线'
                             : '等待任务 AI 调查并建立项目基线';
                   return (
-                    <article key={item.id} data-status={item.status} data-active={itemLane ? '1' : '0'}>
+                    <article key={lane.id} data-status={item.status} data-active="1">
                       <div className="sup-panel__project-plan-row">
                         <span className="sup-panel__project-plan-dot" />
                         <strong title={item.title}>{item.title}</strong>
@@ -985,9 +994,28 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <span>监督：{supervisorStatusLabel}</span>
                         <span>{projectTaskWorkModeLabel(item.contract.execution?.taskWorkMode)}</span>
                       </div>
-                      <div className="sup-panel__project-plan-progress">
-                        {planningSummary}
-                      </div>
+                      {item.supervisorPlan ? <>
+                        <div className="sup-panel__project-plan-route"><strong>当前路线</strong><span>{item.supervisorPlan.selectedRoute}</span></div>
+                        <ol className="sup-panel__project-plan-milestones">
+                          {milestones.map((milestone) => (
+                            <li key={milestone.id} data-status={milestone.status}>
+                              <span>{PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS[milestone.status] || milestone.status}</span>
+                              <strong>{milestone.title}</strong>
+                              <p>{milestone.outcome}</p>
+                              {milestone.evidence && <small>证据：{milestone.evidence}</small>}
+                            </li>
+                          ))}
+                        </ol>
+                        {item.supervisorPlan.remainingWork.length > 0 && (
+                          <div className="sup-panel__project-plan-detail"><strong>剩余工作</strong><span>{item.supervisorPlan.remainingWork.join('；')}</span></div>
+                        )}
+                        {item.supervisorPlan.targetedValidation.length > 0 && (
+                          <div className="sup-panel__project-plan-detail"><strong>定向验证</strong><span>{item.supervisorPlan.targetedValidation.join('；')}</span></div>
+                        )}
+                        {item.supervisorPlan.serializedBoundaries.length > 0 && (
+                          <div className="sup-panel__project-plan-detail"><strong>串行边界</strong><span>{item.supervisorPlan.serializedBoundaries.join('；')}</span></div>
+                        )}
+                      </> : <div className="sup-panel__project-plan-progress">{planningSummary}</div>}
                       {(item.latestBlocker || item.latestEvidence || item.latestContextSummary) && (
                         <div className="sup-panel__project-plan-latest" data-blocked={item.latestBlocker ? '1' : '0'}>
                           {item.latestBlocker
@@ -1601,7 +1629,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
             </div>
           )}
 
-          {visibleLogs.length > 0 && (
+          {!scopedProjectId && visibleLogs.length > 0 && (
             <div className="sup-panel__log">
               {visibleLogs.slice(0, 6).map((e, i) => (
                 <div key={`${e.ts}-${i}`} className="sup-panel__log-line">
@@ -1617,12 +1645,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
 
           {scopedProjectId ? (
             <div className="sup-panel__waiting-notice" role="note">
-              此处只展示当前项目的专属监督。暂停、恢复、换线和需求调整请回到“项目中心”处理。
+              此处只展示当前项目的专属监督。暂停、恢复、换线和需求调整请到“项目管理”页处理。
             </div>
           ) : <div className="sup-panel__actions">
-            <button type="button" onClick={openSupervisorSetup}>
-              配置普通监督
-            </button>
             {ordinaryEnabled.length > 0 && (
               <button type="button" onClick={pauseActiveSession}>
                 暂停普通监督
@@ -1642,13 +1667,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
               </button>
             )}
-            {!ordinaryRetained && (
+            {!ordinaryRetained && ordinaryLanes.length > 0 && !missingDedicatedSupervisor && (
               <button
                 type="button"
                 className="sup-panel__btn-primary"
-                onClick={ordinaryLanes.length === 0 || missingDedicatedSupervisor ? openSupervisorSetup : startFreshSupervisorSession}
+                onClick={startFreshSupervisorSession}
               >
-                {ordinaryLanes.length === 0 || missingDedicatedSupervisor ? '创建普通监督 AI' : '启动普通监督新会话'}
+                启动普通监督新会话
               </button>
             )}
             {ordinaryLanes.length > 0 && (

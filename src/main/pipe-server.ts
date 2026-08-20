@@ -19,7 +19,7 @@ export interface V2Request {
 // read-only and don't mutate any UI/agent state. Everything else — including
 // telemetry-style writes like hook.event and agent.activity, which can spoof
 // agent status / notifications / diff refreshes (issue #72) — requires a valid
-// per-instance token. The legitimate telemetry clients (Claude Code hooks,
+// per-instance token. The legitimate telemetry clients (agent hooks,
 // agents, shell integration) all run inside wmux-spawned shells and carry
 // WMUX_PIPE_TOKEN, so nothing tokenless has a reason to write state. Keeping
 // an allowlist (rather than a blocklist) means any new privileged method is

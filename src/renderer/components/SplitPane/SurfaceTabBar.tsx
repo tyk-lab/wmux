@@ -54,6 +54,7 @@ function surfaceIcon(type: string, isAgent: boolean): string {
     case 'markdown': return '¶';
     case 'diff': return '±';
     case 'supervisor': return '◉';
+    case 'project-manager': return '◆';
     default: return '○';
   }
 }

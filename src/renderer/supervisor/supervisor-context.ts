@@ -308,6 +308,7 @@ export function buildSupervisorRuntimeContext(
       available: [
         'wmux context',
         'wmux supervisor context',
+        'wmux supervisor evidence --review-id <本轮ID> [--page N] [--page-lines N]',
         `wmux read-screen --surface ${targetSurfaceId}`,
         `wmux agent-state --surface ${targetSurfaceId}`,
         'wmux supervisor decide --help',

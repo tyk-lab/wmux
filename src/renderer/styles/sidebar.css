@@ -74,6 +74,49 @@
   border-color: rgba(var(--ui-overlay-rgb), 0.15);
 }
 
+.sidebar__ai-menu {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% - 2px);
+  left: 8px;
+  display: grid;
+  gap: 4px;
+  width: min(260px, calc(100% - 16px));
+  padding: 6px;
+  border: 1px solid rgba(var(--ui-overlay-rgb), 0.12);
+  border-radius: 8px;
+  background: var(--ui-bg-1, #1e1e1e);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+}
+
+.sidebar__ai-menu button {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar__ai-menu button:hover,
+.sidebar__ai-menu button:focus-visible {
+  background: rgba(var(--ui-overlay-rgb), 0.08);
+  outline: none;
+}
+
+.sidebar__ai-menu strong {
+  font-size: 12px;
+}
+
+.sidebar__ai-menu span {
+  color: rgba(var(--ui-overlay-rgb), 0.55);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .sidebar__new-btn--ssh {
   margin-top: 6px;
   color: var(--ui-accent);
@@ -741,7 +784,7 @@
 .workspace-row__agent--done { opacity: 0.55; }
 .workspace-row__agent--done .workspace-row__agent-detail { color: #4caf50; opacity: 1; }
 
-/* ── Per-Claude-session sub-lines (2+ claude panes in one workspace) ── */
+/* ── Per-agent-session sub-lines ── */
 .workspace-row__sessions {
   animation: none; /* always-on block — the slide-in is for transient agent lines */
 }

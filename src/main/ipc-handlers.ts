@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectOptions, SshConnectResult, type TerminalInputIsolationScope } from '../shared/types';
-import { observePtyData, clearActivity } from './claude-observer';
+import { clearActivity } from './agent-activity';
 import { clearAgentState } from './agent-state';
 import { isAuthorizedSshPasswordLaunch, PtyManager, type SshPasswordEndpoint } from './pty-manager';
 import { NotificationManager } from './notification-manager';
@@ -147,8 +147,6 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         if (window && !window.isDestroyed()) {
           window.webContents.send(IPC_CHANNELS.PTY_DATA, id, data);
         }
-        // Feed Claude Code observer for sidebar activity display
-        try { observePtyData(id, data); } catch { /* Observer errors must not interrupt PTY output. */ }
       });
       const unsubExit = ptyManager.onExit(id, (code) => {
         if (window && !window.isDestroyed()) {
@@ -156,8 +154,8 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         }
         // The process that owned this surface is gone, so any state it declared
         // is now a lie. Drop it rather than leave a `working`/`blocked` pane
-        // pointing at a dead PID (issue #128); the observer's scraped activity
-        // goes with it, since it describes the same dead process.
+        // pointing at a dead PID (issue #128); reported activity for the same
+        // dead process goes with it.
         clearAgentState(id);
         clearActivity(id);
         // Clean up listeners when PTY exits

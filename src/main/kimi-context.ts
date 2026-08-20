@@ -2,7 +2,7 @@
  * Kimi Code CLI lifecycle hooks → wmux declared agent state.
  *
  * Kimi stores hooks in `~/.kimi-code/config.toml` as `[[hooks]]` array tables
- * (event / matcher / command / timeout). Payloads are Claude-compatible JSON
+ * (event / matcher / command / timeout). Payloads use the shared lifecycle JSON
  * on stdin, so we reuse `wmux-hook.js --event <Name>` and the shared
  * agent-hook-bridge mapping (UserPromptSubmit → working, Stop → idle, …).
  *
@@ -72,6 +72,32 @@ export function buildWmuxKimiHooksBlock(hookScript: string): string {
 }
 
 /**
+ * Remove wmux hook tables written by older installers before managed markers
+ * existed. User-owned Kimi hooks, including other Stop hooks, are preserved.
+ */
+export function stripLegacyWmuxKimiHookTables(existing: string): string {
+  const lines = existing.replace(/\r\n/gu, '\n').split('\n');
+  const output: string[] = [];
+  const tableHeader = /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/u;
+  for (let index = 0; index < lines.length;) {
+    if (!/^\s*\[\[hooks\]\]\s*$/u.test(lines[index])) {
+      output.push(lines[index]);
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < lines.length && !tableHeader.test(lines[end])) end += 1;
+    const table = lines.slice(index, end);
+    const wmuxOwned = table.some((line) => (
+      /^\s*command\s*=/u.test(line) && /wmux-hook[^"\r\n]*\.js/iu.test(line)
+    ));
+    if (!wmuxOwned) output.push(...table);
+    index = end;
+  }
+  return output.join('\n').replace(/\n{3,}/gu, '\n\n');
+}
+
+/**
  * Insert or replace the wmux-managed hooks block in an existing config.toml
  * body. Preserves all user content outside the markers.
  */
@@ -79,18 +105,11 @@ export function applyWmuxKimiHooksToml(existing: string, hookScript: string): st
   const block = buildWmuxKimiHooksBlock(hookScript);
   const start = existing.indexOf(WMUX_KIMI_START);
   const end = existing.indexOf(WMUX_KIMI_END);
-
+  let unmanaged = existing;
   if (start !== -1 && end !== -1 && end >= start) {
-    let after = existing.slice(end + WMUX_KIMI_END.length);
-    if (after.startsWith('\r\n')) after = after.slice(2);
-    else if (after.startsWith('\n')) after = after.slice(1);
-    const before = existing.slice(0, start).replace(/[ \t\r\n]+$/u, '');
-    const head = before ? `${before}\n\n` : '';
-    const tail = after.replace(/^\s*/u, '');
-    return `${head}${block}${tail ? `\n${tail}` : '\n'}`;
+    unmanaged = `${existing.slice(0, start)}${existing.slice(end + WMUX_KIMI_END.length)}`;
   }
-
-  const base = existing.replace(/\s*$/u, '');
+  const base = stripLegacyWmuxKimiHookTables(unmanaged).replace(/\s*$/u, '');
   if (!base) return `${block}\n`;
   return `${base}\n\n${block}\n`;
 }

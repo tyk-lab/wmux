@@ -1,19 +1,17 @@
 /**
- * Claude Code hooks → declared agent state (issue #128).
+ * Agent lifecycle hooks → declared agent state (issue #128).
  *
  * The protocol in agent-state.ts is agent-agnostic: anything that can write a
- * line of JSON to the wmux pipe can drive it. But Claude Code is what most wmux
- * panes actually run, and wmux ALREADY configures four of its hooks in
- * ~/.claude/settings.json (see ensureClaudeHooks in claude-context.ts):
+ * line of JSON to the wmux pipe can drive it. Supported agents expose the
+ * transitions through their native hook or extension systems:
  *
  *   PostToolUse   — a tool just finished running
- *   Notification  — Claude Code wants the user's attention
+ *   Notification  — the agent wants the user's attention
  *   Stop          — the turn is over
  *   SubagentStop  — one parallel subagent finished
  *
- * Translating those into report_agent calls means the "which pane needs me?"
- * signal works for Claude Code with zero install: no plugin, no wrapper, no
- * opt-in. Other agents (OpenCode, custom harnesses) call the pipe directly.
+ * Translating those into report_agent calls provides the "which pane needs me?"
+ * signal without output scraping or polling.
  *
  * These hooks are lifecycle truth from the agent process itself, which is the
  * same reasoning that made hooks — not output parsing — authoritative for the
@@ -25,7 +23,7 @@ import { reportAgent, ReportAgentParams } from './agent-state';
 
 /**
  * Hook event names we translate into declared agent state.
- * Shared by Claude Code, Kimi Code, and any harness that emits the same names
+ * Shared by Kimi, Codex, Grok and any harness that emits the same names
  * via `wmux-hook.js --event <Name>` / `wmux hook --event <Name>`.
  */
 export type AgentHookEvent =
@@ -40,9 +38,6 @@ export type AgentHookEvent =
   | 'Interrupt'
   | 'SubagentStop';
 
-/** @deprecated Use AgentHookEvent — kept for existing imports/tests. */
-export type ClaudeHookEvent = AgentHookEvent;
-
 const KNOWN_EVENTS: readonly AgentHookEvent[] = [
   'UserPromptSubmit',
   'PreToolUse',
@@ -56,6 +51,21 @@ const KNOWN_EVENTS: readonly AgentHookEvent[] = [
   'SubagentStop',
 ];
 
+const handledHookEventIds = new Set<string>();
+const MAX_HANDLED_HOOK_EVENT_IDS = 1024;
+
+/** Accept one hook helper process once even when an ACK loss causes a retry. */
+export function acceptHookEventId(value: unknown): boolean {
+  const hookId = typeof value === 'string' ? value.trim() : '';
+  if (!hookId) return true;
+  if (handledHookEventIds.has(hookId)) return false;
+  handledHookEventIds.add(hookId);
+  if (handledHookEventIds.size > MAX_HANDLED_HOOK_EVENT_IDS) {
+    handledHookEventIds.delete(handledHookEventIds.values().next().value as string);
+  }
+  return true;
+}
+
 export function isAgentHookTerminalEvent(event: unknown): boolean {
   return event === 'Stop' || event === 'StopFailure' || event === 'Interrupt';
 }
@@ -68,7 +78,7 @@ export function hookToAgentReport(
   message: string | null,
 ): ReportAgentParams | null {
   switch (event) {
-    // Turn start (Claude / Kimi / Codex-style). Marks working even when the
+    // Turn start. Marks working even when the
     // turn never touches a tool (pure text replies).
     case 'UserPromptSubmit':
       return { awaitingHuman: false, runDepth: 1 };
@@ -76,7 +86,7 @@ export function hookToAgentReport(
     case 'PreToolUse':
       return { awaitingHuman: false, runDepth: 1 };
 
-    // Claude Code / Kimi wants the user. This fires both for permission/question
+    // The agent wants the user. This fires both for permission/question
     // prompts and for idle nudges; we park the pane for both — sniffing message
     // text to tell them apart fails the dangerous direction when copy changes.
     case 'Notification':

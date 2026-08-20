@@ -18,12 +18,35 @@ const pipeBridgeSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/pipe-bridge.ts'),
   'utf8',
 );
+const workspaceSettingsSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/components/Settings/WorkspaceSettings.tsx'),
+  'utf8',
+);
 const supervisorCssSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/styles/supervisor.css'),
   'utf8',
 );
+const sidebarSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/components/Sidebar/Sidebar.tsx'),
+  'utf8',
+);
+const paneWrapperSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/components/SplitPane/PaneWrapper.tsx'),
+  'utf8',
+);
+const consoleSurfaceSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/project-manager/console-surface.ts'),
+  'utf8',
+);
 
 describe('supervisor setup dialog feedback', () => {
+  it('does not offer Claude Code as a supervisor launcher', () => {
+    expect(dialogSource).not.toContain("value: 'claude'");
+    expect(dialogSource).not.toContain('Claude Code');
+    expect(workspaceSettingsSource).not.toContain('value="claude"');
+    expect(workspaceSettingsSource).not.toContain('Claude Code');
+  });
+
   it('offers project management as a separate visible mode', () => {
     expect(dialogSource).toContain('AI 工作模式');
     expect(dialogSource).toContain('AI 监督');
@@ -272,7 +295,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('当前项目状态');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__portfolio-actions');
     expect(supervisorCssSource).toMatch(/\.project-manager-dialog\s*\{[\s\S]*?width:\s*min\(1280px,/);
-    expect(supervisorCssSource).toContain("grid-template-areas: 'projects main inspector'");
+    expect(supervisorCssSource).toContain("grid-template-areas: 'main inspector'");
+    expect(supervisorCssSource).toContain("grid-template-areas: 'projects'");
     expect(supervisorCssSource).toContain('@media (max-width: 1100px)');
     expect(supervisorCssSource).toContain('@media (max-width: 820px)');
   });
@@ -285,6 +309,32 @@ describe('supervisor setup dialog feedback', () => {
     expect(composerStyle).not.toContain('position: sticky');
     expect(composerStyle).not.toContain('bottom: 0');
     expect(composerStyle).toContain('margin-top: 8px');
+    expect(projectManagerDialogSource).toMatch(
+      /project-manager-dialog__chat[\s\S]*project-manager-dialog__conversation[\s\S]*project-manager-dialog__composer[\s\S]*<\/section>/,
+    );
+    expect(supervisorCssSource).toContain('grid-template-rows: auto minmax(0, 1fr) auto');
+    expect(supervisorCssSource).toContain('overscroll-behavior: auto');
+  });
+
+  it('separates the project center from an embedded project management surface', () => {
+    expect(projectManagerDialogSource).toContain('embeddedProjectId?: string');
+    expect(projectManagerDialogSource).toContain("embedded ? '项目管理' : '项目 AI 中心'");
+    expect(projectManagerDialogSource).toContain("openProjectManagerConsole(candidate.id)");
+    expect(projectManagerDialogSource).toContain("data-console={embedded && session");
+    expect(paneWrapperSource).toContain("surface.type === 'project-manager'");
+    expect(paneWrapperSource).toContain('<ProjectManagerSessionPane projectId={surface.projectManagerProjectId} />');
+    expect(consoleSurfaceSource).toContain("surface.type === 'project-manager'");
+    expect(consoleSurfaceSource).toContain("store.addSurface(projectWorkspace.id, paneId, 'project-manager'");
+    expect(pipeBridgeSource).toContain("createLeaf(undefined, projectManagedStart ? 'project-manager' : 'supervisor')");
+  });
+
+  it('uses the sidebar AI button as the unified creation entry', () => {
+    expect(sidebarSource).toContain('新建 AI 工作模式');
+    expect(sidebarSource).toContain('添加项目');
+    expect(sidebarSource).toContain('普通 AI 监督');
+    expect(sidebarSource).toContain('openProjectManagerCreationDialog()');
+    expect(sidebarSource).toContain('openSupervisorSetup()');
+    expect(panelSource).not.toContain('>配置普通监督</button>');
   });
 
   it('configures task-terminal work mode with one to three child threads', () => {

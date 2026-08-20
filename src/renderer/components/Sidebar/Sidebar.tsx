@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { WorkspaceInfo, WorkspaceId, PaneId } from '../../../shared/types';
 import WorkspaceRow from './WorkspaceRow';
 import SidebarResizeHandle from './SidebarResizeHandle';
@@ -32,7 +32,7 @@ interface SidebarProps {
   onReorder: (ids: WorkspaceId[]) => void;
   onUpdateMetadata: (id: WorkspaceId, partial: Partial<WorkspaceInfo>) => void;
   hookActivity?: Record<string, { lastTool: string; toolCount: number; lastSeen: number }>;
-  claudeActivity?: Record<string, any>;
+  agentActivity?: Record<string, any>;
   /** surfaceId → declared agent state (issue #128). */
   agentStates?: Record<string, any>;
   onSaveSession?: (name: string) => void;
@@ -54,7 +54,7 @@ export default function Sidebar({
   onReorder,
   onUpdateMetadata,
   hookActivity,
-  claudeActivity,
+  agentActivity,
   agentStates,
   onSaveSession,
   onLoadSession,
@@ -65,7 +65,26 @@ export default function Sidebar({
   const [dropTarget, setDropTarget] = useState<{ id: WorkspaceId; edge: DropEdge } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [sessionMenuMode, setSessionMenuMode] = useState<'load' | 'save' | null>(null);
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
+  const aiMenuRef = useRef<HTMLDivElement | null>(null);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
+  const openProjectManagerCreationDialog = useStore((s) => s.openProjectManagerCreationDialog);
+
+  useEffect(() => {
+    if (!aiMenuOpen) return undefined;
+    const dismiss = (event: MouseEvent) => {
+      if (!aiMenuRef.current?.contains(event.target as Node)) setAiMenuOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAiMenuOpen(false);
+    };
+    document.addEventListener('mousedown', dismiss);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', dismiss);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }, [aiMenuOpen]);
 
   // ── Orchestration IPC subscription ──────────────────────────────────────
   // Main process pushes wmux-orchestrator state.json updates; we mirror them
@@ -296,18 +315,38 @@ export default function Sidebar({
             onDragEnd={handleDragEnd}
             dropEdge={dropTarget?.id === ws.id ? dropTarget.edge : null}
             hookActivity={hookActivity}
-            claudeActivity={claudeActivity}
+            agentActivity={agentActivity}
             agentStates={agentStates}
             onFocusAgentPane={(paneId) => onFocusAgentPane?.(ws.id, paneId)}
           />
         ))}
       </div>
 
-      <div className="sidebar__footer">
+      <div ref={aiMenuRef} className="sidebar__footer">
+        {aiMenuOpen && (
+          <div className="sidebar__ai-menu" role="menu" aria-label="新建 AI 工作模式">
+            <button type="button" role="menuitem" onClick={() => {
+              setAiMenuOpen(false);
+              openProjectManagerCreationDialog();
+            }}>
+              <strong>添加项目</strong>
+              <span>创建独立项目 AI 与执行链</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => {
+              setAiMenuOpen(false);
+              openSupervisorSetup();
+            }}>
+              <strong>普通 AI 监督</strong>
+              <span>监督当前已打开的任务终端</span>
+            </button>
+          </div>
+        )}
         <button
           className="sidebar__footer-btn"
-          onClick={() => openSupervisorSetup()}
-          title="AI 监督 — 监控 agent 终端"
+          onClick={() => setAiMenuOpen((current) => !current)}
+          title="添加项目或普通 AI 监督"
+          aria-haspopup="menu"
+          aria-expanded={aiMenuOpen}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <path d="M8 1a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V4a3 3 0 0 0-3-3zm2 4V4a2 2 0 1 0-4 0v1h4zM5.5 9a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5zm5 0a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5z"/>

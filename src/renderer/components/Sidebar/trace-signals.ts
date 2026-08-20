@@ -9,7 +9,7 @@
 // is happening is a lie, and this sidebar exists to be believed.
 
 /**
- * Tool channels. Bound to `lastTool`, which the Claude Code hook writes as a
+ * Tool channels. Bound to `lastTool`, which agent hooks write as a
  * closed vocabulary, so the mapping is exhaustive rather than heuristic.
  *
  * This is the payload of the mode: at a glance you can tell an agent that is
@@ -116,7 +116,7 @@ export interface TraceState {
 export interface TraceInput {
   working: boolean;
   tool: string | null;
-  /** Monotonic per-session tool counter from the Claude Code hook. */
+  /** Monotonic per-session tool counter from agent hooks. */
   toolCount: number;
   lastSeen: number;
   /** Previous sample, for rate derivation. */

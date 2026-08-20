@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { buildWmuxHooksJsonFile } from './claude-style-hooks';
+import { buildWmuxHooksJsonFile } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
 export function resolveGrokHome(homeDir = os.homedir()): string {

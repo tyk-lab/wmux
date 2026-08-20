@@ -19,16 +19,34 @@ afterEach(() => {
 describe('formatInstallAgentHooksReport', () => {
   it('prints ok/fail rows and notes', () => {
     const results: AgentHookInstallResult[] = [
-      { id: 'claude', label: 'Claude Code', ok: true, path: '/x/settings.json', detail: 'updated' },
+      { id: 'kimi', label: 'Kimi Code', ok: true, path: '/x/settings.json', detail: 'updated' },
       { id: 'pi', label: 'Pi Agent', ok: true, path: '/x/wmux-agent-hooks.ts', detail: 'updated' },
       { id: 'codex', label: 'Codex CLI', ok: false, path: '/x/hooks.json', detail: 'boom' },
     ];
     const text = formatInstallAgentHooksReport(results);
-    expect(text).toContain('[OK] Claude Code');
+    expect(text).toContain('[OK] Kimi Code');
     expect(text).toContain('[OK] Pi Agent');
     expect(text).toContain('[FAIL] Codex CLI');
     expect(text).toContain('/hooks');
     expect(text).toContain('Restart each agent');
+  });
+});
+
+describe('supported hook installers', () => {
+  it('does not configure Claude Code from either installer entry point', () => {
+    const implementation = fs.readFileSync(
+      path.resolve(__dirname, '../../src/main/install-agent-hooks.ts'),
+      'utf8',
+    );
+    const powershellInstaller = fs.readFileSync(
+      path.resolve(__dirname, '../../scripts/install-agent-hooks.ps1'),
+      'utf8',
+    );
+
+    expect(implementation).not.toContain('ensureClaudeHooks');
+    expect(implementation).not.toContain("safeRun('claude'");
+    expect(powershellInstaller).not.toContain('~/.claude');
+    expect(powershellInstaller).not.toContain('Claude Code');
   });
 });
 

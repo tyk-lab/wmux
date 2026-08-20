@@ -32,6 +32,8 @@ describe('supervisor generic input guard', () => {
       .toMatchObject({ surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a' });
     expect(withSurfaceCaller('surface.send_key', { key: 'enter' }, 'supervisor-a'))
       .toMatchObject({ key: 'enter', callerSurfaceId: 'supervisor-a' });
+    expect(withSurfaceCaller('supervisor.evidence', { reviewId: 'review-1' }, 'supervisor-a'))
+      .toMatchObject({ reviewId: 'review-1', callerSurfaceId: 'supervisor-a' });
     expect(withSurfaceCaller('surface.read_text', { surfaceId: 'worker-a' }, 'supervisor-a'))
       .toEqual({ surfaceId: 'worker-a' });
     expect(withSurfaceCaller(

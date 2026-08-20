@@ -5,6 +5,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  acceptHookEventId,
   hookToAgentReport,
   applyHookToAgentState,
   isAgentHookTerminalEvent,
@@ -16,17 +17,26 @@ const surf = 'surf-hook-1' as SurfaceId;
 
 beforeEach(() => resetAgentState());
 
+describe('acceptHookEventId', () => {
+  it('deduplicates retries from one hook helper while accepting legacy events', () => {
+    const hookId = `hook-${Date.now()}-${Math.random()}`;
+    expect(acceptHookEventId(hookId)).toBe(true);
+    expect(acceptHookEventId(hookId)).toBe(false);
+    expect(acceptHookEventId(undefined)).toBe(true);
+  });
+});
+
 describe('hookToAgentReport', () => {
   it('Notification parks the pane on the user and keeps the message as the reason', () => {
-    expect(hookToAgentReport('Notification', 'Claude needs your permission to use Bash'))
-      .toEqual({ awaitingHuman: true, reason: 'Claude needs your permission to use Bash' });
+    expect(hookToAgentReport('Notification', 'Agent needs your permission to use Bash'))
+      .toEqual({ awaitingHuman: true, reason: 'Agent needs your permission to use Bash' });
   });
 
   it('the 60s idle nudge also counts as blocked', () => {
     // Deliberate: the agent genuinely is waiting on the user. Text-sniffing to
     // tell a nudge from a permission prompt would break on any rewording, and
     // would fail in the dangerous direction.
-    expect(hookToAgentReport('Notification', 'Claude is waiting for your input')?.awaitingHuman).toBe(true);
+    expect(hookToAgentReport('Notification', 'Agent is waiting for your input')?.awaitingHuman).toBe(true);
   });
 
   it('PostToolUse asserts a run and clears any block, idempotently', () => {

@@ -138,6 +138,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorContext?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
+  'supervisor.evidence': {
+    js: (p) => `window.__wmux_supervisorEvidence?.(${S(p || {})})`,
+    requireResult: 'No evidence available for this supervisor review',
+  },
   'role.context': {
     js: (p) => `window.__wmux_roleContext?.(${S(p || {})})`,
     requireResult: 'No managed AI role for this terminal',

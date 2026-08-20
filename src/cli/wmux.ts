@@ -169,12 +169,22 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     printContextResult(await sendV2('supervisor.context', {}));
     return;
   }
+  if (args[1] === 'evidence') {
+    const reviewId = getFlag(args, '--review-id') || '';
+    if (!reviewId) throw new Error('--review-id is required');
+    print(await sendV2('supervisor.evidence', {
+      reviewId,
+      page: parseInt(getFlag(args, '--page') || '1', 10),
+      pageLines: parseInt(getFlag(args, '--page-lines') || '200', 10),
+    }));
+    return;
+  }
   if (isSupervisorDecideHelp(args)) {
     console.log(SUPERVISOR_DECIDE_USAGE);
     return;
   }
   if (args[1] !== 'decide') {
-    throw new Error(`Usage: wmux supervisor <context|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
+    throw new Error(`Usage: wmux supervisor <context|evidence|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -1051,7 +1061,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   'agent-activity': cmdAgentActivity,
   supervisor: cmdSupervisor,
   project: cmdProject,
-  // Install/refresh Claude · Kimi · Codex · Grok · Pi · OpenCode lifecycle hooks.
+  // Install/refresh Kimi · Codex · Grok · Pi · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
     // Most CLI commands run from resources/cli in packaged wmux. Keep the
@@ -1061,10 +1071,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
       formatInstallAgentHooksReport,
       installAllAgentHooks,
     } = require('../main/install-agent-hooks') as typeof import('../main/install-agent-hooks');
-    const results = installAllAgentHooks({
-      createClaudeSettings: true,
-      opencode: !noOpencode,
-    });
+    const results = installAllAgentHooks({ opencode: !noOpencode });
     console.log(formatInstallAgentHooksReport(results));
     if (results.some((r) => !r.ok)) process.exit(1);
   },
@@ -1135,8 +1142,9 @@ Notify:     notify <text>, list-notifications, clear-notifications
 Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
-            (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
+            (write Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor context
+             supervisor evidence --review-id <id> [--page N] [--page-lines N]
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--stage-plan-file <.wmux/tmp/file>]

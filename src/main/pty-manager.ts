@@ -149,7 +149,7 @@ function getCliPath(): string {
 
 // Dir holding the `wmux`/`wmux.cmd` shims (each runs `node $WMUX_CLI`). Prepended
 // to PATH in every spawned shell so bare `wmux` resolves in NON-interactive shells
-// too (Claude Code's Bash tool, orchestrator hook scripts) — the interactive
+// too (agent shell tools and orchestration hook scripts) — the interactive
 // `wmux` shell function only exists in the pane's own interactive shell. The dir
 // has no wmux.exe, so there is no PATHEXT collision with the GUI.
 function getCliBinPath(): string {
@@ -373,7 +373,7 @@ export class PtyManager {
     if (!env.TERM || env.TERM.toLowerCase() === 'dumb') env.TERM = 'xterm-256color';
 
     // Make bare `wmux` resolvable in every spawned shell AND all its children
-    // (Claude Code's Bash tool, hook scripts, the orchestrator coordinator) by
+    // (agent shell tools, hook scripts, and orchestration coordinators) by
     // prepending the cli-bin shim dir to PATH. PATH inherits down the process
     // tree regardless of shell/login/interactive state — which is exactly what
     // the interactive `wmux` shell function cannot reach. Prepend (not append)
@@ -656,8 +656,8 @@ export class PtyManager {
     // Tree-kill the shell's whole process subtree BEFORE closing the pseudoconsole
     // (issue #65). With `useConptyDll: true`, node-pty's DLL kill path only calls
     // ClosePseudoConsole — it terminates the directly-attached wrapper shell but
-    // NOT grandchildren that don't share the console lifetime, notably Claude
-    // Code's persistent `-s` backend (`powershell … -s …`), which then orphans.
+    // NOT grandchildren that don't share the console lifetime, notably
+    // persistent `-s` backends (`powershell … -s …`), which then orphan.
     // `taskkill /T /F` walks the parent→child snapshot and force-kills the entire
     // tree while it's still intact. Spawned detached + unref'd so it's non-blocking
     // and survives even when this runs from killAll() on app quit.

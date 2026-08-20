@@ -86,7 +86,7 @@ export default function SidebarSettings() {
 
       <div className="settings-row settings-row--column">
         <p className="settings-hint">
-          TRACE renders each Claude session as a tap on a copper bus. Current
+          TRACE renders each agent session as a tap on a copper bus. Current
           flows only where work is actually happening, tool calls fire rings,
           and the colour tells you whether an agent is reading, writing,
           running commands or delegating. Composes with both light and dark.

@@ -1,5 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import {
+  SUPERVISOR_EVIDENCE_MAX_CHARS,
+  supervisorEvidencePage,
+  type SupervisorEvidencePage,
+  type SupervisorEvidenceSnapshot,
+} from '../shared/supervisor-evidence';
+import { isTerminalInputIsolationScope, type TerminalInputIsolationScope } from '../shared/types';
 
 export interface SupervisorRecord {
   sessionId: string;
@@ -49,11 +56,137 @@ export interface SupervisorRestoreCandidate {
 }
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
+const REVIEW_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const IGNORE_ENTRIES = ['.wmux/supervisor/', '.wmux/tmp/'] as const;
 const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY_EVENTS = 200;
 const MAX_HISTORY_SESSIONS = 50;
+const MAX_EVIDENCE_FILES_PER_SCOPE = 50;
 const RESTORABLE_EVENT_TYPES = new Set(['worker.task', 'worker.lifecycle', 'supervisor.decision']);
+
+function supervisorSessionDirectory(projectDir: string, sessionId: string, create = false): string {
+  if (!path.isAbsolute(projectDir)) throw new Error('projectDir must be absolute');
+  if (!SESSION_ID.test(sessionId)) throw new Error('invalid supervisor session id');
+  const realProjectDir = fs.realpathSync(projectDir);
+  const directory = path.join(realProjectDir, '.wmux', 'supervisor', sessionId);
+  if (create) fs.mkdirSync(directory, { recursive: true });
+  const realDirectory = fs.realpathSync(directory);
+  const relative = path.relative(realProjectDir, realDirectory);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('supervisor directory must stay inside the project');
+  }
+  return realDirectory;
+}
+
+function supervisorEvidenceDirectory(
+  projectDir: string,
+  sessionId: string,
+  isolationScope: TerminalInputIsolationScope,
+  create = false,
+): string {
+  if (!isTerminalInputIsolationScope(isolationScope)) {
+    throw new Error('invalid supervisor evidence isolation scope');
+  }
+  const sessionDirectory = supervisorSessionDirectory(projectDir, sessionId, create);
+  const evidenceDirectory = path.join(sessionDirectory, 'evidence', isolationScope);
+  if (create) fs.mkdirSync(evidenceDirectory, { recursive: true });
+  const realEvidenceDirectory = fs.realpathSync(evidenceDirectory);
+  const relative = path.relative(sessionDirectory, realEvidenceDirectory);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('supervisor evidence directory must stay inside its session');
+  }
+  return realEvidenceDirectory;
+}
+
+function pruneSupervisorEvidence(evidenceDirectory: string): void {
+  try {
+    const files = fs.readdirSync(evidenceDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && REVIEW_ID.test(entry.name.replace(/\.json$/u, '')))
+      .map((entry) => {
+        const filePath = path.join(evidenceDirectory, entry.name);
+        return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const stale of files.slice(MAX_EVIDENCE_FILES_PER_SCOPE)) {
+      try { fs.unlinkSync(stale.filePath); } catch { /* Best-effort retention cleanup. */ }
+    }
+  } catch {
+    // Evidence persistence already succeeded; retention failure must not drop the review event.
+  }
+}
+
+export function saveSupervisorEvidence(options: {
+  projectDir: string;
+  snapshot: SupervisorEvidenceSnapshot;
+}): { path: string } {
+  const { projectDir, snapshot } = options;
+  if (!REVIEW_ID.test(snapshot.reviewId)) throw new Error('invalid supervisor review id');
+  if (!isTerminalInputIsolationScope(snapshot.isolationScope)) {
+    throw new Error('invalid supervisor evidence isolation scope');
+  }
+  if (!snapshot.surfaceId || !snapshot.laneId) throw new Error('evidence terminal binding is required');
+  if (snapshot.version !== 1) throw new Error('unsupported supervisor evidence version');
+  if (snapshot.text.length > SUPERVISOR_EVIDENCE_MAX_CHARS + 100) {
+    throw new Error('supervisor evidence is too large');
+  }
+  const evidenceDirectory = supervisorEvidenceDirectory(
+    projectDir,
+    snapshot.sessionId,
+    snapshot.isolationScope,
+    true,
+  );
+  const evidencePath = path.join(evidenceDirectory, `${snapshot.reviewId}.json`);
+  const serialized = `${JSON.stringify(snapshot)}\n`;
+  try {
+    fs.writeFileSync(evidencePath, serialized, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  pruneSupervisorEvidence(evidenceDirectory);
+  return { path: evidencePath };
+}
+
+export function readSupervisorEvidence(options: {
+  projectDir: string;
+  sessionId: string;
+  reviewId: string;
+  surfaceId: string;
+  isolationScope: TerminalInputIsolationScope;
+  page?: number;
+  pageLines?: number;
+}): SupervisorEvidencePage | { ok: false; error: string } {
+  if (!REVIEW_ID.test(options.reviewId)) return { ok: false, error: 'invalid supervisor review id' };
+  if (!options.surfaceId) return { ok: false, error: 'surfaceId is required' };
+  let evidencePath: string;
+  try {
+    const evidenceDirectory = supervisorEvidenceDirectory(
+      options.projectDir,
+      options.sessionId,
+      options.isolationScope,
+    );
+    evidencePath = path.join(evidenceDirectory, `${options.reviewId}.json`);
+    if (fs.statSync(evidencePath).size > SUPERVISOR_EVIDENCE_MAX_CHARS + 64_000) {
+      return { ok: false, error: 'supervisor evidence file is too large' };
+    }
+  } catch {
+    return { ok: false, error: 'supervisor evidence not found' };
+  }
+  try {
+    const snapshot = JSON.parse(fs.readFileSync(evidencePath, 'utf8')) as SupervisorEvidenceSnapshot;
+    if (
+      snapshot.version !== 1
+      || snapshot.sessionId !== options.sessionId
+      || snapshot.reviewId !== options.reviewId
+      || snapshot.surfaceId !== options.surfaceId
+      || snapshot.isolationScope !== options.isolationScope
+    ) {
+      return { ok: false, error: 'supervisor evidence binding mismatch' };
+    }
+    return supervisorEvidencePage(snapshot, options.page, options.pageLines);
+  } catch {
+    return { ok: false, error: 'supervisor evidence is unreadable' };
+  }
+}
 
 function ensureGitIgnore(projectDir: string): void {
   const gitIgnorePath = path.join(projectDir, '.gitignore');

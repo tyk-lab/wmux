@@ -12,7 +12,6 @@ import {
 describe('inferAgentName', () => {
   it('detects common harness names from free text', () => {
     expect(inferAgentName('tyk-kimi')).toBe('Kimi');
-    expect(inferAgentName('run with claude code')).toBe('Claude');
     expect(inferAgentName('codex')).toBe('Codex');
     expect(inferAgentName('Grok Build')).toBe('Grok');
     expect(inferAgentName('Pi Agent')).toBe('Pi');
@@ -41,13 +40,12 @@ describe('formatAgentLifecycleText', () => {
     })).toBe('Turn complete · Kimi · tyk-kimi');
   });
 
-  it('does not say Claude Code or include the workspace title', () => {
+  it('does not include the workspace title', () => {
     const text = formatAgentLifecycleText({
       kind: 'turn_finished',
       agent: 'Kimi',
       where: 'tyk-kimi',
     });
-    expect(text.toLowerCase()).not.toContain('claude code');
     expect(text).not.toContain('Workspace');
   });
 

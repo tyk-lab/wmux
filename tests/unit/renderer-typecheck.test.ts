@@ -7,7 +7,7 @@ import * as path from 'path';
 // Vite transpiles TSX with esbuild, which strips types without checking them.
 //
 // That gap shipped 0.35.0 broken. WorkspaceRow's TRACE memo listed
-// `isClaudeActive` in its dependency array 17 lines before the `const` that
+// `isAgentActive` in its dependency array before the `const` that
 // declares it. A useMemo deps array is a plain array literal evaluated at the
 // call site — only the callback is deferred — so the read happened on every
 // render, in classic mode too, and every row threw

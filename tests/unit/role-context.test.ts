@@ -360,7 +360,10 @@ describe('unified managed AI role context', () => {
     expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('wmux context');
     expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('wmux context');
+    expect(PROJECT_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
+    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain(PROJECT_TASK_ROLE_ANCHOR);
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('长命令输出');
     const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false, {
       projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
       requirementsVersion: 2, authorizationVersion: 1,

@@ -5,6 +5,7 @@ import {
   projectDisplayName,
 } from '../../../shared/project-manager';
 import { useStore } from '../../store';
+import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import { findLeaf, getAllPaneIds } from '../../store/split-utils';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
 import '../../styles/supervisor.css';
@@ -73,13 +74,13 @@ export default function ProjectManagerPanel() {
         当前目标任务 {completed}/{currentWorkItems.length} · 专属监督 {projectLanes.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
       </div>
       {activeAlert && (
-        <button type="button" className="project-manager-panel__alert" onClick={openProjectManagerDialog}>
+        <button type="button" className="project-manager-panel__alert" onClick={() => openProjectManagerConsole(session.id)}>
           <span>项目告警</span>
           <strong>{activeAlert.summary}</strong>
         </button>
       )}
       <div className="sup-panel__compact-actions">
-        <button type="button" onClick={openProjectManagerDialog}>打开控制台</button>
+        <button type="button" onClick={() => openProjectManagerConsole(session.id)}>打开控制台</button>
         {projectSupervisorView && (
           <button type="button" onClick={openProjectSupervisor}>打开项目监督</button>
         )}

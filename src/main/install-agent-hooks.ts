@@ -10,7 +10,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { ensureClaudeHooks } from './claude-context';
 import { ensureKimiHooks, resolveKimiConfigPath } from './kimi-context';
 import { ensureCodexHooks, resolveCodexHooksPath } from './codex-context';
 import { ensureGrokHooks, resolveGrokWmuxHooksPath } from './grok-context';
@@ -27,23 +26,8 @@ export interface AgentHookInstallResult {
 }
 
 export interface InstallAgentHooksOptions {
-  /** When true (default for the install script), create empty Claude settings if missing. */
-  createClaudeSettings?: boolean;
   /** Install OpenCode plugin as well (default true). */
   opencode?: boolean;
-}
-
-function claudeSettingsPath(): string {
-  return path.join(os.homedir(), '.claude', 'settings.json');
-}
-
-function ensureClaudeSettingsFile(): void {
-  const settingsPath = claudeSettingsPath();
-  const dir = path.dirname(settingsPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(settingsPath)) {
-    fs.writeFileSync(settingsPath, '{}\n', 'utf-8');
-  }
 }
 
 function isLegacyWslBashPath(shellPath: string): boolean {
@@ -127,7 +111,6 @@ function safeRun(id: string, label: string, targetPath: string, fn: () => void |
  * Returns one result row per harness for CLI printing.
  */
 export function installAllAgentHooks(opts: InstallAgentHooksOptions = {}): AgentHookInstallResult[] {
-  const createClaude = opts.createClaudeSettings !== false;
   const withOpencode = opts.opencode !== false;
   const results: AgentHookInstallResult[] = [];
 
@@ -152,10 +135,6 @@ export function installAllAgentHooks(opts: InstallAgentHooksOptions = {}): Agent
     detail: 'ok',
   });
 
-  if (createClaude) {
-    try { ensureClaudeSettingsFile(); } catch { /* ensureClaudeHooks will report */ }
-  }
-  results.push(safeRun('claude', 'Claude Code', claudeSettingsPath(), () => ensureClaudeHooks()));
   results.push(safeRun('kimi', 'Kimi Code', resolveKimiConfigPath(), () => ensureKimiHooks()));
   results.push(safeRun('codex', 'Codex CLI', resolveCodexHooksPath(), () => ensureCodexHooks()));
   results.push(safeRun('grok', 'Grok Build', resolveGrokWmuxHooksPath(), () => ensureGrokHooks()));

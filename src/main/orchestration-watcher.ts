@@ -2,10 +2,9 @@
  * orchestration-watcher.ts — polls the OS temp directory for active
  * wmux-orchestrator runs and broadcasts their state.json to all windows.
  *
- * The wmux-orchestrator Claude Code plugin writes its run state to
- * `{os.tmpdir()}/wmux-orch-*\/state.json` (see skills/orchestrate/SKILL.md
- * Phase 6). This watcher is fully decoupled from the plugin — it only
- * reads files, never writes. It runs as long as wmux is running; when a
+ * External orchestration producers may write their run state to
+ * `{os.tmpdir()}/wmux-orch-*\/state.json`. This watcher only reads files,
+ * never writes. It runs as long as wmux is running; when a
  * run completes, it sends one final "complete" update then stops tracking it.
  */
 
@@ -46,8 +45,7 @@ function listOrchDirs(): string[] {
 
 /**
  * Shape-check a parsed state.json before it is allowed near the renderer.
- * state.json is written by a separate process (the Claude Code plugin, or an
- * agent hand-rolling the file), so it is untrusted input. A run missing `id`
+ * state.json is written by a separate process, so it is untrusted input. A run missing `id`
  * or `waves` used to be broadcast anyway and then throw inside the sidebar's
  * render — and an uncaught throw in render unmounts the entire React tree,
  * leaving a black window that only a restart clears. Anything that does not

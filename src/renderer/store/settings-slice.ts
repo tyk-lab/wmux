@@ -362,9 +362,9 @@ export interface NotificationPrefs {
   paneRing: boolean;
   paneFlashAnimation: boolean;
   sound: 'default' | 'chime' | 'ping' | 'marimba' | 'pop' | 'none';
-  /** Notify when an in-pane agent (Claude Code) needs input/permission (issue #53). */
+  /** Notify when an in-pane agent needs input/permission (issue #53). */
   agentInputNotify: boolean;
-  /** Notify when an in-pane agent (Claude Code) finishes its turn / Stop hook (issue #53). */
+  /** Notify when an in-pane agent finishes its turn / Stop hook (issue #53). */
   agentStopNotify: boolean;
 }
 
@@ -414,7 +414,7 @@ export interface AppearancePrefs {
   terminalBgOpacity: number;
   /**
    * Sidebar presentation mode. 'classic' is the stock list; 'trace' is the
-   * opt-in live view that renders each Claude session as a tap on a copper bus,
+   * opt-in live view that renders each agent session as a tap on a copper bus,
    * with motion driven by real hook traffic.
    *
    * A separate axis from `uiTheme` on purpose — TRACE composes with both dark
@@ -482,9 +482,20 @@ export interface SettingsSlice {
 
 function loadWorkspacePrefs(): WorkspacePrefs {
   const persisted = loadPersisted<WorkspacePrefs>(STORAGE_KEYS.workspacePrefs);
+  const defaultSupervisorModels = { ...(persisted?.defaultSupervisorModels || {}) } as Record<string, string>;
+  const defaultSupervisorReasoningEfforts = {
+    ...(persisted?.defaultSupervisorReasoningEfforts || {}),
+  } as Record<string, string>;
+  delete defaultSupervisorModels.claude;
+  delete defaultSupervisorReasoningEfforts.claude;
   return {
     ...DEFAULT_WORKSPACE_PREFS,
     ...persisted,
+    defaultSupervisorAgent: String(persisted?.defaultSupervisorAgent || '') === 'claude'
+      ? DEFAULT_WORKSPACE_PREFS.defaultSupervisorAgent
+      : persisted?.defaultSupervisorAgent || DEFAULT_WORKSPACE_PREFS.defaultSupervisorAgent,
+    defaultSupervisorModels,
+    defaultSupervisorReasoningEfforts,
     projectManagementAgents: normalizeProjectManagementAgentConfig(persisted?.projectManagementAgents),
   };
 }

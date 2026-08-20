@@ -1,7 +1,7 @@
 /**
  * Codex CLI lifecycle hooks → wmux declared agent state.
  *
- * Codex discovers `~/.codex/hooks.json` (same nested shape as Claude settings).
+ * Codex discovers `~/.codex/hooks.json` using the nested lifecycle-hooks shape.
  * We merge wmux handlers without removing the user's other hooks. First launch
  * may require `/hooks` trust for non-managed commands — documented in README.
  *
@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { applyWmuxLifecycleHooks } from './claude-style-hooks';
+import { applyWmuxLifecycleHooks } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
 export function resolveCodexHome(homeDir = os.homedir()): string {

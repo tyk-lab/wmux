@@ -24,7 +24,12 @@ import ProjectManagerDialog from './components/ProjectManager/ProjectManagerDial
 import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
-import { initPipeBridge, readTerminalScreen } from './pipe-bridge';
+import {
+  initPipeBridge,
+  readTerminalScreen,
+  terminalSupervisorCoreExcerpt,
+  type RemoteTerminalActivityState,
+} from './pipe-bridge';
 import { initSupervisorGenericInputGuard } from './supervisor/generic-input-guard';
 import { useUiTheme } from './hooks/useUiTheme';
 import { useUiMode } from './hooks/useUiMode';
@@ -62,6 +67,11 @@ import {
 } from './supervisor/protocol';
 import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './supervisor/launch-command';
 import { appendSupervisorRecord } from './supervisor/recording';
+import {
+  createSupervisorEvidenceSnapshot,
+  persistSupervisorEvidence,
+  registerSupervisorEvidence,
+} from './supervisor/evidence';
 import {
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
@@ -198,10 +208,10 @@ type HookActivityMap = Record<string, { lastTool: string; toolCount: number; las
  * Stop hook = the turn is over. Zero out lastSeen so the sidebar flips to
  * "Idle" immediately instead of waiting out the ACTIVITY_TTL window, and
  * upsert the entry so turns with zero tool uses (pure text generation) still
- * register as "Claude ran here and finished" — otherwise WorkspaceRow falls
+ * register as "an agent ran here and finished" — otherwise WorkspaceRow falls
  * back to the shell's perpetual "Running" while the TUI sits idle (issue #81).
  *
- * Keyed by SURFACE, not workspace: two Claude sessions split inside one
+ * Keyed by SURFACE, not workspace: two agent sessions split inside one
  * workspace must not zero each other's freshness. Only surfaceId-less legacy
  * events fall back to the active workspace's id as key.
  */
@@ -511,6 +521,61 @@ function queueSupervisorDelivery(
   signalSupervisorDeliveryReady();
 }
 
+function freezeSupervisorEvidence(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  reviewId: string,
+  fallbackSummary: string,
+) {
+  const sessionId = lane.managementSessionId || session.sessionId;
+  if (!sessionId || !lane.projectDir) return undefined;
+  const screen = readTerminalScreen(lane.surfaceId, 10_000);
+  const rawActivityState = String(
+    ((window as any).__wmux_getAgentStates?.() || {})[lane.surfaceId]?.state || 'unknown',
+  );
+  const activityState: RemoteTerminalActivityState = [
+    'idle',
+    'working',
+    'blocked',
+    'unknown',
+  ].includes(rawActivityState)
+    ? rawActivityState as RemoteTerminalActivityState
+    : 'unknown';
+  const conversation = terminalSupervisorCoreExcerpt(
+    screen.text || '',
+    lane.label,
+    activityState,
+  );
+  const summary = conversation.answer || conversation.text || fallbackSummary || '（未提取到任务 AI 最终回答）';
+  const snapshot = createSupervisorEvidenceSnapshot({
+    sessionId,
+    reviewId,
+    laneId: lane.id,
+    surfaceId: lane.surfaceId,
+    isolationScope: isProjectManagedSupervisorLane(lane) ? 'project' : 'ordinary',
+    task: lane.currentTask || '（任务未上报）',
+    bufferType: screen.bufferType,
+    bufferLines: screen.bufferLines,
+    capturedLines: screen.lines,
+    truncated: screen.truncated,
+    summary,
+    text: screen.text || fallbackSummary,
+  });
+  registerSupervisorEvidence(snapshot);
+  void persistSupervisorEvidence(lane.projectDir, snapshot).catch((error: unknown) => {
+    console.warn('[supervisor] evidence snapshot persistence failed', error);
+  });
+  appendSupervisorRecord(session, lane, 'worker.evidence.captured', {
+    reviewId,
+    bufferType: snapshot.bufferType,
+    bufferLines: snapshot.bufferLines,
+    capturedLines: snapshot.capturedLines,
+    truncated: snapshot.truncated,
+    summary: snapshot.summary,
+  });
+  return snapshot;
+}
+
 const ORDINARY_REVIEW_IDLE_GRACE_MS = 15_000;
 const supervisorReviewScreenActivity = new Map<string, { signature: string; stableAt: number }>();
 
@@ -734,7 +799,13 @@ function handleSupervisorHookEvent(event: any): void {
 
   const deliveryKind = supervisorWakeDeliveryKind(lifecycle);
   if (deliveryKind) {
-    const reviewId = ensureOrdinarySupervisorReview(lane);
+    const reviewId = ensureOrdinarySupervisorReview(lane) || `review-${uuid()}`;
+    const evidence = freezeSupervisorEvidence(
+      session,
+      auditLane,
+      reviewId,
+      String(event.message || ''),
+    );
     store.updateLane(lane.id, { awaitingReview: true });
     if (lane.autoDecisionLimitReached) return;
     queueSupervisorDelivery(
@@ -744,6 +815,15 @@ function handleSupervisorHookEvent(event: any): void {
       lane.currentTask || '（任务未上报）',
       [
         `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。`,
+        `[权威生命周期｜event=${lifecycle}｜workerTurn=${lane.workerTurnId || 0}] 控制层已经确认本任务回合结束；若实时状态短暂显示 working，这是状态传播延迟，不得据此否定本事件或等待第二次结束 hook。`,
+        evidence
+          ? [
+              `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
+              evidence.summary ? `任务 AI 最终回答摘要：\n${evidence.summary}` : '',
+              `完整证据：wmux supervisor evidence --review-id ${reviewId}`,
+              '若 hasMore=true，按 nextPage 继续读取；read-screen 仅用于核对当前实时状态，不再作为本轮完整历史。',
+            ].filter(Boolean).join('\n')
+          : `[冻结证据不可用｜review=${reviewId}] 只能使用 read-screen 核对当前状态，并结合项目文件、测试日志和差异证据谨慎裁决。`,
         buildSupervisorWakeEventEnvelope(surfaceId, reviewId, isProjectManagedSupervisorLane(lane)),
         '',
       ].join('\n'),
@@ -875,8 +955,8 @@ export default function App() {
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   // Per-workspace hook activity: workspaceId → { lastTool, toolCount, lastSeen }
   const [hookActivity, setHookActivity] = useState<Record<string, { lastTool: string; toolCount: number; lastSeen: number }>>({});
-  // Per-surface Claude activity (parsed from terminal output)
-  const [claudeActivity, setClaudeActivity] = useState<Record<string, any>>({});
+  // Per-surface activity explicitly reported by agents or integrations.
+  const [agentActivity, setAgentActivity] = useState<Record<string, any>>({});
   // surfaceId → declared agent state (blocked / working / idle), issue #128.
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   // Hook listener is mounted once; read latest agentStates via ref.
@@ -1129,7 +1209,7 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Listen for Claude Code hook events — tie to active workspace
+  // Listen for agent lifecycle hook events — tie to active workspace
   // Also auto-create diff surface when Edit/Write tools fire
   useEffect(() => {
     if (!window.wmux?.hook?.onEvent) return;
@@ -1152,7 +1232,7 @@ export default function App() {
       }
       if (!event?.tool) return;
       const state = useStore.getState();
-      // Key hook activity by SURFACE when the event carries one — each Claude
+      // Key hook activity by SURFACE when the event carries one — each agent
       // session (pane) tracks its own freshness, so two sessions in the same
       // workspace can't clobber each other into a stuck "Running"/false "Idle".
       // Legacy events without surfaceId fall back to the active workspace id.
@@ -1174,29 +1254,31 @@ export default function App() {
   }, []);
 
   // NOTE: hookActivity entries are intentionally kept forever (not cleaned up).
-  // Keys are surface ids (per Claude session) or workspace ids (legacy events).
+  // Keys are surface ids (per agent session) or workspace ids (legacy events).
   // WorkspaceRow uses the lastSeen timestamp + TTL to decide what to display.
-  // Keeping stale entries lets us distinguish "Claude was active but stopped"
+  // Keeping stale entries lets us distinguish "an agent was active but stopped"
   // (idle) from "a regular shell command is running" (no hookActivity at all).
 
-  // Listen for Claude Code activity parsed from terminal output
+  // Listen for explicit per-surface activity reports.
   useEffect(() => {
-    if (!window.wmux?.claudeActivity?.onUpdate) return;
-    const unsub = window.wmux.claudeActivity.onUpdate((data: any) => {
+    if (!window.wmux?.agentActivity?.onUpdate) return;
+    const unsub = window.wmux.agentActivity.onUpdate((data: any) => {
       if (!data?.surfaceId || !data?.activity) return;
-      setClaudeActivity(prev => ({ ...prev, [data.surfaceId]: data.activity }));
+      setAgentActivity(prev => ({ ...prev, [data.surfaceId]: data.activity }));
     });
     return unsub;
   }, []);
 
   // Declared agent state pushed by the agent itself (issue #128). Unlike the
   // scraped/heuristic signals above this is authoritative, so it is kept in its
-  // own map and given precedence in claude-session-view.
+  // own map and given precedence in agent-session-view.
   useEffect(() => {
     if (!window.wmux?.agentState?.onUpdate) return;
     const unsub = window.wmux.agentState.onUpdate((data: any) => {
       if (!data?.surfaceId) return;
-      setAgentStates(prev => ({ ...prev, [data.surfaceId]: data }));
+      const next = { ...agentStatesRef.current, [data.surfaceId]: data };
+      agentStatesRef.current = next;
+      setAgentStates(next);
       signalSupervisorDeliveryReady();
     });
     return unsub;
@@ -1469,7 +1551,9 @@ export default function App() {
             store.appendSupervisorLog(action.laneId, action.action, action.detail);
           } else if (action.type === 'notify_supervisor') {
             let lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
-            const reviewId = action.opensReview && lane ? ensureOrdinarySupervisorReview(lane) : undefined;
+            const reviewId = action.opensReview && lane
+              ? ensureOrdinarySupervisorReview(lane) || `review-${uuid()}`
+              : undefined;
             if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: true });
             lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
             if (lane && action.statusEvent === 'blocked') {
@@ -1479,13 +1563,29 @@ export default function App() {
             }
             const sid = lane ? dedicatedSupervisorSurfaceId(lane) : null;
             if (sid && lane) {
+              const evidence = reviewId
+                ? freezeSupervisorEvidence(
+                    useStore.getState().supervisor,
+                    lane,
+                    reviewId,
+                    action.statusDetail || action.text,
+                  )
+                : undefined;
+              const evidenceText = evidence
+                ? [
+                    `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
+                    evidence.summary ? `任务 AI 当前核心信息：\n${evidence.summary}` : '',
+                    `完整证据：wmux supervisor evidence --review-id ${reviewId}`,
+                    'read-screen 仅用于核对当前实时状态。',
+                  ].filter(Boolean).join('\n')
+                : '';
               queueSupervisorDelivery(
                 session,
                 lane,
                 'worker-status',
                 lane.currentTask || action.statusDetail || lane.label,
                 reviewId
-                  ? `${action.text}\n本轮 reviewId=${reviewId}；提交裁决时必须附 --review-id ${reviewId}。`
+                  ? `${action.text}\n${evidenceText}\n本轮 reviewId=${reviewId}；提交裁决时必须附 --review-id ${reviewId}。`
                   : action.text,
                 reviewId,
               );
@@ -2101,7 +2201,7 @@ export default function App() {
             onReorder={reorderWorkspaces}
             onUpdateMetadata={handleUpdateMetadata}
             hookActivity={hookActivity}
-            claudeActivity={claudeActivity}
+            agentActivity={agentActivity}
             agentStates={agentStates}
             onSaveSession={handleSaveSession}
             onLoadSession={handleLoadSession}
@@ -2142,7 +2242,7 @@ export default function App() {
         )}
 
         {/* Middle: terminals — ALL workspaces stay mounted, only active is visible */}
-        {/* This keeps PTYs alive when switching sessions (Claude Code etc. keep running) */}
+        {/* This keeps PTYs alive when switching sessions (agent processes keep running). */}
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0 }}>
           {customBgActive && (
             <div

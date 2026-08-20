@@ -10,6 +10,11 @@ import {
   terminalSupervisorCoreExcerpt,
 } from '../../src/renderer/pipe-bridge';
 import { surfaceTerminalRegistry } from '../../src/renderer/hooks/useTerminal';
+import {
+  clearSupervisorEvidenceCache,
+  createSupervisorEvidenceSnapshot,
+  registerSupervisorEvidence,
+} from '../../src/renderer/supervisor/evidence';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
 import {
@@ -409,7 +414,47 @@ describe('supervisor decision bridge', () => {
     surfaceTerminalRegistry.delete('supervisor-a');
     surfaceTerminalRegistry.delete('project-manager-atomic');
     clearTerminalRuntimeStatus('project-manager-atomic');
+    clearSupervisorEvidenceCache();
     Reflect.deleteProperty(globalThis, 'window');
+  });
+
+  it('allows only the bound supervisor terminal to page frozen worker evidence', async () => {
+    const state = useStore.getState().supervisor;
+    const boundLane = state.lanes[0];
+    const sessionId = boundLane.managementSessionId || state.sessionId || '';
+    registerSupervisorEvidence(createSupervisorEvidenceSnapshot({
+      sessionId,
+      reviewId: 'review-evidence',
+      laneId: boundLane.id,
+      surfaceId: boundLane.surfaceId,
+      isolationScope: 'ordinary',
+      task: '验证冻结证据',
+      bufferType: 'normal',
+      bufferLines: 3,
+      capturedLines: 3,
+      summary: '第二页仍可读取',
+      text: '第一行\n第二行\n第三行',
+    }));
+    const readEvidence = (globalThis.window as any).__wmux_supervisorEvidence;
+
+    await expect(readEvidence({
+      callerSurfaceId: 'supervisor-a',
+      reviewId: 'review-evidence',
+      page: 2,
+      pageLines: 2,
+    })).resolves.toMatchObject({
+      ok: true,
+      surfaceId: 'worker-a',
+      page: 2,
+      text: '第三行',
+    });
+    await expect(readEvidence({
+      callerSurfaceId: 'worker-a',
+      reviewId: 'review-evidence',
+    })).resolves.toEqual({
+      ok: false,
+      error: '当前终端不是活动监督 lane 绑定的监督 AI',
+    });
   });
 
   it('does not derive route-adjustment authority from retry authority', () => {
@@ -1725,7 +1770,7 @@ describe('supervisor decision bridge', () => {
     expect(conversation.answer).not.toContain('/review');
   });
 
-  it.each(['Codex', 'Claude Code', 'Kimi Code', 'Grok Build', 'Pi Agent', 'OpenCode'])(
+  it.each(['Codex', 'Kimi Code', 'Grok Build', 'Pi Agent', 'OpenCode'])(
     'uses the shared supervisor core fallback for %s',
     (agent) => {
       const conversation = terminalSupervisorCoreExcerpt([

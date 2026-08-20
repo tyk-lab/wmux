@@ -126,6 +126,8 @@ contextBridge.exposeInMainWorld('wmux', {
   },
   supervisor: {
     appendRecord: (record: any) => ipcRenderer.invoke('supervisor:append-record', record),
+    saveEvidence: (options: any) => ipcRenderer.invoke('supervisor:save-evidence', options),
+    readEvidence: (options: any) => ipcRenderer.invoke('supervisor:read-evidence', options),
     readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
     listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),
@@ -221,11 +223,11 @@ contextBridge.exposeInMainWorld('wmux', {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.HOOK_EVENT, handler);
     },
   },
-  claudeActivity: {
+  agentActivity: {
     onUpdate: (callback: (data: any) => void) => {
       const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.CLAUDE_ACTIVITY, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_ACTIVITY, handler);
+      ipcRenderer.on(IPC_CHANNELS.AGENT_ACTIVITY_UPDATE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_ACTIVITY_UPDATE, handler);
     },
   },
   // Declared agent run state — blocked / working / idle (issue #128).

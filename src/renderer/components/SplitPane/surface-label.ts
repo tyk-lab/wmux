@@ -42,6 +42,8 @@ export function getSurfaceLabel(surface: SurfaceRef, agentLabel?: string, worksp
       return 'Diff';
     case 'supervisor':
       return 'AI 监督';
+    case 'project-manager':
+      return '项目管理';
     default:
       return 'Tab';
   }

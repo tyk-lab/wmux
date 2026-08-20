@@ -8,7 +8,7 @@ const base = {
   workingSessions: 0,
   blockedSessions: 0,
   currentToolLabel: null as string | null,
-  claudeIsIdle: false,
+  agentIsIdle: false,
 };
 
 describe('resolveStatusText', () => {
@@ -58,7 +58,7 @@ describe('resolveStatusClass', () => {
       workingSessions: 1,
       sessionCount: 1,
       currentToolLabel: null,
-      claudeIsIdle: false,
+      agentIsIdle: false,
       shellState: 'running',
     })).toBe('workspace-row__status--working');
   });

@@ -93,11 +93,11 @@ describe('supervisor launch command', () => {
   });
 
   it('does not add Kimi Thinking or Grok Build model options to another launcher', () => {
-    expect(buildSupervisorLaunchCommand('claude', 'k3', 'on')).toBe('claude');
+    expect(buildSupervisorLaunchCommand('opencode', 'k3', 'on')).toBe('opencode');
   });
 
   it('does not add Codex arguments to another launcher', () => {
-    expect(buildSupervisorLaunchCommand('claude', 'gpt-5.6-sol')).toBe('claude');
+    expect(buildSupervisorLaunchCommand('opencode', 'gpt-5.6-sol')).toBe('opencode');
   });
 
   it('isolates a dedicated Pi supervisor from project context and external skills', () => {
@@ -152,19 +152,6 @@ describe('supervisor launch command', () => {
     expect(command.match(/--no-memory/g)).toHaveLength(1);
     expect(command).toContain('--no-subagents');
     expect(command).toContain('--disable-web-search');
-  });
-
-  it('isolates built-in Claude even though wmux does not add launcher options to it', () => {
-    const command = buildSupervisorLaunchCommand(
-      'claude',
-      'gpt-5.6-sol',
-      '',
-      { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: 'lane-claude' },
-    );
-
-    expect(command).toContain('\\supervisor\\runtime\\lane-claude');
-    expect(command.endsWith('; claude')).toBe(true);
-    expect(command).not.toContain("--model 'gpt-5.6-sol'");
   });
 
   it('preserves an unknown custom launcher when supervisor isolation is requested', () => {

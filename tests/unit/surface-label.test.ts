@@ -43,6 +43,7 @@ describe('surface labels', () => {
     expect(getSurfaceLabel(surface('surf-browser', { type: 'browser' }))).toBe('Browser');
     expect(getSurfaceLabel(surface('surf-markdown', { type: 'markdown' }))).toBe('Markdown');
     expect(getSurfaceLabel(surface('surf-diff', { type: 'diff' }))).toBe('Diff');
+    expect(getSurfaceLabel(surface('surf-project', { type: 'project-manager' }))).toBe('项目管理');
   });
 
   it('shows the markdown file name when the surface was opened from a file', () => {

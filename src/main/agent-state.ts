@@ -1,10 +1,9 @@
 /**
  * Declared agent state per surface (issue #128).
  *
- * wmux already infers "is this agent busy?" two ways, and both are guesses:
- *   - claude-observer.ts scrapes the Claude Code TUI with regexes
- *   - claude-session-view.ts calls a surface `working` while a hook/observer
- *     signal is younger than 5s, and `idle` once it goes quiet
+ * Hook freshness remains a fallback for integrations that cannot declare state,
+ * but it is still a guess: agent-session-view.ts calls a surface `working`
+ * while a lifecycle signal is younger than 5s, then `idle` once it goes quiet.
  *
  * That inference cannot represent the one state that actually matters: an agent
  * PARKED ON A HUMAN. A permission prompt makes the agent go silent, so after the

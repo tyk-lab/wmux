@@ -18,8 +18,8 @@ export type SplitNode =
   | { type: 'leaf'; paneId: PaneId; surfaces: SurfaceRef[]; activeSurfaceIndex: number }
   | { type: 'branch'; direction: 'horizontal' | 'vertical'; ratio: number; children: [SplitNode, SplitNode] };
 
-export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor';
-export type DefaultSupervisorAgent = 'pi' | 'codex' | 'claude' | 'kimi' | 'grok' | 'opencode' | 'none';
+export type SurfaceType = 'terminal' | 'browser' | 'markdown' | 'diff' | 'supervisor' | 'project-manager';
+export type DefaultSupervisorAgent = 'pi' | 'codex' | 'kimi' | 'grok' | 'opencode' | 'none';
 export type SshCompanionAgent = 'codex' | 'kimi' | 'grok' | 'none';
 
 export type SshAuthMethod = 'agent' | 'privateKey' | 'password';
@@ -203,7 +203,7 @@ export interface WorkspaceInfo {
   notificationText?: string;
   shellState?: 'idle' | 'running' | 'interrupted';
   // Manual pin of the sidebar status indicator (issue #81). When set it wins
-  // over all detection (shell integration, Claude observer/hooks); cleared
+  // over all detection (shell integration and agent hooks); cleared
   // (undefined) means automatic.
   statusOverride?: 'running' | 'idle';
   browserUrl?: string;
@@ -468,10 +468,10 @@ export const IPC_CHANNELS = {
   CDP_WAIT: 'cdp:wait',
   // Active workspace query (renderer → main)
   GET_ACTIVE_WORKSPACE: 'get-active-workspace',
-  // Hook events (Claude Code hooks → main → renderer)
+  // Hook events (agent hooks → main → renderer)
   HOOK_EVENT: 'hook:event',
-  // Claude Code activity (parsed from PTY output → renderer)
-  CLAUDE_ACTIVITY: 'claude:activity',
+  // Explicit agent activity reports (main → renderer)
+  AGENT_ACTIVITY_UPDATE: 'agent:activity-update',
   // Declared agent run state (pane.report_agent → main → renderer, issue #128)
   AGENT_STATE: 'agent:state',
   // Named sessions

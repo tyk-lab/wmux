@@ -3,6 +3,7 @@ import {
   applyWmuxKimiHooksToml,
   buildWmuxKimiHooksBlock,
   makeKimiHookCommand,
+  stripLegacyWmuxKimiHookTables,
   tomlQuote,
   WMUX_KIMI_START,
   WMUX_KIMI_END,
@@ -62,5 +63,37 @@ describe('applyWmuxKimiHooksToml', () => {
     expect(second).toContain('wmux-hook-v2.js');
     expect(second).toContain('foo = 1');
     expect(second).not.toContain('/wmux-hook.js');
+  });
+
+  it('removes legacy wmux tables while preserving user-owned Kimi hooks', () => {
+    const existing = [
+      '[[hooks]]',
+      'event = "Stop"',
+      'command = "powershell -File kimi-toast.ps1"',
+      'timeout = 10',
+      '',
+      '[[hooks]]',
+      'event = "Stop"',
+      'command = "node \\"C:/old/resources/cli/wmux-hook.js\\" --event Stop --agent Kimi"',
+      'timeout = 10',
+      '',
+      WMUX_KIMI_START,
+      'old managed block',
+      WMUX_KIMI_END,
+      '',
+    ].join('\n');
+
+    const next = applyWmuxKimiHooksToml(existing, SCRIPT);
+    expect(next).toContain('kimi-toast.ps1');
+    expect(next).not.toContain('C:/old/resources');
+    expect(next.match(/# wmux-hooks:start/g)).toHaveLength(1);
+    expect(next.match(/--event Stop --agent Kimi/g)).toHaveLength(1);
+  });
+});
+
+describe('stripLegacyWmuxKimiHookTables', () => {
+  it('does not remove non-wmux hook commands', () => {
+    const existing = '[[hooks]]\nevent = "Stop"\ncommand = "notify-user"\n';
+    expect(stripLegacyWmuxKimiHookTables(existing)).toBe(existing);
   });
 });

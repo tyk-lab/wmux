@@ -6,6 +6,7 @@ import BrowserPane from '../Browser/BrowserPane';
 import MarkdownPane from '../Markdown/MarkdownPane';
 import DiffPane from '../Diff/DiffPane';
 import SupervisorSessionPane from '../Supervisor/SupervisorSessionPane';
+import ProjectManagerSessionPane from '../ProjectManager/ProjectManagerSessionPane';
 import NotificationRing from '../Terminal/NotificationRing';
 import SurfaceTabBar from './SurfaceTabBar';
 import { useStore } from '../../store';
@@ -318,6 +319,9 @@ export default function PaneWrapper({
           {surface.type === 'diff' && <DiffPane surfaceId={surface.id} cwd={workspace?.cwd} />}
           {surface.type === 'supervisor' && (
             <SupervisorSessionPane workspaceId={workspaceId} paneId={paneId} />
+          )}
+          {surface.type === 'project-manager' && surface.projectManagerProjectId && (
+            <ProjectManagerSessionPane projectId={surface.projectManagerProjectId} />
           )}
         </div>
       );

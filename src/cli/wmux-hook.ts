@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * wmux hook helper — sends a hook event to the wmux pipe.
- * Called by Claude / Kimi / Codex / Grok / Pi hooks.
+ * Called by Kimi / Codex / Grok / Pi hooks.
  *
  * Usage:
  *   node wmux-hook.js <tool-name> [--agent Name]   # PostToolUse
@@ -12,9 +12,10 @@
  *   - PostToolUse Edit/Write → extracts tool_input.file_path
  *   - Notification           → extracts the `message`
  * WMUX_SURFACE_ID ties the event to its pane.
- * --agent (or WMUX_AGENT env) labels the notification (Kimi / Claude / …).
+ * --agent (or WMUX_AGENT env) labels the notification (Kimi / Codex / …).
  */
 import net from 'net';
+import { randomUUID } from 'node:crypto';
 
 const argv = process.argv.slice(2);
 
@@ -45,6 +46,7 @@ const agent = agentFlag || process.env.WMUX_AGENT || '';
 
 let stdinData = '';
 let sent = false;
+let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
 const MAX_STDIN = 64 * 1024; // 64KB cap
 const MAX_TASK = 800;
 const MAX_PIPE_ATTEMPTS = 3;
@@ -58,6 +60,7 @@ function compact(value: unknown): string {
 function sendHook(): void {
   if (sent) return;
   sent = true;
+  if (fallbackTimer) clearTimeout(fallbackTimer);
 
   let file = '';
   let message = '';
@@ -79,6 +82,7 @@ function sendHook(): void {
   }
 
   const params: Record<string, string> = {};
+  params.hookId = randomUUID();
   if (event) params.event = event;
   if (tool) params.tool = tool;
   if (file) params.file = file;
@@ -94,20 +98,35 @@ function sendHook(): void {
   let attempt = 0;
   const write = () => {
     attempt++;
-    let accepted = false;
+    let completed = false;
     let retryScheduled = false;
+    let response = '';
     const client = net.connect({ path: pipePath }, () => {
-      client.write(wireMessage, () => {
-        accepted = true;
-        client.end();
-      });
+      client.write(wireMessage);
     });
     client.setTimeout(1000);
     const retry = () => {
-      if (accepted || retryScheduled || attempt >= MAX_PIPE_ATTEMPTS) return;
+      if (completed || retryScheduled) return;
+      if (attempt >= MAX_PIPE_ATTEMPTS) {
+        process.exitCode = 1;
+        return;
+      }
       retryScheduled = true;
       setTimeout(write, attempt * 200);
     };
+    client.on('data', (chunk) => {
+      response += chunk.toString();
+      if (!response.includes('\n')) return;
+      completed = true;
+      client.end();
+      try {
+        const reply = JSON.parse(response.trim());
+        if (reply.error) process.exitCode = 1;
+      } catch {
+        process.exitCode = 1;
+      }
+    });
+    client.once('end', retry);
     client.once('error', retry);
     client.once('timeout', () => {
       client.destroy();
@@ -122,6 +141,6 @@ process.stdin.on('data', (chunk) => { if (stdinData.length < MAX_STDIN) stdinDat
 process.stdin.on('end', sendHook);
 process.stdin.on('error', sendHook);
 
-setTimeout(sendHook, 1000);
+fallbackTimer = setTimeout(sendHook, 1000);
 
 if (process.stdin.readableEnded) sendHook();
