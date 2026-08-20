@@ -179,12 +179,37 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     }));
     return;
   }
+  if (args[1] === 'draft') {
+    const surfaceId = getFlag(args, '--surface') || '';
+    if (!surfaceId) throw new Error('supervisor draft requires --surface');
+    const input = resolveProjectJsonInput(
+      args,
+      process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    );
+    let success = false;
+    try {
+      const result = await sendV2('supervisor.goal.draft', { ...input.value, surfaceId });
+      success = result?.ok !== false;
+      if (result?.ok === false) print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
+  if (args[1] === 'reply') {
+    const surfaceId = getFlag(args, '--surface') || '';
+    const message = getFlag(args, '--message') || '';
+    if (!surfaceId || !message) throw new Error('supervisor reply requires --surface and --message');
+    const result = await sendV2('supervisor.reply', { surfaceId, message });
+    if (result?.ok === false) print(result);
+    return;
+  }
   if (isSupervisorDecideHelp(args)) {
     console.log(SUPERVISOR_DECIDE_USAGE);
     return;
   }
   if (args[1] !== 'decide') {
-    throw new Error(`Usage: wmux supervisor <context|evidence|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
+    throw new Error(`Usage: wmux supervisor <context|evidence|draft|reply|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -1145,10 +1170,12 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             (write Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor context
              supervisor evidence --review-id <id> [--page N] [--page-lines N]
+             supervisor draft --surface <id> --json-file <.wmux/tmp/file>
+             supervisor reply --surface <id> --message <text>
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--stage-plan-file <.wmux/tmp/file>]
-                          [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]
+                          [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed|clarification>]
                           [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]
                           [--impact <text>] [--alternatives <text>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
