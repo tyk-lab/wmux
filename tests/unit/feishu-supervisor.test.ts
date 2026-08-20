@@ -532,6 +532,27 @@ supervisor_model: k3`)).toEqual({
     expect(card).not.toContain('直接发送用户输入');
   });
 
+  it('普通监督需求对齐在飞书集中收集答复且不能直发任务终端', () => {
+    const card = JSON.stringify(buildApprovalCard({
+      sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
+      terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
+      payload: {
+        approvalId: 'appr-clarification',
+        proposalKind: 'clarification',
+        reason: '1. 修复现有登录还是新增登录？\n2. 是否包含失败分支测试？',
+        impact: '答案会改变范围和验收',
+        alternatives: '推荐默认答案：修复现有登录；包含失败分支测试',
+      },
+    }));
+
+    expect(card).toContain('AI 推荐默认答案');
+    expect(card).toContain('集中回答以上问题');
+    expect(card).toContain('提交对齐答复');
+    expect(card).toContain('正式计划形成前不会发送执行指令');
+    expect(card).not.toContain('select_static');
+    expect(card).not.toContain('直接发送用户输入');
+  });
+
   it('将日常控制渲染为菜单、启动表单和任务表单', () => {
     const terminals = [{ surfaceId: 'surf-a', label: 'pwsh.exe', workspaceId: 'ws-a', workspace: '飞书管理', cwd: 'E:\\repo', supervised: false }];
     const menuObject = buildSupervisorControlMenuCard() as { schema?: string; body?: { elements?: unknown[] }; elements?: unknown[] };

@@ -2565,8 +2565,11 @@ export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCa
   const impact = String(payload.impact || '未提供').slice(0, 500);
   const rawAlternatives = String(payload.alternatives || '').slice(0, 500);
   const alternatives = rawAlternatives || '未提供';
-  const recommendation = String(payload.recommendation || '未提供').slice(0, 1200);
   const isContextRecovery = payload.proposalKind === 'context-recovery';
+  const isClarification = payload.proposalKind === 'clarification';
+  const recommendation = String(
+    isClarification ? rawAlternatives || '未提供推荐默认答案' : payload.recommendation || '未提供',
+  ).slice(0, 1200);
   const rawTerminalScreen = String(payload.terminalScreen || '');
   const terminalScreenMaxLength = 1200;
   const terminalScreenSeparator = '\n…\n';
@@ -2576,7 +2579,7 @@ export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCa
       terminalScreenMaxLength - terminalScreenHeadLength - terminalScreenSeparator.length
     ))}`
     : rawTerminalScreen;
-  const decisionChoices = isContextRecovery ? [] : decisionOptions(rawAlternatives, recommendation);
+  const decisionChoices = isContextRecovery || isClarification ? [] : decisionOptions(rawAlternatives, recommendation);
   const hasMultipleChoices = decisionChoices.length >= 2;
   const choices = hasMultipleChoices ? [{
     text: { tag: 'plain_text' as const, content: '无' },
@@ -2591,7 +2594,9 @@ export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCa
         content: `未提交：${feedback.error.slice(0, 500)} 请修改后再次点击处理按钮。`,
       },
     }] : []),
-    { tag: 'markdown', content: isContextRecovery ? '**AI 监督拟定的任务恢复指令**' : '**AI 建议**' },
+    { tag: 'markdown', content: isContextRecovery
+      ? '**AI 监督拟定的任务恢复指令**'
+      : isClarification ? '**AI 推荐默认答案**' : '**AI 建议**' },
     { tag: 'div', text: { tag: 'plain_text', content: recommendation } },
     { tag: 'markdown', content: '**任务终端核心信息**' },
     { tag: 'div', text: { tag: 'plain_text', content: terminalScreen || '（暂未识别到任务终端的 Agent 核心信息）' } },
@@ -2603,23 +2608,29 @@ export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCa
     }] : []),
     { tag: 'div', text: { tag: 'plain_text', content: isContextRecovery
       ? '确认后将把上述原文直接发送到任务终端；确认前不会改动任务终端。'
+      : isClarification
+        ? '请集中回答对齐问题；答复只交给监督 AI，正式计划形成前不会发送执行指令。'
       : hasMultipleChoices
         ? '选择具体方案时，AI 监督会结合当前终端信息整理为完整指令；选择“无”时，请在下方填写用户决策或补充信息。'
         : '采用后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。' } },
     ...(!isContextRecovery ? [{
       tag: 'input', element_id: 'decision_input', name: 'decision_input', input_type: 'multiline_text',
       rows: 4, max_length: 1000,
-      label: { tag: 'plain_text', content: '用户决策或补充信息（可选）' },
-      placeholder: { tag: 'plain_text', content: '填写后可交给 AI 监督整理，或直接发送到任务终端' },
+      label: { tag: 'plain_text', content: isClarification ? '集中回答以上问题' : '用户决策或补充信息（可选）' },
+      placeholder: { tag: 'plain_text', content: isClarification
+        ? '按问题编号集中答复；其余可写“按推荐默认答案”'
+        : '填写后可交给 AI 监督整理，或直接发送到任务终端' },
       ...(feedback.decisionInput ? { default_value: feedback.decisionInput.slice(0, 1000) } : {}),
     }, {
-      tag: 'div', text: { tag: 'plain_text', content: '点击“采用 AI 方案”会把所选方案和这里的信息交给 AI 监督整理；选择“无”时必须填写这里的信息。点击“直接发送用户输入”则不经过 AI 监督整理，直接提交到任务终端。' },
+      tag: 'div', text: { tag: 'plain_text', content: isClarification
+        ? '需求对齐必须填写答复；不会直接发送到任务终端。'
+        : '点击“采用 AI 方案”会把所选方案和这里的信息交给 AI 监督整理；选择“无”时必须填写这里的信息。点击“直接发送用户输入”则不经过 AI 监督整理，直接提交到任务终端。' },
     }] : []),
     { tag: 'markdown', content: '**处理当前决策**' },
     {
       tag: 'column_set', flex_mode: 'none', columns: [
-        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', isContextRecovery ? '确认并发送到任务终端' : hasMultipleChoices ? '确认并采用 AI 方案' : '采用 AI 当前方案', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
-        ...(!isContextRecovery ? [{ tag: 'column', width: 'auto', elements: [formButton('wmux_decide_direct', '直接发送用户输入', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'direct' })] }] : []),
+        { tag: 'column', width: 'auto', elements: [formButton('wmux_decide_approve', isContextRecovery ? '确认并发送到任务终端' : isClarification ? '提交对齐答复' : hasMultipleChoices ? '确认并采用 AI 方案' : '采用 AI 当前方案', 'primary', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'approve' })] },
+        ...(!isContextRecovery && !isClarification ? [{ tag: 'column', width: 'auto', elements: [formButton('wmux_decide_direct', '直接发送用户输入', 'default', { wmux_action: 'decide', approval_id: String(payload.approvalId || ''), decision: 'direct' })] }] : []),
       ],
     },
     { tag: 'markdown', content: '**监督控制**' },
