@@ -9742,6 +9742,15 @@ export function initPipeBridge(): void {
       }
       const previousPlan = projectWorkItem?.supervisorPlan
         || lane.decisions?.find((decision) => decision.plan)?.plan;
+      if (!projectWorkItem
+        && previousPlan
+        && previousPlan.selectedRoute !== String((params.stagePlan as any)?.selectedRoute || '').trim()
+        && proposalKind !== 'route-adjustment') {
+        return {
+          ok: false,
+          error: '普通监督修改 selectedRoute 时必须显式使用 --proposal-kind route-adjustment，并通过对应路线调整权限门禁',
+        };
+      }
       const normalizedPlan = normalizeSupervisorStagePlan(
         params.stagePlan,
         projectWorkItem,
