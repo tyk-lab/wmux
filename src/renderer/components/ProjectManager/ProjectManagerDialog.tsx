@@ -437,6 +437,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     return result;
   };
 
+  const enterProjectConsole = (projectId: string) => {
+    selectProjectManager(projectId);
+    setCreating(false);
+    const opened = openProjectManagerConsole(projectId);
+    close();
+    if (!opened) {
+      window.requestAnimationFrame(() => openProjectManagerConsole(projectId));
+    }
+  };
+
   const saveAgentConfig = async () => {
     if (busy) return;
     const previous = normalizeProjectManagementAgentConfig(workspacePrefs.projectManagementAgents);
@@ -554,10 +564,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setDoneWhen('');
       setProjectDir('');
       const projectId = String(result.session?.id || '');
-      if (projectId) {
-        close();
-        openProjectManagerConsole(projectId);
-      }
+      if (projectId) enterProjectConsole(projectId);
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
@@ -1023,13 +1030,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             className="project-manager-dialog__workspace"
             data-console={embedded && session && !creating && !awaitingRecovery ? '1' : '0'}
             data-has-projects={sessions.length > 0 ? '1' : '0'}
+            data-creating={creating ? '1' : '0'}
           >
           {!embedded && sessions.length > 0 && (
             <section className="supervisor-dialog__group project-manager-dialog__portfolio">
               <div className="project-manager-dialog__section-head">
                 <div>
                   <div className="supervisor-dialog__group-title">项目（{activeSessionCount} 个活动）</div>
-                  <div className="supervisor-dialog__hint">项目数量不受限制；同一目录也可按不同稳定范围建立独立项目。每个项目使用独立会话，内部始终只有一个项目 AI 和一条监督链。</div>
+                  <div className="supervisor-dialog__hint">项目数量不受限制；同一项目目录只允许一个项目 AI。每个项目使用独立会话，内部始终只有一个项目 AI 和一条监督链。</div>
                 </div>
                 <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
                   setCreating(true);
@@ -1053,8 +1061,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       <em>{projectActivityLabel(candidate)}</em>
                     </button>
                     <button type="button" className="confirm-dialog__btn project-manager-dialog__project-open" onClick={() => {
-                      close();
-                      openProjectManagerConsole(candidate.id);
+                      enterProjectConsole(candidate.id);
                     }}>打开控制台</button>
                   </article>
                 ))}

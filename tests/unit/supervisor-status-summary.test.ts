@@ -84,7 +84,11 @@ describe('supervisor status summary', () => {
   it('shows only each project supervisor lane and its own execution plan', () => {
     expect(panelSource).toContain('const scopedProjectWorkItems');
     expect(panelSource).toContain('className="sup-panel__project-plan"');
-    expect(panelSource).toContain('监督 AI 执行规划');
+    expect(panelSource).toContain('监督通道执行路线');
+    expect(panelSource).toContain('工作项由项目 AI 下发，具体路线由各监督 AI 维护');
+    expect(panelSource).toContain('来源：项目 AI 工作项');
+    expect(panelSource).toContain('尚未形成监督执行路线 · {planningSummary}');
+    expect(panelSource).not.toContain('监督 AI 执行规划');
     expect(panelSource).toContain('visibleLanes.map((lane)');
     expect(panelSource).toContain('scopedProjectWorkItems.find((candidate) => candidate.id === lane.projectWorkItemId)');
     expect(panelSource).toContain('item.workerSurfaceId');

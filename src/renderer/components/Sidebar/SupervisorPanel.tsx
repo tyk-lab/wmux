@@ -927,11 +927,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
             </div>
           )}
           {scopedProjectId && scopedProject && (
-            <section className="sup-panel__project-plan" aria-label="当前项目监督规划">
+            <section className="sup-panel__project-plan" aria-label="当前项目监督执行路线">
               <div className="sup-panel__project-plan-heading">
                 <div>
-                  <strong>监督 AI 执行规划</strong>
-                  <span>{visibleLanes.length} 个监督通道 · 仅展示各通道自行维护的执行路线</span>
+                  <strong>监督通道执行路线</strong>
+                  <span>{visibleLanes.length} 个监督通道 · 工作项由项目 AI 下发，具体路线由各监督 AI 维护</span>
                 </div>
                 <button type="button" onClick={() => {
                   openProjectManagerConsole(scopedProjectId);
@@ -990,6 +990,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <em>{statusLabel}</em>
                       </div>
                       <div className="sup-panel__project-plan-meta">
+                        <span>来源：项目 AI 工作项</span>
                         <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
                         <span>监督：{supervisorStatusLabel}</span>
                         <span>{projectTaskWorkModeLabel(item.contract.execution?.taskWorkMode)}</span>
@@ -1015,7 +1016,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         {item.supervisorPlan.serializedBoundaries.length > 0 && (
                           <div className="sup-panel__project-plan-detail"><strong>串行边界</strong><span>{item.supervisorPlan.serializedBoundaries.join('；')}</span></div>
                         )}
-                      </> : <div className="sup-panel__project-plan-progress">{planningSummary}</div>}
+                      </> : <div className="sup-panel__project-plan-progress">尚未形成监督执行路线 · {planningSummary}</div>}
                       {(item.latestBlocker || item.latestEvidence || item.latestContextSummary) && (
                         <div className="sup-panel__project-plan-latest" data-blocked={item.latestBlocker ? '1' : '0'}>
                           {item.latestBlocker

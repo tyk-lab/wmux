@@ -252,9 +252,15 @@
   grid-template-areas: 'main inspector';
 }
 
-.project-manager-dialog__workspace[data-console='0'][data-has-projects='1'] {
+.project-manager-dialog__workspace[data-console='0'][data-has-projects='1'][data-creating='0'] {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: 'projects';
+}
+
+.project-manager-dialog__workspace[data-console='0'][data-has-projects='1'][data-creating='1'] {
+  grid-template-columns: 270px minmax(0, 1fr);
+  grid-template-areas: 'projects main';
+  align-items: start;
 }
 
 .project-manager-dialog__workspace[data-has-projects='0'] {
@@ -843,7 +849,7 @@
 }
 
 .project-manager-dialog__project-open {
-  align-self: stretch;
+  align-self: center;
   padding-inline: 10px;
   white-space: nowrap;
 }

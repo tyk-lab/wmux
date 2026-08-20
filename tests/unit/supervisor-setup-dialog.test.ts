@@ -120,7 +120,7 @@ describe('supervisor setup dialog feedback', () => {
       /const sessionDefinitionFingerprint = session \? JSON\.stringify\(\[[\s\S]*?\]\) : '';/m,
     )?.[0] || '';
     expect(definitionFingerprint).not.toContain('session.subgoals');
-    expect(projectManagerDialogSource).toContain('同一目录也可按不同稳定范围建立独立项目');
+    expect(projectManagerDialogSource).toContain('同一项目目录只允许一个项目 AI');
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
     expect(projectManagerDialogSource).toContain('恢复所选项目');
@@ -296,7 +296,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('project-manager-dialog__portfolio-actions');
     expect(supervisorCssSource).toMatch(/\.project-manager-dialog\s*\{[\s\S]*?width:\s*min\(1280px,/);
     expect(supervisorCssSource).toContain("grid-template-areas: 'main inspector'");
-    expect(supervisorCssSource).toContain("grid-template-areas: 'projects'");
+    expect(supervisorCssSource).toContain("[data-creating='1']");
+    expect(supervisorCssSource).toContain("grid-template-areas: 'projects main'");
     expect(supervisorCssSource).toContain('@media (max-width: 1100px)');
     expect(supervisorCssSource).toContain('@media (max-width: 820px)');
   });
@@ -319,8 +320,10 @@ describe('supervisor setup dialog feedback', () => {
   it('separates the project center from an embedded project management surface', () => {
     expect(projectManagerDialogSource).toContain('embeddedProjectId?: string');
     expect(projectManagerDialogSource).toContain("embedded ? '项目管理' : '项目 AI 中心'");
-    expect(projectManagerDialogSource).toContain("openProjectManagerConsole(candidate.id)");
+    expect(projectManagerDialogSource).toContain("enterProjectConsole(candidate.id)");
     expect(projectManagerDialogSource).toContain("data-console={embedded && session");
+    expect(projectManagerDialogSource).toContain('if (projectId) enterProjectConsole(projectId)');
+    expect(projectManagerDialogSource).toContain('window.requestAnimationFrame(() => openProjectManagerConsole(projectId))');
     expect(paneWrapperSource).toContain("surface.type === 'project-manager'");
     expect(paneWrapperSource).toContain('<ProjectManagerSessionPane projectId={surface.projectManagerProjectId} />');
     expect(consoleSurfaceSource).toContain("surface.type === 'project-manager'");

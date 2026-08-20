@@ -50,6 +50,45 @@ describe('surface-slice', () => {
     });
   });
 
+  describe('project surface order', () => {
+    it('keeps project control and AI terminals in the required creation order', () => {
+      const projectId = 'pm-order';
+      const projectAi = currentLeaf().surfaces[0].id;
+      useStore.getState().updateSurface(workspaceId, paneId, projectAi, {
+        customTitle: '项目 AI',
+        projectManagerTerminal: true,
+        projectManagerProjectId: projectId,
+      });
+      useStore.getState().addSurface(workspaceId, paneId, 'terminal', {
+        customTitle: '任务 AI',
+        projectManagerProjectId: projectId,
+        projectManagerWorkItemId: 'task-a',
+      });
+      useStore.getState().addSurface(workspaceId, paneId, 'terminal', {
+        customTitle: 'AI 监督 · 工作项',
+        transientSupervisor: true,
+        projectSupervisorProjectId: projectId,
+      });
+      useStore.getState().addSurface(workspaceId, paneId, 'supervisor', {
+        customTitle: '项目专属监督',
+        projectSupervisorProjectId: projectId,
+      });
+      const projectManagement = useStore.getState().addSurface(workspaceId, paneId, 'project-manager', {
+        customTitle: '项目管理',
+        projectManagerProjectId: projectId,
+      });
+
+      expect(currentLeaf().surfaces.map((surface) => surface.customTitle)).toEqual([
+        '项目管理',
+        '项目专属监督',
+        '项目 AI',
+        'AI 监督 · 工作项',
+        '任务 AI',
+      ]);
+      expect(currentLeaf().surfaces[currentLeaf().activeSurfaceIndex].id).toBe(projectManagement);
+    });
+  });
+
   describe('closeOtherSurfaces', () => {
     it('keeps only the target surface and drops the rest', () => {
       const keep = currentLeaf().surfaces[0].id;

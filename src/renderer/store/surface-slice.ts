@@ -198,6 +198,30 @@ interface ClosedSurface {
 const closedSurfaceStack: ClosedSurface[] = [];
 const MAX_CLOSED_SURFACES = 25;
 
+function projectSurfaceId(surface: SurfaceRef): string | undefined {
+  return surface.projectManagerProjectId || surface.projectSupervisorProjectId;
+}
+
+function projectSurfaceRank(surface: SurfaceRef, projectId: string): number {
+  if (projectSurfaceId(surface) !== projectId) return 100;
+  if (surface.type === 'project-manager') return 0;
+  if (surface.type === 'supervisor' && surface.projectSupervisorProjectId === projectId) return 1;
+  if (surface.projectManagerTerminal === true) return 2;
+  if (surface.transientSupervisor === true && surface.projectSupervisorProjectId === projectId) return 3;
+  if (surface.projectManagerWorkItemId) return 4;
+  return 5;
+}
+
+/** Keep one project execution workspace in control-plane-to-worker order. */
+function orderProjectSurfaces(surfaces: SurfaceRef[], activeSurface: SurfaceRef): SurfaceRef[] {
+  const projectId = projectSurfaceId(activeSurface);
+  if (!projectId) return surfaces;
+  return surfaces
+    .map((surface, index) => ({ surface, index, rank: projectSurfaceRank(surface, projectId) }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map(({ surface }) => surface);
+}
+
 function pushClosedSurface(surface: SurfaceRef): void {
   // Diff is a derived working-tree view; reopening a stale one is noise.
   // Project-manager runtimes carry caller authority. A runtime replaced after
@@ -262,8 +286,8 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.projectManagerReasoningEffort !== undefined ? { projectManagerReasoningEffort: options.projectManagerReasoningEffort } : {}),
       ...(options?.url ? { url: options.url } : {}),
     };
-    const newSurfaces = [...leaf.surfaces, newSurface];
-    const newActiveSurfaceIndex = newSurfaces.length - 1;
+    const newSurfaces = orderProjectSurfaces([...leaf.surfaces, newSurface], newSurface);
+    const newActiveSurfaceIndex = newSurfaces.findIndex((surface) => surface.id === surfaceId);
 
     // Rebuild tree with updated leaf (immutable)
     const updatedTree = patchLeaf(ws.splitTree, paneId, {
