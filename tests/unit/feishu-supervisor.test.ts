@@ -704,6 +704,23 @@ supervisor_model: k3`)).toEqual({
     expect(laneControl).toContain('stop-lane');
   });
 
+  it('裁决看门狗暂停普通监督时将群内状态标记为失败并要求人工恢复', () => {
+    const record = {
+      sessionId: 'sup-1', projectDir: '', type: 'supervisor.review.watchdog-failed' as const,
+      terminal: { surfaceId: 'surf-1', label: 'codex' },
+      payload: { reason: 'AI 监督连续两次结束回合但未提交结构化裁决' },
+    };
+    const status = reduceFeishuAuditTerminalStatus(undefined, record);
+    const alert = JSON.stringify(buildFeishuAuditAlertCard(record, status));
+
+    expect(status).toMatchObject({
+      taskState: 'failed',
+      pendingHuman: '需要用户恢复或重建监督运行时',
+    });
+    expect(alert).toContain('AI 监督未提交裁决，通道已暂停');
+    expect(alert).toContain('red');
+  });
+
   it('飞书状态投影保留项目身份、当前主目标和阶段计划', () => {
     const view = projectManagerViewFromStatusResult({
       session: {

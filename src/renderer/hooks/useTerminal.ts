@@ -147,17 +147,6 @@ function notifyProjectManagerRuntimeFailure(
     text,
   });
 
-  if (role === 'supervisor' && lane && !isProjectManagedSupervisorLane(lane)) {
-    state.updateLane(lane.id, {
-      supervisorProblem: {
-        kind: 'runtime-failed',
-        detail,
-        detectedAt: Date.now(),
-      },
-    });
-    state.pauseSupervisorLane(lane.id, text);
-  }
-
   const projectSessions = role === 'manager'
     ? state.projectManagers.filter((candidate) => (
         candidate.id === surface.projectManagerProjectId
@@ -233,7 +222,16 @@ function notifyProjectManagerRuntimeFailure(
     }
   }
 
-  if (lane && !lane.projectManagerProjectId && state.supervisor.sessionId && lane.projectDir) {
+  if (lane && !isProjectManagedSupervisorLane(lane) && state.supervisor.sessionId && lane.projectDir) {
+    if (role === 'supervisor') {
+      state.updateLane(lane.id, {
+        supervisorProblem: {
+          kind: 'runtime-failed',
+          detail,
+          detectedAt: Date.now(),
+        },
+      });
+    }
     state.pauseSupervisorLane(lane.id, text);
     void window.wmux?.supervisor?.appendRecord?.({
       sessionId: lane.managementSessionId || state.supervisor.sessionId,

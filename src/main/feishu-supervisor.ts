@@ -2167,6 +2167,7 @@ const AUDIT_EVENT_TITLES: Record<string, string> = {
   'supervisor.waiting-for-direction': 'AI 监督通道待续',
   'supervisor.waiting-resumed': 'AI 监督待续已恢复',
   'supervisor.provider-limit': 'AI 监督模型请求受限',
+  'supervisor.review.watchdog-failed': 'AI 监督裁决看门狗暂停通道',
   'supervisor.remote-command': '飞书远程监督命令',
   'supervisor.lane-control': 'AI 监督单通道控制',
   'supervisor.remote-decision': '飞书人工决策',
@@ -2307,6 +2308,16 @@ export function reduceFeishuAuditTerminalStatus(
       latestResult: `AI 监督模型请求受限：${auditPayloadText(record, 'summary', '服务返回限流或额度错误')}`,
       nextStep: '请检查模型额度或稍后重试；任务终端不会自动接收新的监督指令',
       pendingHuman: '需要用户处理模型额度或等待限流解除',
+    };
+  }
+  if (record.type === 'supervisor.review.watchdog-failed') {
+    const detail = auditPayloadText(record, 'reason', 'AI 监督连续两次未提交结构化裁决');
+    return {
+      ...next,
+      taskState: 'failed',
+      latestResult: detail,
+      nextStep: '请在 wmux 中重新唤醒或重建该监督 AI；任务终端不会继续收到自动指令',
+      pendingHuman: '需要用户恢复或重建监督运行时',
     };
   }
   if (record.type === 'supervisor.decision') {
@@ -2457,6 +2468,8 @@ export function buildFeishuAuditAlertCard(
     title = '监督信息发送失败'; template = 'red';
   } else if (record.type === 'supervisor.provider-limit') {
     title = 'AI 监督模型请求受限'; template = 'red';
+  } else if (record.type === 'supervisor.review.watchdog-failed') {
+    title = 'AI 监督未提交裁决，通道已暂停'; template = 'red';
   } else if (record.type === 'supervisor.approval.requested') title = '任务等待人工决策';
   else if (record.type === 'supervisor.waiting-for-direction') title = 'AI 监督通道待续';
   else if (record.type === 'supervisor.decision' && record.payload?.requiresHuman === true) title = '任务等待人工复核';
@@ -2762,6 +2775,16 @@ export class FeishuSupervisorService {
         `故障角色：${record.type === 'supervisor.runtime-failed' ? 'AI 监督' : '任务终端 AI'}`,
         `详情：${auditPayloadText(record, 'detail', '运行时已停止或启动失败')}`,
         '该监督通道已暂停，需在 wmux 中重新建立运行时后再继续。',
+      ].join('\n')));
+      this.enqueueAuditRecord(record);
+      return;
+    }
+    if (record.type === 'supervisor.review.watchdog-failed') {
+      void this.enqueueDecisionOperation(() => this.sendDecisionText([
+        'wmux AI 监督告警：裁决看门狗已暂停通道',
+        `终端：${auditValue('terminal', record.terminal.label)}`,
+        `详情：${auditPayloadText(record, 'reason', 'AI 监督连续两次未提交结构化裁决')}`,
+        '建议：在 wmux 中重新唤醒一次；若仍失败，请重建监督 AI 或更换模型。',
       ].join('\n')));
       this.enqueueAuditRecord(record);
       return;

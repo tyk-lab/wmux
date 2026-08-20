@@ -165,8 +165,12 @@ export function buildUnacknowledgedSupervisorIdlePrompt(
       lane.activeReviewId,
       isProjectManagedSupervisorLane(lane),
     ),
-    '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
-    '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
+    isProjectManagedSupervisorLane(lane)
+      ? '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。'
+      : '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待下一次自动唤醒，也不要直接询问用户。',
+    isProjectManagedSupervisorLane(lane)
+      ? '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。'
+      : '这是唯一一次自动补报机会；必须提交结构化裁决。若仍无法判断，使用 needs-human 交给用户，不得只输出自然语言分析。',
   ].filter(Boolean).join('\n');
 }
 
