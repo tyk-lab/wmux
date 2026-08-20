@@ -146,8 +146,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     const directoryIdentity = projectDirectoryIdentity(options.projectDir);
     const existing = get().projectManagers.find((session) => (
       isLiveProjectManagerSession(session)
-      &&
-      projectDirectoryIdentity(session.projectDir) === directoryIdentity
+      && projectDirectoryIdentity(session.projectDir) === directoryIdentity
     ));
     if (existing) {
       throw new Error(`该目录已绑定项目 AI“${existing.projectName || existing.goal}”（${existing.id}），请进入现有项目，不要重复创建。`);
@@ -222,17 +221,21 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const directoryIdentity = projectDirectoryIdentity(normalized.projectDir);
       const existing = isLiveProjectManagerSession(normalized)
         ? state.projectManagers.find((candidate) => (
-        candidate.id !== normalized.id
-        && isLiveProjectManagerSession(candidate)
-        && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
+          candidate.id !== normalized.id
+          && isLiveProjectManagerSession(candidate)
+          && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
         ))
         : undefined;
       const selected = existing && existing.updatedAt >= normalized.updatedAt ? existing : normalized;
+      const retained = state.projectManagers.filter((candidate) => (
+        candidate.id !== normalized.id
+        && !(isLiveProjectManagerSession(normalized)
+          && isLiveProjectManagerSession(candidate)
+          && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity)
+      ));
       return {
         projectManager: selected,
-        projectManagers: existing
-          ? state.projectManagers.map((candidate) => candidate.id === existing.id ? selected : candidate)
-          : upsertProjectManagerSession(state.projectManagers, normalized),
+        projectManagers: upsertProjectManagerSession(retained, selected),
         selectedProjectManagerId: selected.id,
       };
     });

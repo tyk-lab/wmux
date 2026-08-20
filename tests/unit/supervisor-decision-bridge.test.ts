@@ -585,6 +585,30 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
+  it('allows a new active project in a directory whose previous project was stopped', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\reused-project', goal: '旧项目',
+      preconditions: ['无额外物理前置条件'], doneWhen: ['旧项目完成'],
+    })).resolves.toMatchObject({ ok: true });
+    const previous = useStore.getState().projectManager!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'stop', callerSurfaceId: previous.managerSurfaceId, projectId: previous.id,
+      reason: '旧项目已停止',
+    })).resolves.toMatchObject({ ok: true });
+
+    await expect(remote({
+      action: 'start', projectDir: 'e:/reused-project/.', goal: '新项目',
+      preconditions: ['无额外物理前置条件'], doneWhen: ['新项目完成'],
+    })).resolves.toMatchObject({ ok: true, session: { goal: '新项目' } });
+    const sessions = useStore.getState().projectManagers;
+    expect(sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: previous.id, status: 'stopped' }),
+      expect.objectContaining({ goal: '新项目', status: 'waiting' }),
+    ]));
+  });
+
   it('does not derive route-adjustment authority from retry authority', () => {
     const project = bindProjectLaneToWorkItem();
     const contract = project.workItems[0].contract;

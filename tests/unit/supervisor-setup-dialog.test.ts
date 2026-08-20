@@ -120,7 +120,7 @@ describe('supervisor setup dialog feedback', () => {
       /const sessionDefinitionFingerprint = session \? JSON\.stringify\(\[[\s\S]*?\]\) : '';/m,
     )?.[0] || '';
     expect(definitionFingerprint).not.toContain('session.subgoals');
-    expect(projectManagerDialogSource).toContain('同一项目目录只允许一个项目 AI');
+    expect(projectManagerDialogSource).toContain('同一项目目录同时只允许一个活动项目 AI');
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
     expect(projectManagerDialogSource).toContain('恢复所选项目');

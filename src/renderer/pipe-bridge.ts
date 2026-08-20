@@ -8363,7 +8363,8 @@ export function initPipeBridge(): void {
       }
       const directoryIdentity = projectDirectoryIdentity(projectDir);
       const existingProject = store.projectManagers.find((candidate) => (
-        projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
+        ['active', 'paused', 'waiting'].includes(candidate.status)
+        && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
       ));
       if (existingProject) {
         return {

@@ -57,6 +57,24 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManagers[0].id).toBe(first.id);
   });
 
+  it('allows a new active project in a directory that only has stopped history', () => {
+    const useStore = store();
+    const historical = useStore.getState().startProjectManager({
+      projectDir: 'E:\\Repo\\', goal: '历史项目', doneWhen: ['历史项目完成'],
+    });
+    useStore.getState().restoreProjectManager({ ...historical, status: 'stopped', updatedAt: 20 });
+
+    const active = useStore.getState().startProjectManager({
+      projectDir: 'e:/repo/.', goal: '新的活动项目', doneWhen: ['新项目完成'],
+    });
+
+    expect(active.id).not.toBe(historical.id);
+    expect(useStore.getState().projectManagers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: historical.id, status: 'stopped' }),
+      expect.objectContaining({ id: active.id, status: 'active' }),
+    ]));
+  });
+
   it('deduplicates legacy restored projects by normalized directory', () => {
     const useStore = store();
     const first = useStore.getState().startProjectManager({
@@ -75,6 +93,31 @@ describe('project-manager slice', () => {
       id: second.id,
       projectDir: 'e:/repo/.',
     });
+  });
+
+  it('retains stopped history while deduplicating only live restored projects', () => {
+    const useStore = store();
+    const historical = useStore.getState().startProjectManager({
+      projectDir: 'E:\\history', goal: '历史记录', doneWhen: ['历史完成'],
+    });
+    const olderLive = useStore.getState().startProjectManager({
+      projectDir: 'E:\\live-a', goal: '较旧活动项目', doneWhen: ['完成 A'],
+    });
+    const newerLive = useStore.getState().startProjectManager({
+      projectDir: 'E:\\live-b', goal: '较新活动项目', doneWhen: ['完成 B'],
+    });
+
+    useStore.getState().restoreProjectManagers([
+      { ...historical, projectDir: 'E:\\Repo', status: 'stopped', updatedAt: 30 },
+      { ...olderLive, projectDir: 'e:/repo/.', updatedAt: 10 },
+      { ...newerLive, projectDir: 'E:\\REPO\\', updatedAt: 20 },
+    ]);
+
+    expect(useStore.getState().projectManagers).toHaveLength(2);
+    expect(useStore.getState().projectManagers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: historical.id, status: 'stopped' }),
+      expect.objectContaining({ id: newerLive.id, status: 'active' }),
+    ]));
   });
 
   it('keeps multiple projects independently selectable and mutates only the targeted project', () => {
