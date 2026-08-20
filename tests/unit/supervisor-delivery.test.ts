@@ -102,6 +102,7 @@ describe('supervisor delivery queue', () => {
       pendingDeliveries: 0,
     };
     expect(shouldReportUnacknowledgedSupervisorIdle(base)).toBe(true);
+    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, lifecycle: 'Notification' })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, awaitingReview: false })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, controlState: 'waiting' })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, hasPendingDecision: true })).toBe(false);

@@ -99,9 +99,12 @@ describe('supervisor wake event envelope', () => {
   });
 
   it('keeps the normal read-screen handoff after a real task terminal is bound', () => {
-    const retry = buildUnacknowledgedSupervisorIdlePrompt(lane(), '');
+    const retry = buildUnacknowledgedSupervisorIdlePrompt(lane({ activeReviewId: 'review-123' }), '');
 
     expect(retry).toContain('wmux read-screen --surface worker-a');
+    expect(retry).toContain('--review-id review-123');
+    expect(retry).toContain('唯一一次自动补报机会');
+    expect(retry).not.toContain('建议项目 AI');
     expect(retry).not.toContain('首次启动任务终端');
   });
 });
