@@ -14,7 +14,7 @@ import { loadSession, saveSession, handleVersionChange, SessionData } from './se
 import { sessionWindows, MAX_RESTORED_WINDOWS } from './session-windows';
 import { WindowManager } from './window-manager';
 import { initAutoUpdater, requestUpdateNow, getUpdateState } from './updater';
-import { initUpdateChecker, getLatestUpdate } from './update-checker';
+import { getLatestUpdate } from './update-checker';
 import { ensureClaudeHooks, ensureChromeDevtoolsConfig, ensureOrchestratorPlugin } from './claude-context';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { ensureKimiHooks } from './kimi-context';
@@ -826,7 +826,6 @@ app.whenReady().then(() => {
   // Initialize auto-updater only when packaged (avoids errors in dev)
   if (app.isPackaged) {
     initAutoUpdater();
-    initUpdateChecker();
   }
 
   // Late-mounted windows query the cached latest update info so the badge
