@@ -25,14 +25,20 @@ const supervisorCssSource = fs.readFileSync(
 
 describe('supervisor setup dialog feedback', () => {
   it('offers project management as a separate visible mode', () => {
-    expect(dialogSource).toContain('选择 AI 工作模式');
-    expect(dialogSource).toContain('AI 监督模式');
-    expect(dialogSource).toContain('项目 AI 模式');
+    expect(dialogSource).toContain('AI 工作模式');
+    expect(dialogSource).toContain('AI 监督');
+    expect(dialogSource).toContain('项目 AI');
     expect(dialogSource).toContain('openProjectManagerDialog');
-    expect(dialogSource).toContain('进入项目中心');
+    expect(dialogSource).toContain('两种模式独立配置、独立运行，可随时切换管理');
+    expect(dialogSource).toContain('supervisor-dialog__mode-tabs');
+    expect(dialogSource).not.toContain('supervisor-dialog__mode-picker');
     expect(dialogSource).not.toContain('创建或打开项目管理终端');
     expect(dialogSource).toContain('if (s.projectManagerTerminal) continue;');
-    expect(projectManagerDialogSource).toContain('项目中心');
+    expect(projectManagerDialogSource).toContain('项目 AI 中心');
+    expect(projectManagerDialogSource).toContain('switchToSupervisorMode');
+    expect(projectManagerDialogSource).toContain('openSupervisorSetup');
+    expect(projectManagerDialogSource).toContain('supervisor-dialog__mode-tabs');
+    expect(projectManagerDialogSource).toContain('切换会取消未确认的目标与需求变更');
     expect(projectManagerDialogSource).toContain("action: 'start'");
     expect(projectManagerDialogSource).toContain('项目 AI + 监督 AI + 任务 AI');
     expect(projectManagerDialogSource).toContain('选择目录');
@@ -196,6 +202,56 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('projectSupervisorWorkspaceTitle');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__alert');
+  });
+
+  it('allows optional user guidance to be evaluated by the AI supervisor', () => {
+    expect(panelSource).toContain('proposalGuidance');
+    expect(panelSource).toContain('补充给 AI 监督的信息（可选）');
+    expect(panelSource).toContain('没有可选方案时，也可以只提交这段信息');
+    expect(panelSource).toContain("(!selectedOption && !userGuidance.trim())");
+    expect(panelSource).toContain("{selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'}");
+  });
+
+  it('separates supervision setup into focused steps and terminal details', () => {
+    expect(dialogSource).toContain("useState<'targets' | 'permissions' | 'agent'>('targets')");
+    expect(dialogSource).toContain('AI 监督配置步骤');
+    expect(dialogSource).toContain('supervisor-dialog__setup-layout');
+    expect(dialogSource).toContain("setupSection === 'targets'");
+    expect(dialogSource).toContain("setupSection === 'permissions'");
+    expect(dialogSource).toContain("setupSection === 'agent'");
+    expect(dialogSource).toContain('配置详情');
+    expect(dialogSource).toContain('terminalConfigExpansion[candidate.surfaceId] ?? false');
+    expect(dialogSource).toContain('expandedSurfaceId');
+    expect(dialogSource).toContain("[expandedSurfaceId]: false");
+    expect(dialogSource).toContain('supervisor-dialog__drawer-title');
+    expect(dialogSource).toContain('supervisor-dialog__drawer-overview');
+    expect(dialogSource).toContain('任务终端监督配置');
+    expect(supervisorCssSource).toContain('.supervisor-dialog__lane-settings[open]');
+    expect(supervisorCssSource).toContain('position: fixed;');
+    expect(supervisorCssSource).toContain('width: min(620px, calc(100vw - 32px))');
+    expect(supervisorCssSource).toContain(".supervisor-dialog__lane-settings[open] > .supervisor-dialog__section");
+  });
+
+  it('uses a wide responsive project workspace with project and status sidebars', () => {
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__workspace');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__main');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__inspector');
+    expect(projectManagerDialogSource).toContain('当前项目状态');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__portfolio-actions');
+    expect(supervisorCssSource).toMatch(/\.project-manager-dialog\s*\{[\s\S]*?width:\s*min\(1280px,/);
+    expect(supervisorCssSource).toContain("grid-template-areas: 'projects main inspector'");
+    expect(supervisorCssSource).toContain('@media (max-width: 1100px)');
+    expect(supervisorCssSource).toContain('@media (max-width: 820px)');
+  });
+
+  it('keeps the project message composer in normal flow so it cannot cover history', () => {
+    const composerStyle = supervisorCssSource.match(
+      /\.project-manager-dialog__composer\s*\{[\s\S]*?\}/,
+    )?.[0] || '';
+
+    expect(composerStyle).not.toContain('position: sticky');
+    expect(composerStyle).not.toContain('bottom: 0');
+    expect(composerStyle).toContain('margin-top: 8px');
   });
 
   it('configures task-terminal work mode with one to three child threads', () => {

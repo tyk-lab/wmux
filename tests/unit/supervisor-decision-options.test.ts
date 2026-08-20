@@ -135,6 +135,7 @@ describe('supervisor decision options', () => {
         title: '方案 B',
         detail: '切换到备选实现',
       },
+      userGuidance: '保留现有 API，并先补充回归测试',
       recommendation: 'AI 推荐方案 A',
       reason: '现有路线受阻',
       impact: '可能增加改动范围',
@@ -142,11 +143,27 @@ describe('supervisor decision options', () => {
     });
 
     expect(briefing).toContain('[用户选择] 方案 B：切换到备选实现');
+    expect(briefing).toContain('[用户补充信息] 保留现有 API，并先补充回归测试');
+    expect(briefing).toContain('用户补充信息是决策依据，不是可原样发送到任务终端的命令');
     expect(briefing).toContain('请先 read-screen 获取任务终端最新状态');
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
     expect(briefing).toContain('.wmux/tmp/<唯一文件名>.txt');
     expect(briefing).toContain('--next-file');
     expect(briefing).toContain('禁止在项目根目录创建监督草稿');
+    expect(briefing).toContain('不要把本消息原样转发');
+  });
+
+  it('lets the AI supervisor decide from user guidance when no plan is selected', () => {
+    const briefing = buildAdoptedPlanBriefing({
+      surfaceId: 'surface-worker',
+      userGuidance: '先确认失败是否来自环境配置，再决定修复路线',
+      recommendation: '',
+    });
+
+    expect(briefing).toContain('[人工决定] 用户未指定固定方案');
+    expect(briefing).toContain('[用户选择] 未指定固定方案，由 AI 监督判断');
+    expect(briefing).toContain('[用户补充信息] 先确认失败是否来自环境配置，再决定修复路线');
+    expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
     expect(briefing).toContain('不要把本消息原样转发');
   });
 });

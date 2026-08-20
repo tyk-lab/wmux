@@ -335,6 +335,7 @@ export default function SupervisorSetupDialog() {
   };
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [setupSection, setSetupSection] = useState<'targets' | 'permissions' | 'agent'>('targets');
   const [terminalConfigExpansion, setTerminalConfigExpansion] = useState<Record<string, boolean>>({});
   const [dialogNotice, setDialogNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [laneConfigs, setLaneConfigs] = useState<Record<string, SupervisorLaneConfig>>({});
@@ -390,6 +391,7 @@ export default function SupervisorSetupDialog() {
 
   useEffect(() => {
     if (!setupOpen) return;
+    setSetupSection('targets');
     setDialogNotice(null);
     setRestoreEnabled(new Set(
       ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource ? [lane.surfaceId] : []),
@@ -453,11 +455,19 @@ export default function SupervisorSetupDialog() {
     if (!setupOpen) return;
     dialogRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeSupervisorSetup();
+      if (event.key !== 'Escape') return;
+      const expandedSurfaceId = Object.entries(terminalConfigExpansion).find(([, expanded]) => expanded)?.[0];
+      if (expandedSurfaceId) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTerminalConfigExpansion((current) => ({ ...current, [expandedSurfaceId]: false }));
+        return;
+      }
+      closeSupervisorSetup();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [setupOpen, closeSupervisorSetup]);
+  }, [setupOpen, closeSupervisorSetup, terminalConfigExpansion]);
 
   useEffect(() => {
     if (!setupOpen) return;
@@ -713,7 +723,7 @@ export default function SupervisorSetupDialog() {
     if (!selected.has(surfaceId)) {
       setTerminalConfigExpansion((current) => typeof current[surfaceId] === 'boolean'
         ? current
-        : { ...current, [surfaceId]: true });
+        : { ...current, [surfaceId]: false });
     }
     setSelected((prev) => {
       const next = new Set(prev);
@@ -724,9 +734,13 @@ export default function SupervisorSetupDialog() {
   };
 
   const setTerminalConfigExpanded = (surfaceId: string, expanded: boolean) => {
-    setTerminalConfigExpansion((current) => current[surfaceId] === expanded
-      ? current
-      : { ...current, [surfaceId]: expanded });
+    setTerminalConfigExpansion((current) => {
+      if (!expanded) return current[surfaceId] === false ? current : { ...current, [surfaceId]: false };
+      return Object.fromEntries([
+        ...Object.keys(current).map((key) => [key, false] as const),
+        [surfaceId, true] as const,
+      ]);
+    });
   };
 
   const toggleRestoreContext = (surfaceId: string, enabled: boolean) => {
@@ -866,7 +880,7 @@ export default function SupervisorSetupDialog() {
       setSelected(new Set(importPlan.selectedSurfaceIds));
       setTerminalConfigExpansion((current) => ({
         ...current,
-        ...Object.fromEntries(importedSurfaceIds.map((surfaceId) => [surfaceId, true])),
+        ...Object.fromEntries(importedSurfaceIds.map((surfaceId) => [surfaceId, false])),
       }));
     }
     const loadedLaunchCommand = config.supervisorLaunchCmd ?? 'pi';
@@ -1397,31 +1411,64 @@ export default function SupervisorSetupDialog() {
         }}
       >
         <header className="supervisor-dialog__header">
-          <div className="supervisor-dialog__title">选择 AI 工作模式</div>
+          <div className="supervisor-dialog__title">AI 工作模式</div>
           <div className="supervisor-dialog__sub">
-            选择直接监督任务终端，或通过项目中心创建不限数量、彼此独立的项目 AI 会话。
+            两种模式独立配置、独立运行，可随时切换管理。
           </div>
-        </header>
-
-        <div className="supervisor-dialog__body">
-          <section className="supervisor-dialog__mode-picker" aria-label="工作模式选择">
-            <button type="button" className="supervisor-dialog__mode-card" data-selected="true" aria-pressed="true">
-              <strong>AI 监督模式</strong>
-              <span>直接选择任务终端，为每个终端配置独立监督 AI。</span>
-              <em>当前配置</em>
+          <nav className="supervisor-dialog__mode-tabs" aria-label="AI 工作模式切换">
+            <button
+              type="button"
+              className="supervisor-dialog__mode-tab"
+              data-active="true"
+              aria-pressed="true"
+            >
+              <span>AI 监督</span>
+              <small>直接监督已打开的任务终端</small>
             </button>
             <button
               type="button"
-              className="supervisor-dialog__mode-card"
-              data-selected="false"
+              className="supervisor-dialog__mode-tab"
+              data-active="false"
               aria-pressed="false"
               onClick={openProjectManagerMode}
             >
-              <strong>项目 AI 模式</strong>
-              <span>从项目中心进入；每个项目拥有独立会话，由一个项目 AI 管理一条专属监督 AI＋任务 AI 链。</span>
-              <em>进入项目中心</em>
+              <span>项目 AI</span>
+              <small>按项目组织独立会话与执行链</small>
             </button>
-          </section>
+          </nav>
+        </header>
+
+        <div className="supervisor-dialog__body">
+          <div className="supervisor-dialog__setup-layout">
+            <nav className="supervisor-dialog__setup-nav" aria-label="AI 监督配置步骤">
+              <button
+                type="button"
+                data-active={setupSection === 'targets' ? 'true' : 'false'}
+                onClick={() => setSetupSection('targets')}
+              >
+                <span><b>1</b>监督对象</span>
+                <small>{selectedCandidates.length > 0 ? `已选 ${selectedCandidates.length} 个终端` : '选择要监督的终端'}</small>
+              </button>
+              <button
+                type="button"
+                data-active={setupSection === 'permissions' ? 'true' : 'false'}
+                onClick={() => setSetupSection('permissions')}
+              >
+                <span><b>2</b>权限边界</span>
+                <small>{autonomous ? '全自动监督' : `${autonomyPermissions.length} 项自主权限`}</small>
+              </button>
+              <button
+                type="button"
+                data-active={setupSection === 'agent' ? 'true' : 'false'}
+                onClick={() => setSetupSection('agent')}
+              >
+                <span><b>3</b>Agent 设置</span>
+                <small>{supervisorLauncherDisplayName(launcherKind)}</small>
+              </button>
+            </nav>
+
+            <main className="supervisor-dialog__setup-content">
+          {setupSection === 'targets' && (
           <section className="supervisor-dialog__group">
             <div className="supervisor-dialog__group-heading">
               <div>
@@ -1452,7 +1499,7 @@ export default function SupervisorSetupDialog() {
                 const laneWaitingForDirection = existingLane
                   ? supervisorLaneControlState(existingLane) === 'waiting'
                   : false;
-                const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? true;
+                const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? false;
                 const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
                 const configuredChildThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
                   laneConfig.childThreadResponsibilities,
@@ -1491,6 +1538,7 @@ export default function SupervisorSetupDialog() {
                     {isSelected && (
                       <details
                         className="supervisor-dialog__lane-settings"
+                        aria-label={`${candidate.label} 的监督配置详情`}
                         open={isConfigExpanded}
                         onToggle={(event) => setTerminalConfigExpanded(
                           candidate.surfaceId,
@@ -1498,11 +1546,34 @@ export default function SupervisorSetupDialog() {
                         )}
                       >
                         <summary>
-                          {isExistingLane ? '当前独立监督配置（会保留原管理会话）' : '配置此终端的独立监督任务'}
+                          <span className="supervisor-dialog__drawer-title" data-expanded={isConfigExpanded ? '1' : '0'}>
+                            {isConfigExpanded && <small>任务终端监督配置</small>}
+                            <strong>
+                              {isConfigExpanded
+                                ? candidate.label
+                                : isExistingLane
+                                  ? '查看当前独立监督配置'
+                                  : '配置详情'}
+                            </strong>
+                          </span>
                           <span className="supervisor-dialog__toggle-hint">
-                            {isConfigExpanded ? '折叠' : '展开'}
+                            {isConfigExpanded ? '关闭' : '打开'}
                           </span>
                         </summary>
+                        {isConfigExpanded && (
+                          <div className="supervisor-dialog__drawer-overview">
+                            <div>
+                              <span>当前任务</span>
+                              <strong>{candidate.currentTask?.trim() || '尚未收到终端任务事件'}</strong>
+                            </div>
+                            <div className="supervisor-dialog__drawer-meta">
+                              <span>{candidate.workspaceTitle}</span>
+                              <span>状态 {candidate.state}</span>
+                              {candidate.remoteSshControl && <span>SSH 远程控制</span>}
+                              <span>{candidate.surfaceId.slice(0, 16)}…</span>
+                            </div>
+                          </div>
+                        )}
                         <div className="supervisor-dialog__section">
                           <label className="supervisor-dialog__row">
                             <input
@@ -1862,9 +1933,11 @@ export default function SupervisorSetupDialog() {
               </div>
             )}
           </section>
+          )}
 
+          {setupSection === 'permissions' && (
           <section className="supervisor-dialog__group">
-            <div className="supervisor-dialog__group-title">2. 会话默认的自主权限与边界</div>
+            <div className="supervisor-dialog__group-title">权限边界</div>
             <div className="supervisor-dialog__group-description">所有终端默认使用这些权限；在终端配置中可单独覆盖全自动、允许自主处理和禁止事项。</div>
             <label className="supervisor-dialog__row supervisor-dialog__autonomous-row">
               <input
@@ -1966,9 +2039,12 @@ export default function SupervisorSetupDialog() {
               </div>
             </section>
           </section>
+          )}
 
-          <details className="supervisor-dialog__advanced">
-            <summary>3. 会话高级设置</summary>
+          {setupSection === 'agent' && (
+          <section className="supervisor-dialog__group supervisor-dialog__agent-settings">
+            <div className="supervisor-dialog__group-title">Agent 设置</div>
+            <div className="supervisor-dialog__group-description">配置监督 AI 的启动器、模型、思考程度以及终端配置文件。</div>
             <div className="supervisor-dialog__advanced-content">
               <section className="supervisor-dialog__section">
                 <div className="supervisor-dialog__label">监督 AI 启动器</div>
@@ -2318,7 +2394,10 @@ export default function SupervisorSetupDialog() {
                 <div className="supervisor-dialog__hint">用于预览专属监督上下文；不会开始调度或监听任务事件。</div>
               </section>
             </div>
-          </details>
+          </section>
+          )}
+            </main>
+          </div>
         </div>
 
         {dialogNotice && (
@@ -2344,6 +2423,9 @@ export default function SupervisorSetupDialog() {
               停止监督
             </button>
           )}
+          <span className="supervisor-dialog__selection-summary">
+            已选 {selectedCandidates.length} 个终端 · {autonomous ? '全自动监督' : '受控自主'}
+          </span>
           <span className="supervisor-dialog__actions-spacer" />
           <button type="button" className="confirm-dialog__btn" onClick={closeSupervisorSetup}>
             取消

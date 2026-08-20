@@ -10,6 +10,10 @@ const panelSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/Sidebar/SupervisorPanel.tsx'),
   'utf8',
 );
+const supervisorCssSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/styles/supervisor.css'),
+  'utf8',
+);
 
 describe('supervisor status summary', () => {
   it('shows the latest supervisor decision as the next-step plan', () => {
@@ -75,5 +79,39 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('const visibleChannelCount = scopedProjectId ? enabled.length : visibleBoundLanes.length;');
     expect(panelSource).toContain('{visibleChannelCount} 通道');
     expect(panelSource).toMatch(/\{!laneProjectManaged && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
+  });
+
+  it('shows every current project work item and its supervisor planning state', () => {
+    expect(panelSource).toContain('const scopedProjectWorkItems');
+    expect(panelSource).toContain('className="sup-panel__project-plan"');
+    expect(panelSource).toContain('当前监督规划');
+    expect(panelSource).toContain('item.workerSurfaceId');
+    expect(panelSource).toContain('item.supervisorPlan?.milestones');
+    expect(panelSource).toContain('item.supervisorPlan.selectedRoute');
+    expect(panelSource).toContain('item.latestBlocker');
+    expect(panelSource).toContain('item.latestEvidence');
+    expect(panelSource).toContain("? '已结束'");
+    expect(panelSource).toContain(": '已停止';");
+    expect(panelSource).toContain('工作项已完成，执行证据已归档');
+    expect(panelSource).toContain('打开执行链');
+  });
+
+  it('shows the current route and recent planning trail for ordinary supervision', () => {
+    expect(panelSource).toContain('SUPERVISOR_DECISION_OUTCOME_LABELS');
+    expect(panelSource).toContain('SUPERVISOR_PROPOSAL_KIND_LABELS');
+    expect(panelSource).toContain('className="sup-panel__ordinary-plan"');
+    expect(panelSource).toContain('当前路线 / 方案');
+    expect(panelSource).toContain('下一步安排');
+    expect(panelSource).toContain('监督决策链');
+    expect(panelSource).toContain('负责任务：');
+    expect(panelSource).toContain('决策依据：');
+    expect(panelSource).toContain('→ 指示任务 AI');
+    expect(panelSource).toContain('(lane.decisions || []).length > 0');
+    expect(panelSource).toContain('.slice(0, 6)');
+    expect(panelSource).toContain('等待首次规划');
+    expect(panelSource).toContain('监督 AI 提交首次正式裁决后');
+    expect(supervisorCssSource).toContain('.sup-panel__ordinary-plan-grid');
+    expect(supervisorCssSource).toContain('.sup-panel__ordinary-plan-history');
+    expect(supervisorCssSource).toContain('max-height: 280px');
   });
 });
