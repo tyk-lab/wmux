@@ -87,10 +87,6 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'high', label: '高（更深入）' },
   { value: 'xhigh', label: '超高（最深入）' },
 ];
-const KIMI_THINKING_OPTIONS = [
-  { value: '', label: '使用 Kimi 默认 Thinking 设置' },
-  { value: 'on', label: '开启 Thinking' },
-];
 const PI_THINKING_OPTIONS = [
   { value: 'medium', label: '中（均衡）' },
   { value: 'low', label: '低（更快）' },
@@ -2232,30 +2228,8 @@ export default function SupervisorSetupDialog() {
               )}
               {launcherKind === 'kimi' && (
                 <section className="supervisor-dialog__section">
-                  <div className="supervisor-dialog__label">Kimi Thinking</div>
-                  <div className="supervisor-dialog__default-agent-row">
-                    <select
-                      className="supervisor-dialog__input"
-                      value={reasoningEffort}
-                      disabled={sessionRetained}
-                      onChange={(event) => setReasoningEffort(event.target.value)}
-                    >
-                      {KIMI_THINKING_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}{selectedAgentDefaults?.supervisorReasoningEffort === option.value ? '（当前默认）' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="confirm-dialog__btn"
-                      disabled={sessionRetained || !selectedDefaultAgent || reasoningIsDefault}
-                      onClick={saveCurrentReasoningAsDefault}
-                      title="将当前 Thinking 设置用作 Kimi 以后新建监督会话的默认选择"
-                    >
-                      {reasoningIsDefault ? '已为默认' : '设为默认'}
-                    </button>
-                  </div>
+                  <div className="supervisor-dialog__label">Kimi 推理设置</div>
+                  <p>由当前 Kimi 模型或 Agent 配置决定；启动命令不再附加不受支持的参数。</p>
                 </section>
               )}
               {launcherKind === 'pi' && (

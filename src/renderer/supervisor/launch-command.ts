@@ -146,9 +146,9 @@ export function buildSupervisorLaunchCommand(
       configuredCommand = `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
     }
   }
-  if (launcher === 'kimi' && selectedEffort === 'on' && !/(?:^|\s)--thinking(?:\s|$)/i.test(command)) {
-    configuredCommand = `${modelCommand} --thinking`;
-  }
+  // Current Kimi Code releases do not expose a --thinking CLI option. Legacy
+  // preferences are normalized away; the selected model/profile decides its
+  // thinking behavior instead of making the Agent fail at startup.
   if (launcher === 'grok'
     && selectedEffort
     && !/(?:^|\s)--(?:reasoning-)?effort(?:\s|=)/i.test(command)) {

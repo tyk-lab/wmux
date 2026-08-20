@@ -2976,13 +2976,17 @@ describe('supervisor decision bridge', () => {
       supervisor: { agent: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
       task: { agent: 'kimi', model: 'k3', reasoningEffort: 'on' },
     };
+    const normalizedRecoveredAgentConfig = {
+      ...recoveredAgentConfig,
+      task: { ...recoveredAgentConfig.task, reasoningEffort: '' },
+    };
     await expect(remote({
       action: 'restore-projects', agentConfig: recoveredAgentConfig,
     })).resolves.toMatchObject({
       ok: true, restored: true, projects: [{ id: 'pm-recover' }],
-      agentConfig: recoveredAgentConfig,
+      agentConfig: normalizedRecoveredAgentConfig,
     });
-    expect(useStore.getState().workspacePrefs.projectManagementAgents).toEqual(recoveredAgentConfig);
+    expect(useStore.getState().workspacePrefs.projectManagementAgents).toEqual(normalizedRecoveredAgentConfig);
     expect(useStore.getState().projectManager).toMatchObject({
       id: 'pm-recover', managerSurfaceId: expect.any(String), recoveryState: 'checking',
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
@@ -3087,7 +3091,7 @@ describe('supervisor decision bridge', () => {
     expect(recoveredSurface).toMatchObject({
       projectManagerProjectId: 'pm-recover', projectManagerWorkItemId: 'recover_task',
       customTitle: 'Kimi直连 · 恢复任务',
-      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
     });
     const recoveredSupervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
@@ -3325,7 +3329,7 @@ describe('supervisor decision bridge', () => {
     )).find((surface) => surface.id === created.surfaceId);
     expect(taskSurface).toMatchObject({
       customTitle: 'Kimi直连 · 配置任务',
-      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
       startupInput: expect.stringContaining('项目任务 AI 冷启动'),
     });
     const supervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (

@@ -306,7 +306,7 @@ export function supervisorDefaultsForAgent(
     defaults = {
       supervisorLaunchCmd: 'kimi',
       supervisorModel: '',
-      supervisorReasoningEffort: 'on',
+      supervisorReasoningEffort: '',
     };
   } else if (agent === 'grok') {
     defaults = {
@@ -323,7 +323,9 @@ export function supervisorDefaultsForAgent(
   }
 
   const savedModel = preferences?.defaultSupervisorModels?.[agent];
-  const savedReasoningEffort = preferences?.defaultSupervisorReasoningEfforts?.[agent];
+  const savedReasoningEffort = agent === 'kimi'
+    ? undefined
+    : preferences?.defaultSupervisorReasoningEfforts?.[agent];
   return {
     ...defaults,
     supervisorModel: typeof savedModel === 'string' ? savedModel : defaults.supervisorModel,

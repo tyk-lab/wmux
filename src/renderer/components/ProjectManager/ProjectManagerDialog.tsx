@@ -127,8 +127,7 @@ function projectReasoningOptions(agent: string): Array<{ value: string; label: s
     { value: 'off', label: '关闭' },
   ];
   if (agent === 'kimi') return [
-    { value: '', label: '使用 Kimi 默认 Thinking' },
-    { value: 'on', label: '开启 Thinking' },
+    { value: '', label: '由 Kimi 模型或 Agent 配置决定' },
   ];
   if (agent === 'grok') return [
     { value: '', label: '使用 Grok 默认 Thinking' },

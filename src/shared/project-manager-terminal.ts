@@ -27,7 +27,6 @@ export const PROJECT_MANAGER_TERMINAL_AGENT = DEFAULT_PROJECT_MANAGEMENT_AGENT_C
 
 export function projectAgentDefaultReasoningEffort(agent: string): string {
   if (agent === 'codex' || agent === 'pi') return 'medium';
-  if (agent === 'kimi') return 'on';
   return '';
 }
 
@@ -39,9 +38,7 @@ export function normalizeProjectAgentReasoningEffort(agent: string, value: unkno
     ? ['low', 'medium', 'high', 'xhigh']
     : agent === 'pi'
       ? ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'off']
-      : agent === 'kimi'
-        ? ['on']
-        : agent === 'grok'
+      : agent === 'grok'
           ? ['low', 'medium', 'high']
         : [];
   return allowed.includes(effort) ? effort : projectAgentDefaultReasoningEffort(agent);

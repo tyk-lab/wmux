@@ -1102,7 +1102,7 @@ export default function App() {
     const launcherName = supervisorLauncherDisplayName(launcher);
     let defaultReasoning = '不适用';
     if (launcher === 'codex') defaultReasoning = 'Codex 默认推理程度';
-    else if (launcher === 'kimi') defaultReasoning = 'Kimi 默认 Thinking';
+    else if (launcher === 'kimi') defaultReasoning = '由 Kimi 模型或 Agent 配置决定';
     else if (launcher === 'pi') defaultReasoning = 'Pi 默认 Thinking';
     for (const lane of session.lanes) {
       const managementSessionId = lane.managementSessionId || session.sessionId;

@@ -36,7 +36,7 @@ describe('interactive Agent launch', () => {
     expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-sol', 'high').startupCommands[0])
       .toMatch(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /);
     expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3', 'on')).toEqual({
-      startupCommands: ["kimi --model 'k3' --thinking # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
     });
     expect(buildInteractiveAgentLaunch('grok', '执行首条任务', 'grok-4.6', 'medium').startupCommands[0])
