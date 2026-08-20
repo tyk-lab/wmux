@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import {
   buildSupervisorBriefing,
+  buildUnacknowledgedSupervisorIdlePrompt,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -217,6 +218,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     supervisorLaneControlState(lane) === 'waiting'
     || supervisorLaneControlState(lane) === 'paused'
     || visibleAgentStates[lane.surfaceId]?.state === 'blocked'
+    || !!lane.supervisorProblem
   )).map((lane) => lane.id)).size;
   const ordinaryAttentionCount = ordinaryAttentionLaneCount + pendingCount;
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
@@ -239,9 +241,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const missingDedicatedSupervisor = supervisor.lanes.some(
     (lane) => {
       const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-      return !isProjectManagedSupervisorLane(lane)
-        && supervisorLaneControlState(lane) !== 'stopped'
-        && (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId));
+        return !isProjectManagedSupervisorLane(lane)
+          && supervisorLaneControlState(lane) !== 'stopped'
+          && (
+            !supervisorSurfaceId
+            || !liveSurfaceIds.has(supervisorSurfaceId)
+            || lane.supervisorProblem?.kind === 'runtime-failed'
+          );
     },
   );
   let statusLabel = '已停止';
@@ -489,6 +495,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const resumeAfterHumanReview = (lane: SupervisorLane) => {
     updateLane(lane.id, {
       awaitingReview: false,
+      activeReviewId: undefined,
+      reviewWorkerTurnId: undefined,
+      reviewOpenedAt: undefined,
+      reviewDeliveryConfirmedAt: undefined,
+      reviewWatchdogState: undefined,
       awaitingStopCheck: false,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
@@ -517,6 +528,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       && lane.resumeAfterCancelledDecision
       && !pendingLaneIds.has(lane.id)
     )).map((lane) => lane.id));
+    const watchdogLaneIds = new Set(ordinaryLanes.filter((lane) => (
+      supervisorLaneControlState(lane) === 'paused'
+      && lane.supervisorProblem?.kind === 'unreported-decision'
+    )).map((lane) => lane.id));
     resumeOrdinarySupervisor();
     const resumedSession = useStore.getState().supervisor;
     for (const lane of resumedSession.lanes.filter((candidate) => !isProjectManagedSupervisorLane(candidate))) {
@@ -524,7 +539,17 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       if (supervisorLaneControlState(lane) !== 'active'
         || !supervisorSurfaceId
         || pendingLaneIds.has(lane.id)) continue;
-      const message = cancelledDecisionLaneIds.has(lane.id)
+      if (watchdogLaneIds.has(lane.id)) {
+        updateLane(lane.id, {
+          reviewWatchdogState: 'retrying',
+          reviewDeliveryConfirmedAt: undefined,
+          unreportedIdleRecoveryAttempts: 1,
+          supervisorProblem: undefined,
+        });
+      }
+      const message = watchdogLaneIds.has(lane.id)
+        ? buildUnacknowledgedSupervisorIdlePrompt(lane)
+        : cancelledDecisionLaneIds.has(lane.id)
         ? '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n'
         : '[会话继续] 用户已恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n';
       sendToSurface(supervisorSurfaceId, message, true);
@@ -563,14 +588,31 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const resumeLane = (lane: SupervisorLane) => {
     if (isProjectManagedSupervisorLane(lane)) return;
     const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-    if (!supervisorSurfaceId || !liveSurfaceIds.has(supervisorSurfaceId)) {
+    if (!supervisorSurfaceId
+      || !liveSurfaceIds.has(supervisorSurfaceId)
+      || lane.supervisorProblem?.kind === 'runtime-failed') {
       openSupervisorSetup();
       return;
     }
+    const retriesWatchdog = lane.supervisorProblem?.kind === 'unreported-decision';
     resumeSupervisorLane(lane.id, `用户继续 ${lane.label}；其他监督通道状态不变`);
+    if (retriesWatchdog) {
+      updateLane(lane.id, {
+        reviewWatchdogState: 'retrying',
+        reviewDeliveryConfirmedAt: undefined,
+        unreportedIdleRecoveryAttempts: 1,
+        supervisorProblem: undefined,
+      });
+    }
     appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'resume' });
     if (supervisor.active && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)) {
-      sendToSurface(supervisorSurfaceId, '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+      sendToSurface(
+        supervisorSurfaceId,
+        retriesWatchdog
+          ? buildUnacknowledgedSupervisorIdlePrompt(lane)
+          : '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
+        true,
+      );
     }
   };
 
@@ -1026,6 +1068,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   )}
                   {!laneDetailsCollapsed && (
                     <>
+                  {!laneProjectManaged && lane.supervisorProblem && (
+                    <div className="sup-panel__waiting-notice" role="alert">
+                      {lane.supervisorProblem.detail}
+                    </div>
+                  )}
                   {!laneProjectManaged && (
                     <>
                       <div className="sup-panel__lane-status-grid" aria-label={`${lane.label} 的规划与执行状态`}>

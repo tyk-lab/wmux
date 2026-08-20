@@ -1400,6 +1400,32 @@
   white-space: nowrap;
 }
 
+.supervisor-dialog__terminal-config-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.supervisor-dialog__terminal-config-summary > span {
+  max-width: 190px;
+  overflow: hidden;
+  padding: 2px 6px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.14);
+  color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.68);
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.supervisor-dialog__terminal-config-summary > span[data-warning='1'] {
+  border-color: rgba(245, 158, 11, 0.42);
+  color: #fbbf24;
+}
+
 .supervisor-dialog__lane-settings[open] > summary {
   position: sticky;
   z-index: 1;
@@ -1417,20 +1443,29 @@
 .supervisor-dialog__lane-settings[open] {
   position: fixed;
   z-index: 1320;
+  display: flex;
+  flex-direction: column;
   top: 16px;
   right: 16px;
   bottom: 16px;
-  width: min(620px, calc(100vw - 32px));
+  width: min(760px, calc(100vw - 32px));
   box-sizing: border-box;
   margin: 0;
-  padding: 0 18px 20px;
-  overflow: auto;
+  padding: 0 18px;
+  overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid rgba(80, 160, 255, 0.42);
   border-radius: 14px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-1, #1e1e1e) 96%, #24558a 4%), var(--ui-bg-1, #1e1e1e) 180px);
   box-shadow: -18px 0 48px rgba(0, 0, 0, 0.52), 0 0 0 100vmax rgba(0, 0, 0, 0.28);
   clip-path: inset(-100vmax 0 -100vmax -100vmax);
+}
+
+.supervisor-dialog__lane-settings[open]::details-content {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
 }
 
 .supervisor-dialog__lane-settings .supervisor-dialog__section {
@@ -1444,7 +1479,114 @@
   background: rgba(0, 0, 0, 0.12);
 }
 
+.supervisor-dialog__config-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  flex: 0 0 auto;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.supervisor-dialog__config-tabs button {
+  position: relative;
+  min-width: 0;
+  padding: 8px 6px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.14);
+  color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.64);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.supervisor-dialog__config-tabs button[aria-selected='true'] {
+  border-color: rgba(80, 160, 255, 0.52);
+  background: rgba(80, 160, 255, 0.13);
+  color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.96);
+}
+
+.supervisor-dialog__config-tabs button[data-invalid='1']::after {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.12);
+  content: '';
+}
+
+.supervisor-dialog__drawer-notice {
+  flex: 0 0 auto;
+  margin-top: 9px;
+  padding: 7px 9px;
+  border: 1px solid rgba(80, 160, 255, 0.24);
+  border-radius: 7px;
+  background: rgba(80, 160, 255, 0.08);
+  color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.76);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.supervisor-dialog__drawer-notice[data-kind='error'] {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+}
+
+.supervisor-dialog__lane-settings-content {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px 2px 12px 0;
+}
+
+.supervisor-dialog__config-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.supervisor-dialog__config-panel > .supervisor-dialog__section {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.09);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.supervisor-dialog__drawer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 auto;
+  margin: 0 -18px;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  background: color-mix(in srgb, var(--ui-bg-1, #1e1e1e) 96%, #2b65a0 4%);
+}
+
+.supervisor-dialog__drawer-actions > span {
+  min-width: 0;
+  flex: 1;
+  color: var(--ui-text-muted);
+  font-size: 10px;
+}
+
+.supervisor-dialog__drawer-actions > span[data-dirty='1'] {
+  color: #fbbf24;
+}
+
+.supervisor-dialog__drawer-save {
+  border-color: rgba(80, 160, 255, 0.52) !important;
+  background: rgba(80, 160, 255, 0.16) !important;
+}
+
 .supervisor-dialog__drawer-overview {
+  flex: 0 0 auto;
   display: grid;
   gap: 8px;
   margin-bottom: 12px;
@@ -1944,6 +2086,18 @@
 }
 
 @media (max-width: 620px) {
+  .supervisor-dialog__config-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .supervisor-dialog__drawer-actions {
+    flex-wrap: wrap;
+  }
+
+  .supervisor-dialog__drawer-actions > span {
+    flex-basis: 100%;
+  }
+
   .supervisor-dialog__mode-tabs {
     grid-template-columns: 1fr;
   }

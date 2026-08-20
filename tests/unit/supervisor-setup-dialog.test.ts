@@ -228,8 +228,27 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('任务终端监督配置');
     expect(supervisorCssSource).toContain('.supervisor-dialog__lane-settings[open]');
     expect(supervisorCssSource).toContain('position: fixed;');
-    expect(supervisorCssSource).toContain('width: min(620px, calc(100vw - 32px))');
-    expect(supervisorCssSource).toContain(".supervisor-dialog__lane-settings[open] > .supervisor-dialog__section");
+    expect(supervisorCssSource).toContain('width: min(760px, calc(100vw - 32px))');
+    expect(supervisorCssSource).toContain('.supervisor-dialog__config-panel > .supervisor-dialog__section');
+  });
+
+  it('groups terminal details into tabs with summaries and a fixed save bar', () => {
+    expect(dialogSource).toContain("type TerminalConfigSection = 'basic' | 'execution' | 'context' | 'supervision'");
+    expect(dialogSource).toContain("{ id: 'basic', label: '基础配置' }");
+    expect(dialogSource).toContain("{ id: 'execution', label: '执行方式' }");
+    expect(dialogSource).toContain("{ id: 'context', label: '上下文与资料' }");
+    expect(dialogSource).toContain("{ id: 'supervision', label: '监督与权限' }");
+    expect(dialogSource).toContain('supervisor-dialog__terminal-config-summary');
+    expect(dialogSource).toContain('supervisor-dialog__config-tabs');
+    expect(dialogSource).toContain('supervisor-dialog__drawer-notice');
+    expect(dialogSource).toContain('supervisor-dialog__lane-settings-content');
+    expect(dialogSource).toContain('已修改，尚未保存');
+    expect(dialogSource).toContain('保存全部设置');
+    expect(dialogSource).toContain("showTerminalConfigSection(firstLane.surfaceId, 'basic'");
+    expect(dialogSource).toContain("showTerminalConfigSection(firstLane.surfaceId, 'execution'");
+    expect(supervisorCssSource).toContain('.supervisor-dialog__drawer-actions');
+    expect(supervisorCssSource).toContain('.supervisor-dialog__lane-settings[open]::details-content');
+    expect(supervisorCssSource).toContain('.supervisor-dialog__config-tabs button[aria-selected=\'true\']');
   });
 
   it('uses a wide responsive project workspace with project and status sidebars', () => {

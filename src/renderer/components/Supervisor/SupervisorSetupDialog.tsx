@@ -171,6 +171,18 @@ interface TerminalCandidate {
   remoteSshControl: boolean;
 }
 
+type TerminalConfigSection = 'basic' | 'execution' | 'context' | 'supervision';
+
+const TERMINAL_CONFIG_SECTIONS: Array<{
+  id: TerminalConfigSection;
+  label: string;
+}> = [
+  { id: 'basic', label: '基础配置' },
+  { id: 'execution', label: '执行方式' },
+  { id: 'context', label: '上下文与资料' },
+  { id: 'supervision', label: '监督与权限' },
+];
+
 function emptyLaneConfig(): SupervisorLaneConfig {
   return {
     taskGoal: '',
@@ -337,6 +349,8 @@ export default function SupervisorSetupDialog() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [setupSection, setSetupSection] = useState<'targets' | 'permissions' | 'agent'>('targets');
   const [terminalConfigExpansion, setTerminalConfigExpansion] = useState<Record<string, boolean>>({});
+  const [terminalConfigSections, setTerminalConfigSections] = useState<Record<string, TerminalConfigSection>>({});
+  const [dirtyTerminalConfigIds, setDirtyTerminalConfigIds] = useState<Set<string>>(new Set());
   const [dialogNotice, setDialogNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [laneConfigs, setLaneConfigs] = useState<Record<string, SupervisorLaneConfig>>({});
   const [lanePermissionOverrides, setLanePermissionOverrides] = useState<
@@ -421,16 +435,9 @@ export default function SupervisorSetupDialog() {
     setForbiddenActions(normalizeSupervisorForbiddenActions(supervisor.forbiddenActions));
     const boundSurfaceIds = ordinarySupervisorLanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId);
     setSelected(new Set(boundSurfaceIds));
-    setTerminalConfigExpansion((current) => {
-      const next = { ...current };
-      let changed = false;
-      for (const surfaceId of boundSurfaceIds) {
-        if (typeof next[surfaceId] === 'boolean') continue;
-        next[surfaceId] = true;
-        changed = true;
-      }
-      return changed ? next : current;
-    });
+    setTerminalConfigExpansion({});
+    setTerminalConfigSections({});
+    setDirtyTerminalConfigIds(new Set());
     setLaneConfigs(Object.fromEntries(
       ordinarySupervisorLanes.map((lane) => [lane.surfaceId, effectiveSupervisorLaneConfig(lane)]),
     ));
@@ -743,8 +750,39 @@ export default function SupervisorSetupDialog() {
     });
   };
 
+  const markTerminalConfigDirty = (surfaceId: string) => {
+    setDirtyTerminalConfigIds((current) => {
+      if (current.has(surfaceId)) return current;
+      const next = new Set(current);
+      next.add(surfaceId);
+      return next;
+    });
+  };
+
+  const showTerminalConfigSection = (
+    surfaceId: string,
+    section: TerminalConfigSection,
+    fieldAriaLabel?: string,
+  ) => {
+    setSetupSection('targets');
+    setTerminalConfigExpanded(surfaceId, true);
+    setTerminalConfigSections((current) => ({ ...current, [surfaceId]: section }));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const drawer = Array.from(document.querySelectorAll<HTMLElement>('[data-terminal-config-surface]'))
+        .find((element) => element.dataset.terminalConfigSurface === surfaceId);
+      if (!drawer) return;
+      const field = fieldAriaLabel
+        ? Array.from(drawer.querySelectorAll<HTMLElement>('[aria-label]'))
+          .find((element) => element.getAttribute('aria-label') === fieldAriaLabel)
+        : undefined;
+      (field || drawer).focus({ preventScroll: false });
+      (field || drawer).scrollIntoView({ block: 'nearest' });
+    }));
+  };
+
   const toggleRestoreContext = (surfaceId: string, enabled: boolean) => {
     setDialogNotice(null);
+    markTerminalConfigDirty(surfaceId);
     setRestoreEnabled((current) => {
       const next = new Set(current);
       if (enabled) next.add(surfaceId);
@@ -759,11 +797,13 @@ export default function SupervisorSetupDialog() {
 
   const selectRestoreSource = (surfaceId: string, restoreSurfaceId: string) => {
     setDialogNotice(null);
+    markTerminalConfigDirty(surfaceId);
     setRestoreSources((current) => ({ ...current, [surfaceId]: restoreSurfaceId }));
   };
 
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
     setDialogNotice(null);
+    markTerminalConfigDirty(surfaceId);
     setLaneConfigs((current) => ({
       ...current,
       [surfaceId]: { ...(current[surfaceId] || emptyLaneConfig()), ...patch },
@@ -1032,6 +1072,12 @@ export default function SupervisorSetupDialog() {
         awaitingStopCheck: keepsCurrentContext ? prev?.awaitingStopCheck || false : false,
         stopConfirmed: keepsCurrentContext ? prev?.stopConfirmed || false : false,
         awaitingReview: keepsCurrentContext ? prev?.awaitingReview || false : false,
+        activeReviewId: keepsCurrentContext ? prev?.activeReviewId : undefined,
+        reviewWorkerTurnId: keepsCurrentContext ? prev?.reviewWorkerTurnId : undefined,
+        reviewOpenedAt: keepsCurrentContext ? prev?.reviewOpenedAt : undefined,
+        reviewDeliveryConfirmedAt: keepsCurrentContext ? prev?.reviewDeliveryConfirmedAt : undefined,
+        reviewWatchdogState: keepsCurrentContext ? prev?.reviewWatchdogState : undefined,
+        supervisorProblem: keepsCurrentContext ? prev?.supervisorProblem : undefined,
         resumeAfterCancelledDecision: keepsCurrentContext ? prev?.resumeAfterCancelledDecision : false,
         lastBlockedResponseVersion: keepsCurrentContext ? prev?.lastBlockedResponseVersion : undefined,
         lastBlockedResponseId: keepsCurrentContext ? prev?.lastBlockedResponseId : undefined,
@@ -1150,7 +1196,16 @@ export default function SupervisorSetupDialog() {
         transientSupervisor: true,
       });
       if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
-      return { ...lane, supervisorSurfaceId };
+      return {
+        ...lane,
+        supervisorSurfaceId,
+        ...(replaceExisting ? {
+          supervisorProblem: undefined,
+          reviewWatchdogState: lane.activeReviewId ? 'pending' as const : undefined,
+          reviewDeliveryConfirmedAt: undefined,
+          unreportedIdleRecoveryAttempts: 0,
+        } : {}),
+      };
     });
 
     if (configuredLanes.some((lane) => !lane.supervisorSurfaceId)) {
@@ -1213,6 +1268,12 @@ export default function SupervisorSetupDialog() {
       && !restoreSourceIdFor(candidate.surfaceId)
     ));
     if (missingRestoreSource.length > 0) {
+      const firstCandidate = missingRestoreSource[0];
+      showTerminalConfigSection(
+        firstCandidate.surfaceId,
+        'context',
+        `${firstCandidate.label} 的恢复上下文`,
+      );
       setDialogNotice({
         kind: 'error',
         message: `以下终端没有可恢复的审计上下文：${missingRestoreSource.map((candidate) => candidate.label).join('、')}`,
@@ -1226,6 +1287,8 @@ export default function SupervisorSetupDialog() {
     }
     const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
+      const firstLane = missingStopWhen[0];
+      showTerminalConfigSection(firstLane.surfaceId, 'basic', `${firstLane.label} 的停止条件`);
       setDialogNotice({
         kind: 'error',
         message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
@@ -1236,13 +1299,23 @@ export default function SupervisorSetupDialog() {
       hasIncompleteMultiThreadAssignment(lane.config)
     ));
     if (incompleteThreadAssignments.length > 0) {
+      const firstLane = incompleteThreadAssignments[0];
+      showTerminalConfigSection(firstLane.surfaceId, 'execution', `${firstLane.label} 的主线程职责`);
       setDialogNotice({
         kind: 'error',
         message: `请完整填写以下终端的主线程和已启用子线程职责：${incompleteThreadAssignments.map((lane) => lane.label).join('、')}`,
       });
       return;
     }
-    if (workScope === 'plan-defined' && lanes.some((lane) => !lane.config?.planFilePath.trim())) {
+    const missingPlanFile = workScope === 'plan-defined'
+      ? lanes.find((lane) => !lane.config?.planFilePath.trim())
+      : undefined;
+    if (missingPlanFile) {
+      showTerminalConfigSection(
+        missingPlanFile.surfaceId,
+        'context',
+        `${missingPlanFile.label} 的计划文件`,
+      );
       setDialogNotice({ kind: 'error', message: '工作范围选择“按计划文件定义”时，每个被监督终端都必须选择自己的计划文件。' });
       return;
     }
@@ -1329,6 +1402,12 @@ export default function SupervisorSetupDialog() {
       && !restoreSourceIdFor(candidate.surfaceId)
     ));
     if (missingRestoreSource.length > 0) {
+      const firstCandidate = missingRestoreSource[0];
+      showTerminalConfigSection(
+        firstCandidate.surfaceId,
+        'context',
+        `${firstCandidate.label} 的恢复上下文`,
+      );
       setDialogNotice({
         kind: 'error',
         message: `以下终端没有可恢复的审计上下文：${missingRestoreSource.map((candidate) => candidate.label).join('、')}`,
@@ -1342,6 +1421,8 @@ export default function SupervisorSetupDialog() {
     }
     const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
+      const firstLane = missingStopWhen[0];
+      showTerminalConfigSection(firstLane.surfaceId, 'basic', `${firstLane.label} 的停止条件`);
       setDialogNotice({
         kind: 'error',
         message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
@@ -1352,6 +1433,8 @@ export default function SupervisorSetupDialog() {
       hasIncompleteMultiThreadAssignment(lane.config)
     ));
     if (incompleteThreadAssignments.length > 0) {
+      const firstLane = incompleteThreadAssignments[0];
+      showTerminalConfigSection(firstLane.surfaceId, 'execution', `${firstLane.label} 的主线程职责`);
       setDialogNotice({
         kind: 'error',
         message: `请完整填写以下终端的主线程和已启用子线程职责：${incompleteThreadAssignments.map((lane) => lane.label).join('、')}`,
@@ -1500,6 +1583,8 @@ export default function SupervisorSetupDialog() {
                   ? supervisorLaneControlState(existingLane) === 'waiting'
                   : false;
                 const isConfigExpanded = terminalConfigExpansion[candidate.surfaceId] ?? false;
+                const activeConfigSection = terminalConfigSections[candidate.surfaceId] || 'basic';
+                const terminalConfigDirty = dirtyTerminalConfigIds.has(candidate.surfaceId);
                 const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
                 const configuredChildThreadResponsibilities = normalizeTaskChildThreadResponsibilities(
                   laneConfig.childThreadResponsibilities,
@@ -1533,12 +1618,25 @@ export default function SupervisorSetupDialog() {
                         <span className="supervisor-dialog__current-task" title={candidate.currentTask || ''}>
                           当前任务：{candidate.currentTask?.trim() || '尚未收到终端任务事件'}
                         </span>
+                        {isSelected && (
+                          <span className="supervisor-dialog__terminal-config-summary" aria-label={`${candidate.label} 的配置摘要`}>
+                            <span>{taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}</span>
+                            <span>{laneConfig.stopWhenKind === 'direction' ? '方向型条件' : '具体条件'}</span>
+                            <span data-warning={laneConfig.stopWhen.trim() ? '0' : '1'}>
+                              {laneConfig.stopWhen.trim() || '缺少停止条件'}
+                            </span>
+                            <span>{restoreContextEnabled ? '恢复上下文' : '不恢复上下文'}</span>
+                            <span>{lanePolicyOverride ? '单独权限' : '继承默认权限'}</span>
+                          </span>
+                        )}
                       </span>
                     </label>
                     {isSelected && (
                       <details
                         className="supervisor-dialog__lane-settings"
                         aria-label={`${candidate.label} 的监督配置详情`}
+                        data-terminal-config-surface={candidate.surfaceId}
+                        tabIndex={-1}
                         open={isConfigExpanded}
                         onToggle={(event) => setTerminalConfigExpanded(
                           candidate.surfaceId,
@@ -1561,366 +1659,453 @@ export default function SupervisorSetupDialog() {
                           </span>
                         </summary>
                         {isConfigExpanded && (
-                          <div className="supervisor-dialog__drawer-overview">
-                            <div>
-                              <span>当前任务</span>
-                              <strong>{candidate.currentTask?.trim() || '尚未收到终端任务事件'}</strong>
-                            </div>
-                            <div className="supervisor-dialog__drawer-meta">
-                              <span>{candidate.workspaceTitle}</span>
-                              <span>状态 {candidate.state}</span>
-                              {candidate.remoteSshControl && <span>SSH 远程控制</span>}
-                              <span>{candidate.surfaceId.slice(0, 16)}…</span>
-                            </div>
-                          </div>
-                        )}
-                        <div className="supervisor-dialog__section">
-                          <label className="supervisor-dialog__row">
-                            <input
-                              type="checkbox"
-                              checked={restoreContextEnabled}
-                              disabled={isExistingLane}
-                              onChange={(event) => toggleRestoreContext(candidate.surfaceId, event.target.checked)}
-                            />
-                            <span className="supervisor-dialog__row-main">
-                              <span className="supervisor-dialog__row-label">恢复任务终端上下文</span>
-                              <span className="supervisor-dialog__row-meta">
-                                {isExistingLane
-                                  ? '运行中的监督会话不能切换恢复来源；停止后重新配置即可更改。'
-                                  : '勾选后自动恢复最新审计历史；监督 AI 拟定恢复指令，需你确认后才发送。'}
-                              </span>
-                            </span>
-                          </label>
-                          {restoreContextEnabled && (
-                            <div className="supervisor-dialog__restore-row">
-                              <div className="supervisor-dialog__row-label">恢复上下文（默认最新）</div>
-                              {!restoreCandidatesReady ? (
-                                <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
-                              ) : selectedRestoreSource ? (
-                                <>
-                                  <select
-                                    className="supervisor-dialog__input"
-                                    aria-label={`${candidate.label} 的恢复上下文`}
-                                    value={restoreSourceIdFor(candidate.surfaceId)}
-                                    disabled={isExistingLane}
-                                    onChange={(event) => selectRestoreSource(candidate.surfaceId, event.target.value)}
-                                  >
-                                    {restoreOptions.map((option, index) => (
-                                      <option key={`${option.surfaceId}-${option.sessionId}`} value={option.surfaceId}>
-                                        {index === 0 ? '（最新）' : ''}{option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
-                                        {option.currentTask ? ` · ${option.currentTask.slice(0, 50)}` : ''}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <div className="supervisor-dialog__hint">
-                                    {selectedRestoreSource.currentTask ? `当前任务：${selectedRestoreSource.currentTask.slice(0, 80)}` : '当前任务：未记录'}
-                                    {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
-                                  </div>
-                                </>
-                              ) : (
-                                <div className="supervisor-dialog__warning">此工程没有可恢复的监督历史，无法启用上下文恢复。</div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">任务目标（可选）</div>
-                          <textarea
-                            className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的任务目标`}
-                            rows={2}
-                            value={laneConfig.taskGoal}
-                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
-                            placeholder="例如：修复此终端负责的认证模块并保持现有行为"
-                          />
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">任务终端 AI 工作模式</div>
-                          <div className="supervisor-dialog__freedom">
-                            {([
-                              ['single-thread', '单线程工作', '任务终端 AI 在一个执行线程内完成任务'],
-                              ['multi-thread', '多线程工程', '任务终端 AI 按约定自行拆分主线程和子线程'],
-                            ] as Array<[TaskWorkMode, string, string]>).map(([mode, label, description]) => (
-                              <label key={mode} className="supervisor-dialog__radio" data-active={taskWorkMode === mode}>
-                                <input
-                                  type="radio"
-                                  name={`taskWorkMode-${candidate.surfaceId}`}
-                                  checked={taskWorkMode === mode}
-                                  onChange={() => updateLaneConfig(candidate.surfaceId, {
-                                    taskWorkMode: mode,
-                                    ...(mode === 'multi-thread' && childThreadResponsibilities.length === 0
-                                      ? { childThreadResponsibilities: [''] }
-                                      : {}),
-                                  })}
-                                />
-                                <span><strong>{label}</strong> — {description}</span>
-                              </label>
-                            ))}
-                          </div>
-                          <div className="supervisor-dialog__hint">
-                            这里约定的是任务终端里的 AI，不是监督 AI；wmux 记录并传达分工，不创建额外终端。
-                          </div>
-                          {taskWorkMode === 'multi-thread' && (
-                            <div className="supervisor-dialog__thread-config">
-                              <label className="supervisor-dialog__thread-count">
-                                <span>子线程数量</span>
-                                <select
-                                  className="supervisor-dialog__input"
-                                  aria-label={`${candidate.label} 的子线程数量`}
-                                  value={Math.max(1, childThreadResponsibilities.length)}
-                                  onChange={(event) => {
-                                    const count = Number(event.target.value);
-                                    updateLaneConfig(candidate.surfaceId, {
-                                      childThreadResponsibilities: Array.from(
-                                        { length: count },
-                                        (_, index) => childThreadResponsibilities[index] || '',
-                                      ),
-                                    });
-                                  }}
-                                >
-                                  <option value={1}>1 个</option>
-                                  <option value={2}>2 个</option>
-                                  <option value={3}>3 个</option>
-                                </select>
-                              </label>
-                              <label className="supervisor-dialog__thread-role">
-                                <span>主线程职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
-                                <textarea
-                                  className="supervisor-dialog__textarea"
-                                  aria-label={`${candidate.label} 的主线程职责`}
-                                  rows={2}
-                                  maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
-                                  value={normalizeTaskThreadResponsibility(laneConfig.mainThreadResponsibility)}
-                                  onChange={(event) => updateLaneConfig(candidate.surfaceId, {
-                                    mainThreadResponsibility: event.target.value,
-                                  })}
-                                  placeholder="例如：统筹任务、整合子线程结果、执行最终验证"
-                                />
-                              </label>
-                              {childThreadResponsibilities.map((responsibility, index) => (
-                                <label key={index} className="supervisor-dialog__thread-role">
-                                  <span>子线程 {index + 1} 职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
-                                  <textarea
-                                    className="supervisor-dialog__textarea"
-                                    aria-label={`${candidate.label} 的子线程 ${index + 1} 职责`}
-                                    rows={2}
-                                    maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
-                                    value={responsibility}
-                                    onChange={(event) => {
-                                      const nextResponsibilities = [...childThreadResponsibilities];
-                                      nextResponsibilities[index] = event.target.value;
-                                      updateLaneConfig(candidate.surfaceId, {
-                                        childThreadResponsibilities: nextResponsibilities,
-                                      });
-                                    }}
-                                    placeholder={`例如：负责${index === 0 ? '代码实现' : index === 1 ? '测试与验证' : '独立审查与风险检查'}`}
-                                  />
-                                </label>
-                              ))}
-                              <div className="supervisor-dialog__hint">
-                                保存后立即更新对应监督 AI，从下一次裁决开始传达；不会打断任务终端当前工作。
+                          <>
+                            <div className="supervisor-dialog__drawer-overview">
+                              <div>
+                                <span>当前任务</span>
+                                <strong>{candidate.currentTask?.trim() || '尚未收到终端任务事件'}</strong>
+                              </div>
+                              <div className="supervisor-dialog__drawer-meta">
+                                <span>{candidate.workspaceTitle}</span>
+                                <span>状态 {candidate.state}</span>
+                                {candidate.remoteSshControl && <span>SSH 远程控制</span>}
+                                <span>{candidate.surfaceId.slice(0, 16)}…</span>
                               </div>
                             </div>
-                          )}
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">停止条件类型</div>
-                          <div className="supervisor-dialog__freedom">
-                            {(['concrete', 'direction'] as StopWhenKind[]).map((kind) => (
-                              <label key={kind} className="supervisor-dialog__radio" data-active={laneConfig.stopWhenKind === kind}>
-                                <input
-                                  type="radio"
-                                  name={`stopWhenKind-${candidate.surfaceId}`}
-                                  checked={laneConfig.stopWhenKind === kind}
-                                  onChange={() => updateLaneConfig(candidate.surfaceId, { stopWhenKind: kind })}
-                                />
-                                <span>{stopWhenKindLabel(kind)}{kind === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
-                              </label>
-                            ))}
-                          </div>
-                          <div className="supervisor-dialog__hint">{stopWhenKindHint(laneConfig.stopWhenKind)}</div>
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label supervisor-dialog__label--required">
-                            停止条件 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
-                          </div>
-                          <textarea
-                            className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的停止条件`}
-                            rows={2}
-                            value={laneConfig.stopWhen}
-                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { stopWhen: event.target.value })}
-                            placeholder={laneConfig.stopWhenKind === 'direction'
-                              ? '例如：此终端负责的登录流程可用，错误提示合理'
-                              : '例如：认证模块单测全部通过'}
-                          />
-                          <div className="supervisor-dialog__hint">只用于此终端的继续、返工、完成或人工接管裁决。</div>
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <label className="supervisor-dialog__row">
-                            <input
-                              type="checkbox"
-                              aria-label={`${candidate.label} 完成后待续`}
-                              checked={laneConfig.waitForNextDirection === true}
-                              onChange={(event) => updateLaneConfig(candidate.surfaceId, {
-                                waitForNextDirection: event.target.checked,
-                              })}
-                            />
-                            <span className="supervisor-dialog__row-main">
-                              <span className="supervisor-dialog__row-label">完成后待续（可选）</span>
-                              <span className="supervisor-dialog__row-meta">
-                                {laneWaitingForDirection
-                                  ? '当前通道正在待续；取消勾选并应用后，本轮将正式完成并停止。'
-                                  : '达到停止条件后保留监督通道与上下文，等待你提供下一步指示或方向。'}
+
+                            <div className="supervisor-dialog__config-tabs" role="tablist" aria-label={`${candidate.label} 的配置分组`}>
+                              {TERMINAL_CONFIG_SECTIONS.map((section) => (
+                                <button
+                                  key={section.id}
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={activeConfigSection === section.id}
+                                  aria-controls={`terminal-config-${candidate.surfaceId}-${section.id}`}
+                                  data-invalid={
+                                    section.id === 'basic'
+                                      ? (!laneConfig.stopWhen.trim() ? '1' : '0')
+                                      : section.id === 'execution'
+                                        ? (hasIncompleteMultiThreadAssignment(laneConfig) ? '1' : '0')
+                                        : section.id === 'context'
+                                          ? (workScope === 'plan-defined' && !laneConfig.planFilePath.trim() ? '1' : '0')
+                                          : '0'
+                                  }
+                                  onClick={() => setTerminalConfigSections((current) => ({
+                                    ...current,
+                                    [candidate.surfaceId]: section.id,
+                                  }))}
+                                >
+                                  {section.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {dialogNotice && (
+                              <div className="supervisor-dialog__drawer-notice" data-kind={dialogNotice.kind}>
+                                {dialogNotice.message}
+                              </div>
+                            )}
+
+                            <div className="supervisor-dialog__lane-settings-content">
+                              {activeConfigSection === 'basic' && (
+                                <div id={`terminal-config-${candidate.surfaceId}-basic`} role="tabpanel" className="supervisor-dialog__config-panel">
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">任务目标（可选）</div>
+                                    <textarea
+                                      className="supervisor-dialog__textarea"
+                                      aria-label={`${candidate.label} 的任务目标`}
+                                      rows={2}
+                                      value={laneConfig.taskGoal}
+                                      onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
+                                      placeholder="例如：修复此终端负责的认证模块并保持现有行为"
+                                    />
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">停止条件类型</div>
+                                    <div className="supervisor-dialog__freedom">
+                                      {(['concrete', 'direction'] as StopWhenKind[]).map((kind) => (
+                                        <label key={kind} className="supervisor-dialog__radio" data-active={laneConfig.stopWhenKind === kind}>
+                                          <input
+                                            type="radio"
+                                            name={`stopWhenKind-${candidate.surfaceId}`}
+                                            checked={laneConfig.stopWhenKind === kind}
+                                            onChange={() => updateLaneConfig(candidate.surfaceId, { stopWhenKind: kind })}
+                                          />
+                                          <span>{stopWhenKindLabel(kind)}{kind === 'concrete' ? ' — 可核对事实' : ' — 期望终态/方向'}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                    <div className="supervisor-dialog__hint">{stopWhenKindHint(laneConfig.stopWhenKind)}</div>
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label supervisor-dialog__label--required">
+                                      停止条件 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
+                                    </div>
+                                    <textarea
+                                      className="supervisor-dialog__textarea"
+                                      aria-label={`${candidate.label} 的停止条件`}
+                                      rows={2}
+                                      value={laneConfig.stopWhen}
+                                      onChange={(event) => updateLaneConfig(candidate.surfaceId, { stopWhen: event.target.value })}
+                                      placeholder={laneConfig.stopWhenKind === 'direction'
+                                        ? '例如：此终端负责的登录流程可用，错误提示合理'
+                                        : '例如：认证模块单测全部通过'}
+                                    />
+                                    <div className="supervisor-dialog__hint">只用于此终端的继续、返工、完成或人工接管裁决。</div>
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <label className="supervisor-dialog__row">
+                                      <input
+                                        type="checkbox"
+                                        aria-label={`${candidate.label} 完成后待续`}
+                                        checked={laneConfig.waitForNextDirection === true}
+                                        onChange={(event) => updateLaneConfig(candidate.surfaceId, {
+                                          waitForNextDirection: event.target.checked,
+                                        })}
+                                      />
+                                      <span className="supervisor-dialog__row-main">
+                                        <span className="supervisor-dialog__row-label">完成后待续（可选）</span>
+                                        <span className="supervisor-dialog__row-meta">
+                                          {laneWaitingForDirection
+                                            ? '当前通道正在待续；取消勾选并应用后，本轮将正式完成并停止。'
+                                            : '达到停止条件后保留监督通道与上下文，等待你提供下一步指示或方向。'}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  </div>
+                                </div>
+                              )}
+
+                              {activeConfigSection === 'execution' && (
+                                <div id={`terminal-config-${candidate.surfaceId}-execution`} role="tabpanel" className="supervisor-dialog__config-panel">
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">任务终端 AI 工作模式</div>
+                                    <div className="supervisor-dialog__freedom">
+                                      {([
+                                        ['single-thread', '单线程工作', '任务终端 AI 在一个执行线程内完成任务'],
+                                        ['multi-thread', '多线程工程', '任务终端 AI 按约定自行拆分主线程和子线程'],
+                                      ] as Array<[TaskWorkMode, string, string]>).map(([mode, label, description]) => (
+                                        <label key={mode} className="supervisor-dialog__radio" data-active={taskWorkMode === mode}>
+                                          <input
+                                            type="radio"
+                                            name={`taskWorkMode-${candidate.surfaceId}`}
+                                            checked={taskWorkMode === mode}
+                                            onChange={() => updateLaneConfig(candidate.surfaceId, {
+                                              taskWorkMode: mode,
+                                              ...(mode === 'multi-thread' && childThreadResponsibilities.length === 0
+                                                ? { childThreadResponsibilities: [''] }
+                                                : {}),
+                                            })}
+                                          />
+                                          <span><strong>{label}</strong> — {description}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                    <div className="supervisor-dialog__hint">
+                                      这里约定的是任务终端里的 AI，不是监督 AI；wmux 记录并传达分工，不创建额外终端。
+                                    </div>
+                                    {taskWorkMode === 'multi-thread' && (
+                                      <div className="supervisor-dialog__thread-config">
+                                        <label className="supervisor-dialog__thread-count">
+                                          <span>子线程数量</span>
+                                          <select
+                                            className="supervisor-dialog__input"
+                                            aria-label={`${candidate.label} 的子线程数量`}
+                                            value={Math.max(1, childThreadResponsibilities.length)}
+                                            onChange={(event) => {
+                                              const count = Number(event.target.value);
+                                              updateLaneConfig(candidate.surfaceId, {
+                                                childThreadResponsibilities: Array.from(
+                                                  { length: count },
+                                                  (_, index) => childThreadResponsibilities[index] || '',
+                                                ),
+                                              });
+                                            }}
+                                          >
+                                            <option value={1}>1 个</option>
+                                            <option value={2}>2 个</option>
+                                            <option value={3}>3 个</option>
+                                          </select>
+                                        </label>
+                                        <label className="supervisor-dialog__thread-role">
+                                          <span>主线程职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
+                                          <textarea
+                                            className="supervisor-dialog__textarea"
+                                            aria-label={`${candidate.label} 的主线程职责`}
+                                            rows={2}
+                                            maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
+                                            value={normalizeTaskThreadResponsibility(laneConfig.mainThreadResponsibility)}
+                                            onChange={(event) => updateLaneConfig(candidate.surfaceId, {
+                                              mainThreadResponsibility: event.target.value,
+                                            })}
+                                            placeholder="例如：统筹任务、整合子线程结果、执行最终验证"
+                                          />
+                                        </label>
+                                        {childThreadResponsibilities.map((responsibility, index) => (
+                                          <label key={index} className="supervisor-dialog__thread-role">
+                                            <span>子线程 {index + 1} 职责 <span className="supervisor-dialog__required" aria-hidden="true">*</span></span>
+                                            <textarea
+                                              className="supervisor-dialog__textarea"
+                                              aria-label={`${candidate.label} 的子线程 ${index + 1} 职责`}
+                                              rows={2}
+                                              maxLength={MAX_TASK_THREAD_RESPONSIBILITY_LENGTH}
+                                              value={responsibility}
+                                              onChange={(event) => {
+                                                const nextResponsibilities = [...childThreadResponsibilities];
+                                                nextResponsibilities[index] = event.target.value;
+                                                updateLaneConfig(candidate.surfaceId, {
+                                                  childThreadResponsibilities: nextResponsibilities,
+                                                });
+                                              }}
+                                              placeholder={`例如：负责${index === 0 ? '代码实现' : index === 1 ? '测试与验证' : '独立审查与风险检查'}`}
+                                            />
+                                          </label>
+                                        ))}
+                                        <div className="supervisor-dialog__hint">
+                                          保存后立即更新对应监督 AI，从下一次裁决开始传达；不会打断任务终端当前工作。
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {activeConfigSection === 'context' && (
+                                <div id={`terminal-config-${candidate.surfaceId}-context`} role="tabpanel" className="supervisor-dialog__config-panel">
+                                  <div className="supervisor-dialog__section">
+                                    <label className="supervisor-dialog__row">
+                                      <input
+                                        type="checkbox"
+                                        checked={restoreContextEnabled}
+                                        disabled={isExistingLane}
+                                        onChange={(event) => toggleRestoreContext(candidate.surfaceId, event.target.checked)}
+                                      />
+                                      <span className="supervisor-dialog__row-main">
+                                        <span className="supervisor-dialog__row-label">恢复任务终端上下文</span>
+                                        <span className="supervisor-dialog__row-meta">
+                                          {isExistingLane
+                                            ? '运行中的监督会话不能切换恢复来源；停止后重新配置即可更改。'
+                                            : '勾选后自动恢复最新审计历史；监督 AI 拟定恢复指令，需你确认后才发送。'}
+                                        </span>
+                                      </span>
+                                    </label>
+                                    {restoreContextEnabled && (
+                                      <div className="supervisor-dialog__restore-row">
+                                        <div className="supervisor-dialog__row-label">恢复上下文（默认最新）</div>
+                                        {!restoreCandidatesReady ? (
+                                          <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
+                                        ) : selectedRestoreSource ? (
+                                          <>
+                                            <select
+                                              className="supervisor-dialog__input"
+                                              aria-label={`${candidate.label} 的恢复上下文`}
+                                              value={restoreSourceIdFor(candidate.surfaceId)}
+                                              disabled={isExistingLane}
+                                              onChange={(event) => selectRestoreSource(candidate.surfaceId, event.target.value)}
+                                            >
+                                              {restoreOptions.map((option, index) => (
+                                                <option key={`${option.surfaceId}-${option.sessionId}`} value={option.surfaceId}>
+                                                  {index === 0 ? '（最新）' : ''}{option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
+                                                  {option.currentTask ? ` · ${option.currentTask.slice(0, 50)}` : ''}
+                                                </option>
+                                              ))}
+                                            </select>
+                                            <div className="supervisor-dialog__hint">
+                                              {selectedRestoreSource.currentTask ? `当前任务：${selectedRestoreSource.currentTask.slice(0, 80)}` : '当前任务：未记录'}
+                                              {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
+                                            </div>
+                                          </>
+                                        ) : (
+                                          <div className="supervisor-dialog__warning">此工程没有可恢复的监督历史，无法启用上下文恢复。</div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
+                                    <div className="supervisor-dialog__plan-actions">
+                                      <input
+                                        className="supervisor-dialog__input"
+                                        aria-label={`${candidate.label} 的计划文件`}
+                                        value={laneConfig.planFilePath}
+                                        readOnly
+                                        title={laneConfig.planFilePath}
+                                        placeholder="未选择；仅提供给此终端的监督 AI"
+                                      />
+                                      <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile(candidate.surfaceId)}>
+                                        选择文件
+                                      </button>
+                                      {laneConfig.planFilePath && (
+                                        <button
+                                          type="button"
+                                          className="confirm-dialog__btn"
+                                          onClick={() => updateLaneConfig(candidate.surfaceId, { planFilePath: '' })}
+                                        >
+                                          清除
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
+                                    <textarea
+                                      className="supervisor-dialog__textarea"
+                                      aria-label={`${candidate.label} 的前置条件`}
+                                      rows={2}
+                                      value={laneConfig.preconditions}
+                                      onChange={(event) => updateLaneConfig(candidate.surfaceId, { preconditions: event.target.value })}
+                                      placeholder="例如：此终端对应的测试环境已准备好"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {activeConfigSection === 'supervision' && (
+                                <div id={`terminal-config-${candidate.surfaceId}-supervision`} role="tabpanel" className="supervisor-dialog__config-panel">
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
+                                    <textarea
+                                      className="supervisor-dialog__textarea"
+                                      aria-label={`${candidate.label} 的停止条件补充说明`}
+                                      rows={2}
+                                      value={laneConfig.taskDescription}
+                                      onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskDescription: event.target.value })}
+                                      placeholder="补充此终端的验收语境和边界"
+                                    />
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">注意事项（可选）</div>
+                                    <textarea
+                                      className="supervisor-dialog__textarea"
+                                      aria-label={`${candidate.label} 的监督注意事项`}
+                                      rows={3}
+                                      value={laneConfig.supervisorNotes || ''}
+                                      onChange={(event) => updateLaneConfig(candidate.surfaceId, { supervisorNotes: event.target.value })}
+                                      placeholder="例如：完成一个有意义的阶段后，让任务 AI 同步相关文档；形成可回滚成果后提交本地 Git commit"
+                                    />
+                                    <div className="supervisor-dialog__hint">仅提醒监督 AI 在合适检查点安排，不会扩大任务范围、权限或允许推送/发布等高风险动作。</div>
+                                  </div>
+                                  <div className="supervisor-dialog__section">
+                                    <label className="supervisor-dialog__row">
+                                      <input
+                                        type="checkbox"
+                                        checked={lanePolicyOverride}
+                                        onChange={(event) => {
+                                          const checked = event.target.checked;
+                                          markTerminalConfigDirty(candidate.surfaceId);
+                                          setLanePermissionOverrides((current) => {
+                                            if (checked) return { ...current, [candidate.surfaceId]: [...autonomyPermissions] };
+                                            const next = { ...current };
+                                            delete next[candidate.surfaceId];
+                                            return next;
+                                          });
+                                          setLaneAutonomousOverrides((current) => {
+                                            if (checked) return { ...current, [candidate.surfaceId]: autonomous };
+                                            const next = { ...current };
+                                            delete next[candidate.surfaceId];
+                                            return next;
+                                          });
+                                          setLaneForbiddenActionOverrides((current) => {
+                                            if (checked) return { ...current, [candidate.surfaceId]: [...forbiddenActions] };
+                                            const next = { ...current };
+                                            delete next[candidate.surfaceId];
+                                            return next;
+                                          });
+                                        }}
+                                      />
+                                      <span className="supervisor-dialog__row-main">
+                                        <span className="supervisor-dialog__row-label">为此终端单独设置监督权限</span>
+                                        <span className="supervisor-dialog__row-meta">可覆盖全自动、允许自主处理和禁止事项；关闭时继承会话默认。</span>
+                                      </span>
+                                    </label>
+                                    {lanePolicyOverride && Array.isArray(lanePermissionOverride) && (
+                                      <div className="supervisor-dialog__option-list">
+                                        <label className="supervisor-dialog__option">
+                                          <input
+                                            type="checkbox"
+                                            checked={laneAutonomous}
+                                            onChange={(event) => {
+                                              markTerminalConfigDirty(candidate.surfaceId);
+                                              setLaneAutonomousOverrides((current) => ({
+                                                ...current,
+                                                [candidate.surfaceId]: event.target.checked,
+                                              }));
+                                            }}
+                                          />
+                                          <span>全自动监督（仅此终端）</span>
+                                        </label>
+                                        <div className="supervisor-dialog__label">允许自主处理</div>
+                                        {SUPERVISOR_AUTONOMY_PERMISSION_VALUES.map((permission) => (
+                                          <label key={permission} className="supervisor-dialog__option">
+                                            <input
+                                              type="checkbox"
+                                              checked={lanePermissionOverride.includes(permission)}
+                                              onChange={() => {
+                                                markTerminalConfigDirty(candidate.surfaceId);
+                                                setLanePermissionOverrides((current) => {
+                                                  const selectedPermissions = current[candidate.surfaceId] || [];
+                                                  return {
+                                                    ...current,
+                                                    [candidate.surfaceId]: selectedPermissions.includes(permission)
+                                                      ? selectedPermissions.filter((item) => item !== permission)
+                                                      : [...selectedPermissions, permission],
+                                                  };
+                                                });
+                                              }}
+                                            />
+                                            <span>{AUTONOMY_PERMISSION_LABELS[permission]}</span>
+                                          </label>
+                                        ))}
+                                        <div className="supervisor-dialog__label">此终端额外禁止事项</div>
+                                        {SUPERVISOR_FORBIDDEN_ACTION_VALUES.map((action) => (
+                                          <label key={action} className="supervisor-dialog__option">
+                                            <input
+                                              type="checkbox"
+                                              checked={laneForbiddenActions.includes(action)}
+                                              onChange={() => {
+                                                markTerminalConfigDirty(candidate.surfaceId);
+                                                setLaneForbiddenActionOverrides((current) => {
+                                                  const selectedActions = current[candidate.surfaceId] || [];
+                                                  return {
+                                                    ...current,
+                                                    [candidate.surfaceId]: selectedActions.includes(action)
+                                                      ? selectedActions.filter((item) => item !== action)
+                                                      : [...selectedActions, action],
+                                                  };
+                                                });
+                                              }}
+                                            />
+                                            <span>{FORBIDDEN_ACTION_LABELS[action]}</span>
+                                          </label>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="supervisor-dialog__drawer-actions">
+                              <span data-dirty={terminalConfigDirty ? '1' : '0'}>
+                                {terminalConfigDirty ? '已修改，尚未保存' : '当前配置未修改'}
                               </span>
-                            </span>
-                          </label>
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">停止条件补充说明（可选）</div>
-                          <textarea
-                            className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的停止条件补充说明`}
-                            rows={2}
-                            value={laneConfig.taskDescription}
-                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskDescription: event.target.value })}
-                            placeholder="补充此终端的验收语境和边界"
-                          />
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">注意事项（可选）</div>
-                          <textarea
-                            className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的监督注意事项`}
-                            rows={3}
-                            value={laneConfig.supervisorNotes || ''}
-                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { supervisorNotes: event.target.value })}
-                            placeholder="例如：完成一个有意义的阶段后，让任务 AI 同步相关文档；形成可回滚成果后提交本地 Git commit"
-                          />
-                          <div className="supervisor-dialog__hint">仅提醒监督 AI 在合适检查点安排，不会扩大任务范围、权限或允许推送/发布等高风险动作。</div>
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>
-                          <div className="supervisor-dialog__plan-actions">
-                            <input
-                              className="supervisor-dialog__input"
-                              aria-label={`${candidate.label} 的计划文件`}
-                              value={laneConfig.planFilePath}
-                              readOnly
-                              title={laneConfig.planFilePath}
-                              placeholder="未选择；仅提供给此终端的监督 AI"
-                            />
-                            <button type="button" className="confirm-dialog__btn" onClick={() => void choosePlanFile(candidate.surfaceId)}>
-                              选择文件
-                            </button>
-                            {laneConfig.planFilePath && (
                               <button
                                 type="button"
                                 className="confirm-dialog__btn"
-                                onClick={() => updateLaneConfig(candidate.surfaceId, { planFilePath: '' })}
+                                onClick={() => setTerminalConfigExpanded(candidate.surfaceId, false)}
                               >
-                                清除
+                                关闭详情
                               </button>
-                            )}
-                          </div>
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <div className="supervisor-dialog__label">前置条件 / 已确认环境信息（可选）</div>
-                          <textarea
-                            className="supervisor-dialog__textarea"
-                            aria-label={`${candidate.label} 的前置条件`}
-                            rows={2}
-                            value={laneConfig.preconditions}
-                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { preconditions: event.target.value })}
-                            placeholder="例如：此终端对应的测试环境已准备好"
-                          />
-                        </div>
-                        <div className="supervisor-dialog__section">
-                          <label className="supervisor-dialog__row">
-                            <input
-                              type="checkbox"
-                              checked={lanePolicyOverride}
-                              onChange={(event) => {
-                                const checked = event.target.checked;
-                                setLanePermissionOverrides((current) => {
-                                  if (checked) return { ...current, [candidate.surfaceId]: [...autonomyPermissions] };
-                                  const next = { ...current };
-                                  delete next[candidate.surfaceId];
-                                  return next;
-                                });
-                                setLaneAutonomousOverrides((current) => {
-                                  if (checked) return { ...current, [candidate.surfaceId]: autonomous };
-                                  const next = { ...current };
-                                  delete next[candidate.surfaceId];
-                                  return next;
-                                });
-                                setLaneForbiddenActionOverrides((current) => {
-                                  if (checked) return { ...current, [candidate.surfaceId]: [...forbiddenActions] };
-                                  const next = { ...current };
-                                  delete next[candidate.surfaceId];
-                                  return next;
-                                });
-                              }}
-                            />
-                            <span className="supervisor-dialog__row-main">
-                              <span className="supervisor-dialog__row-label">为此终端单独设置监督权限</span>
-                              <span className="supervisor-dialog__row-meta">可覆盖全自动、允许自主处理和禁止事项；关闭时继承会话默认。</span>
-                            </span>
-                          </label>
-                          {lanePolicyOverride && Array.isArray(lanePermissionOverride) && (
-                            <div className="supervisor-dialog__option-list">
-                              <label className="supervisor-dialog__option">
-                                <input
-                                  type="checkbox"
-                                  checked={laneAutonomous}
-                                  onChange={(event) => setLaneAutonomousOverrides((current) => ({
-                                    ...current,
-                                    [candidate.surfaceId]: event.target.checked,
-                                  }))}
-                                />
-                                <span>全自动监督（仅此终端）</span>
-                              </label>
-                              <div className="supervisor-dialog__label">允许自主处理</div>
-                              {SUPERVISOR_AUTONOMY_PERMISSION_VALUES.map((permission) => (
-                                <label key={permission} className="supervisor-dialog__option">
-                                  <input
-                                    type="checkbox"
-                                    checked={lanePermissionOverride.includes(permission)}
-                                    onChange={() => setLanePermissionOverrides((current) => {
-                                      const selectedPermissions = current[candidate.surfaceId] || [];
-                                      return {
-                                        ...current,
-                                        [candidate.surfaceId]: selectedPermissions.includes(permission)
-                                          ? selectedPermissions.filter((item) => item !== permission)
-                                          : [...selectedPermissions, permission],
-                                      };
-                                    })}
-                                  />
-                                  <span>{AUTONOMY_PERMISSION_LABELS[permission]}</span>
-                                </label>
-                              ))}
-                              <div className="supervisor-dialog__label">此终端额外禁止事项</div>
-                              {SUPERVISOR_FORBIDDEN_ACTION_VALUES.map((action) => (
-                                <label key={action} className="supervisor-dialog__option">
-                                  <input
-                                    type="checkbox"
-                                    checked={laneForbiddenActions.includes(action)}
-                                    onChange={() => setLaneForbiddenActionOverrides((current) => {
-                                      const selectedActions = current[candidate.surfaceId] || [];
-                                      return {
-                                        ...current,
-                                        [candidate.surfaceId]: selectedActions.includes(action)
-                                          ? selectedActions.filter((item) => item !== action)
-                                          : [...selectedActions, action],
-                                      };
-                                    })}
-                                  />
-                                  <span>{FORBIDDEN_ACTION_LABELS[action]}</span>
-                                </label>
-                              ))}
+                              <button
+                                type="button"
+                                className="confirm-dialog__btn supervisor-dialog__drawer-save"
+                                onClick={() => applyConfig(false)}
+                              >
+                                保存全部设置
+                              </button>
                             </div>
-                          )}
-                        </div>
+                          </>
+                        )}
                       </details>
                     )}
                   </div>
