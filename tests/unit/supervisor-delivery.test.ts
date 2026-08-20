@@ -92,6 +92,7 @@ describe('supervisor delivery queue', () => {
 
   it('labels liveness probes separately from task lifecycle notifications', () => {
     expect(supervisorDeliveryLabel('liveness-probe')).toBe('活性检查');
+    expect(supervisorDeliveryLabel('agent-recovery')).toBe('Agent 恢复');
   });
 
   it('reports only a project supervisor turn that ended without a structured state handoff', () => {

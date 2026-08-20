@@ -638,7 +638,7 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('当前为 idle') });
   });
 
-  it('defers repeated project progress inspections without writing into a working supervisor', async () => {
+  it('keeps repeated project progress inspections read-only without writing into a working supervisor', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-inspect-backpressure' });
     const managerSurfaceId = 'project-manager-inspect';
     useStore.getState().restoreProjectManager({ ...project, managerSurfaceId: managerSurfaceId as any });
@@ -689,13 +689,17 @@ describe('supervisor decision bridge', () => {
       callerSurfaceId: managerSurfaceId,
       projectId: project.id,
       reason: '暂时没有新进度',
-    })).resolves.toMatchObject({ ok: true, deferred: true });
+    })).resolves.toMatchObject({
+      ok: true,
+      watchdog: null,
+      message: expect.stringContaining('未向任何 Agent 发送'),
+    });
     await expect(request({
       action: 'supervisor-inspect',
       callerSurfaceId: managerSurfaceId,
       projectId: project.id,
       reason: '再次询问同一进度',
-    })).resolves.toMatchObject({ ok: true, deferred: true });
+    })).resolves.toMatchObject({ ok: true, watchdog: null });
 
     expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
     expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries || []).toEqual([]);
@@ -3931,13 +3935,18 @@ describe('supervisor decision bridge', () => {
     });
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
     markTerminalRuntimeExited(reboundLane!.supervisorSurfaceId!, '测试监督运行时退出');
-    await expect(request({
-      action: 'task-supervise', callerSurfaceId: managerSurfaceId,
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
       projectId,
+      role: 'supervisor',
+      laneId: reboundLane?.id,
+      surfaceId: reboundLane?.supervisorSurfaceId,
       workItemId: 'rotation_task',
-    })).resolves.toMatchObject({
-      ok: true,
-      waitingForSupervisorTaskTerminal: true,
+      detail: '测试监督运行时退出',
+    })).toBe(true);
+    await vi.waitFor(() => {
+      expect(useStore.getState().supervisor.lanes.find((lane) => (
+        lane.projectManagerProjectId === projectId && lane.projectWorkItemId === 'rotation_task'
+      ))?.id).not.toBe(reboundLane?.id);
     });
     const rebuiltLane = useStore.getState().supervisor.lanes.find((lane) => (
       lane.projectManagerProjectId === projectId && lane.projectWorkItemId === 'rotation_task'
@@ -3951,6 +3960,46 @@ describe('supervisor decision bridge', () => {
     expect(rebuiltLane?.supervisorSurfaceId).not.toBe(reboundLane?.supervisorSurfaceId);
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
     clearTerminalRuntimeStatus(reboundLane!.supervisorSurfaceId!);
+
+    await expect(request({
+      action: 'task-terminal-start',
+      callerSurfaceId: rebuiltLane?.supervisorSurfaceId,
+      projectId,
+      workItemId: 'rotation_task',
+    })).resolves.toMatchObject({ ok: true });
+    const runningLane = useStore.getState().supervisor.lanes.find((lane) => (
+      lane.projectManagerProjectId === projectId && lane.projectWorkItemId === 'rotation_task'
+    ));
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'rotation_task',
+      patch: { status: 'waiting-decision', latestBlocker: '测试任务运行时退出' },
+    }, projectId);
+    markTerminalRuntimeExited(runningLane!.surfaceId, '测试任务运行时退出');
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
+      projectId,
+      role: 'task',
+      laneId: runningLane?.id,
+      surfaceId: runningLane?.surfaceId,
+      workItemId: 'rotation_task',
+      detail: '测试任务运行时退出',
+    })).toBe(true);
+    await vi.waitFor(() => {
+      expect(useStore.getState().supervisor.lanes.find((lane) => (
+        lane.projectManagerProjectId === projectId && lane.projectWorkItemId === 'rotation_task'
+      ))?.surfaceId).not.toBe(runningLane?.surfaceId);
+    });
+    const taskRecoveredLane = useStore.getState().supervisor.lanes.find((lane) => (
+      lane.projectManagerProjectId === projectId && lane.projectWorkItemId === 'rotation_task'
+    ));
+    expect(taskRecoveredLane).toMatchObject({
+      id: runningLane?.id,
+      supervisorSurfaceId: runningLane?.supervisorSurfaceId,
+    });
+    expect(taskRecoveredLane?.surfaceId).not.toBe(runningLane?.surfaceId);
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({ status: 'running' });
+    expect(useStore.getState().projectManager?.workItems[0].latestBlocker).toBeUndefined();
+    clearTerminalRuntimeStatus(runningLane!.surfaceId);
   });
 
   it('closes an unbound task terminal when requirements change during startup', async () => {

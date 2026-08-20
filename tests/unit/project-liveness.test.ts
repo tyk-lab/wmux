@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PROJECT_LIVENESS_CONTROL_GRACE_MS,
-  PROJECT_LIVENESS_IDLE_PROBE_MS,
-  PROJECT_LIVENESS_PROBE_REPORT_MS,
-  PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS,
-  PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS,
-  evaluateProjectLiveness,
+  MANAGED_AGENT_ESCAPE_GRACE_MS,
+  MANAGED_AGENT_INTERRUPT_GRACE_MS,
+  MANAGED_AGENT_NO_LIVENESS_GRACE_MS,
+  beginManagedAgentTurn,
+  evaluateManagedAgentDeadline,
+  managedAgentDeadlinePolicy,
+  managedCommandHardBudgetMs,
+  looksLikeManagedShellPrompt,
   normalizeProjectActivityFingerprintText,
+  noteManagedAgentCommand,
+  noteManagedAgentOutput,
+  noteManagedAgentSemanticProgress,
+  pauseManagedAgentWatchdog,
+  resumeManagedAgentWatchdog,
+  shiftManagedAgentDeadlineForSuspend,
 } from '../../src/renderer/project-manager/liveness';
 
 describe('normalizeProjectActivityFingerprintText', () => {
@@ -24,94 +32,142 @@ describe('normalizeProjectActivityFingerprintText', () => {
     expect(after).not.toBe(before);
     expect(normalizeProjectActivityFingerprintText('Working (10 files modified)')).toContain('10 files modified');
   });
+
+  it('distinguishes a plain shell prompt from Agent UI output', () => {
+    expect(looksLikeManagedShellPrompt('Agent stopped\r\nPS C:\\repo> ')).toBe(true);
+    expect(looksLikeManagedShellPrompt('root@host:/repo$ ')).toBe(true);
+    expect(looksLikeManagedShellPrompt('Working\n已经恢复任务分析')).toBe(false);
+  });
 });
 
-describe('project execution-chain liveness', () => {
-  const initial = evaluateProjectLiveness({
-    fingerprint: 'v1', now: 1_000, supervisorState: 'working', workerState: 'working',
-    pendingSupervisorDeliveries: 0,
-  }).runtime;
+describe('managed project agent deadline policy', () => {
+  it('uses conservative role and reasoning defaults', () => {
+    expect(managedAgentDeadlinePolicy({ role: 'manager', reasoningEffort: 'medium' }))
+      .toMatchObject({ softMs: 30 * 60_000, hardMs: 90 * 60_000 });
+    expect(managedAgentDeadlinePolicy({ role: 'manager', reasoningEffort: 'high' }))
+      .toMatchObject({ softMs: 45 * 60_000, hardMs: 120 * 60_000 });
+    expect(managedAgentDeadlinePolicy({ role: 'supervisor', reasoningEffort: 'medium' }))
+      .toMatchObject({ softMs: 20 * 60_000, hardMs: 60 * 60_000 });
+    expect(managedAgentDeadlinePolicy({ role: 'task', reasoningEffort: 'medium' }))
+      .toMatchObject({ softMs: 25 * 60_000, hardMs: 75 * 60_000 });
+  });
 
-  it('does not inject progress prompts while a supervisor is legitimately thinking', () => {
-    const decision = evaluateProjectLiveness({
-      runtime: initial,
-      fingerprint: 'v1',
-      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS - 1,
-      supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 0,
+  it('only lets sufficient successful history lengthen deadlines', () => {
+    const shortHistory = Array.from({ length: 19 }, () => 80 * 60_000);
+    const matureHistory = [...shortHistory, 80 * 60_000];
+    expect(managedAgentDeadlinePolicy({ role: 'supervisor', successfulDurationsMs: shortHistory }).softMs)
+      .toBe(20 * 60_000);
+    expect(managedAgentDeadlinePolicy({ role: 'supervisor', successfulDurationsMs: matureHistory }).softMs)
+      .toBe(90 * 60_000);
+  });
+
+  it('never lets history shorten an explicit task contract budget', () => {
+    const policy = managedAgentDeadlinePolicy({
+      role: 'task',
+      reasoningEffort: 'medium',
+      taskBudgetMinutes: 240,
+      successfulDurationsMs: Array.from({ length: 20 }, () => 10 * 60_000),
     });
+    expect(policy.hardMs).toBe(240 * 60_000);
+  });
+
+  it('gives install and test commands an explicit hard budget', () => {
+    expect(managedCommandHardBudgetMs('npm ci')).toBe(180 * 60_000);
+    expect(managedCommandHardBudgetMs('npm test')).toBe(120 * 60_000);
+    expect(managedCommandHardBudgetMs('rg -n TODO src')).toBe(90 * 60_000);
+  });
+});
+
+describe('managed project agent one-shot watchdog', () => {
+  const policy = managedAgentDeadlinePolicy({ role: 'supervisor', reasoningEffort: 'medium' });
+
+  function turn(now = 1_000) {
+    return beginManagedAgentTurn({
+      surfaceId: 'supervisor-a',
+      role: 'supervisor',
+      generation: 1,
+      now,
+      policy,
+    });
+  }
+
+  it('does not interrupt a live long-thinking spinner at the soft deadline', () => {
+    const initial = turn();
+    const alive = noteManagedAgentOutput(initial, initial.softDeadlineAt - 1, 'thinking');
+    const decision = evaluateManagedAgentDeadline({
+      runtime: alive,
+      now: initial.softDeadlineAt,
+      policy,
+    });
+
     expect(decision.action).toBe('none');
-    expect(decision.runtime.probeQueuedAt).toBeUndefined();
+    expect(decision.runtime.nextDeadlineAt).toBe(initial.hardDeadlineAt);
   });
 
-  it('escalates a semantically silent working supervisor through Esc, Ctrl+C, then one report', () => {
-    const escaped = evaluateProjectLiveness({
-      runtime: initial, fingerprint: 'v1',
-      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_BUSY_WORKING_GRACE_MS,
-      supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 0,
-    });
-    expect(escaped.action).toBe('escape-supervisor');
+  it('gives a silent turn one local grace, then Esc, Ctrl+C, and recovery', () => {
+    const initial = turn();
+    const suspected = evaluateManagedAgentDeadline({ runtime: initial, now: initial.softDeadlineAt, policy });
+    expect(suspected).toMatchObject({ action: 'none', runtime: { phase: 'soft-grace' } });
+    expect(suspected.runtime.nextDeadlineAt).toBe(initial.softDeadlineAt + MANAGED_AGENT_NO_LIVENESS_GRACE_MS);
 
-    const interrupted = evaluateProjectLiveness({
-      runtime: escaped.runtime, fingerprint: 'v1',
-      now: escaped.runtime.escapeSentAt! + PROJECT_LIVENESS_CONTROL_GRACE_MS,
-      supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 1,
+    const escaped = evaluateManagedAgentDeadline({
+      runtime: suspected.runtime,
+      now: suspected.runtime.nextDeadlineAt,
+      policy,
     });
-    expect(interrupted.action).toBe('interrupt-supervisor');
+    expect(escaped).toMatchObject({ action: 'escape', runtime: { phase: 'escape-sent' } });
+    expect(escaped.runtime.nextDeadlineAt).toBe(escaped.runtime.escapeSentAt! + MANAGED_AGENT_ESCAPE_GRACE_MS);
 
-    const reported = evaluateProjectLiveness({
-      runtime: interrupted.runtime, fingerprint: 'v1',
-      now: interrupted.runtime.interruptSentAt! + PROJECT_LIVENESS_CONTROL_GRACE_MS,
-      supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 1,
+    const interrupted = evaluateManagedAgentDeadline({
+      runtime: escaped.runtime,
+      now: escaped.runtime.nextDeadlineAt,
+      policy,
     });
-    expect(reported.action).toBe('report-supervisor-stuck');
-    expect(evaluateProjectLiveness({
-      runtime: reported.runtime, fingerprint: 'v1', now: reported.runtime.attentionReportedAt! + 60_000,
-      supervisorState: 'working', workerState: 'working', pendingSupervisorDeliveries: 1,
-    }).action).toBe('none');
+    expect(interrupted).toMatchObject({ action: 'interrupt', runtime: { phase: 'interrupt-sent' } });
+    expect(interrupted.runtime.nextDeadlineAt)
+      .toBe(interrupted.runtime.interruptSentAt! + MANAGED_AGENT_INTERRUPT_GRACE_MS);
+
+    expect(evaluateManagedAgentDeadline({
+      runtime: interrupted.runtime,
+      now: interrupted.runtime.nextDeadlineAt,
+      policy,
+    }).action).toBe('recover');
   });
 
-  it('interrupts sooner when the worker is idle than while useful task work is active', () => {
-    const decision = evaluateProjectLiveness({
-      runtime: initial, fingerprint: 'v1',
-      now: 1_000 + PROJECT_LIVENESS_SUPERVISOR_IDLE_WORKING_GRACE_MS,
-      supervisorState: 'working', workerState: 'idle', pendingSupervisorDeliveries: 0,
-    });
-    expect(decision.action).toBe('escape-supervisor');
+  it('eventually interrupts an infinite spinner at the absolute hard deadline', () => {
+    const initial = turn();
+    const alive = noteManagedAgentOutput(initial, initial.hardDeadlineAt - 1, 'thinking');
+    expect(evaluateManagedAgentDeadline({
+      runtime: alive,
+      now: initial.hardDeadlineAt,
+      policy,
+    }).action).toBe('escape');
   });
 
-  it('queues one probe for an idle chain and reports only if the probe remains unanswered', () => {
-    const idle = evaluateProjectLiveness({
-      fingerprint: 'idle-v1', now: 5_000, supervisorState: 'idle', workerState: 'idle',
-      pendingSupervisorDeliveries: 0,
-    }).runtime;
-    const probed = evaluateProjectLiveness({
-      runtime: idle, fingerprint: 'idle-v1', now: 5_000 + PROJECT_LIVENESS_IDLE_PROBE_MS,
-      supervisorState: 'idle', workerState: 'idle', pendingSupervisorDeliveries: 0,
-    });
-    expect(probed.action).toBe('probe-supervisor');
-    expect(evaluateProjectLiveness({
-      runtime: probed.runtime, fingerprint: 'idle-v1',
-      now: probed.runtime.probeQueuedAt! + PROJECT_LIVENESS_PROBE_REPORT_MS - 1,
-      supervisorState: 'idle', workerState: 'idle', pendingSupervisorDeliveries: 0,
-    }).action).toBe('none');
-    expect(evaluateProjectLiveness({
-      runtime: probed.runtime, fingerprint: 'idle-v1',
-      now: probed.runtime.probeQueuedAt! + PROJECT_LIVENESS_PROBE_REPORT_MS,
-      supervisorState: 'idle', workerState: 'idle', pendingSupervisorDeliveries: 0,
-    }).action).toBe('report-supervisor-stuck');
+  it('resets a segment on semantic Hook progress and extends registered commands', () => {
+    const initial = turn();
+    const progressedAt = initial.softDeadlineAt - 1;
+    const progressed = noteManagedAgentSemanticProgress(initial, progressedAt, policy);
+    expect(progressed.softDeadlineAt).toBe(progressedAt + policy.softMs);
+    expect(progressed.hardDeadlineAt).toBe(progressedAt + policy.hardMs);
+
+    const command = noteManagedAgentCommand(progressed, progressedAt + 1, 'npm ci');
+    expect(command.hardDeadlineAt).toBe(progressedAt + 1 + 180 * 60_000);
+    expect(command.softDeadlineAt).toBe(progressedAt + 1 + 90 * 60_000);
   });
 
-  it('wakes queued work when the supervisor becomes deliverable and resets on real progress', () => {
-    const woke = evaluateProjectLiveness({
-      runtime: initial, fingerprint: 'v2', now: 9_000,
-      supervisorState: 'idle', workerState: 'working', pendingSupervisorDeliveries: 1,
-    });
-    expect(woke).toMatchObject({ action: 'wake-supervisor', silentForMs: 0 });
-    expect(evaluateProjectLiveness({
-      runtime: woke.runtime,
-      fingerprint: 'v2',
-      now: 9_000 + PROJECT_LIVENESS_PROBE_REPORT_MS,
-      supervisorState: 'unknown', workerState: 'working', pendingSupervisorDeliveries: 1,
-    }).action).toBe('report-supervisor-stuck');
+  it('pauses user/permission waits and excludes sleep from elapsed time', () => {
+    const initial = turn();
+    const paused = pauseManagedAgentWatchdog(initial, 5_000);
+    expect(paused.phase).toBe('paused');
+    expect(evaluateManagedAgentDeadline({ runtime: paused, now: initial.hardDeadlineAt * 2, policy }).action)
+      .toBe('none');
+
+    const resumed = resumeManagedAgentWatchdog(paused, 65_000);
+    expect(resumed.hardDeadlineAt).toBe(initial.hardDeadlineAt + 60_000);
+
+    const shifted = shiftManagedAgentDeadlineForSuspend(resumed, 10 * 60_000);
+    expect(shifted.hardDeadlineAt)
+      .toBe(resumed.hardDeadlineAt + 10 * 60_000 + MANAGED_AGENT_NO_LIVENESS_GRACE_MS);
   });
 });

@@ -510,6 +510,7 @@ function queueSupervisorDelivery(
 }
 
 function handleSupervisorHookEvent(event: any): void {
+  (window as any).__wmux_noteManagedAgentHook?.(event);
   const store = useStore.getState();
   const session = store.supervisor;
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';

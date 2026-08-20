@@ -11,6 +11,7 @@ export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): strin
   if (kind === 'task-end') return '任务结束';
   if (kind === 'task-interrupted') return '任务中断';
   if (kind === 'worker-status') return '任务状态更新';
+  if (kind === 'agent-recovery') return 'Agent 恢复';
   return '活性检查';
 }
 

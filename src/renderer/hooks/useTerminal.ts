@@ -150,6 +150,8 @@ function notifyProjectManagerRuntimeFailure(
     : lane?.projectManagerProjectId
       ? state.projectManagers.filter((candidate) => candidate.id === lane.projectManagerProjectId)
       : [];
+  const autoRecoverProjectLane = !!lane?.projectManagerProjectId
+    && (role === 'supervisor' || role === 'task');
   for (const session of projectSessions) {
     const kind = role === 'manager'
       ? 'manager-runtime-failed'
@@ -157,7 +159,7 @@ function notifyProjectManagerRuntimeFailure(
         ? 'supervisor-runtime-failed'
         : 'task-runtime-failed';
     if (lane) {
-      state.pauseSupervisorLane(lane.id, text);
+      if (!autoRecoverProjectLane) state.pauseSupervisorLane(lane.id, text);
       state.updateLane(lane.id, {
         projectTaskRotationPending: false,
         projectTaskRotationSummary: undefined,
@@ -184,7 +186,7 @@ function notifyProjectManagerRuntimeFailure(
       }
     }
     const currentSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-    if (currentSession && currentSession.status !== 'paused') {
+    if (!autoRecoverProjectLane && currentSession && currentSession.status !== 'paused') {
       state.applyProjectManagerAction({ type: 'pause-project', reason: text }, session.id);
     }
     const event = state.appendProjectManagerEvent({
@@ -208,6 +210,7 @@ function notifyProjectManagerRuntimeFailure(
         projectId: session.id,
         workItemId: lane?.projectWorkItemId,
         laneId: lane?.id,
+        surfaceId,
         role,
         detail: text,
       });
@@ -995,6 +998,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           }, 300);
         }
         if (!innerAgentExitHandled) maybeConfirmStartupTrust(id);
+        // Let explicit inner-Agent exit handling run first. The watchdog then
+        // handles surviving Agent output or a plain shell prompt without racing
+        // the runtime-failure recovery path above.
+        (window as any).__wmux_noteManagedAgentOutput?.(id, data);
         // Track SGR/button mouse enable (?1006h, ?1000h, ?1002h, ?1003h) and disable
         // so the wheel handler can distinguish tmux from a plain shell after remount.
         // Mirror the enable pattern for disable so any of the four modes clears the flag.
@@ -1007,6 +1014,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // Wire PTY exit → inform user; also auto-heal a stuck "Running" badge
       // (see clearStuckRunningState).
       const unsubExit = window.wmux.pty.onExit(id, (code: number) => {
+        (window as any).__wmux_clearManagedAgentWatchdog?.(id);
         if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
         runtimeReadyTimer = undefined;
         terminal.writeln('\r\n\x1b[2m[process exited]\x1b[0m');
@@ -1015,7 +1023,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         const detail = `进程已退出（代码 ${code}）`;
         if (!innerAgentExitHandled) {
           markTerminalRuntimeExited(id, detail);
-          notifyProjectManagerRuntimeFailure(id, detail);
+          notifyProjectManagerRuntimeFailure(id, detail, true);
         }
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).

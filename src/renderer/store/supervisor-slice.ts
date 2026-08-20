@@ -31,7 +31,7 @@ export interface SupervisorDecision {
 /** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */
 export interface SupervisorDelivery {
   id: string;
-  kind: 'task-start' | 'task-end' | 'task-interrupted' | 'worker-status' | 'liveness-probe';
+  kind: 'task-start' | 'task-end' | 'task-interrupted' | 'worker-status' | 'liveness-probe' | 'agent-recovery';
   text: string;
   task: string;
   createdAt: number;
