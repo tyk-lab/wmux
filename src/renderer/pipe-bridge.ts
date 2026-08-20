@@ -72,6 +72,7 @@ import {
 import {
   buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
+  buildUnacknowledgedSupervisorIdlePrompt,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -9013,6 +9014,7 @@ export function initPipeBridge(): void {
     const completionStopWhen = String(params?.completionStopWhen || '').trim().slice(0, 500);
     const completionValidation = String(params?.completionValidation || '').trim().slice(0, 500);
     const remainingWork = String(params?.remainingWork || '').trim().slice(0, 2000);
+    const reviewId = String(params?.reviewId || '').trim().slice(0, 200);
     const retryRequested = params?.retry === true
       || ((outcome === 'continue' || outcome === 'rework') && !!executionError);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
@@ -9038,6 +9040,17 @@ export function initPipeBridge(): void {
     const laneState = supervisorLaneControlState(lane);
     if (laneState !== 'active') return { ok: false, error: laneState === 'paused' ? '当前监督通道已暂停' : '当前监督通道已停止' };
     const projectManagedLane = isProjectManagedSupervisorLane(lane);
+    if (!projectManagedLane && lane.activeReviewId && reviewId !== lane.activeReviewId) {
+      return {
+        ok: false,
+        error: reviewId
+          ? 'reviewId 已过期或不属于当前任务回合；请重新运行 wmux context 获取当前复核 ID'
+          : `当前复核必须附 --review-id ${lane.activeReviewId}，避免迟到裁决覆盖新任务回合`,
+      };
+    }
+    if (!projectManagedLane && !lane.activeReviewId && reviewId) {
+      return { ok: false, error: '当前没有与该 reviewId 对应的待裁决轮次；请等待新的监督事件' };
+    }
     const projectSession = lane.projectManagerProjectId
       ? store.projectManagers.find((candidate) => candidate.id === lane.projectManagerProjectId)
       : undefined;
@@ -9847,6 +9860,12 @@ export function initPipeBridge(): void {
         store.appendSupervisorLog(lane.id, 'AI 自动授权', permissionCommand);
         store.updateLane(lane.id, {
           awaitingReview: false,
+          activeReviewId: undefined,
+          reviewWorkerTurnId: undefined,
+          reviewOpenedAt: undefined,
+          reviewDeliveryConfirmedAt: undefined,
+          reviewWatchdogState: undefined,
+          ...(lane.supervisorProblem?.kind === 'unreported-decision' ? { supervisorProblem: undefined } : {}),
           lastBlockedResponseVersion: agentState!.blockedVersion,
           lastBlockedResponseId: agentState!.blockedRequestId || undefined,
           permissionConfirmations: [
@@ -9913,13 +9932,26 @@ export function initPipeBridge(): void {
           awaitingReview: false,
           awaitingDirectionAfterWaitingResume: false,
           autoDecisionLimitReached: false,
+          activeReviewId: undefined,
+          reviewWorkerTurnId: undefined,
+          reviewOpenedAt: undefined,
+          reviewDeliveryConfirmedAt: undefined,
+          reviewWatchdogState: undefined,
         });
         const waitingReason = reason || '用户提供的新方向信息仍不足，等待补充';
         store.appendSupervisorLog(lane.id, '新方向信息不足，返回待续', waitingReason);
         announceSupervisorWaitingForDirection(lane, waitingReason, { handoffKind: 'direction-needed' });
         return { ok: true, outcome, waiting: true };
       }
-      store.updateLane(lane.id, { awaitingReview: true, ...(limitReached ? { autoDecisionLimitReached: true } : {}) });
+      store.updateLane(lane.id, {
+        awaitingReview: true,
+        activeReviewId: undefined,
+        reviewWorkerTurnId: undefined,
+        reviewOpenedAt: undefined,
+        reviewDeliveryConfirmedAt: undefined,
+        reviewWatchdogState: undefined,
+        ...(limitReached ? { autoDecisionLimitReached: true } : {}),
+      });
       const kind = proposalKinds.has(proposalKind)
         ? proposalKind as 'route-change' | 'important' | 'context-recovery'
         : 'important';
@@ -10038,6 +10070,12 @@ export function initPipeBridge(): void {
       if (projectSession) saveProjectManagerSnapshot(projectSession.id);
       store.updateLane(lane.id, {
         awaitingReview: false,
+        activeReviewId: undefined,
+        reviewWorkerTurnId: undefined,
+        reviewOpenedAt: undefined,
+        reviewDeliveryConfirmedAt: undefined,
+        reviewWatchdogState: undefined,
+        ...(lane.supervisorProblem?.kind === 'unreported-decision' ? { supervisorProblem: undefined } : {}),
         awaitingDirectionAfterWaitingResume: false,
         ...(next && !projectSession ? { taskRoleAnchorPending: false } : {}),
         ...(next && projectSession && projectWorkItem ? {
@@ -10448,13 +10486,30 @@ export function initPipeBridge(): void {
         if (laneState === 'stopped') return { ok: false, error: `${lane.label} 已停止；请重新配置后启动。`, message: '' };
         if (laneState === 'active') return { ok: true, message: `${lane.label} 已经在监督中。` };
         const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-        if (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId)) {
+        if (!supervisorSurfaceId
+          || !hasLiveSurface(supervisorSurfaceId)
+          || lane.supervisorProblem?.kind === 'runtime-failed') {
           return { ok: false, error: `${lane.label} 的专属监督终端已缺失；请在 wmux 中重新配置。`, message: '' };
         }
+        const retriesWatchdog = lane.supervisorProblem?.kind === 'unreported-decision';
         remoteAudit(session, lane, 'supervisor.remote-command', { action: 'resume-lane', actor });
         useStore.getState().resumeSupervisorLane(lane.id, `由飞书继续 ${lane.label}`);
+        if (retriesWatchdog) {
+          useStore.getState().updateLane(lane.id, {
+            reviewWatchdogState: 'retrying',
+            reviewDeliveryConfirmedAt: undefined,
+            unreportedIdleRecoveryAttempts: 1,
+            supervisorProblem: undefined,
+          });
+        }
         if (session.active && !session.pendingApprovals.some((item) => item.laneId === lane.id)) {
-          sendToSurface(supervisorSurfaceId, '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+          sendToSurface(
+            supervisorSurfaceId,
+            retriesWatchdog
+              ? buildUnacknowledgedSupervisorIdlePrompt(lane)
+              : '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
+            true,
+          );
         }
         return { ok: true, message: session.paused
           ? `${lane.label} 已设为继续；当前会话仍处于全局暂停。`
@@ -10494,7 +10549,11 @@ export function initPipeBridge(): void {
         const missingLane = ordinaryLanes.find((lane) => {
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           return supervisorLaneControlState(lane) === 'paused'
-            && (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId));
+            && (
+              !supervisorSurfaceId
+              || !hasLiveSurface(supervisorSurfaceId)
+              || lane.supervisorProblem?.kind === 'runtime-failed'
+            );
         });
         if (missingLane) return { ok: false, error: `专属监督终端已缺失：${missingLane.label}。请在 wmux 中停止后重新配置。`, message: '' };
         useStore.getState().resumeOrdinarySupervisor();
@@ -10506,7 +10565,22 @@ export function initPipeBridge(): void {
           if (supervisorLaneControlState(lane) !== 'active'
             || !supervisorSurfaceId
             || pendingLaneIds.has(lane.id)) continue;
-          sendToSurface(supervisorSurfaceId, '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n', true);
+          const retriesWatchdog = lane.supervisorProblem?.kind === 'unreported-decision';
+          if (retriesWatchdog) {
+            useStore.getState().updateLane(lane.id, {
+              reviewWatchdogState: 'retrying',
+              reviewDeliveryConfirmedAt: undefined,
+              unreportedIdleRecoveryAttempts: 1,
+              supervisorProblem: undefined,
+            });
+          }
+          sendToSurface(
+            supervisorSurfaceId,
+            retriesWatchdog
+              ? buildUnacknowledgedSupervisorIdlePrompt(lane)
+              : '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
+            true,
+          );
         }
         return { ok: true, message: '已继续普通 AI 监督；项目监督不受影响。' };
       }

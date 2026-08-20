@@ -32,6 +32,7 @@ describe('supervisor decide command', () => {
 
   it('documents the required decision arguments', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--surface <id>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--review-id <id>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--outcome <continue|rework|complete|needs-human>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');

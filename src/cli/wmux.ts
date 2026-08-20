@@ -191,6 +191,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   const result = await sendV2('supervisor.decide', {
     surfaceId,
     supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
+    reviewId: getFlag(args, '--review-id') || '',
     outcome,
     reason: getFlag(args, '--reason') || '',
     next: nextInput.text,
@@ -1136,7 +1137,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Claude/Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor context
-             supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
+             supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--stage-plan-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]

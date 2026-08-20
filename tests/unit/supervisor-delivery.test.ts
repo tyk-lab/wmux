@@ -95,14 +95,13 @@ describe('supervisor delivery queue', () => {
     expect(supervisorDeliveryLabel('agent-recovery')).toBe('Agent 恢复');
   });
 
-  it('reports only a project supervisor turn that ended without a structured state handoff', () => {
+  it('reports any active supervisor turn that ended without a structured state handoff', () => {
     const base = {
-      lifecycle: 'Stop', projectManaged: true, controlState: 'active',
+      lifecycle: 'Stop', controlState: 'active',
       awaitingReview: true, providerLimited: false, hasPendingDecision: false,
       pendingDeliveries: 0,
     };
     expect(shouldReportUnacknowledgedSupervisorIdle(base)).toBe(true);
-    expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, projectManaged: false })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, awaitingReview: false })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, controlState: 'waiting' })).toBe(false);
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, hasPendingDecision: true })).toBe(false);
@@ -110,10 +109,13 @@ describe('supervisor delivery queue', () => {
     expect(shouldReportUnacknowledgedSupervisorIdle({ ...base, providerLimited: true })).toBe(false);
   });
 
-  it('retries one unreported supervisor turn locally before escalating once', () => {
+  it('retries once, then routes project and ordinary supervisors to different recovery owners', () => {
     expect(unacknowledgedSupervisorIdleAction(undefined)).toBe('retry-local');
     expect(unacknowledgedSupervisorIdleAction(1)).toBe('escalate-project');
+    expect(unacknowledgedSupervisorIdleAction(undefined, false)).toBe('retry-local');
+    expect(unacknowledgedSupervisorIdleAction(1, false)).toBe('pause-ordinary');
     expect(unacknowledgedSupervisorIdleAction(2)).toBe('ignore');
+    expect(unacknowledgedSupervisorIdleAction(2, false)).toBe('ignore');
     expect(unacknowledgedSupervisorIdleAction(3)).toBe('ignore');
   });
 });

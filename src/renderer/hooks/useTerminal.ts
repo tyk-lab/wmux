@@ -8,6 +8,7 @@ import { ImageAddon } from '@xterm/addon-image';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
+import { isProjectManagedSupervisorLane } from '../store/supervisor-slice';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
 import { disconnectWorkspaceSsh } from '../store/pty-teardown';
 import { SplitNode, SurfaceRef, ThemeConfig } from '../../shared/types';
@@ -145,6 +146,17 @@ function notifyProjectManagerRuntimeFailure(
     title,
     text,
   });
+
+  if (role === 'supervisor' && lane && !isProjectManagedSupervisorLane(lane)) {
+    state.updateLane(lane.id, {
+      supervisorProblem: {
+        kind: 'runtime-failed',
+        detail,
+        detectedAt: Date.now(),
+      },
+    });
+    state.pauseSupervisorLane(lane.id, text);
+  }
 
   const projectSessions = role === 'manager'
     ? state.projectManagers.filter((candidate) => (

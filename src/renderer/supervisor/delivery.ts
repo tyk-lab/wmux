@@ -84,7 +84,6 @@ export function canDeliverToSupervisor(state: unknown): boolean {
 /** Detect a supervisor Agent turn that ended without publishing a state handoff. */
 export function shouldReportUnacknowledgedSupervisorIdle(options: {
   lifecycle: unknown;
-  projectManaged: boolean;
   controlState: unknown;
   awaitingReview: boolean;
   providerLimited: boolean;
@@ -92,7 +91,6 @@ export function shouldReportUnacknowledgedSupervisorIdle(options: {
   pendingDeliveries: number;
 }): boolean {
   return (options.lifecycle === 'Stop' || options.lifecycle === 'StopFailure')
-    && options.projectManaged
     && options.controlState === 'active'
     && options.awaitingReview
     && !options.providerLimited
@@ -100,12 +98,19 @@ export function shouldReportUnacknowledgedSupervisorIdle(options: {
     && options.pendingDeliveries === 0;
 }
 
-export type UnacknowledgedSupervisorIdleAction = 'retry-local' | 'escalate-project' | 'ignore';
+export type UnacknowledgedSupervisorIdleAction =
+  | 'retry-local'
+  | 'pause-ordinary'
+  | 'escalate-project'
+  | 'ignore';
 
 /** Retry one malformed supervisor turn locally before involving the project AI. */
-export function unacknowledgedSupervisorIdleAction(recoveryAttempts: number | undefined): UnacknowledgedSupervisorIdleAction {
+export function unacknowledgedSupervisorIdleAction(
+  recoveryAttempts: number | undefined,
+  projectManaged = true,
+): UnacknowledgedSupervisorIdleAction {
   const attempts = Math.max(0, Math.trunc(recoveryAttempts || 0));
   if (attempts === 0) return 'retry-local';
-  if (attempts === 1) return 'escalate-project';
+  if (attempts === 1) return projectManaged ? 'escalate-project' : 'pause-ordinary';
   return 'ignore';
 }

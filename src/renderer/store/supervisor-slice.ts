@@ -37,6 +37,8 @@ export interface SupervisorDelivery {
   createdAt: number;
   /** Worker turn generation; separates repeated tasks from duplicate hooks. */
   turnId?: number;
+  /** Review generation that must be acknowledged by the matching supervisor decision. */
+  reviewId?: string;
   /** Paste succeeded; only Enter remains, so retries must not duplicate text. */
   stage?: 'pending' | 'pasted';
 }
@@ -106,6 +108,22 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Stable identity of the currently unresolved ordinary-supervisor review. */
+  activeReviewId?: string;
+  /** Worker generation that opened activeReviewId. */
+  reviewWorkerTurnId?: number;
+  /** Wall-clock time at which the current review was opened. */
+  reviewOpenedAt?: number;
+  /** Time at which the current review prompt was accepted by the supervisor terminal. */
+  reviewDeliveryConfirmedAt?: number;
+  /** Bounded watchdog lifecycle for the current review. */
+  reviewWatchdogState?: 'pending' | 'retrying' | 'failed';
+  /** User-visible fault that prevents the dedicated supervisor from completing reviews. */
+  supervisorProblem?: {
+    kind: 'provider-limit' | 'runtime-failed' | 'unreported-decision';
+    detail: string;
+    detectedAt: number;
+  };
   /** Number of consecutive supervisor turns that ended without a structured decision. */
   unreportedIdleRecoveryAttempts?: number;
   /** Marks review created by alternate input so resume clears only this lane. */
@@ -348,6 +366,12 @@ export function clearSupervisorLaneContext(
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
+    activeReviewId: undefined,
+    reviewWorkerTurnId: undefined,
+    reviewOpenedAt: undefined,
+    reviewDeliveryConfirmedAt: undefined,
+    reviewWatchdogState: undefined,
+    supervisorProblem: undefined,
     unreportedIdleRecoveryAttempts: 0,
     resumeAfterCancelledDecision: false,
     awaitingDirectionAfterWaitingResume: false,
@@ -700,6 +724,11 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
               awaitingStopCheck: false,
               stopConfirmed: false,
               awaitingReview: false,
+              activeReviewId: undefined,
+              reviewWorkerTurnId: undefined,
+              reviewOpenedAt: undefined,
+              reviewDeliveryConfirmedAt: undefined,
+              reviewWatchdogState: undefined,
               awaitingDirectionAfterWaitingResume: true,
               resumeAfterCancelledDecision: false,
               autoDecisionLimitReached: false,
@@ -909,6 +938,11 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
               stopConfirmed: true,
               autoDecisionLimitReached: false,
               controlState: waitForNextDirection ? 'waiting' as const : 'stopped' as const,
+              activeReviewId: undefined,
+              reviewWorkerTurnId: undefined,
+              reviewOpenedAt: undefined,
+              reviewDeliveryConfirmedAt: undefined,
+              reviewWatchdogState: undefined,
               ...(waitForNextDirection ? { awaitingReview: false } : { autonomousOverride: undefined }),
             }
           : lane,

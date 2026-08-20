@@ -5,7 +5,7 @@ import type {
   SupervisorSession,
 } from '../store/supervisor-slice';
 import { surfaceTerminalRegistry } from '../hooks/useTerminal';
-import { supervisorLaneControlState } from '../store/supervisor-slice';
+import { isProjectManagedSupervisorLane, supervisorLaneControlState } from '../store/supervisor-slice';
 import { buildSupervisorWakeEventEnvelope, effectiveSupervisorAutonomyPermissions } from './protocol';
 import { hasPendingTerminalInput } from './pending-input-guard';
 import {
@@ -129,7 +129,11 @@ export function tickLane(opts: {
               ? ['SSH 远程控制下，删除/覆盖、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程、账户/权限/网络/系统配置及破坏性数据库操作一律使用 needs-human，不得通过终端转发、脚本或其他间接方式绕过。']
               : []),
             '删除或覆盖、git push/重写历史、发布/部署、云端/生产环境、凭据/权限变更或无法确认的请求，一律使用 needs-human，不要发送权限确认。',
-            buildSupervisorWakeEventEnvelope(lane.surfaceId),
+            buildSupervisorWakeEventEnvelope(
+              lane.surfaceId,
+              lane.activeReviewId,
+              isProjectManagedSupervisorLane(lane),
+            ),
           ].join('\n'),
         });
       } else {

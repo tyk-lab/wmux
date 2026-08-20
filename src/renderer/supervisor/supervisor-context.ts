@@ -49,6 +49,7 @@ export interface SupervisorRuntimeContext {
     supervisorSurfaceId: string;
     targetSurfaceId: string;
     laneId: string;
+    reviewId?: string;
     projectId?: string;
     goalId?: string;
     workItemId?: string;
@@ -209,6 +210,7 @@ export function buildSupervisorRuntimeContext(
     && project.decisionsUsed !== undefined
     && project.decisionsUsed >= project.maxDecisions;
   const terminalOutcomeAvailable = reviewReady && options.taskState !== 'working';
+  const reviewFlag = lane.activeReviewId ? ` --review-id ${lane.activeReviewId}` : '';
   const decisionOutcomes: SupervisorRuntimeContext['commands']['decisionOutcomes'] = laneActive
     ? [
         ...(sameRouteAvailable ? ['continue', 'rework'] as const : []),
@@ -218,12 +220,12 @@ export function buildSupervisorRuntimeContext(
     : [];
   const conditional: SupervisorConditionalCommand[] = [
     {
-      command: `wmux supervisor decide --surface ${targetSurfaceId} --outcome continue|rework --next <指令>`,
+      command: `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --next <指令>`,
       available: sameRouteAvailable,
       condition: '仅限原目标内明确、低风险、可逆且可验证的下一步',
     },
     {
-      command: `wmux supervisor decide --surface ${targetSurfaceId} --permission-command <命令> --permission-response y`,
+      command: `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --permission-command <命令> --permission-response y`,
       available: permissionConfirmationAvailable,
       condition: projectManaged
         ? '还必须命中当前任务合同的定向测试或 allowedCommandPrefixes，且不得触及硬性禁止项'
@@ -257,6 +259,7 @@ export function buildSupervisorRuntimeContext(
       supervisorSurfaceId: lane.supervisorSurfaceId || '',
       targetSurfaceId,
       laneId: lane.id,
+      ...(lane.activeReviewId ? { reviewId: lane.activeReviewId } : {}),
       ...(lane.projectManagerProjectId ? { projectId: lane.projectManagerProjectId } : {}),
       ...(project?.goalId ? { goalId: project.goalId } : {}),
       ...(lane.projectWorkItemId ? { workItemId: lane.projectWorkItemId } : {}),
@@ -309,7 +312,7 @@ export function buildSupervisorRuntimeContext(
         `wmux agent-state --surface ${targetSurfaceId}`,
         'wmux supervisor decide --help',
         ...(decisionOutcomes.length > 0
-          ? [`wmux supervisor decide --surface ${targetSurfaceId} --outcome <结果>`]
+          ? [`wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome <结果>`]
           : []),
       ],
       decisionOutcomes,
@@ -364,6 +367,7 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
     `身份: ${context.role}`,
     `监督终端: ${context.identity.supervisorSurfaceId || '（启动中）'}`,
     `唯一任务终端: ${context.identity.targetSurfaceId}`,
+    context.identity.reviewId ? `当前复核 ID: ${context.identity.reviewId}` : '当前复核 ID: 无',
     context.identity.projectId
       ? `项目绑定: ${context.identity.projectId} / ${context.identity.goalId || '（目标待绑定）'} / ${context.identity.workItemId || '（工作项待绑定）'}`
       : '项目绑定: 无（普通监督模式）',

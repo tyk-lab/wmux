@@ -491,6 +491,7 @@ function queueSupervisorDelivery(
   kind: SupervisorDelivery['kind'],
   task: string,
   text: string,
+  reviewId?: string,
 ): void {
   const delivery = {
     id: uuid(),
@@ -499,14 +500,167 @@ function queueSupervisorDelivery(
     text,
     createdAt: Date.now(),
     turnId: lane.workerTurnId,
+    ...(reviewId ? { reviewId } : {}),
     stage: 'pending' as const,
   };
   const pending = enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery);
   if (pending === lane.pendingSupervisorDeliveries) return;
   const store = useStore.getState();
   store.updateLane(lane.id, { pendingSupervisorDeliveries: pending });
-  appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task });
+  appendSupervisorRecord(session, lane, 'supervisor.delivery.queued', { kind, task, reviewId });
   signalSupervisorDeliveryReady();
+}
+
+const ORDINARY_REVIEW_IDLE_GRACE_MS = 15_000;
+const supervisorReviewScreenActivity = new Map<string, { signature: string; stableAt: number }>();
+
+function supervisorScreenSignature(surfaceId: string): string {
+  const text = readTerminalScreen(surfaceId, 30).text || '';
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function noteSupervisorReviewScreen(reviewId: string, supervisorSurfaceId: string, now = Date.now()): void {
+  supervisorReviewScreenActivity.set(reviewId, {
+    signature: supervisorScreenSignature(supervisorSurfaceId),
+    stableAt: now,
+  });
+  if (supervisorReviewScreenActivity.size > 128) {
+    supervisorReviewScreenActivity.delete(supervisorReviewScreenActivity.keys().next().value as string);
+  }
+}
+
+function ensureOrdinarySupervisorReview(lane: SupervisorLane): string | undefined {
+  if (isProjectManagedSupervisorLane(lane)) return undefined;
+  const workerTurnId = lane.workerTurnId || 0;
+  if (lane.awaitingReview && lane.activeReviewId && lane.reviewWorkerTurnId === workerTurnId) {
+    return lane.activeReviewId;
+  }
+
+  const reviewId = `review-${uuid()}`;
+  const store = useStore.getState();
+  store.updateLane(lane.id, {
+    activeReviewId: reviewId,
+    reviewWorkerTurnId: workerTurnId,
+    reviewOpenedAt: Date.now(),
+    reviewDeliveryConfirmedAt: undefined,
+    reviewWatchdogState: 'pending',
+    unreportedIdleRecoveryAttempts: 0,
+  });
+  appendSupervisorRecord(store.supervisor, lane, 'supervisor.review.opened', {
+    reviewId,
+    workerTurnId,
+  });
+  return reviewId;
+}
+
+function handleUnacknowledgedSupervisorReview(
+  laneId: string,
+  trigger: 'supervisor-stop' | 'idle-timeout',
+): void {
+  const store = useStore.getState();
+  const session = store.supervisor;
+  const lane = session.lanes.find((candidate) => candidate.id === laneId);
+  if (!session.active || !lane) return;
+  const projectManaged = isProjectManagedSupervisorLane(lane);
+  const hasPendingDecision = session.pendingApprovals.some((approval) => approval.laneId === lane.id);
+  const providerLimited = lane.supervisorProblem?.kind === 'provider-limit';
+  if (!shouldReportUnacknowledgedSupervisorIdle({
+    lifecycle: 'Stop',
+    controlState: supervisorLaneControlState(lane),
+    awaitingReview: lane.awaitingReview === true,
+    providerLimited,
+    hasPendingDecision,
+    pendingDeliveries: (lane.pendingSupervisorDeliveries || []).length,
+  })) return;
+
+  const recoveryAction = unacknowledgedSupervisorIdleAction(
+    lane.unreportedIdleRecoveryAttempts,
+    projectManaged,
+  );
+  if (recoveryAction === 'retry-local') {
+    const reviewId = projectManaged ? undefined : lane.activeReviewId || `review-${uuid()}`;
+    const recoveryLane = reviewId && !lane.activeReviewId
+      ? {
+          ...lane,
+          activeReviewId: reviewId,
+          reviewWorkerTurnId: lane.workerTurnId || 0,
+          reviewOpenedAt: Date.now(),
+        }
+      : lane;
+    store.updateLane(lane.id, {
+      ...(reviewId && !lane.activeReviewId ? {
+        activeReviewId: reviewId,
+        reviewWorkerTurnId: lane.workerTurnId || 0,
+        reviewOpenedAt: Date.now(),
+      } : {}),
+      reviewDeliveryConfirmedAt: undefined,
+      reviewWatchdogState: 'retrying',
+      unreportedIdleRecoveryAttempts: 1,
+    });
+    appendSupervisorRecord(session, recoveryLane, 'supervisor.idle-recovery', {
+      reviewId,
+      trigger,
+      recoveryAttempts: 1,
+      reason: '监督首次结束回合但未提交结构化裁决，原地补报一次',
+    });
+    const projectWorkItem = recoveryLane.projectManagerProjectId && recoveryLane.projectWorkItemId
+      ? store.projectManagers.find((project) => project.id === recoveryLane.projectManagerProjectId)
+        ?.workItems.find((item) => item.id === recoveryLane.projectWorkItemId)
+      : undefined;
+    queueSupervisorDelivery(
+      session,
+      recoveryLane,
+      'liveness-probe',
+      recoveryLane.currentTask || recoveryLane.projectWorkItemId || '当前监督任务',
+      buildUnacknowledgedSupervisorIdlePrompt(
+        recoveryLane,
+        projectWorkItem
+          ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
+          : '',
+      ),
+      reviewId,
+    );
+    return;
+  }
+
+  if (recoveryAction === 'escalate-project') {
+    store.updateLane(lane.id, { unreportedIdleRecoveryAttempts: 2 });
+    appendSupervisorRecord(session, lane, 'supervisor.idle-unreported', {
+      trigger,
+      recoveryAttempts: 2,
+      reason: '专属监督经一次原地补报后仍未提交结构化裁决',
+      contextSummary: '本层有界恢复已失败；停止重复唤醒，交由项目 AI 恢复或重建监督链。',
+    });
+    return;
+  }
+
+  if (recoveryAction !== 'pause-ordinary') return;
+  const detail = 'AI 监督连续两次结束回合但未提交结构化裁决；该通道已暂停，请重新唤醒或重建监督 AI。';
+  store.updateLane(lane.id, {
+    reviewWatchdogState: 'failed',
+    unreportedIdleRecoveryAttempts: 2,
+    supervisorProblem: {
+      kind: 'unreported-decision',
+      detail,
+      detectedAt: Date.now(),
+    },
+  });
+  store.pauseSupervisorLane(lane.id, detail);
+  appendSupervisorRecord(session, lane, 'supervisor.review.watchdog-failed', {
+    reviewId: lane.activeReviewId,
+    workerTurnId: lane.reviewWorkerTurnId,
+    trigger,
+    recoveryAttempts: 2,
+    reason: detail,
+  });
+  const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+  if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text: detail });
+  window.wmux?.notification?.fire({ surfaceId: lane.surfaceId, title: 'AI 监督已暂停', text: detail });
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -530,48 +684,8 @@ function handleSupervisorHookEvent(event: any): void {
       const providerLimited = reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
       const freshLane = useStore.getState().supervisor.lanes
         .find((candidate) => candidate.id === supervisorLane.id) || supervisorLane;
-      const hasPendingDecision = useStore.getState().supervisor.pendingApprovals
-        .some((approval) => approval.laneId === freshLane.id);
-      if (shouldReportUnacknowledgedSupervisorIdle({
-        lifecycle,
-        projectManaged: isProjectManagedSupervisorLane(freshLane),
-        controlState: supervisorLaneControlState(freshLane),
-        awaitingReview: freshLane.awaitingReview === true,
-        providerLimited,
-        hasPendingDecision,
-        pendingDeliveries: (freshLane.pendingSupervisorDeliveries || []).length,
-      })) {
-        const projectWorkItem = freshLane.projectManagerProjectId && freshLane.projectWorkItemId
-          ? store.projectManagers.find((project) => project.id === freshLane.projectManagerProjectId)
-            ?.workItems.find((item) => item.id === freshLane.projectWorkItemId)
-          : undefined;
-        const recoveryAction = unacknowledgedSupervisorIdleAction(freshLane.unreportedIdleRecoveryAttempts);
-        if (recoveryAction === 'retry-local') {
-          store.updateLane(freshLane.id, { unreportedIdleRecoveryAttempts: 1 });
-          appendSupervisorRecord(session, freshLane, 'supervisor.idle-recovery', {
-            event: lifecycle,
-            reason: '专属监督首次结束回合但未提交结构化裁决，先原地补报一次',
-          });
-          queueSupervisorDelivery(
-            session,
-            freshLane,
-            'liveness-probe',
-            freshLane.currentTask || freshLane.projectWorkItemId || '当前项目任务',
-            buildUnacknowledgedSupervisorIdlePrompt(
-              freshLane,
-              projectWorkItem
-                ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
-                : '',
-            ),
-          );
-        } else if (recoveryAction === 'escalate-project') {
-          store.updateLane(freshLane.id, { unreportedIdleRecoveryAttempts: 2 });
-          appendSupervisorRecord(session, freshLane, 'supervisor.idle-unreported', {
-            event: lifecycle,
-            reason: '专属监督经一次原地补报后仍未提交结构化裁决',
-            contextSummary: '本层有界恢复已失败；停止重复唤醒，交由项目 AI 恢复或重建监督链。',
-          });
-        }
+      if (!providerLimited && (lifecycle === 'Stop' || lifecycle === 'StopFailure')) {
+        handleUnacknowledgedSupervisorReview(freshLane.id, 'supervisor-stop');
       }
     }
     return;
@@ -586,6 +700,12 @@ function handleSupervisorHookEvent(event: any): void {
     const manuallyResolved = resolvePendingApprovalsForManualTask(session, auditLane, task);
     store.updateLane(lane.id, {
       awaitingReview: manuallyResolved ? false : !!lane.autoDecisionLimitReached,
+      activeReviewId: undefined,
+      reviewWorkerTurnId: undefined,
+      reviewOpenedAt: undefined,
+      reviewDeliveryConfirmedAt: undefined,
+      reviewWatchdogState: undefined,
+      ...(lane.supervisorProblem?.kind === 'unreported-decision' ? { supervisorProblem: undefined } : {}),
       unreportedIdleRecoveryAttempts: 0,
       ...(manuallyResolved ? {
         awaitingStopCheck: false,
@@ -614,6 +734,7 @@ function handleSupervisorHookEvent(event: any): void {
 
   const deliveryKind = supervisorWakeDeliveryKind(lifecycle);
   if (deliveryKind) {
+    const reviewId = ensureOrdinarySupervisorReview(lane);
     store.updateLane(lane.id, { awaitingReview: true });
     if (lane.autoDecisionLimitReached) return;
     queueSupervisorDelivery(
@@ -623,9 +744,10 @@ function handleSupervisorHookEvent(event: any): void {
       lane.currentTask || '（任务未上报）',
       [
         `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。`,
-        buildSupervisorWakeEventEnvelope(surfaceId),
+        buildSupervisorWakeEventEnvelope(surfaceId, reviewId, isProjectManagedSupervisorLane(lane)),
         '',
       ].join('\n'),
+      reviewId,
     );
   }
 }
@@ -1245,10 +1367,17 @@ export default function App() {
           if (!current) continue;
           store.updateLane(lane.id, {
             pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).filter((item) => item.id !== delivery.id),
+            ...(delivery.reviewId && current.activeReviewId === delivery.reviewId ? {
+              reviewDeliveryConfirmedAt: Date.now(),
+            } : {}),
           });
+          if (delivery.reviewId) {
+            noteSupervisorReviewScreen(delivery.reviewId, supervisorSurfaceId);
+          }
           appendSupervisorRecord(store.supervisor, current, 'supervisor.delivery.delivered', {
             kind: delivery.kind,
             task: delivery.task,
+            reviewId: delivery.reviewId,
           });
           store.appendSupervisorLog(lane.id, '监督通知已送达', supervisorDeliveryLabel(delivery.kind));
         }
@@ -1293,6 +1422,33 @@ export default function App() {
           if (screen.text) reportSupervisorProviderLimit(session, lane, screen.text);
         }
         const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
+        const reviewScreenActivity = lane.activeReviewId
+          ? supervisorReviewScreenActivity.get(lane.activeReviewId)
+          : undefined;
+        if (lane.activeReviewId && reviewScreenActivity && supervisorSurfaceId) {
+          const currentSignature = supervisorScreenSignature(supervisorSurfaceId);
+          if (currentSignature !== reviewScreenActivity.signature) {
+            supervisorReviewScreenActivity.set(lane.activeReviewId, {
+              signature: currentSignature,
+              stableAt: now,
+            });
+          }
+        }
+        if (
+          !isProjectManagedSupervisorLane(lane)
+          && lane.awaitingReview
+          && lane.activeReviewId
+          && lane.reviewDeliveryConfirmedAt
+          && reviewScreenActivity
+          && supervisorSurfaceId
+          && supervisorState === 'idle'
+          && supervisorScreenSignature(supervisorSurfaceId) === reviewScreenActivity.signature
+          && now - reviewScreenActivity.stableAt >= ORDINARY_REVIEW_IDLE_GRACE_MS
+        ) {
+          handleUnacknowledgedSupervisorReview(lane.id, 'idle-timeout');
+          const freshLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id);
+          if (!freshLane || supervisorLaneControlState(freshLane) !== 'active') continue;
+        }
         const { actions, runtime: nextRt } = tickLane({
           session,
           lane,
@@ -1310,8 +1466,10 @@ export default function App() {
           if (action.type === 'log') {
             store.appendSupervisorLog(action.laneId, action.action, action.detail);
           } else if (action.type === 'notify_supervisor') {
+            let lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
+            const reviewId = action.opensReview && lane ? ensureOrdinarySupervisorReview(lane) : undefined;
             if (action.opensReview) store.updateLane(action.laneId, { awaitingReview: true });
-            const lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
+            lane = useStore.getState().supervisor.lanes.find((item) => item.id === action.laneId);
             if (lane && action.statusEvent === 'blocked') {
               appendSupervisorRecord(session, lane, 'worker.blocked', {
                 reason: action.statusDetail || '终端正在等待输入或权限处理',
@@ -1324,10 +1482,20 @@ export default function App() {
                 lane,
                 'worker-status',
                 lane.currentTask || action.statusDetail || lane.label,
-                action.text,
+                reviewId
+                  ? `${action.text}\n本轮 reviewId=${reviewId}；提交裁决时必须附 --review-id ${reviewId}。`
+                  : action.text,
+                reviewId,
               );
             } else if (action.opensReview) {
-              store.updateLane(action.laneId, { awaitingReview: false });
+              store.updateLane(action.laneId, {
+                awaitingReview: false,
+                activeReviewId: undefined,
+                reviewWorkerTurnId: undefined,
+                reviewOpenedAt: undefined,
+                reviewDeliveryConfirmedAt: undefined,
+                reviewWatchdogState: undefined,
+              });
               store.appendSupervisorLog(action.laneId, '监督通知发送失败', '专属监督终端不存在');
             }
           } else if (action.type === 'notify_user') {

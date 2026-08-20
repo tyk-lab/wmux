@@ -61,6 +61,13 @@ export function reportSupervisorProviderLimit(
     supervisorModel: session.supervisorModel || 'Agent 默认模型',
   });
   const store = useStore.getState();
+  store.updateLane(lane.id, {
+    supervisorProblem: {
+      kind: 'provider-limit',
+      detail: error.summary,
+      detectedAt: Date.now(),
+    },
+  });
   store.appendSupervisorLog(lane.id, '监督模型受限', error.summary);
   const notificationText = `AI 监督通道“${lane.label}”的模型请求受限：${error.summary}`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
@@ -78,6 +85,10 @@ export function clearSupervisorProviderLimitAlert(session: SupervisorSession, la
   const prefix = `${lane.managementSessionId || session.sessionId}:${lane.id}:`;
   for (const key of recentAlerts.keys()) {
     if (key.startsWith(prefix)) recentAlerts.delete(key);
+  }
+  const current = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id);
+  if (current?.supervisorProblem?.kind === 'provider-limit') {
+    useStore.getState().updateLane(lane.id, { supervisorProblem: undefined });
   }
 }
 

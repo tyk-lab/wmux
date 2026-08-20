@@ -70,6 +70,15 @@ describe('supervisor wake event envelope', () => {
     expect(text).not.toContain('专属监督，不是任务执行者');
   });
 
+  it('binds an ordinary wake event to one review generation', () => {
+    const text = buildSupervisorWakeEventEnvelope('worker-a', 'review-123', false);
+
+    expect(text).toContain('review=review-123');
+    expect(text).toContain('--review-id review-123');
+    expect(text).toContain('当前普通监督通道');
+    expect(text).not.toContain('项目 AI 给定的硬边界');
+  });
+
   it('retries the controlled task-terminal startup instead of reading a reserved surface', () => {
     const pendingLane = lane({
       surfaceId: 'project-task-pending-1' as any,

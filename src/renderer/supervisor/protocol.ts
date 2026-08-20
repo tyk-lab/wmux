@@ -94,14 +94,25 @@ export function supervisorTabTitle(laneLabel: string): string {
 }
 
 /** Compact event envelope for an already-briefed supervisor runtime. */
-export function buildSupervisorWakeEventEnvelope(surfaceId: string): string {
+export function buildSupervisorWakeEventEnvelope(
+  surfaceId: string,
+  reviewId = '',
+  projectManaged = true,
+): string {
   const target = surfaceId.trim() || '（未指定）';
+  const normalizedReviewId = reviewId.trim();
+  const reviewInstruction = normalizedReviewId
+    ? `本轮 reviewId=${normalizedReviewId}；提交裁决时必须附 --review-id ${normalizedReviewId}，不得用旧 reviewId 回报新任务回合。`
+    : '';
   return [
-    `[监督事件｜控制层｜surface=${target}｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
+    `[监督事件｜控制层｜surface=${target}${normalizedReviewId ? `｜review=${normalizedReviewId}` : ''}｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
     '当前运行时与完整 briefing 继续有效，无需重读协议、重新确认角色或复述身份。运行 wmux context 只刷新 capability 绑定的实时权限、预算和可用命令；发现绑定或协议变化时停止沿用旧授权。',
-    '你负责在项目 AI 给定的硬边界内完成整个阶段成果并维护自己的阶段计划；任务 AI 的检查点只是证据输入，不要把内部里程碑原样转交项目 AI 决定。',
+    projectManaged
+      ? '你负责在项目 AI 给定的硬边界内完成整个阶段成果并维护自己的阶段计划；任务 AI 的检查点只是证据输入，不要把内部里程碑原样转交项目 AI 决定。'
+      : '你只负责当前普通监督通道；依据用户配置、任务终端证据和既有裁决处理本轮，不得扩展目标或读取其他终端。',
+    reviewInstruction,
     `再运行 wmux read-screen --surface ${target} 核对新证据；只形成一个裁决并用 wmux supervisor decide 提交，成功后立即结束本回合。`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
@@ -149,7 +160,11 @@ export function buildUnacknowledgedSupervisorIdlePrompt(
   }
   return [
     ...header,
-    buildSupervisorWakeEventEnvelope(lane.surfaceId),
+    buildSupervisorWakeEventEnvelope(
+      lane.surfaceId,
+      lane.activeReviewId,
+      isProjectManagedSupervisorLane(lane),
+    ),
     '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
     '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
   ].filter(Boolean).join('\n');

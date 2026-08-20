@@ -4193,6 +4193,30 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects a missing or stale ordinary review id before accepting the matching decision', () => {
+    useStore.getState().updateLane('lane-a', {
+      activeReviewId: 'review-current',
+      reviewWorkerTurnId: 3,
+      reviewWatchdogState: 'pending',
+    });
+
+    expect(decide({ next: '运行相关单元测试' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--review-id review-current'),
+    });
+    expect(decide({ reviewId: 'review-old', next: '运行相关单元测试' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已过期'),
+    });
+    expect(decide({ reviewId: 'review-current', next: '运行相关单元测试' }))
+      .toMatchObject({ ok: true, outcome: 'continue' });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: false,
+      activeReviewId: undefined,
+      reviewWatchdogState: undefined,
+    });
+  });
+
   it('uses a compact event envelope after the ordinary task role was loaded once', () => {
     expect(decide({ next: '检查当前实现' })).toMatchObject({ ok: true, outcome: 'continue' });
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
