@@ -46,6 +46,10 @@ export function normalizeProjectAgentReasoningEffort(agent: string, value: unkno
 
 function normalizeProjectAgentModel(agent: string, value: unknown): string {
   const model = String(value || '').trim();
+  if (agent === 'kimi' && /^(?:k3|k3-256k|kimi-for-coding(?:-highspeed)?)$/i.test(model)) {
+    return `kimi-code/${model}`;
+  }
+  if (agent === 'codex' && model === 'gpt-5.4-codex-spark') return 'gpt-5.3-codex-spark';
   if (agent === 'grok' && model === 'grok-build') return 'grok-4.6';
   if (agent === 'pi' && model === 'xai/grok-build-0.1') return 'xai/grok-4.6';
   return model;

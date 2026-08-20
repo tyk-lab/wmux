@@ -31,9 +31,21 @@ describe('supervisor launch command', () => {
       .toBe('codex --model gpt-5.6-terra');
   });
 
+  it('migrates the obsolete Codex Spark model ID', () => {
+    expect(buildSupervisorLaunchCommand('codex', 'gpt-5.4-codex-spark'))
+      .toBe("codex --model 'gpt-5.3-codex-spark'");
+  });
+
   it('adds a selected Kimi model without the unsupported Thinking flag', () => {
     expect(buildSupervisorLaunchCommand('kimi', 'k3', 'on'))
-      .toBe("kimi --model 'k3'");
+      .toBe("kimi --model 'kimi-code/k3'");
+  });
+
+  it('migrates legacy Kimi model names to configured aliases', () => {
+    expect(buildSupervisorLaunchCommand('kimi', 'k3-256k'))
+      .toBe("kimi --model 'kimi-code/k3-256k'");
+    expect(buildSupervisorLaunchCommand('kimi', 'custom-alias'))
+      .toBe("kimi --model 'custom-alias'");
   });
 
   it('adds a selected Grok model with the Grok Build CLI short flag', () => {
@@ -99,9 +111,22 @@ describe('supervisor launch command', () => {
     expect(command).toContain("$env:WMUX_SUPERVISOR_PROJECT_DIR = 'E:\\Work\\O''Brien'");
     expect(command).toContain('\\supervisor\\runtime\\lane-auth');
     expect(command).toContain('Set-Location -LiteralPath $wmuxSupervisorRuntimeDir');
+    expect(command).toContain('--approve');
     expect(command).toContain('--no-skills');
     expect(command).toContain('--no-prompt-templates');
     expect(command).toContain('--no-context-files');
+  });
+
+  it('does not override an explicit Pi no-approve choice', () => {
+    const command = buildSupervisorLaunchCommand(
+      'pi --no-approve',
+      '',
+      '',
+      { isolateSupervisor: true, projectDir: 'E:\\project' },
+    );
+
+    expect(command).toContain('pi --no-approve');
+    expect(command).not.toMatch(/(?:^|\s)--approve(?:\s|$)/i);
   });
 
   it('gives a dedicated Kimi supervisor an empty isolated skill directory', () => {

@@ -200,10 +200,8 @@ export function parsePiModelList(output: string): string[] {
 
 export function parseKimiProviderModelList(output: string): string[] {
   try {
-    const parsed = JSON.parse(output) as { models?: Record<string, { model?: unknown }> };
-    return uniqueValidModels(Object.entries(parsed.models || {}).map(([key, value]) => (
-      typeof value?.model === 'string' ? value.model : key.split('/').pop() || ''
-    )));
+    const parsed = JSON.parse(output) as { models?: Record<string, unknown> };
+    return uniqueValidModels(Object.keys(parsed.models || {}));
   } catch {
     return [];
   }

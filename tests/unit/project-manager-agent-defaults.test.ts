@@ -72,4 +72,28 @@ describe('project manager agent defaults', () => {
       task: { model: 'grok-4.6' },
     });
   });
+
+  it('migrates legacy Kimi model names to configured aliases', () => {
+    expect(normalizeProjectManagementAgentConfig({
+      manager: { agent: 'kimi', model: 'k3-256k', reasoningEffort: '' },
+      supervisor: { agent: 'kimi', model: 'k3', reasoningEffort: '' },
+      task: { agent: 'kimi', model: 'kimi-for-coding', reasoningEffort: '' },
+    })).toMatchObject({
+      manager: { model: 'kimi-code/k3-256k' },
+      supervisor: { model: 'kimi-code/k3' },
+      task: { model: 'kimi-code/kimi-for-coding' },
+    });
+  });
+
+  it('migrates the obsolete Codex Spark model ID in project settings', () => {
+    expect(normalizeProjectManagementAgentConfig({
+      manager: { agent: 'codex', model: 'gpt-5.4-codex-spark', reasoningEffort: '' },
+      supervisor: { agent: 'codex', model: 'gpt-5.4-codex-spark', reasoningEffort: 'medium' },
+      task: { agent: 'codex', model: 'gpt-5.4-codex-spark', reasoningEffort: '' },
+    })).toMatchObject({
+      manager: { model: 'gpt-5.3-codex-spark' },
+      supervisor: { model: 'gpt-5.3-codex-spark' },
+      task: { model: 'gpt-5.3-codex-spark' },
+    });
+  });
 });

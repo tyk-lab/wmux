@@ -60,7 +60,7 @@ describe('supervisor model validation invocation', () => {
         'kimi-code/k3': { provider: 'managed:kimi-code', model: 'k3' },
         'kimi-code/k3-256k': { provider: 'managed:kimi-code', model: 'k3-256k' },
       },
-    }))).toEqual(['k3', 'k3-256k']);
+    }))).toEqual(['kimi-code/k3', 'kimi-code/k3-256k']);
   });
 
   it('parses Codex cached models and ignores malformed entries', () => {

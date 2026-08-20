@@ -51,6 +51,13 @@ function qualifyPiModel(model: string): string {
   return model;
 }
 
+function qualifyKimiModel(model: string): string {
+  if (/^(?:k3|k3-256k|kimi-for-coding(?:-highspeed)?)$/i.test(model)) {
+    return `kimi-code/${model}`;
+  }
+  return model;
+}
+
 function appendFlagIfMissing(command: string, pattern: RegExp, flag: string): string {
   return pattern.test(command) ? command : `${command} ${flag}`;
 }
@@ -75,6 +82,11 @@ function isolatedSupervisorCommand(
 
   let isolatedCommand = command;
   if (launcher === 'pi') {
+    isolatedCommand = appendFlagIfMissing(
+      isolatedCommand,
+      /(?:^|\s)--(?:no-)?approve(?:\s|$)/i,
+      '--approve',
+    );
     isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-skills(?:\s|$)/i, '--no-skills');
     isolatedCommand = appendFlagIfMissing(
       isolatedCommand,
@@ -129,6 +141,10 @@ export function buildSupervisorLaunchCommand(
   const rawModel = model.trim();
   const selectedModel = launcher === 'pi'
     ? qualifyPiModel(rawModel === 'xai/grok-build-0.1' ? 'xai/grok-4.6' : rawModel)
+    : launcher === 'kimi'
+      ? qualifyKimiModel(rawModel)
+    : launcher === 'codex' && rawModel === 'gpt-5.4-codex-spark'
+      ? 'gpt-5.3-codex-spark'
     : launcher === 'grok' && rawModel === 'grok-build'
       ? 'grok-4.6'
       : rawModel;

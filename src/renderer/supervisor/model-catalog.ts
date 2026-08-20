@@ -24,13 +24,13 @@ export const BUILTIN_SUPERVISOR_MODEL_OPTIONS: Record<
     { value: 'gpt-5.5', label: 'GPT-5.5（复杂编码与研究）' },
     { value: 'gpt-5.4', label: 'GPT-5.4（日常编码）' },
     { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini（轻量、快速）' },
-    { value: 'gpt-5.4-codex-spark', label: 'GPT-5.4 Codex Spark（超快速编码）' },
+    { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark（超快速编码）' },
   ],
   kimi: [
-    { value: 'k3', label: 'Kimi K3（长上下文）' },
-    { value: 'k3-256k', label: 'Kimi K3 · 256k' },
-    { value: 'kimi-for-coding', label: 'Kimi K2.7 Code' },
-    { value: 'kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
+    { value: 'kimi-code/k3', label: 'Kimi K3（长上下文）' },
+    { value: 'kimi-code/k3-256k', label: 'Kimi K3 · 256k' },
+    { value: 'kimi-code/kimi-for-coding', label: 'Kimi K2.7 Code' },
+    { value: 'kimi-code/kimi-for-coding-highspeed', label: 'Kimi K2.7 Code 高速版' },
   ],
   grok: [
     { value: 'grok-4.6', label: 'Grok 4.6（推荐）' },

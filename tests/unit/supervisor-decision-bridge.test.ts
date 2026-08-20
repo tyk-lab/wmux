@@ -2978,7 +2978,7 @@ describe('supervisor decision bridge', () => {
     };
     const normalizedRecoveredAgentConfig = {
       ...recoveredAgentConfig,
-      task: { ...recoveredAgentConfig.task, reasoningEffort: '' },
+      task: { ...recoveredAgentConfig.task, model: 'kimi-code/k3', reasoningEffort: '' },
     };
     await expect(remote({
       action: 'restore-projects', agentConfig: recoveredAgentConfig,
@@ -3091,7 +3091,7 @@ describe('supervisor decision bridge', () => {
     expect(recoveredSurface).toMatchObject({
       projectManagerProjectId: 'pm-recover', projectManagerWorkItemId: 'recover_task',
       customTitle: 'Kimi直连 · 恢复任务',
-      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
     });
     const recoveredSupervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
@@ -3329,7 +3329,7 @@ describe('supervisor decision bridge', () => {
     )).find((surface) => surface.id === created.surfaceId);
     expect(taskSurface).toMatchObject({
       customTitle: 'Kimi直连 · 配置任务',
-      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
       startupInput: expect.stringContaining('项目任务 AI 冷启动'),
     });
     const supervisorSurface = useStore.getState().workspaces.flatMap((workspace) => (
