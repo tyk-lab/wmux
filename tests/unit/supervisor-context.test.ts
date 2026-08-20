@@ -95,6 +95,23 @@ describe('supervisor runtime context', () => {
     expect(context.budget.autoDecisionsRemaining).toBe(3);
   });
 
+  it('includes the active review id in every advertised decision command', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const context = buildSupervisorRuntimeContext(session, lane({
+      awaitingReview: true,
+      activeReviewId: 'review-current',
+    }), { taskState: 'idle', permissionBlocked: true });
+
+    expect(context.identity.reviewId).toBe('review-current');
+    expect(context.commands.available.find((command) => command.includes('supervisor decide')))
+      .toContain('--review-id review-current');
+    expect(context.commands.conditional
+      .filter((item) => item.command.includes('supervisor decide'))
+      .every((item) => item.command.includes('--review-id review-current'))).toBe(true);
+    expect(buildSupervisorCapabilityCard(context).join('\n')).toContain('当前复核 ID: review-current');
+  });
+
   it('removes decision commands while the lane is paused', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;

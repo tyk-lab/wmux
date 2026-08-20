@@ -90,6 +90,10 @@ describe('AI supervisor provider limit detection', () => {
       title: 'AI 监督模型受限',
       text: expect.stringContaining('代码审查'),
     }));
+    expect(useStore.getState().supervisor.lanes[0].supervisorProblem).toMatchObject({
+      kind: 'provider-limit',
+      detail: expect.stringContaining('429'),
+    });
   });
 
   it('redacts common credentials before publishing the error summary', () => {

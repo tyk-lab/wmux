@@ -1425,11 +1425,13 @@ export default function App() {
         const reviewScreenActivity = lane.activeReviewId
           ? supervisorReviewScreenActivity.get(lane.activeReviewId)
           : undefined;
+        const currentReviewScreenSignature = supervisorSurfaceId && reviewScreenActivity
+          ? supervisorScreenSignature(supervisorSurfaceId)
+          : '';
         if (lane.activeReviewId && reviewScreenActivity && supervisorSurfaceId) {
-          const currentSignature = supervisorScreenSignature(supervisorSurfaceId);
-          if (currentSignature !== reviewScreenActivity.signature) {
+          if (currentReviewScreenSignature !== reviewScreenActivity.signature) {
             supervisorReviewScreenActivity.set(lane.activeReviewId, {
-              signature: currentSignature,
+              signature: currentReviewScreenSignature,
               stableAt: now,
             });
           }
@@ -1442,7 +1444,7 @@ export default function App() {
           && reviewScreenActivity
           && supervisorSurfaceId
           && supervisorState === 'idle'
-          && supervisorScreenSignature(supervisorSurfaceId) === reviewScreenActivity.signature
+          && currentReviewScreenSignature === reviewScreenActivity.signature
           && now - reviewScreenActivity.stableAt >= ORDINARY_REVIEW_IDLE_GRACE_MS
         ) {
           handleUnacknowledgedSupervisorReview(lane.id, 'idle-timeout');
