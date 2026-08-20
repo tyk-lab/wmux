@@ -4454,6 +4454,17 @@ describe('supervisor decision bridge', () => {
       },
     });
     useStore.getState().updateLane('lane-a', { awaitingReview: true });
+    expect(decide({
+      next: '继续处理同一配置分支',
+      stagePlanFile: '.wmux/tmp/hidden-route-change.json',
+      stagePlan: {
+        ...plan,
+        selectedRoute: '改为重写整个配置加载流程',
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--proposal-kind route-adjustment'),
+    });
     expect(decide({ outcome: 'complete', next: '' })).toMatchObject({
       ok: false,
       error: expect.stringContaining('仍有未完成执行项'),
