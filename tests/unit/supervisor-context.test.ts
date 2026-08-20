@@ -104,7 +104,7 @@ describe('supervisor runtime context', () => {
     }), { taskState: 'idle', permissionBlocked: true });
 
     expect(context.identity.reviewId).toBe('review-current');
-    expect(context.commands.available.find((command) => command.includes('supervisor decide')))
+    expect(context.commands.available.find((command) => command.includes('supervisor decide') && command.includes('--outcome')))
       .toContain('--review-id review-current');
     expect(context.commands.conditional
       .filter((item) => item.command.includes('supervisor decide'))
