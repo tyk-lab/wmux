@@ -19,6 +19,7 @@ export interface TerminalInputWriter {
 }
 
 interface StartupInputDeliveryOptions {
+  cancelWhen?: () => boolean;
   readyDelayMs?: number;
   readyWhen?: () => boolean;
   readyTimeoutMs?: number;
@@ -101,6 +102,7 @@ export async function deliverStartupInput(
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   if (!input) return false;
+  if (options.cancelWhen?.()) return false;
   const atomicInput = prepareAutomatedTerminalInput(input);
   if (!atomicInput) return false;
 
@@ -108,6 +110,7 @@ export async function deliverStartupInput(
     const maxReadyAttempts = Math.max(1, Math.ceil(readyTimeoutMs / readyPollMs) + 1);
     let ready = false;
     for (let attempt = 0; attempt < maxReadyAttempts; attempt += 1) {
+      if (options.cancelWhen?.()) return false;
       if (options.readyWhen()) {
         ready = true;
         break;
@@ -117,9 +120,11 @@ export async function deliverStartupInput(
     if (!ready) return false;
   }
   await wait(readyDelayMs);
+  if (options.cancelWhen?.()) return false;
   const pasted = await writeWhenAvailable(writer, surfaceId, atomicInput, wait, retryDelayMs, maxAttempts);
   if (!pasted) return false;
 
   await wait(pasteSubmitDelayMs(atomicInput));
+  if (options.cancelWhen?.()) return false;
   return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
 }

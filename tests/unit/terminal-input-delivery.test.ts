@@ -84,6 +84,21 @@ describe('terminal startup input delivery', () => {
     expect(writeChecked).not.toHaveBeenCalled();
   });
 
+  it('Agent 启动失败后取消等待且不向普通 shell 写入', async () => {
+    const writeChecked = vi.fn(async () => true);
+    let cancelled = false;
+
+    await expect(deliverStartupInput({ write: vi.fn(), writeChecked }, 'surf-failed', '不要投进普通 shell', {
+      cancelWhen: () => cancelled,
+      readyWhen: () => false,
+      readyTimeoutMs: 1_000,
+      readyPollMs: 100,
+      wait: async () => { cancelled = true; },
+    })).resolves.toBe(false);
+
+    expect(writeChecked).not.toHaveBeenCalled();
+  });
+
   it('等待 PTY 可写后再发送任务，并且只提交一次', async () => {
     const writeChecked = vi.fn()
       .mockResolvedValueOnce(false)

@@ -23,7 +23,10 @@ import {
 } from '../utils/terminal-input-delivery';
 import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/terminal-user-submit';
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
-import { interactiveAgentExitDetail } from '../utils/interactive-agent-runtime';
+import {
+  interactiveAgentExitDetail,
+  interactiveAgentStartupFailureDetail,
+} from '../utils/interactive-agent-runtime';
 import {
   consumeTerminalBufferSnapshot,
   registerTerminalBufferSnapshotter,
@@ -970,17 +973,22 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
         if (disposed) return;
         startupInputOutput = `${startupInputOutput}${data}`.slice(-12_000);
-        const innerAgentExit = innerAgentExitHandled
+        const startupFailure = innerAgentExitHandled || terminalRuntimeStatus(id)?.state !== 'starting'
+          ? null
+          : interactiveAgentStartupFailureDetail(startupInputOutput);
+        const innerAgentExit = innerAgentExitHandled || startupFailure
           ? null
           : interactiveAgentExitDetail(automatedStartupAgent, startupInputOutput);
-        if (innerAgentExit) {
+        const runtimeFailure = startupFailure || innerAgentExit;
+        if (runtimeFailure) {
           innerAgentExitHandled = true;
           if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
           runtimeReadyTimer = undefined;
           stopStartupTrustPolling();
           clearStuckRunningState(id);
-          markTerminalRuntimeExited(id, innerAgentExit);
-          notifyProjectManagerRuntimeFailure(id, innerAgentExit, true);
+          if (startupFailure) markTerminalRuntimeFailed(id, startupFailure);
+          else markTerminalRuntimeExited(id, runtimeFailure);
+          notifyProjectManagerRuntimeFailure(id, runtimeFailure, true);
           useStore.getState().setSurfaceProgress(id, null);
         }
         if (
@@ -1087,9 +1095,18 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // PTYs survive workspace switches, so this delivery intentionally survives
       // the React pane unmount. It starts only after PTY create/attach succeeds.
       void deliverStartupInput(window.wmux.pty, id, input, {
+        cancelWhen: () => {
+          const state = terminalRuntimeStatus(id)?.state;
+          return innerAgentExitHandled || state === 'failed' || state === 'exited';
+        },
         readyWhen: () => isKimiInteractiveInputReady(`${startupInputOutput}\n${startupInputScreenText()}`),
         readyDelayMs: 300,
       }).then((delivered) => {
+        const runtimeState = terminalRuntimeStatus(id)?.state;
+        if (innerAgentExitHandled || runtimeState === 'failed' || runtimeState === 'exited') {
+          startupInputScheduledSurfaceIds.delete(id);
+          return;
+        }
         if (delivered) {
           clearStartupInputForSurface(id);
           markTerminalRuntimeReady(id);
