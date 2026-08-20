@@ -7,6 +7,13 @@ export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 2;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
+export interface ProjectGoalConstructionState {
+  status: 'drafting' | 'confirmed';
+  initialIdea: string;
+  startedAt: number;
+  confirmedAt?: number;
+}
+
 export type ProjectGoalStatus = 'transitioning' | 'active' | 'achieved' | 'superseded' | 'abandoned';
 
 export type ProjectSubgoalStatus = 'planned' | 'active' | 'blocked' | 'achieved' | 'obsolete';
@@ -80,6 +87,8 @@ export type ProjectManagerEventKind =
   | 'user-clarification-answered'
   | 'requirements-alignment-required'
   | 'requirements-alignment-confirmed'
+  | 'goal-construction-started'
+  | 'goal-construction-confirmed'
   | 'project-definition-updated'
   | 'project-subgoals-updated'
   | 'project-goal-completed'
@@ -533,6 +542,8 @@ export interface ProjectManagerSession {
   progressSync?: ProjectProgressSyncState;
   /** Blocks project-level planning and dispatch until the project AI records a structured understanding. */
   orientation?: ProjectOrientationState;
+  /** Present when this project's formal goal is being built with the project AI before execution starts. */
+  goalConstruction?: ProjectGoalConstructionState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
   /** Manager-bound messages that have not yet been written to the manager terminal. */
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
@@ -915,6 +926,18 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
+    goalConstruction: session.goalConstruction && ['drafting', 'confirmed'].includes(session.goalConstruction.status)
+      ? {
+          status: session.goalConstruction.status,
+          initialIdea: String(session.goalConstruction.initialIdea || session.goal).trim().slice(0, 4000),
+          startedAt: Number.isFinite(session.goalConstruction.startedAt)
+            ? Number(session.goalConstruction.startedAt)
+            : session.createdAt,
+          ...(Number.isFinite(session.goalConstruction.confirmedAt)
+            ? { confirmedAt: Number(session.goalConstruction.confirmedAt) }
+            : {}),
+        }
+      : undefined,
     pendingSupervisorTransitions: (Array.isArray(session.pendingSupervisorTransitions)
       ? session.pendingSupervisorTransitions
       : [])

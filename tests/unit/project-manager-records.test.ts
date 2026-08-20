@@ -103,6 +103,26 @@ describe('project manager records', () => {
     }, appData)).toThrow('invalid project manager session payload');
   });
 
+  it('persists an unfinished conversational project goal across recovery', () => {
+    const appData = root();
+    const drafting = normalizeProjectManagerSession({
+      ...session('pm-goal-drafting', 20),
+      status: 'waiting',
+      goalConstruction: {
+        status: 'drafting',
+        initialIdea: '帮我整理这个旧项目',
+        startedAt: 10,
+      },
+    });
+
+    saveProjectManagerSession(drafting, appData);
+    expect(recoveredSession(appData, drafting.id)?.goalConstruction).toEqual({
+      status: 'drafting',
+      initialIdea: '帮我整理这个旧项目',
+      startedAt: 10,
+    });
+  });
+
   it('rejects another live project AI for the same normalized directory', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-first', 10), projectDir: 'E:\\Repo\\' }, appData);

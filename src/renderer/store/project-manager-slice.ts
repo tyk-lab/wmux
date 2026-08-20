@@ -45,6 +45,7 @@ export interface ProjectManagerSlice {
     supervisorNotes?: string[];
     planFiles?: ProjectManagerSession['planFiles'];
     doneWhen: string[];
+    goalConstruction?: boolean;
     managerSurfaceId?: string;
     feishuChatId?: string;
   }) => ProjectManagerSession;
@@ -100,6 +101,10 @@ function updateWorkItem(
   };
 }
 
+function isLiveProjectManagerSession(session: Pick<ProjectManagerSession, 'status'>): boolean {
+  return ['active', 'paused', 'waiting'].includes(session.status);
+}
+
 function projectSubgoalDependencyError(subgoals: readonly ProjectSubgoal[]): string | null {
   const byId = new Map(subgoals.map((subgoal) => [subgoal.id, subgoal]));
   if (byId.size !== subgoals.length) return '阶段目标 ID 不能重复';
@@ -140,6 +145,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
   startProjectManager(options) {
     const directoryIdentity = projectDirectoryIdentity(options.projectDir);
     const existing = get().projectManagers.find((session) => (
+      isLiveProjectManagerSession(session)
+      &&
       projectDirectoryIdentity(session.projectDir) === directoryIdentity
     ));
     if (existing) {
@@ -183,6 +190,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         reason: '项目首次创建，需要先建立项目认知基线',
         requestedAt: now,
       },
+      ...(options.goalConstruction ? {
+        goalConstruction: {
+          status: 'drafting' as const,
+          initialIdea: options.goal,
+          startedAt: now,
+        },
+      } : {}),
       managerSurfaceId: options.managerSurfaceId,
       feishuChatId: options.feishuChatId,
       workItems: [],
@@ -206,10 +220,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     const normalized = normalizeProjectManagerSession(session);
     set((state) => {
       const directoryIdentity = projectDirectoryIdentity(normalized.projectDir);
-      const existing = state.projectManagers.find((candidate) => (
+      const existing = isLiveProjectManagerSession(normalized)
+        ? state.projectManagers.find((candidate) => (
         candidate.id !== normalized.id
+        && isLiveProjectManagerSession(candidate)
         && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
-      ));
+        ))
+        : undefined;
       const selected = existing && existing.updatedAt >= normalized.updatedAt ? existing : normalized;
       return {
         projectManager: selected,
@@ -222,13 +239,17 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
   },
   restoreProjectManagers(sessions, selectedId) {
     const normalized: ProjectManagerSession[] = [];
-    const directoryIndexes = new Map<string, number>();
+    const liveDirectoryIndexes = new Map<string, number>();
     for (const rawSession of sessions) {
       const session = normalizeProjectManagerSession(rawSession);
+      if (!isLiveProjectManagerSession(session)) {
+        normalized.push(session);
+        continue;
+      }
       const identity = projectDirectoryIdentity(session.projectDir);
-      const existingIndex = directoryIndexes.get(identity);
+      const existingIndex = liveDirectoryIndexes.get(identity);
       if (existingIndex === undefined) {
-        directoryIndexes.set(identity, normalized.length);
+        liveDirectoryIndexes.set(identity, normalized.length);
         normalized.push(session);
       } else if (session.updatedAt > normalized[existingIndex].updatedAt) {
         normalized[existingIndex] = session;
