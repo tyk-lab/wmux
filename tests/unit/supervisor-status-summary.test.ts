@@ -134,6 +134,26 @@ describe('supervisor status summary', () => {
     });
   });
 
+  it('shows material ambiguity as waiting for batched user alignment', () => {
+    expect(buildSupervisorPlanView({
+      source: 'user',
+      task: '做好登录功能',
+      latestDecision: {
+        ts: 4,
+        task: '做好登录功能',
+        outcome: 'needs-human',
+        proposalKind: 'clarification',
+        reason: '1. 修复现有登录还是新增登录？\n2. 是否包含失败分支测试？',
+        next: '',
+      },
+    })).toMatchObject({
+      mode: 'forming',
+      modeLabel: '等待需求对齐',
+      nextInstruction: '等待用户集中答复后形成正式计划',
+      steps: [],
+    });
+  });
+
   it('renders the clear planning and execution hierarchy only for ordinary supervision', () => {
     expect(panelSource).toContain('className="sup-panel__summary"');
     expect(panelSource).toContain('上级任务 · {planView.sourceLabel}');
@@ -142,7 +162,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('className="sup-panel__lane-config"');
     expect(panelSource).toContain('const visibleChannelCount = scopedProjectId ? enabled.length : visibleBoundLanes.length;');
     expect(panelSource).toContain('{visibleChannelCount} 通道');
-    expect(panelSource).toMatch(/\{!laneProjectManaged && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
+    expect(panelSource).toMatch(/\{!laneProjectManaged && lane\.goalConstruction\?\.status !== 'drafting' && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
   });
 
   it('shows only each project supervisor lane and its own execution plan', () => {

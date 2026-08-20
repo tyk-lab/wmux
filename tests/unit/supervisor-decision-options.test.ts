@@ -166,4 +166,23 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
     expect(briefing).toContain('不要把本消息原样转发');
   });
+
+  it('returns clarification answers to the supervisor and requires a formal plan before execution', () => {
+    const briefing = buildAdoptedPlanBriefing({
+      surfaceId: 'surface-worker',
+      userGuidance: '1. 修复现有登录。2. 包含失败分支测试。',
+      recommendation: '',
+      reason: '1. 修复还是新增登录？\n2. 是否包含失败分支测试？',
+      impact: '答案影响范围与验收',
+      alternatives: '推荐默认答案：修复现有登录；包含失败分支测试',
+      clarification: true,
+    });
+
+    expect(briefing).toContain('[需求对齐答复]');
+    expect(briefing).toContain('[用户集中答复]');
+    expect(briefing).toContain('不得重复询问已经回答的内容');
+    expect(briefing).toContain('--stage-plan-file');
+    expect(briefing).toContain('计划形成前不得向任务 AI 投递');
+    expect(briefing).not.toContain('不要把本消息原样转发');
+  });
 });

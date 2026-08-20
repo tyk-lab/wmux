@@ -93,6 +93,7 @@ function proposalTitle(proposalKind: string): string {
     case 'important': return '重要建议';
     case 'context-recovery': return '上下文恢复指令';
     case 'direction-needed': return '待续方向不足';
+    case 'clarification': return '需求对齐';
     default: return '';
   }
 }
@@ -146,7 +147,9 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
       ? '路线变更'
       : proposalKind === 'context-recovery'
         ? '上下文恢复指令'
-        : '重要建议';
+        : proposalKind === 'clarification'
+          ? '需求对齐'
+          : '重要建议';
     const text = payloadText(payload, 'text');
     return [
       `#### 【人工裁决】${resolution} · ${kind}`,

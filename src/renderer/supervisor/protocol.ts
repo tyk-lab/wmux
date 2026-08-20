@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
-export const SUPERVISOR_PROTOCOL_REVISION = '2';
+export const SUPERVISOR_PROTOCOL_REVISION = '4';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -91,6 +91,27 @@ export function projectManagerWorkspaceTitle(projectGoal: string, projectId: str
 
 export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
+}
+
+/** Goal-building mode keeps the dedicated supervisor conversational and read-only until user confirmation. */
+export function buildSupervisorGoalConstructionBriefing(lane: SupervisorLane): string {
+  const construction = lane.goalConstruction;
+  const initialIdea = construction?.initialIdea.trim() || lane.config?.taskGoal.trim() || '（未填写）';
+  return [
+    `[普通监督目标构建｜控制层｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
+    `监督通道：${lane.id}`,
+    `目标任务终端：${lane.surfaceId}`,
+    `项目目录：${lane.projectDir || '（未知）'}`,
+    `用户初始想法：${initialIdea}`,
+    '',
+    '你是这条普通监督通道即将使用的同一个监督 AI，目前处于“目标构建状态”。用户确认后你会原地进入正式监督，不会更换 Agent 或丢失当前对话。',
+    '确认前只能：与用户澄清方向；通过 wmux read-screen 只读查看上面的任务终端；只读检查项目目录；维护结构化目标草案。禁止修改项目文件、运行会改变状态的命令、向任务终端发送内容、提交 supervisor decide、创建计划或开始监督执行。',
+    '',
+    '每轮先判断是否仍有会实质改变方向、范围或验收的歧义。需要提问时一次提出 1-3 个关键问题，并给出推荐默认答案；信息充分时直接完善草案，不要为了形式继续提问。',
+    `将草案 JSON 写入当前项目 .wmux/tmp/goal-draft-<唯一名>.json，再执行 wmux supervisor draft --surface ${lane.surfaceId} --json-file .wmux/tmp/goal-draft-<唯一名>.json。JSON 必须包含 taskGoal、taskDescription、preconditions、stopWhen、stopWhenKind；stopWhenKind 只能是 concrete 或 direction。`,
+    `随后执行 wmux supervisor reply --surface ${lane.surfaceId} --message "<本轮回复>"，把问题、推荐答案或草案摘要显示在目标构建对话中。不要只在监督终端输出后等待。`,
+    '草案命令只更新待确认内容，不会启动任务。用户会在界面中查看结构化草案并点击“确认并开始”；在收到控制层的正式监督 briefing 前，始终保持目标构建状态。',
+  ].join('\n');
 }
 
 /** Compact event envelope for an already-briefed supervisor runtime. */
@@ -619,7 +640,7 @@ export function buildSupervisorBriefing(
     '任务已经具体且可一次完成时，不要机械拆分：使用一个 milestone，界面会显示“直接监督执行”。只有存在真实阶段依赖、中间验证、风险边界或可并行工作时，才使用多个 milestones，界面显示“分阶段监督执行”。',
     projectManaged
       ? '项目基线批准时必须通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。'
-      : '取得足够任务上下文后的首次 continue/rework 应通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。没有正式计划前，控制台只把当前裁决显示为“形成正式路线中”。',
+      : '先一次性检查目标、范围和完成条件是否足以执行。存在会实质改变方向、范围或验收的歧义时，使用 needs-human --proposal-kind clarification，在 --reason 中提出 2-5 个编号问题并用问号结尾，--impact 说明这些答案会改变什么，--alternatives 给出整组推荐默认答案；不得携带 --next。没有实质歧义时不要询问用户。首次 continue/rework 必须通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。',
     '计划 JSON 包含 selectedRoute、milestones（1-12 项，每项含 id/title/outcome/status）、expectedPaths、targetedValidation、serializedBoundaries 和 remainingWork。计划必须保持在当前任务、工作范围、禁止事项和授权边界内。',
     '',
   ];

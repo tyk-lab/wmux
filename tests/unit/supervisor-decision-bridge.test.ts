@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   initPipeBridge,
+  ordinaryClarificationQuestions,
   permissionCommandMatchesEvidence,
   projectContractAutonomyPermissions,
   projectMessageChangeSignal,
@@ -458,6 +459,130 @@ describe('supervisor decision bridge', () => {
       ok: false,
       error: '当前终端不是活动监督 lane 绑定的监督 AI',
     });
+  });
+
+  it('keeps an ordinary supervisor read-only while conversationally building a goal, then reuses it after confirmation', async () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-goal-builder' as any,
+      title: '目标构建测试',
+      cwd: 'E:\\repo',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-goal-builder' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '任务 AI' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '监督 AI', transientSupervisor: true },
+        ],
+      },
+    }]);
+    surfaceTerminalRegistry.set('supervisor-a', {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const current = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(current.id, {
+      awaitingReview: false,
+      goalConstruction: {
+        status: 'drafting',
+        initialIdea: '把登录问题修好',
+        draft: {
+          taskGoal: '把登录问题修好',
+          taskDescription: '',
+          preconditions: '',
+          stopWhen: '',
+          stopWhenKind: 'concrete',
+        },
+        messages: [{ id: 'initial', role: 'user', text: '把登录问题修好', ts: 1 }],
+        startedAt: 1,
+      },
+    });
+
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a', outcome: 'continue', reason: '开始执行', next: '修改登录逻辑',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('目标构建尚未由用户确认') });
+
+    expect((globalThis.window as any).__wmux_supervisorGoalDraft({
+      surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a',
+      taskGoal: '无效草案', preconditions: ['无额外物理前置条件'], stopWhen: ['完成'], stopWhenKind: 'invalid',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('concrete 或 direction') });
+    expect((globalThis.window as any).__wmux_supervisorGoalDraft({
+      surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a',
+      taskGoal: '修复登录失败并保持现有兼容性',
+      taskDescription: '仅处理登录模块和相关测试',
+      preconditions: ['无额外物理前置条件'],
+      stopWhen: ['登录相关测试通过', '错误提示可验证'],
+      stopWhenKind: 'concrete',
+    })).toMatchObject({ ok: true, draft: { taskGoal: '修复登录失败并保持现有兼容性' } });
+    expect((globalThis.window as any).__wmux_supervisorReply({
+      surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a', message: '草案已补全，请确认。',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().supervisor.lanes[0].goalConstruction?.messages.at(-1)).toMatchObject({
+      role: 'assistant', text: '草案已补全，请确认。',
+    });
+
+    const remote = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    expect(remote({
+      action: 'send-supervisor-message', terminal: 'worker-a', message: '保持旧接口兼容', actor: 'desktop',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('目标构建答复') });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[目标构建对话｜用户回复]'));
+
+    expect(remote({ action: 'confirm-goal-construction', terminal: 'worker-a', actor: 'desktop' }))
+      .toMatchObject({ ok: true, message: expect.stringContaining('原地进入正式') });
+    const confirmed = useStore.getState().supervisor.lanes[0];
+    expect(confirmed.goalConstruction).toMatchObject({ status: 'confirmed', confirmedAt: expect.any(Number) });
+    expect(confirmed.config).toMatchObject({
+      taskGoal: '修复登录失败并保持现有兼容性',
+      preconditions: '无额外物理前置条件',
+      stopWhen: '登录相关测试通过\n错误提示可验证',
+    });
+    expect(confirmed.supervisorSurfaceId).toBe('supervisor-a');
+    const stagedInput = (globalThis.window as any).wmux.pty.stageInputFile as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect([
+        ...writes.mock.calls.map(([, text]) => String(text)),
+        ...stagedInput.mock.calls.map(([, text]) => String(text)),
+      ].some((text) => text.includes('[目标构建完成｜用户已确认｜现在进入正式监督]'))).toBe(true);
+    });
+  });
+
+  it('creates a project AI in goal-building mode and blocks planning until the user confirms its draft', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\goal-construction', goal: '把这个旧项目整理好', goalConstruction: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      session: { goalConstruction: { status: 'drafting', initialIdea: '把这个旧项目整理好' }, status: 'waiting' },
+    });
+    const project = useStore.getState().projectManager!;
+    expect(project.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'goal-construction-started' }),
+      expect.objectContaining({ kind: 'user-message', summary: '把这个旧项目整理好' }),
+    ]));
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'goal-plan', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      subgoals: [{ id: 'stage', title: '提前执行', outcome: '不应发生', acceptance: ['完成'], dependencies: [] }],
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('目标草案尚未由用户确认') });
+
+    await expect(request({
+      action: 'update-definition', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      goal: '完成旧项目整理并形成可发布版本',
+      preconditions: ['无额外物理前置条件'],
+      doneWhen: ['相关测试通过', '构建产物可生成'],
+      mode: 'refine', reason: '根据用户对话形成结构化草案',
+    })).resolves.toMatchObject({ ok: true });
+    await expect(remote({ action: 'confirm-goal-construction', projectId: project.id }))
+      .resolves.toMatchObject({ ok: true, message: expect.stringContaining('原地进入') });
+    const confirmed = useStore.getState().projectManager!;
+    expect(confirmed.goalConstruction).toMatchObject({ status: 'confirmed', confirmedAt: expect.any(Number) });
+    expect(confirmed.managerSurfaceId).toBe(project.managerSurfaceId);
+    expect(confirmed.goal).toBe('完成旧项目整理并形成可发布版本');
+    expect(confirmed.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'goal-construction-confirmed' }),
+    ]));
   });
 
   it('does not derive route-adjustment authority from retry authority', () => {
@@ -4280,6 +4405,7 @@ describe('supervisor decision bridge', () => {
   });
 
   it('accepts and retains an ordinary supervisor execution plan derived from the user task', () => {
+    useStore.getState().updateLane('lane-a', { ordinaryPlanRequired: true });
     const plan = {
       selectedRoute: '先完成聚焦修复，再运行定向测试',
       milestones: [{
@@ -4308,6 +4434,58 @@ describe('supervisor decision bridge', () => {
       ok: false,
       error: expect.stringContaining('仍有未完成执行项'),
     });
+  });
+
+  it('aligns several material ambiguities before a new ordinary lane can execute', () => {
+    useStore.getState().updateLane('lane-a', { ordinaryPlanRequired: true });
+    expect(decide({ next: '直接开始实现' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('首次执行前'),
+    });
+
+    const questions = '1. 目标是修复现有登录还是新增登录？\n2. 完成条件是否包含失败分支测试？';
+    expect(ordinaryClarificationQuestions(questions)).toHaveLength(2);
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'clarification',
+      reason: '1. 目标是修复现有登录吗？',
+      impact: '答案会改变实现范围',
+      alternatives: '推荐默认答案：修复现有登录并补失败分支测试',
+      next: '',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('2-5 个') });
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'clarification',
+      reason: questions,
+      impact: '答案会改变功能范围和验收标准',
+      alternatives: '推荐默认答案：1=修复现有登录；2=包含失败分支测试',
+      next: '',
+    })).toMatchObject({ ok: true, outcome: 'needs-human' });
+
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    expect(approval).toMatchObject({ proposalKind: 'clarification', reason: questions });
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('集中填写') });
+    writes.mockClear();
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve',
+      task: '1. 修复现有登录。2. 包含失败分支测试。', actor: 'ou-user',
+    })).toMatchObject({ ok: true });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[需求对齐答复]'));
+    expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
+
+    expect(decide({
+      next: '修复现有登录并补充失败分支测试',
+      stagePlanFile: '.wmux/tmp/aligned-ordinary-plan.json',
+      stagePlan: {
+        selectedRoute: '聚焦修复现有登录并补齐验收测试',
+        milestones: [{ id: 'fix_login', title: '修复并验证', outcome: '登录及失败分支测试通过', status: 'active' }],
+        expectedPaths: [], targetedValidation: [], serializedBoundaries: [], remainingWork: ['完成修复和验证'],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(writes).toHaveBeenCalledWith('worker-a', expect.stringContaining('修复现有登录并补充失败分支测试'));
   });
 
   it('rejects a missing or stale ordinary review id before accepting the matching decision', () => {

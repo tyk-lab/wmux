@@ -145,6 +145,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
+  const [goalConstructionInputs, setGoalConstructionInputs] = useState<Record<string, string>>({});
+  const [goalConstructionNotices, setGoalConstructionNotices] = useState<Record<string, string>>({});
   const [polledAgentStates, setPolledAgentStates] = useState<Record<string, SupervisorTaskAgentState | undefined>>({});
 
   useEffect(() => {
@@ -286,6 +288,45 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     openSupervisorSetup();
   };
 
+  const sendGoalConstructionMessage = (lane: SupervisorLane) => {
+    const message = (goalConstructionInputs[lane.id] || '').trim();
+    if (!message) return;
+    const control = (window as any).__wmux_supervisorRemoteControl;
+    if (typeof control !== 'function') {
+      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: '监督控制层尚未就绪' }));
+      return;
+    }
+    const result = control({
+      action: 'send-supervisor-message',
+      terminal: lane.surfaceId,
+      message,
+      actor: 'desktop-goal-construction',
+    });
+    if (result?.ok === false) {
+      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: result.error || '消息发送失败' }));
+      return;
+    }
+    setGoalConstructionInputs((current) => ({ ...current, [lane.id]: '' }));
+    setGoalConstructionNotices((current) => ({ ...current, [lane.id]: result?.message || '已发送' }));
+  };
+
+  const confirmGoalConstruction = (lane: SupervisorLane) => {
+    const control = (window as any).__wmux_supervisorRemoteControl;
+    if (typeof control !== 'function') {
+      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: '监督控制层尚未就绪' }));
+      return;
+    }
+    const result = control({
+      action: 'confirm-goal-construction',
+      terminal: lane.surfaceId,
+      actor: 'desktop-goal-construction',
+    });
+    setGoalConstructionNotices((current) => ({
+      ...current,
+      [lane.id]: result?.ok === false ? result.error || '目标确认失败' : result?.message || '目标已确认',
+    }));
+  };
+
   const openAuditTrail = async (lane: SupervisorLane) => {
     setLoadingRecordLaneId(lane.id);
     const trail = await readSupervisorAuditTrail(lane);
@@ -366,9 +407,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           userGuidance,
           recommendation: item.text,
           reason: item.reason,
-          impact: item.impact,
-          alternatives: item.alternatives,
-        }), true, supervisorLaneInputIsolationScope(lane));
+           impact: item.impact,
+           alternatives: item.alternatives,
+           clarification: item.proposalKind === 'clarification',
+         }), true, supervisorLaneInputIsolationScope(lane));
       } else if (item.text.trim()) {
         sendTaskToSurface(
           item.surfaceId,
@@ -1093,6 +1135,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
               });
               const laneStatusLabel = laneControlState === 'waiting'
                 ? '待续'
+                : lane.goalConstruction?.status === 'drafting'
+                  ? '目标构建中'
                 : lane.stopConfirmed
                   ? '已达停止条件'
                   : laneControlState === 'active'
@@ -1144,7 +1188,50 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       {lane.supervisorProblem.detail}
                     </div>
                   )}
-                  {!laneProjectManaged && (
+                  {!laneProjectManaged && lane.goalConstruction?.status === 'drafting' && (() => {
+                    const construction = lane.goalConstruction;
+                    const draft = construction.draft;
+                    return (
+                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的任务目标构建对话`}>
+                        <header>
+                          <div><span>监督 AI 目标构建</span><strong>确认前只读，不会启动任务</strong></div>
+                          <em>同一个 Agent</em>
+                        </header>
+                        <div className="sup-panel__goal-draft">
+                          <div><span>任务目标</span><strong>{draft.taskGoal || '等待监督 AI 补全'}</strong></div>
+                          <div><span>任务范围</span><strong>{draft.taskDescription || '仅限所选任务终端和项目目录'}</strong></div>
+                          <div><span>前置条件</span><strong>{draft.preconditions || '等待监督 AI 补全'}</strong></div>
+                          <div><span>停止条件</span><strong>{draft.stopWhen || '等待监督 AI 补全'}</strong></div>
+                        </div>
+                        <div className="sup-panel__goal-conversation">
+                          {construction.messages.map((entry) => (
+                            <article key={entry.id} data-role={entry.role}>
+                              <header><strong>{entry.role === 'assistant' ? '监督 AI' : '你'}</strong><time>{new Date(entry.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time></header>
+                              <p>{entry.text}</p>
+                            </article>
+                          ))}
+                        </div>
+                        <textarea
+                          className="supervisor-dialog__textarea"
+                          rows={2}
+                          value={goalConstructionInputs[lane.id] || ''}
+                          onChange={(event) => setGoalConstructionInputs((current) => ({ ...current, [lane.id]: event.target.value }))}
+                          placeholder="回答监督 AI 的问题，或继续补充目标、范围和验收要求"
+                          aria-label={`回复 ${lane.label} 的目标构建 Agent`}
+                        />
+                        {goalConstructionNotices[lane.id] && <div className="sup-panel__goal-notice" role="status">{goalConstructionNotices[lane.id]}</div>}
+                        <div className="sup-panel__approval-actions">
+                          <button type="button" disabled={!(goalConstructionInputs[lane.id] || '').trim()} onClick={() => sendGoalConstructionMessage(lane)}>发送给监督 AI</button>
+                          <button
+                            type="button"
+                            disabled={!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()}
+                            onClick={() => confirmGoalConstruction(lane)}
+                          >确认目标并开始</button>
+                        </div>
+                      </section>
+                    );
+                  })()}
+                  {!laneProjectManaged && lane.goalConstruction?.status !== 'drafting' && (
                     <>
                       <div className="sup-panel__lane-status-grid" aria-label={`${lane.label} 的规划与执行状态`}>
                         <div title={lane.currentTask || laneConfig.taskGoal || planFileName}>
@@ -1405,7 +1492,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 const lane = supervisor.lanes.find((entry) => entry.id === a.laneId);
                 const laneControlState = lane ? supervisorLaneControlState(lane) : 'stopped';
                 const isContextRecovery = a.source === 'supervisor-context-recovery';
-                const decisionOptions = a.proposalKind && !isContextRecovery
+                const isClarification = a.proposalKind === 'clarification';
+                const decisionOptions = a.proposalKind && !isContextRecovery && !isClarification
                   ? supervisorDecisionOptions(a.alternatives, a.text)
                   : [];
                 const selectedOption = proposalSelections[a.id] || '';
@@ -1415,7 +1503,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 return (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">
-                    <strong>{isContextRecovery ? '上下文恢复指令' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
+                    <strong>{isContextRecovery ? '上下文恢复指令' : isClarification ? '需求对齐' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
                     {a.proposalKind && <span>{a.laneLabel}</span>}
                   </div>
                   {isContextRecovery ? (
@@ -1462,14 +1550,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   ) : a.proposalKind ? (
                     <div className="sup-panel__proposal">
                       <section className="sup-panel__decision-section">
-                        <h4>决策背景</h4>
+                        <h4>{isClarification ? '需要集中确认的问题' : '决策背景'}</h4>
                         <div className="sup-panel__decision-overview">
                           <div className="sup-panel__decision-fact sup-panel__decision-fact--task">
                             <span>当前任务目标</span>
                             <div>{a.task || '任务终端暂未上报明确目标'}</div>
                           </div>
                           <div className="sup-panel__decision-fact">
-                            <span>需要你决定</span>
+                            <span>{isClarification ? '对齐问题' : '需要你决定'}</span>
                             <div>{a.reason || 'AI 监督请求你确认下一步路线'}</div>
                           </div>
                           <div className="sup-panel__decision-fact">
@@ -1480,11 +1568,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       </section>
 
                       <section className="sup-panel__decision-section sup-panel__recommendation">
-                        <h4>AI 推荐</h4>
-                        <div>{a.text || 'AI 未提供具体下一步'}</div>
+                        <h4>{isClarification ? 'AI 推荐默认答案' : 'AI 推荐'}</h4>
+                        <div>{isClarification
+                          ? a.alternatives || 'AI 未提供推荐默认答案'
+                          : a.text || 'AI 未提供具体下一步'}</div>
                       </section>
 
-                      <fieldset className="sup-panel__decision-section sup-panel__decision-options">
+                      {!isClarification && <fieldset className="sup-panel__decision-section sup-panel__decision-options">
                         <legend>选择 AI 方案</legend>
                         <p>选择后，AI 监督会读取任务终端最新状态，整理成完整指令再发送。</p>
                         <div className="sup-panel__decision-option-list">
@@ -1511,11 +1601,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             </label>
                           ))}
                         </div>
-                      </fieldset>
+                      </fieldset>}
 
                       <section className="sup-panel__decision-section sup-panel__supervisor-guidance">
                         <label className="sup-panel__proposal-edit">
-                          <span>补充给 AI 监督的信息（可选）</span>
+                          <span>{isClarification ? '集中回答以上问题' : '补充给 AI 监督的信息（可选）'}</span>
                           <textarea
                             className="sup-panel__proposal-input"
                             value={userGuidance}
@@ -1524,11 +1614,15 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                               ...current,
                               [a.id]: event.target.value,
                             }))}
-                            placeholder="例如：优先保持现有 API；请结合当前终端状态判断是否调整方案"
+                            placeholder={isClarification
+                              ? '按问题编号集中答复；未特别说明的项目可写“按推荐默认答案”'
+                              : '例如：优先保持现有 API；请结合当前终端状态判断是否调整方案'}
                             disabled={!supervisor.active || laneControlState === 'stopped'}
                             aria-label={`${a.laneLabel} 的监督 AI 补充信息`}
                           />
-                          <small>采用时会与所选方案一起交给 AI 监督分析，不会直接发送到任务终端。没有可选方案时，也可以只提交这段信息。</small>
+                          <small>{isClarification
+                            ? '答复只交给监督 AI 完成对齐；监督 AI 形成正式计划前不会向任务 AI 发送执行指令。'
+                            : '采用时会与所选方案一起交给 AI 监督分析，不会直接发送到任务终端。没有可选方案时，也可以只提交这段信息。'}</small>
                         </label>
                       </section>
 
@@ -1563,10 +1657,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             || (!selectedOption && !userGuidance.trim())
                           }
                         >
-                          {selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'}
+                          {isClarification
+                            ? '提交对齐答复'
+                            : selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'}
                         </button>
                       </div>
 
+                      {!isClarification && <>
                       <div className="sup-panel__decision-divider"><span>或者直接决定</span></div>
 
                       <section className="sup-panel__direct-decision">
@@ -1602,6 +1699,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           </button>
                         </div>
                       </section>
+                      </>}
                     </div>
                   ) : (
                     <>

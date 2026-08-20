@@ -146,7 +146,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('项目管理 AI 邀请你对齐需求');
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
-    expect(projectManagerDialogSource).toContain('当前项目：{session.goal}');
+    expect(projectManagerDialogSource).toContain('`当前项目：${session.goal}。');
     expect(projectManagerDialogSource).toContain('项目 AI · 回复');
     expect(projectManagerDialogSource).toContain('你 · 询问');
     expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
@@ -167,6 +167,23 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('其他工作项没有被全局暂停');
     expect(pipeBridgeSource).toContain('[${messageSource}项目管理消息｜必须回复到对应项目会话${revokedOldRun');
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
+  });
+
+  it('offers conversational goal construction for projects and ordinary supervision', () => {
+    expect(dialogSource).toContain('对话构建任务目标');
+    expect(dialogSource).toContain('创建监督 AI 并对话');
+    expect(dialogSource).toContain('buildSupervisorGoalConstructionBriefing');
+    expect(dialogSource).toContain("creationMode === 'conversation'");
+    expect(panelSource).toContain('监督 AI 目标构建');
+    expect(panelSource).toContain('确认目标并开始');
+    expect(panelSource).toContain("action: 'confirm-goal-construction'");
+    expect(projectManagerDialogSource).toContain('对话构建项目目标');
+    expect(projectManagerDialogSource).toContain('创建项目 AI 并对话');
+    expect(projectManagerDialogSource).toContain('待确认的项目目标草案');
+    expect(projectManagerDialogSource).toContain("goalConstruction: creationMode === 'conversation'");
+    expect(projectManagerDialogSource).toContain("action: 'confirm-goal-construction'");
+    expect(pipeBridgeSource).toContain('目标构建期间只能更新项目定义、向用户提问或回复');
+    expect(pipeBridgeSource).toContain('目标构建尚未由用户确认');
   });
 
   it('defaults new supervision lanes to wait for the next direction after completion', () => {
@@ -217,6 +234,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('if (s.projectManagerProjectId || s.projectManagerWorkItemId) continue;');
     expect(dialogSource).toContain('supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane))');
     expect(dialogSource).toContain('setOrdinarySupervisorLanes(result.lanes)');
+    expect(dialogSource).toContain('ordinaryPlanRequired: keepsCurrentContext ? prev?.ordinaryPlanRequired : true');
     expect(dialogSource).toContain('startOrdinarySupervisor()');
     expect(dialogSource).toContain('stopOrdinarySupervisor()');
     expect(panelSource).toContain('普通监督的配置、暂停和停止操作均不会修改这里');
@@ -236,7 +254,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('补充给 AI 监督的信息（可选）');
     expect(panelSource).toContain('没有可选方案时，也可以只提交这段信息');
     expect(panelSource).toContain("(!selectedOption && !userGuidance.trim())");
-    expect(panelSource).toContain("{selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'}");
+    expect(panelSource).toContain("isClarification\n                            ? '提交对齐答复'");
+    expect(panelSource).toContain("selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'");
   });
 
   it('separates supervision setup into focused steps and terminal details', () => {
@@ -286,7 +305,7 @@ describe('supervisor setup dialog feedback', () => {
       /<div className="supervisor-dialog__actions">[\s\S]*?^        <\/div>/m,
     )?.[0] || '';
 
-    expect(footer).toContain('{!sessionRetained && (');
+    expect(footer).toContain("{!sessionRetained && creationMode === 'direct' && (");
     expect(footer).toContain('保存设置');
     expect(footer).toContain('{primaryActionLabel}');
     expect(dialogSource).toContain("if (ordinaryActive) primaryActionLabel = '应用并继续普通监督'");

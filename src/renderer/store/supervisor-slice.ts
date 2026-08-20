@@ -24,7 +24,7 @@ export interface SupervisorDecision {
   ts: number;
   task: string;
   outcome: 'continue' | 'rework' | 'complete' | 'needs-human';
-  proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery' | 'direction-needed';
+  proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery' | 'direction-needed' | 'clarification';
   reason: string;
   next: string;
   /** Supervisor-owned execution plan snapshot; one milestone means direct execution. */
@@ -73,6 +73,22 @@ export interface SupervisorLaneConfig {
   supervisorMayApproveThreads?: boolean;
   parallelizableOperations?: string[];
   serializedOperations?: string[];
+}
+
+export interface SupervisorGoalConstructionMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number;
+}
+
+export interface SupervisorGoalConstructionState {
+  status: 'drafting' | 'confirmed';
+  initialIdea: string;
+  draft: Pick<SupervisorLaneConfig, 'taskGoal' | 'taskDescription' | 'preconditions' | 'stopWhen' | 'stopWhenKind'>;
+  messages: SupervisorGoalConstructionMessage[];
+  startedAt: number;
+  confirmedAt?: number;
 }
 
 export interface SupervisorLane {
@@ -161,6 +177,10 @@ export interface SupervisorLane {
   projectTaskContractPending?: boolean;
   /** True until an ordinary task terminal receives its one-time role anchor. */
   taskRoleAnchorPending?: boolean;
+  /** New ordinary lanes must align material ambiguity and persist a plan before first execution. */
+  ordinaryPlanRequired?: boolean;
+  /** Conversational target definition gate; the same supervisor becomes active after explicit user confirmation. */
+  goalConstruction?: SupervisorGoalConstructionState;
   /** Bounded permission audit used to stop repeated confirmations that make no progress. */
   permissionConfirmations?: Array<{
     ts: number;
@@ -192,7 +212,7 @@ export interface PendingApproval {
   text: string;
   source: ApprovalSource;
   /** A supervisor proposal that must be decided by the user before injection. */
-  proposalKind?: 'route-change' | 'important' | 'context-recovery';
+  proposalKind?: 'route-change' | 'important' | 'context-recovery' | 'clarification';
   reason?: string;
   impact?: string;
   alternatives?: string;

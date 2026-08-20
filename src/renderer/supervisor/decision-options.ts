@@ -13,8 +13,21 @@ export function buildAdoptedPlanBriefing(options: {
   reason?: string;
   impact?: string;
   alternatives?: string;
+  clarification?: boolean;
 }): string {
   const userGuidance = options.userGuidance?.trim() || '';
+  if (options.clarification) {
+    return [
+      '[需求对齐答复] 用户已集中回答普通监督提出的实质歧义问题。',
+      userGuidance ? `[用户集中答复] ${userGuidance}` : '',
+      options.reason?.trim() ? `[原对齐问题] ${options.reason.trim()}` : '',
+      options.impact?.trim() ? `[答案影响] ${options.impact.trim()}` : '',
+      options.alternatives?.trim() ? `[AI 推荐默认答案] ${options.alternatives.trim()}` : '',
+      '',
+      '先根据整组答复完成需求对齐；不得重复询问已经回答的内容。仍有会实质改变方向、范围或验收的歧义时，才可再提出一批必要问题。',
+      `对齐充分后，创建 .wmux/tmp/ 下的阶段计划 JSON，并使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework --stage-plan-file <文件> 携带第一条 --next；计划形成前不得向任务 AI 投递。`,
+    ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
+  }
   return [
     options.selection
       ? '[人工决定] 用户已选择 AI 监督提出的方案，请结合用户补充信息重新判断并处理。'

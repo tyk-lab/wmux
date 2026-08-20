@@ -694,6 +694,23 @@
   margin-top: 9px;
 }
 
+.project-manager-dialog__definition-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 9px 0;
+  font-size: 11px;
+}
+
+.project-manager-dialog__definition-grid dt {
+  color: var(--ui-text-muted);
+}
+
+.project-manager-dialog__definition-grid dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .project-manager-dialog__agent-grid article {
   display: grid;
   gap: 8px;
@@ -2872,6 +2889,98 @@
   border: 1px solid rgba(80, 160, 255, 0.2);
   border-radius: 7px;
   background: rgba(80, 160, 255, 0.045);
+}
+
+.sup-panel__goal-construction {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid rgba(154, 124, 255, 0.34);
+  border-radius: 7px;
+  background: rgba(154, 124, 255, 0.06);
+}
+
+.sup-panel__goal-construction > header,
+.sup-panel__goal-conversation article header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sup-panel__goal-construction > header div {
+  display: grid;
+  gap: 2px;
+}
+
+.sup-panel__goal-construction > header span,
+.sup-panel__goal-draft span,
+.sup-panel__goal-conversation time {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
+.sup-panel__goal-construction > header em {
+  color: #c4b5ff;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.sup-panel__goal-draft {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sup-panel__goal-draft > div {
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.sup-panel__goal-draft strong {
+  white-space: pre-wrap;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.sup-panel__goal-conversation {
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  padding: 7px;
+  overflow: auto;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.sup-panel__goal-conversation article {
+  max-width: 90%;
+  padding: 7px;
+  border-radius: 6px;
+  background: rgba(154, 124, 255, 0.1);
+}
+
+.sup-panel__goal-conversation article[data-role='user'] {
+  justify-self: end;
+  background: rgba(80, 160, 255, 0.14);
+}
+
+.sup-panel__goal-conversation p {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.sup-panel__goal-notice {
+  color: #b8d8ff;
+  font-size: 10px;
 }
 
 .sup-panel__ordinary-plan-heading {

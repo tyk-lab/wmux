@@ -69,6 +69,7 @@ import {
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   supervisorLaneControlState,
+  type StopWhenKind,
   type SupervisorDecision,
   type SupervisorDelivery,
   type SupervisorLane,
@@ -77,6 +78,7 @@ import {
 import {
   buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
+  buildSupervisorGoalConstructionBriefing,
   buildUnacknowledgedSupervisorIdlePrompt,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
@@ -731,7 +733,15 @@ export function isSupervisorProposalAllowed(outcome: string, proposalKind: strin
   return (proposalKind === 'route-change'
     || proposalKind === 'important'
     || proposalKind === 'context-recovery'
-    || proposalKind === 'direction-needed') && outcome === 'needs-human';
+    || proposalKind === 'direction-needed'
+    || proposalKind === 'clarification') && outcome === 'needs-human';
+}
+
+/** Extract the batch of material-alignment questions from an ordinary supervisor proposal. */
+export function ordinaryClarificationQuestions(value: string): string[] {
+  return (value.match(/[^?？\r\n]{3,}[?？]/gu) || [])
+    .map((question) => question.trim())
+    .filter(Boolean);
 }
 
 /** A supervisor may advance work only from a continuation/rework or a human proposal. */
@@ -1820,7 +1830,9 @@ function projectAwareSupervisorBriefing(
   lane: SupervisorLane,
   state: string,
 ): string {
-  return lane.projectTaskStartupPending
+  return lane.goalConstruction?.status === 'drafting'
+    ? buildSupervisorGoalConstructionBriefing(lane)
+    : lane.projectTaskStartupPending
     ? buildProjectTaskStartupBriefing(lane)
     : buildSupervisorBriefing(session, { lane, state });
 }
@@ -2053,7 +2065,9 @@ function startRemoteSupervisor(
       } : {}),
       controlState: 'active',
       awaitingStopCheck: false, stopConfirmed: false,
-      awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0, pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
+      awaitingReview: false, autoDecisionLimitReached: false, autoDecisionsUsed: 0,
+      pendingSupervisorDeliveries: [], currentTask: '', decisions: [],
+      ordinaryPlanRequired: !projectManagedStart,
     }, supervisorSurfaceId);
     return retainedSession || projectTaskBootstrap ? { ...lane, awaitingReview: true } : lane;
   });
@@ -2326,13 +2340,32 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   }
   const message = params.message.trim();
   if (!message) return { ok: false, error: '监督方向信息不能为空。', message: '' };
+  const buildingGoal = lane.goalConstruction?.status === 'drafting';
 
   try {
-    sendTaskToSurface(supervisorSurfaceId, `[用户调整监督方向]\n${message}`, true, 'ordinary');
+    sendTaskToSurface(
+      supervisorSurfaceId,
+      buildingGoal ? `[目标构建对话｜用户回复]\n${message}` : `[用户调整监督方向]\n${message}`,
+      true,
+      'ordinary',
+    );
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
-  if (supervisorLaneControlState(lane) === 'waiting') {
+  if (buildingGoal) {
+    const construction = lane.goalConstruction!;
+    useStore.getState().updateLane(lane.id, {
+      goalConstruction: {
+        ...construction,
+        messages: [...construction.messages, {
+          id: `goal-user-${uuid()}`,
+          role: 'user' as const,
+          text: message.slice(0, 5000),
+          ts: Date.now(),
+        }].slice(-50),
+      },
+    });
+  } else if (supervisorLaneControlState(lane) === 'waiting') {
     resumeWaitingLaneFromSupervisorInput(session, lane, 'remote-supervisor-message');
     session = useStore.getState().supervisor;
   }
@@ -2341,8 +2374,152 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
     actor: params.actor || 'unknown',
     message,
   });
-  useStore.getState().appendSupervisorLog(lane.id, '用户调整监督方向', message);
-  return { ok: true, message: `已向 AI 监督终端（管家）“${lane.label}”发送监督方向信息。` };
+  useStore.getState().appendSupervisorLog(
+    lane.id,
+    buildingGoal ? '目标构建对话' : '用户调整监督方向',
+    message,
+  );
+  return {
+    ok: true,
+    message: buildingGoal
+      ? `已向监督 AI“${lane.label}”发送目标构建答复。`
+      : `已向 AI 监督终端（管家）“${lane.label}”发送监督方向信息。`,
+  };
+}
+
+function updateSupervisorGoalDraft(params: any): { ok: boolean; error?: string; draft?: unknown } {
+  const store = useStore.getState();
+  const surfaceId = String(params?.surfaceId || '').trim();
+  const supervisorSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
+  const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
+  if (!lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId)) {
+    return { ok: false, error: '当前终端不是该普通监督通道绑定的目标构建 Agent' };
+  }
+  if (isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
+    return { ok: false, error: '当前普通监督通道不处于目标构建状态' };
+  }
+  if (!store.supervisor.active || supervisorLaneControlState(lane) !== 'active') {
+    return { ok: false, error: '目标构建通道当前未运行，不能更新草案' };
+  }
+  const input = params?.draft && typeof params.draft === 'object' ? params.draft : params;
+  const textLines = (value: unknown): string => (
+    Array.isArray(value) ? projectStringArray(value).join('\n') : String(value || '').trim()
+  );
+  const taskGoal = String(input?.taskGoal || '').trim().slice(0, 4000);
+  const taskDescription = String(input?.taskDescription || '').trim().slice(0, 8000);
+  const preconditions = textLines(input?.preconditions).slice(0, 8000);
+  const stopWhen = textLines(input?.stopWhen).slice(0, 8000);
+  const rawStopWhenKind = String(input?.stopWhenKind || '').trim();
+  if (rawStopWhenKind !== 'concrete' && rawStopWhenKind !== 'direction') {
+    return { ok: false, error: 'stopWhenKind 只能是 concrete 或 direction' };
+  }
+  const stopWhenKind: StopWhenKind = rawStopWhenKind;
+  if (!taskGoal || !preconditions || !stopWhen) {
+    return { ok: false, error: '目标草案必须包含 taskGoal、preconditions 和 stopWhen；没有额外前置条件时请明确写出' };
+  }
+  const draft = { taskGoal, taskDescription, preconditions, stopWhen, stopWhenKind };
+  store.updateLane(lane.id, {
+    goalConstruction: {
+      ...lane.goalConstruction,
+      draft,
+    },
+  });
+  store.appendSupervisorLog(lane.id, '目标草案已更新', `${taskGoal}；完成条件：${stopWhen}`);
+  return { ok: true, draft };
+}
+
+function appendSupervisorGoalReply(params: any): { ok: boolean; error?: string; message?: string } {
+  const store = useStore.getState();
+  const surfaceId = String(params?.surfaceId || '').trim();
+  const supervisorSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
+  const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
+  if (!lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId)) {
+    return { ok: false, error: '当前终端不是该普通监督通道绑定的目标构建 Agent' };
+  }
+  if (isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
+    return { ok: false, error: '当前普通监督通道不处于目标构建状态' };
+  }
+  if (!store.supervisor.active || supervisorLaneControlState(lane) !== 'active') {
+    return { ok: false, error: '目标构建通道当前未运行，不能写入回复' };
+  }
+  const message = String(params?.message || '').trim().slice(0, 5000);
+  if (!message) return { ok: false, error: '目标构建回复不能为空' };
+  store.updateLane(lane.id, {
+    goalConstruction: {
+      ...lane.goalConstruction,
+      messages: [...lane.goalConstruction.messages, {
+        id: `goal-assistant-${uuid()}`,
+        role: 'assistant' as const,
+        text: message,
+        ts: Date.now(),
+      }].slice(-50),
+    },
+  });
+  store.appendSupervisorLog(lane.id, '监督 AI 目标构建回复', message);
+  return { ok: true, message };
+}
+
+function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: string; message?: string } {
+  const store = useStore.getState();
+  const terminal = String(params?.terminal || params?.surfaceId || '').trim();
+  const lane = store.supervisor.lanes.find((candidate) => (
+    candidate.surfaceId === terminal || candidate.managementSessionId === terminal
+  ));
+  if (!lane || isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
+    return { ok: false, error: '当前没有可确认的普通监督目标草案' };
+  }
+  if (supervisorLaneControlState(lane) !== 'active') {
+    return { ok: false, error: '目标构建通道当前未运行；请先恢复该监督 AI 再确认目标' };
+  }
+  const draft = lane.goalConstruction.draft;
+  if (!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()) {
+    return { ok: false, error: '目标草案尚不完整：必须包含任务目标、前置条件和停止条件' };
+  }
+  const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+  if (!supervisorSurfaceId || !hasLiveSurface(supervisorSurfaceId)) {
+    return { ok: false, error: '监督 AI 终端已缺失；请重新配置该通道后再确认目标' };
+  }
+  const now = Date.now();
+  const confirmedPatch: Partial<SupervisorLane> = {
+    config: {
+      ...effectiveSupervisorLaneConfig(lane),
+      ...draft,
+    },
+    goalConstruction: {
+      ...lane.goalConstruction,
+      status: 'confirmed',
+      confirmedAt: now,
+    },
+    ordinaryPlanRequired: true,
+    awaitingReview: false,
+    activeReviewId: undefined,
+    reviewWorkerTurnId: undefined,
+  };
+  const confirmedLane = { ...lane, ...confirmedPatch } as SupervisorLane;
+  const current = {
+    ...store.supervisor,
+    lanes: store.supervisor.lanes.map((candidate) => candidate.id === lane.id ? confirmedLane : candidate),
+  };
+  const states = (window as any).__wmux_getAgentStates?.() || {};
+  try {
+    sendToSurface(
+      supervisorSurfaceId,
+      [
+        '[目标构建完成｜用户已确认｜现在进入正式监督]',
+        buildSupervisorBriefing(current, {
+          lane: confirmedLane,
+          state: String(states[confirmedLane.surfaceId]?.state || 'unknown'),
+        }),
+      ].join('\n\n'),
+      true,
+      'ordinary',
+    );
+  } catch (error) {
+    return { ok: false, error: `监督 AI 未接受正式启动 briefing：${String((error as Error)?.message || error)}` };
+  }
+  store.updateLane(lane.id, confirmedPatch);
+  store.appendSupervisorLog(lane.id, '目标草案已确认', `${draft.taskGoal}；正式监督开始`);
+  return { ok: true, message: '任务目标已确认，同一个监督 AI 已原地进入正式规划与监督流程。' };
 }
 
 function decideRemoteWaiting(params: RemoteWaitingDecision): { ok: boolean; message: string; error?: string } {
@@ -2501,6 +2678,13 @@ function decideRemoteSupervisor(
     };
   }
   const decisionInput = task?.trim().slice(0, 4000) || '';
+  const clarification = approval.proposalKind === 'clarification';
+  if (clarification && decision === 'direct') {
+    return { ok: false, error: '需求对齐答复只能交给监督 AI 整理，不能绕过规划门禁直接发送到任务终端。', message: '' };
+  }
+  if (clarification && decision === 'approve' && !decisionInput) {
+    return { ok: false, error: '请按问题编号集中填写需求对齐答复；未特别说明的项目可写“按推荐默认答案”。', message: '' };
+  }
   if (decision === 'direct') {
     const directTask = decisionInput;
     if (!directTask) return { ok: false, error: projectManagedDecision
@@ -2586,7 +2770,9 @@ function decideRemoteSupervisor(
   const offeredOptions = new Set(parsedOptions.length >= 2
     ? parsedOptions.map((option) => option.value)
     : []);
-  const requiresOptionSelection = decision === 'approve' && approval.source !== 'supervisor-context-recovery';
+  const requiresOptionSelection = decision === 'approve'
+    && approval.source !== 'supervisor-context-recovery'
+    && !clarification;
   if (requiresOptionSelection && offeredOptions.size >= 2 && !selectedOption && !selectedNone) {
     return { ok: false, error: 'AI 监督提供了多个方案，请先选择其中一个方案。', message: '' };
   }
@@ -2601,7 +2787,9 @@ function decideRemoteSupervisor(
       ? selectedNone ? '' : selectedOption || approval.text.trim()
       : '';
     const briefing = [
-      projectManagedDecision
+      clarification
+        ? '[需求对齐答复] 用户已集中回答普通监督提出的实质歧义问题。'
+        : projectManagedDecision
         ? decision === 'direct'
           ? '[项目管理 AI 决定] 项目管理 AI 提供了项目内决策，请由专属 AI 监督结合最新终端证据整理处理。'
           : decisionInput
@@ -2621,8 +2809,12 @@ function decideRemoteSupervisor(
       approval.impact?.trim() ? `[影响] ${approval.impact.trim()}` : '',
       approval.alternatives?.trim() ? `[AI 备选方案] ${approval.alternatives.trim()}` : '',
       '',
-      `请先 read-screen 获取任务终端最新状态，再基于${decisionOwnerLabel}决定、当前任务、计划约束和终端证据，整理成完整、明确、可执行的下一步。`,
-      `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
+      clarification
+        ? '先根据整组答复完成需求对齐；仍有会实质改变方向、范围或验收的歧义时，可再提出一批必要问题，但不得重复询问已经回答的内容。'
+        : `请先 read-screen 获取任务终端最新状态，再基于${decisionOwnerLabel}决定、当前任务、计划约束和终端证据，整理成完整、明确、可执行的下一步。`,
+      clarification
+        ? `对齐充分后，创建 .wmux/tmp/ 下的阶段计划 JSON，并使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework --stage-plan-file <文件> 携带第一条 --next；计划形成前不得向任务 AI 投递。`
+        : `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
     try {
       sendToSurface(
@@ -4185,6 +4377,116 @@ interface PendingProjectManagerDelivery extends ProjectManagerPendingDelivery {
   alerted: boolean;
 }
 
+function projectGoalConstructionBriefing(session: ProjectManagerSession): string {
+  return [
+    '[项目目标构建｜控制层｜确认前禁止执行]',
+    `项目 ID：${session.id}`,
+    `项目名称：${session.projectName}`,
+    `项目目录：${session.projectDir}`,
+    `稳定项目范围：${session.projectScope}`,
+    `用户初始想法：${session.goalConstruction?.initialIdea || session.goal}`,
+    '',
+    '你是该项目以后正式使用的同一个项目 AI，目前处于“目标构建状态”。用户确认后你会原地进入项目规划和执行，不会更换 Agent 或丢失当前对话。',
+    '确认前只能只读检查项目目录、与用户对话、更新项目定义和回复用户。禁止 orientation-confirm、goal-plan、task-create、supervise、resume、complete，以及任何会修改项目文件或外部状态的操作。',
+    '',
+    '先结合用户初始想法和项目目录现状，判断目标、稳定范围、前置条件和可验证完成条件是否明确。存在实质歧义时一次提出 1-3 个关键问题并给出推荐答案；信息充分时不要机械提问。',
+    `每次形成或更新结构化草案时，执行 wmux project update --project ${session.id} --json-file <项目目录内的 .wmux/tmp/文件>，JSON 至少包含 goal、preconditions、doneWhen、mode="refine" 和 reason。没有额外前置条件时明确写“无额外物理前置条件”。`,
+    `随后执行 wmux project reply --project ${session.id} --message "<本轮回复>"，把问题、推荐答案或草案摘要写入项目对话；不要只在项目 AI 终端输出后等待。`,
+    '用户会在项目控制台查看当前结构化草案并点击“确认并开始”。收到控制层的正式启动消息前，不得提交需求充分性结论、阶段计划或执行任务。',
+  ].join('\n');
+}
+
+async function confirmProjectGoalConstruction(params: any): Promise<any> {
+  const initial = projectSessionForParams(params);
+  if (!initial || initial.goalConstruction?.status !== 'drafting') {
+    return { ok: false, error: '当前项目没有可确认的目标构建草案' };
+  }
+  if (initial.pendingUserQuestion) {
+    return { ok: false, error: '项目 AI 仍有待答问题，请先完成当前对齐问题' };
+  }
+  if (!initial.goal.trim() || initial.preconditions.length === 0 || initial.doneWhen.length === 0) {
+    return { ok: false, error: '项目草案尚不完整：必须包含主目标、前置条件和可验证完成条件' };
+  }
+  const initialFingerprint = JSON.stringify([
+    initial.goal,
+    initial.projectScope,
+    initial.preconditions,
+    initial.supervisorNotes,
+    initial.doneWhen,
+    initial.planFiles,
+    initial.requirementsVersion,
+    initial.authorizationVersion,
+  ]);
+  const runtime = await ensureProjectManagerRuntime(initial.id);
+  if (!runtime.ok || !runtime.manager) return { ok: false, error: runtime.error || '项目 AI 运行时不可用' };
+  const session = useStore.getState().projectManagers.find((candidate) => candidate.id === initial.id);
+  if (!session || session.goalConstruction?.status !== 'drafting') {
+    return { ok: false, error: '目标草案已在确认期间发生变化，请刷新项目状态' };
+  }
+  if (session.pendingUserQuestion) {
+    return { ok: false, error: '项目 AI 在确认期间提出了新的待答问题，请先完成对齐' };
+  }
+  if (!session.goal.trim() || session.preconditions.length === 0 || session.doneWhen.length === 0) {
+    return { ok: false, error: '项目草案在确认期间变为不完整，请继续对话补全' };
+  }
+  const currentFingerprint = JSON.stringify([
+    session.goal,
+    session.projectScope,
+    session.preconditions,
+    session.supervisorNotes,
+    session.doneWhen,
+    session.planFiles,
+    session.requirementsVersion,
+    session.authorizationVersion,
+  ]);
+  if (currentFingerprint !== initialFingerprint) {
+    return { ok: false, error: '项目 AI 在确认期间更新了目标草案；请查看最新内容后再次确认' };
+  }
+  const now = Date.now();
+  replaceProjectManagerSession({
+    ...session,
+    goalConstruction: {
+      ...session.goalConstruction,
+      status: 'confirmed',
+      confirmedAt: now,
+    },
+    status: 'waiting',
+    updatedAt: now,
+  });
+  useStore.getState().appendProjectManagerEvent({
+    kind: 'goal-construction-confirmed',
+    summary: '用户已确认项目目标草案，允许进入正式规划流程',
+    payload: {
+      goal: session.goal,
+      projectScope: session.projectScope,
+      preconditions: session.preconditions,
+      doneWhen: session.doneWhen,
+    },
+  }, session.id);
+  const confirmed = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+  await (window as any).wmux?.projectManager?.saveSession?.(confirmed);
+  deliverProjectManagerMessage([
+    '[项目目标草案已由用户确认｜现在进入正式项目流程]',
+    `项目 ID：${confirmed.id}`,
+    `项目目录：${confirmed.projectDir}`,
+    `当前主目标：${confirmed.goal}`,
+    `稳定项目范围：${confirmed.projectScope}`,
+    `前置条件：${confirmed.preconditions.join('；')}`,
+    `完成条件：${confirmed.doneWhen.join('；')}`,
+    '',
+    PROJECT_MANAGER_ALIGNMENT_GATE,
+    `先执行 wmux project alignment-confirm --project ${confirmed.id}，记录对已确认目标、范围和验收标准的理解；不得重复询问用户已经确认的内容。`,
+    `随后根据 project status 的当前快照执行 wmux project orientation-confirm --project ${confirmed.id}，再用 goal-plan 建立 3-7 个粗粒度阶段目标并显式 resume。`,
+    '只有上述门禁完成后才能创建监督链和任务。原目标范围内的技术路线、阶段拆分和低风险选择由项目 AI 与监督 AI 自主处理。',
+    `完成本轮规划后执行 wmux project reply --project ${confirmed.id} --message "<已进入正式流程及阶段规划摘要>"。`,
+  ].join('\n'), false, confirmed.id);
+  return {
+    ok: true,
+    session: projectManagerSessionView(confirmed),
+    message: '项目目标已确认，同一个项目 AI 已原地进入需求对齐、阶段规划和执行流程。',
+  };
+}
+
 function notifyProjectManagerUserQuestion(
   session: ProjectManagerSession,
   question: ProjectManagerUserQuestion,
@@ -5462,7 +5764,7 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
       kind: 'recovery-restored',
       summary: '已从持久记录恢复本项目；旧项目 AI、监督 AI 和任务 AI 会话均已失效',
     }, current.id);
-    if (projectRequirementsAlignmentPending(current)) {
+    if (current.goalConstruction?.status !== 'drafting' && projectRequirementsAlignmentPending(current)) {
       await requireProjectRequirementsAlignment(
         current.id,
         '继续首次启动时尚未完成的需求充分性检测',
@@ -5472,7 +5774,9 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
     current = useStore.getState().projectManagers.find((candidate) => candidate.id === initialSession.id)!;
     await (window as any).wmux?.projectManager?.saveSession?.(current);
     const recoverableWorkItems = current.workItems.filter((item) => item.status !== 'stopped');
-    deliverProjectManagerMessage([
+    deliverProjectManagerMessage(current.goalConstruction?.status === 'drafting'
+      ? projectGoalConstructionBriefing(current)
+      : [
       '[本项目恢复｜创建全新项目运行链]',
       `项目：${current.id} · ${current.projectDir}`,
       `状态：${current.status}`,
@@ -6601,6 +6905,13 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   }
   if (!callerSurfaceId || callerSurfaceId !== session.managerSurfaceId) {
     return { ok: false, error: '该动作只能由当前项目管理 AI 执行' };
+  }
+  if (session.goalConstruction?.status === 'drafting'
+    && !['update-definition', 'user-question', 'reply'].includes(action)) {
+    return {
+      ok: false,
+      error: '项目目标草案尚未由用户确认；目标构建期间只能更新项目定义、向用户提问或回复，不能规划和执行',
+    };
   }
   if (action === 'user-question') {
     if (['completed', 'stopped'].includes(session.status)) {
@@ -8013,6 +8324,9 @@ export function initPipeBridge(): void {
     if (action === 'answer-question') {
       return answerProjectManagerUserQuestion(params);
     }
+    if (action === 'confirm-goal-construction') {
+      return confirmProjectGoalConstruction(params);
+    }
     if (action === 'pause-all-projects' || action === 'resume-all-projects') {
       return setProjectPortfolioPaused(
         action === 'pause-all-projects',
@@ -8032,6 +8346,7 @@ export function initPipeBridge(): void {
         .slice(0, 20).map((note) => note.slice(0, 4000));
       const planFiles = projectPlanFileSnapshots(params?.planFiles);
       const doneWhen = projectStringArray(params?.doneWhen);
+      const conversationalGoal = params?.goalConstruction === true;
       if (!projectDir && store.projectManagers.length > 0) {
         const current = projectSessionForParams(params) || store.projectManagers[0];
         if (current) {
@@ -8059,8 +8374,27 @@ export function initPipeBridge(): void {
       if (projectManagerRecoveryChoice === 'pending') projectManagerRecoveryChoice = 'skip';
       const session = store.startProjectManager({
         projectDir, projectName, projectScope, goal, preconditions, supervisorNotes, planFiles, doneWhen,
+        goalConstruction: conversationalGoal,
       });
-      await (window as any).wmux?.projectManager?.saveSession?.(session);
+      if (conversationalGoal) {
+        store.appendProjectManagerEvent({
+          kind: 'goal-construction-started',
+          summary: '用户选择通过对话构建项目目标',
+          payload: { initialIdea: goal },
+        }, session.id);
+        store.appendProjectManagerEvent({
+          kind: 'user-message',
+          summary: goal,
+          payload: { goalConstruction: true },
+        }, session.id);
+        store.applyProjectManagerAction({
+          type: 'require-requirements-alignment',
+          reason: '项目目标正在通过对话构建，用户确认草案前禁止规划和执行',
+        }, session.id);
+      }
+      await (window as any).wmux?.projectManager?.saveSession?.(
+        useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session,
+      );
       await checkpointProjectProgress(session.id, '项目首次创建');
       await (window as any).wmux?.projectManager?.saveSession?.(
         useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session,
@@ -8078,9 +8412,13 @@ export function initPipeBridge(): void {
         });
         return { ok: false, error: runtime.error || '项目 AI 尚未就绪' };
       }
-      await requireProjectRequirementsAlignment(session.id, '项目首次启动，必须先完成需求充分性检测', runtime.created === true);
+      if (!conversationalGoal) {
+        await requireProjectRequirementsAlignment(session.id, '项目首次启动，必须先完成需求充分性检测', runtime.created === true);
+      }
       const activeSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
-      deliverProjectManagerMessage([
+      const startupBriefing = conversationalGoal
+        ? projectGoalConstructionBriefing(activeSession)
+        : [
         '[项目管理 AI 会话]',
         `项目 ID：${activeSession.id}`,
         `项目名称：${activeSession.projectName}`,
@@ -8107,7 +8445,8 @@ export function initPipeBridge(): void {
         '所有项目专属命令都必须显式携带 --project <项目ID>；不要依赖界面当前选中项目，也不要把普通执行过程发送给用户。',
         `每个有意义的里程碑及监督进入待续/阻塞前，必须用 wmux project task-update --project ${activeSession.id} 持久化 latestContextSummary、latestEvidence 和 latestBlocker，供软件重启后创建新 AI 会话续作。`,
         `需求不足或用户偏好不明确时，必须用 wmux project ask --project ${activeSession.id} 发起 category=clarification 的结构化飞书通知；阻塞超出你的决策权或需要人工操作时改用 category=manual-intervention。用户答复后先决定下一步，不得自动恢复任务。`,
-        ].join('\n'), runtime.created === true, activeSession.id);
+        ].join('\n');
+      deliverProjectManagerMessage(startupBriefing, runtime.created === true, activeSession.id);
       return { ok: true, restored: false, session: activeSession };
     }
     if (action === 'message') {
@@ -8115,7 +8454,8 @@ export function initPipeBridge(): void {
       if (!selectedProject) return { ok: false, error: '请先在项目中心选择消息所属项目' };
       const message = String(params?.message || '').trim();
       if (!message) return { ok: false, error: '项目管理消息不能为空' };
-      const changeSignal = projectMessageChangeSignal(message);
+      const buildingGoal = selectedProject.goalConstruction?.status === 'drafting';
+      const changeSignal = buildingGoal ? null : projectMessageChangeSignal(message);
       const messageSource = String(params?.source || '').trim() === 'desktop'
         ? '桌面'
         : String(params?.chatId || '').trim()
@@ -8184,7 +8524,16 @@ export function initPipeBridge(): void {
           error: `${runtime.error || '项目管理 AI 尚未就绪'}${revokedOldRun ? '；变更消息已记录，旧任务已保持暂停' : ''}`,
         };
       }
-      deliverProjectManagerMessage([
+      deliverProjectManagerMessage(buildingGoal ? [
+        '[项目目标构建对话｜用户回复｜确认前禁止执行]',
+        `消息 ID：${String(params?.messageId || 'unknown')}`,
+        `当前项目 ID：${selectedProject.id}`,
+        `当前项目目录：${selectedProject.projectDir}`,
+        message,
+        '',
+        `继续通过只读检查和对话完善结构化草案。需要更新时执行 wmux project update --project ${selectedProject.id}；随后必须执行 wmux project reply --project ${selectedProject.id} --correlation "${String(params?.messageId || 'unknown')}" --message "<回复内容>"。`,
+        '用户点击“确认并开始”前，不得 alignment-confirm、orientation-confirm、goal-plan、resume、创建任务或修改项目文件。',
+      ].join('\n') : [
         `[${messageSource}项目管理消息｜必须回复到对应项目会话${revokedOldRun ? '｜控制层已撤销旧运行授权' : ''}]`,
         `消息 ID：${String(params?.messageId || 'unknown')}`,
         `当前项目 ID：${selectedProject?.id || '未选择'}`,
@@ -9130,6 +9479,9 @@ export function initPipeBridge(): void {
     return persisted || { ok: false, error: '未找到与当前监督 lane 匹配的冻结证据' };
   };
 
+  w.__wmux_supervisorGoalDraft = (params: any) => updateSupervisorGoalDraft(params);
+  w.__wmux_supervisorReply = (params: any) => appendSupervisorGoalReply(params);
+
   // The dedicated supervisor terminal records its judgment through a silent CLI
   // call. Routing by surfaceId, not display label, keeps duplicate tab names
   // distinct inside the same workspace/session.
@@ -9172,9 +9524,12 @@ export function initPipeBridge(): void {
     const retryRequested = params?.retry === true
       || ((outcome === 'continue' || outcome === 'rework') && !!executionError);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
-    const proposalKinds = new Set(['route-change', 'important', 'context-recovery']);
+    const proposalKinds = new Set(['route-change', 'important', 'context-recovery', 'clarification']);
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
+    if (lane.goalConstruction?.status === 'drafting') {
+      return { ok: false, error: '目标构建尚未由用户确认；只能更新目标草案并回复用户，不能提交监督裁决' };
+    }
     if (rawNextFile && !nextFile) {
       return { ok: false, error: '--next-file 必须是当前项目 .wmux/tmp/ 下的单个安全文件名' };
     }
@@ -9287,6 +9642,21 @@ export function initPipeBridge(): void {
     } else if (rawEscalationBoundary) {
       return { ok: false, error: '--escalation-boundary 仅用于项目专属监督的 needs-human 裁决' };
     }
+    if (proposalKind === 'clarification') {
+      if (projectManagedLane) {
+        return { ok: false, error: '项目专属监督不能使用普通监督需求对齐；应交给项目 AI 处理项目级歧义' };
+      }
+      const questions = ordinaryClarificationQuestions(reason);
+      if (questions.length < 2 || questions.length > 5) {
+        return { ok: false, error: '普通监督需求对齐必须在 --reason 中一次提出 2-5 个明确问题，并分别用问号结尾' };
+      }
+      if (!impact || !alternatives) {
+        return { ok: false, error: '普通监督需求对齐必须附 --impact 说明答案影响，并用 --alternatives 给出整组推荐默认答案' };
+      }
+      if (next) {
+        return { ok: false, error: '需求对齐等待用户集中答复时不得携带 --next 或提前向任务 AI 投递' };
+      }
+    }
     if (outcome !== 'needs-human' && session.pendingApprovals.some((approval) => approval.laneId === lane.id)) {
       return { ok: false, error: lane.projectManagerProjectId
         ? '当前通道仍有待项目管理 AI 处理的决策项；补充意见只用于更新上下文，不能绕过项目管理 AI 自动继续'
@@ -9301,7 +9671,7 @@ export function initPipeBridge(): void {
     // A supervisor must not smuggle a declared route/important proposal through
     // an auto-continue decision. Such proposals always stop for user consent.
     if (!isSupervisorProposalAllowed(outcome, proposalKind)) {
-      return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；重大路线变更、重要建议或待续方向不足必须使用对应 proposal-kind 配合 needs-human' };
+      return { ok: false, error: '小范围路线调整须使用 route-adjustment 配合 continue/rework；需求对齐、重大路线变更、重要建议或待续方向不足必须使用对应 proposal-kind 配合 needs-human' };
     }
     if (proposalKind === 'direction-needed' && !(
       lane.awaitingDirectionAfterWaitingResume
@@ -9403,6 +9773,16 @@ export function initPipeBridge(): void {
     const ordinaryCompletionPlan = !projectWorkItem
       ? proposedSupervisorPlan || lane.decisions?.find((decision) => decision.plan)?.plan
       : undefined;
+    if (!projectManagedLane
+      && lane.ordinaryPlanRequired === true
+      && (outcome === 'continue' || outcome === 'rework')
+      && !permissionResponse
+      && !ordinaryCompletionPlan) {
+      return {
+        ok: false,
+        error: '新普通监督首次执行前必须先完成轻量需求判断：无实质歧义时通过 --stage-plan-file 提交正式计划；有实质歧义时使用 needs-human --proposal-kind clarification 一次提出 2-5 个问题',
+      };
+    }
     if (outcome === 'complete' && ordinaryCompletionPlan && (
       ordinaryCompletionPlan.milestones.some((milestone) => milestone.status !== 'completed')
       || ordinaryCompletionPlan.remainingWork.length > 0
@@ -10151,7 +10531,7 @@ export function initPipeBridge(): void {
         ...(limitReached ? { autoDecisionLimitReached: true } : {}),
       });
       const kind = proposalKinds.has(proposalKind)
-        ? proposalKind as 'route-change' | 'important' | 'context-recovery'
+        ? proposalKind as 'route-change' | 'important' | 'context-recovery' | 'clarification'
         : 'important';
       const approval = {
         laneId: lane.id,
@@ -10228,7 +10608,9 @@ export function initPipeBridge(): void {
         ? '路线变更'
         : kind === 'context-recovery'
           ? '上下文恢复指令'
-          : '重要建议';
+          : kind === 'clarification'
+            ? '需求对齐'
+            : '重要建议';
       const text = `${proposalLabel}待你决定：${reason || lane.label}`;
       if (!lane.projectManagerProjectId) {
         const workspaceId = lane.workspaceId || store.activeWorkspaceId;
@@ -10411,6 +10793,9 @@ export function initPipeBridge(): void {
             .map((approval) => ({ id: approval.id, terminal: approval.laneLabel, reason: approval.reason || '' })),
         }),
       };
+    }
+    if (action === 'confirm-goal-construction') {
+      return confirmSupervisorGoalConstruction(params);
     }
     if (action === 'terminal-list') {
       if (!['ordinary', 'project'].includes(String(params?.mode))) {

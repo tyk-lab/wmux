@@ -71,19 +71,24 @@ export function buildSupervisorPlanView(options: {
   const route = options.latestDecision?.reason.trim()
     || baselineRoute
     || `尚未形成正式路线；上级任务：${task}`;
+  const awaitingClarification = options.latestDecision?.proposalKind === 'clarification';
   return {
     sourceLabel: options.source === 'project-ai' ? '项目 AI 工作项' : '用户任务',
     mode: 'forming',
-    modeLabel: options.baselineStatus && options.baselineStatus !== 'approved'
+    modeLabel: awaitingClarification
+      ? '等待需求对齐'
+      : options.baselineStatus && options.baselineStatus !== 'approved'
       ? '建立基线中'
       : options.latestDecision
         ? '形成正式路线中'
         : '等待首次规划',
     route,
-    nextInstruction: next || (options.baselineStatus === 'investigating'
+    nextInstruction: awaitingClarification
+      ? '等待用户集中答复后形成正式计划'
+      : next || (options.baselineStatus === 'investigating'
       ? '等待基线报告，再由监督 AI 审核并形成正式路线'
       : '等待监督 AI 提交第一条可执行指令'),
-    steps: next ? [{
+    steps: next && !awaitingClarification ? [{
       id: `decision-${options.latestDecision?.ts || 0}`,
       title: '当前执行项',
       outcome: next,

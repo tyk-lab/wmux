@@ -36,6 +36,7 @@ import {
 } from '../../../shared/supervisor-work-mode';
 import {
   buildSupervisorBriefing,
+  buildSupervisorGoalConstructionBriefing,
   effectiveSupervisorLaneConfig,
   stopWhenKindHint,
   stopWhenKindLabel,
@@ -282,8 +283,10 @@ export default function SupervisorSetupDialog() {
   const modelCatalogScope = supervisorModelCatalogScope(activeWorkspace?.cwd, activeWorkspaceId || undefined);
   const modelCatalog = supervisorModelCatalogs[modelCatalogScope] || {};
   let primaryActionLabel = '启动 AI 监督';
+  const [creationMode, setCreationMode] = useState<'direct' | 'conversation'>('direct');
   if (ordinaryActive) primaryActionLabel = '应用并继续普通监督';
   else if (ordinaryPaused) primaryActionLabel = '应用并返回普通监督会话';
+  else if (creationMode === 'conversation') primaryActionLabel = '创建监督 AI 并对话';
 
   const [agentStates, setAgentStates] = useState<Record<string, any>>({});
   useEffect(() => {
@@ -398,6 +401,7 @@ export default function SupervisorSetupDialog() {
 
   useEffect(() => {
     if (!setupOpen) return;
+    if (!sessionRetained) setCreationMode('direct');
     setSetupSection('targets');
     setDialogNotice(null);
     setRestoreEnabled(new Set(
@@ -1088,6 +1092,27 @@ export default function SupervisorSetupDialog() {
         pendingSupervisorDeliveries: keepsCurrentContext ? prev?.pendingSupervisorDeliveries || [] : [],
         currentTask: keepsCurrentContext ? prev?.currentTask || '' : '',
         decisions: keepsCurrentContext ? prev?.decisions || [] : [],
+        ordinaryPlanRequired: keepsCurrentContext ? prev?.ordinaryPlanRequired : true,
+        ...(!keepsCurrentContext && creationMode === 'conversation' ? {
+          goalConstruction: {
+            status: 'drafting' as const,
+            initialIdea: config.taskGoal.trim(),
+            draft: {
+              taskGoal: config.taskGoal.trim(),
+              taskDescription: config.taskDescription.trim(),
+              preconditions: config.preconditions.trim(),
+              stopWhen: config.stopWhen.trim(),
+              stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' as const : 'concrete' as const,
+            },
+            messages: [{
+              id: `goal-user-${Date.now()}-${c.surfaceId}`,
+              role: 'user' as const,
+              text: config.taskGoal.trim(),
+              ts: Date.now(),
+            }],
+            startedAt: Date.now(),
+          },
+        } : {}),
         config: {
           taskGoal: config.taskGoal.trim(),
           taskDescription: config.taskDescription.trim(),
@@ -1254,7 +1279,10 @@ export default function SupervisorSetupDialog() {
             lane,
             state: String(states[lane.surfaceId]?.state || 'unknown'),
           });
-          sendToSurface(supervisorSurfaceId, text, true, 'ordinary');
+          const briefing = lane.goalConstruction?.status === 'drafting'
+            ? buildSupervisorGoalConstructionBriefing(lane)
+            : text;
+          sendToSurface(supervisorSurfaceId, briefing, true, 'ordinary');
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
@@ -1287,7 +1315,18 @@ export default function SupervisorSetupDialog() {
       setDialogNotice({ kind: 'error', message: '请至少选择一个要监控的终端。' });
       return;
     }
-    const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
+    if (!sessionRetained && creationMode === 'conversation' && lanes.length !== 1) {
+      setDialogNotice({ kind: 'error', message: '对话构建任务目标时请只选择一个任务终端。' });
+      return;
+    }
+    if (!sessionRetained && creationMode === 'conversation' && !lanes[0]?.goalConstruction?.initialIdea.trim()) {
+      showTerminalConfigSection(lanes[0].surfaceId, 'basic', `${lanes[0].label} 的初始任务想法`);
+      setDialogNotice({ kind: 'error', message: '请先用一句话描述希望完成的任务。' });
+      return;
+    }
+    const missingStopWhen = creationMode === 'conversation' && !sessionRetained
+      ? []
+      : lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
       const firstLane = missingStopWhen[0];
       showTerminalConfigSection(firstLane.surfaceId, 'basic', `${firstLane.label} 的停止条件`);
@@ -1498,11 +1537,31 @@ export default function SupervisorSetupDialog() {
         <header className="supervisor-dialog__header">
           <div className="supervisor-dialog__title">普通 AI 监督</div>
           <div className="supervisor-dialog__sub">
-            配置直接监督已打开任务终端的独立监督会话。
+            {creationMode === 'conversation' && !sessionRetained
+              ? '先创建监督 AI，通过对话构建任务目标；确认后由同一个 Agent 原地开始监督。'
+              : '配置直接监督已打开任务终端的独立监督会话。'}
           </div>
         </header>
 
         <div className="supervisor-dialog__body">
+          {!sessionRetained && (
+            <section className="supervisor-dialog__group" aria-label="普通监督创建方式">
+              <div className="supervisor-dialog__group-title">创建方式</div>
+              <div className="supervisor-dialog__freedom">
+                <label className="supervisor-dialog__radio" data-active={creationMode === 'direct'}>
+                  <input type="radio" name="ordinary-supervisor-creation-mode" checked={creationMode === 'direct'} onChange={() => setCreationMode('direct')} />
+                  <span>直接配置并启动 — 已明确目标和停止条件</span>
+                </label>
+                <label className="supervisor-dialog__radio" data-active={creationMode === 'conversation'}>
+                  <input type="radio" name="ordinary-supervisor-creation-mode" checked={creationMode === 'conversation'} onChange={() => setCreationMode('conversation')} />
+                  <span>对话构建任务目标 — 先创建监督 AI（推荐）</span>
+                </label>
+              </div>
+              {creationMode === 'conversation' && (
+                <div className="supervisor-dialog__hint">选择一个任务终端并填写一句初始想法。目标构建期间只允许对话和只读检查；用户确认结构化草案后才会开始规划与监督。</div>
+              )}
+            </section>
+          )}
           <div className="supervisor-dialog__setup-layout">
             <nav className="supervisor-dialog__setup-nav" aria-label="AI 监督配置步骤">
               <button
@@ -1664,7 +1723,7 @@ export default function SupervisorSetupDialog() {
                                   aria-controls={`terminal-config-${candidate.surfaceId}-${section.id}`}
                                   data-invalid={
                                     section.id === 'basic'
-                                      ? (!laneConfig.stopWhen.trim() ? '1' : '0')
+                                      ? (creationMode === 'direct' && !laneConfig.stopWhen.trim() ? '1' : '0')
                                       : section.id === 'execution'
                                         ? (hasIncompleteMultiThreadAssignment(laneConfig) ? '1' : '0')
                                         : section.id === 'context'
@@ -1691,14 +1750,20 @@ export default function SupervisorSetupDialog() {
                               {activeConfigSection === 'basic' && (
                                 <div id={`terminal-config-${candidate.surfaceId}-basic`} role="tabpanel" className="supervisor-dialog__config-panel">
                                   <div className="supervisor-dialog__section">
-                                    <div className="supervisor-dialog__label">任务目标（可选）</div>
+                                    <div className={creationMode === 'conversation' && !sessionRetained
+                                      ? 'supervisor-dialog__label supervisor-dialog__label--required'
+                                      : 'supervisor-dialog__label'}>
+                                      {creationMode === 'conversation' && !sessionRetained ? '初始任务想法' : '任务目标（可选）'}
+                                    </div>
                                     <textarea
                                       className="supervisor-dialog__textarea"
                                       aria-label={`${candidate.label} 的任务目标`}
                                       rows={2}
                                       value={laneConfig.taskGoal}
                                       onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
-                                      placeholder="例如：修复此终端负责的认证模块并保持现有行为"
+                                      placeholder={creationMode === 'conversation' && !sessionRetained
+                                        ? '例如：帮我把这个登录问题修好，并确认怎样才算完成'
+                                        : '例如：修复此终端负责的认证模块并保持现有行为'}
                                     />
                                   </div>
                                   <div className="supervisor-dialog__section">
@@ -1719,8 +1784,10 @@ export default function SupervisorSetupDialog() {
                                     <div className="supervisor-dialog__hint">{stopWhenKindHint(laneConfig.stopWhenKind)}</div>
                                   </div>
                                   <div className="supervisor-dialog__section">
-                                    <div className="supervisor-dialog__label supervisor-dialog__label--required">
-                                      停止条件 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
+                                    <div className={creationMode === 'conversation' && !sessionRetained
+                                      ? 'supervisor-dialog__label'
+                                      : 'supervisor-dialog__label supervisor-dialog__label--required'}>
+                                      停止条件{creationMode === 'conversation' && !sessionRetained ? '（由对话草案补全）' : <><span> </span><span className="supervisor-dialog__required" aria-hidden="true">*</span></>}
                                     </div>
                                     <textarea
                                       className="supervisor-dialog__textarea"
@@ -2538,6 +2605,7 @@ export default function SupervisorSetupDialog() {
                 </section>
               )}
 
+              {creationMode === 'direct' && <>
               <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">
                 <div className="supervisor-dialog__label">配置文件</div>
                 <div className="supervisor-dialog__config-actions">
@@ -2562,6 +2630,7 @@ export default function SupervisorSetupDialog() {
                 </button>
                 <div className="supervisor-dialog__hint">用于预览专属监督上下文；不会开始调度或监听任务事件。</div>
               </section>
+              </>}
             </div>
           </section>
           )}
@@ -2593,13 +2662,13 @@ export default function SupervisorSetupDialog() {
             </button>
           )}
           <span className="supervisor-dialog__selection-summary">
-            已选 {selectedCandidates.length} 个终端 · {autonomous ? '全自动监督' : '受控自主'}
+            已选 {selectedCandidates.length} 个终端 · {creationMode === 'conversation' && !sessionRetained ? '目标构建' : autonomous ? '全自动监督' : '受控自主'}
           </span>
           <span className="supervisor-dialog__actions-spacer" />
           <button type="button" className="confirm-dialog__btn" onClick={closeSupervisorSetup}>
             取消
           </button>
-          {!sessionRetained && (
+          {!sessionRetained && creationMode === 'direct' && (
             <button
               type="button"
               className="confirm-dialog__btn"
