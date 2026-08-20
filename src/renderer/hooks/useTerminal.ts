@@ -20,6 +20,7 @@ import {
   deliverStartupInput,
   isKimiInteractiveInputReady,
   isStartupTrustPromptReady,
+  startupTrustPromptAction,
 } from '../utils/terminal-input-delivery';
 import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/terminal-user-submit';
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
@@ -923,8 +924,6 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     );
     let startupTrustConfirmationScheduled = false;
     let startupTrustConfirmed = false;
-    let startupTrustPollTimer: ReturnType<typeof setInterval> | undefined;
-    let startupTrustPollTimeout: ReturnType<typeof setTimeout> | undefined;
     let runtimeReadyTimer: ReturnType<typeof setTimeout> | undefined;
     let innerAgentExitHandled = false;
 
@@ -942,13 +941,6 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }
     };
 
-    const stopStartupTrustPolling = () => {
-      if (startupTrustPollTimer) clearInterval(startupTrustPollTimer);
-      if (startupTrustPollTimeout) clearTimeout(startupTrustPollTimeout);
-      startupTrustPollTimer = undefined;
-      startupTrustPollTimeout = undefined;
-    };
-
     const maybeConfirmStartupTrust = (id: string) => {
       if (
         innerAgentExitHandled
@@ -958,11 +950,16 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       ) return;
       const visibleOutput = `${startupInputOutput}\n${startupInputScreenText()}`;
       if (!isStartupTrustPromptReady(automatedStartupAgent, visibleOutput)) return;
+      if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
+      runtimeReadyTimer = undefined;
+      const action = startupTrustPromptAction(automatedStartupAgent, visibleOutput);
+      if (!action) return;
       startupTrustConfirmationScheduled = true;
-      void confirmStartupTrustPrompt(window.wmux.pty, id).then((confirmed) => {
+      void confirmStartupTrustPrompt(window.wmux.pty, id, {
+        action,
+      }).then((confirmed) => {
         startupTrustConfirmationScheduled = false;
         startupTrustConfirmed = confirmed;
-        if (confirmed) stopStartupTrustPolling();
       });
     };
 
@@ -984,7 +981,6 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           innerAgentExitHandled = true;
           if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
           runtimeReadyTimer = undefined;
-          stopStartupTrustPolling();
           clearStuckRunningState(id);
           if (startupFailure) markTerminalRuntimeFailed(id, startupFailure);
           else markTerminalRuntimeExited(id, runtimeFailure);
@@ -1058,11 +1054,6 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       cleanupFnsRef.current.push(() => clearTimeout(deferredResizeId));
       scheduleBufferRestore();
 
-      if (automatedStartupAgent) {
-        startupTrustPollTimer = setInterval(() => maybeConfirmStartupTrust(id), 100);
-        startupTrustPollTimeout = setTimeout(stopStartupTrustPolling, 30_000);
-        cleanupFnsRef.current.push(stopStartupTrustPolling);
-      }
       const startupStillPending = terminalRuntimeStatus(id)?.state === 'starting';
       if (!startupInputRef.current && !startupStillPending) markTerminalRuntimeReady(id);
     };
@@ -1101,6 +1092,10 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         },
         readyWhen: () => isKimiInteractiveInputReady(`${startupInputOutput}\n${startupInputScreenText()}`),
         readyDelayMs: 300,
+        // Kimi creates its session only after the first message is submitted.
+        // Keep the runtime in "starting" briefly so an immediate model/config
+        // failure cancels delivery instead of being mistaken for readiness.
+        submitSettleMs: 2_000,
       }).then((delivered) => {
         const runtimeState = terminalRuntimeStatus(id)?.state;
         if (innerAgentExitHandled || runtimeState === 'failed' || runtimeState === 'exited') {

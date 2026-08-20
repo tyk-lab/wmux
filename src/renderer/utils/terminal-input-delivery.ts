@@ -25,34 +25,105 @@ interface StartupInputDeliveryOptions {
   readyTimeoutMs?: number;
   readyPollMs?: number;
   retryDelayMs?: number;
+  submitSettleMs?: number;
   maxAttempts?: number;
   wait?: (delayMs: number) => Promise<void>;
 }
 
-export type StartupTrustPromptAgent = 'codex' | 'kimi';
+export type StartupTrustPromptAgent = 'codex' | 'kimi' | 'grok' | 'pi';
+export type StartupTrustPromptAction = 'confirm-selected' | 'select-previous' | 'type-yes';
+
+const ANSI_ESCAPE = new RegExp(
+  String.raw`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`,
+  'gu',
+);
+
+function normalizedTerminalOutput(output: string): string {
+  return output.replace(ANSI_ESCAPE, '').replace(/\r/gu, '');
+}
+
+interface StartupTrustPromptOptions extends Pick<
+  StartupInputDeliveryOptions,
+  'readyDelayMs' | 'retryDelayMs' | 'maxAttempts' | 'wait'
+> {
+  action: StartupTrustPromptAction;
+  selectionDelayMs?: number;
+}
 
 export function isStartupTrustPromptReady(agent: StartupTrustPromptAgent, output: string): boolean {
+  const normalizedOutput = normalizedTerminalOutput(output);
   if (agent === 'codex') {
-    return /Do you trust the contents of this directory\?[\s\S]{0,2000}Yes, continue/i.test(output)
-      || /Yes, continue[\s\S]{0,1000}No, quit/i.test(output);
+    return /Do you trust the contents of this directory\?[\s\S]{0,2000}Yes, continue/i.test(normalizedOutput)
+      || /Yes, continue[\s\S]{0,1000}No, quit/i.test(normalizedOutput);
   }
-  return /Trust this folder\?[\s\S]{0,2000}Trust this folder/i.test(output);
+  if (agent === 'kimi') {
+    return /Trust this folder\?[\s\S]{0,2000}Trust this folder/i.test(normalizedOutput);
+  }
+  if (agent === 'grok') {
+    return /This folder contains repo-local config[\s\S]{0,2000}Trust the authors of this folder and allow these servers to start\?\s*\[y\/N\]/i.test(normalizedOutput);
+  }
+  // Pi isolated supervisors receive --approve, so no interactive fallback is
+  // accepted until a stable Pi trust prompt can be identified precisely.
+  return false;
+}
+
+export function startupTrustPromptAction(
+  agent: StartupTrustPromptAgent,
+  output: string,
+): StartupTrustPromptAction | null {
+  if (agent === 'grok') {
+    return isStartupTrustPromptReady(agent, output) ? 'type-yes' : null;
+  }
+  if (agent === 'pi') return null;
+
+  const normalizedOutput = normalizedTerminalOutput(output);
+  const selectedMarker = '(?:[>❯›➜→]|[●◉])';
+  const selectedTrust = agent === 'codex'
+    ? new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*(?:1\\.\\s*)?Yes, continue\\b`, 'giu')
+    : new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*Trust this folder\\b`, 'giu');
+  const selectedReject = agent === 'codex'
+    ? new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*(?:2\\.\\s*)?No, quit\\b`, 'giu')
+    : new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*Don't trust\\b`, 'giu');
+  const trustMatches = [...normalizedOutput.matchAll(selectedTrust)];
+  const rejectMatches = [...normalizedOutput.matchAll(selectedReject)];
+  const lastTrustIndex = trustMatches[trustMatches.length - 1]?.index ?? -1;
+  const lastRejectIndex = rejectMatches[rejectMatches.length - 1]?.index ?? -1;
+  if (lastRejectIndex > lastTrustIndex) return 'select-previous';
+  if (lastTrustIndex >= 0) return 'confirm-selected';
+  return null;
 }
 
 export function isKimiInteractiveInputReady(output: string): boolean {
-  return /No session yet[\s\S]{0,2000}first message/i.test(output);
+  const normalizedOutput = normalizedTerminalOutput(output);
+  return !/Failed to start a session/i.test(normalizedOutput)
+    && /No session yet[\s\S]{0,2000}first message/i.test(normalizedOutput);
 }
 
 export async function confirmStartupTrustPrompt(
   writer: TerminalInputWriter,
   surfaceId: string,
-  options: Pick<StartupInputDeliveryOptions, 'readyDelayMs' | 'retryDelayMs' | 'maxAttempts' | 'wait'> = {},
+  options: StartupTrustPromptOptions,
 ): Promise<boolean> {
   const wait = options.wait || defaultWait;
   const readyDelayMs = Math.max(0, options.readyDelayMs ?? 200);
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   await wait(readyDelayMs);
+  if (options.action === 'type-yes') {
+    return writeWhenAvailable(writer, surfaceId, 'y\r', wait, retryDelayMs, maxAttempts);
+  }
+  if (options.action === 'select-previous') {
+    const selectedTrust = await writeWhenAvailable(
+      writer,
+      surfaceId,
+      '\x1b[A',
+      wait,
+      retryDelayMs,
+      maxAttempts,
+    );
+    if (!selectedTrust) return false;
+    await wait(Math.max(0, options.selectionDelayMs ?? 100));
+  }
   return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
 }
 
@@ -100,6 +171,7 @@ export async function deliverStartupInput(
   const readyTimeoutMs = Math.max(0, options.readyTimeoutMs ?? STARTUP_INPUT_READY_TIMEOUT_MS);
   const readyPollMs = Math.max(1, options.readyPollMs ?? STARTUP_INPUT_READY_POLL_MS);
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
+  const submitSettleMs = Math.max(0, options.submitSettleMs ?? 0);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   if (!input) return false;
   if (options.cancelWhen?.()) return false;
@@ -126,5 +198,8 @@ export async function deliverStartupInput(
 
   await wait(pasteSubmitDelayMs(atomicInput));
   if (options.cancelWhen?.()) return false;
-  return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
+  const submitted = await writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
+  if (!submitted) return false;
+  if (submitSettleMs > 0) await wait(submitSettleMs);
+  return !options.cancelWhen?.();
 }

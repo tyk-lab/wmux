@@ -1,4 +1,4 @@
-import { buildSupervisorLaunchCommand } from '../supervisor/launch-command';
+import { buildSupervisorLaunchCommand, detectSupervisorLauncher } from '../supervisor/launch-command';
 
 export type InteractiveAgent = 'codex' | 'kimi' | 'grok';
 
@@ -38,14 +38,23 @@ export function buildInteractiveAgentLaunch(
   };
 }
 
-export type AutomatedInteractiveAgent = 'codex' | 'kimi';
+export type AutomatedInteractiveAgent = 'codex' | 'kimi' | 'grok' | 'pi';
 
 export function detectAutomatedInteractiveAgent(
   startupCommands: string[] | undefined,
   startupInput: string | undefined,
 ): AutomatedInteractiveAgent | undefined {
-  const command = startupCommands?.[0]?.trim().toLowerCase() || '';
+  const rawCommand = startupCommands?.[0]?.trim() || '';
+  const command = rawCommand.toLowerCase();
   if (command.startsWith('codex ') && command.includes('convertfrom-json')) return 'codex';
+  if (command.startsWith('grok ') && command.includes('convertfrom-json')) return 'grok';
   if (command.startsWith('kimi ') && command.endsWith(AUTOMATED_KIMI_STARTUP_MARKER) && !!startupInput) return 'kimi';
+  if (command.includes('$wmuxsupervisorruntimedir')) {
+    const isolatedCommand = rawCommand.split(/;\s*/u).pop() || '';
+    const launcher = detectSupervisorLauncher(isolatedCommand);
+    if (launcher === 'codex' || launcher === 'kimi' || launcher === 'grok' || launcher === 'pi') {
+      return launcher;
+    }
+  }
   return undefined;
 }

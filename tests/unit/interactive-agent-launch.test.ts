@@ -27,7 +27,7 @@ describe('interactive Agent launch', () => {
     expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-terra').startupCommands[0])
       .toMatch(/^codex --model 'gpt-5\.6-terra' -- /);
     expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3')).toEqual({
-      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
     });
   });
@@ -36,21 +36,33 @@ describe('interactive Agent launch', () => {
     expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-sol', 'high').startupCommands[0])
       .toMatch(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /);
     expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3', 'on')).toEqual({
-      startupCommands: ["kimi --model 'k3' # wmux-automated-agent-task"],
+      startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
     });
     expect(buildInteractiveAgentLaunch('grok', '执行首条任务', 'grok-4.6', 'medium').startupCommands[0])
       .toMatch(/^grok -m 'grok-4\.6' --reasoning-effort 'medium' -- /);
   });
 
-  it('detects only wmux automated Codex and Kimi startup flows', () => {
+  it('detects only wmux automated task-Agent startup flows', () => {
     const codex = buildInteractiveAgentLaunch('codex', '执行首条任务');
     const kimi = buildInteractiveAgentLaunch('kimi', '执行首条任务');
+    const grok = buildInteractiveAgentLaunch('grok', '执行首条任务');
 
     expect(detectAutomatedInteractiveAgent(codex.startupCommands, codex.startupInput)).toBe('codex');
     expect(detectAutomatedInteractiveAgent(kimi.startupCommands, kimi.startupInput)).toBe('kimi');
+    expect(detectAutomatedInteractiveAgent(grok.startupCommands, grok.startupInput)).toBe('grok');
     expect(detectAutomatedInteractiveAgent(['codex'], undefined)).toBeUndefined();
+    expect(detectAutomatedInteractiveAgent(['grok'], undefined)).toBeUndefined();
     expect(detectAutomatedInteractiveAgent(['kimi'], undefined)).toBeUndefined();
     expect(detectAutomatedInteractiveAgent(['kimi'], 'SSH 自动控制说明')).toBeUndefined();
+  });
+
+  it('detects all managed Agents inside wmux isolated supervisor launch commands', () => {
+    const prelude = "$wmuxSupervisorRuntimeDir = 'C:\\runtime'; Set-Location $wmuxSupervisorRuntimeDir; ";
+    expect(detectAutomatedInteractiveAgent([`${prelude}codex --model gpt-5`], undefined)).toBe('codex');
+    expect(detectAutomatedInteractiveAgent([`${prelude}kimi --model k3`], undefined)).toBe('kimi');
+    expect(detectAutomatedInteractiveAgent([`${prelude}grok -m grok-4.6`], undefined)).toBe('grok');
+    expect(detectAutomatedInteractiveAgent([`${prelude}pi --model openai/gpt-5`], undefined)).toBe('pi');
+    expect(detectAutomatedInteractiveAgent([`${prelude}& "C:\\Tools\\codex.exe"`], undefined)).toBe('codex');
   });
 });

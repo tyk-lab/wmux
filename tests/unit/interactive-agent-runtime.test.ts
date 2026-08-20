@@ -35,6 +35,19 @@ describe('interactive Agent runtime detection', () => {
     expect(interactiveAgentStartupFailureDetail('Welcome to Kimi Code!')).toBeNull();
   });
 
+  it('treats a rejected Kimi trust prompt as startup failure', () => {
+    expect(interactiveAgentStartupFailureDetail('Bye!\nPS C:\\runtime>'))
+      .toBe('Agent 启动失败：目录信任未获确认，Agent 已退出');
+  });
+
+  it('detects a Kimi session creation failure before accepting startup input', () => {
+    expect(interactiveAgentStartupFailureDetail(
+      'Error: Failed to start a session: Model "k3-256k" is not configured in config.toml.',
+    )).toBe(
+      'Agent 启动失败：Error: Failed to start a session: Model "k3-256k" is not configured in config.toml.',
+    );
+  });
+
   it('detects ordinary shell startup failures with ANSI and split output', () => {
     expect(interactiveAgentStartupFailureDetail('\u001b[31mParserError:\u001b[0m Missing an argument for parameter.'))
       .toContain('ParserError');

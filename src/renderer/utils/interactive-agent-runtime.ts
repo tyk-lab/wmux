@@ -15,6 +15,7 @@ const STARTUP_FAILURE_PATTERNS = [
   /(?:^|\n)\s*error:\s*unexpected argument\b[^\n]*/iu,
   /(?:^|\n)\s*(?:unknown|unrecognized)\s+(?:option|argument)\b[^\n]*/iu,
   /(?:^|\n)\s*ParserError:\s*[^\n]*/iu,
+  /(?:^|\n)\s*Error:\s*Failed to start a session:\s*[^\n]*/iu,
   /(?:^|\n)\s*[^\n]*\bis not recognized as (?:the name of a cmdlet|an internal or external command)\b[^\n]*/iu,
   /(?:^|\n)\s*[^\n]*\bcommand not found\b[^\n]*/iu,
   /(?:^|\n)\s*(?:Error:\s*)?Cannot find module\b[^\n]*/iu,
@@ -23,6 +24,9 @@ const STARTUP_FAILURE_PATTERNS = [
 /** Detect an explicit launcher/outer-shell failure before any Agent becomes ready. */
 export function interactiveAgentStartupFailureDetail(output: string): string | null {
   const plain = plainTerminalOutput(output);
+  if (/(?:^|\n)\s*Bye!\s*(?=\n|$)/iu.test(plain)) {
+    return 'Agent 启动失败：目录信任未获确认，Agent 已退出';
+  }
   for (const pattern of STARTUP_FAILURE_PATTERNS) {
     const match = pattern.exec(plain)?.[0]?.trim();
     if (match) return `Agent 启动失败：${match.replace(/\s+/gu, ' ').slice(0, 500)}`;

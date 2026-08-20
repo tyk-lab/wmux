@@ -6,6 +6,7 @@ import {
   isStartupTrustPromptReady,
   pasteSubmitDelayMs,
   prepareAutomatedTerminalInput,
+  startupTrustPromptAction,
 } from '../../src/renderer/utils/terminal-input-delivery';
 
 describe('terminal startup input delivery', () => {
@@ -25,17 +26,37 @@ describe('terminal startup input delivery', () => {
     ]);
   });
 
-  it('识别 Codex 和 Kimi 的目录信任页，且不误判普通欢迎页', () => {
+  it('精确识别 Codex、Kimi 和 Grok 的目录信任页', () => {
     expect(isStartupTrustPromptReady('codex', 'Do you trust the contents of this directory? 1. Yes, continue')).toBe(true);
     expect(isStartupTrustPromptReady('codex', '1. Yes, continue\n2. No, quit')).toBe(true);
     expect(isStartupTrustPromptReady('kimi', "Trust this folder? Trust this folder Don't trust")).toBe(true);
+    expect(isStartupTrustPromptReady(
+      'grok',
+      'This folder contains repo-local config (.mcp.json) that can run commands on your machine.\nTrust the authors of this folder and allow these servers to start? [y/N]',
+    )).toBe(true);
     expect(isStartupTrustPromptReady('kimi', 'Welcome to Kimi Code!')).toBe(false);
+    expect(isStartupTrustPromptReady('grok', 'Trust this folder for hooks')).toBe(false);
+    expect(isStartupTrustPromptReady('pi', 'Trust this folder?')).toBe(false);
+  });
+
+  it('只根据实际选中项决定 Codex 和 Kimi 的信任操作', () => {
+    expect(startupTrustPromptAction('kimi', '  Trust this folder\n❯ Don\'t trust')).toBe('select-previous');
+    expect(startupTrustPromptAction('kimi', '❯ Trust this folder\n  Don\'t trust')).toBe('confirm-selected');
+    expect(startupTrustPromptAction('codex', '  1. Yes, continue\n› 2. No, quit')).toBe('select-previous');
+    expect(startupTrustPromptAction('codex', '› 1. Yes, continue\n  2. No, quit')).toBe('confirm-selected');
+    expect(startupTrustPromptAction(
+      'kimi',
+      "❯ Don't trust\n\n\x1b[2J❯ Trust this folder\n  Don't trust",
+    )).toBe('confirm-selected');
+    expect(startupTrustPromptAction('kimi', 'Trust this folder?')).toBeNull();
+    expect(startupTrustPromptAction('pi', 'Trust this folder?')).toBeNull();
   });
 
   it('信任页就绪后只发送一次 Enter，并在 PTY 忙时重试', async () => {
     const writeChecked = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-trust', {
+      action: 'confirm-selected',
       readyDelayMs: 0,
       retryDelayMs: 0,
       maxAttempts: 3,
@@ -48,9 +69,67 @@ describe('terminal startup input delivery', () => {
     ]);
   });
 
+  it('Kimi 信任页先上移选择 Trust，再发送一次 Enter', async () => {
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-kimi-trust', {
+      action: 'select-previous',
+      readyDelayMs: 0,
+      selectionDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-kimi-trust', '\x1b[A'],
+      ['surf-kimi-trust', '\r'],
+    ]);
+
+    writeChecked.mockClear();
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-kimi-selected', {
+      action: 'confirm-selected',
+      readyDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+    expect(writeChecked.mock.calls).toEqual([['surf-kimi-selected', '\r']]);
+  });
+
+  it('Grok 精确信任提示只写入一次 y 和 Enter', async () => {
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-grok-trust', {
+      action: 'type-yes',
+      readyDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(writeChecked.mock.calls).toEqual([['surf-grok-trust', 'y\r']]);
+  });
+
   it('只在 Kimi 的首条消息输入界面出现后判定为就绪', () => {
     expect(isKimiInteractiveInputReady('Welcome to Kimi Code!')).toBe(false);
     expect(isKimiInteractiveInputReady('No session yet — one will be created on your first message.')).toBe(true);
+    expect(isKimiInteractiveInputReady(
+      'No session yet — one will be created on your first message.\nError: Failed to start a session: model missing',
+    )).toBe(false);
+  });
+
+  it('Kimi 首条消息提交后保留启动窗口，并在会话创建失败时取消就绪', async () => {
+    let failed = false;
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(deliverStartupInput({ write: vi.fn(), writeChecked }, 'surf-kimi-failed', '项目上下文', {
+      cancelWhen: () => failed,
+      readyDelayMs: 0,
+      submitSettleMs: 2_000,
+      wait: async (delayMs) => {
+        if (delayMs === 2_000) failed = true;
+      },
+    })).resolves.toBe(false);
+
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-kimi-failed', '项目上下文'],
+      ['surf-kimi-failed', '\r'],
+    ]);
   });
 
   it('等待交互界面的可观测就绪标记后才写入', async () => {
