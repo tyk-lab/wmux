@@ -1,6 +1,7 @@
 import {
   activeProjectGoal,
   activeProjectSubgoals,
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   projectAuthorizationVersion,
   projectOrientationReady,
   projectRequirementsAlignmentPhase,
@@ -22,6 +23,15 @@ export const ORDINARY_TASK_ROLE_ANCHOR = [
   '先运行 wmux context 获取当前 capability 绑定的任务终端、监督通道、状态和可用 wmux 命令；不得自行指定或操作其他终端。',
   'wmux context 描述的是 wmux 编排权限；Agent 原生工具仍受当前 Agent 和沙箱配置约束。',
 ].join('\n');
+export const ORDINARY_TASK_PROTOCOL_REVISION = '2';
+
+export function buildOrdinaryTaskEventEnvelope(surfaceId: string): string {
+  const target = surfaceId.trim() || '（未指定）';
+  return [
+    `[任务事件｜控制层｜surface=${target}｜protocol=${ORDINARY_TASK_PROTOCOL_REVISION}]`,
+    '当前任务终端与监督绑定继续有效；无需重新运行 wmux context、重新确认角色或复述协议。若控制层返回绑定或权限错误，停止沿用旧状态并报告监督 AI。',
+  ].join('\n');
+}
 
 export interface RoleContextConditionalAction {
   command: string;
@@ -51,6 +61,7 @@ export interface ProjectAiRuntimeContext {
       | 'needs-definition-update';
     orientation: 'ready' | 'required';
     progressSync: 'ready' | 'review-required';
+    executionProtocol: 'current' | 'migration-required';
   };
   scope: {
     projectDir: string;
@@ -106,6 +117,12 @@ export interface TaskAiRuntimeContext {
     validation: string[];
     forbiddenActions: string[];
     supervisorConfirmableCommandPrefixes: string[];
+    supervisorPlan?: {
+      revision: number;
+      selectedRoute: string;
+      milestones: Array<{ id: string; status: string; outcome: string }>;
+      remainingWork: string[];
+    };
   };
   actions: {
     available: string[];
@@ -255,10 +272,15 @@ export function buildProjectAiRuntimeContext(
   const progressReady = session.progressSync?.status !== 'review-required';
   const goal = activeProjectGoal(session);
   const subgoals = activeProjectSubgoals(session);
+  const executionProtocolMigrationRequired = session.workItems.some((item) => (
+    !['completed', 'stopped'].includes(item.status)
+    && (item.executionProtocolVersion || 0) < CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
+  ));
   const readyWorkItems = session.workItems.filter((item) => (
     item.goalId === goal.id
     && item.requirementsVersion === requirementsVersion
     && item.authorizationVersion === authorizationVersion
+    && (item.executionProtocolVersion || 0) >= CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
     && projectWorkItemReady(item, session.workItems)
     && !projectWorkItemSubgoalDependencyError(session, item)
   ));
@@ -291,6 +313,7 @@ export function buildProjectAiRuntimeContext(
       requirementsAlignment: alignmentPhase,
       orientation: orientationReady ? 'ready' : 'required',
       progressSync: progressReady ? 'ready' : 'review-required',
+      executionProtocol: executionProtocolMigrationRequired ? 'migration-required' : 'current',
     },
     scope: {
       projectDir: session.projectDir,
@@ -354,7 +377,9 @@ export function buildProjectAiRuntimeContext(
         {
           command: `wmux project task-update --project ${projectId} --json-file <.wmux/tmp/文件>`,
           available: mutableProject && session.workItems.length > 0,
-          condition: '持久化工作项状态、证据、上下文或阻塞',
+          condition: executionProtocolMigrationRequired
+            ? `旧项目存在过期工作项；逐项提交完整 contract 以迁移到执行协议 v${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION}，不能只修改状态或版本号`
+            : '持久化工作项状态、证据、上下文或阻塞',
         },
         {
           command: `wmux project record --project ${projectId} --json-file <.wmux/tmp/文件>`,
@@ -437,7 +462,9 @@ export function buildTaskAiRuntimeContext(options: {
     && projectRequirementsAlignmentPhase(project) === 'accepted'
     && workItem.goalId === activeProjectGoal(project).id
     && workItem.requirementsVersion === projectRequirementsVersion(project)
-    && workItem.authorizationVersion === projectAuthorizationVersion(project);
+    && workItem.authorizationVersion === projectAuthorizationVersion(project)
+    && (project.executionProtocolVersion || 0) >= CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
+    && (workItem.executionProtocolVersion || 0) >= CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION;
   const inactiveWorkItem = !!workItem && [
     'completed', 'stopped', 'failed', 'paused', 'waiting-decision',
   ].includes(workItem.status);
@@ -533,6 +560,18 @@ export function buildTaskAiRuntimeContext(options: {
       validation: [...(contract?.validation || [])],
       forbiddenActions: [...(contract?.scope.forbiddenActions || [])],
       supervisorConfirmableCommandPrefixes: [...(authority?.allowedCommandPrefixes || [])],
+      ...(workItem?.supervisorPlan ? {
+        supervisorPlan: {
+          revision: workItem.supervisorPlan.revision,
+          selectedRoute: workItem.supervisorPlan.selectedRoute,
+          milestones: workItem.supervisorPlan.milestones.map((milestone) => ({
+            id: milestone.id,
+            status: milestone.status,
+            outcome: milestone.outcome,
+          })),
+          remainingWork: [...workItem.supervisorPlan.remainingWork],
+        },
+      } : {}),
     },
     actions: {
       available: allowedActions,

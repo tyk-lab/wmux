@@ -53,7 +53,7 @@ import {
 import {
   buildUnacknowledgedSupervisorIdlePrompt,
   buildUserNotifyText,
-  buildSupervisorWakeRoleAnchor,
+  buildSupervisorWakeEventEnvelope,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
   effectiveSupervisorForbiddenActions,
@@ -70,6 +70,7 @@ import {
   SUPERVISOR_DELIVERY_READY_EVENT,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
+  unacknowledgedSupervisorIdleAction,
 } from './supervisor/delivery';
 import {
   omitNonRestorableWorkspaces,
@@ -543,23 +544,33 @@ function handleSupervisorHookEvent(event: any): void {
           ? store.projectManagers.find((project) => project.id === freshLane.projectManagerProjectId)
             ?.workItems.find((item) => item.id === freshLane.projectWorkItemId)
           : undefined;
-        appendSupervisorRecord(session, freshLane, 'supervisor.idle-unreported', {
-          event: lifecycle,
-          reason: '专属监督回合已结束，但没有提交继续、阶段交接、暂停或待决状态',
-          contextSummary: '控制层已原地唤醒同一专属监督，要求根据最新任务证据完成一次结构化裁决。',
-        });
-        queueSupervisorDelivery(
-          session,
-          freshLane,
-          'liveness-probe',
-          freshLane.currentTask || freshLane.projectWorkItemId || '当前项目任务',
-          buildUnacknowledgedSupervisorIdlePrompt(
+        const recoveryAction = unacknowledgedSupervisorIdleAction(freshLane.unreportedIdleRecoveryAttempts);
+        if (recoveryAction === 'retry-local') {
+          store.updateLane(freshLane.id, { unreportedIdleRecoveryAttempts: 1 });
+          appendSupervisorRecord(session, freshLane, 'supervisor.idle-recovery', {
+            event: lifecycle,
+            reason: '专属监督首次结束回合但未提交结构化裁决，先原地补报一次',
+          });
+          queueSupervisorDelivery(
+            session,
             freshLane,
-            projectWorkItem
-              ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
-              : '',
-          ),
-        );
+            'liveness-probe',
+            freshLane.currentTask || freshLane.projectWorkItemId || '当前项目任务',
+            buildUnacknowledgedSupervisorIdlePrompt(
+              freshLane,
+              projectWorkItem
+                ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
+                : '',
+            ),
+          );
+        } else if (recoveryAction === 'escalate-project') {
+          store.updateLane(freshLane.id, { unreportedIdleRecoveryAttempts: 2 });
+          appendSupervisorRecord(session, freshLane, 'supervisor.idle-unreported', {
+            event: lifecycle,
+            reason: '专属监督经一次原地补报后仍未提交结构化裁决',
+            contextSummary: '本层有界恢复已失败；停止重复唤醒，交由项目 AI 恢复或重建监督链。',
+          });
+        }
       }
     }
     return;
@@ -574,6 +585,7 @@ function handleSupervisorHookEvent(event: any): void {
     const manuallyResolved = resolvePendingApprovalsForManualTask(session, auditLane, task);
     store.updateLane(lane.id, {
       awaitingReview: manuallyResolved ? false : !!lane.autoDecisionLimitReached,
+      unreportedIdleRecoveryAttempts: 0,
       ...(manuallyResolved ? {
         awaitingStopCheck: false,
         stopConfirmed: false,
@@ -610,7 +622,7 @@ function handleSupervisorHookEvent(event: any): void {
       lane.currentTask || '（任务未上报）',
       [
         `[${deliveryKind === 'task-interrupted' ? '任务中断' : '任务结束'}] ${lane.label} (${surfaceId})。`,
-        buildSupervisorWakeRoleAnchor(surfaceId),
+        buildSupervisorWakeEventEnvelope(surfaceId),
         '',
       ].join('\n'),
     );

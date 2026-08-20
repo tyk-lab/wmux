@@ -2,6 +2,8 @@ import type { TaskWorkMode } from './supervisor-work-mode';
 
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
+/** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 2;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
@@ -60,6 +62,7 @@ export type ProjectManagerEventKind =
   | 'progress-inspection'
   | 'terminal-rotated'
   | 'recovery-restored'
+  | 'execution-protocol-migrated'
   | 'manager-runtime-restarted'
   | 'manager-runtime-failed'
   | 'supervisor-runtime-failed'
@@ -235,6 +238,28 @@ export interface ProjectExecutionRecord {
   escalationBoundary?: ProjectEscalationBoundary;
 }
 
+export type ProjectSupervisorMilestoneStatus = 'planned' | 'active' | 'completed';
+
+export interface ProjectSupervisorMilestone {
+  id: string;
+  title: string;
+  outcome: string;
+  status: ProjectSupervisorMilestoneStatus;
+  evidence?: string;
+}
+
+/** Supervisor-owned route and milestone state inside the project AI's hard contract. */
+export interface ProjectSupervisorStagePlan {
+  revision: number;
+  selectedRoute: string;
+  milestones: ProjectSupervisorMilestone[];
+  expectedPaths: string[];
+  targetedValidation: string[];
+  serializedBoundaries: string[];
+  remainingWork: string[];
+  updatedAt: number;
+}
+
 export type ProjectTaskBaselineStatus = 'required' | 'investigating' | 'approved';
 
 /** Control-plane-owned proof that the task inspected the current project before writing. */
@@ -353,8 +378,14 @@ export interface ProjectWorkItem {
   /** Requirements and inherited-authorization versions accepted for this task contract. */
   requirementsVersion?: number;
   authorizationVersion?: number;
+  /** Contract semantics version. Older unfinished items must be re-contracted before dispatch. */
+  executionProtocolVersion?: number;
   /** Project AI cannot approve this field; only the bound supervisor decision bridge can. */
   baseline?: ProjectTaskBaseline;
+  /** Mutable execution route owned by the supervisor after baseline investigation. */
+  supervisorPlan?: ProjectSupervisorStagePlan;
+  /** Control-plane migration gate for supervisor-owned planning after baseline approval. */
+  supervisorPlanRequired?: boolean;
   title: string;
   contract: ProjectSupervisorContract;
   status: ProjectWorkItemStatus;
@@ -482,6 +513,8 @@ export interface ProjectManagerSession {
   authorizationVersion?: number;
   /** Latest requirements version explicitly accepted by the project manager through resume. */
   acceptedRequirementsVersion?: number;
+  /** Persisted execution semantics version, independent from user requirement revisions. */
+  executionProtocolVersion?: number;
   status: ProjectManagerSessionStatus;
   /** True only when the project was paused by the portfolio-level control. */
   pausedByPortfolio?: boolean;
@@ -848,6 +881,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     requirementsVersion,
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
+    executionProtocolVersion: Math.max(0, Math.trunc(session.executionProtocolVersion || 0)),
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
@@ -896,9 +930,12 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
         requirementsVersion: itemRequirementsVersion,
         authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
+        executionProtocolVersion: Math.max(0, Math.trunc(item.executionProtocolVersion || 0)),
         baseline: activeBaseline
           ? item.baseline
           : requiredProjectTaskBaseline(itemRequirementsVersion),
+        supervisorPlanRequired: item.supervisorPlanRequired
+          ?? !['completed', 'stopped'].includes(item.status),
       };
     }),
   };
@@ -943,7 +980,13 @@ export type ProjectManagerAction =
     intervention: 'skip' | 'close';
     reason?: string;
   }
-  | { type: 'record-execution'; workItemId: string; record: ProjectExecutionRecord }
+  | {
+    type: 'record-execution';
+    workItemId: string;
+    record: ProjectExecutionRecord;
+    /** Rejected or failed delivery attempts remain auditable without spending autonomy budget. */
+    consumeDecision?: boolean;
+  }
   | {
     type: 'pause-project';
     reason: string;

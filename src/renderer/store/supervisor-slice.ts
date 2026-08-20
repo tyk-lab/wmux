@@ -104,6 +104,8 @@ export interface SupervisorLane {
   stopConfirmed: boolean;
   /** A finished turn must be reviewed before the scheduler advances this terminal. */
   awaitingReview?: boolean;
+  /** Number of consecutive supervisor turns that ended without a structured decision. */
+  unreportedIdleRecoveryAttempts?: number;
   /** Marks review created by alternate input so resume clears only this lane. */
   resumeAfterCancelledDecision?: boolean;
   /** The current review began by resuming a waiting lane and still needs an actionable direction. */
@@ -134,6 +136,8 @@ export interface SupervisorLane {
   pendingSupervisorDeliveries?: SupervisorDelivery[];
   /** True until the dedicated supervisor has delivered this work item's complete task contract. */
   projectTaskContractPending?: boolean;
+  /** True until an ordinary task terminal receives its one-time role anchor. */
+  taskRoleAnchorPending?: boolean;
   /** Bounded permission audit used to stop repeated confirmations that make no progress. */
   permissionConfirmations?: Array<{
     ts: number;
@@ -340,6 +344,7 @@ export function clearSupervisorLaneContext(
     awaitingStopCheck: false,
     stopConfirmed: false,
     awaitingReview: false,
+    unreportedIdleRecoveryAttempts: 0,
     resumeAfterCancelledDecision: false,
     awaitingDirectionAfterWaitingResume: false,
     lastBlockedResponseVersion: undefined,
@@ -347,6 +352,7 @@ export function clearSupervisorLaneContext(
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
+    taskRoleAnchorPending: true,
     permissionConfirmations: [],
     decisions: [],
     restoredHistory: undefined,

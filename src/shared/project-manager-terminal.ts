@@ -90,8 +90,10 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
   return '.wmux\\project-manager\\manage-project\\SKILL.md';
 }
 
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '3';
+
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
-  '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。',
+  '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。同一运行时收到相同协议版本的普通事件时，复用已加载协议，不得重复读取 manage-project 技能；仅新建/恢复运行时、显式调用技能或协议版本变化时重读。',
   '首次启动项目时只执行一次需求充分性检查；恢复时沿用持久化结论或待确认问题，不得重复对齐。',
   '存在会改变方案的实质歧义时，禁止只在项目管理终端输出问题后等待；必须执行 wmux project ask --project <项目ID>，使用 category=clarification，一次只问一个问题，提供 2-4 个互斥方案并设置 recommendedOptionId。',
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
@@ -105,6 +107,7 @@ export function projectManagerRoleAnchor(projectId: string): string {
   return [
     '[项目 AI 角色锚点｜控制层]',
     `你是项目 ${projectId} 的专属项目 AI，只能管理这一个项目。`,
+    `项目管理协议版本：${PROJECT_MANAGER_PROTOCOL_REVISION}。本运行时加载一次；相同版本的普通事件不得重复读取 manage-project 技能。`,
     '先运行 wmux context 获取实时身份、状态、权限和命令；该结果由当前终端 capability 绑定，不接受手工指定项目身份。',
     '不得直接修改项目交付文件、执行实现/测试，或使用通用 send/send-key 控制监督 AI 与任务 AI。',
   ].join('\n');
@@ -113,6 +116,30 @@ export function projectManagerRoleAnchor(projectId: string): string {
 export function withProjectManagerRoleAnchor(text: string, projectId: string): string {
   const anchor = projectManagerRoleAnchor(projectId);
   return text.startsWith(anchor) ? text : `${anchor}\n\n${text}`;
+}
+
+export function projectManagerEventEnvelope(projectId: string): string {
+  return [
+    `[项目事件｜控制层｜project=${projectId}｜protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}]`,
+    '先运行 wmux context 获取实时状态；协议版本未变化，继续使用本运行时已加载的协议，无需重读技能或重新确认角色。',
+    '项目 AI 只处理主目标、可验收阶段、依赖和硬安全边界；监督 AI 在该边界内自行维护路线与内部里程碑，不要把任务 AI 的每个检查点拆成新工作项。',
+  ].join('\n');
+}
+
+function stripLeadingProjectManagerControlEnvelope(text: string): string {
+  if (!text.startsWith('[项目 AI 角色锚点｜控制层]\n')
+    && !text.startsWith('[项目事件｜控制层｜')) {
+    return text;
+  }
+  const separatorIndex = text.indexOf('\n\n');
+  return separatorIndex >= 0 ? text.slice(separatorIndex + 2) : '';
+}
+
+export function withProjectManagerEventEnvelope(text: string, projectId: string): string {
+  const envelope = projectManagerEventEnvelope(projectId);
+  if (text === envelope || text.startsWith(`${envelope}\n\n`)) return text;
+  const body = stripLeadingProjectManagerControlEnvelope(text);
+  return body ? `${envelope}\n\n${body}` : envelope;
 }
 
 export function projectManagerStartupInput(

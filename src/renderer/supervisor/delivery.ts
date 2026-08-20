@@ -98,3 +98,13 @@ export function shouldReportUnacknowledgedSupervisorIdle(options: {
     && !options.hasPendingDecision
     && options.pendingDeliveries === 0;
 }
+
+export type UnacknowledgedSupervisorIdleAction = 'retry-local' | 'escalate-project' | 'ignore';
+
+/** Retry one malformed supervisor turn locally before involving the project AI. */
+export function unacknowledgedSupervisorIdleAction(recoveryAttempts: number | undefined): UnacknowledgedSupervisorIdleAction {
+  const attempts = Math.max(0, Math.trunc(recoveryAttempts || 0));
+  if (attempts === 0) return 'retry-local';
+  if (attempts === 1) return 'escalate-project';
+  return 'ignore';
+}

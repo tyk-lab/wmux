@@ -180,6 +180,33 @@ function isProjectSubgoal(value: unknown): boolean {
     && Number.isFinite(subgoal.createdAt) && Number.isFinite(subgoal.updatedAt);
 }
 
+function isProjectSupervisorStagePlan(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Record<string, unknown>;
+  if (!Number.isInteger(plan.revision) || Number(plan.revision) < 1
+    || typeof plan.selectedRoute !== 'string' || !plan.selectedRoute.trim()
+    || !Array.isArray(plan.milestones) || plan.milestones.length < 1 || plan.milestones.length > 12
+    || !isStringArray(plan.expectedPaths) || !isStringArray(plan.targetedValidation)
+    || !isStringArray(plan.serializedBoundaries) || !isStringArray(plan.remainingWork)
+    || !Number.isFinite(plan.updatedAt)) return false;
+  const milestoneIds = new Set<string>();
+  let activeMilestones = 0;
+  const milestonesValid = plan.milestones.every((value) => {
+    if (!value || typeof value !== 'object') return false;
+    const milestone = value as Record<string, unknown>;
+    if (milestone.status === 'active') activeMilestones += 1;
+    if (typeof milestone.id === 'string') milestoneIds.add(milestone.id.trim());
+    return typeof milestone.id === 'string' && !!milestone.id.trim()
+      && typeof milestone.title === 'string' && !!milestone.title.trim()
+      && typeof milestone.outcome === 'string' && !!milestone.outcome.trim()
+      && ['planned', 'active', 'completed'].includes(String(milestone.status))
+      && (milestone.evidence === undefined || typeof milestone.evidence === 'string');
+  });
+  return milestonesValid
+    && milestoneIds.size === plan.milestones.length
+    && activeMilestones <= 1;
+}
+
 function isProjectManagerSession(value: unknown): value is ProjectManagerSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
@@ -228,6 +255,9 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.requirementsVersion !== undefined && (!Number.isFinite(session.requirementsVersion) || Number(session.requirementsVersion) < 1))
     || (session.authorizationVersion !== undefined && (!Number.isFinite(session.authorizationVersion) || Number(session.authorizationVersion) < 1))
     || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
+    || (session.executionProtocolVersion !== undefined && (
+      !Number.isInteger(session.executionProtocolVersion) || Number(session.executionProtocolVersion) < 0
+    ))
     || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
     || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
     || (session.orientation !== undefined && !normalizeProjectOrientationState(session.orientation))
@@ -250,7 +280,12 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
       && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
       && (item.authorizationVersion === undefined || (Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1))
+      && (item.executionProtocolVersion === undefined || (
+        Number.isInteger(item.executionProtocolVersion) && item.executionProtocolVersion >= 0
+      ))
       && (item.baseline === undefined || isProjectTaskBaseline(item.baseline))
+      && (item.supervisorPlan === undefined || isProjectSupervisorStagePlan(item.supervisorPlan))
+      && (item.supervisorPlanRequired === undefined || typeof item.supervisorPlanRequired === 'boolean')
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)

@@ -7,7 +7,14 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
-import { cleanupSupervisorNextInput, isSupervisorDecideHelp, resolveSupervisorNextInput, SUPERVISOR_DECIDE_USAGE } from './supervisor-command';
+import {
+  cleanupSupervisorNextInput,
+  cleanupSupervisorStagePlanInput,
+  isSupervisorDecideHelp,
+  resolveSupervisorNextInput,
+  resolveSupervisorStagePlanInput,
+  SUPERVISOR_DECIDE_USAGE,
+} from './supervisor-command';
 import { cleanupProjectJsonInput, resolveProjectJsonInput } from './project-command';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 import { requireSuccessfulContext } from './context-result';
@@ -176,6 +183,10 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     args,
     process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
   );
+  const stagePlanInput = resolveSupervisorStagePlanInput(
+    args,
+    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+  );
 
   const result = await sendV2('supervisor.decide', {
     surfaceId,
@@ -184,6 +195,8 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     reason: getFlag(args, '--reason') || '',
     next: nextInput.text,
     nextFile: nextInput.fileReference || '',
+    stagePlan: stagePlanInput.value,
+    stagePlanFile: stagePlanInput.fileReference || '',
     proposalKind: getFlag(args, '--proposal-kind') || '',
     escalationBoundary: getFlag(args, '--escalation-boundary') || '',
     impact: getFlag(args, '--impact') || '',
@@ -200,12 +213,19 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     diffSummary: getFlag(args, '--diff-summary') || '',
     evidence: getFlag(args, '--evidence') || '',
     contextSummary: getFlag(args, '--context-summary') || '',
+    completionStopWhen: getFlag(args, '--completion-stop-when') || '',
+    completionValidation: getFlag(args, '--completion-validation') || '',
+    remainingWork: getFlag(args, '--remaining-work') || '',
     fullSuite: args.includes('--full-suite'),
     retry: args.includes('--retry'),
   });
   cleanupSupervisorNextInput(
     nextInput,
     result?.ok !== false && result?.retainNextFile !== true,
+  );
+  cleanupSupervisorStagePlanInput(
+    stagePlanInput,
+    result?.ok !== false && result?.retainStagePlanFile !== true,
   );
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
@@ -1118,6 +1138,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
 Supervisor:  supervisor context
              supervisor decide --surface <id> --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
+                          [--stage-plan-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed>]
                           [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]
                           [--impact <text>] [--alternatives <text>]
@@ -1125,6 +1146,7 @@ Supervisor:  supervisor context
                           [--execution-action <text> --command <text> --error <text> --workspace-version <hash>]
                           [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]
                           [--evidence <text> --context-summary <text>]
+                          [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply

@@ -28,6 +28,7 @@ import {
 } from './supervisor-context';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
+export const SUPERVISOR_PROTOCOL_REVISION = '2';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -92,15 +93,14 @@ export function supervisorTabTitle(laneLabel: string): string {
   return `${SUPERVISOR_TAB_TITLE} · ${laneLabel}`;
 }
 
-/** Compact role reset attached to every event-driven supervisor wake-up. */
-export function buildSupervisorWakeRoleAnchor(surfaceId: string): string {
+/** Compact event envelope for an already-briefed supervisor runtime. */
+export function buildSupervisorWakeEventEnvelope(surfaceId: string): string {
   const target = surfaceId.trim() || '（未指定）';
   return [
-    '【监督角色锚点】你是此任务终端的专属监督，不是任务执行者。',
-    `仅检查任务终端 ${target}；除 briefing 指定的计划文件和工程 .wmux/tmp 裁决草稿外，不读取其他上下文。`,
-    '不得修改交付文件、执行实现或测试、创建子代理、调用无关技能，也不得直接控制其他终端。',
-    '先运行 wmux context 获取当前 capability 绑定的身份、权限、预算和命令；不得沿用记忆中的旧授权。',
-    `再运行 wmux read-screen --surface ${target}；本次只形成一个裁决并用 wmux supervisor decide 提交，仅按 briefing 的单次投递核验处理未送达，成功后立即结束本回合。`,
+    `[监督事件｜控制层｜surface=${target}｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
+    '当前运行时与完整 briefing 继续有效，无需重读协议、重新确认角色或复述身份。运行 wmux context 只刷新 capability 绑定的实时权限、预算和可用命令；发现绑定或协议变化时停止沿用旧授权。',
+    '你负责在项目 AI 给定的硬边界内完成整个阶段成果并维护自己的阶段计划；任务 AI 的检查点只是证据输入，不要把内部里程碑原样转交项目 AI 决定。',
+    `再运行 wmux read-screen --surface ${target} 核对新证据；只形成一个裁决并用 wmux supervisor decide 提交，成功后立即结束本回合。`,
   ].join('\n');
 }
 
@@ -148,7 +148,7 @@ export function buildUnacknowledgedSupervisorIdlePrompt(
   }
   return [
     ...header,
-    buildSupervisorWakeRoleAnchor(lane.surfaceId),
+    buildSupervisorWakeEventEnvelope(lane.surfaceId),
     '先只读核对任务终端和最新证据，再通过一次 wmux supervisor decide 写回明确状态；不要等待项目 AI 轮询，也不要重复询问用户。',
     '缺少的身份若可在项目范围内建立，应作为准备步骤直接推进；若可绕开则一次性建议项目 AI 暂缓此项并推进不依赖项。禁止反复重建同一身份。',
   ].filter(Boolean).join('\n');
@@ -647,6 +647,9 @@ export function buildSupervisorBriefing(
   return [
       SUPERVISOR_PROTOCOL_CORE,
       '',
+      `[监督协议｜控制层｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
+      '本完整 briefing 只在启动、恢复、工作项切换或协议变化时加载；同一协议版本的普通事件使用短事件信封，不重新确认角色。',
+      '',
       '# AI 监督',
       '',
       autonomous
@@ -688,7 +691,7 @@ export function buildSupervisorBriefing(
       '## 规则',
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
       '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
-      '3. 证据足以收尾可提交 complete；证据不足时优先用 continue / rework 补证或返工，只有无低风险路径时才 needs-human。',
+      '3. 只有完整阶段的全部停止条件与验证要求均满足且没有剩余工作时才提交 complete，并按项目合同附完整 completion checklist；P0/P1/P2、单条命令、单次测试或任务 AI 回合结束都使用 continue / rework 直接推进。异常、外部阻塞、需要人工/项目级决策或预算耗尽使用 needs-human，不得静默等待。',
       ...(isProjectManagedSupervisorLane(lane) ? [
         '4. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
       ] : []),

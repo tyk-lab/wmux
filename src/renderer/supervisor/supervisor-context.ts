@@ -1,4 +1,7 @@
-import type { ProjectSupervisorAuthority } from '../../shared/project-manager';
+import type {
+  ProjectSupervisorAuthority,
+  ProjectSupervisorStagePlan,
+} from '../../shared/project-manager';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -30,6 +33,7 @@ export interface SupervisorProjectContext {
   bindingCurrent?: boolean;
   baselineApproved?: boolean;
   dependencyError?: string;
+  supervisorPlan?: ProjectSupervisorStagePlan;
 }
 
 export interface SupervisorConditionalCommand {
@@ -81,6 +85,12 @@ export interface SupervisorRuntimeContext {
     projectDecisionsRemaining?: number;
     projectAttempts?: number;
     projectRetriesRemaining?: number;
+  };
+  plan?: {
+    revision: number;
+    selectedRoute: string;
+    milestones: Array<{ id: string; status: string; outcome: string }>;
+    remainingWork: string[];
   };
 }
 
@@ -330,6 +340,18 @@ export function buildSupervisorRuntimeContext(
           : Math.max(0, project.maxTaskRetries - project.attempts),
       } : {}),
     },
+    ...(project?.supervisorPlan ? {
+      plan: {
+        revision: project.supervisorPlan.revision,
+        selectedRoute: project.supervisorPlan.selectedRoute,
+        milestones: project.supervisorPlan.milestones.map((milestone) => ({
+          id: milestone.id,
+          status: milestone.status,
+          outcome: milestone.outcome,
+        })),
+        remainingWork: [...project.supervisorPlan.remainingWork],
+      },
+    } : {}),
   };
 }
 
@@ -350,6 +372,11 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       ? `（${context.state.decisionBlockers.join('；')}）`
       : ''}`,
     `可用裁决: ${context.commands.decisionOutcomes.join('、')}`,
+    context.plan
+      ? `监督阶段计划: r${context.plan.revision}；路线=${context.plan.selectedRoute}；剩余=${context.plan.remainingWork.join('、') || '无'}`
+      : context.role === 'project-supervisor'
+        ? '监督阶段计划: 基线批准时必须用 --stage-plan-file 建立，随后由监督 AI 自主维护'
+        : '',
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
     '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',

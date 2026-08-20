@@ -139,6 +139,68 @@ function projectReasoningOptions(agent: string): Array<{ value: string; label: s
   return [];
 }
 
+function ProjectAgentConfigFields({
+  value,
+  onChange,
+}: {
+  value: ProjectManagementAgentConfig;
+  onChange: (next: ProjectManagementAgentConfig) => void;
+}) {
+  return (
+    <div className="project-manager-dialog__agent-grid">
+      {PROJECT_AGENT_ROWS.map((row) => {
+        const selection = value[row.key];
+        const models = modelOptionsFor(selection.agent);
+        const reasoningOptions = projectReasoningOptions(selection.agent);
+        return (
+          <article key={row.key}>
+            <strong>{row.title}</strong>
+            <label>
+              <span>Agent</span>
+              <select value={selection.agent} onChange={(event) => {
+                const agent = event.target.value;
+                onChange(normalizeProjectManagementAgentConfig({
+                  ...value,
+                  [row.key]: { agent, model: '', reasoningEffort: projectAgentDefaultReasoningEffort(agent) },
+                } as Partial<ProjectManagementAgentConfig>));
+              }}>
+                {row.agents.map(([agent, label]) => <option key={agent} value={agent}>{label}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>模型</span>
+              <select value={selection.model} onChange={(event) => {
+                onChange(normalizeProjectManagementAgentConfig({
+                  ...value,
+                  [row.key]: { ...value[row.key], model: event.target.value },
+                }));
+              }}>
+                <option value="">使用 Agent 默认模型</option>
+                {selection.model && !models.some((option) => option.value === selection.model) && (
+                  <option value={selection.model}>{selection.model}</option>
+                )}
+                {models.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>{selection.agent === 'codex' ? '推理程度' : 'Thinking'}</span>
+              <select value={selection.reasoningEffort} onChange={(event) => {
+                onChange(normalizeProjectManagementAgentConfig({
+                  ...value,
+                  [row.key]: { ...value[row.key], reasoningEffort: event.target.value },
+                }));
+              }}>
+                {reasoningOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <p>{row.hint}</p>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 interface ProjectRecoveryCandidate {
   id: string;
   projectDir: string;
@@ -146,6 +208,8 @@ interface ProjectRecoveryCandidate {
   goal: string;
   status: string;
   workItemCount: number;
+  executionProtocolVersion: number;
+  requiresProtocolMigration: boolean;
   updatedAt: number;
 }
 
@@ -388,7 +452,10 @@ export default function ProjectManagerDialog() {
     try {
       const result = await invoke({
         action: restore ? 'restore-projects' : 'skip-project-recovery',
-        ...(restore ? { projectIds: selectedRecoveryIds } : {}),
+        ...(restore ? {
+          projectIds: selectedRecoveryIds,
+          agentConfig: normalizeProjectManagementAgentConfig(agentDraft),
+        } : {}),
       });
       setRecoveryCandidates([]);
       setSelectedRecoveryIds([]);
@@ -794,6 +861,14 @@ export default function ProjectManagerDialog() {
                 <>
                   <div className="supervisor-dialog__hint">项目中心只恢复你勾选的项目，并为每个项目创建独立的新 AI 会话继续推进。未选择的历史记录会保留。</div>
                   <div className="project-manager-dialog__recovery-summary">已选择 {selectedRecoveryIds.length} 个项目</div>
+                  <details open className="supervisor-dialog__advanced project-manager-dialog__agent-config">
+                    <summary>本次恢复使用的 Agent 配置 <span>可在恢复前重新选择</span></summary>
+                    <div className="supervisor-dialog__hint">所选项目共用这组项目模式配置；项目 AI 会立即按此启动，后续新监督和新任务终端也使用对应 Agent、模型及 Thinking。</div>
+                    <ProjectAgentConfigFields value={agentDraft} onChange={(next) => {
+                      setAgentDraft(next);
+                      setConfigNotice('');
+                    }} />
+                  </details>
                   <div className="project-manager-dialog__recovery-list">
                     {recoveryCandidates.map((candidate) => (
                       <div key={candidate.id} className="project-manager-dialog__recovery-item">
@@ -807,7 +882,11 @@ export default function ProjectManagerDialog() {
                             <strong>{candidate.projectName || candidate.goal}</strong>
                             {candidate.projectName && <small>当前主目标：{candidate.goal}</small>}
                             <small>{candidate.projectDir}</small>
-                            <em>{STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项 · 最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}</em>
+                            <em>
+                              {STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项
+                              {candidate.requiresProtocolMigration ? ' · 恢复时升级到最新执行协议' : ''}
+                              {' · '}最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}
+                            </em>
                           </span>
                         </label>
                         <button
@@ -902,65 +981,10 @@ export default function ProjectManagerDialog() {
               </div>
               <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void saveAgentConfig()}>保存配置</button>
             </div>
-            <div className="project-manager-dialog__agent-grid">
-              {PROJECT_AGENT_ROWS.map((row) => {
-                const selection = agentDraft[row.key];
-                const models = modelOptionsFor(selection.agent);
-                const reasoningOptions = projectReasoningOptions(selection.agent);
-                return (
-                  <article key={row.key}>
-                    <strong>{row.title}</strong>
-                    <label>
-                      <span>Agent</span>
-                      <select value={selection.agent} onChange={(event) => {
-                        const agent = event.target.value;
-                        setAgentDraft((current) => normalizeProjectManagementAgentConfig({
-                          ...current,
-                          [row.key]: { agent, model: '', reasoningEffort: projectAgentDefaultReasoningEffort(agent) },
-                        } as Partial<ProjectManagementAgentConfig>));
-                        setConfigNotice('');
-                      }}>
-                        {row.agents.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                      </select>
-                    </label>
-                    <label>
-                      <span>模型</span>
-                      <select value={selection.model} onChange={(event) => {
-                        const model = event.target.value;
-                        setAgentDraft((current) => normalizeProjectManagementAgentConfig({
-                          ...current,
-                          [row.key]: { ...current[row.key], model },
-                        }));
-                        setConfigNotice('');
-                      }}>
-                        <option value="">使用 Agent 默认模型</option>
-                        {selection.model && !models.some((option) => option.value === selection.model) && (
-                          <option value={selection.model}>{selection.model}</option>
-                        )}
-                        {models.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
-                    <label>
-                      <span>{selection.agent === 'codex' ? '推理程度' : 'Thinking'}</span>
-                      <select
-                        value={selection.reasoningEffort}
-                        onChange={(event) => {
-                          const reasoningEffort = event.target.value;
-                          setAgentDraft((current) => normalizeProjectManagementAgentConfig({
-                            ...current,
-                            [row.key]: { ...current[row.key], reasoningEffort },
-                          }));
-                          setConfigNotice('');
-                        }}
-                      >
-                        {reasoningOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
-                    <p>{row.hint}</p>
-                  </article>
-                );
-              })}
-            </div>
+            <ProjectAgentConfigFields value={agentDraft} onChange={(next) => {
+              setAgentDraft(next);
+              setConfigNotice('');
+            }} />
             {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
           </details>}
 

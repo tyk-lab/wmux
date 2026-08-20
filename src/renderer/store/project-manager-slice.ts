@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   activeProjectGoal,
   normalizeProjectManagerSession,
   projectAcceptedRequirementsVersion,
@@ -155,6 +156,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       requirementsVersion: 1,
       authorizationVersion: 1,
       acceptedRequirementsVersion: 0,
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       status: 'active',
       recoveryState: 'ready',
       orientation: {
@@ -792,13 +794,19 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        decisionsUsed: item.decisionsUsed + 1,
+        decisionsUsed: item.decisionsUsed + (action.consumeDecision === false ? 0 : 1),
         updatedAt: now,
         executionHistory: [...item.executionHistory, action.record].slice(-MAX_EXECUTION_HISTORY),
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       next = updated;
-      eventInput = { kind: 'supervisor-decision', workItemId: action.workItemId, summary: `记录监督决策：${action.workItemId}` };
+      eventInput = {
+        kind: 'supervisor-decision',
+        workItemId: action.workItemId,
+        summary: action.consumeDecision === false
+          ? `记录未生效的监督尝试：${action.workItemId}`
+          : `记录监督决策：${action.workItemId}`,
+      };
     } else if (action.type === 'pause-project') {
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
       eventInput = {
