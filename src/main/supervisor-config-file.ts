@@ -23,6 +23,7 @@ export interface SupervisorTerminalConfigFileData {
   taskGoal: string;
   taskDescription: string;
   preconditions: string;
+  supervisorNotes: string;
   stopWhen: string;
   stopWhenKind: 'direction' | 'concrete';
   waitForNextDirection: boolean;
@@ -40,6 +41,7 @@ export interface SupervisorConfigFileData {
   taskGoal: string;
   taskDescription: string;
   preconditions: string;
+  supervisorNotes: string;
   stopWhen: string;
   stopWhenKind: 'direction' | 'concrete';
   waitForNextDirection: boolean;
@@ -99,6 +101,7 @@ function terminalConfig(value: unknown): SupervisorTerminalConfigFileData | null
     taskGoal: text(config.taskGoal),
     taskDescription: text(config.taskDescription),
     preconditions: text(config.preconditions),
+    supervisorNotes: text(config.supervisorNotes),
     stopWhen: text(config.stopWhen),
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     waitForNextDirection: config.waitForNextDirection === true,
@@ -140,6 +143,7 @@ export function normalizeSupervisorConfig(
     taskGoal: text(config.taskGoal),
     taskDescription: text(config.taskDescription),
     preconditions: text(config.preconditions),
+    supervisorNotes: text(config.supervisorNotes),
     stopWhen: text(config.stopWhen),
     stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
     waitForNextDirection: config.waitForNextDirection === true,

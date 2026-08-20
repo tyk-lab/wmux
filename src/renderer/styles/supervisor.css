@@ -1867,6 +1867,119 @@
   margin-left: auto;
 }
 
+.sup-panel__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.sup-panel__summary > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.sup-panel__summary > div[data-attention='1'] {
+  border-color: rgba(226, 170, 79, 0.4);
+  background: rgba(226, 170, 79, 0.08);
+}
+
+.sup-panel__summary span,
+.sup-panel__config-grid span {
+  font-size: 10px;
+  opacity: 0.58;
+}
+
+.sup-panel__summary strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__session-config {
+  margin: 0 12px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.sup-panel__session-config summary,
+.sup-panel__lane-config summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sup-panel__session-config summary small {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.58;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 10px 8px;
+}
+
+.sup-panel__config-grid > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sup-panel__config-grid strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__session-config p {
+  margin: 0;
+  padding: 0 10px 9px;
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.sup-panel__lane-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(93, 202, 138, 0.12);
+  color: #8de1b0;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.sup-panel__lane-status-pill[data-state='paused'],
+.sup-panel__lane-status-pill[data-state='waiting'] {
+  background: rgba(226, 170, 79, 0.13);
+  color: #f2c977;
+}
+
+.sup-panel__lane-status-pill[data-state='stopped'] {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.58);
+}
+
 .sup-panel__lane-detail {
   font-size: 10px;
   opacity: 0.5;
@@ -1874,6 +1987,123 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sup-panel__lane-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.sup-panel__lane-status-grid > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.sup-panel__lane-status-grid span,
+.sup-panel__lane-status-grid strong,
+.sup-panel__lane-status-grid small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sup-panel__lane-status-grid span {
+  font-size: 10px;
+  opacity: 0.52;
+}
+
+.sup-panel__lane-status-grid strong {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sup-panel__lane-status-grid small {
+  margin-top: 2px;
+  font-size: 10px;
+  opacity: 0.64;
+}
+
+.supervisor-session-pane .sup-panel__lane-status-grid span,
+.supervisor-session-pane .sup-panel__lane-status-grid small {
+  font-size: 12px;
+}
+
+.supervisor-session-pane .sup-panel__lane-status-grid strong {
+  font-size: 14px;
+}
+
+.sup-panel__lane-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sup-panel__lane-metrics span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  font-size: 9px;
+  opacity: 0.66;
+}
+
+.sup-panel__lane-metrics span[data-attention='1'] {
+  background: rgba(226, 170, 79, 0.13);
+  color: #f2c977;
+  opacity: 1;
+}
+
+.sup-panel__lane-config {
+  margin-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.sup-panel__lane-config summary {
+  justify-content: flex-start;
+  padding: 7px 0 2px;
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.sup-panel__lane-config dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 7px 0 0;
+  padding: 8px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.14);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.sup-panel__lane-config dt {
+  opacity: 0.5;
+}
+
+.sup-panel__lane-config dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  opacity: 0.78;
+}
+
+@media (max-width: 720px) {
+  .sup-panel__summary,
+  .sup-panel__lane-status-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sup-panel__config-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .sup-panel__lane-task,

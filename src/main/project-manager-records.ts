@@ -220,6 +220,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.subgoals !== undefined && (!Array.isArray(session.subgoals) || !session.subgoals.every(isProjectSubgoal)))
     || typeof session.goal !== 'string' || !isStringArray(session.doneWhen)
     || (session.preconditions !== undefined && !isStringArray(session.preconditions))
+    || (session.supervisorNotes !== undefined && !isStringArray(session.supervisorNotes))
     || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
     || (session.pendingUserQuestion !== undefined && !isPendingUserQuestion(session.pendingUserQuestion))
     || (session.pendingManagerDeliveries !== undefined && (
@@ -293,6 +294,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && Number.isFinite(item.attempts) && Number.isFinite(item.decisionsUsed) && Number.isFinite(item.updatedAt)
       && typeof contract?.objective === 'string' && typeof contract?.description === 'string'
       && isStringArray(contract?.preconditions) && isStringArray(contract?.stopWhen) && isStringArray(contract?.validation)
+      && (contract?.supervisorNotes === undefined || isStringArray(contract.supervisorNotes))
       && typeof scope?.root === 'string' && path.isAbsolute(scope.root)
       && scope.root.toLowerCase() === String(session.projectDir).toLowerCase()
       && isStringArray(scope?.allowPaths) && isStringArray(scope?.denyPaths) && isStringArray(scope?.forbiddenActions)
@@ -378,6 +380,7 @@ function readProjectManagerSessions(
             ? normalizeProjectManagerSession({
                 ...parsed.session,
                 preconditions: parsed.session.preconditions || [],
+                supervisorNotes: parsed.session.supervisorNotes || [],
                 planFiles: parsed.session.planFiles || [],
                 pendingManagerDeliveries: parsed.session.pendingManagerDeliveries || [],
                 requirementsVersion: parsed.session.requirementsVersion || 1,

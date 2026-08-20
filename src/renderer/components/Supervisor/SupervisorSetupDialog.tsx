@@ -180,6 +180,7 @@ function emptyLaneConfig(): SupervisorLaneConfig {
     taskGoal: '',
     taskDescription: '',
     preconditions: '',
+    supervisorNotes: '',
     stopWhen: '',
     stopWhenKind: 'concrete',
     waitForNextDirection: true,
@@ -892,6 +893,7 @@ export default function SupervisorSetupDialog() {
           taskGoal: terminalConfig.taskGoal || '',
           taskDescription: terminalConfig.taskDescription || '',
           preconditions: terminalConfig.preconditions || '',
+          supervisorNotes: terminalConfig.supervisorNotes || '',
           stopWhen: terminalConfig.stopWhen || '',
           stopWhenKind: terminalConfig.stopWhenKind === 'direction' ? 'direction' : 'concrete',
           waitForNextDirection: terminalConfig.waitForNextDirection === true,
@@ -1032,6 +1034,7 @@ export default function SupervisorSetupDialog() {
           taskGoal: config.taskGoal.trim(),
           taskDescription: config.taskDescription.trim(),
           preconditions: config.preconditions.trim(),
+          supervisorNotes: config.supervisorNotes?.trim() || '',
           stopWhen: config.stopWhen.trim(),
           stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
           waitForNextDirection: config.waitForNextDirection === true,
@@ -1716,6 +1719,18 @@ export default function SupervisorSetupDialog() {
                             onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskDescription: event.target.value })}
                             placeholder="补充此终端的验收语境和边界"
                           />
+                        </div>
+                        <div className="supervisor-dialog__section">
+                          <div className="supervisor-dialog__label">注意事项（可选）</div>
+                          <textarea
+                            className="supervisor-dialog__textarea"
+                            aria-label={`${candidate.label} 的监督注意事项`}
+                            rows={3}
+                            value={laneConfig.supervisorNotes || ''}
+                            onChange={(event) => updateLaneConfig(candidate.surfaceId, { supervisorNotes: event.target.value })}
+                            placeholder="例如：完成一个有意义的阶段后，让任务 AI 同步相关文档；形成可回滚成果后提交本地 Git commit"
+                          />
+                          <div className="supervisor-dialog__hint">仅提醒监督 AI 在合适检查点安排，不会扩大任务范围、权限或允许推送/发布等高风险动作。</div>
                         </div>
                         <div className="supervisor-dialog__section">
                           <div className="supervisor-dialog__label">计划文件（可选 · Markdown/文本）</div>

@@ -118,6 +118,7 @@ export function buildProjectTaskStartupBriefing(lane: SupervisorLane): string {
     `任务目标：${config.taskGoal || '（缺失）'}`,
     config.taskDescription ? `任务与恢复上下文：\n${config.taskDescription}` : '',
     config.preconditions ? `前置条件：${config.preconditions}` : '',
+    config.supervisorNotes ? `监督注意事项：\n${config.supervisorNotes}` : '',
     `停止条件：${config.stopWhen || '（缺失）'}`,
     '',
     '启动顺序（只能执行一次）：',
@@ -177,6 +178,7 @@ export function effectiveSupervisorLaneConfig(
       taskGoal: lane.config.taskGoal || '',
       taskDescription: lane.config.taskDescription || '',
       preconditions: lane.config.preconditions || '',
+      ...(lane.config.supervisorNotes ? { supervisorNotes: lane.config.supervisorNotes } : {}),
       stopWhen: lane.config.stopWhen || '',
       stopWhenKind: lane.config.stopWhenKind === 'direction' ? 'direction' : 'concrete',
       waitForNextDirection: lane.config.waitForNextDirection === true,
@@ -273,11 +275,12 @@ export function supervisorLaneBriefingChanged(
     'taskGoal',
     'taskDescription',
     'preconditions',
+    'supervisorNotes',
     'stopWhen',
     'planFilePath',
   ] as const;
   const configChanged = textFields
-    .some((key) => previousConfig[key].trim() !== nextConfig[key].trim());
+    .some((key) => (previousConfig[key] || '').trim() !== (nextConfig[key] || '').trim());
   if (configChanged
     || previousConfig.stopWhenKind !== nextConfig.stopWhenKind
     || previousConfig.waitForNextDirection !== nextConfig.waitForNextDirection
@@ -528,6 +531,17 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
+  const supervisorNotes = laneConfig.supervisorNotes?.trim() || '';
+  const supervisorNotesBlock = supervisorNotes
+    ? [
+        '## 注意事项（监督检查点提醒）',
+        supervisorNotes,
+        '',
+        '在任务进展到合适检查点时，将适用事项纳入下一次 continue/rework 指令并核对结果；不要仅因事项存在就打断正在工作的任务 AI。',
+        `注意事项不能扩大目标、范围、命令权限或风险授权；与硬边界冲突时按原规则交给${decisionOwnerLabel}。`,
+        '',
+      ]
+    : [];
   const restoredHistoryBlock = lane.restoredHistory?.trim()
     ? [
         '## 已恢复的本终端审计摘要',
@@ -661,6 +675,7 @@ export function buildSupervisorBriefing(
       ...taskWorkModeBlock,
       ...stopContextBlock,
       ...preconditionsBlock,
+      ...supervisorNotesBlock,
       ...planBlock,
       ...policyBlock,
       ...restoredHistoryBlock,

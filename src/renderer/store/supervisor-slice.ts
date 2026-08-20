@@ -53,6 +53,8 @@ export interface SupervisorLaneConfig {
   taskGoal: string;
   taskDescription: string;
   preconditions: string;
+  /** Optional checkpoint and handoff reminders for the dedicated supervisor only. */
+  supervisorNotes?: string;
   stopWhen: string;
   stopWhenKind: StopWhenKind;
   /** Keep the lane bound after completion and wait for a new user direction. */

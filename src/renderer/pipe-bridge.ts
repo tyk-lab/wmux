@@ -1153,6 +1153,7 @@ interface RemoteSupervisorStart {
   taskGoal?: string;
   taskDescription?: string;
   preconditions?: string;
+  supervisorNotes?: string;
   planFile?: string;
   autonomous: boolean;
   supervisorLaunchCmd?: string;
@@ -1994,6 +1995,7 @@ function startRemoteSupervisor(
         taskGoal: params.taskGoal || '',
         taskDescription: params.taskDescription || '',
         preconditions: params.preconditions || '',
+        supervisorNotes: params.supervisorNotes || '',
         stopWhen: params.stopWhen,
         stopWhenKind: params.stopWhenKind,
         planFilePath: params.planFile || '',
@@ -3071,6 +3073,8 @@ function normalizeProjectWorkItemInput(
         objective,
         description: String(contractRaw.description || '').trim().slice(0, 4000),
         preconditions: projectStringArray(contractRaw.preconditions),
+        supervisorNotes: projectStringArray(contractRaw.supervisorNotes)
+          .slice(0, 20).map((note) => note.slice(0, 4000)),
         scope: {
           root: projectDir,
           allowPaths,
@@ -3958,9 +3962,6 @@ function projectRequirementAlignmentState(session: ProjectManagerSession): Proje
   ), -1);
   if (latestChangeMessageIndex > latestDefinitionIndex) return 'needs-definition-update';
   const goal = session.goal.trim();
-  if (session.preconditions.map((item) => item.trim()).filter(Boolean).length === 0) {
-    return session.pendingUserQuestion ? 'needs-definition-update' : 'needs-question';
-  }
   const doneWhen = session.doneWhen.map((item) => item.trim()).filter(Boolean);
   const onlyCriterion = doneWhen.length === 1 ? doneWhen[0] : '';
   const genericGoal = goal.length <= 12 && /^(测试(相关)?功能|测试项目|完成项目|继续项目|开发项目|实现(相关)?功能|做(个|一个).+)$/u.test(goal);
@@ -3976,7 +3977,9 @@ function projectRequirementAlignmentState(session: ProjectManagerSession): Proje
   const planDefinesBoundaries = planText.length >= 120
     && /(目标|范围|需求|功能)/u.test(planText)
     && /(验收|完成条件|测试|验证)/u.test(planText);
-  if ((goalSpecific && criteriaSpecific && !requestAsCriterion) || planDefinesBoundaries) return 'sufficient';
+  if ((goalSpecific && (doneWhen.length === 0 || (criteriaSpecific && !requestAsCriterion))) || planDefinesBoundaries) {
+    return 'sufficient';
+  }
   if (session.pendingUserQuestion) return 'needs-definition-update';
   const latestAnswer = [...session.events].reverse().find((event) => event.kind === 'user-clarification-answered');
   const latestDefinition = [...session.events].reverse().find((event) => event.kind === 'project-definition-updated');
@@ -5546,6 +5549,9 @@ async function updateProjectDefinition(
   const preconditions = params?.preconditions === undefined
     ? session.preconditions
     : projectStringArray(params.preconditions);
+  const supervisorNotes = params?.supervisorNotes === undefined
+    ? session.supervisorNotes || []
+    : projectStringArray(params.supervisorNotes).slice(0, 20).map((note) => note.slice(0, 4000));
   const doneWhen = params?.doneWhen === undefined
     ? session.doneWhen
     : projectStringArray(params.doneWhen);
@@ -5565,6 +5571,7 @@ async function updateProjectDefinition(
   const mode = params?.mode === 'pivot' ? 'pivot' : 'refine';
   const unchanged = goal === session.goal
     && JSON.stringify(preconditions) === JSON.stringify(session.preconditions)
+    && JSON.stringify(supervisorNotes) === JSON.stringify(session.supervisorNotes || [])
     && JSON.stringify(doneWhen) === JSON.stringify(session.doneWhen)
     && JSON.stringify(planFiles) === JSON.stringify(session.planFiles);
   if (unchanged && mode === 'refine') return { ok: false, error: '当前主目标和需求没有发生变化' };
@@ -5582,6 +5589,7 @@ async function updateProjectDefinition(
     type: 'update-project-definition',
     goal,
     preconditions,
+    supervisorNotes,
     planFiles,
     doneWhen,
     reason,
@@ -5617,6 +5625,7 @@ async function updateProjectDefinition(
       `新目标：${goal}`,
       `变更模式：${mode === 'pivot' ? '切换新的主目标；旧目标进入历史且禁止继续派发' : '调整当前主目标；只允许显式复核后重绑任务版本'}`,
       `新前置条件：${preconditions.join('；')}`,
+      `监督注意事项：${supervisorNotes.length > 0 ? supervisorNotes.join('；') : '无'}`,
       `新完成条件：${doneWhen.join('；')}`,
       `计划文件：${planFiles.length > 0 ? planFiles.map((file) => file.name).join('、') : '无'}`,
       `用户说明：${reason}`,
@@ -6382,6 +6391,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (projectRequirementAlignmentState(session) === 'needs-definition-update') {
       return { ok: false, error: `用户变更尚未写回项目定义；请先执行 wmux project update --project ${session.id}` };
     }
+    if (session.preconditions.length === 0 || session.doneWhen.length === 0) {
+      return {
+        ok: false,
+        error: `项目定义仍有空白项；请先起草前置条件和可验证完成条件，并执行 wmux project update --project ${session.id} 写回。仅在存在实质歧义时向用户提问。`,
+      };
+    }
     const assessment = params?.assessment || params;
     const result = store.applyProjectManagerAction({
       type: 'confirm-requirements-alignment',
@@ -6811,6 +6826,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       recoveryEvents.length > 0 ? `最近决策记录：\n${recoveryEvents.join('\n')}` : '',
     ].filter(Boolean).join('\n');
     const projectPreconditions = projectStringArray(session.preconditions);
+    const supervisorNotes = mergeProjectRequirements(
+      projectStringArray(session.supervisorNotes),
+      projectStringArray(item.contract.supervisorNotes),
+    ).join('\n');
     const contractBriefing = [
       projectPreconditions.length > 0
         ? `[项目级前置条件｜已确认且持续有效]\n${projectPreconditions.map((condition) => `- ${condition}`).join('\n')}\n这些条件由用户在当前需求版本中确认，既是已知事实，也是其中明确写出的操作授权；在用户未更新、且没有具体反证时，监督 AI 和任务 AI 必须持续沿用，不得每一步重新询问、重新授权或要求重复取证。若条件明确允许对同一设备执行运行、上电、测试或验证，可在合同范围和既定风险等级内连续推进。只有收到条件变更、发现明确冲突，或进入原条件未覆盖的新设备/环境/更高风险动作时才暂停并上报。任务 AI 自身再次询问不构成条件变化。`
@@ -6951,6 +6970,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
               taskGoal: item.contract.objective,
               taskDescription: [item.contract.description, contractBriefing].filter(Boolean).join('\n\n'),
               preconditions: [...projectPreconditions, ...item.contract.preconditions].join('；'),
+              supervisorNotes,
               stopWhen: item.contract.stopWhen.join('；'),
               stopWhenKind: 'concrete',
               waitForNextDirection: true,
@@ -7101,6 +7121,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           taskGoal: item.contract.objective,
           taskDescription: [item.contract.description, contractBriefing].filter(Boolean).join('\n\n'),
           preconditions: [...projectPreconditions, ...item.contract.preconditions].join('；'),
+          supervisorNotes,
           stopWhen: item.contract.stopWhen.join('；'),
           stopWhenKind: 'concrete',
           waitForNextDirection: true,
@@ -7180,6 +7201,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       taskGoal: item.contract.objective,
       taskDescription: [item.contract.description, contractBriefing].filter(Boolean).join('\n\n'),
       preconditions: [...projectPreconditions, ...item.contract.preconditions].join('；'),
+      supervisorNotes,
       autonomous: true,
       supervisorLaunchCmd: supervisorDefaults.supervisorLaunchCmd,
       supervisorModel: supervisorDefaults.supervisorModel,
@@ -7754,6 +7776,8 @@ export function initPipeBridge(): void {
         || `仅限项目目录 ${projectDir} 内与当前项目直接相关的工作`;
       const goal = String(params?.goal || '').trim();
       const preconditions = projectStringArray(params?.preconditions);
+      const supervisorNotes = projectStringArray(params?.supervisorNotes)
+        .slice(0, 20).map((note) => note.slice(0, 4000));
       const planFiles = projectPlanFileSnapshots(params?.planFiles);
       const doneWhen = projectStringArray(params?.doneWhen);
       if (!projectDir && store.projectManagers.length > 0) {
@@ -7767,12 +7791,12 @@ export function initPipeBridge(): void {
           return { ok: true, restored: true, session: projectManagerSessionView(refreshed), projects: store.projectManagers.map(projectManagerSessionView) };
         }
       }
-      if (!normalizeAbsolutePath(projectDir) || !goal || preconditions.length === 0 || doneWhen.length === 0) {
-        return { ok: false, error: 'projectDir 必须是绝对路径，goal、preconditions 和 doneWhen 不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
+      if (!normalizeAbsolutePath(projectDir) || !goal) {
+        return { ok: false, error: 'projectDir 必须是绝对路径，goal 不能为空' };
       }
       if (projectManagerRecoveryChoice === 'pending') projectManagerRecoveryChoice = 'skip';
       const session = store.startProjectManager({
-        projectDir, projectName, projectScope, goal, preconditions, planFiles, doneWhen,
+        projectDir, projectName, projectScope, goal, preconditions, supervisorNotes, planFiles, doneWhen,
       });
       await (window as any).wmux?.projectManager?.saveSession?.(session);
       await checkpointProjectProgress(session.id, '项目首次创建');
@@ -7801,14 +7825,19 @@ export function initPipeBridge(): void {
         `项目目录：${activeSession.projectDir}`,
         `稳定项目范围：${activeSession.projectScope}`,
         `当前主目标：G${activeProjectGoal(activeSession).sequence} · ${activeSession.goal}`,
-        `项目级前置条件：${activeSession.preconditions.length > 0 ? activeSession.preconditions.join('；') : '未声明；规划前必须主动核实物理、环境、权限和资源条件'}`,
-        '已记录的前置条件和其中明确授权，在当前需求版本内持续有效。用户未发送变更且没有具体反证时，项目 AI、监督 AI 和任务 AI 都应直接继承，不得把同一上电、运行、测试、环境或安全条件拆成逐步确认。',
-        `完成条件：${activeSession.doneWhen.join('；')}`,
+        `项目级前置条件：${activeSession.preconditions.length > 0 ? activeSession.preconditions.join('；') : '未填写；由项目 AI 在首次需求对齐时判断并起草'}`,
+        activeSession.preconditions.length > 0
+          ? '已记录的前置条件和其中明确授权，在当前需求版本内持续有效。用户未发送变更且没有具体反证时，项目 AI、监督 AI 和任务 AI 都应直接继承，不得把同一上电、运行、测试、环境或安全条件拆成逐步确认。'
+          : '前置条件留空不表示已确认不存在。先根据目标和项目环境判断；仅当硬件、环境、权限、资源或安全差异会实质改变方案时才向用户提问，否则自行记录“无额外物理前置条件”。',
+        `项目级监督注意事项：${activeSession.supervisorNotes?.length ? activeSession.supervisorNotes.join('；') : '无'}`,
+        '创建或更新工作项时，把适用的项目级注意事项写入 contract.supervisorNotes，并可补充当前阶段专属事项。它们用于监督 AI 选择检查点和安排任务 AI，不扩大合同范围、命令权限或风险授权。',
+        `完成条件：${activeSession.doneWhen.length > 0 ? activeSession.doneWhen.join('；') : '未填写；由项目 AI 起草可验证标准'}`,
         projectPlanFilesBriefing(activeSession.planFiles || []),
         '',
         '你只管理当前这一个项目。项目 AI、专属监督 AI 和任务 AI 都在本项目的独立会话中；不得读取或决定其他项目。',
         '[首次需求对齐门禁｜必须先执行]',
         PROJECT_MANAGER_ALIGNMENT_GATE,
+        `若前置条件或完成条件未填写，先基于当前主目标起草完整定义，并执行 wmux project update --project ${activeSession.id} 写回；只有不同合理答案会实质改变业务范围、验收、硬件、环境、权限或安全边界时，才使用结构化提问。定义仍有空白时不得提交 alignment-confirm。`,
         `[项目认知基线｜需求对齐后必须执行]\n先读取 project status 中的目标、前置条件、当前目录快照、orientation、全部工作项和最近事件，再用 wmux project orientation-confirm --project ${activeSession.id} --json-file <项目目录内的 .wmux/tmp/文件> 提交 orientation 中原样读取的 requirementsVersion、authorizationVersion、snapshotFingerprint、requestedAt，以及 summary、knownFacts、unknowns 和 workItems。新项目的 workItems 传空数组。认知基线由控制层绑定当前需求、授权和目录快照；确认过程中任何版本或目录变化都会拒绝旧结果。`,
         `认知基线确认后，再用 wmux project goal-plan --project ${activeSession.id} --json-file <项目目录内的 .wmux/tmp/文件> 保存 3-7 个粗粒度阶段目标，然后 resume 和创建执行任务。阶段目标描述成果、依赖和验收，不得写成命令级微步骤。`,
         '每个执行任务必须携带当前 goalId 和 subgoalId。主目标切换后旧 goalId 的任务永久失效，只能复用其证据，不能复活执行。',

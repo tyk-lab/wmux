@@ -213,6 +213,8 @@ export interface ProjectSupervisorContract {
   objective: string;
   description: string;
   preconditions: string[];
+  /** Checkpoint and handoff reminders consumed by the supervisor, not direct task-AI instructions. */
+  supervisorNotes?: string[];
   scope: ProjectWorkScope;
   authority: ProjectSupervisorAuthority;
   /** Selected by the project manager and forwarded through the supervisor to the task terminal. */
@@ -504,6 +506,8 @@ export interface ProjectManagerSession {
   goal: string;
   /** User-owned physical, environmental, access, or resource gates for all project work. */
   preconditions: string[];
+  /** Project-level reminders that project AI may inherit and refine for each supervisor contract. */
+  supervisorNotes?: string[];
   /** User-selected, size-limited text snapshots that supplement the stated requirements. */
   planFiles: ProjectPlanFileSnapshot[];
   doneWhen: string[];
@@ -877,6 +881,10 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     goals,
     subgoals,
     goal: activeGoal.statement,
+    supervisorNotes: (Array.isArray(session.supervisorNotes) ? session.supervisorNotes : [])
+      .slice(0, 20)
+      .map((item) => item.trim().slice(0, 4000))
+      .filter(Boolean),
     doneWhen: activeGoal.doneWhen,
     requirementsVersion,
     authorizationVersion,
@@ -926,6 +934,15 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
       );
       return {
         ...item,
+        contract: {
+          ...item.contract,
+          supervisorNotes: (Array.isArray(item.contract.supervisorNotes)
+            ? item.contract.supervisorNotes
+            : [])
+            .slice(0, 20)
+            .map((note) => note.trim().slice(0, 4000))
+            .filter(Boolean),
+        },
         goalId: item.goalId || activeGoalId,
         subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
         requirementsVersion: itemRequirementsVersion,
@@ -954,6 +971,7 @@ export type ProjectManagerAction =
     type: 'update-project-definition';
     goal: string;
     preconditions: string[];
+    supervisorNotes?: string[];
     planFiles: ProjectPlanFileSnapshot[];
     doneWhen: string[];
     reason?: string;

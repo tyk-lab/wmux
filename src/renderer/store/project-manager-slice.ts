@@ -39,6 +39,7 @@ export interface ProjectManagerSlice {
     projectScope?: string;
     goal: string;
     preconditions?: string[];
+    supervisorNotes?: string[];
     planFiles?: ProjectManagerSession['planFiles'];
     doneWhen: string[];
     managerSurfaceId?: string;
@@ -151,6 +152,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       subgoals: [],
       goal: options.goal,
       preconditions: options.preconditions || [],
+      supervisorNotes: options.supervisorNotes || [],
       planFiles: options.planFiles || [],
       doneWhen: options.doneWhen,
       requirementsVersion: 1,
@@ -270,6 +272,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     } else if (action.type === 'update-project-definition') {
       const goal = action.goal.trim();
       const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
+      const supervisorNotes = (action.supervisorNotes ?? session.supervisorNotes ?? [])
+        .slice(0, 20).map((item) => item.trim().slice(0, 4000)).filter(Boolean);
       const doneWhen = action.doneWhen.map((item) => item.trim()).filter(Boolean);
       if (!goal) return { ok: false, error: '项目目标不能为空' };
       if (preconditions.length === 0) {
@@ -280,6 +284,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goal: session.goal,
         goalId: session.activeGoalId,
         preconditions: session.preconditions,
+        supervisorNotes: session.supervisorNotes || [],
         planFiles: session.planFiles.map((file) => ({ path: file.path, name: file.name })),
         doneWhen: session.doneWhen,
       };
@@ -348,6 +353,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goals,
         goal,
         preconditions,
+        supervisorNotes,
         planFiles: action.planFiles,
         doneWhen,
         requirementsVersion: nextRequirementsVersion,
@@ -383,6 +389,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
             goal,
             goalId: nextGoalId,
             preconditions,
+            supervisorNotes,
             planFiles: action.planFiles.map((file) => ({ path: file.path, name: file.name })),
             doneWhen,
           },

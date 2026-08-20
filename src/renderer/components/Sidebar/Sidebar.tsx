@@ -276,7 +276,7 @@ export default function Sidebar({
       </ErrorBoundary>
 
       <ErrorBoundary label="supervisor" silent>
-        <SupervisorPanel />
+        <SupervisorPanel agentStates={agentStates} />
       </ErrorBoundary>
 
       <div className="sidebar__list" onDragLeave={handleListDragLeave}>

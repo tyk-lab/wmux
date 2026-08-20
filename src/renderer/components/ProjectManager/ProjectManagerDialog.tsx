@@ -229,6 +229,7 @@ export default function ProjectManagerDialog() {
   const [projectScope, setProjectScope] = useState('');
   const [goal, setGoal] = useState('');
   const [preconditions, setPreconditions] = useState('');
+  const [supervisorNotes, setSupervisorNotes] = useState('');
   const [planFiles, setPlanFiles] = useState<ProjectPlanFileSnapshot[]>([]);
   const [planFilePath, setPlanFilePath] = useState('');
   const [definitionGoalDraft, setDefinitionGoalDraft] = useState('');
@@ -237,6 +238,7 @@ export default function ProjectManagerDialog() {
   const [definitionPlanFilePath, setDefinitionPlanFilePath] = useState('');
   const [goalChangeMode, setGoalChangeMode] = useState<'refine' | 'pivot'>('refine');
   const [preconditionsDraft, setPreconditionsDraft] = useState('');
+  const [supervisorNotesDraft, setSupervisorNotesDraft] = useState('');
   const [doneWhen, setDoneWhen] = useState('');
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -294,6 +296,7 @@ export default function ProjectManagerDialog() {
     session.projectScope,
     session.activeGoalId,
     session.preconditions,
+    session.supervisorNotes,
     session.doneWhen,
     session.planFiles.map((file) => [file.path, file.sizeBytes, file.mtimeMs, file.capturedAt]),
   ]) : '';
@@ -355,6 +358,7 @@ export default function ProjectManagerDialog() {
     if (!open) return;
     setDefinitionGoalDraft(session?.goal || '');
     setPreconditionsDraft((session?.preconditions || []).join('\n'));
+    setSupervisorNotesDraft((session?.supervisorNotes || []).join('\n'));
     setDefinitionDoneWhenDraft((session?.doneWhen || []).join('\n'));
     setDefinitionPlanFiles(session?.planFiles || []);
     setDefinitionPlanFilePath('');
@@ -504,10 +508,10 @@ export default function ProjectManagerDialog() {
 
   const start = async () => {
     const projectPreconditions = conditionLines(preconditions);
+    const projectSupervisorNotes = conditionLines(supervisorNotes);
     const conditions = conditionLines(doneWhen);
-    if (!projectDir.trim() || !projectName.trim() || !projectScope.trim() || !goal.trim()
-      || projectPreconditions.length === 0 || conditions.length === 0) {
-      setNotice('请填写项目名称、目录、稳定范围、当前主目标、至少一个前置条件和至少一个可验证的完成条件。');
+    if (!projectDir.trim() || !goal.trim()) {
+      setNotice('请填写项目目录和当前主目标。');
       return;
     }
     setBusy(true);
@@ -520,6 +524,7 @@ export default function ProjectManagerDialog() {
         projectScope: projectScope.trim(),
         goal: goal.trim(),
         preconditions: projectPreconditions,
+        supervisorNotes: projectSupervisorNotes,
         planFiles,
         doneWhen: conditions,
       });
@@ -528,6 +533,7 @@ export default function ProjectManagerDialog() {
       setProjectScope('');
       setGoal('');
       setPreconditions('');
+      setSupervisorNotes('');
       setPlanFiles([]);
       setPlanFilePath('');
       setDoneWhen('');
@@ -661,6 +667,7 @@ export default function ProjectManagerDialog() {
   const updateProjectDefinition = async () => {
     if (!session || busy) return;
     const projectPreconditions = conditionLines(preconditionsDraft);
+    const projectSupervisorNotes = conditionLines(supervisorNotesDraft);
     const projectDoneWhen = conditionLines(definitionDoneWhenDraft);
     if (!definitionGoalDraft.trim() || projectPreconditions.length === 0 || projectDoneWhen.length === 0) {
       setNotice('请填写项目目标、至少一个前置条件和至少一个可验证的完成条件。没有额外条件时请明确填写“无额外物理前置条件”。');
@@ -675,6 +682,7 @@ export default function ProjectManagerDialog() {
         projectId: session.id,
         goal: definitionGoalDraft.trim(),
         preconditions: projectPreconditions,
+        supervisorNotes: projectSupervisorNotes,
         planFiles: definitionPlanFiles,
         doneWhen: projectDoneWhen,
         mode: goalChangeMode,
@@ -695,6 +703,7 @@ export default function ProjectManagerDialog() {
     if (!session || busy) return;
     setDefinitionGoalDraft(session.goal);
     setPreconditionsDraft(session.preconditions.join('\n'));
+    setSupervisorNotesDraft((session.supervisorNotes || []).join('\n'));
     setDefinitionDoneWhenDraft(session.doneWhen.join('\n'));
     setDefinitionPlanFiles(session.planFiles || []);
     setDefinitionPlanFilePath('');
@@ -791,6 +800,7 @@ export default function ProjectManagerDialog() {
     goalChangeMode === 'pivot'
     || definitionGoalDraft.trim() !== session.goal
     || conditionLines(preconditionsDraft).join('\n') !== session.preconditions.join('\n')
+    || conditionLines(supervisorNotesDraft).join('\n') !== (session.supervisorNotes || []).join('\n')
     || conditionLines(definitionDoneWhenDraft).join('\n') !== session.doneWhen.join('\n')
     || JSON.stringify(definitionPlanFiles) !== JSON.stringify(session.planFiles || [])
   );
@@ -1037,11 +1047,11 @@ export default function ProjectManagerDialog() {
             creating || !session ? <section className="supervisor-dialog__group">
               <div className="supervisor-dialog__group-title">添加项目</div>
               <div className="supervisor-dialog__hint">先定义长期稳定的项目身份，再说明当前要完成的主目标。创建后，专属项目 AI 会提出 3-7 个阶段目标并自主拆分执行任务。</div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目名称</div>
+              <div className="supervisor-dialog__label">项目名称（可选）</div>
               <input className="supervisor-dialog__input" value={projectName} onChange={(event) => {
                 setProjectName(event.target.value);
                 setNotice('');
-              }} placeholder="例如：TMC6460 调试与验证" />
+              }} placeholder="留空则使用项目目录名称，例如：TMC6460 调试与验证" />
               <div className="supervisor-dialog__label supervisor-dialog__label--required">项目目录</div>
               <div className="project-manager-dialog__directory-row">
                 <input className="supervisor-dialog__input" value={projectDir} onChange={(event) => {
@@ -1050,11 +1060,11 @@ export default function ProjectManagerDialog() {
                 }} placeholder={'E:\\project'} />
                 <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void pickProjectDirectory()}>选择目录</button>
               </div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目稳定范围</div>
+              <div className="supervisor-dialog__label">项目稳定范围（可选）</div>
               <textarea className="supervisor-dialog__textarea" rows={2} value={projectScope} onChange={(event) => {
                 setProjectScope(event.target.value);
                 setNotice('');
-              }} placeholder="说明这个项目长期负责什么、不负责什么；主目标变化时该范围保持不变" />
+              }} placeholder="留空则默认仅处理项目目录内与当前项目直接相关的工作" />
               <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标</div>
               <textarea ref={goalRef} className="supervisor-dialog__textarea" rows={3} value={goal} onChange={(event) => {
                 setGoal(event.target.value);
@@ -1073,18 +1083,30 @@ export default function ProjectManagerDialog() {
                 </article>)}
               </div>}
               <div className="supervisor-dialog__hint">支持 Markdown、TXT、JSON、YAML；单个不超过 1 MB。快照只补充需求，不扩大任务终端对项目目录之外的访问权限。</div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">项目前置条件（每行一项）</div>
+              <div className="project-manager-dialog__section-head">
+                <div className="supervisor-dialog__label">项目前置条件（可选，每行一项）</div>
+                <button type="button" className="confirm-dialog__btn" disabled={busy || preconditions.trim() === '无额外物理前置条件'} onClick={() => {
+                  setPreconditions('无额外物理前置条件');
+                  setNotice('');
+                }}>无额外前置条件</button>
+              </div>
               <textarea className="supervisor-dialog__textarea" rows={4} value={preconditions} onChange={(event) => {
                 setPreconditions(event.target.value);
                 setNotice('');
               }} placeholder={'树莓派已接通受控电源并可安全断电\n局域网访问权限已获得\n目标设备、接口和安全限值已经人工确认'} />
-              <div className="supervisor-dialog__hint">这里填写的内容视为当前需求版本中用户已确认的事实；其中明确写出的“允许、可以、可直接运行/测试”等授权会持续有效，不会逐步重复确认。条件变化时再从项目中心更新；无额外条件时请明确填写。</div>
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标完成条件（每行一项）</div>
+              <div className="supervisor-dialog__hint">这里填写的内容视为当前需求版本中用户已确认的事实；其中明确写出的授权会持续有效。可留空让项目 AI 判断并起草；只有硬件、环境、权限或安全差异会实质改变方案时才会向你确认。</div>
+              <div className="supervisor-dialog__label">监督 AI 注意事项（可选，每行一项）</div>
+              <textarea className="supervisor-dialog__textarea" rows={3} value={supervisorNotes} onChange={(event) => {
+                setSupervisorNotes(event.target.value);
+                setNotice('');
+              }} placeholder={'完成一个有意义的阶段后，让任务 AI 同步相关文档\n形成可回滚成果后提交本地 Git commit'} />
+              <div className="supervisor-dialog__hint">项目 AI 会把适用事项交给各阶段监督 AI，并可补充阶段专属事项；它们只决定检查点提醒，不扩大范围、权限或推送/发布授权。</div>
+              <div className="supervisor-dialog__label">当前主目标完成条件（可选，每行一项）</div>
               <textarea className="supervisor-dialog__textarea" rows={4} value={doneWhen} onChange={(event) => {
                 setDoneWhen(event.target.value);
                 setNotice('');
               }} placeholder={'相关功能实现并验证\n关键测试通过\n高风险或未验证项已明确报告'} />
-              <div className="supervisor-dialog__hint">用户只确认主目标和必要边界；阶段目标、执行任务、技术路线与普通重试由项目 AI 和专属监督自主决策。只有业务选择、越界或硬风险才向上提案。</div>
+              <div className="supervisor-dialog__hint">可留空让项目 AI 起草可验证的完成条件；只有不同合理标准会实质改变范围或验收时才会向你确认。阶段目标、执行任务、技术路线与普通重试由项目 AI 和专属监督自主决策。</div>
             </section> : (
             <>
               {activeView === 'execution' && <section className="project-manager-dialog__summary">
@@ -1144,6 +1166,12 @@ export default function ProjectManagerDialog() {
                   setPreconditionsDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder="每行填写一项已确认条件或授权；例如：硬件已上电，允许直接运行本项目测试" />
+                <div className="supervisor-dialog__label">监督 AI 注意事项（可选，每行一项）</div>
+                <textarea className="supervisor-dialog__textarea" rows={3} value={supervisorNotesDraft} onChange={(event) => {
+                  setSupervisorNotesDraft(event.target.value);
+                  setConstraintNotice('');
+                }} placeholder={'完成一个有意义的阶段后，让任务 AI 同步相关文档\n形成可回滚成果后提交本地 Git commit'} />
+                <div className="supervisor-dialog__hint">适用于后续阶段监督；项目 AI 可在工作项合同中补充更具体的注意事项。</div>
                 <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标完成条件（每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={4} value={definitionDoneWhenDraft} onChange={(event) => {
                   setDefinitionDoneWhenDraft(event.target.value);
@@ -1214,6 +1242,7 @@ export default function ProjectManagerDialog() {
                           <dt>旧目标</dt><dd>{String(previous?.goal || '无')}</dd>
                           <dt>新目标</dt><dd>{String(next?.goal || '无')}</dd>
                           <dt>新前置条件</dt><dd>{lines(next?.preconditions)}</dd>
+                          <dt>新监督注意事项</dt><dd>{lines(next?.supervisorNotes)}</dd>
                           <dt>新完成条件</dt><dd>{lines(next?.doneWhen)}</dd>
                         </dl>
                       </details>
@@ -1292,6 +1321,7 @@ export default function ProjectManagerDialog() {
                           {execution?.taskWorkMode === 'adaptive' && <><dt>自适应边界</dt><dd>最多 {execution.maxChildThreads} 个内部子线程；可并行：{execution.parallelizableOperations?.join('；')}；必须串行：{execution.serializedOperations?.join('；')}</dd></>}
                           <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
+                          <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
                           <dt>阻塞原因</dt><dd>{item.latestBlocker || '无'}</dd>
