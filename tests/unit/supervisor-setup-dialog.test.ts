@@ -135,6 +135,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'delete-recovery-project'");
     expect(projectManagerDialogSource).toContain('删除记录');
     expect(projectManagerDialogSource).toContain('确认删除历史项目记录？');
+    expect(projectManagerDialogSource).toContain('项目记录已不可用');
     expect(projectManagerDialogSource).toContain('recoveryDeleteCancelRef.current?.focus()');
     expect(projectManagerDialogSource).toContain('删除后无法从此页面恢复');
     expect(projectManagerDialogSource).toContain('计划文件（可选，最多');

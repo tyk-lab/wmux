@@ -48,6 +48,7 @@ import {
   buildOrdinaryTaskEventEnvelope,
 } from '../../src/renderer/role-context';
 import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervisor-engine';
+import { openProjectManagerConsole } from '../../src/renderer/project-manager/console-surface';
 
 async function confirmProjectOrientation(projectId: string): Promise<void> {
   const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
@@ -3627,7 +3628,7 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ status: 'stopped' });
   });
 
-  it('creates an isolated project-AI session without a count or directory-uniqueness cap', async () => {
+  it('creates multiple project-AI sessions while rejecting a duplicate project directory', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-projects' as any,
       title: '项目组合',
@@ -3643,22 +3644,25 @@ describe('supervisor decision bridge', () => {
     });
 
     await expect(start('E:\\project-a', '项目 A')).resolves.toMatchObject({ ok: true });
-    await expect(start('e:\\project-a\\', '同目录独立项目')).resolves.toMatchObject({ ok: true, restored: false });
+    await expect(start('e:\\project-a\\', '同目录重复项目')).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('该目录已绑定项目 AI'),
+    });
     await expect(start('E:\\project-b', '项目 B')).resolves.toMatchObject({ ok: true });
     await expect(start('E:\\project-c', '项目 C')).resolves.toMatchObject({ ok: true });
     await expect(start('E:\\project-d', '项目 D')).resolves.toMatchObject({ ok: true });
 
     expect(useStore.getState().projectManagers.map((session) => session.projectDir)).toEqual([
-      'E:\\project-a', 'e:\\project-a\\', 'E:\\project-b', 'E:\\project-c', 'E:\\project-d',
+      'E:\\project-a', 'E:\\project-b', 'E:\\project-c', 'E:\\project-d',
     ]);
     const managerSurfaceIds = useStore.getState().projectManagers.map((session) => session.managerSurfaceId);
     expect(managerSurfaceIds.every(Boolean)).toBe(true);
-    expect(new Set(managerSurfaceIds).size).toBe(5);
+    expect(new Set(managerSurfaceIds).size).toBe(4);
     const managerWorkspaces = useStore.getState().workspaces.filter((workspace) => (
       workspace.splitTree.type === 'leaf'
       && workspace.splitTree.surfaces.some((surface) => surface.projectManagerTerminal === true)
     ));
-    expect(managerWorkspaces).toHaveLength(5);
+    expect(managerWorkspaces).toHaveLength(4);
     for (const session of useStore.getState().projectManagers) {
       const workspace = managerWorkspaces.find((candidate) => (
         candidate.splitTree.type === 'leaf'
@@ -4180,6 +4184,35 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.projectManagerTerminal)).toBe(true);
+  });
+
+  it('closes a planning-only project console when the project is deleted', async () => {
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
+    useStore.getState().replaceAllWorkspaces([]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'start', projectDir: 'E:\\delete-planning-project', goal: '删除尚未派发任务的项目',
+      preconditions: ['项目目录可访问'], doneWhen: ['项目完成'],
+    })).resolves.toMatchObject({ ok: true });
+    const projectId = useStore.getState().projectManager?.id;
+    expect(projectId).toBeTruthy();
+    expect(openProjectManagerConsole(projectId!)).toBe(true);
+    const consoleWorkspace = useStore.getState().workspaces.find((workspace) => (
+      workspace.transientSupervisorWorkspace === true
+      && workspace.splitTree.type === 'leaf'
+      && workspace.splitTree.surfaces.some((surface) => (
+        surface.type === 'project-manager' && surface.projectManagerProjectId === projectId
+      ))
+    ));
+    expect(consoleWorkspace).toBeDefined();
+    expect(useStore.getState().supervisor.lanes.some((lane) => lane.projectManagerProjectId === projectId)).toBe(false);
+
+    await expect(remote({ action: 'delete-project', projectId })).resolves.toMatchObject({
+      ok: true, deletedProjectId: projectId,
+    });
+    expect(useStore.getState().workspaces.some((workspace) => workspace.id === consoleWorkspace?.id)).toBe(false);
   });
 
   it('closes an ordinary task terminal and cleans up its last-tab workspace', () => {

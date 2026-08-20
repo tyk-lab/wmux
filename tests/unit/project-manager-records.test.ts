@@ -48,11 +48,97 @@ function recoveredSession(appData: string, sessionId: string): ProjectManagerSes
 }
 
 describe('project manager records', () => {
-  it('atomically replaces one project snapshot without hiding another project in the directory', () => {
+  it('persists a newly created project while completion conditions await AI alignment', () => {
     const appData = root();
-    saveProjectManagerSession(session('pm-old', 10), appData);
-    saveProjectManagerSession(session('pm-new', 20), appData);
-    saveProjectManagerSession(session('pm-new', 30), appData);
+    const now = 100;
+    const created = normalizeProjectManagerSession({
+      id: 'pm-new-project',
+      projectDir: 'E:\\new-project',
+      activeGoalId: 'pm-new-project-goal-1',
+      goals: [{
+        id: 'pm-new-project-goal-1',
+        sequence: 1,
+        statement: '完成首次需求对齐',
+        doneWhen: [],
+        status: 'transitioning',
+        requirementsVersion: 1,
+        createdAt: now,
+      }],
+      subgoals: [],
+      goal: '完成首次需求对齐',
+      preconditions: [],
+      planFiles: [],
+      doneWhen: [],
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      acceptedRequirementsVersion: 0,
+      status: 'active',
+      orientation: {
+        status: 'required',
+        requirementsVersion: 1,
+        authorizationVersion: 1,
+        snapshotFingerprint: 'capture-pending',
+        reason: '项目首次创建，需要先建立项目认知基线',
+        requestedAt: now,
+      },
+      workItems: [],
+      events: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    expect(() => saveProjectManagerSession(created, appData)).not.toThrow();
+    expect(recoveredSession(appData, created.id)?.goals?.[0].doneWhen).toEqual([]);
+    expect(() => saveProjectManagerSession({
+      ...created,
+      id: 'pm-invalid-completed',
+      activeGoalId: 'pm-invalid-completed-goal-1',
+      goals: [{
+        ...created.goals![0],
+        id: 'pm-invalid-completed-goal-1',
+        status: 'completed',
+        closedAt: now + 1,
+      }],
+      status: 'completed',
+    }, appData)).toThrow('invalid project manager session payload');
+  });
+
+  it('rejects another live project AI for the same normalized directory', () => {
+    const appData = root();
+    saveProjectManagerSession({ ...session('pm-first', 10), projectDir: 'E:\\Repo\\' }, appData);
+
+    expect(() => saveProjectManagerSession({
+      ...session('pm-second', 20),
+      projectDir: 'e:/repo/.',
+    }, appData)).toThrow('该目录已存在项目 AI：pm-first');
+  });
+
+  it('restores only the newest live legacy session for one normalized directory', () => {
+    const appData = root();
+    const directory = path.join(appData, 'project-manager');
+    fs.mkdirSync(directory, { recursive: true });
+    const older = session('pm-legacy-old', 10);
+    const newer = { ...session('pm-legacy-new', 20), projectDir: 'e:/repo/' };
+    fs.writeFileSync(
+      path.join(directory, 'pm-legacy-old.json'),
+      JSON.stringify({ version: 1, session: older }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(directory, 'pm-legacy-new.json'),
+      JSON.stringify({ version: 1, session: newer }),
+      'utf8',
+    );
+
+    expect(readActiveProjectManagerSessions(appData).map((candidate) => candidate.id))
+      .toEqual(['pm-legacy-new']);
+  });
+
+  it('atomically replaces one project snapshot without hiding a project from another directory', () => {
+    const appData = root();
+    saveProjectManagerSession({ ...session('pm-old', 10), projectDir: 'E:\\old' }, appData);
+    saveProjectManagerSession({ ...session('pm-new', 20), projectDir: 'E:\\new' }, appData);
+    saveProjectManagerSession({ ...session('pm-new', 30), projectDir: 'E:\\new' }, appData);
     expect(recoveredSession(appData, 'pm-new')?.updatedAt).toBe(30);
     expect(readActiveProjectManagerSessions(appData).map((candidate) => candidate.id)).toEqual(['pm-new', 'pm-old']);
   });
@@ -329,17 +415,16 @@ describe('project manager records', () => {
     expect(() => saveProjectManagerSession(competingGoals, appData)).toThrow('invalid project manager session payload');
   });
 
-  it('restores every active project including independent projects that share one directory', () => {
+  it('restores every active project across distinct directories', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-a', 50), projectDir: 'E:\\a' }, appData);
-    saveProjectManagerSession({ ...session('pm-a-old', 10), projectDir: 'E:\\a\\' }, appData);
     saveProjectManagerSession({ ...session('pm-b', 40), projectDir: 'E:\\b' }, appData);
     saveProjectManagerSession({ ...session('pm-c', 30), projectDir: 'E:\\c' }, appData);
     saveProjectManagerSession({ ...session('pm-d', 20), projectDir: 'E:\\d' }, appData);
     saveProjectManagerSession({ ...session('pm-done', 60), projectDir: 'E:\\done', status: 'completed' }, appData);
 
     expect(readActiveProjectManagerSessions(appData).map((item) => item.id)).toEqual([
-      'pm-a', 'pm-b', 'pm-c', 'pm-d', 'pm-a-old',
+      'pm-a', 'pm-b', 'pm-c', 'pm-d',
     ]);
   });
 

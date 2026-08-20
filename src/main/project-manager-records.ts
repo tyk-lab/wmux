@@ -3,6 +3,7 @@ import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
   normalizeProjectManagerSession,
+  projectDirectoryIdentity,
   normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
@@ -156,7 +157,7 @@ function isProjectGoal(value: unknown): boolean {
   return typeof goal.id === 'string' && goal.id.length > 0
     && Number.isInteger(goal.sequence) && Number(goal.sequence) >= 1
     && typeof goal.statement === 'string' && goal.statement.trim().length > 0
-    && isStringArray(goal.doneWhen) && goal.doneWhen.length > 0
+    && isStringArray(goal.doneWhen)
     && typeof goal.status === 'string' && GOAL_STATUSES.has(goal.status)
     && Number.isFinite(goal.requirementsVersion) && Number(goal.requirementsVersion) >= 1
     && (goal.supersedesGoalId === undefined || typeof goal.supersedesGoalId === 'string')
@@ -319,6 +320,10 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
   if (!workItemsValid) return false;
   const goals = Array.isArray(session.goals) ? session.goals as Array<Record<string, unknown>> : [];
   const subgoals = Array.isArray(session.subgoals) ? session.subgoals as Array<Record<string, unknown>> : [];
+  if (goals.some((goal) => goal.status === 'completed' && (goal.doneWhen as unknown[]).length === 0)) {
+    return false;
+  }
+  if (session.status === 'completed' && (session.doneWhen as unknown[]).length === 0) return false;
   if (goals.length === 0) return session.activeGoalId === undefined && subgoals.length === 0;
   const goalIds = new Set(goals.map((goal) => String(goal.id)));
   const goalSequences = new Set(goals.map((goal) => Number(goal.sequence)));
@@ -405,6 +410,16 @@ export function saveProjectManagerSession(
   const normalized = normalizeProjectManagerSession(session);
   validateIdentity(normalized.id, normalized.projectDir);
   if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
+  const duplicate = ['active', 'paused', 'waiting'].includes(normalized.status)
+    ? readProjectManagerSessions(appDataDir).find((candidate) => (
+        candidate.id !== normalized.id
+        && projectDirectoryIdentity(candidate.projectDir) === projectDirectoryIdentity(normalized.projectDir)
+        && ['active', 'paused', 'waiting'].includes(candidate.status)
+      ))
+    : undefined;
+  if (duplicate) {
+    throw new Error(`该目录已存在项目 AI：${duplicate.id}`);
+  }
   const directory = recordsDirectory(appDataDir);
   fs.mkdirSync(directory, { recursive: true });
   const sessionPath = path.join(directory, `${session.id}.json`);
@@ -470,8 +485,15 @@ export function appendProjectManagerRecord(
 export function readActiveProjectManagerSessions(
   appDataDir = getAppDataDir(),
 ): ProjectManagerSession[] {
+  const seenDirectories = new Set<string>();
   return readProjectManagerSessions(appDataDir)
-    .filter((session) => ['active', 'paused', 'waiting'].includes(session.status));
+    .filter((session) => ['active', 'paused', 'waiting'].includes(session.status))
+    .filter((session) => {
+      const identity = projectDirectoryIdentity(session.projectDir);
+      if (seenDirectories.has(identity)) return false;
+      seenDirectories.add(identity);
+      return true;
+    });
 }
 
 /** Native Agent conversations are restart-unsafe even after their project was completed or stopped. */

@@ -4,6 +4,7 @@ import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   activeProjectGoal,
   normalizeProjectManagerSession,
+  projectDirectoryIdentity,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
@@ -137,6 +138,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     set({ projectManagerDialogOpen: false, projectManagerDialogView: 'center' });
   },
   startProjectManager(options) {
+    const directoryIdentity = projectDirectoryIdentity(options.projectDir);
+    const existing = get().projectManagers.find((session) => (
+      projectDirectoryIdentity(session.projectDir) === directoryIdentity
+    ));
+    if (existing) {
+      throw new Error(`该目录已绑定项目 AI“${existing.projectName || existing.goal}”（${existing.id}），请进入现有项目，不要重复创建。`);
+    }
     const now = Date.now();
     const id = `pm-${uuid()}`;
     const goalId = `${id}-goal-1`;
@@ -196,14 +204,36 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       return;
     }
     const normalized = normalizeProjectManagerSession(session);
-    set((state) => ({
-      projectManager: normalized,
-      projectManagers: upsertProjectManagerSession(state.projectManagers, normalized),
-      selectedProjectManagerId: normalized.id,
-    }));
+    set((state) => {
+      const directoryIdentity = projectDirectoryIdentity(normalized.projectDir);
+      const existing = state.projectManagers.find((candidate) => (
+        candidate.id !== normalized.id
+        && projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
+      ));
+      const selected = existing && existing.updatedAt >= normalized.updatedAt ? existing : normalized;
+      return {
+        projectManager: selected,
+        projectManagers: existing
+          ? state.projectManagers.map((candidate) => candidate.id === existing.id ? selected : candidate)
+          : upsertProjectManagerSession(state.projectManagers, normalized),
+        selectedProjectManagerId: selected.id,
+      };
+    });
   },
   restoreProjectManagers(sessions, selectedId) {
-    const normalized = sessions.map(normalizeProjectManagerSession);
+    const normalized: ProjectManagerSession[] = [];
+    const directoryIndexes = new Map<string, number>();
+    for (const rawSession of sessions) {
+      const session = normalizeProjectManagerSession(rawSession);
+      const identity = projectDirectoryIdentity(session.projectDir);
+      const existingIndex = directoryIndexes.get(identity);
+      if (existingIndex === undefined) {
+        directoryIndexes.set(identity, normalized.length);
+        normalized.push(session);
+      } else if (session.updatedAt > normalized[existingIndex].updatedAt) {
+        normalized[existingIndex] = session;
+      }
+    }
     const selected = normalized.find((session) => session.id === selectedId) || normalized[0] || null;
     set({
       projectManager: selected,

@@ -544,6 +544,28 @@ export interface ProjectManagerSession {
   updatedAt: number;
 }
 
+/** Stable directory key used to prevent two live project AIs from owning one project root. */
+export function projectDirectoryIdentity(value: string): string {
+  const slashed = value.trim().replace(/\\/gu, '/');
+  if (slashed === '/') return '/';
+  if (/^[A-Za-z]:\/+$/u.test(slashed)) return `${slashed[0].toLowerCase()}:/`;
+  const normalized = slashed.replace(/\/+$/u, '');
+  const windowsPath = /^[A-Za-z]:\//u.test(normalized) || normalized.startsWith('//');
+  const segments: string[] = [];
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(windowsPath ? segment.toLowerCase() : segment);
+  }
+  if (/^[A-Za-z]:\//u.test(normalized)) return segments.join('/');
+  if (normalized.startsWith('//')) return `//${segments.join('/')}`;
+  if (normalized.startsWith('/')) return `/${segments.join('/')}`;
+  return segments.join('/');
+}
+
 export function projectRequirementsVersion(session: Pick<ProjectManagerSession, 'requirementsVersion'>): number {
   return Math.max(1, Math.trunc(session.requirementsVersion || 1));
 }

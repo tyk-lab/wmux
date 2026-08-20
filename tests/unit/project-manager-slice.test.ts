@@ -6,6 +6,7 @@ import {
 } from '../../src/renderer/store/project-manager-slice';
 import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
+  projectDirectoryIdentity,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 
@@ -37,6 +38,45 @@ function item(id: string, dependencies: string[] = []): ProjectWorkItem {
 }
 
 describe('project-manager slice', () => {
+  it('normalizes project directory roots without collapsing their identity', () => {
+    expect(projectDirectoryIdentity('E:\\')).toBe('e:/');
+    expect(projectDirectoryIdentity('e:/')).toBe('e:/');
+    expect(projectDirectoryIdentity('/')).toBe('/');
+  });
+
+  it('rejects a second project AI for the same normalized directory', () => {
+    const useStore = store();
+    const first = useStore.getState().startProjectManager({
+      projectDir: 'E:\\Repo\\', goal: '项目 A', doneWhen: ['A 完成'],
+    });
+
+    expect(() => useStore.getState().startProjectManager({
+      projectDir: 'e:/repo/.', goal: '重复项目', doneWhen: ['重复完成'],
+    })).toThrow(`该目录已绑定项目 AI`);
+    expect(useStore.getState().projectManagers).toHaveLength(1);
+    expect(useStore.getState().projectManagers[0].id).toBe(first.id);
+  });
+
+  it('deduplicates legacy restored projects by normalized directory', () => {
+    const useStore = store();
+    const first = useStore.getState().startProjectManager({
+      projectDir: 'E:\\legacy-a', goal: '旧项目', doneWhen: ['旧项目完成'],
+    });
+    const second = useStore.getState().startProjectManager({
+      projectDir: 'E:\\legacy-b', goal: '新项目', doneWhen: ['新项目完成'],
+    });
+    useStore.getState().restoreProjectManagers([
+      { ...first, projectDir: 'E:\\Repo\\', updatedAt: 10 },
+      { ...second, projectDir: 'e:/repo/.', updatedAt: 20 },
+    ]);
+
+    expect(useStore.getState().projectManagers).toHaveLength(1);
+    expect(useStore.getState().projectManagers[0]).toMatchObject({
+      id: second.id,
+      projectDir: 'e:/repo/.',
+    });
+  });
+
   it('keeps multiple projects independently selectable and mutates only the targeted project', () => {
     const useStore = store();
     const first = useStore.getState().startProjectManager({ projectDir: 'E:\\repo-a', goal: '项目 A', doneWhen: ['A 完成'] });

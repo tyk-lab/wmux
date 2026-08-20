@@ -124,6 +124,7 @@ import {
   projectAcceptedRequirementsVersion,
   projectRequirementsAlignmentPhase,
   projectRequirementsVersion,
+  projectDirectoryIdentity,
   projectTaskBaselineApproved,
   requiredProjectOrientation,
   requiredProjectTaskBaseline,
@@ -4691,7 +4692,13 @@ function teardownManagedProject(session: ProjectManagerSession): void {
         surface.projectSupervisorProjectId === session.id
       ))
     ));
-    if (ownsProjectSupervisor) store.closeWorkspace(workspace.id);
+    const ownsProjectConsole = workspace.transientSupervisorWorkspace === true
+      && getAllPaneIds(workspace.splitTree).some((paneId) => (
+        findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => (
+          surface.projectManagerProjectId === session.id
+        ))
+      ));
+    if (ownsProjectSupervisor || ownsProjectConsole) store.closeWorkspace(workspace.id);
   }
   for (const surfaceId of workerSurfaceIds) {
     const terminal = remoteTerminalList().find((candidate) => candidate.surfaceId === surfaceId);
@@ -7975,6 +7982,16 @@ export function initPipeBridge(): void {
       }
       if (!normalizeAbsolutePath(projectDir) || !goal) {
         return { ok: false, error: 'projectDir 必须是绝对路径，goal 不能为空' };
+      }
+      const directoryIdentity = projectDirectoryIdentity(projectDir);
+      const existingProject = store.projectManagers.find((candidate) => (
+        projectDirectoryIdentity(candidate.projectDir) === directoryIdentity
+      ));
+      if (existingProject) {
+        return {
+          ok: false,
+          error: `该目录已绑定项目 AI“${projectDisplayName(existingProject)}”（${existingProject.id}），请进入现有项目，不要重复创建。`,
+        };
       }
       if (projectManagerRecoveryChoice === 'pending') projectManagerRecoveryChoice = 'skip';
       const session = store.startProjectManager({

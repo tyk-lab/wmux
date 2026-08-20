@@ -1079,7 +1079,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           )}
 
           {!awaitingRecovery && (
-            creating || !session ? <section className="supervisor-dialog__group">
+            creating || (!embedded && !session) ? <section className="supervisor-dialog__group">
               <div className="supervisor-dialog__group-title">添加项目</div>
               <div className="supervisor-dialog__hint">先定义长期稳定的项目身份，再说明当前要完成的主目标。创建后，专属项目 AI 会提出 3-7 个阶段目标并自主拆分执行任务。</div>
               <div className="supervisor-dialog__label">项目名称（可选）</div>
@@ -1142,6 +1142,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 setNotice('');
               }} placeholder={'相关功能实现并验证\n关键测试通过\n高风险或未验证项已明确报告'} />
               <div className="supervisor-dialog__hint">可留空让项目 AI 起草可验证的完成条件；只有不同合理标准会实质改变范围或验收时才会向你确认。阶段目标、执行任务、技术路线与普通重试由项目 AI 和专属监督自主决策。</div>
+            </section> : !session ? <section className="supervisor-dialog__group">
+              <div className="supervisor-dialog__group-title">项目记录已不可用</div>
+              <div className="supervisor-dialog__hint">该项目可能已被删除或关闭。请关闭当前控制台，并从项目中心重新选择项目。</div>
             </section> : (
             <>
               {activeView === 'execution' && <section className="project-manager-dialog__summary">
@@ -1530,7 +1533,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             >{busy ? '正在应用…' : '确认生效'}</button>
           </>}
           {!embedded && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={closeDialog}>{projectDefinitionDraftDirty ? '关闭（取消变更）' : '关闭'}</button>}
-          {!awaitingRecovery && (creating || !session) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : '添加项目'}</button>}
+          {!awaitingRecovery && (creating || (!embedded && !session)) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : '添加项目'}</button>}
         </div>
 
         {recoveryDeleteCandidate && (
