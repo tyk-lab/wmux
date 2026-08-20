@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import * as os from 'os';
-import { IPC_CHANNELS } from '../shared/types';
+import { IPC_CHANNELS, type TerminalInputIsolationScope } from '../shared/types';
 
 const sshUploadGrants = new Set<string>();
 
@@ -14,8 +14,8 @@ contextBridge.exposeInMainWorld('wmux', {
       ipcRenderer.invoke(IPC_CHANNELS.PTY_WRITE_CHECKED, id, data) as Promise<boolean>,
     writeReliable: (id: string, data: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.PTY_WRITE_RELIABLE, id, data) as Promise<boolean>,
-    stageInputFile: (id: string, content: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, id, content) as Promise<{
+    stageInputFile: (id: string, content: string, isolationScope: TerminalInputIsolationScope) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, id, content, isolationScope) as Promise<{
         reference: string;
         filePath: string;
       }>,

@@ -4,6 +4,15 @@ export type PaneId = `pane-${string}`;
 export type SurfaceId = `surf-${string}`;
 export type WindowId = `win-${string}`;
 
+export const TERMINAL_INPUT_ISOLATION_SCOPES = ['ordinary', 'project'] as const;
+export type TerminalInputIsolationScope = typeof TERMINAL_INPUT_ISOLATION_SCOPES[number];
+
+export function isTerminalInputIsolationScope(
+  value: unknown,
+): value is TerminalInputIsolationScope {
+  return TERMINAL_INPUT_ISOLATION_SCOPES.includes(value as TerminalInputIsolationScope);
+}
+
 // Split tree
 export type SplitNode =
   | { type: 'leaf'; paneId: PaneId; surfaces: SurfaceRef[]; activeSurfaceIndex: number }

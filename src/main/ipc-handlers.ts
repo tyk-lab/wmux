@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectOptions, SshConnectResult } from '../shared/types';
+import { IPC_CHANNELS, SurfaceId, WindowId, WorkspaceId, AgentId, SshConnectionProfile, SshConnectOptions, SshConnectResult, type TerminalInputIsolationScope } from '../shared/types';
 import { observePtyData, clearActivity } from './claude-observer';
 import { clearAgentState } from './agent-state';
 import { isAuthorizedSshPasswordLaunch, PtyManager, type SshPasswordEndpoint } from './pty-manager';
@@ -183,8 +183,13 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     return ptyManager.writeReliable(id, data);
   });
 
-  ipcMain.handle(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, (_event, id: SurfaceId, content: string) => {
-    return ptyManager.stageInputFile(id, content);
+  ipcMain.handle(IPC_CHANNELS.PTY_STAGE_INPUT_FILE, (
+    _event,
+    id: SurfaceId,
+    content: string,
+    isolationScope: TerminalInputIsolationScope,
+  ) => {
+    return ptyManager.stageInputFile(id, content, isolationScope);
   });
 
   ipcMain.on(IPC_CHANNELS.PTY_RESIZE, (_event, id: SurfaceId, cols: number, rows: number) => {

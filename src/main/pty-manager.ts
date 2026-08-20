@@ -3,7 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execFileSync, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { SurfaceId } from '../shared/types';
+import {
+  isTerminalInputIsolationScope,
+  SurfaceId,
+  type TerminalInputIsolationScope,
+} from '../shared/types';
 import { getPipePath, tokensMatch } from '../shared/instance';
 
 // ─── Shell resolution ──────────────────────────────────────────────────────
@@ -551,15 +555,34 @@ export class PtyManager {
     return delivery;
   }
 
-  /** Persist oversized AI input beside the target local terminal instead of pasting it through ConPTY. */
-  stageInputFile(id: SurfaceId, content: string): { reference: string; filePath: string } {
+  /** Persist oversized AI input in an ownership-scoped directory beside the target terminal. */
+  stageInputFile(
+    id: SurfaceId,
+    content: string,
+    isolationScope: TerminalInputIsolationScope,
+  ): { reference: string; filePath: string } {
     const entry = this.ptys.get(id);
     if (!entry || !entry.alive) throw new Error('目标终端不存在或已退出');
     if (entry.sshProfileId) throw new Error('SSH 远程终端不能读取本地 .wmux/tmp/ 临时文件');
-    if (!content || content.length > 256_000) throw new Error('临时投递文件必须为 1-256000 字符');
+    if (!isTerminalInputIsolationScope(isolationScope)) {
+      throw new Error('临时投递文件缺少有效的普通/项目隔离域');
+    }
+
+    const isolationLabel = isolationScope === 'project' ? '项目 AI 链' : '普通监督链';
+    const stagedContent = [
+      `[wmux 隔离投递｜${isolationLabel}]`,
+      `投递域: ${isolationScope}`,
+      `目标终端: ${id}`,
+      `边界: 仅供上述目标终端执行；其他${isolationScope === 'project' ? '普通监督' : '项目 AI/项目监督'}终端即使位于同一工程目录，也必须停止读取且不得执行下文。`,
+      '',
+      content,
+    ].join('\n');
+    if (!content || stagedContent.length > 256_000) {
+      throw new Error('临时投递文件必须为 1-256000 字符');
+    }
 
     const cwd = fs.realpathSync(entry.cwd);
-    const tempRoot = path.join(cwd, '.wmux', 'tmp');
+    const tempRoot = path.join(cwd, '.wmux', 'tmp', 'terminal-input', isolationScope);
     fs.mkdirSync(tempRoot, { recursive: true });
     const realTempRoot = fs.realpathSync(tempRoot);
     const relativeTempRoot = path.relative(cwd, realTempRoot);
@@ -569,8 +592,11 @@ export class PtyManager {
 
     const fileName = `terminal-input-${Date.now()}-${uuidv4().slice(0, 8)}.txt`;
     const filePath = path.join(realTempRoot, fileName);
-    fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    return { reference: `.wmux/tmp/${fileName}`, filePath };
+    fs.writeFileSync(filePath, stagedContent, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    return {
+      reference: `.wmux/tmp/terminal-input/${isolationScope}/${fileName}`,
+      filePath,
+    };
   }
 
   private writeChunked(entry: PtyEntry, data: string): Promise<boolean> {

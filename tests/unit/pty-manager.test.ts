@@ -132,17 +132,35 @@ describe('PtyManager', () => {
     await expect(manager.writeReliable('missing' as SurfaceId, 'text')).resolves.toBe(false);
   });
 
-  it('returns the absolute path of a staged input file', async () => {
+  it('separates staged input files by ordinary and project ownership', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-stage-input-'));
     const manager = makeManager();
     const { id } = manager.create({ shell: TEST_SHELL, cwd, env: TEST_ENV });
     try {
-      const staged = manager.stageInputFile(id, '完整监督指令');
+      const ordinary = manager.stageInputFile(id, '普通监督完整指令', 'ordinary');
+      const project = manager.stageInputFile(id, '项目监督完整指令', 'project');
 
-      expect(staged.reference).toMatch(/^\.wmux\/tmp\/terminal-input-.+\.txt$/u);
-      expect(path.isAbsolute(staged.filePath)).toBe(true);
-      expect(staged.filePath).toBe(path.join(fs.realpathSync(cwd), ...staged.reference.split('/')));
-      expect(fs.readFileSync(staged.filePath, 'utf8')).toBe('完整监督指令');
+      expect(ordinary.reference).toMatch(/^\.wmux\/tmp\/terminal-input\/ordinary\/terminal-input-.+\.txt$/u);
+      expect(project.reference).toMatch(/^\.wmux\/tmp\/terminal-input\/project\/terminal-input-.+\.txt$/u);
+      expect(path.dirname(ordinary.filePath)).not.toBe(path.dirname(project.filePath));
+      for (const staged of [ordinary, project]) {
+        expect(path.isAbsolute(staged.filePath)).toBe(true);
+        expect(staged.filePath).toBe(path.join(fs.realpathSync(cwd), ...staged.reference.split('/')));
+      }
+      const ordinaryContent = fs.readFileSync(ordinary.filePath, 'utf8');
+      expect(ordinaryContent).toContain('[wmux 隔离投递｜普通监督链]');
+      expect(ordinaryContent).toContain('投递域: ordinary');
+      expect(ordinaryContent).toContain(`目标终端: ${id}`);
+      expect(ordinaryContent).toContain('其他项目 AI/项目监督终端');
+      expect(ordinaryContent).toContain('普通监督完整指令');
+      const projectContent = fs.readFileSync(project.filePath, 'utf8');
+      expect(projectContent).toContain('[wmux 隔离投递｜项目 AI 链]');
+      expect(projectContent).toContain('投递域: project');
+      expect(projectContent).toContain(`目标终端: ${id}`);
+      expect(projectContent).toContain('其他普通监督终端');
+      expect(projectContent).toContain('项目监督完整指令');
+      expect(() => manager.stageInputFile(id, '无域指令', 'shared' as any))
+        .toThrow('缺少有效的普通/项目隔离域');
     } finally {
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(resolve, 2_000);
