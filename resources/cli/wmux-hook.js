@@ -62,6 +62,7 @@ function sendHook() {
     let file = '';
     let message = '';
     let task = '';
+    let command = '';
     try {
         if (stdinData.trim()) {
             const data = JSON.parse(stdinData);
@@ -71,6 +72,7 @@ function sendHook() {
                 || '';
             message = data.message || data.tool_input?.description || '';
             task = compact(data.prompt || data.user_prompt || data.input?.prompt);
+            command = compact(data.tool_input?.command || data.input?.command);
         }
     }
     catch {
@@ -87,6 +89,8 @@ function sendHook() {
         params.message = message;
     if (task)
         params.task = task;
+    if (command)
+        params.command = command;
     const cwd = process.cwd();
     if (cwd)
         params.cwd = cwd;

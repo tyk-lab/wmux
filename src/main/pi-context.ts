@@ -75,6 +75,7 @@ export default function wmuxAgentHooks(pi) {
   });
 
   pi.on("tool_call", (event) => {
+    sendWmuxEvent("PreToolUse", { tool_input: event.input }, wmuxToolName(event.toolName));
     if (event.toolName === "ask_question") {
       sendWmuxEvent("Notification", { message: "Pi Agent 正在等待用户回答" });
     }

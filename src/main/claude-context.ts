@@ -27,6 +27,8 @@ export function applyWmuxHooks(settings: any, hookScript: string): any {
   // Keep `2>/dev/null || true` for Claude's Git-Bash-on-Windows hook runner.
   const makeToolCmd = (tool: string) =>
     `node "${hookScript}" ${tool} --agent Claude 2>/dev/null || true`;
+  const makePreToolCmd = (tool: string) =>
+    `node "${hookScript}" --event PreToolUse --tool ${tool} --agent Claude 2>/dev/null || true`;
   const makeEventCmd = (event: string) =>
     `node "${hookScript}" --event ${event} --agent Claude 2>/dev/null || true`;
 
@@ -43,6 +45,14 @@ export function applyWmuxHooks(settings: any, hookScript: string): any {
     ...TRACKED_TOOLS.map(tool => ({
       matcher: tool,
       hooks: [{ type: 'command', command: makeToolCmd(tool) }],
+    })),
+  ];
+
+  next.hooks.PreToolUse = [
+    ...stripWmux(next.hooks.PreToolUse),
+    ...TRACKED_TOOLS.map(tool => ({
+      matcher: tool,
+      hooks: [{ type: 'command', command: makePreToolCmd(tool) }],
     })),
   ];
 

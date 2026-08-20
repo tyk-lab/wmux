@@ -30,6 +30,7 @@ describe('Pi Agent wmux hooks', () => {
     expect(source).toContain('before_agent_start');
     expect(source).toContain('UserPromptSubmit');
     expect(source).toContain('tool_result');
+    expect(source).toContain('PreToolUse');
     expect(source).toContain('PostToolUse');
     expect(source).toContain('agent_settled');
     expect(source).toContain('session_shutdown');

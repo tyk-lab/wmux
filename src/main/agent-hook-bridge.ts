@@ -30,6 +30,7 @@ import { reportAgent, ReportAgentParams } from './agent-state';
  */
 export type AgentHookEvent =
   | 'UserPromptSubmit'
+  | 'PreToolUse'
   | 'PostToolUse'
   | 'Notification'
   | 'PermissionRequest'
@@ -44,6 +45,7 @@ export type ClaudeHookEvent = AgentHookEvent;
 
 const KNOWN_EVENTS: readonly AgentHookEvent[] = [
   'UserPromptSubmit',
+  'PreToolUse',
   'PostToolUse',
   'Notification',
   'PermissionRequest',
@@ -69,6 +71,9 @@ export function hookToAgentReport(
     // Turn start (Claude / Kimi / Codex-style). Marks working even when the
     // turn never touches a tool (pure text replies).
     case 'UserPromptSubmit':
+      return { awaitingHuman: false, runDepth: 1 };
+
+    case 'PreToolUse':
       return { awaitingHuman: false, runDepth: 1 };
 
     // Claude Code / Kimi wants the user. This fires both for permission/question

@@ -7,13 +7,15 @@ const wmuxCmds = (entries: any[]): string[] =>
   entries.flatMap((e) => (e.hooks || []).map((h: any) => h.command as string));
 
 describe('applyWmuxHooks (issue #53)', () => {
-  it('installs PostToolUse, Notification and Stop wmux hooks', () => {
+  it('installs PreToolUse, PostToolUse, Notification and Stop wmux hooks', () => {
     const out = applyWmuxHooks({}, HOOK);
 
     // PostToolUse: one entry per tracked tool.
     const postCmds = wmuxCmds(out.hooks.PostToolUse);
     expect(postCmds.some((c) => c.includes('wmux-hook.js') && c.includes('Bash') && c.includes('--agent Claude'))).toBe(true);
     expect(postCmds.some((c) => c.includes('Edit'))).toBe(true);
+    const preCmds = wmuxCmds(out.hooks.PreToolUse);
+    expect(preCmds.some((c) => c.includes('--event PreToolUse') && c.includes('--tool Bash'))).toBe(true);
 
     // Notification + Stop: --event plus --agent so notifications know the harness.
     expect(wmuxCmds(out.hooks.Notification)).toEqual([
@@ -46,6 +48,7 @@ describe('applyWmuxHooks (issue #53)', () => {
     expect(twice.hooks.Stop).toHaveLength(1);
     // Same number of PostToolUse entries on the second pass (no accumulation).
     expect(twice.hooks.PostToolUse).toHaveLength(once.hooks.PostToolUse.length);
+    expect(twice.hooks.PreToolUse).toHaveLength(once.hooks.PreToolUse.length);
   });
 
   it('does not mutate the input settings object', () => {

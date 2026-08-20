@@ -33,6 +33,10 @@ describe('hookToAgentReport', () => {
     expect(hookToAgentReport('PostToolUse', null)).toEqual({ awaitingHuman: false, runDepth: 1 });
   });
 
+  it('PreToolUse marks a long-running tool as active before it completes', () => {
+    expect(hookToAgentReport('PreToolUse', null)).toEqual({ awaitingHuman: false, runDepth: 1 });
+  });
+
   it('SubagentStop decrements rather than clearing the run', () => {
     expect(hookToAgentReport('SubagentStop', null)).toEqual({ runDelta: -1 });
   });

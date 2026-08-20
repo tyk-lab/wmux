@@ -62,6 +62,7 @@ function sendHook(): void {
   let file = '';
   let message = '';
   let task = '';
+  let command = '';
   try {
     if (stdinData.trim()) {
       const data = JSON.parse(stdinData);
@@ -71,6 +72,7 @@ function sendHook(): void {
         || '';
       message = data.message || data.tool_input?.description || '';
       task = compact(data.prompt || data.user_prompt || data.input?.prompt);
+      command = compact(data.tool_input?.command || data.input?.command);
     }
   } catch {
     // stdin wasn't valid JSON — that's fine.
@@ -82,6 +84,7 @@ function sendHook(): void {
   if (file) params.file = file;
   if (message) params.message = message;
   if (task) params.task = task;
+  if (command) params.command = command;
   const cwd = process.cwd();
   if (cwd) params.cwd = cwd;
   if (surfaceId) params.surfaceId = surfaceId;
