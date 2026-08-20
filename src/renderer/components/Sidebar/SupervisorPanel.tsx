@@ -17,7 +17,12 @@ import {
   detectSupervisorLauncher,
   supervisorLauncherDisplayName,
 } from '../../supervisor/launch-command';
-import { sendTaskToSurface, sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
+import {
+  sendTaskToSurface,
+  sendToSurface,
+  supervisorLaneInputIsolationScope,
+  SUPERVISOR_TUI_READY_DELAY_MS,
+} from '../../supervisor/supervisor-engine';
 import {
   buildAdoptedPlanBriefing,
   supervisorDecisionOptions,
@@ -336,7 +341,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       let adoptedPlan = '';
       if (isContextRecovery) {
         if (!lane || supervisorLaneControlState(lane) !== 'active' || !item.text.trim()) return;
-        sendTaskToSurface(item.surfaceId, item.text, supervisor.submitEnter);
+        sendTaskToSurface(
+          item.surfaceId,
+          item.text,
+          supervisor.submitEnter,
+          supervisorLaneInputIsolationScope(lane),
+        );
       } else if (isHumanProposal) {
         const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
         const choices = supervisorDecisionOptions(item.alternatives, item.text);
@@ -360,9 +370,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           reason: item.reason,
           impact: item.impact,
           alternatives: item.alternatives,
-        }), true);
+        }), true, supervisorLaneInputIsolationScope(lane));
       } else if (item.text.trim()) {
-        sendTaskToSurface(item.surfaceId, item.text, supervisor.submitEnter);
+        sendTaskToSurface(
+          item.surfaceId,
+          item.text,
+          supervisor.submitEnter,
+          supervisorLaneInputIsolationScope(lane),
+        );
       }
       approvePending(id);
       setProposalSelections((current) => {
@@ -429,7 +444,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     const text = proposalEdits[id]?.trim() || '';
     if (!item || !lane || supervisorLaneControlState(lane) !== 'active' || !text) return;
     try {
-      sendTaskToSurface(item.surfaceId, text, supervisor.submitEnter);
+      sendTaskToSurface(
+        item.surfaceId,
+        text,
+        supervisor.submitEnter,
+        supervisorLaneInputIsolationScope(lane),
+      );
       approvePending(id);
       setProposalEdits((current) => {
         const next = { ...current };
@@ -510,7 +530,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     appendSupervisorLog(lane.id, '人工已审阅', '自动判断计数已重置，可继续监督');
     const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
     if (supervisorSurfaceId) {
-      sendToSurface(supervisorSurfaceId, '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n', true);
+      sendToSurface(
+        supervisorSurfaceId,
+        '[人工已介入] 已审阅当前终端。自动判断计数已重置；下一轮结束后可继续裁决。\n',
+        true,
+        supervisorLaneInputIsolationScope(lane),
+      );
     }
   };
 
@@ -552,7 +577,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         : cancelledDecisionLaneIds.has(lane.id)
         ? '[会话继续] 用户已通过任务终端等其他方式发送信息，原待决项已取消。请保持原任务上下文，read-screen 后继续监督。\n'
         : '[会话继续] 用户已恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n';
-      sendToSurface(supervisorSurfaceId, message, true);
+      sendToSurface(
+        supervisorSurfaceId,
+        message,
+        true,
+        supervisorLaneInputIsolationScope(lane),
+      );
     }
   };
 
@@ -612,6 +642,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           ? buildUnacknowledgedSupervisorIdlePrompt(lane)
           : '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
         true,
+        supervisorLaneInputIsolationScope(lane),
       );
     }
   };
@@ -773,7 +804,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           lane,
           state: String(states[lane.surfaceId]?.state || 'unknown'),
         });
-        sendToSurface(supervisorSurfaceId, text, true);
+        sendToSurface(
+          supervisorSurfaceId,
+          text,
+          true,
+          supervisorLaneInputIsolationScope(lane),
+        );
       }
     }, SUPERVISOR_TUI_READY_DELAY_MS);
   };

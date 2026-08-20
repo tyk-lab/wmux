@@ -244,11 +244,25 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('supervisor-dialog__lane-settings-content');
     expect(dialogSource).toContain('已修改，尚未保存');
     expect(dialogSource).toContain('保存全部设置');
+    expect(dialogSource).toContain('markTerminalConfigSaved(candidate.surfaceId)');
+    expect(dialogSource).toContain('setTerminalConfigExpanded(candidate.surfaceId, false)');
+    expect(dialogSource).not.toContain('applyConfig(false, false)');
     expect(dialogSource).toContain("showTerminalConfigSection(firstLane.surfaceId, 'basic'");
     expect(dialogSource).toContain("showTerminalConfigSection(firstLane.surfaceId, 'execution'");
     expect(supervisorCssSource).toContain('.supervisor-dialog__drawer-actions');
     expect(supervisorCssSource).toContain('.supervisor-dialog__lane-settings[open]::details-content');
     expect(supervisorCssSource).toContain('.supervisor-dialog__config-tabs button[aria-selected=\'true\']');
+  });
+
+  it('keeps draft save separate from applying a retained supervision session', () => {
+    const footer = dialogSource.match(
+      /<div className="supervisor-dialog__actions">[\s\S]*?^        <\/div>/m,
+    )?.[0] || '';
+
+    expect(footer).toContain('{!sessionRetained && (');
+    expect(footer).toContain('保存设置');
+    expect(footer).toContain('{primaryActionLabel}');
+    expect(dialogSource).toContain("if (ordinaryActive) primaryActionLabel = '应用并继续普通监督'");
   });
 
   it('uses a wide responsive project workspace with project and status sidebars', () => {

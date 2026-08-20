@@ -4,6 +4,7 @@ import type {
   SupervisorLane,
   SupervisorSession,
 } from '../store/supervisor-slice';
+import type { TerminalInputIsolationScope } from '../../shared/types';
 import { surfaceTerminalRegistry } from '../hooks/useTerminal';
 import { isProjectManagedSupervisorLane, supervisorLaneControlState } from '../store/supervisor-slice';
 import { buildSupervisorWakeEventEnvelope, effectiveSupervisorAutonomyPermissions } from './protocol';
@@ -24,6 +25,12 @@ import { terminalRuntimeInputError } from '../terminal-runtime-lifecycle';
 export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
+
+export function supervisorLaneInputIsolationScope(
+  lane?: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId' | 'projectTaskStartupPending'>,
+): TerminalInputIsolationScope {
+  return lane && isProjectManagedSupervisorLane(lane) ? 'project' : 'ordinary';
+}
 
 export interface SurfaceStateView {
   state: DeclaredState | string;
@@ -182,24 +189,36 @@ function terminalPasteInput(_surfaceId: string, text: string, submitEnter: boole
 
 export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;
 
-export function stagedTerminalInputPrompt(reference: string, filePath = reference): string {
+export function stagedTerminalInputPrompt(
+  reference: string,
+  filePath: string,
+  isolationScope: TerminalInputIsolationScope,
+): string {
+  const scopeLabel = isolationScope === 'project' ? '项目 AI 链' : '普通监督链';
   return [
-    '[wmux 临时投递文件]',
+    `[wmux 临时投递文件｜${scopeLabel}]`,
+    `投递域：${isolationScope}；仅当前目标终端可读取并执行。`,
     `请先使用文件读取工具完整读取此路径：${filePath}。`,
     '文件内容是本轮完整指令；读取后直接执行，不要将全文重新粘贴到终端。',
     `确认读取成功后，只删除这一个临时文件：${filePath}。`,
   ].join('\n');
 }
 
-function stageOversizedTerminalInput(surfaceId: string, text: string): Promise<string> {
+function stageOversizedTerminalInput(
+  surfaceId: string,
+  text: string,
+  isolationScope: TerminalInputIsolationScope,
+): Promise<string> {
   const pty = (window as any).wmux?.pty;
   if (!pty?.stageInputFile) {
     return Promise.reject(new Error('当前版本不支持大文段临时文件投递；已拒绝全文写入终端'));
   }
-  return Promise.resolve(pty.stageInputFile(surfaceId, text)).then(
+  return Promise.resolve(pty.stageInputFile(surfaceId, text, isolationScope)).then(
     (staged: { reference?: string; filePath?: string }) => {
       const reference = String(staged?.reference || '');
-      if (!/^\.wmux\/tmp\/terminal-input-[A-Za-z0-9._-]+\.txt$/u.test(reference)) {
+      const expectedPrefix = `.wmux/tmp/terminal-input/${isolationScope}/`;
+      if (!reference.startsWith(expectedPrefix)
+        || !/^\.wmux\/tmp\/terminal-input\/(?:ordinary|project)\/terminal-input-[A-Za-z0-9._-]+\.txt$/u.test(reference)) {
         throw new Error('临时投递文件返回了非法路径');
       }
       const filePath = String(staged?.filePath || '').trim();
@@ -211,12 +230,17 @@ function stageOversizedTerminalInput(surfaceId: string, text: string): Promise<s
       )) {
         throw new Error('临时投递文件返回了非法绝对路径');
       }
-      return stagedTerminalInputPrompt(reference, filePath || reference);
+      return stagedTerminalInputPrompt(reference, filePath || reference, isolationScope);
     },
   );
 }
 
-export function sendToSurface(surfaceId: string, text: string, submitEnter: boolean): Promise<void> | void {
+export function sendToSurface(
+  surfaceId: string,
+  text: string,
+  submitEnter: boolean,
+  isolationScope: TerminalInputIsolationScope,
+): Promise<void> | void {
   const runtimeError = terminalRuntimeInputError(surfaceId);
   if (runtimeError) throw new Error(`终端 Agent 已不可用：${runtimeError}`);
   const pty = (window as any).wmux?.pty;
@@ -224,8 +248,8 @@ export function sendToSurface(surfaceId: string, text: string, submitEnter: bool
     throw new Error('wmux.pty.write unavailable');
   }
   if (submitEnter && text.length > TERMINAL_INLINE_TEXT_LIMIT) {
-    const stagedDelivery = stageOversizedTerminalInput(surfaceId, text).then((prompt) => {
-      sendToSurface(surfaceId, prompt, true);
+    const stagedDelivery = stageOversizedTerminalInput(surfaceId, text, isolationScope).then((prompt) => {
+      sendToSurface(surfaceId, prompt, true, isolationScope);
     });
     void stagedDelivery.catch((error) => {
       console.warn('[supervisor] oversized terminal input staging failed', error);
@@ -275,9 +299,14 @@ function assertTaskTerminalInputAvailable(surfaceId: string): void {
 }
 
 /** Send a new task without ever appending it to an existing user draft. */
-export function sendTaskToSurface(surfaceId: string, text: string, submitEnter: boolean): void {
+export function sendTaskToSurface(
+  surfaceId: string,
+  text: string,
+  submitEnter: boolean,
+  isolationScope: TerminalInputIsolationScope,
+): void {
   assertTaskTerminalInputAvailable(surfaceId);
-  sendToSurface(surfaceId, text, submitEnter);
+  sendToSurface(surfaceId, text, submitEnter, isolationScope);
 }
 
 /**
@@ -289,6 +318,7 @@ function sendSurfaceInputReliably(
   surfaceId: string,
   text: string,
   submitEnter: boolean,
+  isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
   validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
@@ -296,11 +326,12 @@ function sendSurfaceInputReliably(
   if (runtimeError) throw new Error(`终端 Agent 已不可用：${runtimeError}`);
   const pty = (window as any).wmux?.pty;
   if (submitEnter && text.length > TERMINAL_INLINE_TEXT_LIMIT) {
-    return stageOversizedTerminalInput(surfaceId, text).then((prompt) => (
+    return stageOversizedTerminalInput(surfaceId, text, isolationScope).then((prompt) => (
       sendSurfaceInputReliably(
         surfaceId,
         prompt,
         true,
+        isolationScope,
         captureBeforeSubmit,
         validateBeforeSubmit,
       ) || { beforeSubmitScreen: captureBeforeSubmit?.() }
@@ -315,7 +346,7 @@ function sendSurfaceInputReliably(
   };
   if (!pty?.writeReliable) {
     if (!submitEnter) {
-      sendToSurface(surfaceId, text, false);
+      sendToSurface(surfaceId, text, false, isolationScope);
       return;
     }
     if (!pty?.write) {
@@ -399,27 +430,37 @@ export function sendToSurfaceReliably(
   surfaceId: string,
   text: string,
   submitEnter: boolean,
+  isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
-  return sendSurfaceInputReliably(surfaceId, text, submitEnter, captureBeforeSubmit);
+  return sendSurfaceInputReliably(surfaceId, text, submitEnter, isolationScope, captureBeforeSubmit);
 }
 
 export function sendTaskToSurfaceReliably(
   surfaceId: string,
   text: string,
   submitEnter: boolean,
+  isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
   assertTaskTerminalInputAvailable(surfaceId);
-  return sendSurfaceInputReliably(surfaceId, text, submitEnter, captureBeforeSubmit);
+  return sendSurfaceInputReliably(surfaceId, text, submitEnter, isolationScope, captureBeforeSubmit);
 }
 
 /** Permission prompts are the current terminal input, so they intentionally bypass the empty-draft guard. */
 export function sendPermissionResponseReliably(
   surfaceId: string,
   response: string,
+  isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
   validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
-  return sendSurfaceInputReliably(surfaceId, response, true, captureBeforeSubmit, validateBeforeSubmit);
+  return sendSurfaceInputReliably(
+    surfaceId,
+    response,
+    true,
+    isolationScope,
+    captureBeforeSubmit,
+    validateBeforeSubmit,
+  );
 }

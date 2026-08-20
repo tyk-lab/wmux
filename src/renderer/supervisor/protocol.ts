@@ -519,7 +519,8 @@ export function buildSupervisorBriefing(
   const currentTask = lane.currentTask?.trim() || '';
   const laneConfig = effectiveSupervisorLaneConfig(lane);
   const effectiveStopWhen = laneConfig.stopWhen.trim();
-  const decisionOwner = isProjectManagedSupervisorLane(lane) ? 'project-manager' as const : 'user' as const;
+  const projectManaged = isProjectManagedSupervisorLane(lane);
+  const decisionOwner = projectManaged ? 'project-manager' as const : 'user' as const;
   const decisionOwnerLabel = decisionOwner === 'project-manager' ? '项目管理 AI' : '用户';
   const completionBehavior = laneConfig.waitForNextDirection
     ? `达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待${decisionOwnerLabel}的新指令或方向。待续恢复后，若${decisionOwnerLabel}的新方向仍不足以形成可执行下一步，使用 needs-human 并附 --proposal-kind direction-needed 说明缺少的信息；wmux 会让通道再次进入待续并重新通知${decisionOwnerLabel}。权限、业务取舍或路线变更仍使用原有上级决策类型，不得标记 direction-needed。`
@@ -683,7 +684,12 @@ export function buildSupervisorBriefing(
       `[监督协议｜控制层｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
       '本完整 briefing 只在启动、恢复、工作项切换或协议变化时加载；同一协议版本的普通事件使用短事件信封，不重新确认角色。',
       '',
-      '# AI 监督',
+      `[监督隔离域｜${projectManaged ? 'project' : 'ordinary'}｜lane=${lane.id}｜target=${lane.surfaceId}]`,
+      projectManaged
+        ? `当前是项目专属监督，只接受项目 ${lane.projectManagerProjectId || '（缺失）'} / 工作项 ${lane.projectWorkItemId || '（待绑定）'} 的项目 AI 链指令；不得读取或执行 .wmux/tmp/terminal-input/ordinary/ 下的普通监督投递文件。`
+        : '当前是普通 AI 监督，决策上级仅为用户，不属于任何项目 AI 链；不得读取或执行 .wmux/tmp/terminal-input/project/ 下的项目投递文件。',
+      '',
+      projectManaged ? '# 项目专属 AI 监督' : '# 普通 AI 监督',
       '',
       autonomous
         ? `本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`

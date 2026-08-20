@@ -138,6 +138,10 @@ describe('supervisor isolation', () => {
 
     expect(text).toContain('worker-a');
     expect(text).toContain('只监督此终端');
+    expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
+    expect(text).toContain('# 普通 AI 监督');
+    expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
+    expect(text).not.toContain('# 项目专属 AI 监督');
     expect(text).not.toContain('worker-b');
   });
 
@@ -159,6 +163,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain('控制层会先交给项目管理 AI');
     expect(text).toContain('不要直接向用户提问');
     expect(text).toContain('复杂或高影响决定交给项目管理 AI');
+    expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
+    expect(text).toContain('# 项目专属 AI 监督');
+    expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/ordinary/');
+    expect(text).not.toContain('# 普通 AI 监督');
   });
 
   it('distinguishes an unknown worker Agent state from the supervisor channel state', () => {

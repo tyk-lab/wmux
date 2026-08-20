@@ -21,6 +21,7 @@ import {
   sendTaskToSurfaceReliably,
   sendToSurface,
   sendToSurfaceReliably,
+  supervisorLaneInputIsolationScope,
   SUPERVISOR_TUI_READY_DELAY_MS,
 } from './supervisor/supervisor-engine';
 import {
@@ -1828,6 +1829,7 @@ async function deliverSupervisorStartupBriefing(laneId: string): Promise<void> {
       lane.supervisorSurfaceId,
       projectAwareSupervisorBriefing(current, lane, String(states[lane.surfaceId]?.state || 'unknown')),
       true,
+      supervisorLaneInputIsolationScope(lane),
     );
   } catch (error) {
     const detail = `AI 监督启动协议投递失败：${String((error as Error)?.message || error)}`;
@@ -2139,7 +2141,7 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
   }
 
   try {
-    sendTaskToSurface(terminal.surfaceId, task, true);
+    sendTaskToSurface(terminal.surfaceId, task, true, projectMode ? 'project' : 'ordinary');
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
@@ -2197,7 +2199,7 @@ function sendRemoteTerminalEscape(params: RemoteTerminalEscape): { ok: boolean; 
     return { ok: false, error: '项目任务终端只能由项目管理模式处理中断。', message: '' };
   }
   try {
-    sendToSurface(terminal.surfaceId, '\x1b', false);
+    sendToSurface(terminal.surfaceId, '\x1b', false, projectMode ? 'project' : 'ordinary');
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
@@ -2228,7 +2230,7 @@ function sendRemoteTerminalInterrupt(params: RemoteTerminalInterrupt): { ok: boo
     return { ok: false, error: '项目任务终端只能由项目管理模式处理中断。', message: '' };
   }
   try {
-    sendToSurface(terminal.surfaceId, '\x03', false);
+    sendToSurface(terminal.surfaceId, '\x03', false, projectMode ? 'project' : 'ordinary');
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
@@ -2301,7 +2303,7 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   if (!message) return { ok: false, error: '监督方向信息不能为空。', message: '' };
 
   try {
-    sendTaskToSurface(supervisorSurfaceId, `[用户调整监督方向]\n${message}`, true);
+    sendTaskToSurface(supervisorSurfaceId, `[用户调整监督方向]\n${message}`, true, 'ordinary');
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
@@ -2413,7 +2415,7 @@ function decideRemoteSupervisor(
             '[待决项已过期｜重新核对]',
             `原待决 ID：${approvalId}`,
             '旧待决项已解除。请重新读取任务终端当前状态和最新项目约束；能够在既有授权内继续时提交新的 continue/rework，需要上级决定时重新提交 needs-human。不得继续等待旧待决项。',
-          ].join('\n'), true);
+          ].join('\n'), true, supervisorLaneInputIsolationScope(approvalLane));
         } catch (error) {
           queueProjectSupervisorRecovery(
             approvalLane,
@@ -2481,7 +2483,7 @@ function decideRemoteSupervisor(
       : '请填写要直接发送到任务终端的决策信息。', message: '' };
     if (!projectManagedDecision) {
       try {
-        sendTaskToSurface(approval.surfaceId, directTask, true);
+        sendTaskToSurface(approval.surfaceId, directTask, true, 'ordinary');
       } catch (err) {
         return { ok: false, error: String((err as Error)?.message || err), message: '' };
       }
@@ -2522,7 +2524,7 @@ function decideRemoteSupervisor(
       return { ok: false, error: 'AI 监督没有提供可发送的上下文恢复指令。', message: '' };
     }
     try {
-      sendTaskToSurface(approval.surfaceId, recoveryInstruction, true);
+      sendTaskToSurface(approval.surfaceId, recoveryInstruction, true, 'ordinary');
     } catch (err) {
       return { ok: false, error: String((err as Error)?.message || err), message: '' };
     }
@@ -2598,7 +2600,12 @@ function decideRemoteSupervisor(
       `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
     try {
-      sendToSurface(laneSupervisorSurfaceId, briefing, true);
+      sendToSurface(
+        laneSupervisorSurfaceId,
+        briefing,
+        true,
+        supervisorLaneInputIsolationScope(lane),
+      );
     } catch (err) {
       return { ok: false, error: String((err as Error)?.message || err), message: '' };
     }
@@ -4717,7 +4724,7 @@ function flushProjectManagerDeliveries(): void {
       }
       try {
         const deliveryGeneration = projectManagerDeliveryGeneration;
-        const pending = sendTaskToSurfaceReliably(manager.surfaceId, delivery.text, true);
+        const pending = sendTaskToSurfaceReliably(manager.surfaceId, delivery.text, true, 'project');
         projectManagerDeliverySurfacesInFlight.add(manager.surfaceId);
         void Promise.resolve(pending).then(() => {
           if (deliveryGeneration !== projectManagerDeliveryGeneration) return;
@@ -6100,7 +6107,7 @@ async function startProjectTaskTerminalFromSupervisor(
       briefing,
       '',
       '这是新建任务终端的首次待裁决轮次。先 read-screen 核对其等待状态，再通过 supervisor decide 携带 --next 发送任务契约和第一条可执行指令。',
-    ].filter(Boolean).join('\n\n'), true);
+    ].filter(Boolean).join('\n\n'), true, supervisorLaneInputIsolationScope(rebound));
   } catch (error) {
     const detail = `任务终端已就绪，但正式监督协议投递失败：${String((error as Error)?.message || error)}`;
     store.pauseSupervisorLane(lane.id, detail);
@@ -6253,7 +6260,7 @@ async function rotateProjectTaskTerminalFromSupervisor(
         '[任务终端已轮换]',
         `新任务终端：${replacement.surfaceId}`,
         '你继续担任该项目的 AI 监督。先核对新终端已收到恢复总结，再按原任务契约继续监督。',
-      ].join('\n'), true);
+      ].join('\n'), true, supervisorLaneInputIsolationScope(lane));
     } catch (error) {
       notificationWarning = `任务终端已轮换，但无法通知 AI 监督：${String((error as Error)?.message || error)}`;
       store.pauseSupervisorLane(lane.id, notificationWarning);
@@ -6751,7 +6758,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         '轮换上下文已由控制层暂存。请核对当前任务已处于可交接点，然后执行：',
         `wmux project task-terminal-rotate --project ${session.id} --task ${lane.projectWorkItemId}`,
         '只能由你这个已绑定的 AI 监督执行；新终端确认就绪前，控制层不会关闭原任务终端。',
-      ].join('\n'), true);
+      ].join('\n'), true, supervisorLaneInputIsolationScope(lane));
     } catch (error) {
       store.updateLane(lane.id, {
         projectTaskRotationPending: false,
@@ -7135,6 +7142,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
                 ),
               ].filter(Boolean).join('\n\n'),
               true,
+              supervisorLaneInputIsolationScope(resumedLane),
             );
           } catch (error) {
             const detail = `恢复专属监督时协议重投失败：${String((error as Error)?.message || error)}`;
@@ -7282,7 +7290,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
               useStore.getState().supervisor,
               { lane: reboundLane, state: String(((window as any).__wmux_getAgentStates?.() || {})[reboundLane.surfaceId]?.state || 'unknown') },
             ),
-          ].join('\n\n'), true);
+          ].join('\n\n'), true, supervisorLaneInputIsolationScope(reboundLane));
         } catch (error) {
           const detail = `下一阶段目标交付失败：${String((error as Error)?.message || error)}`;
           store.pauseSupervisorLane(existingLane.id, detail);
@@ -8320,7 +8328,12 @@ export function initPipeBridge(): void {
         latestStore.pauseSupervisorLane(lane.id, '项目前置条件已更新，等待项目管理 AI 按新版本重新规划');
         if (lane.supervisorSurfaceId) {
           try {
-            await sendToSurfaceReliably(lane.supervisorSurfaceId, constraintNotice, true);
+            await sendToSurfaceReliably(
+              lane.supervisorSurfaceId,
+              constraintNotice,
+              true,
+              supervisorLaneInputIsolationScope(lane),
+            );
           } catch (error) {
             supervisorNotificationFailures += 1;
             console.warn('[project-manager] failed to notify supervisor about prerequisites', error);
@@ -8414,7 +8427,7 @@ export function initPipeBridge(): void {
         if (params?.emergency === true) {
           for (const item of session.workItems) {
             if (item.workerSurfaceId && ['running', 'validating'].includes(item.status)) {
-              try { sendToSurface(item.workerSurfaceId, '\x03', false); } catch { /* Already stopped. */ }
+              try { sendToSurface(item.workerSurfaceId, '\x03', false, 'project'); } catch { /* Already stopped. */ }
             }
           }
         }
@@ -9885,6 +9898,7 @@ export function initPipeBridge(): void {
         const pendingDelivery = sendPermissionResponseReliably(
           lane.surfaceId,
           permissionResponse,
+          supervisorLaneInputIsolationScope(lane),
           () => terminalScreenTail(lane.surfaceId),
           validatePermissionBeforeSubmit,
         );
@@ -10115,6 +10129,7 @@ export function initPipeBridge(): void {
           lane.surfaceId,
           deliveryText,
           session.submitEnter,
+          supervisorLaneInputIsolationScope(lane),
           () => terminalScreenTail(lane.surfaceId),
         );
         if (pendingDelivery) {
@@ -10509,6 +10524,7 @@ export function initPipeBridge(): void {
               ? buildUnacknowledgedSupervisorIdlePrompt(lane)
               : '[通道继续] 用户已通过飞书恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
             true,
+            supervisorLaneInputIsolationScope(lane),
           );
         }
         return { ok: true, message: session.paused
@@ -10580,6 +10596,7 @@ export function initPipeBridge(): void {
               ? buildUnacknowledgedSupervisorIdlePrompt(lane)
               : '[会话继续] 用户已通过飞书恢复当前监督会话。请保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
             true,
+            supervisorLaneInputIsolationScope(lane),
           );
         }
         return { ok: true, message: '已继续普通 AI 监督；项目监督不受影响。' };

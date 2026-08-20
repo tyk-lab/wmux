@@ -31,7 +31,7 @@ describe('supervisor surface input delivery', () => {
       },
     });
 
-    sendToSurface('supervisor-a', '审核当前结果\n\n', true);
+    sendToSurface('supervisor-a', '审核当前结果\n\n', true, 'ordinary');
 
     expect(write.mock.calls).toEqual([
       ['supervisor-a', '审核当前结果'],
@@ -41,9 +41,10 @@ describe('supervisor surface input delivery', () => {
 
   it('stages oversized text and writes only a short file-reference prompt', async () => {
     const write = vi.fn();
-    const filePath = 'E:\\project\\.wmux\\tmp\\terminal-input-1234-abcd1234.txt';
+    const reference = '.wmux/tmp/terminal-input/ordinary/terminal-input-1234-abcd1234.txt';
+    const filePath = 'E:\\project\\.wmux\\tmp\\terminal-input\\ordinary\\terminal-input-1234-abcd1234.txt';
     const stageInputFile = vi.fn().mockResolvedValue({
-      reference: '.wmux/tmp/terminal-input-1234-abcd1234.txt',
+      reference,
       filePath,
     });
     Object.defineProperty(globalThis, 'window', {
@@ -58,10 +59,10 @@ describe('supervisor surface input delivery', () => {
     });
 
     const longText = 'x'.repeat(4_001);
-    await sendToSurface('supervisor-a', longText, true);
+    await sendToSurface('supervisor-a', longText, true, 'ordinary');
 
-    const prompt = stagedTerminalInputPrompt('.wmux/tmp/terminal-input-1234-abcd1234.txt', filePath);
-    expect(stageInputFile).toHaveBeenCalledWith('supervisor-a', longText);
+    const prompt = stagedTerminalInputPrompt(reference, filePath, 'ordinary');
+    expect(stageInputFile).toHaveBeenCalledWith('supervisor-a', longText, 'ordinary');
     expect(write.mock.calls).toEqual([
       ['supervisor-a', prompt.replace(/\n/gu, ' ')],
       ['supervisor-a', '\r'],
@@ -72,7 +73,7 @@ describe('supervisor surface input delivery', () => {
   it('rejects a staged absolute path that does not match its trusted reference', async () => {
     const write = vi.fn();
     const stageInputFile = vi.fn().mockResolvedValue({
-      reference: '.wmux/tmp/terminal-input-1234-abcd1234.txt',
+      reference: '.wmux/tmp/terminal-input/ordinary/terminal-input-1234-abcd1234.txt',
       filePath: 'E:\\other\\terminal-input-1234-abcd1234.txt',
     });
     Object.defineProperty(globalThis, 'window', {
@@ -80,8 +81,29 @@ describe('supervisor surface input delivery', () => {
       value: { wmux: { pty: { write, stageInputFile } } },
     });
 
-    await expect(sendToSurface('supervisor-a', 'x'.repeat(4_001), true))
+    await expect(sendToSurface('supervisor-a', 'x'.repeat(4_001), true, 'ordinary'))
       .rejects.toThrow('非法绝对路径');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('rejects a staged file returned from the other supervision isolation scope', async () => {
+    const write = vi.fn();
+    const stageInputFile = vi.fn().mockResolvedValue({
+      reference: '.wmux/tmp/terminal-input/project/terminal-input-1234-abcd1234.txt',
+      filePath: 'E:\\project\\.wmux\\tmp\\terminal-input\\project\\terminal-input-1234-abcd1234.txt',
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { wmux: { pty: { write, stageInputFile } } },
+    });
+
+    await expect(sendToSurface('supervisor-a', 'x'.repeat(4_001), true, 'ordinary'))
+      .rejects.toThrow('非法路径');
+    expect(stageInputFile).toHaveBeenCalledWith(
+      'supervisor-a',
+      expect.any(String),
+      'ordinary',
+    );
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -99,7 +121,7 @@ describe('supervisor surface input delivery', () => {
       },
     });
 
-    sendToSurface('worker-a', 'AI 审核意见', true);
+    sendToSurface('worker-a', 'AI 审核意见', true, 'ordinary');
     expect(prepareForUserTerminalInput('worker-a', '用户意见').shouldSubmit).toBe(false);
     submit?.();
 
@@ -123,7 +145,7 @@ describe('supervisor surface input delivery', () => {
       },
     });
 
-    const delivery = sendPermissionResponseReliably('worker-a', 'y');
+    const delivery = sendPermissionResponseReliably('worker-a', 'y', 'ordinary');
     expect(prepareForUserTerminalInput('worker-a', '用户输入').clearAutomatedDraft).toBe(false);
     submit?.();
 
@@ -142,7 +164,7 @@ describe('supervisor surface input delivery', () => {
     });
     markTerminalRuntimeExited('worker-a', 'Codex Agent 已退出');
 
-    expect(() => sendToSurface('worker-a', '项目监督事件：请继续', true))
+    expect(() => sendToSurface('worker-a', '项目监督事件：请继续', true, 'project'))
       .toThrow('终端 Agent 已不可用');
     expect(write).not.toHaveBeenCalled();
   });

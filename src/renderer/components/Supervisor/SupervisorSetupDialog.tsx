@@ -759,6 +759,15 @@ export default function SupervisorSetupDialog() {
     });
   };
 
+  const markTerminalConfigSaved = (surfaceId: string) => {
+    setDirtyTerminalConfigIds((current) => {
+      if (!current.has(surfaceId)) return current;
+      const next = new Set(current);
+      next.delete(surfaceId);
+      return next;
+    });
+  };
+
   const showTerminalConfigSection = (
     surfaceId: string,
     section: TerminalConfigSection,
@@ -1252,7 +1261,7 @@ export default function SupervisorSetupDialog() {
             lane,
             state: String(states[lane.surfaceId]?.state || 'unknown'),
           });
-          sendToSurface(supervisorSurfaceId, text, true);
+          sendToSurface(supervisorSurfaceId, text, true, 'ordinary');
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
@@ -2099,7 +2108,10 @@ export default function SupervisorSetupDialog() {
                               <button
                                 type="button"
                                 className="confirm-dialog__btn supervisor-dialog__drawer-save"
-                                onClick={() => applyConfig(false)}
+                                onClick={() => {
+                                  markTerminalConfigSaved(candidate.surfaceId);
+                                  setTerminalConfigExpanded(candidate.surfaceId, false);
+                                }}
                               >
                                 保存全部设置
                               </button>
@@ -2615,13 +2627,15 @@ export default function SupervisorSetupDialog() {
           <button type="button" className="confirm-dialog__btn" onClick={closeSupervisorSetup}>
             取消
           </button>
-          <button
-            type="button"
-            className="confirm-dialog__btn"
-            onClick={() => applyConfig(false)}
-          >
-            保存设置
-          </button>
+          {!sessionRetained && (
+            <button
+              type="button"
+              className="confirm-dialog__btn"
+              onClick={() => applyConfig(false)}
+            >
+              保存设置
+            </button>
+          )}
           <button
             type="button"
             className="confirm-dialog__btn confirm-dialog__btn--danger"

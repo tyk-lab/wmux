@@ -357,7 +357,13 @@ describe('supervisor decision bridge', () => {
         wmux: {
           pty: {
             write: writes,
-            stageInputFile: vi.fn(async () => ({ reference: '.wmux/tmp/terminal-input-1234-abcd1234.txt' })),
+            stageInputFile: vi.fn(async (
+              _surfaceId: string,
+              _text: string,
+              isolationScope: 'ordinary' | 'project',
+            ) => ({
+              reference: `.wmux/tmp/terminal-input/${isolationScope}/terminal-input-1234-abcd1234.txt`,
+            })),
           },
           notification: { fire: vi.fn() },
           projectManager: {
@@ -5128,7 +5134,11 @@ describe('supervisor decision bridge', () => {
       ?.workItems.find((item) => item.id === 'decision_task')?.startedAt)
       .toBeGreaterThan(previousContinuousWindowStartedAt);
     expect((globalThis.window as any).wmux.pty.stageInputFile)
-      .toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[项目 AI 续接阶段目标'));
+      .toHaveBeenCalledWith(
+        'supervisor-a',
+        expect.stringContaining('[项目 AI 续接阶段目标'),
+        'project',
+      );
   });
 
   it('keeps one durable supervisor transition until the project AI records its resolution', async () => {
