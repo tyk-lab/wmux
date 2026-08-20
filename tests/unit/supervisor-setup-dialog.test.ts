@@ -47,21 +47,20 @@ describe('supervisor setup dialog feedback', () => {
     expect(workspaceSettingsSource).not.toContain('Claude Code');
   });
 
-  it('offers project management as a separate visible mode', () => {
-    expect(dialogSource).toContain('AI 工作模式');
-    expect(dialogSource).toContain('AI 监督');
-    expect(dialogSource).toContain('项目 AI');
-    expect(dialogSource).toContain('openProjectManagerDialog');
-    expect(dialogSource).toContain('两种模式独立配置、独立运行，可随时切换管理');
-    expect(dialogSource).toContain('supervisor-dialog__mode-tabs');
+  it('keeps ordinary supervision and project management in separate dialogs', () => {
+    expect(dialogSource).toContain('普通 AI 监督');
+    expect(dialogSource).toContain('配置直接监督已打开任务终端的独立监督会话');
+    expect(dialogSource).not.toContain('openProjectManagerDialog');
+    expect(dialogSource).not.toContain('AI 工作模式切换');
+    expect(dialogSource).not.toContain('supervisor-dialog__mode-tabs');
     expect(dialogSource).not.toContain('supervisor-dialog__mode-picker');
     expect(dialogSource).not.toContain('创建或打开项目管理终端');
     expect(dialogSource).toContain('if (s.projectManagerTerminal) continue;');
     expect(projectManagerDialogSource).toContain('项目 AI 中心');
-    expect(projectManagerDialogSource).toContain('switchToSupervisorMode');
-    expect(projectManagerDialogSource).toContain('openSupervisorSetup');
-    expect(projectManagerDialogSource).toContain('supervisor-dialog__mode-tabs');
-    expect(projectManagerDialogSource).toContain('切换会取消未确认的目标与需求变更');
+    expect(projectManagerDialogSource).not.toContain('switchToSupervisorMode');
+    expect(projectManagerDialogSource).not.toContain('openSupervisorSetup');
+    expect(projectManagerDialogSource).not.toContain('AI 工作模式切换');
+    expect(projectManagerDialogSource).not.toContain('supervisor-dialog__mode-tabs');
     expect(projectManagerDialogSource).toContain("action: 'start'");
     expect(projectManagerDialogSource).toContain('项目 AI + 监督 AI + 任务 AI');
     expect(projectManagerDialogSource).toContain('选择目录');

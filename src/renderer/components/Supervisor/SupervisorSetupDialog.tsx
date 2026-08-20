@@ -247,7 +247,6 @@ export default function SupervisorSetupDialog() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const agentMeta = useStore((s) => s.agentMeta);
   const closeSupervisorSetup = useStore((s) => s.closeSupervisorSetup);
-  const openProjectManagerDialog = useStore((s) => s.openProjectManagerDialog);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
   const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
   const startOrdinarySupervisor = useStore((s) => s.startOrdinarySupervisor);
@@ -339,11 +338,6 @@ export default function SupervisorSetupDialog() {
     }
     return list;
   }, [workspaces, agentMeta, agentStates, sessionRetained, supervisor.lanes]);
-
-  const openProjectManagerMode = () => {
-    closeSupervisorSetup();
-    openProjectManagerDialog();
-  };
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [setupSection, setSetupSection] = useState<'targets' | 'permissions' | 'agent'>('targets');
@@ -1502,31 +1496,10 @@ export default function SupervisorSetupDialog() {
         }}
       >
         <header className="supervisor-dialog__header">
-          <div className="supervisor-dialog__title">AI 工作模式</div>
+          <div className="supervisor-dialog__title">普通 AI 监督</div>
           <div className="supervisor-dialog__sub">
-            两种模式独立配置、独立运行，可随时切换管理。
+            配置直接监督已打开任务终端的独立监督会话。
           </div>
-          <nav className="supervisor-dialog__mode-tabs" aria-label="AI 工作模式切换">
-            <button
-              type="button"
-              className="supervisor-dialog__mode-tab"
-              data-active="true"
-              aria-pressed="true"
-            >
-              <span>AI 监督</span>
-              <small>直接监督已打开的任务终端</small>
-            </button>
-            <button
-              type="button"
-              className="supervisor-dialog__mode-tab"
-              data-active="false"
-              aria-pressed="false"
-              onClick={openProjectManagerMode}
-            >
-              <span>项目 AI</span>
-              <small>按项目组织独立会话与执行链</small>
-            </button>
-          </nav>
         </header>
 
         <div className="supervisor-dialog__body">

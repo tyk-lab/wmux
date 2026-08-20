@@ -230,7 +230,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const workspaces = useStore((state) => state.workspaces);
   const activeWorkspaceId = useStore((state) => state.activeWorkspaceId);
   const close = useStore((state) => state.closeProjectManagerDialog);
-  const openSupervisorSetup = useStore((state) => state.openSupervisorSetup);
   const selectProjectManager = useStore((state) => state.selectProjectManager);
   const workspacePrefs = useStore((state) => state.workspacePrefs);
   const setWorkspacePrefs = useStore((state) => state.setWorkspacePrefs);
@@ -833,13 +832,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     close();
   };
 
-  const switchToSupervisorMode = () => {
-    if (busy) return;
-    if (!creating && session && projectDefinitionDraftDirty) discardProjectDefinitionChanges();
-    close();
-    openSupervisorSetup();
-  };
-
   const interveneWorkItem = async () => {
     if (!session || !selectedInterventionWorkItem || busy) {
       if (!selectedInterventionWorkItem) setWorkItemInterventionNotice('请先选择一个尚未结束的工作项。');
@@ -886,33 +878,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               ? `${projectDisplayName(session)} · G${currentGoal?.sequence || 1} ${session.goal}`
               : '项目是稳定容器；每个项目由独立项目 AI 围绕当前主目标推进'}
           </div>
-          {!embedded && <nav className="supervisor-dialog__mode-tabs" aria-label="AI 工作模式切换">
-            <button
-              type="button"
-              className="supervisor-dialog__mode-tab"
-              data-active="false"
-              aria-pressed="false"
-              disabled={busy}
-              title={projectDefinitionDraftDirty ? '切换会取消未确认的目标与需求变更' : '切换到 AI 监督'}
-              onClick={switchToSupervisorMode}
-            >
-              <span>AI 监督</span>
-              <small>
-                {projectDefinitionDraftDirty
-                  ? '切换会取消未确认的目标与需求变更'
-                  : '直接监督已打开的任务终端'}
-              </small>
-            </button>
-            <button
-              type="button"
-              className="supervisor-dialog__mode-tab"
-              data-active="true"
-              aria-pressed="true"
-            >
-              <span>项目 AI</span>
-              <small>按项目组织独立会话与执行链</small>
-            </button>
-          </nav>}
         </header>
 
         <div className="supervisor-dialog__body">

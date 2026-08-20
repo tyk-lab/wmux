@@ -41,55 +41,6 @@
   line-height: 1.4;
 }
 
-.supervisor-dialog__mode-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.supervisor-dialog__mode-tab {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  padding: 9px 11px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
-  background: rgba(0, 0, 0, 0.2);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.supervisor-dialog__mode-tab span {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.supervisor-dialog__mode-tab small {
-  overflow: hidden;
-  color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.58);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.supervisor-dialog__mode-tab[data-active='true'] {
-  border-color: rgba(80, 160, 255, 0.45);
-  background: rgba(80, 160, 255, 0.14);
-}
-
-.supervisor-dialog__mode-tab:hover:not([data-active='true']):not(:disabled) {
-  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
-}
-
-.supervisor-dialog__mode-tab:disabled {
-  cursor: wait;
-  opacity: 0.58;
-}
-
 .supervisor-dialog__setup-layout {
   display: grid;
   grid-template-columns: 176px minmax(0, 1fr);
@@ -2142,10 +2093,6 @@
 
   .supervisor-dialog__drawer-actions > span {
     flex-basis: 100%;
-  }
-
-  .supervisor-dialog__mode-tabs {
-    grid-template-columns: 1fr;
   }
 
   .project-manager-dialog__architecture {
