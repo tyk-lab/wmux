@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cross-platform installer for Claude/Kimi/Codex/Grok/Pi/OpenCode lifecycle hooks.
+ * Cross-platform installer for Kimi/Codex/Grok/Pi/OpenCode lifecycle hooks.
  * On Windows, Pi is configured to prefer Git Bash when no valid custom shell exists.
  *
  * Usage (from repo root):
@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const cli = path.join(root, 'dist', 'cli', 'wmux.js');
+const builtHook = path.join(root, 'dist', 'cli', 'wmux-hook.js');
 const hook = path.join(root, 'resources', 'cli', 'wmux-hook.js');
 
 const args = process.argv.slice(2);
@@ -97,6 +98,14 @@ if (!skipBuild && needsBuild()) {
 
 if (!fs.existsSync(cli)) {
   die(`Missing ${cli}. Run: npm run build:main`);
+}
+if (!fs.existsSync(builtHook)) {
+  die(`Missing ${builtHook}. Run: npm run build:main`);
+}
+if (!fs.existsSync(hook) || fs.readFileSync(hook).compare(fs.readFileSync(builtHook)) !== 0) {
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.copyFileSync(builtHook, hook);
+  console.log(`→ Sync ${path.relative(root, hook)}`);
 }
 
 const argv = [cli, 'install-hooks'];

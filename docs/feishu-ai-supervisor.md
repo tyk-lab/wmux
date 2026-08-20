@@ -175,7 +175,7 @@ supervisor_reasoning: high
 - `task_description` 可选，仅用于补充说明停止条件，不会作为工作终端的新任务注入。
 - `plan_file` 可选，必须是**运行 wmux 的 Windows 电脑上存在的绝对文件路径**；监督 AI 会在裁决时按文件更新时间决定是否重读。
 - `autonomous` 只能是 `on` 或 `off`。即使为 `on`，删除或覆盖文件、Git 推送/重写、发布部署、云端或生产、凭据与权限变更仍必须人工处理。
-- `supervisor_launch_cmd` 仅允许 `codex`、`claude`、`kimi`、`grok`、`pi`、`opencode` 或留空，不能填任意 shell 命令。
+- `supervisor_launch_cmd` 仅允许 `codex`、`kimi`、`grok`、`pi`、`opencode` 或留空，不能填任意 shell 命令。
 
 `START` 只能引用同一台 wmux 的 `LIST` 返回的 `surfaceId`，不能自行编造。
 

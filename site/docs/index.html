@@ -4,12 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Documentation wmux — guide complet pour débutants</title>
-  <meta name="description" content="Documentation complète de wmux : installation, concepts, raccourcis clavier, intégration Claude Code, plugin wmux-orchestrator. Un guide pour commencer à zéro." />
   <meta name="author" content="amirlehmam" />
   <meta name="theme-color" content="#0a0a0a" />
 
   <meta property="og:title" content="Documentation wmux — guide complet" />
-  <meta property="og:description" content="Tout ce qu'il faut savoir pour utiliser wmux : de l'installation au plugin Claude Code." />
+  <meta property="og:description" content="Tout ce qu'il faut savoir pour utiliser wmux : de l'installation au plugin AI agents." />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://wmux.org/docs" />
   <meta property="og:site_name" content="wmux" />
@@ -395,7 +394,6 @@
       </div>
       <nav>
         <a href="/">Accueil</a>
-        <a href="https://plugin.wmux.org">Plugin</a>
         <a href="https://github.com/amirlehmam/wmux">GitHub</a>
         <span style="color: var(--border); margin: 0 4px 0 10px;" aria-hidden="true">·</span>
         <a href="/docs/" style="color: var(--text); font-weight: 500;">FR</a>
@@ -413,7 +411,6 @@
         <li><a href="#first-launch">Premier lancement</a></li>
         <li><a href="#concepts">Les concepts de base</a></li>
         <li><a href="#shortcuts">Raccourcis clavier</a></li>
-        <li><a href="#claude-code">Travailler avec Claude Code</a></li>
         <li><a href="#split-panes">Diviser un panneau</a></li>
         <li><a href="#browser">Le navigateur intégré</a></li>
         <li><a href="#notifications">Notifications</a></li>
@@ -421,7 +418,6 @@
         <li><a href="#themes">Thèmes</a></li>
         <li><a href="#shell">Intégration shell</a></li>
         <li><a href="#cli">Le CLI <code>wmux</code></a></li>
-        <li><a href="#plugin-orchestrator">Plugin orchestrator</a></li>
         <li><a href="#faq">Problèmes courants</a></li>
         <li><a href="#resources">Ressources</a></li>
       </ul>
@@ -436,7 +432,7 @@
       <!-- ─────────────────────────────────────────────────────── -->
       <h2 id="what-is-wmux">Qu'est-ce que wmux ?</h2>
       <p>
-        <strong>wmux</strong> est une application de bureau pour Windows qui te permet d'avoir plusieurs terminaux ouverts en même temps, organisés en onglets verticaux, avec la possibilité de diviser chaque onglet en plusieurs panneaux. C'est l'équivalent Windows d'outils comme tmux (Linux/macOS), Ghostty, ou Warp — mais pensé spécifiquement pour travailler avec des agents IA comme Claude Code.
+        <strong>wmux</strong> est une application de bureau pour Windows qui te permet d'avoir plusieurs terminaux ouverts en même temps, organisés en onglets verticaux, avec la possibilité de diviser chaque onglet en plusieurs panneaux. C'est l'équivalent Windows d'outils comme tmux (Linux/macOS), Ghostty, ou Warp — mais pensé spécifiquement pour travailler avec des agents IA comme AI agents.
       </p>
       <p>
         Concrètement, quand tu lances wmux, tu obtiens :
@@ -444,16 +440,15 @@
       <ul>
         <li>Une <strong>fenêtre unique</strong> qui peut contenir autant de terminaux que tu veux</li>
         <li>Une <strong>barre latérale</strong> qui liste tous tes espaces de travail, avec la branche git, le répertoire courant, les ports actifs, le statut des PR GitHub, et les notifications</li>
-        <li>Un <strong>navigateur web intégré</strong> (à droite) qui peut afficher ce que ton agent Claude Code est en train de faire en temps réel</li>
+        <li>Un <strong>navigateur web intégré</strong> (à droite) qui peut afficher ce que ton agent AI agents est en train de faire en temps réel</li>
         <li>Des <strong>notifications visuelles et sonores</strong> quand un agent a fini une tâche ou attend une réponse</li>
-        <li>L'<strong>intégration automatique</strong> avec Claude Code, sans avoir à configurer quoi que ce soit</li>
       </ul>
       <p>
-        <strong>À qui c'est destiné ?</strong> À toute personne qui veut lancer plusieurs agents IA en parallèle sur Windows et garder un œil sur ce qu'ils font. Si tu utilises déjà Claude Code et que tu en as marre de jongler entre plusieurs fenêtres de terminal, wmux est fait pour toi.
+        <strong>À qui c'est destiné ?</strong> À toute personne qui veut lancer plusieurs agents IA en parallèle sur Windows et garder un œil sur ce qu'ils font. Si tu utilises déjà AI agents et que tu en as marre de jongler entre plusieurs fenêtres de terminal, wmux est fait pour toi.
       </p>
 
       <div class="callout">
-        <strong>Le problème que wmux résout.</strong> Les agents IA comme Claude Code travaillent par bursts — parfois 30 secondes, parfois 10 minutes. Pendant qu'un agent tourne, tu pourrais en lancer un autre. Sans wmux, tu dois ouvrir plusieurs fenêtres de terminal, les organiser à la main, et tu rates les notifications quand tu es sur un autre écran. Avec wmux, tout est dans une seule fenêtre, chaque agent a sa place, et les notifications te trouvent où que tu sois.
+        <strong>Le problème que wmux résout.</strong> Les agents IA comme AI agents travaillent par bursts — parfois 30 secondes, parfois 10 minutes. Pendant qu'un agent tourne, tu pourrais en lancer un autre. Sans wmux, tu dois ouvrir plusieurs fenêtres de terminal, les organiser à la main, et tu rates les notifications quand tu es sur un autre écran. Avec wmux, tout est dans une seule fenêtre, chaque agent a sa place, et les notifications te trouvent où que tu sois.
       </div>
 
       <!-- ─────────────────────────────────────────────────────── -->
@@ -599,28 +594,7 @@
       </p>
 
       <!-- ─────────────────────────────────────────────────────── -->
-      <h2 id="claude-code">Travailler avec Claude Code</h2>
-      <p>
-        C'est ici que wmux devient intéressant. wmux détecte automatiquement Claude Code et configure son intégration sans que tu aies à faire quoi que ce soit. Quand tu lances <code>claude</code> dans un terminal wmux, les choses suivantes se passent en arrière-plan :
-      </p>
-      <ul>
-        <li>wmux injecte ses instructions dans <code>~/.claude/CLAUDE.md</code> (lecture seule, surgical, non-intrusif) pour que Claude Code sache qu'il tourne dans wmux et utilise le navigateur intégré au lieu d'ouvrir Playwright.</li>
-        <li>Les <strong>hooks Claude Code</strong> (<code>SessionStart</code>, <code>PostToolUse</code>, <code>SubagentStop</code>, <code>Stop</code>) sont auto-enregistrés. Ils rapportent en temps réel dans la barre latérale l'activité de l'agent : quels outils il utilise, combien, s'il est en pause, s'il attend une réponse.</li>
-        <li>Un <strong>proxy CDP</strong> sur <code>localhost:9222</code> expose le navigateur intégré à Claude Code via <code>chrome-devtools-mcp</code>. Chaque page, clic, formulaire que l'agent visite est affiché dans ton panneau navigateur.</li>
-      </ul>
-      <p>
-        Résultat concret : tu lances <code>claude</code>, tu lui demandes "navigue sur github.com et cherche le repo wmux", et tu vois en temps réel dans le panneau navigateur ce qu'il fait. Pas besoin de Playwright, pas de fenêtres invisibles, pas de configuration.
-      </p>
 
-      <h3>Le plugin wmux-orchestrator</h3>
-      <p>
-        Pour aller plus loin avec Claude Code, wmux embarque un plugin appelé <strong>wmux-orchestrator</strong>. Il te permet de lancer plusieurs agents Claude Code en parallèle pour une même tâche, chacun dans son propre pane visible. Le plugin analyse ta codebase, découpe la tâche en sous-tâches, et coordonne tout.
-      </p>
-      <p>
-        Tout est expliqué en détail sur <a href="https://plugin.wmux.org" target="_blank" rel="noopener">plugin.wmux.org</a> avec un simulateur interactif.
-      </p>
-
-      <!-- ─────────────────────────────────────────────────────── -->
       <h2 id="split-panes">Diviser un panneau (split panes)</h2>
       <p>
         Avoir plusieurs terminaux côte à côte, c'est souvent ce qui te fait gagner le plus de temps. wmux rend ça trivial.
@@ -656,7 +630,7 @@
         wmux embarque un vrai navigateur Chromium (pas une webview basique) que tu peux ouvrir à côté de n'importe quel terminal. Il sert à deux choses :
       </p>
       <ol>
-        <li><strong>Voir en direct ce que Claude Code fait</strong> quand il navigue sur le web via <code>chrome-devtools-mcp</code>. Chaque action de l'agent est visible en temps réel, comme si tu regardais par-dessus son épaule.</li>
+        <li><strong>Voir en direct ce que AI agents fait</strong> quand il navigue sur le web via <code>chrome-devtools-mcp</code>. Chaque action de l'agent est visible en temps réel, comme si tu regardais par-dessus son épaule.</li>
         <li><strong>Consulter la documentation d'une librairie, vérifier un dashboard, ouvrir Stack Overflow</strong> sans quitter wmux.</li>
       </ol>
       <p>
@@ -782,45 +756,15 @@ wmux notify "Build terminé avec succès"
 wmux tree</code></pre>
 
       <p>
-        La liste complète des commandes est disponible via <code>wmux --help</code> dans n'importe quel terminal. Le CLI est ce qui permet à Claude Code et à tout autre outil d'automatisation d'interagir avec wmux.
+        La liste complète des commandes est disponible via <code>wmux --help</code> dans n'importe quel terminal. Le CLI est ce qui permet à AI agents et à tout autre outil d'automatisation d'interagir avec wmux.
       </p>
 
       <div class="callout tip">
-        <strong>Pourquoi pas MCP ?</strong> wmux n'expose pas de serveur MCP, volontairement. Le CLI via named pipe est plus simple, plus fiable, et s'intègre mieux avec les workflows existants. Claude Code peut appeler <code>wmux</code> directement via <code>Bash</code> sans avoir besoin d'une couche d'abstraction supplémentaire.
+        <strong>Pourquoi pas MCP ?</strong> wmux n'expose pas de serveur MCP, volontairement. Le CLI via named pipe est plus simple, plus fiable, et s'intègre mieux avec les workflows existants. AI agents peut appeler <code>wmux</code> directement via <code>Bash</code> sans avoir besoin d'une couche d'abstraction supplémentaire.
       </div>
 
       <!-- ─────────────────────────────────────────────────────── -->
-      <h2 id="plugin-orchestrator">Le plugin wmux-orchestrator</h2>
-      <p>
-        wmux embarque un plugin Claude Code appelé <strong>wmux-orchestrator</strong> qui transforme une seule tâche complexe en plusieurs agents travaillant en parallèle, chacun dans son propre pane visible.
-      </p>
-      <p>
-        Par exemple, si tu demandes "refactorer l'authentification pour utiliser JWT", l'orchestrateur va :
-      </p>
-      <ol>
-        <li>Analyser la codebase et identifier tous les fichiers concernés</li>
-        <li>Découper la tâche en sous-tâches (types partagés, service, middleware, tests)</li>
-        <li>Organiser les sous-tâches en vagues selon leurs dépendances</li>
-        <li>Spawner un agent Claude Code par sous-tâche, chacun dans son propre pane wmux</li>
-        <li>Coordonner les transitions de vagues automatiquement</li>
-        <li>Lancer un agent reviewer à la fin pour vérifier la cohérence</li>
-      </ol>
-      <p>
-        Le plugin est déjà installé avec wmux (il est copié dans <code>~/.claude/plugins/cache/</code> au premier démarrage). Tu peux l'utiliser directement avec :
-      </p>
-      <pre><code>/wmux-orchestrator:orchestrate "refactorer l'auth en JWT"</code></pre>
-      <p>
-        Pour une explication complète avec un simulateur interactif, une démo en direct, l'architecture détaillée et un guide d'utilisation étape par étape, visite <a href="https://plugin.wmux.org" target="_blank" rel="noopener">plugin.wmux.org</a>.
-      </p>
 
-      <p style="margin-top: 24px;">
-        <a href="https://plugin.wmux.org" target="_blank" rel="noopener" class="btn-link">
-          Voir plugin.wmux.org
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7"/><path d="M7 7h10v10"/></svg>
-        </a>
-      </p>
-
-      <!-- ─────────────────────────────────────────────────────── -->
       <h2 id="faq">Problèmes courants</h2>
 
       <h3>wmux ne démarre pas, j'ai une erreur à propos de <code>node-pty</code></h3>
@@ -833,13 +777,6 @@ wmux tree</code></pre>
         Vérifie que ton antivirus ou un logiciel comme AutoHotkey n'intercepte pas les combinaisons. Windows Defender et la plupart des antivirus grand public n'interfèrent pas, mais certains outils de productivité le font. Teste dans les paramètres → <em>Raccourcis clavier</em> avec le bouton "tester".
       </p>
 
-      <h3>Claude Code ne reconnaît pas wmux</h3>
-      <p>
-        Quand tu lances <code>claude</code> dans un terminal wmux, vérifie que les variables d'environnement sont injectées : tape <code>echo $env:WMUX</code> (PowerShell) ou <code>echo $WMUX</code> (bash). Tu devrais voir <code>1</code>. Si tu vois vide, c'est que le shell d'intégration ne s'est pas chargé — redémarre le shell ou relance wmux.
-      </p>
-      <p>
-        Vérifie aussi que <code>~/.claude/CLAUDE.md</code> contient bien une section commençant par <code># wmux</code>. Si elle manque, c'est que l'auto-injection a échoué. Relance wmux depuis un terminal admin et regarde les logs.
-      </p>
 
       <h3>Le navigateur intégré est lent ou noir</h3>
       <p>
@@ -853,7 +790,6 @@ wmux tree</code></pre>
 
       <h3>Puis-je utiliser wmux sur macOS ou Linux ?</h3>
       <p>
-        Non. wmux est spécifiquement conçu pour Windows (il utilise ConPTY, des APIs Win32 natives, et des optimisations Electron pour Windows). Pour macOS, utilise <a href="https://cmux.com" target="_blank" rel="noopener">cmux</a>, qui est le projet parent écrit en Swift/AppKit. Pour Linux, il y a tmux, Ghostty, ou Warp — mais tu n'auras pas le plugin wmux-orchestrator.
       </p>
 
       <!-- ─────────────────────────────────────────────────────── -->
@@ -866,7 +802,6 @@ wmux tree</code></pre>
         <li><strong>Releases</strong> — <a href="https://github.com/amirlehmam/wmux/releases" target="_blank" rel="noopener">Toutes les versions</a> avec changelog</li>
         <li><strong>Discussions</strong> — <a href="https://github.com/amirlehmam/wmux/discussions" target="_blank" rel="noopener">GitHub Discussions</a> pour poser des questions</li>
         <li><strong>Issues</strong> — <a href="https://github.com/amirlehmam/wmux/issues" target="_blank" rel="noopener">Rapporter un bug</a></li>
-        <li><strong>Plugin orchestrator</strong> — <a href="https://plugin.wmux.org" target="_blank" rel="noopener">plugin.wmux.org</a> : documentation complète du plugin avec simulateur interactif</li>
         <li><strong>cmux (macOS)</strong> — <a href="https://cmux.com" target="_blank" rel="noopener">cmux.com</a> : la version macOS dont wmux est le fork Windows</li>
       </ul>
 

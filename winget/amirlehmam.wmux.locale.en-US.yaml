@@ -15,7 +15,7 @@ ShortDescription: Windows terminal multiplexer for AI coding agents, with a buil
 Description: >-
   wmux is an Electron-based Windows terminal multiplexer built for AI coding
   agents. It provides split panes, tabbed surfaces, a side-by-side browser panel
-  the agent can drive, a named-pipe CLI, and first-class Claude Code / OpenCode
+  the agent can drive, a named-pipe CLI, and first-class AI agent
   integration.
 Moniker: wmux
 Tags:
@@ -24,7 +24,6 @@ Tags:
   - tmux
   - developer-tools
   - ai
-  - claude-code
   - electron
 ReleaseNotesUrl: https://github.com/amirlehmam/wmux/releases/tag/v0.8.6
 ManifestType: defaultLocale

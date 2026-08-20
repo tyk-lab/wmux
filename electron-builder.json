@@ -45,11 +45,10 @@
     { "from": "resources/themes", "to": "themes" },
     { "from": "resources/sounds", "to": "sounds" },
     { "from": "resources/skills", "to": "skills" },
-    { "from": "resources/claude-instructions.md", "to": "claude-instructions/claude-instructions.md" },
+    { "from": "resources/agent-instructions.md", "to": "agent-instructions/agent-instructions.md" },
     { "from": "src/shell-integration", "to": "shell-integration" },
     { "from": "dist/cli", "to": "cli", "filter": ["*.js"] },
     { "from": "dist/shared", "to": "shared", "filter": ["*.js"] },
-    { "from": "src/cli-bin", "to": "cli-bin" },
-    { "from": "resources/wmux-orchestrator", "to": "wmux-orchestrator" }
+    { "from": "src/cli-bin", "to": "cli-bin" }
   ]
 }

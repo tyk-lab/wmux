@@ -5,7 +5,7 @@
  *
  * Why Electron and not sharp/resvg: this repo lives under a path with a space
  * ("OneDrive - Pulsa"), which breaks node-gyp — every native image dependency
- * is off the table (see the build gotcha in CLAUDE.md). Electron is already a
+ * is off the table in the supported Windows build. Electron is already a
  * devDependency and rasterizes SVG exactly, so this costs zero new packages and
  * zero native builds.
  *

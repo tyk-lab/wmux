@@ -6,7 +6,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * wmux hook helper — sends a hook event to the wmux pipe.
- * Called by Claude / Kimi / Codex / Grok / Pi hooks.
+ * Called by Kimi / Codex / Grok / Pi hooks.
  *
  * Usage:
  *   node wmux-hook.js <tool-name> [--agent Name]   # PostToolUse
@@ -17,9 +17,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   - PostToolUse Edit/Write → extracts tool_input.file_path
  *   - Notification           → extracts the `message`
  * WMUX_SURFACE_ID ties the event to its pane.
- * --agent (or WMUX_AGENT env) labels the notification (Kimi / Claude / …).
+ * --agent (or WMUX_AGENT env) labels the notification (Kimi / Codex / …).
  */
 const net_1 = __importDefault(require("net"));
+const node_crypto_1 = require("node:crypto");
 const argv = process.argv.slice(2);
 function takeFlag(args, name) {
     const i = args.indexOf(name);
@@ -46,6 +47,7 @@ const surfaceId = process.env.WMUX_SURFACE_ID || '';
 const agent = agentFlag || process.env.WMUX_AGENT || '';
 let stdinData = '';
 let sent = false;
+let fallbackTimer;
 const MAX_STDIN = 64 * 1024; // 64KB cap
 const MAX_TASK = 800;
 const MAX_PIPE_ATTEMPTS = 3;
@@ -59,6 +61,8 @@ function sendHook() {
     if (sent)
         return;
     sent = true;
+    if (fallbackTimer)
+        clearTimeout(fallbackTimer);
     let file = '';
     let message = '';
     let task = '';
@@ -79,6 +83,7 @@ function sendHook() {
         // stdin wasn't valid JSON — that's fine.
     }
     const params = {};
+    params.hookId = (0, node_crypto_1.randomUUID)();
     if (event)
         params.event = event;
     if (tool)
@@ -102,21 +107,39 @@ function sendHook() {
     let attempt = 0;
     const write = () => {
         attempt++;
-        let accepted = false;
+        let completed = false;
         let retryScheduled = false;
+        let response = '';
         const client = net_1.default.connect({ path: pipePath }, () => {
-            client.write(wireMessage, () => {
-                accepted = true;
-                client.end();
-            });
+            client.write(wireMessage);
         });
         client.setTimeout(1000);
         const retry = () => {
-            if (accepted || retryScheduled || attempt >= MAX_PIPE_ATTEMPTS)
+            if (completed || retryScheduled)
                 return;
+            if (attempt >= MAX_PIPE_ATTEMPTS) {
+                process.exitCode = 1;
+                return;
+            }
             retryScheduled = true;
             setTimeout(write, attempt * 200);
         };
+        client.on('data', (chunk) => {
+            response += chunk.toString();
+            if (!response.includes('\n'))
+                return;
+            completed = true;
+            client.end();
+            try {
+                const reply = JSON.parse(response.trim());
+                if (reply.error)
+                    process.exitCode = 1;
+            }
+            catch {
+                process.exitCode = 1;
+            }
+        });
+        client.once('end', retry);
         client.once('error', retry);
         client.once('timeout', () => {
             client.destroy();
@@ -130,6 +153,6 @@ process.stdin.on('data', (chunk) => { if (stdinData.length < MAX_STDIN)
     stdinData += chunk; });
 process.stdin.on('end', sendHook);
 process.stdin.on('error', sendHook);
-setTimeout(sendHook, 1000);
+fallbackTimer = setTimeout(sendHook, 1000);
 if (process.stdin.readableEnded)
     sendHook();
