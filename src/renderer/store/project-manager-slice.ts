@@ -45,7 +45,6 @@ export interface ProjectManagerSlice {
     supervisorNotes?: string[];
     planFiles?: ProjectManagerSession['planFiles'];
     doneWhen: string[];
-    goalConstruction?: boolean;
     managerSurfaceId?: string;
     feishuChatId?: string;
   }) => ProjectManagerSession;
@@ -189,13 +188,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         reason: '项目首次创建，需要先建立项目认知基线',
         requestedAt: now,
       },
-      ...(options.goalConstruction ? {
-        goalConstruction: {
-          status: 'drafting' as const,
-          initialIdea: options.goal,
-          startedAt: now,
-        },
-      } : {}),
       managerSurfaceId: options.managerSurfaceId,
       feishuChatId: options.feishuChatId,
       workItems: [],

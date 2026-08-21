@@ -39,7 +39,10 @@ describe('managed agent watchdog bridge', () => {
             write: vi.fn(),
           },
           notification: { fire: vi.fn() },
-          projectManager: { saveSession: vi.fn(async () => ({ ok: true })) },
+          projectManager: {
+            saveSession: vi.fn(async () => ({ ok: true })),
+            appendRecord: vi.fn(async () => ({ ok: true })),
+          },
         },
         setTimeout: globalThis.setTimeout,
         __wmux_getAgentStates: () => ({
@@ -137,5 +140,43 @@ describe('managed agent watchdog bridge', () => {
     });
     await vi.advanceTimersByTimeAsync(20 * 60_000);
     expect(writeReliable).not.toHaveBeenCalled();
+  });
+
+  it('resumes after semantic progress when PermissionResult was dropped', async () => {
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'manager-watchdog', event: 'UserPromptSubmit',
+    });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    agentState = 'blocked';
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'manager-watchdog', event: 'PermissionRequest',
+    });
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000);
+
+    agentState = 'working';
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'manager-watchdog', event: 'PostToolUse',
+    });
+    await vi.advanceTimersByTimeAsync(35 * 60_000);
+
+    expect(writeReliable).toHaveBeenLastCalledWith('manager-watchdog', '\x1b');
+  });
+
+  it('records and notifies when a stuck runtime reaches automatic rebuild', async () => {
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'manager-watchdog', event: 'UserPromptSubmit', task: '继续当前项目',
+    });
+
+    await vi.advanceTimersByTimeAsync(42 * 60_000);
+
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'guard-triggered',
+      payload: expect.objectContaining({
+        action: 'watchdog-rebuild-manager', attentionRequired: true,
+      }),
+    }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目执行护栏需要处理',
+    }));
   });
 });

@@ -263,14 +263,6 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
     || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
     || (session.orientation !== undefined && !normalizeProjectOrientationState(session.orientation))
-    || (session.goalConstruction !== undefined && (
-      !session.goalConstruction || typeof session.goalConstruction !== 'object'
-      || !['drafting', 'confirmed'].includes(String((session.goalConstruction as Record<string, unknown>).status))
-      || typeof (session.goalConstruction as Record<string, unknown>).initialIdea !== 'string'
-      || !Number.isFinite((session.goalConstruction as Record<string, unknown>).startedAt)
-      || ((session.goalConstruction as Record<string, unknown>).confirmedAt !== undefined
-        && !Number.isFinite((session.goalConstruction as Record<string, unknown>).confirmedAt))
-    ))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')

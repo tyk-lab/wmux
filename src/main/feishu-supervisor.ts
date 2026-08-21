@@ -1113,6 +1113,8 @@ export function buildProjectClarificationCard(
 }
 
 export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): object {
+  const watchdogRebuild = record.type === 'guard-triggered'
+    && String(record.payload?.action || '').startsWith('watchdog-rebuild-');
   const role = record.type === 'manager-runtime-failed'
     ? '项目管理 AI'
     : record.type === 'project-paused'
@@ -1126,7 +1128,7 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
             : record.type === 'manager-delivery-failed'
               ? '项目管理消息投递'
               : record.type === 'guard-triggered'
-                ? '项目执行护栏'
+                ? watchdogRebuild ? '项目 Agent 卡死看门狗' : '项目执行护栏'
                 : '项目执行异常';
   const detail = String(record.payload?.message || record.payload?.detail || '运行时或控制链路不可用').trim();
   const suggestion = record.type === 'manager-runtime-failed'
@@ -1142,7 +1144,9 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
             : record.type === 'manager-delivery-failed'
               ? '检查项目管理 AI 运行时与控制链路，确认消息已送达后再恢复。'
               : record.type === 'guard-triggered'
-                ? '打开项目工作台查看预算与护栏原因；调整任务合同或恢复项目后再继续。'
+                ? watchdogRebuild
+                  ? '控制层正在使用持久化上下文重建该 Agent；打开项目工作台查看恢复结果，不要向旧终端重复发送任务。'
+                  : '打开项目工作台查看预算与护栏原因；调整任务合同或恢复项目后再继续。'
                 : '打开项目工作台查看异常详情，排除阻塞后再恢复自动推进。';
   return {
     schema: '2.0',

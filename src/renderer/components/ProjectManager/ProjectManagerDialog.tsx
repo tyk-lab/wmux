@@ -118,11 +118,9 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
 
 function projectActivityLabel(session: {
   status: string;
-  goalConstruction?: { status: 'drafting' | 'confirmed' };
   activeGoalId?: string;
   workItems: Array<{ goalId?: string; status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }>;
 }): string {
-  if (session.goalConstruction?.status === 'drafting') return '目标构建中';
   if (session.status !== 'active') return STATUS_LABELS[session.status] || session.status;
   const workItems = session.workItems.filter((item) => (
     !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
@@ -929,24 +927,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     close();
   };
 
-  const confirmGoalConstruction = async () => {
-    if (!session || busy || session.goalConstruction?.status !== 'drafting') return;
-    setBusy(true);
-    setNotice('');
-    setConfigNotice('');
-    try {
-      const result = await invoke({
-        action: 'confirm-goal-construction',
-        projectId: session.id,
-      });
-      setConfigNotice(result.message || '项目目标已确认，项目 AI 正在进入正式规划流程。');
-    } catch (error) {
-      setNotice(String((error as Error)?.message || error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const interveneWorkItem = async () => {
     if (!session || !selectedInterventionWorkItem || busy) {
       if (!selectedInterventionWorkItem) setWorkItemInterventionNotice('请先选择一个尚未结束的工作项。');
@@ -1592,31 +1572,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               {activeView === 'conversation' && <section className="supervisor-dialog__group project-manager-dialog__chat">
                 <div className="project-manager-dialog__section-head">
                   <div>
-                    <div className="supervisor-dialog__group-title">{session.goalConstruction?.status === 'drafting' ? '与项目 AI 构建目标' : '与当前项目 AI 对话'}</div>
-                    <div className="supervisor-dialog__hint">{session.goalConstruction?.status === 'drafting'
-                      ? '当前 Agent 只读了解项目并维护下面的目标草案；你确认前不会建立阶段计划或启动执行链。'
-                      : `当前项目：${session.goal}。该项目 AI 只管理这个项目；确认的新目标、范围和验收细节会写回项目配置并触发重规划。`}</div>
+                    <div className="supervisor-dialog__group-title">与当前项目 AI 对话</div>
+                    <div className="supervisor-dialog__hint">当前项目：{session.goal}。该项目 AI 只管理这个项目；确认的新目标、范围和验收细节会写回项目配置并触发重规划。</div>
                   </div>
                   <span className="project-manager-dialog__chat-project">{session.projectDir}</span>
                 </div>
-                {session.goalConstruction?.status === 'drafting' && (
-                  <div className="project-manager-dialog__clarification" role="region" aria-label="待确认的项目目标草案">
-                    <div className="supervisor-dialog__group-title">待确认的项目目标草案</div>
-                    <dl className="project-manager-dialog__definition-grid">
-                      <dt>主目标</dt><dd>{session.goal || '等待项目 AI 补全'}</dd>
-                      <dt>稳定范围</dt><dd>{session.projectScope || '仅限当前项目目录'}</dd>
-                      <dt>前置条件</dt><dd>{session.preconditions.length > 0 ? session.preconditions.join('\n') : '等待项目 AI 补全'}</dd>
-                      <dt>完成条件</dt><dd>{session.doneWhen.length > 0 ? session.doneWhen.join('\n') : '等待项目 AI 补全'}</dd>
-                    </dl>
-                    <div className="supervisor-dialog__hint">继续对话会让同一个项目 AI 更新草案。确认后该 Agent 原地进入需求充分性确认、阶段规划和执行流程。</div>
-                    <button
-                      type="button"
-                      className="confirm-dialog__btn project-manager-dialog__apply-btn"
-                      disabled={busy || !!session.pendingUserQuestion || session.preconditions.length === 0 || session.doneWhen.length === 0}
-                      onClick={() => void confirmGoalConstruction()}
-                    >{busy ? '正在确认…' : '确认目标并开始'}</button>
-                  </div>
-                )}
                 <div ref={conversationRef} className="project-manager-dialog__conversation">
                   {conversation.length === 0 && <div className="supervisor-dialog__empty">会话已建立，可直接讨论需求、确认细节、调整方向、暂停或改线。</div>}
                   {conversation.map((event) => (
@@ -1693,8 +1653,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               )}
               <div className="project-manager-dialog__inspector-actions">
                 {session.status === 'active' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('pause')}>暂停项目</button>}
-                {session.goalConstruction?.status !== 'drafting'
-                  && (session.status === 'paused' || session.status === 'waiting')
+                {(session.status === 'paused' || session.status === 'waiting')
                   && currentGoal?.status !== 'achieved'
                   && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('resume')}>恢复项目</button>}
                 {session.status === 'waiting' && currentGoal?.status === 'achieved' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {

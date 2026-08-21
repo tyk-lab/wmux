@@ -4506,116 +4506,6 @@ interface PendingProjectManagerDelivery extends ProjectManagerPendingDelivery {
   alerted: boolean;
 }
 
-function projectGoalConstructionBriefing(session: ProjectManagerSession): string {
-  return [
-    '[项目目标构建｜控制层｜确认前禁止执行]',
-    `项目 ID：${session.id}`,
-    `项目名称：${session.projectName}`,
-    `项目目录：${session.projectDir}`,
-    `稳定项目范围：${session.projectScope}`,
-    `用户初始想法：${session.goalConstruction?.initialIdea || session.goal}`,
-    '',
-    '你是该项目以后正式使用的同一个项目 AI，目前处于“目标构建状态”。用户确认后你会原地进入项目规划和执行，不会更换 Agent 或丢失当前对话。',
-    '确认前只能只读检查项目目录、与用户对话、更新项目定义和回复用户。禁止 orientation-confirm、goal-plan、task-create、supervise、resume、complete，以及任何会修改项目文件或外部状态的操作。',
-    '',
-    '先结合用户初始想法和项目目录现状，判断目标、稳定范围、前置条件和可验证完成条件是否明确。存在实质歧义时一次提出 1-3 个关键问题并给出推荐答案；信息充分时不要机械提问。',
-    `每次形成或更新结构化草案时，执行 wmux project update --project ${session.id} --json-file <项目目录内的 .wmux/tmp/文件>，JSON 至少包含 goal、preconditions、doneWhen、mode="refine" 和 reason。没有额外前置条件时明确写“无额外物理前置条件”。`,
-    `随后执行 wmux project reply --project ${session.id} --message "<本轮回复>"，把问题、推荐答案或草案摘要写入项目对话；不要只在项目 AI 终端输出后等待。`,
-    '用户会在项目控制台查看当前结构化草案并点击“确认并开始”。收到控制层的正式启动消息前，不得提交需求充分性结论、阶段计划或执行任务。',
-  ].join('\n');
-}
-
-async function confirmProjectGoalConstruction(params: any): Promise<any> {
-  const initial = projectSessionForParams(params);
-  if (!initial || initial.goalConstruction?.status !== 'drafting') {
-    return { ok: false, error: '当前项目没有可确认的目标构建草案' };
-  }
-  if (initial.pendingUserQuestion) {
-    return { ok: false, error: '项目 AI 仍有待答问题，请先完成当前对齐问题' };
-  }
-  if (!initial.goal.trim() || initial.preconditions.length === 0 || initial.doneWhen.length === 0) {
-    return { ok: false, error: '项目草案尚不完整：必须包含主目标、前置条件和可验证完成条件' };
-  }
-  const initialFingerprint = JSON.stringify([
-    initial.goal,
-    initial.projectScope,
-    initial.preconditions,
-    initial.supervisorNotes,
-    initial.doneWhen,
-    initial.planFiles,
-    initial.requirementsVersion,
-    initial.authorizationVersion,
-  ]);
-  const runtime = await ensureProjectManagerRuntime(initial.id);
-  if (!runtime.ok || !runtime.manager) return { ok: false, error: runtime.error || '项目 AI 运行时不可用' };
-  const session = useStore.getState().projectManagers.find((candidate) => candidate.id === initial.id);
-  if (!session || session.goalConstruction?.status !== 'drafting') {
-    return { ok: false, error: '目标草案已在确认期间发生变化，请刷新项目状态' };
-  }
-  if (session.pendingUserQuestion) {
-    return { ok: false, error: '项目 AI 在确认期间提出了新的待答问题，请先完成对齐' };
-  }
-  if (!session.goal.trim() || session.preconditions.length === 0 || session.doneWhen.length === 0) {
-    return { ok: false, error: '项目草案在确认期间变为不完整，请继续对话补全' };
-  }
-  const currentFingerprint = JSON.stringify([
-    session.goal,
-    session.projectScope,
-    session.preconditions,
-    session.supervisorNotes,
-    session.doneWhen,
-    session.planFiles,
-    session.requirementsVersion,
-    session.authorizationVersion,
-  ]);
-  if (currentFingerprint !== initialFingerprint) {
-    return { ok: false, error: '项目 AI 在确认期间更新了目标草案；请查看最新内容后再次确认' };
-  }
-  const now = Date.now();
-  replaceProjectManagerSession({
-    ...session,
-    goalConstruction: {
-      ...session.goalConstruction,
-      status: 'confirmed',
-      confirmedAt: now,
-    },
-    status: 'waiting',
-    updatedAt: now,
-  });
-  useStore.getState().appendProjectManagerEvent({
-    kind: 'goal-construction-confirmed',
-    summary: '用户已确认项目目标草案，允许进入正式规划流程',
-    payload: {
-      goal: session.goal,
-      projectScope: session.projectScope,
-      preconditions: session.preconditions,
-      doneWhen: session.doneWhen,
-    },
-  }, session.id);
-  const confirmed = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
-  await (window as any).wmux?.projectManager?.saveSession?.(confirmed);
-  deliverProjectManagerMessage([
-    '[项目目标草案已由用户确认｜现在进入正式项目流程]',
-    `项目 ID：${confirmed.id}`,
-    `项目目录：${confirmed.projectDir}`,
-    `当前主目标：${confirmed.goal}`,
-    `稳定项目范围：${confirmed.projectScope}`,
-    `前置条件：${confirmed.preconditions.join('；')}`,
-    `完成条件：${confirmed.doneWhen.join('；')}`,
-    '',
-    PROJECT_MANAGER_ALIGNMENT_GATE,
-    `先执行 wmux project alignment-confirm --project ${confirmed.id}，记录对已确认目标、范围和验收标准的理解；不得重复询问用户已经确认的内容。`,
-    `随后重新读取 project status；若 progressSync 为 review-required，先执行 wmux project progress-sync --project ${confirmed.id} --ack --summary "<已知变化、未知项和后续核对安排>"。再根据最新快照执行 orientation-confirm，用 goal-plan 建立 3-7 个粗粒度阶段目标并显式 resume。`,
-    '只有上述门禁完成后才能创建监督链和任务。原目标范围内的技术路线、阶段拆分和低风险选择由项目 AI 与监督 AI 自主处理。',
-    `完成本轮规划后执行 wmux project reply --project ${confirmed.id} --message "<已进入正式流程及阶段规划摘要>"。`,
-  ].join('\n'), false, confirmed.id);
-  return {
-    ok: true,
-    session: projectManagerSessionView(confirmed),
-    message: '项目目标已确认，同一个项目 AI 已原地进入需求对齐、阶段规划和执行流程。',
-  };
-}
-
 function notifyProjectManagerUserQuestion(
   session: ProjectManagerSession,
   question: ProjectManagerUserQuestion,
@@ -4864,18 +4754,19 @@ async function forceRecoverManagedAgent(
         patch: { latestContextSummary: context || item?.latestContextSummary, latestBlocker: detail },
       }, target.session.id);
     }
-    store.appendProjectManagerEvent({
+    await appendRecordedProjectEvent(target.session, {
       kind: 'guard-triggered',
       workItemId: target.lane?.projectWorkItemId,
       summary: detail,
       payload: {
         action: `watchdog-rebuild-${target.role}`,
+        attentionRequired: true,
+        recoveryKey,
         surfaceId: runtime.surfaceId,
         generation: runtime.generation,
         laneId: target.lane?.id,
       },
-    }, target.session.id);
-    saveProjectManagerSnapshot(target.session.id);
+    });
 
     markTerminalRuntimeExited(runtime.surfaceId, detail);
     if (target.role === 'manager') {
@@ -4883,6 +4774,8 @@ async function forceRecoverManagedAgent(
         projectId: target.session.id,
         role: 'manager',
         detail,
+        watchdogRecovery: true,
+        recoveryKey,
       });
       return;
     }
@@ -4920,15 +4813,32 @@ async function forceRecoverManagedAgent(
         workItemId: target.lane.projectWorkItemId,
       });
     }
-    if (result?.ok && target.role === 'task') {
-      useStore.getState().applyProjectManagerAction({
-        type: 'update-work-item',
+    if (result?.ok) {
+      if (target.role === 'task') {
+        useStore.getState().applyProjectManagerAction({
+          type: 'update-work-item',
+          workItemId: target.lane.projectWorkItemId,
+          patch: { status: 'running', latestBlocker: undefined },
+        }, current.id);
+      }
+      await appendRecordedProjectEvent(current, {
+        kind: 'recovery-restored',
         workItemId: target.lane.projectWorkItemId,
-        patch: { status: 'running', latestBlocker: undefined },
-      }, current.id);
-      saveProjectManagerSnapshot(current.id);
+        summary: `${roleLabel}运行时已自动重建并恢复受控执行链`,
+        payload: {
+          role: target.role,
+          recoveryKey,
+          resolvedAttentionKinds: ['guard-triggered'],
+        },
+      });
     }
     if (!result?.ok) {
+      await appendRecordedProjectEvent(current, {
+        kind: target.role === 'task' ? 'task-runtime-failed' : 'supervisor-runtime-failed',
+        workItemId: target.lane.projectWorkItemId,
+        summary: `${roleLabel}自动重建失败：${String(result?.error || '未知错误')}`,
+        payload: { role: target.role, recoveryKey, attentionRequired: true },
+      });
       queueProjectManagerDelivery([
         '[项目运行链自动重建失败]',
         `项目：${current.id}；任务：${target.lane.projectWorkItemId}`,
@@ -4943,6 +4853,16 @@ async function forceRecoverManagedAgent(
       role: target.role,
       surfaceId: runtime.surfaceId,
       reason,
+    });
+    await appendRecordedProjectEvent(target.session, {
+      kind: target.role === 'manager'
+        ? 'manager-runtime-failed'
+        : target.role === 'task'
+          ? 'task-runtime-failed'
+          : 'supervisor-runtime-failed',
+      workItemId: target.lane?.projectWorkItemId,
+      summary: `${target.role} 自动重建异常：${reason}`,
+      payload: { role: target.role, recoveryKey, attentionRequired: true },
     });
     queueProjectManagerDelivery([
       '[项目运行链自动重建异常]',
@@ -5893,7 +5813,7 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
       kind: 'recovery-restored',
       summary: '已从持久记录恢复本项目；旧项目 AI、监督 AI 和任务 AI 会话均已失效',
     }, current.id);
-    if (current.goalConstruction?.status !== 'drafting' && projectRequirementsAlignmentPending(current)) {
+    if (projectRequirementsAlignmentPending(current)) {
       await requireProjectRequirementsAlignment(
         current.id,
         '继续首次启动时尚未完成的需求充分性检测',
@@ -5911,9 +5831,7 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
     const recoverySituationBriefing = recoverySituation
       ? `[用户恢复时设置的当前情况｜优先核对]\n${recoverySituation}`
       : '';
-    deliverProjectManagerMessage(current.goalConstruction?.status === 'drafting'
-      ? [projectGoalConstructionBriefing(current), recoverySituationBriefing].filter(Boolean).join('\n\n')
-      : [
+    deliverProjectManagerMessage([
       '[本项目恢复｜创建全新项目运行链]',
       `项目：${current.id} · ${current.projectDir}`,
       `状态：${current.status}`,
@@ -7043,13 +6961,6 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   }
   if (!callerSurfaceId || callerSurfaceId !== session.managerSurfaceId) {
     return { ok: false, error: '该动作只能由当前项目管理 AI 执行' };
-  }
-  if (session.goalConstruction?.status === 'drafting'
-    && !['update-definition', 'user-question', 'reply'].includes(action)) {
-    return {
-      ok: false,
-      error: '项目目标草案尚未由用户确认；目标构建期间只能更新项目定义、向用户提问或回复，不能规划和执行',
-    };
   }
   if (action === 'user-question') {
     if (['completed', 'stopped'].includes(session.status)) {
@@ -8207,6 +8118,17 @@ export function initPipeBridge(): void {
         }
         const current = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
         if (!current || ['completed', 'stopped'].includes(current.status)) return;
+        if (params?.watchdogRecovery === true) {
+          await appendRecordedProjectEvent(current, {
+            kind: 'recovery-restored',
+            summary: '项目 AI 运行时已自动重建并恢复结构化项目上下文',
+            payload: {
+              role: 'manager',
+              recoveryKey: String(params?.recoveryKey || ''),
+              resolvedAttentionKinds: ['guard-triggered'],
+            },
+          });
+        }
       })().catch((error) => {
         console.warn('[project-manager] manager runtime recovery failed', error);
       }).finally(() => {
@@ -8481,9 +8403,6 @@ export function initPipeBridge(): void {
     if (action === 'answer-question') {
       return answerProjectManagerUserQuestion(params);
     }
-    if (action === 'confirm-goal-construction') {
-      return confirmProjectGoalConstruction(params);
-    }
     if (action === 'pause-all-projects' || action === 'resume-all-projects') {
       return setProjectPortfolioPaused(
         action === 'pause-all-projects',
@@ -8619,8 +8538,7 @@ export function initPipeBridge(): void {
       if (!selectedProject) return { ok: false, error: '请先在项目中心选择消息所属项目' };
       const message = String(params?.message || '').trim();
       if (!message) return { ok: false, error: '项目管理消息不能为空' };
-      const buildingGoal = selectedProject.goalConstruction?.status === 'drafting';
-      const changeSignal = buildingGoal ? null : projectMessageChangeSignal(message);
+      const changeSignal = projectMessageChangeSignal(message);
       const messageSource = String(params?.source || '').trim() === 'desktop'
         ? '桌面'
         : String(params?.chatId || '').trim()
@@ -8689,16 +8607,7 @@ export function initPipeBridge(): void {
           error: `${runtime.error || '项目管理 AI 尚未就绪'}${revokedOldRun ? '；变更消息已记录，旧任务已保持暂停' : ''}`,
         };
       }
-      deliverProjectManagerMessage(buildingGoal ? [
-        '[项目目标构建对话｜用户回复｜确认前禁止执行]',
-        `消息 ID：${String(params?.messageId || 'unknown')}`,
-        `当前项目 ID：${selectedProject.id}`,
-        `当前项目目录：${selectedProject.projectDir}`,
-        message,
-        '',
-        `继续通过只读检查和对话完善结构化草案。需要更新时执行 wmux project update --project ${selectedProject.id}；随后必须执行 wmux project reply --project ${selectedProject.id} --correlation "${String(params?.messageId || 'unknown')}" --message "<回复内容>"。`,
-        '用户点击“确认并开始”前，不得 alignment-confirm、orientation-confirm、goal-plan、resume、创建任务或修改项目文件。',
-      ].join('\n') : [
+      deliverProjectManagerMessage([
         `[${messageSource}项目管理消息｜必须回复到对应项目会话${revokedOldRun ? '｜控制层已撤销旧运行授权' : ''}]`,
         `消息 ID：${String(params?.messageId || 'unknown')}`,
         `当前项目 ID：${selectedProject?.id || '未选择'}`,

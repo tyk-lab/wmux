@@ -253,6 +253,11 @@ describe('project-manager engine', () => {
       evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',
     })).toBeNull();
     expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
+      evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',
+      changedFiles: ['src/auth.ts'], testCommand: 'npm test -- auth', testResult: 'passed',
+    })).toContain('批准项目基线的原子裁决不得携带');
+    expect(projectTaskBaselineViolation(task, {
       outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 定向核对唯一缺失入口`,
     })).toBeNull();
     task.baseline.investigationRounds = 2;
@@ -316,6 +321,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('主线程职责：整合实现并负责最终验证');
     expect(text).toContain('子线程 1 职责：检查 UI 状态');
     expect(text).toContain('必须把以上线程职责清晰传达给任务终端');
+    expect(text).toContain('除批准项目基线的原子裁决外');
+    expect(text).toContain('构建工具自动生成的二进制');
   });
 
   it('briefs adaptive tasks with bounded proposal approval and serialized hardware work', () => {

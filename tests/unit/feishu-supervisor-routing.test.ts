@@ -2420,18 +2420,30 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify((send.mock.calls[2][1] as { card?: unknown }).card)).toContain('项目执行护栏');
 
     service.onProjectManagerRecord({
+      sessionId: 'pm-watchdog', projectDir: 'E:\\repo', type: 'guard-triggered',
+      payload: {
+        message: '任务 AI 在 Esc、Ctrl+C 后仍未恢复，控制层正在重建运行时',
+        action: 'watchdog-rebuild-task', attentionRequired: true,
+      },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(4));
+    const watchdogAlert = JSON.stringify((send.mock.calls[3][1] as { card?: unknown }).card);
+    expect(watchdogAlert).toContain('项目 Agent 卡死看门狗');
+    expect(watchdogAlert).toContain('不要向旧终端重复发送任务');
+
+    service.onProjectManagerRecord({
       sessionId: 'pm-replan', projectDir: 'E:\\repo', type: 'guard-triggered',
       payload: { message: '需要换一条执行路线', decision: 'replan' },
     });
     await Promise.resolve();
-    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledTimes(4);
 
     service.onProjectManagerRecord({
       sessionId: 'pm-future', projectDir: 'E:\\repo', type: 'future-control-failed',
       payload: { message: '新增控制链异常' },
     });
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(4));
-    expect(JSON.stringify((send.mock.calls[3][1] as { card?: unknown }).card)).toContain('新增控制链异常');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(5));
+    expect(JSON.stringify((send.mock.calls[4][1] as { card?: unknown }).card)).toContain('新增控制链异常');
   });
 
   it('项目人工介入阻塞推送到专用飞书群，答复进入对应项目且不自动恢复', async () => {

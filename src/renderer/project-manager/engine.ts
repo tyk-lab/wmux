@@ -116,6 +116,7 @@ export function projectTaskBaselineViolation(
     instruction?: string;
     changedFiles?: string[];
     testCommand?: string;
+    testResult?: string;
     fullSuite?: boolean;
     retry?: boolean;
     permissionResponse?: string;
@@ -150,8 +151,12 @@ export function projectTaskBaselineViolation(
   }
   if ((proposal.changedFiles || []).length > 0
     || !!proposal.testCommand?.trim()
+    || !!proposal.testResult?.trim()
     || proposal.fullSuite === true
     || proposal.retry === true) {
+    if (approvalRequested) {
+      return '批准项目基线的原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；这些字段只记录基线获批后已经发生的执行结果。未来写入路径和验证命令分别填写在阶段计划的 expectedPaths 与 targetedValidation 中';
+    }
     return '项目基线门禁阶段只允许只读调查，不能报告任务写入、运行测试、全量验证或重试';
   }
   if (approvalRequested && item.baseline?.status !== 'investigating') {
@@ -585,8 +590,8 @@ export function buildProjectSupervisorBriefing(options: {
     baseline?.status === 'approved'
       ? `项目基线：已审核；工作区版本 ${baseline.workspaceVersion || '已记录'}。需求或工作区状态发生变化时必须重新调查。`
       : baseline?.status === 'investigating'
-        ? `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；只有一个会改变执行路径的关键事实缺失时才可下达一次以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的定向补查，禁止重新做整套调查或第三轮调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。`
-        : `项目基线：待审核。首次指令只能以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头，要求任务 AI 做有界只读调查并以“${PROJECT_TASK_BASELINE_REPORT_MARKER}”报告；在你审查报告前不得写入、安装依赖、构建/测试、操作设备或确认权限。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence；控制层会阻止绕过。`,
+        ? `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；只有一个会改变执行路径的关键事实缺失时才可下达一次以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的定向补查，禁止重新做整套调查或第三轮调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。该原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；未来写入路径与验证命令只放入阶段计划。`
+        : `项目基线：待审核。首次指令只能以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头，要求任务 AI 做有界只读调查并以“${PROJECT_TASK_BASELINE_REPORT_MARKER}”报告；在你审查报告前不得写入、安装依赖、构建/测试、操作设备或确认权限。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence；该原子裁决不得携带执行结果字段，控制层会阻止绕过。`,
     supervisorPlan
       ? `[监督自主管理阶段计划 r${supervisorPlan.revision}]
 已选路线：${supervisorPlan.selectedRoute}
@@ -609,9 +614,10 @@ export function buildProjectSupervisorBriefing(options: {
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,
     `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
-    '每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
+    '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
-    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[{"id":"...","title":"...","outcome":"...","status":"planned|active|completed","evidence":"..."}],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."]}。写入当前项目 .wmux/tmp/<唯一名>.json 后，在裁决中附 --stage-plan-file；该计划由你维护，项目 AI 无权代填。',
+    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[{"id":"...","title":"...","outcome":"...","status":"planned|active|completed","evidence":"..."}],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."]}。expectedPaths 只列任务 AI 将主动创建或修改、且位于合同允许范围内的路径；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。写入当前项目 .wmux/tmp/<唯一名>.json 后，在裁决中附 --stage-plan-file；该计划由你维护，项目 AI 无权代填。',
+    '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,
     '任务边界优先于追逐目标。只有合同变化、跨工作项协调、外部阻塞、用户独有信息、高风险动作或预算实际耗尽时，才使用 needs-human 交回项目管理 AI，并分别标注 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted，同时提供 --reason 与 --impact。普通技术判断不得升级；不得原样重复命令或测试，也不得只改写升级理由。',

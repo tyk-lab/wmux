@@ -191,7 +191,7 @@ export interface SupervisorLane {
   taskRoleAnchorPending?: boolean;
   /** New ordinary lanes must align material ambiguity and persist a plan before first execution. */
   ordinaryPlanRequired?: boolean;
-  /** Conversational target definition gate; the same supervisor becomes active after explicit user confirmation. */
+  /** Terminal-context bootstrap gate; the same supervisor becomes active after evidence is sufficient or gaps are answered. */
   goalConstruction?: SupervisorGoalConstructionState;
   /** Bounded permission audit used to stop repeated confirmations that make no progress. */
   permissionConfirmations?: Array<{
