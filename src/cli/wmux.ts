@@ -179,16 +179,20 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     }));
     return;
   }
-  if (args[1] === 'draft') {
+  if (args[1] === 'draft' || args[1] === 'finalize') {
+    const action = args[1];
     const surfaceId = getFlag(args, '--surface') || '';
-    if (!surfaceId) throw new Error('supervisor draft requires --surface');
+    if (!surfaceId) throw new Error(`supervisor ${action} requires --surface`);
     const input = resolveProjectJsonInput(
       args,
       process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
     );
     let success = false;
     try {
-      const result = await sendV2('supervisor.goal.draft', { ...input.value, surfaceId });
+      const result = await sendV2(
+        action === 'finalize' ? 'supervisor.goal.finalize' : 'supervisor.goal.draft',
+        { ...input.value, surfaceId },
+      );
       success = result?.ok !== false;
       if (result?.ok === false) print(result);
     } finally {
@@ -209,7 +213,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     return;
   }
   if (args[1] !== 'decide') {
-    throw new Error(`Usage: wmux supervisor <context|evidence|draft|reply|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
+    throw new Error(`Usage: wmux supervisor <context|evidence|draft|finalize|reply|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -1171,6 +1175,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
 Supervisor:  supervisor context
              supervisor evidence --review-id <id> [--page N] [--page-lines N]
              supervisor draft --surface <id> --json-file <.wmux/tmp/file>
+             supervisor finalize --surface <id> --json-file <.wmux/tmp/file>
              supervisor reply --surface <id> --message <text>
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]

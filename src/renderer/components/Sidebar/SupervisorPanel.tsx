@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import {
@@ -147,6 +147,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
   const [goalConstructionInputs, setGoalConstructionInputs] = useState<Record<string, string>>({});
   const [goalConstructionNotices, setGoalConstructionNotices] = useState<Record<string, string>>({});
+  const goalConversationRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [polledAgentStates, setPolledAgentStates] = useState<Record<string, SupervisorTaskAgentState | undefined>>({});
 
   useEffect(() => {
@@ -168,6 +169,20 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       return retained.size === current.size ? current : retained;
     });
   }, [supervisor.lanes]);
+
+  const goalConversationRevision = supervisor.lanes.map((lane) => {
+    const messages = lane.goalConstruction?.messages || [];
+    return `${lane.id}:${messages.length}:${messages.at(-1)?.id || ''}`;
+  }).join('|');
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      for (const conversation of goalConversationRefs.current.values()) {
+        conversation.scrollTo({ top: conversation.scrollHeight, behavior: 'smooth' });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [goalConversationRevision]);
 
   const ordinaryLanes = supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
   const projectLanes = supervisor.lanes.filter(isProjectManagedSupervisorLane);
@@ -1191,10 +1206,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   {!laneProjectManaged && lane.goalConstruction?.status === 'drafting' && (() => {
                     const construction = lane.goalConstruction;
                     const draft = construction.draft;
+                    const terminalContext = construction.origin === 'terminal-context';
                     return (
-                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的任务目标构建对话`}>
+                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的${terminalContext ? '终端上下文汇总' : '任务目标构建对话'}`}>
                         <header>
-                          <div><span>监督 AI 目标构建</span><strong>确认前只读，不会启动任务</strong></div>
+                          <div>
+                            <span>{terminalContext ? '监督 AI 正在汇总终端上下文' : '监督 AI 目标构建'}</span>
+                            <strong>{terminalContext ? '信息充分时自动开始；关键条件不足时在此询问' : '确认前只读，不会启动任务'}</strong>
+                          </div>
                           <em>同一个 Agent</em>
                         </header>
                         <div className="sup-panel__goal-draft">
@@ -1203,7 +1222,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           <div><span>前置条件</span><strong>{draft.preconditions || '等待监督 AI 补全'}</strong></div>
                           <div><span>停止条件</span><strong>{draft.stopWhen || '等待监督 AI 补全'}</strong></div>
                         </div>
-                        <div className="sup-panel__goal-conversation">
+                        <div
+                          ref={(element) => {
+                            if (element) goalConversationRefs.current.set(lane.id, element);
+                            else goalConversationRefs.current.delete(lane.id);
+                          }}
+                          className="sup-panel__goal-conversation"
+                        >
                           {construction.messages.map((entry) => (
                             <article key={entry.id} data-role={entry.role}>
                               <header><strong>{entry.role === 'assistant' ? '监督 AI' : '你'}</strong><time>{new Date(entry.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time></header>
@@ -1216,7 +1241,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           rows={2}
                           value={goalConstructionInputs[lane.id] || ''}
                           onChange={(event) => setGoalConstructionInputs((current) => ({ ...current, [lane.id]: event.target.value }))}
-                          placeholder="回答监督 AI 的问题，或继续补充目标、范围和验收要求"
+                          placeholder={terminalContext ? '仅在监督 AI 提问时补充目标、边界或验收信息' : '回答监督 AI 的问题，或继续补充目标、范围和验收要求'}
                           aria-label={`回复 ${lane.label} 的目标构建 Agent`}
                         />
                         {goalConstructionNotices[lane.id] && <div className="sup-panel__goal-notice" role="status">{goalConstructionNotices[lane.id]}</div>}
@@ -1226,7 +1251,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             type="button"
                             disabled={!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()}
                             onClick={() => confirmGoalConstruction(lane)}
-                          >确认目标并开始</button>
+                          >{terminalContext ? '确认补全并开始' : '确认目标并开始'}</button>
                         </div>
                       </section>
                     );

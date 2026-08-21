@@ -141,7 +141,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('worker-a');
     expect(text).toContain('只监督此终端');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('[监督协议｜控制层｜protocol=4]');
+    expect(text).toContain('[监督协议｜控制层｜protocol=5]');
     expect(text).toContain('# 普通 AI 监督');
     expect(text).toContain('## 监督 AI 自己的执行规划');
     expect(text).toContain('上级任务由用户提供');

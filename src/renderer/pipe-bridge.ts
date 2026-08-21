@@ -737,6 +737,40 @@ export function isSupervisorProposalAllowed(outcome: string, proposalKind: strin
     || proposalKind === 'clarification') && outcome === 'needs-human';
 }
 
+const TERMINAL_BOOTSTRAP_CONTEXT_MAX_CHARS = 20_000;
+const TERMINAL_BOOTSTRAP_CONTEXT_MAX_LINES = 240;
+
+/** Bounded, prompt-ready evidence from an existing Agent terminal. */
+export function terminalBootstrapContext(
+  text: string,
+  terminalLabel: string,
+  activityState: RemoteTerminalActivityState = 'unknown',
+): string {
+  const core = terminalSupervisorCoreExcerpt(text, terminalLabel, activityState);
+  const compacted: string[] = [];
+  for (const rawLine of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const line = sanitizeTerminalTextLine(rawLine).trimEnd();
+    if (isTerminalTuiChromeLine(line)) continue;
+    if (!line.trim()) {
+      if (compacted.length > 0 && compacted[compacted.length - 1] !== '') compacted.push('');
+      continue;
+    }
+    if (line === compacted[compacted.length - 1]) continue;
+    compacted.push(line);
+  }
+  while (compacted[compacted.length - 1] === '') compacted.pop();
+  const recent = compacted.slice(-TERMINAL_BOOTSTRAP_CONTEXT_MAX_LINES).join('\n').trim();
+  const evidence = limitConversationText(recent, TERMINAL_BOOTSTRAP_CONTEXT_MAX_CHARS);
+  return [
+    `来源终端：${terminalLabel || 'terminal'}`,
+    `终端活动状态：${activityState}`,
+    core.question ? `最近用户请求：\n${core.question}` : '',
+    core.answer ? `最近 Agent 结论：\n${core.answer}` : '',
+    core.answerPending ? '最近一轮 Agent 仍可能在处理中。' : '',
+    evidence ? `最近对话与操作证据：\n${evidence}` : '未读取到可用的终端对话。',
+  ].filter(Boolean).join('\n\n');
+}
+
 /** Extract the batch of material-alignment questions from an ordinary supervisor proposal. */
 export function ordinaryClarificationQuestions(value: string): string[] {
   return (value.match(/[^?？\r\n]{3,}[?？]/gu) || [])
@@ -2468,6 +2502,14 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
   if (!lane || isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
     return { ok: false, error: '当前没有可确认的普通监督目标草案' };
   }
+  const inferredFromTerminal = params?.inferredFromTerminal === true;
+  if (inferredFromTerminal) {
+    const callerSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
+    if (lane.goalConstruction.origin !== 'terminal-context'
+      || !isSupervisorDecisionAuthorised(lane, callerSurfaceId)) {
+      return { ok: false, error: '只有该通道绑定的监督 AI 才能从终端上下文自动完成目标归纳' };
+    }
+  }
   if (supervisorLaneControlState(lane) !== 'active') {
     return { ok: false, error: '目标构建通道当前未运行；请先恢复该监督 AI 再确认目标' };
   }
@@ -2505,7 +2547,9 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
     sendToSurface(
       supervisorSurfaceId,
       [
-        '[目标构建完成｜用户已确认｜现在进入正式监督]',
+        inferredFromTerminal
+          ? '[终端上下文汇总完成｜条件充分｜现在进入正式监督]'
+          : '[目标构建完成｜用户已确认｜现在进入正式监督]',
         buildSupervisorBriefing(current, {
           lane: confirmedLane,
           state: String(states[confirmedLane.surfaceId]?.state || 'unknown'),
@@ -2518,8 +2562,31 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
     return { ok: false, error: `监督 AI 未接受正式启动 briefing：${String((error as Error)?.message || error)}` };
   }
   store.updateLane(lane.id, confirmedPatch);
-  store.appendSupervisorLog(lane.id, '目标草案已确认', `${draft.taskGoal}；正式监督开始`);
-  return { ok: true, message: '任务目标已确认，同一个监督 AI 已原地进入正式规划与监督流程。' };
+  store.appendSupervisorLog(
+    lane.id,
+    inferredFromTerminal ? '终端上下文已汇总' : '目标草案已确认',
+    `${draft.taskGoal}；正式监督开始`,
+  );
+  return {
+    ok: true,
+    message: inferredFromTerminal
+      ? '已有终端上下文信息充分，同一个监督 AI 已完成汇总并进入正式规划与监督流程。'
+      : '任务目标已确认，同一个监督 AI 已原地进入正式规划与监督流程。',
+  };
+}
+
+function finalizeSupervisorGoalFromTerminal(params: any): { ok: boolean; error?: string; message?: string } {
+  const store = useStore.getState();
+  const surfaceId = String(params?.surfaceId || '').trim();
+  const callerSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
+  const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
+  if (!lane || lane.goalConstruction?.origin !== 'terminal-context'
+    || !isSupervisorDecisionAuthorised(lane, callerSurfaceId)) {
+    return { ok: false, error: '只有该通道绑定的监督 AI 才能从终端上下文自动完成目标归纳' };
+  }
+  const updated = updateSupervisorGoalDraft(params);
+  if (!updated.ok) return updated;
+  return confirmSupervisorGoalConstruction({ ...params, inferredFromTerminal: true });
 }
 
 function decideRemoteWaiting(params: RemoteWaitingDecision): { ok: boolean; message: string; error?: string } {
@@ -9481,6 +9548,7 @@ export function initPipeBridge(): void {
   };
 
   w.__wmux_supervisorGoalDraft = (params: any) => updateSupervisorGoalDraft(params);
+  w.__wmux_supervisorGoalFinalize = (params: any) => finalizeSupervisorGoalFromTerminal(params);
   w.__wmux_supervisorReply = (params: any) => appendSupervisorGoalReply(params);
 
   // The dedicated supervisor terminal records its judgment through a silent CLI

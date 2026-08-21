@@ -84,6 +84,8 @@ export interface SupervisorGoalConstructionMessage {
 
 export interface SupervisorGoalConstructionState {
   status: 'drafting' | 'confirmed';
+  /** Terminal-context bootstrap may finalize without user input when the evidence is sufficient. */
+  origin?: 'conversation' | 'terminal-context';
   initialIdea: string;
   draft: Pick<SupervisorLaneConfig, 'taskGoal' | 'taskDescription' | 'preconditions' | 'stopWhen' | 'stopWhenKind'>;
   messages: SupervisorGoalConstructionMessage[];

@@ -7,6 +7,7 @@ import {
   projectMessageChangeSignal,
   projectSupervisorTransitionRedeliveryMs,
   readTerminalScreen,
+  terminalBootstrapContext,
   terminalConversationExcerpt,
   terminalScreenExcerpt,
   terminalSupervisorCoreExcerpt,
@@ -548,41 +549,106 @@ describe('supervisor decision bridge', () => {
     });
   });
 
-  it('creates a project AI in goal-building mode and blocks planning until the user confirms its draft', async () => {
+  it('lets the bound supervisor finalize a sufficient terminal-context summary without user confirmation', async () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-terminal-context' as any,
+      title: '终端上下文测试',
+      cwd: 'E:\\repo',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-terminal-context' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          { id: 'worker-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '任务 AI' },
+          { id: 'supervisor-a' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '监督 AI', transientSupervisor: true },
+        ],
+      },
+    }]);
+    surfaceTerminalRegistry.set('supervisor-a', {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const current = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(current.id, {
+      awaitingReview: false,
+      goalConstruction: {
+        status: 'drafting',
+        origin: 'terminal-context',
+        initialIdea: '从已有终端继续',
+        draft: {
+          taskGoal: '', taskDescription: '', preconditions: '', stopWhen: '', stopWhenKind: 'concrete',
+        },
+        messages: [],
+        startedAt: 1,
+      },
+    });
+
+    const finalize = (globalThis.window as any).__wmux_supervisorGoalFinalize;
+    expect(finalize({
+      surfaceId: 'worker-a', callerSurfaceId: 'worker-a',
+      taskGoal: '完成认证收尾', preconditions: ['无额外前置条件'], stopWhen: ['集成测试通过'], stopWhenKind: 'concrete',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('绑定的监督 AI') });
+    expect(finalize({
+      surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a',
+      taskGoal: '完成认证收尾',
+      taskDescription: '根据已有终端进度完成剩余验证',
+      preconditions: ['无额外前置条件'],
+      stopWhen: ['集成测试通过'],
+      stopWhenKind: 'concrete',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('信息充分') });
+
+    const confirmed = useStore.getState().supervisor.lanes[0];
+    expect(confirmed.goalConstruction).toMatchObject({
+      status: 'confirmed', origin: 'terminal-context', confirmedAt: expect.any(Number),
+    });
+    expect(confirmed.config).toMatchObject({ taskGoal: '完成认证收尾', stopWhen: '集成测试通过' });
+    const stagedInput = (globalThis.window as any).wmux.pty.stageInputFile as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect([
+        ...writes.mock.calls.map(([, text]) => String(text)),
+        ...stagedInput.mock.calls.map(([, text]) => String(text)),
+      ].some((text) => text.includes('[终端上下文汇总完成｜条件充分｜现在进入正式监督]'))).toBe(true);
+    });
+  });
+
+  it('creates a project AI from an existing terminal conversation without a mandatory creation dialogue', async () => {
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-project-source' as any,
+      title: '已有任务终端',
+      cwd: 'E:\\goal-construction',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-project-source' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'project-source' as any, type: 'terminal', shell: 'pwsh.exe', customTitle: '现有 Codex' }],
+      },
+    }]);
+    const sourceLines = [
+      '❯ 修复登录流程并完成发布前验证',
+      '',
+      '• 登录实现已经完成，剩余集成测试和发布检查。',
+    ];
+    surfaceTerminalRegistry.set('project-source', {
+      buffer: {
+        active: {
+          type: 'normal', baseY: 0, cursorX: 0, cursorY: 0, length: sourceLines.length,
+          getLine: (index: number) => ({ translateToString: () => sourceLines[index] || '' }),
+        },
+      },
+    } as any);
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     await expect(remote({
-      action: 'start', projectDir: 'E:\\goal-construction', goal: '把这个旧项目整理好', goalConstruction: true,
+      action: 'start', projectDir: 'E:\\goal-construction', goal: '继续完成登录项目', sourceTerminalId: 'project-source',
     })).resolves.toMatchObject({
       ok: true,
-      session: { goalConstruction: { status: 'drafting', initialIdea: '把这个旧项目整理好' }, status: 'waiting' },
+      session: { goal: '继续完成登录项目', status: 'waiting' },
     });
     const project = useStore.getState().projectManager!;
-    expect(project.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'goal-construction-started' }),
-      expect.objectContaining({ kind: 'user-message', summary: '把这个旧项目整理好' }),
-    ]));
-    const request = (globalThis.window as any).__wmux_projectManagerRequest;
-    await expect(request({
-      action: 'goal-plan', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
-      subgoals: [{ id: 'stage', title: '提前执行', outcome: '不应发生', acceptance: ['完成'], dependencies: [] }],
-    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('目标草案尚未由用户确认') });
-
-    await expect(request({
-      action: 'update-definition', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
-      goal: '完成旧项目整理并形成可发布版本',
-      preconditions: ['无额外物理前置条件'],
-      doneWhen: ['相关测试通过', '构建产物可生成'],
-      mode: 'refine', reason: '根据用户对话形成结构化草案',
-    })).resolves.toMatchObject({ ok: true });
-    await expect(remote({ action: 'confirm-goal-construction', projectId: project.id }))
-      .resolves.toMatchObject({ ok: true, message: expect.stringContaining('原地进入') });
-    const confirmed = useStore.getState().projectManager!;
-    expect(confirmed.goalConstruction).toMatchObject({ status: 'confirmed', confirmedAt: expect.any(Number) });
-    expect(confirmed.managerSurfaceId).toBe(project.managerSurfaceId);
-    expect(confirmed.goal).toBe('完成旧项目整理并形成可发布版本');
-    expect(confirmed.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'goal-construction-confirmed' }),
-    ]));
+    expect(project.goalConstruction).toBeUndefined();
+    const startupContext = useStore.getState().projectManager?.pendingManagerDeliveries
+      ?.map((delivery) => delivery.text).join('\n') || '';
+    expect(startupContext).toContain('[已有终端上下文｜只读证据，不继承权限]');
+    expect(startupContext).toContain('登录实现已经完成，剩余集成测试和发布检查。');
   });
 
   it('allows a new active project in a directory whose previous project was stopped', async () => {
@@ -1502,6 +1568,21 @@ describe('supervisor decision bridge', () => {
     expect(excerpt).toHaveLength(20);
     expect(excerpt.startsWith('…\n')).toBe(true);
     expect(excerpt).toContain('最新错误：测试失败');
+  });
+
+  it('builds bounded terminal bootstrap evidence with the latest request and Agent conclusion', () => {
+    const context = terminalBootstrapContext([
+      '❯ 修复认证失败并确认发布条件',
+      '',
+      '• 已完成认证实现。',
+      '  剩余工作是集成测试和发布检查。',
+    ].join('\n'), 'Codex', 'idle');
+
+    expect(context).toContain('来源终端：Codex');
+    expect(context).toContain('最近用户请求');
+    expect(context).toContain('修复认证失败并确认发布条件');
+    expect(context).toContain('最近 Agent 结论');
+    expect(context).toContain('剩余工作是集成测试和发布检查');
   });
 
   it('joins Grok wrapped wide-character lines and collapses repeated TUI repaint frames', () => {
