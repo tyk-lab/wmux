@@ -70,6 +70,12 @@ import {
 } from './project-manager-records';
 import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './project-plan-files';
 import { captureProjectProgress } from './project-progress-sync';
+import {
+  applyProjectMergeCandidate,
+  finalizeProjectWorkerGroup,
+  prepareProjectWorkerGroup,
+  submitProjectMergeCandidate,
+} from './project-worker-worktrees';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -694,6 +700,45 @@ app.whenReady().then(() => {
       : result;
   });
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
+  ipcMain.handle('project-manager:prepare-worker-group', (_event, request) => {
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
+    const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    if (!session || !item || path.resolve(session.projectDir) !== path.resolve(String(request?.projectDir || ''))) {
+      return { ok: false, error: '多任务 AI 请求不属于已登记的活动项目工作项' };
+    }
+    return prepareProjectWorkerGroup({ ...request, projectDir: session.projectDir });
+  });
+  ipcMain.handle('project-manager:submit-merge-candidate', (_event, request) => {
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
+    const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    const worker = item?.workerGroup?.workers.find((candidate) => candidate.workerId === String(request?.workerId || ''));
+    if (!session || !item?.workerGroup || !worker
+      || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)
+      || worker.assignmentVersion !== Number(request?.assignmentVersion)) {
+      return { ok: false, error: '合并候选请求不属于当前持久化的任务 AI 执行轮次' };
+    }
+    return submitProjectMergeCandidate(request);
+  });
+  ipcMain.handle('project-manager:apply-merge-candidate', (_event, request) => {
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
+    const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    const candidate = item?.mergeCandidates?.find((entry) => entry.candidateId === String(request?.candidateId || ''));
+    if (!session || !item?.workerGroup || candidate?.status !== 'submitted'
+      || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)) {
+      return { ok: false, error: '待应用候选不属于当前持久化的任务 AI 执行轮次' };
+    }
+    return applyProjectMergeCandidate(request);
+  });
+  ipcMain.handle('project-manager:finalize-worker-group', (_event, request) => {
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
+    const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    if (!session || !item?.workerGroup
+      || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)
+      || item.finalApplyBlocked !== true) {
+      return { ok: false, error: '最终应用请求不属于当前持久化的任务 AI 执行轮次' };
+    }
+    return finalizeProjectWorkerGroup(request);
+  });
   ipcMain.handle('project-manager:capture-progress', (_event, request) => {
     const requestedDir = String(request?.projectDir || '').trim();
     if (!path.isAbsolute(requestedDir)) return { ok: false, error: '项目进度同步目录必须是绝对路径' };

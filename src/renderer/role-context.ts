@@ -96,6 +96,11 @@ export interface TaskAiRuntimeContext {
     projectId?: string;
     goalId?: string;
     workItemId?: string;
+    workerId?: string;
+    workerRole?: string;
+    executionEpoch?: number;
+    assignmentVersion?: number;
+    directiveEpoch?: number;
     requirementsVersion?: number;
     authorizationVersion?: number;
     agent?: string;
@@ -149,6 +154,7 @@ export interface ManagedRoleBinding {
   role: ManagedAiRole;
   callerSurfaceId: string;
   targetSurfaceId?: string;
+  targetSurfaceIds?: string[];
   projectId?: string;
   workItemId?: string;
 }
@@ -175,6 +181,14 @@ const PROJECT_SUPERVISOR_METHODS = new Set([
   'project.task-terminal.start',
   'project.task-terminal.rotate',
   'project.task-terminal.control',
+  'project.worker.status',
+  'project.worker.recover',
+  'project.worker.resource.acquire',
+  'project.worker.resource.release',
+  'project.worker.directive.reconcile',
+  'project.worker.merge.submit',
+  'project.worker.merge.apply',
+  'project.worker.finalize',
 ]);
 
 const PROJECT_AI_METHODS = new Set([
@@ -219,8 +233,12 @@ export function authorizeManagedRoleV2(
     const supervisorTarget = binding.role === 'supervisor' || binding.role === 'project-supervisor'
       ? binding.targetSurfaceId
       : undefined;
+    const supervisorTargets = new Set([
+      ...(supervisorTarget ? [supervisorTarget] : []),
+      ...(binding.targetSurfaceIds || []),
+    ]);
     if (requested === binding.callerSurfaceId
-      || (supervisorTarget && requested === supervisorTarget
+      || (supervisorTargets.has(requested)
         && (method === 'surface.read_text' || method === 'pane.agent_state'))) {
       return { allowed: true };
     }
@@ -461,6 +479,10 @@ export function buildTaskAiRuntimeContext(options: {
   const supervisionState = lane ? supervisorLaneControlState(lane) : 'unbound';
   const config = lane ? effectiveSupervisorLaneConfig(lane) : undefined;
   const authority = workItem?.contract.authority;
+  const workerRuntime = lane?.projectWorkerId
+    ? workItem?.workerGroup?.workers.find((worker) => worker.workerId === lane.projectWorkerId)
+    : undefined;
+  const internalThreadsActive = workItem?.parallelismDecision?.resolvedMode === 'internal-threads';
   const contractVersionCurrent = !!project && !!workItem
     && project.status === 'active'
     && projectRequirementsAlignmentPhase(project) === 'accepted'
@@ -498,7 +520,8 @@ export function buildTaskAiRuntimeContext(options: {
           authority?.technicalChoices ? '在合同边界内自主选择技术实现' : '',
           authority?.lowRiskRetries ? '基于新证据进行合同预算内的低风险重试' : '',
           authority?.targetedTests ? '运行合同要求的最小相关测试' : '',
-          authority?.internalThreads ? '按 execution 约定组织任务 AI 自己的内部线程' : '',
+          authority?.internalThreads && internalThreadsActive ? '按 execution 约定组织本任务 AI 自己的内部线程' : '',
+          workerRuntime ? `只在当前 worktree 的 writeClaims 内写入：${workerRuntime.writeClaims.join('、') || '无（只读）'}` : '',
           authority?.continuousExecution ? '连续推进完整工作流直到停止条件或真实边界' : '',
         ].filter(Boolean)
       : ['仅执行监督 AI 下达的有界只读项目基线调查，并提交基线报告后停止']
@@ -511,10 +534,13 @@ export function buildTaskAiRuntimeContext(options: {
     authority?.permissionConfirm
       ? '遇到权限提示时等待监督 AI 按合同白名单确认；任务 AI 不自行扩大权限'
       : '任何权限提示都交回监督 AI；当前合同未授权监督自动确认',
-    authority?.internalThreads
+    authority?.internalThreads && internalThreadsActive
       ? '只有 execution 模式允许时才能建立内部线程；共享资源和最终集成保持串行'
       : '不得创建内部线程',
-  ] : [];
+    workerRuntime?.resourceClaims.length
+      ? `共享资源必须先由监督 AI 获取租约：${workerRuntime.resourceClaims.join('、')}`
+      : '',
+  ].filter(Boolean) : [];
   const contract = workItem?.contract;
 
   return {
@@ -527,6 +553,13 @@ export function buildTaskAiRuntimeContext(options: {
       ...(project ? { projectId: project.id } : {}),
       ...(workItem?.goalId ? { goalId: workItem.goalId } : {}),
       ...(workItem ? { workItemId: workItem.id } : {}),
+      ...(workerRuntime ? {
+        workerId: workerRuntime.workerId,
+        workerRole: workerRuntime.role,
+        executionEpoch: workItem?.workerGroup?.executionEpoch,
+        assignmentVersion: workerRuntime.assignmentVersion,
+        directiveEpoch: workerRuntime.directiveEpoch,
+      } : {}),
       ...(workItem?.requirementsVersion !== undefined
         ? { requirementsVersion: workItem.requirementsVersion }
         : {}),
@@ -554,7 +587,7 @@ export function buildTaskAiRuntimeContext(options: {
     contract: {
       objective: contract?.objective || config?.taskGoal || lane?.currentTask || '',
       ...(contract?.scope.root ? { projectRoot: contract.scope.root } : {}),
-      allowPaths: [...(contract?.scope.allowPaths || [])],
+      allowPaths: workerRuntime ? [...workerRuntime.writeClaims] : [...(contract?.scope.allowPaths || [])],
       denyPaths: [...(contract?.scope.denyPaths || [])],
       preconditions: [...new Set([
         ...(project?.preconditions || []),

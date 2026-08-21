@@ -289,6 +289,10 @@ contextBridge.exposeInMainWorld('wmux', {
     saveSession: (session: any) => ipcRenderer.invoke('project-manager:save-session', session),
     deleteSession: (sessionId: string) => ipcRenderer.invoke('project-manager:delete-session', sessionId),
     listActiveSessions: () => ipcRenderer.invoke('project-manager:list-active-sessions'),
+    prepareWorkerGroup: (request: any) => ipcRenderer.invoke('project-manager:prepare-worker-group', request),
+    submitMergeCandidate: (request: any) => ipcRenderer.invoke('project-manager:submit-merge-candidate', request),
+    applyMergeCandidate: (request: any) => ipcRenderer.invoke('project-manager:apply-merge-candidate', request),
+    finalizeWorkerGroup: (request: any) => ipcRenderer.invoke('project-manager:finalize-worker-group', request),
     captureProgress: (projectDir: string, planFilePaths: string[]) => ipcRenderer.invoke(
       'project-manager:capture-progress',
       { projectDir, planFilePaths },

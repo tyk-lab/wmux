@@ -2,11 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
+  MAX_PROJECT_ACTIVE_WORKERS,
   normalizeProjectManagerSession,
   projectDirectoryIdentity,
   normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
+  normalizeProjectWorkerAssignments,
+  projectWorkerAssignmentsViolation,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 import {
@@ -51,6 +54,84 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isWorkerRuntime(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const worker = value as Record<string, unknown>;
+  return typeof worker.workerId === 'string' && worker.workerId.length > 0
+    && ['integrator', 'worker', 'hardware-executor'].includes(String(worker.role))
+    && typeof worker.outcome === 'string' && worker.outcome.length > 0
+    && isStringArray(worker.dependencies) && isStringArray(worker.writeClaims)
+    && isStringArray(worker.resourceClaims) && isStringArray(worker.validation)
+    && ['planned', 'starting', 'running', 'waiting-resource', 'awaiting-review', 'completed', 'failed',
+      'exited', 'recovering', 'frozen', 'superseded'].includes(String(worker.status))
+    && Number.isInteger(worker.assignmentVersion) && Number(worker.assignmentVersion) >= 1
+    && Number.isInteger(worker.directiveEpoch) && Number(worker.directiveEpoch) >= 0
+    && (worker.surfaceId === undefined || typeof worker.surfaceId === 'string')
+    && (worker.laneId === undefined || typeof worker.laneId === 'string')
+    && (worker.worktreeId === undefined || typeof worker.worktreeId === 'string')
+    && (worker.worktreePath === undefined || typeof worker.worktreePath === 'string')
+    && (worker.checkpoint === undefined || typeof worker.checkpoint === 'string')
+    && (worker.startedAt === undefined || Number.isFinite(worker.startedAt))
+    && (worker.accumulatedActiveMs === undefined || (Number.isFinite(worker.accumulatedActiveMs) && Number(worker.accumulatedActiveMs) >= 0))
+    && Number.isFinite(worker.updatedAt);
+}
+
+function isWorkerGroup(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const group = value as Record<string, any>;
+  if (!Number.isInteger(group.executionEpoch)
+    || typeof group.integratorWorkerId !== 'string'
+    || !Array.isArray(group.workers)
+    || group.workers.length < 2
+    || group.workers.length > MAX_PROJECT_ACTIVE_WORKERS
+    || !group.workers.every(isWorkerRuntime)
+    || !isStringArray(group.mergeOrder)
+    || group.mergeOrder.length !== group.workers.length
+    || new Set(group.mergeOrder).size !== group.mergeOrder.length
+    || group.mergeOrder.some((workerId: string) => !group.workers.some((worker: any) => worker.workerId === workerId))
+    || !Number.isFinite(group.createdAt)
+    || !Number.isFinite(group.updatedAt)) return false;
+  const assignments = normalizeProjectWorkerAssignments(group.workers);
+  return assignments.length === group.workers.length
+    && projectWorkerAssignmentsViolation(assignments) === null
+    && assignments.find((assignment) => assignment.role === 'integrator')?.workerId === group.integratorWorkerId;
+}
+
+function isUserDirective(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const directive = value as Record<string, unknown>;
+  return typeof directive.directiveId === 'string' && typeof directive.workerId === 'string'
+    && Number.isInteger(directive.directiveEpoch) && Number.isInteger(directive.assignmentVersion)
+    && typeof directive.exactTextAvailable === 'boolean'
+    && (directive.exactText === undefined || typeof directive.exactText === 'string')
+    && ['pending', 'within-assignment', 'reassignment-required', 'contract-change', 'high-risk']
+      .includes(String(directive.classification))
+    && ['pending', 'reconciled', 'superseded'].includes(String(directive.reconciliationStatus))
+    && Number.isFinite(directive.receivedAt);
+}
+
+function isResourceLease(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const lease = value as Record<string, unknown>;
+  return ['leaseId', 'resourceId', 'ownerWorkerId', 'operationId'].every((key) => typeof lease[key] === 'string')
+    && ['shared-read', 'exclusive-write', 'snapshot-read', 'brokered-read'].includes(String(lease.mode))
+    && ['reserved', 'in-use', 'releasing', 'cooldown', 'released', 'quarantined'].includes(String(lease.status))
+    && typeof lease.idempotent === 'boolean'
+    && Number.isFinite(lease.grantedAt) && Number.isFinite(lease.updatedAt)
+    && (lease.evidence === undefined || typeof lease.evidence === 'string');
+}
+
+function isMergeCandidate(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return ['candidateId', 'workerId', 'baselineCommit', 'patchHash'].every((key) => typeof candidate[key] === 'string')
+    && Number.isInteger(candidate.assignmentVersion) && Number(candidate.assignmentVersion) >= 1
+    && isStringArray(candidate.changedFiles) && isStringArray(candidate.evidence)
+    && ['submitted', 'checking', 'accepted', 'applied', 'rejected', 'superseded', 'frozen']
+      .includes(String(candidate.status))
+    && Number.isFinite(candidate.createdAt) && Number.isFinite(candidate.updatedAt);
+}
+
 function isProjectTaskExecutionPlan(value: unknown, internalThreads: boolean): boolean {
   if (!value || typeof value !== 'object') return false;
   const execution = value as Record<string, unknown>;
@@ -64,7 +145,14 @@ function isProjectTaskExecutionPlan(value: unknown, internalThreads: boolean): b
     || !isStringArray(execution.childThreadResponsibilities)
     || execution.childThreadResponsibilities.length > MAX_TASK_CHILD_THREADS
   ) return false;
+  if (execution.parallelismSelection !== undefined
+    && !['auto', 'single-worker', 'internal-threads', 'worker-group']
+      .includes(String(execution.parallelismSelection))) return false;
   if (mode !== 'single-thread' && !internalThreads) return false;
+  if (execution.parallelismSelection === 'internal-threads' && !internalThreads) return false;
+  if ((execution.parallelismSelection === 'single-worker' || execution.parallelismSelection === 'worker-group')
+    && mode !== 'single-thread') return false;
+  if (execution.parallelismSelection === 'internal-threads' && mode !== 'multi-thread') return false;
   const maxChildThreads = execution.maxChildThreads;
   if (maxChildThreads !== undefined && (
     typeof maxChildThreads !== 'number'
@@ -190,6 +278,16 @@ function isProjectSupervisorStagePlan(value: unknown): boolean {
     || !isStringArray(plan.expectedPaths) || !isStringArray(plan.targetedValidation)
     || !isStringArray(plan.serializedBoundaries) || !isStringArray(plan.remainingWork)
     || !Number.isFinite(plan.updatedAt)) return false;
+  if (plan.workerAssignments !== undefined) {
+    const assignments = normalizeProjectWorkerAssignments(plan.workerAssignments);
+    if (assignments.length !== (plan.workerAssignments as unknown[]).length
+      || projectWorkerAssignmentsViolation(assignments)) return false;
+    if (plan.mergeOrder !== undefined && (
+      !isStringArray(plan.mergeOrder)
+      || plan.mergeOrder.length > MAX_PROJECT_ACTIVE_WORKERS
+      || plan.mergeOrder.some((workerId) => !assignments.some((item) => item.workerId === workerId))
+    )) return false;
+  } else if (plan.mergeOrder !== undefined) return false;
   const milestoneIds = new Set<string>();
   let activeMilestones = 0;
   const milestonesValid = plan.milestones.every((value) => {
@@ -288,6 +386,21 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.baseline === undefined || isProjectTaskBaseline(item.baseline))
       && (item.supervisorPlan === undefined || isProjectSupervisorStagePlan(item.supervisorPlan))
       && (item.supervisorPlanRequired === undefined || typeof item.supervisorPlanRequired === 'boolean')
+      && (item.parallelismDecision === undefined || (
+        item.parallelismDecision && typeof item.parallelismDecision === 'object'
+        && ['auto', 'single-worker', 'internal-threads', 'worker-group'].includes(String(item.parallelismDecision.requestedMode))
+        && ['single-worker', 'internal-threads', 'worker-group'].includes(String(item.parallelismDecision.resolvedMode))
+        && Number.isInteger(item.parallelismDecision.requirementsVersion)
+        && Number.isInteger(item.parallelismDecision.executionEpoch)
+        && typeof item.parallelismDecision.reason === 'string'
+        && isStringArray(item.parallelismDecision.evidence)
+        && Number.isFinite(item.parallelismDecision.resolvedAt)
+      ))
+      && (item.workerGroup === undefined || isWorkerGroup(item.workerGroup))
+      && (item.userDirectives === undefined || (Array.isArray(item.userDirectives) && item.userDirectives.every(isUserDirective)))
+      && (item.resourceLeases === undefined || (Array.isArray(item.resourceLeases) && item.resourceLeases.every(isResourceLease)))
+      && (item.mergeCandidates === undefined || (Array.isArray(item.mergeCandidates) && item.mergeCandidates.every(isMergeCandidate)))
+      && (item.finalApplyBlocked === undefined || typeof item.finalApplyBlocked === 'boolean')
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)
@@ -315,6 +428,8 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && ['maxDecisions', 'maxContinuousMinutes', 'maxIdenticalFailures', 'maxNoProgressRounds',
         'maxTaskRetries', 'maxSameTestRuns', 'maxFullSuiteRunsPerVersion']
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)
+      && (budget?.maxAggregateWorkerMinutes === undefined
+        || (Number.isFinite(budget.maxAggregateWorkerMinutes) && budget.maxAggregateWorkerMinutes >= 1))
       && (!execution || isProjectTaskExecutionPlan(execution, authority?.internalThreads === true));
   });
   if (!workItemsValid) return false;

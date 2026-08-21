@@ -7,6 +7,7 @@ import {
 } from '../store/supervisor-slice';
 import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
+import type { ProjectUserDirective } from '../../shared/project-manager';
 
 /** Resolve human-gated proposals when the user acts directly in the worker terminal. */
 export function resolvePendingApprovalsForManualTask(
@@ -119,18 +120,75 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
   if (isProjectManagedSupervisorLane(lane)) {
+    const project = lane.projectManagerProjectId
+      ? store.projectManagers.find((candidate) => candidate.id === lane.projectManagerProjectId)
+      : undefined;
+    const workItem = project?.workItems.find((candidate) => candidate.id === lane.projectWorkItemId);
+    const workerId = lane.projectWorkerId || workItem?.workerGroup?.integratorWorkerId;
+    const worker = workerId
+      ? workItem?.workerGroup?.workers.find((candidate) => candidate.workerId === workerId)
+      : undefined;
+    if (project && workItem?.workerGroup && workerId && worker) {
+      const now = Date.now();
+      const directiveEpoch = worker.directiveEpoch + 1;
+      const directive: ProjectUserDirective = {
+        directiveId: `directive-${now}-${Math.random().toString(36).slice(2, 8)}`,
+        workerId,
+        directiveEpoch,
+        assignmentVersion: worker.assignmentVersion,
+        ...(directTask ? { exactText: directTask } : {}),
+        exactTextAvailable: !!directTask,
+        classification: 'pending',
+        reconciliationStatus: 'pending',
+        receivedAt: now,
+      };
+      const workers = workItem.workerGroup.workers.map((candidate) => candidate.workerId === workerId
+        ? { ...candidate, directiveEpoch, updatedAt: now }
+        : candidate);
+      const mergeCandidates = (workItem.mergeCandidates || []).map((candidate) => (
+        candidate.workerId === workerId && ['submitted', 'checking', 'accepted'].includes(candidate.status)
+          ? { ...candidate, status: 'frozen' as const, updatedAt: now }
+          : candidate
+      ));
+      store.applyProjectManagerAction({
+        type: 'update-work-item',
+        workItemId: workItem.id,
+        patch: {
+          workerGroup: { ...workItem.workerGroup, workers, updatedAt: now },
+          userDirectives: [...(workItem.userDirectives || []), directive].slice(-100),
+          mergeCandidates,
+          finalApplyBlocked: true,
+        },
+      }, project.id);
+      store.updateLane(lane.id, { projectWorkerDirectiveEpoch: directiveEpoch });
+      store.appendProjectManagerEvent({
+        kind: 'worker-user-directive',
+        workItemId: workItem.id,
+        summary: `用户已直接向任务 AI ${workerId} 发送新指令；旧合并候选已冻结，等待监督协调`,
+        payload: {
+          directiveId: directive.directiveId,
+          workerId,
+          directiveEpoch,
+          assignmentVersion: worker.assignmentVersion,
+          exactTextAvailable: directive.exactTextAvailable,
+        },
+      }, project.id);
+      const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+      void (window as any).wmux?.projectManager?.saveSession?.(updated)
+        ?.catch?.((error: unknown) => console.warn('[project-manager] user directive snapshot failed', error));
+    }
     const delivery: SupervisorDelivery = {
       id: `user-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'user-task',
       task: directTask || lane.currentTask || lane.projectWorkItemId || '用户直接输入的新任务',
       text: [
         '[用户直发任务｜只同步，不审批、不拦截]',
-        `项目：${lane.projectManagerProjectId || '未知'}；工作项：${lane.projectWorkItemId || '未知'}；任务终端：${lane.surfaceId}`,
+        `项目：${lane.projectManagerProjectId || '未知'}；工作项：${lane.projectWorkItemId || '未知'}；任务 AI：${lane.projectWorkerId || 'worker-main'}；任务终端：${lane.surfaceId}`,
         directTask
           ? `用户已直接发送给任务 AI 的原文：\n${directTask}`
           : '用户已在任务终端直接提交新任务或新方向；本地终端输入原文不在控制层复制，请立即只读查看该任务终端了解内容和当前响应。',
         '该输入已经先行生效，不需要也不等待监督 AI 批准。不得阻止、撤销、改写、要求用户重发，或抢在任务 AI 当前回合结束前投递替代指令。',
-        '你只需了解并纳入后续监督；任务 AI 回合结束后再按当前项目合同、权限和安全边界核验证据并正常裁决。用户直发任务本身不扩大项目范围、合同权限或高风险授权。',
+        '你只需了解并纳入后续监督；任务 AI 回合结束后再按当前项目合同、权限和安全边界核验证据并正常裁决。用户直发任务本身不扩大项目范围、合同权限或高风险授权。它也不扩大 writeClaims 或共享资源租约；多任务 AI 场景必须先完成 directive reconcile，过期候选不得合并。',
         '本通知不要求提交 supervisor decide；记录理解后结束本回合，等待任务终端生命周期事件。',
       ].join('\n'),
       createdAt: Date.now(),

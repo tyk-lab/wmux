@@ -9,7 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
-import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
+import type { ProjectSupervisorStagePlan, ProjectWorkerRole } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -99,6 +99,12 @@ export interface SupervisorLane {
   projectWorkItemId?: string;
   /** Project-management project that owns this lane; work-item IDs are only unique within it. */
   projectManagerProjectId?: string;
+  /** Address inside one logical project-supervisor worker group. */
+  projectWorkerId?: string;
+  projectWorkerRole?: ProjectWorkerRole;
+  projectWorkerExecutionEpoch?: number;
+  projectWorkerAssignmentVersion?: number;
+  projectWorkerDirectiveEpoch?: number;
   /** The project supervisor is running, but it has not created its dedicated task terminal yet. */
   projectTaskStartupPending?: boolean;
   /** Project manager requested context rotation; only this lane's supervisor may execute it. */

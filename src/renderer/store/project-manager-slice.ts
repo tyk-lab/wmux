@@ -831,6 +831,31 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         status: 'stopped',
         supervisorLaneId: undefined,
         workerSurfaceId: undefined,
+        workerGroup: item.workerGroup ? {
+          ...item.workerGroup,
+          workers: item.workerGroup.workers.map((worker) => ({
+            ...worker,
+            status: 'superseded' as const,
+            surfaceId: undefined,
+            laneId: undefined,
+            startedAt: undefined,
+            updatedAt: now,
+          })),
+          updatedAt: now,
+        } : undefined,
+        resourceLeases: (item.resourceLeases || []).map((lease) => ({
+          ...lease,
+          status: ['released', 'quarantined'].includes(lease.status) ? lease.status : 'quarantined' as const,
+          updatedAt: now,
+        })),
+        mergeCandidates: (item.mergeCandidates || []).map((candidate) => ({
+          ...candidate,
+          status: ['applied', 'rejected', 'superseded'].includes(candidate.status)
+            ? candidate.status
+            : 'frozen' as const,
+          updatedAt: now,
+        })),
+        finalApplyBlocked: item.workerGroup ? true : item.finalApplyBlocked,
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };

@@ -325,7 +325,7 @@ describe('project-manager engine', () => {
     expect(text).toContain('构建工具自动生成的二进制');
   });
 
-  it('briefs adaptive tasks with bounded proposal approval and serialized hardware work', () => {
+  it('briefs legacy adaptive tasks with automatic mutually exclusive parallelism', () => {
     const contract = item('auth', 'planned').contract;
     contract.authority.internalThreads = true;
     contract.execution = {
@@ -342,14 +342,12 @@ describe('project-manager engine', () => {
     const briefing = buildProjectSupervisorBriefing({ workItemId: 'auth', contract });
     const envelope = buildProjectTaskExecutionEnvelope(contract);
 
-    expect(briefing).toContain('任务终端工作模式：自适应线程');
-    expect(briefing).toContain('允许的内部子线程上限：2');
-    expect(briefing).toContain('[批准内部线程方案 childThreads=N]');
-    expect(briefing).toContain('设备上电/重上电');
-    expect(envelope).toContain('先进行一次有界、只读的结构探测');
-    expect(envelope).toContain('带有明确 childThreads 数字的批准标记前不得创建内部子线程');
+    expect(briefing).toContain('项目执行模式：自动互斥选择');
+    expect(briefing).toContain('基线批准时只能选择单任务 AI、内部多线程或多任务 AI 一种');
+    expect(briefing).toContain('必须串行：设备重上电；最终集成验证');
+    expect(envelope).toContain('项目执行模式：自动选择');
+    expect(envelope).toContain('不得同时提议内部线程和多任务 AI');
     expect(envelope).toContain('必须串行：设备重上电；最终集成验证');
-    expect(envelope).toContain('不得新建 wmux 任务终端');
     expect(projectContractViolation(contract, {
       instruction: '[批准内部线程方案 childThreads=3] 并行处理三个任务',
     })).toContain('超出任务契约上限 2');

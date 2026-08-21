@@ -218,6 +218,38 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-control' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.worker.status': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-status' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.recover': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-recover' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.resource.acquire': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-acquire' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.resource.release': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-release' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.directive.reconcile': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-directive-reconcile' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.merge.submit': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-submit' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.merge.apply': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-apply' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.finalize': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-finalize' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.supervisor.inspect': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-inspect' })})`,
     requireResult: 'Project manager bridge is unavailable',

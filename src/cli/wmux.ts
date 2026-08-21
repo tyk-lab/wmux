@@ -417,7 +417,99 @@ async function cmdProject(args: string[]): Promise<void> {
     if (!projectId || !workItemId || !control || !reason) {
       throw new Error('project task-terminal-control requires --project, --task, --key <escape|interrupt>, and --reason');
     }
-    print(await sendV2('project.task-terminal.control', { workItemId, projectId, control, reason }));
+    print(await sendV2('project.task-terminal.control', {
+      workItemId, projectId, control, reason, workerId: getFlag(args, '--worker') || '',
+    }));
+    return;
+  }
+  if (sub === 'worker-status') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const status = getFlag(args, '--status') || '';
+    if (!projectId || !workItemId || !workerId || !status) {
+      throw new Error('project worker-status requires --project, --task, --worker, and --status');
+    }
+    print(await sendV2('project.worker.status', {
+      projectId, workItemId, workerId, status, checkpoint: getFlag(args, '--checkpoint') || '',
+    }));
+    return;
+  }
+  if (sub === 'worker-recover') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    if (!projectId || !workItemId || !workerId) {
+      throw new Error('project worker-recover requires --project, --task, and --worker');
+    }
+    print(await sendV2('project.worker.recover', { projectId, workItemId, workerId }));
+    return;
+  }
+  if (sub === 'worker-resource-acquire') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const resourceId = getFlag(args, '--resource') || '';
+    const operationId = getFlag(args, '--operation') || '';
+    const mode = getFlag(args, '--mode') || '';
+    if (!projectId || !workItemId || !workerId || !resourceId || !operationId || !mode) {
+      throw new Error('project worker-resource-acquire requires --project, --task, --worker, --resource, --operation, and --mode');
+    }
+    print(await sendV2('project.worker.resource.acquire', {
+      projectId, workItemId, workerId, resourceId, operationId, mode, idempotent: args.includes('--idempotent'),
+    }));
+    return;
+  }
+  if (sub === 'worker-resource-release') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const leaseId = getFlag(args, '--lease') || '';
+    if (!projectId || !workItemId || !workerId || !leaseId) {
+      throw new Error('project worker-resource-release requires --project, --task, --worker, and --lease');
+    }
+    print(await sendV2('project.worker.resource.release', {
+      projectId, workItemId, workerId, leaseId, evidence: getFlag(args, '--evidence') || '',
+    }));
+    return;
+  }
+  if (sub === 'worker-directive-reconcile') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const directiveId = getFlag(args, '--directive') || '';
+    const classification = getFlag(args, '--classification') || '';
+    if (!projectId || !workItemId || !workerId || !directiveId || !classification) {
+      throw new Error('project worker-directive-reconcile requires --project, --task, --worker, --directive, and --classification');
+    }
+    print(await sendV2('project.worker.directive.reconcile', {
+      projectId, workItemId, workerId, directiveId, classification,
+    }));
+    return;
+  }
+  if (sub === 'worker-merge-submit') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    if (!projectId || !workItemId || !workerId) {
+      throw new Error('project worker-merge-submit requires --project, --task, and --worker');
+    }
+    print(await sendV2('project.worker.merge.submit', {
+      projectId, workItemId, workerId, evidence: getFlag(args, '--evidence') || '',
+    }));
+    return;
+  }
+  if (sub === 'worker-merge-apply') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const candidateId = getFlag(args, '--candidate') || '';
+    if (!projectId || !workItemId || !workerId || !candidateId) {
+      throw new Error('project worker-merge-apply requires --project, --task, --worker, and --candidate');
+    }
+    print(await sendV2('project.worker.merge.apply', { projectId, workItemId, workerId, candidateId }));
+    return;
+  }
+  if (sub === 'worker-finalize') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    if (!projectId || !workItemId || !workerId) {
+      throw new Error('project worker-finalize requires --project, --task, and --worker');
+    }
+    print(await sendV2('project.worker.finalize', { projectId, workItemId, workerId }));
     return;
   }
   if (sub === 'inspect') {
@@ -494,7 +586,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1190,7 +1282,7 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>

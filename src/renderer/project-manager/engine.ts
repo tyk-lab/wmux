@@ -1,6 +1,8 @@
 import {
   activeProjectGoal,
   activeProjectSubgoals,
+  normalizeProjectParallelismSelection,
+  type ProjectParallelismMode,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectOrientationReady,
@@ -19,7 +21,7 @@ export const PROJECT_TASK_EXECUTION_ENVELOPE_MARKER = '[项目任务连续执行
 export const PROJECT_TASK_BASELINE_INVESTIGATION_MARKER = '[项目基线调查]';
 export const PROJECT_TASK_BASELINE_REPORT_MARKER = '[项目基线报告]';
 export const PROJECT_TASK_BASELINE_APPROVAL_MARKER = '[批准项目基线]';
-export const PROJECT_TASK_PROTOCOL_REVISION = '2';
+export const PROJECT_TASK_PROTOCOL_REVISION = '3';
 export const PROJECT_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
   '先运行 wmux context 获取当前 capability 绑定的项目、目标、工作项、需求/授权版本、基线、合同范围和可用动作；不得沿用旧会话身份或自行指定其他项目/工作项。',
@@ -176,14 +178,34 @@ type SupervisorDecisionOutcome = 'continue' | 'rework' | 'complete' | 'needs-hum
 export function buildProjectTaskExecutionEnvelope(
   contract: ProjectSupervisorContract,
   executionIdentity?: ProjectExecutionIdentity,
+  resolvedParallelismMode?: ProjectParallelismMode,
 ): string {
   const authority = contract.authority;
   const execution = contract.execution;
+  const parallelismSelection = resolvedParallelismMode || normalizeProjectParallelismSelection(
+    execution?.parallelismSelection,
+    execution?.taskWorkMode,
+  );
   const authorizedDevices = authority.authorizedDevices || [];
   const authorizedEnvironments = authority.authorizedEnvironments || [];
   const authorizedOperations = authority.authorizedOperations || [];
   const allowedCommandPrefixes = authority.allowedCommandPrefixes || [];
-  const executionModeLines = execution?.taskWorkMode === 'adaptive'
+  const executionModeLines = parallelismSelection === 'worker-group'
+    ? [
+        `项目执行模式：固定多任务 AI；与内部多线程互斥。理由：${execution?.modeReason || '存在可独立交付的并行成果'}`,
+        `主任务 AI 职责：${execution?.mainThreadResponsibility || contract.objective}`,
+        '当前终端是主任务 AI。先完成只读基线并提出 workerAssignments；控制层验证并创建独立任务终端前，不得自行创建内部子线程或额外终端。',
+        '共享接口、锁文件、最终集成和全量验证由主任务 AI 串行负责；普通工人只能在各自 writeClaims 内工作。',
+      ]
+    : parallelismSelection === 'auto'
+      ? [
+          `项目执行模式：自动选择；基线批准时只能解析为单任务 AI、内部多线程或多任务 AI 之一。理由：${execution?.modeReason || '需要依据实际边界选择'}`,
+          `主任务 AI 职责：${execution?.mainThreadResponsibility || contract.objective}`,
+          `可并行候选：${execution?.parallelizableOperations?.join('；') || '无'}`,
+          `必须串行：${execution?.serializedOperations?.join('；') || '共享写入、硬件和最终集成'}`,
+          '基线报告必须明确推荐一种模式：只读分析并行使用内部线程；存在多个独立、写域互斥、可长期交付的成果时提交 workerAssignments；否则保持单任务 AI。不得同时提议内部线程和多任务 AI。',
+        ]
+      : execution?.taskWorkMode === 'adaptive'
     ? [
         `任务 AI 工作模式：自适应线程；这是唯一会依据基线调查结果动态决定单/多线程的模式。理由：${execution.modeReason}`,
         `主线程职责：${execution.mainThreadResponsibility}`,
@@ -193,11 +215,11 @@ export function buildProjectTaskExecutionEnvelope(
         '先进行一次有界、只读的结构探测。若无需拆分，直接由主线程继续；若值得拆分，先输出“[内部线程提案]”，列出理由、线程数、职责、文件/路径所有权、依赖、共享资源、汇总与验证方式。收到监督 AI 带有明确 childThreads 数字的批准标记前不得创建内部子线程。',
         '共享硬件、设备上电/重上电、固件烧录、共享测试环境变更、破坏性动作和最终集成验证一律由主线程串行执行。内部线程只是本任务 AI 的工作组织，不得新建 wmux 任务终端。',
       ]
-    : execution?.taskWorkMode === 'multi-thread'
+    : parallelismSelection === 'internal-threads' || execution?.taskWorkMode === 'multi-thread'
       ? [
-          `任务 AI 工作模式：固定多线程；不会自行切换模式。理由：${execution.modeReason}`,
-          `主线程职责：${execution.mainThreadResponsibility}`,
-          ...execution.childThreadResponsibilities.map((responsibility, index) => (
+          `任务 AI 工作模式：固定多线程；不会自行切换模式。理由：${execution?.modeReason || '已授权内部并行分析'}`,
+          `主线程职责：${execution?.mainThreadResponsibility || contract.objective}`,
+          ...(execution?.childThreadResponsibilities || []).map((responsibility, index) => (
             `子线程 ${index + 1} 职责：${responsibility}`
           )),
           '内部线程仅属于本任务 AI，不得新建额外 wmux 任务终端；共享资源操作与最终集成由主线程串行完成。',
@@ -241,6 +263,7 @@ export function prepareProjectTaskDelivery(
   instruction: string,
   contractPending: boolean,
   executionIdentity?: ProjectExecutionIdentity,
+  resolvedParallelismMode?: ProjectParallelismMode,
 ): PreparedProjectTaskDelivery {
   const requested = instruction.trim();
   if (!contractPending) {
@@ -252,7 +275,7 @@ export function prepareProjectTaskDelivery(
     };
   }
 
-  const envelope = buildProjectTaskExecutionEnvelope(contract, executionIdentity);
+  const envelope = buildProjectTaskExecutionEnvelope(contract, executionIdentity, resolvedParallelismMode);
   const legacyPayload = requested.startsWith(envelope)
     ? requested.slice(envelope.length).trim().replace(/^\[本轮执行指令\]\s*/u, '').trim()
     : requested;
@@ -521,6 +544,7 @@ export function buildProjectSupervisorBriefing(options: {
   contract: ProjectSupervisorContract;
   baseline?: ProjectTaskBaseline;
   supervisorPlan?: ProjectSupervisorStagePlan;
+  resolvedParallelismMode?: ProjectParallelismMode;
   executionIdentity?: ProjectExecutionIdentity;
   projectGoal?: string;
   stage?: {
@@ -529,7 +553,7 @@ export function buildProjectSupervisorBriefing(options: {
     acceptance: string[];
   };
 }): string {
-  const { workItemId, contract, baseline, supervisorPlan, executionIdentity, projectGoal, stage } = options;
+  const { workItemId, contract, baseline, supervisorPlan, resolvedParallelismMode, executionIdentity, projectGoal, stage } = options;
   const allowedCommandPrefixes = contract.authority.allowedCommandPrefixes || [];
   const permissions = [
     contract.authority.technicalChoices ? '可在边界内自主选择技术实现' : '技术路线变化须交给项目管理 AI',
@@ -545,8 +569,28 @@ export function buildProjectSupervisorBriefing(options: {
       : `任务 AI 仅执行到受控边界：${contract.authority.continuationBoundary || '未声明（合同无效）'}`,
   ];
   const execution = contract.execution;
+  const parallelismSelection = resolvedParallelismMode || normalizeProjectParallelismSelection(
+    execution?.parallelismSelection,
+    execution?.taskWorkMode,
+  );
   let executionLines: string[];
-  if (execution?.taskWorkMode === 'adaptive') {
+  if (parallelismSelection === 'worker-group') {
+    executionLines = [
+      `项目执行模式：固定多任务 AI；与内部多线程互斥。选择理由：${execution?.modeReason || '存在独立交付成果'}`,
+      `主任务 AI 职责：${execution?.mainThreadResponsibility || contract.objective}`,
+      '基线批准时阶段计划必须提供 2-3 个 workerAssignments，且只能有一个 integrator；控制层验证依赖、写域和资源后创建工人。',
+      '监督 AI 只能申请控制层创建工人，不得自行创建子代理；所有任务 AI 都保持 single-thread。',
+      `运行时命令：worker-status/recover；worker-resource-acquire/release；worker-directive-reconcile；普通 worker 使用 worker-merge-submit，集成者使用 worker-merge-apply；全部收敛后由集成者 worker-finalize。每条命令必须显式指定 --project ${executionIdentity?.projectId || '<项目ID>'} --task ${workItemId} --worker <workerId>。`,
+    ];
+  } else if (parallelismSelection === 'auto') {
+    executionLines = [
+      `项目执行模式：自动互斥选择。选择理由：${execution?.modeReason || '依据基线决定最小安全并行层级'}`,
+      `主任务 AI 职责：${execution?.mainThreadResponsibility || contract.objective}`,
+      `可并行候选：${execution?.parallelizableOperations?.join('；') || '无'}`,
+      `必须串行：${execution?.serializedOperations?.join('；') || '共享写入、硬件和最终集成'}`,
+      '基线批准时只能选择单任务 AI、内部多线程或多任务 AI 一种。多任务 AI 必须在阶段计划中提交 workerAssignments；没有安全独立写域时不得选择它。',
+    ];
+  } else if (execution?.taskWorkMode === 'adaptive') {
     executionLines = [
       `任务终端工作模式：自适应线程；只有此模式可依据基线调查后的实际复杂度动态决定保持单线程或申请多线程。选择理由：${execution.modeReason}`,
       `主线程职责：${execution.mainThreadResponsibility}`,
@@ -559,11 +603,11 @@ export function buildProjectSupervisorBriefing(options: {
       '首次任务指令必须要求任务 AI 先做一次有界、只读的结构探测。它可以判断无需拆分并直接单线程推进；如需拆分，必须先提交“[内部线程提案]”，获批前不得创建子线程。',
       '监督 AI 不得创建额外 wmux 任务终端或代替任务 AI 创建子代理。共享硬件、设备上电/重上电、烧录、共享环境变更、破坏性动作和最终集成验证必须保持主线程串行。',
     ];
-  } else if (execution?.taskWorkMode === 'multi-thread') {
+  } else if (parallelismSelection === 'internal-threads' || execution?.taskWorkMode === 'multi-thread') {
     executionLines = [
-      `任务终端工作模式：固定多线程；不得静默改成其他模式。选择理由：${execution.modeReason}`,
-      `主线程职责：${execution.mainThreadResponsibility}`,
-      ...execution.childThreadResponsibilities.map((responsibility, index) => `子线程 ${index + 1} 职责：${responsibility}`),
+      `任务终端工作模式：固定多线程；不得静默改成其他模式。选择理由：${execution?.modeReason || '已授权内部并行分析'}`,
+      `主线程职责：${execution?.mainThreadResponsibility || contract.objective}`,
+      ...(execution?.childThreadResponsibilities || []).map((responsibility, index) => `子线程 ${index + 1} 职责：${responsibility}`),
       '你必须把以上线程职责清晰传达给任务终端，并检查各线程没有越界或重复工作。',
     ];
   } else {
@@ -613,10 +657,10 @@ export function buildProjectSupervisorBriefing(options: {
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,
-    `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
+    `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、累计任务 AI 时间 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
     '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
-    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[{"id":"...","title":"...","outcome":"...","status":"planned|active|completed","evidence":"..."}],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."]}。expectedPaths 只列任务 AI 将主动创建或修改、且位于合同允许范围内的路径；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。写入当前项目 .wmux/tmp/<唯一名>.json 后，在裁决中附 --stage-plan-file；该计划由你维护，项目 AI 无权代填。',
+    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一 integrator、无循环依赖和互斥 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。',
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,

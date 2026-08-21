@@ -1432,6 +1432,9 @@ describe('supervisor isolation', () => {
     });
 
     expect(briefing).toContain('首次任务终端上下文恢复（必须先处理）');
+    expect(briefing).toContain('恢复需求异常门禁');
+    expect(briefing).toContain('--proposal-kind clarification');
+    expect(briefing).toContain('没有实质歧义时不要机械提问');
     expect(briefing).toContain('--proposal-kind context-recovery');
     expect(briefing).toContain('--next-file .wmux/tmp/context-recovery-<唯一名>.txt');
     expect(briefing).not.toContain('--next "<完整恢复指令>"');

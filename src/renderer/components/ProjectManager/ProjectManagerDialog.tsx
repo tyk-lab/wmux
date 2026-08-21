@@ -50,10 +50,13 @@ const STATUS_LABELS: Record<string, string> = {
   obsolete: '已取消',
 };
 
-function taskWorkModeLabel(mode: string | undefined): string {
-  if (mode === 'multi-thread') return '固定多线程';
-  if (mode === 'adaptive') return '自适应线程（按调查结果）';
-  return '固定单线程';
+function taskWorkModeLabel(selection: string | undefined, legacyMode: string | undefined): string {
+  if (selection === 'worker-group') return '多任务 AI';
+  if (selection === 'internal-threads') return '单任务 AI · 内部多线程';
+  if (selection === 'single-worker') return '单任务 AI · 单线程';
+  if (selection === 'auto' || legacyMode === 'adaptive') return '自动选择（互斥）';
+  if (legacyMode === 'multi-thread') return '单任务 AI · 内部多线程';
+  return '单任务 AI · 单线程';
 }
 
 interface ProjectContextTerminal {
@@ -1512,14 +1515,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <strong>{item.title}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
-                          <dt>执行模式</dt><dd>{taskWorkModeLabel(execution?.taskWorkMode)}{execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
-                          {execution?.taskWorkMode === 'adaptive' && <><dt>自适应边界</dt><dd>最多 {execution.maxChildThreads} 个内部子线程；可并行：{execution.parallelizableOperations?.join('；')}；必须串行：{execution.serializedOperations?.join('；')}</dd></>}
+                          <dt>执行模式</dt><dd>{taskWorkModeLabel(item.parallelismDecision?.resolvedMode || execution?.parallelismSelection, execution?.taskWorkMode)}{item.parallelismDecision ? `：${item.parallelismDecision.reason}` : execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
+                          {(execution?.parallelismSelection === 'auto' || execution?.taskWorkMode === 'adaptive') && !item.parallelismDecision && <><dt>自动选择边界</dt><dd>基线批准时只会选择一种模式；可并行：{execution.parallelizableOperations?.join('；') || '无'}；必须串行：{execution.serializedOperations?.join('；') || '共享写入、硬件与最终集成'}</dd></>}
+                          {item.workerGroup && <><dt>任务 AI 组</dt><dd>{item.workerGroup.workers.map((worker) => `${worker.workerId}（${worker.role}／${STATUS_LABELS[worker.status] || worker.status}）`).join('；')}</dd><dt>合并状态</dt><dd>候选 {item.mergeCandidates?.length || 0}；活动租约 {(item.resourceLeases || []).filter((lease) => !['released', 'quarantined'].includes(lease.status)).length}；待协调直发 {(item.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending').length}；最终应用{item.finalApplyBlocked ? '已锁定' : '已完成'}</dd></>}
                           <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
                           <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
                           <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : '等待形成正式路线'}</dd>
-                          <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
+                          <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；多任务 AI 聚合 {item.contract.budget.maxAggregateWorkerMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>

@@ -3,7 +3,17 @@ import type { TaskWorkMode } from './supervisor-work-mode';
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 /** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
-export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 2;
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 3;
+
+export const PROJECT_PARALLELISM_SELECTIONS = [
+  'auto',
+  'single-worker',
+  'internal-threads',
+  'worker-group',
+] as const;
+export type ProjectParallelismSelection = typeof PROJECT_PARALLELISM_SELECTIONS[number];
+export type ProjectParallelismMode = Exclude<ProjectParallelismSelection, 'auto'>;
+export const MAX_PROJECT_ACTIVE_WORKERS = 3;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
@@ -53,6 +63,12 @@ export type ProjectManagerEventKind =
   | 'work-item-baseline-approved'
   | 'user-work-item-intervention'
   | 'dispatch-mode-selected'
+  | 'worker-group-created'
+  | 'worker-status'
+  | 'worker-user-directive'
+  | 'worker-assignment-updated'
+  | 'merge-candidate-updated'
+  | 'resource-lease-updated'
   | 'supervisor-status'
   | 'supervisor-handoff'
   | 'supervisor-transition'
@@ -136,6 +152,8 @@ export interface ProjectManagerUserQuestion {
 export interface ProjectExecutionBudget {
   maxDecisions: number;
   maxContinuousMinutes: number;
+  /** Aggregate task-AI time across a worker group; parallelism must not multiply the budget. */
+  maxAggregateWorkerMinutes: number;
   maxIdenticalFailures: number;
   maxNoProgressRounds: number;
   maxTaskRetries: number;
@@ -146,6 +164,7 @@ export interface ProjectExecutionBudget {
 export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
   maxDecisions: 12,
   maxContinuousMinutes: 90,
+  maxAggregateWorkerMinutes: 180,
   maxIdenticalFailures: 2,
   maxNoProgressRounds: 2,
   maxTaskRetries: 3,
@@ -157,6 +176,7 @@ export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
 export const MAX_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
   maxDecisions: 50,
   maxContinuousMinutes: 240,
+  maxAggregateWorkerMinutes: 720,
   maxIdenticalFailures: 5,
   maxNoProgressRounds: 5,
   maxTaskRetries: 5,
@@ -196,6 +216,8 @@ export interface ProjectSupervisorAuthority {
 
 export interface ProjectTaskExecutionPlan {
   taskWorkMode: TaskWorkMode;
+  /** Project-only mutually exclusive parallelism request. Legacy taskWorkMode is normalized into this field. */
+  parallelismSelection?: ProjectParallelismSelection;
   modeReason: string;
   mainThreadResponsibility: string;
   childThreadResponsibilities: string[];
@@ -207,6 +229,113 @@ export interface ProjectTaskExecutionPlan {
   parallelizableOperations?: string[];
   /** Shared-resource or high-coupling operations that must remain on the main thread. */
   serializedOperations?: string[];
+}
+
+export interface ProjectParallelismDecision {
+  requestedMode: ProjectParallelismSelection;
+  resolvedMode: ProjectParallelismMode;
+  requirementsVersion: number;
+  executionEpoch: number;
+  reason: string;
+  evidence: string[];
+  resolvedAt: number;
+}
+
+export type ProjectWorkerRole = 'integrator' | 'worker' | 'hardware-executor';
+export type ProjectWorkerStatus =
+  | 'planned'
+  | 'starting'
+  | 'running'
+  | 'waiting-resource'
+  | 'awaiting-review'
+  | 'completed'
+  | 'failed'
+  | 'exited'
+  | 'recovering'
+  | 'frozen'
+  | 'superseded';
+
+export interface ProjectWorkerAssignment {
+  workerId: string;
+  role: ProjectWorkerRole;
+  outcome: string;
+  dependencies: string[];
+  writeClaims: string[];
+  resourceClaims: string[];
+  validation: string[];
+}
+
+export interface ProjectWorkerRuntime extends ProjectWorkerAssignment {
+  status: ProjectWorkerStatus;
+  assignmentVersion: number;
+  directiveEpoch: number;
+  surfaceId?: string;
+  laneId?: string;
+  worktreeId?: string;
+  worktreePath?: string;
+  checkpoint?: string;
+  startedAt?: number;
+  accumulatedActiveMs: number;
+  updatedAt: number;
+}
+
+export interface ProjectWorkerGroup {
+  executionEpoch: number;
+  integratorWorkerId: string;
+  workers: ProjectWorkerRuntime[];
+  mergeOrder: string[];
+  baselineCommit?: string;
+  integrationWorktreePath?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ProjectUserDirectiveClassification =
+  | 'pending'
+  | 'within-assignment'
+  | 'reassignment-required'
+  | 'contract-change'
+  | 'high-risk';
+
+export interface ProjectUserDirective {
+  directiveId: string;
+  workerId: string;
+  directiveEpoch: number;
+  assignmentVersion: number;
+  exactText?: string;
+  exactTextAvailable: boolean;
+  classification: ProjectUserDirectiveClassification;
+  reconciliationStatus: 'pending' | 'reconciled' | 'superseded';
+  receivedAt: number;
+}
+
+export type ProjectResourceMode = 'shared-read' | 'exclusive-write' | 'snapshot-read' | 'brokered-read';
+export type ProjectResourceLeaseStatus = 'reserved' | 'in-use' | 'releasing' | 'cooldown' | 'released' | 'quarantined';
+
+export interface ProjectResourceLease {
+  leaseId: string;
+  resourceId: string;
+  mode: ProjectResourceMode;
+  ownerWorkerId: string;
+  operationId: string;
+  status: ProjectResourceLeaseStatus;
+  idempotent: boolean;
+  grantedAt: number;
+  updatedAt: number;
+  evidence?: string;
+}
+
+export interface ProjectMergeCandidate {
+  candidateId: string;
+  workerId: string;
+  assignmentVersion: number;
+  baselineCommit: string;
+  patchHash: string;
+  changedFiles: string[];
+  evidence: string[];
+  status: 'submitted' | 'checking' | 'accepted' | 'applied' | 'rejected' | 'superseded' | 'frozen';
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface ProjectSupervisorContract {
@@ -259,6 +388,9 @@ export interface ProjectSupervisorStagePlan {
   targetedValidation: string[];
   serializedBoundaries: string[];
   remainingWork: string[];
+  /** Present only when this revision resolves to control-plane worker-group execution. */
+  workerAssignments?: ProjectWorkerAssignment[];
+  mergeOrder?: string[];
   updatedAt: number;
 }
 
@@ -394,6 +526,12 @@ export interface ProjectWorkItem {
   dependencies: string[];
   supervisorLaneId?: string;
   workerSurfaceId?: string;
+  parallelismDecision?: ProjectParallelismDecision;
+  workerGroup?: ProjectWorkerGroup;
+  userDirectives?: ProjectUserDirective[];
+  resourceLeases?: ProjectResourceLease[];
+  mergeCandidates?: ProjectMergeCandidate[];
+  finalApplyBlocked?: boolean;
   attempts: number;
   decisionsUsed: number;
   startedAt?: number;
@@ -860,6 +998,226 @@ export function projectDisplayName(session: Pick<ProjectManagerSession, 'project
   return session.projectName?.trim() || fallbackProjectName(session);
 }
 
+export function normalizeProjectParallelismSelection(
+  value: unknown,
+  legacyMode: TaskWorkMode = 'single-thread',
+): ProjectParallelismSelection {
+  if (PROJECT_PARALLELISM_SELECTIONS.includes(value as ProjectParallelismSelection)) {
+    return value as ProjectParallelismSelection;
+  }
+  if (legacyMode === 'adaptive') return 'auto';
+  if (legacyMode === 'multi-thread') return 'internal-threads';
+  return 'single-worker';
+}
+
+function normalizeProjectWorkerAssignment(value: ProjectWorkerAssignment): ProjectWorkerAssignment {
+  const strings = (items: unknown, maximum = 50): string[] => (
+    Array.isArray(items)
+      ? items.slice(0, maximum).map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+  );
+  return {
+    workerId: String(value?.workerId || '').trim().slice(0, 100),
+    role: value?.role === 'integrator' || value?.role === 'hardware-executor' ? value.role : 'worker',
+    outcome: String(value?.outcome || '').trim().slice(0, 4000),
+    dependencies: strings(value?.dependencies, MAX_PROJECT_ACTIVE_WORKERS),
+    writeClaims: strings(value?.writeClaims),
+    resourceClaims: strings(value?.resourceClaims),
+    validation: strings(value?.validation),
+  };
+}
+
+export function normalizeProjectWorkerAssignments(value: unknown): ProjectWorkerAssignment[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PROJECT_ACTIVE_WORKERS)
+    .map((item) => normalizeProjectWorkerAssignment(item as ProjectWorkerAssignment))
+    .filter((item) => {
+      if (!item.workerId || !item.outcome || seen.has(item.workerId)) return false;
+      seen.add(item.workerId);
+      return true;
+    });
+}
+
+export function projectWorkerAssignmentsViolation(assignments: readonly ProjectWorkerAssignment[]): string | null {
+  if (assignments.length < 2 || assignments.length > MAX_PROJECT_ACTIVE_WORKERS) {
+    return `多任务 AI 必须包含 2-${MAX_PROJECT_ACTIVE_WORKERS} 个执行 AI`;
+  }
+  const workerIds = new Set(assignments.map((item) => item.workerId));
+  const integrators = assignments.filter((item) => item.role === 'integrator');
+  if (integrators.length !== 1) return '多任务 AI 必须且只能包含一个主任务 AI';
+  if (assignments.filter((item) => item.role === 'hardware-executor').length > 1) {
+    return '多任务 AI 最多只能包含一个硬件执行 AI；共享硬件必须通过租约串行使用';
+  }
+  for (const assignment of assignments) {
+    if (assignment.dependencies.includes(assignment.workerId)) return `${assignment.workerId} 不能依赖自己`;
+    const unknownDependency = assignment.dependencies.find((dependency) => !workerIds.has(dependency));
+    if (unknownDependency) return `${assignment.workerId} 依赖了未知 worker：${unknownDependency}`;
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(assignments.map((item) => [item.workerId, item]));
+  const visit = (workerId: string): boolean => {
+    if (visited.has(workerId)) return true;
+    if (visiting.has(workerId)) return false;
+    visiting.add(workerId);
+    for (const dependency of byId.get(workerId)?.dependencies || []) {
+      if (!visit(dependency)) return false;
+    }
+    visiting.delete(workerId);
+    visited.add(workerId);
+    return true;
+  };
+  if (assignments.some((item) => !visit(item.workerId))) return '多任务 AI 的依赖关系不能形成循环';
+  const pathOwner = new Map<string, string>();
+  for (const assignment of assignments) {
+    for (const claim of assignment.writeClaims.map((item) => item.replace(/\\/gu, '/').toLowerCase())) {
+      const overlap = [...pathOwner.entries()].find(([otherClaim, owner]) => (
+        owner !== assignment.workerId
+        && (claim === otherClaim || claim.startsWith(`${otherClaim}/`) || otherClaim.startsWith(`${claim}/`))
+      ));
+      if (overlap) return `写入区域 ${claim} 与 ${overlap[0]} 重叠，分别分配给 ${assignment.workerId} 和 ${overlap[1]}`;
+      pathOwner.set(claim, assignment.workerId);
+    }
+  }
+  return null;
+}
+
+export function createProjectWorkerGroup(options: {
+  decision: ProjectParallelismDecision;
+  assignments: readonly ProjectWorkerAssignment[];
+  mergeOrder?: readonly string[];
+  worktrees?: readonly { workerId: string; worktreePath: string }[];
+  baselineCommit?: string;
+  now?: number;
+}): ProjectWorkerGroup {
+  if (options.decision.resolvedMode !== 'worker-group') {
+    throw new Error('只有 worker-group 决策可以创建多任务 AI 运行时');
+  }
+  const assignments = normalizeProjectWorkerAssignments(options.assignments);
+  const violation = projectWorkerAssignmentsViolation(assignments);
+  if (violation) throw new Error(violation);
+  const mergeOrder = Array.isArray(options.mergeOrder) && options.mergeOrder.length === assignments.length
+    ? options.mergeOrder.map(String)
+    : assignments.map((assignment) => assignment.workerId);
+  if (new Set(mergeOrder).size !== assignments.length
+    || mergeOrder.some((workerId) => !assignments.some((assignment) => assignment.workerId === workerId))) {
+    throw new Error('多任务 AI 的 mergeOrder 必须且只能包含全部 workerId 一次');
+  }
+  const now = options.now ?? Date.now();
+  const worktreeByWorker = new Map((options.worktrees || []).map((item) => [item.workerId, item.worktreePath]));
+  const workers: ProjectWorkerRuntime[] = assignments.map((assignment) => ({
+    ...assignment,
+    status: 'starting',
+    assignmentVersion: 1,
+    directiveEpoch: 0,
+    worktreeId: `epoch-${options.decision.executionEpoch}-${assignment.workerId}`,
+    worktreePath: worktreeByWorker.get(assignment.workerId),
+    startedAt: now,
+    accumulatedActiveMs: 0,
+    updatedAt: now,
+  }));
+  const integrator = workers.find((worker) => worker.role === 'integrator')!;
+  return {
+    executionEpoch: options.decision.executionEpoch,
+    integratorWorkerId: integrator.workerId,
+    workers,
+    mergeOrder,
+    baselineCommit: options.baselineCommit,
+    integrationWorktreePath: integrator.worktreePath,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function projectResourceLeaseViolation(
+  leases: readonly ProjectResourceLease[],
+  request: Pick<ProjectResourceLease, 'resourceId' | 'mode' | 'ownerWorkerId'>,
+): string | null {
+  const active = leases.filter((lease) => (
+    lease.resourceId === request.resourceId
+    && !['released', 'quarantined'].includes(lease.status)
+  ));
+  if (request.mode === 'shared-read' && active.every((lease) => lease.mode === 'shared-read')) return null;
+  if (request.mode === 'snapshot-read' || request.mode === 'brokered-read') {
+    return active.some((lease) => lease.mode === 'exclusive-write')
+      ? `资源 ${request.resourceId} 正由 ${active[0].ownerWorkerId} 独占写入`
+      : null;
+  }
+  return active.length > 0
+    ? `资源 ${request.resourceId} 已由 ${active.map((lease) => lease.ownerWorkerId).join('、')} 占用`
+    : null;
+}
+
+export function projectWorkerGroupAggregateMinutes(group: ProjectWorkerGroup, now = Date.now()): number {
+  const totalMs = group.workers.reduce((total, worker) => (
+    total
+    + Math.max(0, worker.accumulatedActiveMs || 0)
+    + (worker.status === 'running' && worker.startedAt ? Math.max(0, now - worker.startedAt) : 0)
+  ), 0);
+  return totalMs / 60_000;
+}
+
+export function projectWorkerGroupCompletionViolation(item: Pick<ProjectWorkItem,
+  'workerGroup' | 'userDirectives' | 'resourceLeases' | 'mergeCandidates' | 'finalApplyBlocked'
+>): string | null {
+  if (!item.workerGroup) return null;
+  const pendingDirective = (item.userDirectives || []).find((directive) => directive.reconciliationStatus === 'pending');
+  if (pendingDirective) return `用户直发指令 ${pendingDirective.directiveId} 尚未完成范围与分工协调`;
+  const activeLease = (item.resourceLeases || []).find((lease) => !['released', 'quarantined'].includes(lease.status));
+  if (activeLease) return `共享资源 ${activeLease.resourceId} 的租约尚未释放`;
+  const unfinishedWorker = item.workerGroup.workers.find((worker) => !['completed', 'superseded'].includes(worker.status));
+  if (unfinishedWorker) return `任务 AI ${unfinishedWorker.workerId} 尚未完成或安全终止`;
+  const unapplied = (item.mergeCandidates || []).find((candidate) => !['applied', 'rejected', 'superseded'].includes(candidate.status));
+  if (unapplied) return `集成候选 ${unapplied.candidateId} 尚未完成处理`;
+  if (item.finalApplyBlocked) return '多任务 AI 最终应用仍被用户直发、基线漂移或合并门禁阻止';
+  return null;
+}
+
+export function resolveProjectParallelismDecision(options: {
+  execution?: ProjectTaskExecutionPlan;
+  stagePlan?: Pick<ProjectSupervisorStagePlan, 'workerAssignments'>;
+  requirementsVersion: number;
+  previousEpoch?: number;
+  now?: number;
+}): ProjectParallelismDecision {
+  const legacyMode = options.execution?.taskWorkMode || 'single-thread';
+  const requestedMode = normalizeProjectParallelismSelection(
+    options.execution?.parallelismSelection,
+    legacyMode,
+  );
+  const assignments = normalizeProjectWorkerAssignments(options.stagePlan?.workerAssignments);
+  const assignmentViolation = assignments.length > 0 ? projectWorkerAssignmentsViolation(assignments) : null;
+  let resolvedMode: ProjectParallelismMode;
+  let reason: string;
+  const evidence: string[] = [];
+  if (requestedMode !== 'auto') {
+    resolvedMode = requestedMode;
+    reason = options.execution?.modeReason?.trim() || `项目 AI 固定选择 ${requestedMode}`;
+  } else if (assignments.length >= 2 && !assignmentViolation) {
+    resolvedMode = 'worker-group';
+    reason = '基线阶段识别出多个可独立验收、写域互斥的长期交付成果';
+    evidence.push(`${assignments.length} 个任务 AI；写入区域和依赖图已通过校验`);
+  } else if (options.execution?.parallelizableOperations?.length && options.execution?.taskWorkMode !== 'single-thread') {
+    resolvedMode = 'internal-threads';
+    reason = '存在可并行分析工作，但没有形成可安全隔离的独立写入交付';
+    evidence.push(`${options.execution?.parallelizableOperations?.length || 0} 个可并行分析边界`);
+  } else {
+    resolvedMode = 'single-worker';
+    reason = '未发现两个以上值得独立调度且可安全隔离的并行单元';
+  }
+  if (assignmentViolation) evidence.push(`工人方案未采用：${assignmentViolation}`);
+  return {
+    requestedMode,
+    resolvedMode,
+    requirementsVersion: Math.max(1, Math.trunc(options.requirementsVersion || 1)),
+    executionEpoch: Math.max(1, Math.trunc(options.previousEpoch || 0) + 1),
+    reason,
+    evidence,
+    resolvedAt: options.now ?? Date.now(),
+  };
+}
+
 /** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
@@ -961,6 +1319,14 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         ...item,
         contract: {
           ...item.contract,
+          execution: item.contract.execution ? {
+            ...item.contract.execution,
+            parallelismSelection: normalizeProjectParallelismSelection(
+              item.contract.execution.parallelismSelection,
+              item.contract.execution.taskWorkMode,
+            ),
+          } : undefined,
+          budget: normalizeProjectExecutionBudget(item.contract.budget),
           supervisorNotes: (Array.isArray(item.contract.supervisorNotes)
             ? item.contract.supervisorNotes
             : [])
@@ -976,6 +1342,47 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         baseline: activeBaseline
           ? item.baseline
           : requiredProjectTaskBaseline(itemRequirementsVersion),
+        parallelismDecision: item.parallelismDecision?.requirementsVersion === itemRequirementsVersion
+          ? {
+              ...item.parallelismDecision,
+              requestedMode: normalizeProjectParallelismSelection(item.parallelismDecision.requestedMode),
+              resolvedMode: item.parallelismDecision.resolvedMode === 'internal-threads'
+                || item.parallelismDecision.resolvedMode === 'worker-group'
+                ? item.parallelismDecision.resolvedMode
+                : 'single-worker',
+              requirementsVersion: itemRequirementsVersion,
+              executionEpoch: Math.max(1, Math.trunc(item.parallelismDecision.executionEpoch || 1)),
+              evidence: Array.isArray(item.parallelismDecision.evidence)
+                ? item.parallelismDecision.evidence.slice(0, 20).map((entry) => String(entry).slice(0, 2000))
+                : [],
+            }
+          : undefined,
+        workerGroup: item.workerGroup?.workers?.length
+          ? {
+              ...item.workerGroup,
+              workers: item.workerGroup.workers.slice(0, MAX_PROJECT_ACTIVE_WORKERS).map((worker) => ({
+                ...normalizeProjectWorkerAssignment(worker),
+                status: worker.status,
+                assignmentVersion: Math.max(1, Math.trunc(worker.assignmentVersion || 1)),
+                directiveEpoch: Math.max(0, Math.trunc(worker.directiveEpoch || 0)),
+                surfaceId: worker.surfaceId,
+                laneId: worker.laneId,
+                worktreeId: worker.worktreeId,
+                worktreePath: worker.worktreePath,
+                checkpoint: worker.checkpoint,
+                startedAt: Number.isFinite(worker.startedAt) ? worker.startedAt : undefined,
+                accumulatedActiveMs: Math.max(0, Number(worker.accumulatedActiveMs) || 0),
+                updatedAt: Number.isFinite(worker.updatedAt) ? worker.updatedAt : item.updatedAt,
+              })),
+              mergeOrder: Array.isArray(item.workerGroup.mergeOrder)
+                ? item.workerGroup.mergeOrder.slice(0, MAX_PROJECT_ACTIVE_WORKERS)
+                : [],
+            }
+          : undefined,
+        userDirectives: Array.isArray(item.userDirectives) ? item.userDirectives.slice(-100) : [],
+        resourceLeases: Array.isArray(item.resourceLeases) ? item.resourceLeases.slice(-100) : [],
+        mergeCandidates: Array.isArray(item.mergeCandidates) ? item.mergeCandidates.slice(-100) : [],
+        finalApplyBlocked: item.finalApplyBlocked === true,
         supervisorPlanRequired: item.supervisorPlanRequired
           ?? !['completed', 'stopped'].includes(item.status),
       };
@@ -1085,6 +1492,11 @@ export function normalizeProjectExecutionBudget(
   return {
     maxDecisions: positiveInteger(value?.maxDecisions, DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions, MAX_PROJECT_EXECUTION_BUDGET.maxDecisions),
     maxContinuousMinutes: positiveInteger(value?.maxContinuousMinutes, DEFAULT_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes, MAX_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes),
+    maxAggregateWorkerMinutes: positiveInteger(
+      value?.maxAggregateWorkerMinutes,
+      DEFAULT_PROJECT_EXECUTION_BUDGET.maxAggregateWorkerMinutes,
+      MAX_PROJECT_EXECUTION_BUDGET.maxAggregateWorkerMinutes,
+    ),
     maxIdenticalFailures: positiveInteger(value?.maxIdenticalFailures, DEFAULT_PROJECT_EXECUTION_BUDGET.maxIdenticalFailures, MAX_PROJECT_EXECUTION_BUDGET.maxIdenticalFailures),
     maxNoProgressRounds: positiveInteger(value?.maxNoProgressRounds, DEFAULT_PROJECT_EXECUTION_BUDGET.maxNoProgressRounds, MAX_PROJECT_EXECUTION_BUDGET.maxNoProgressRounds),
     maxTaskRetries: positiveInteger(value?.maxTaskRetries, DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries, MAX_PROJECT_EXECUTION_BUDGET.maxTaskRetries),

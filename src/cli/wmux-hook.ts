@@ -16,6 +16,14 @@
  */
 import net from 'net';
 import { randomUUID } from 'node:crypto';
+import { resolveWmuxHookRuntimeContext } from './wmux-hook-context';
+
+const runtimeContext = resolveWmuxHookRuntimeContext(process.env);
+if (runtimeContext.state === 'inactive') process.exit(0);
+if (runtimeContext.state === 'invalid') {
+  console.error(`[wmux-hook] wmux integration is missing: ${runtimeContext.missing.join(', ')}`);
+  process.exit(1);
+}
 
 const argv = process.argv.slice(2);
 

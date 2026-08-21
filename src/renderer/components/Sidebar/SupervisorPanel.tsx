@@ -108,10 +108,13 @@ const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   'needs-human': '等待人工决定',
 };
 
-function projectTaskWorkModeLabel(mode: string | undefined): string {
-  if (mode === 'multi-thread') return '多线程';
-  if (mode === 'adaptive') return '自适应线程';
-  return '单线程';
+function projectTaskWorkModeLabel(selection: string | undefined, mode: string | undefined): string {
+  if (selection === 'worker-group') return '多任务 AI';
+  if (selection === 'internal-threads') return '内部多线程';
+  if (selection === 'single-worker') return '单任务 AI';
+  if (selection === 'auto' || mode === 'adaptive') return '自动互斥选择';
+  if (mode === 'multi-thread') return '内部多线程';
+  return '单任务 AI';
 }
 
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId, agentStates }: SupervisorPanelProps) {
@@ -1046,7 +1049,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <span>上级任务：{planView.sourceLabel}</span>
                         <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
                         <span>监督：{supervisorStatusLabel}</span>
-                        <span>{projectTaskWorkModeLabel(item.contract.execution?.taskWorkMode)}</span>
+                        <span>{projectTaskWorkModeLabel(item.parallelismDecision?.resolvedMode || item.contract.execution?.parallelismSelection, item.contract.execution?.taskWorkMode)}</span>
+                        {item.workerGroup && <span>任务 AI {item.workerGroup.workers.length} 个 · 待协调 {(item.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending').length}</span>}
                       </div>
                       <div className="sup-panel__project-plan-route"><strong>监督 AI 当前规划</strong><span>{planView.modeLabel}</span></div>
                       <div className="sup-panel__project-plan-detail"><strong>当前路线</strong><span>{planView.route}</span></div>

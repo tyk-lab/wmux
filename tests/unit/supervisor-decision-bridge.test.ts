@@ -2900,6 +2900,32 @@ describe('supervisor decision bridge', () => {
     );
   });
 
+  it('requires a current-protocol alignment audit before resuming a legacy project', async () => {
+    const persisted = {
+      id: 'pm-legacy-recovery', projectDir: 'E:\\legacy-recovery',
+      goal: '测试项目', preconditions: ['测试环境可用'],
+      planFiles: [], doneWhen: ['完成项目'], status: 'active' as const,
+      workItems: [], events: [], createdAt: 1, updatedAt: 2,
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([persisted]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({ action: 'restore-projects', projectIds: [persisted.id] })).resolves.toMatchObject({
+      ok: true,
+      projects: [{ id: persisted.id, status: 'waiting' }],
+    });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toMatchObject({
+      category: 'clarification',
+      recommendedOptionId: 'minimal-prototype',
+    });
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'requirements-alignment-required',
+        summary: expect.stringContaining('当前协议下仍不充分'),
+      }),
+    ]));
+  });
+
   it('persists and publishes a project AI runtime failure during recovery', async () => {
     const persisted = {
       id: 'pm-runtime-failure', projectDir: 'E:\\runtime-failure',
@@ -3034,7 +3060,7 @@ describe('supervisor decision bridge', () => {
     }));
   });
 
-  it('rebuilds a restored project AI and records recovery without forcing a new user question', async () => {
+  it('asks the user before restoring an underspecified legacy project', async () => {
     const persisted = {
       id: 'pm-unaccepted-recovery', projectDir: 'E:\\unaccepted-recovery',
       goal: '测试相关功能', preconditions: ['无'], planFiles: [], doneWhen: ['做个管理系统'],
@@ -3045,9 +3071,13 @@ describe('supervisor decision bridge', () => {
 
     await remote({ action: 'recovery-candidates' });
     await expect(remote({ action: 'restore-projects', projectIds: [persisted.id] })).resolves.toMatchObject({
-      ok: true, restored: true, projects: [{ id: persisted.id, status: 'active' }],
+      ok: true, restored: true, projects: [{ id: persisted.id, status: 'waiting' }],
     });
-    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toMatchObject({
+      category: 'clarification',
+      recommendedOptionId: expect.any(String),
+    });
+    expect(useStore.getState().projectManagerDialogOpen).toBe(true);
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'recovery-restored',
@@ -3560,7 +3590,16 @@ describe('supervisor decision bridge', () => {
       {
         id: 'pm-history-b', projectDir: 'E:\\history-b', goal: '历史项目 B',
         preconditions: ['环境安全'], doneWhen: ['完成 B'], status: 'waiting',
-        workItems: [], events: [], createdAt: 11, updatedAt: 20,
+        workItems: [], events: [
+          {
+            id: 'required-b', sessionId: 'pm-history-b', ts: 12,
+            kind: 'requirements-alignment-required' as const, summary: '首次需求对齐',
+          },
+          {
+            id: 'confirmed-b', sessionId: 'pm-history-b', ts: 13,
+            kind: 'requirements-alignment-confirmed' as const, summary: '需求已确认',
+          },
+        ], createdAt: 11, updatedAt: 20,
       },
     ];
     (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue(persisted);
@@ -3592,12 +3631,68 @@ describe('supervisor decision bridge', () => {
         payload: expect.objectContaining({ source: 'desktop-recovery' }),
       }),
     ]));
+    expect(useStore.getState().projectManager?.events.some((event) => (
+      event.kind === 'user-message' && !!event.payload?.changeSignal
+    ))).toBe(false);
+    expect(useStore.getState().projectManager?.events.filter((event) => (
+      event.kind === 'requirements-alignment-required' || event.kind === 'requirements-alignment-confirmed'
+    ))).toHaveLength(2);
     expect(JSON.stringify(useStore.getState().projectManager?.events)).not.toContain('未选择项目的情况不应写入');
     const recoveryBriefings = JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries);
     expect(recoveryBriefings).toContain('[用户恢复时设置的当前情况｜优先核对]');
+    expect(recoveryBriefings).toContain('[恢复需求异常门禁｜先核对再继续]');
     expect(recoveryBriefings).toContain('核心实现已完成，目前只需完成发布前验证。');
     expect(recoveryBriefings).not.toContain('未选择项目的情况不应写入');
     expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('revokes persisted alignment when a project recovery note changes requirements', async () => {
+    const persisted = {
+      id: 'pm-history-changed', projectDir: 'E:\\history-changed', goal: '交付桌面端和服务端',
+      preconditions: ['测试环境可用'], doneWhen: ['桌面端和服务端测试通过'], status: 'active' as const,
+      workItems: [],
+      events: [
+        {
+          id: 'required', sessionId: 'pm-history-changed', ts: 10,
+          kind: 'requirements-alignment-required' as const, summary: '首次需求对齐',
+        },
+        {
+          id: 'confirmed', sessionId: 'pm-history-changed', ts: 20,
+          kind: 'requirements-alignment-confirmed' as const, summary: '原需求已确认',
+        },
+      ],
+      createdAt: 1, updatedAt: 20,
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([persisted]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'restore-projects',
+      projectIds: [persisted.id],
+      currentSituations: {
+        [persisted.id]: '需求改为只交付桌面端，验收标准也调整为安装包测试通过。',
+      },
+    })).resolves.toMatchObject({ ok: true, restored: true });
+
+    const restored = useStore.getState().projectManager!;
+    expect(restored.status).toBe('waiting');
+    expect(restored.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'user-message',
+        payload: expect.objectContaining({
+          source: 'desktop-recovery',
+          changeSignal: 'requirements-change',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'requirements-alignment-required',
+        summary: expect.stringContaining('恢复说明表明项目需求可能已变化'),
+      }),
+    ]));
+    const recoveryBriefings = JSON.stringify(restored.pendingManagerDeliveries);
+    expect(recoveryBriefings).toContain('[恢复需求异常门禁｜先核对再继续]');
+    expect(recoveryBriefings).toContain('wmux project ask');
+    expect(recoveryBriefings).toContain('用户答复并写回项目定义前');
   });
 
   it('safely replaces only the project-manager runtime after its project-mode launch configuration changes', async () => {
