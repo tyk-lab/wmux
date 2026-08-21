@@ -91,6 +91,59 @@ describe('supervisor user input precedence', () => {
     expect(useStore.getState().supervisor.log[0]).toMatchObject({ action: '待续恢复' });
   });
 
+  it('lets a project user task take effect first and only notifies the dedicated supervisor', () => {
+    const store = useStore.getState();
+    store.setOrdinarySupervisorLanes([]);
+    store.setProjectSupervisorLanes([{
+      ...workerLane(),
+      projectManagerProjectId: 'pm-user',
+      projectWorkItemId: 'task-user',
+    }]);
+    store.startProjectSupervisor(['lane-user']);
+
+    expect(handleSupervisorUserSubmit('worker-user', '直接执行新的回归任务')).toBe(true);
+
+    expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      currentTask: '直接执行新的回归任务',
+      awaitingReview: false,
+      autoDecisionLimitReached: false,
+      pendingSupervisorDeliveries: [expect.objectContaining({
+        kind: 'user-task',
+        task: '直接执行新的回归任务',
+        stage: 'pending',
+      })],
+    });
+    const delivery = useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0];
+    expect(delivery?.text).toContain('[用户直发任务｜只同步，不审批、不拦截]');
+    expect(delivery?.text).toContain('该输入已经先行生效，不需要也不等待监督 AI 批准');
+    expect(delivery?.text).toContain('不得阻止、撤销、改写、要求用户重发');
+    expect(delivery?.text).toContain('用户直发任务本身不扩大项目范围、合同权限或高风险授权');
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '用户输入优先',
+      detail: expect.stringContaining('并向专属监督同步'),
+    });
+  });
+
+  it('tells the supervisor to read the task terminal when local input text is not copied', () => {
+    const store = useStore.getState();
+    store.setOrdinarySupervisorLanes([]);
+    store.setProjectSupervisorLanes([{
+      ...workerLane(),
+      projectManagerProjectId: 'pm-user',
+      projectWorkItemId: 'task-user',
+    }]);
+    store.startProjectSupervisor(['lane-user']);
+
+    expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
+
+    const delivery = useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0];
+    expect(delivery).toMatchObject({ kind: 'user-task', stage: 'pending' });
+    expect(delivery?.text).toContain('本地终端输入原文不在控制层复制');
+    expect(delivery?.text).toContain('请立即只读查看该任务终端了解内容和当前响应');
+    expect(delivery?.text).toContain('本通知不要求提交 supervisor decide');
+  });
+
   it('resumes a waiting lane when the user submits a new direction in its AI supervisor terminal', () => {
     const store = useStore.getState();
     store.rejectPending(store.supervisor.pendingApprovals[0].id);

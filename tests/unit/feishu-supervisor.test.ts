@@ -766,6 +766,16 @@ supervisor_model: k3`)).toEqual({
     });
   });
 
+  it('将用户直发任务显示为知情通知而不是泛化状态更新', () => {
+    const status = reduceFeishuAuditTerminalStatus(undefined, {
+      sessionId: 'sup-project', projectDir: 'E:\\repo', type: 'supervisor.delivery.queued',
+      terminal: { surfaceId: 'project-task', label: '任务 AI' },
+      payload: { kind: 'user-task', task: '用户直发回归任务', nonBlocking: true },
+    });
+
+    expect(status.latestResult).toBe('等待通知监督 AI：用户直发任务');
+  });
+
   it('项目管理 AI 对话默认折叠较早记录并可在原卡片展开和收起', () => {
     const session = {
       projectId: 'pm-a', status: 'active', goal: '完成认证功能',

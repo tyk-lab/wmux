@@ -1,6 +1,11 @@
 import { useStore } from '../store';
-import type { SupervisorLane, SupervisorSession } from '../store/supervisor-slice';
-import { dedicatedSupervisorSurfaceId, supervisorLaneControlState } from '../store/supervisor-slice';
+import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from '../store/supervisor-slice';
+import {
+  dedicatedSupervisorSurfaceId,
+  isProjectManagedSupervisorLane,
+  supervisorLaneControlState,
+} from '../store/supervisor-slice';
+import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
 
 /** Resolve human-gated proposals when the user acts directly in the worker terminal. */
@@ -71,8 +76,10 @@ export function resumeWaitingLaneFromSupervisorInput(
  * User Enter is authoritative immediately; do not wait for an agent hook that
  * may be delayed, unsupported, or dropped. Task-terminal input takes priority
  * over a pending decision; supervisor-terminal input resumes a waiting lane.
+ * Project task input is also queued as a non-blocking fact for its dedicated
+ * supervisor after the user's task has already been accepted by the terminal.
  */
-export function handleSupervisorUserSubmit(surfaceId: string): boolean {
+export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolean {
   const store = useStore.getState();
   const session = store.supervisor;
   if (!session.active || !surfaceId) return false;
@@ -91,8 +98,9 @@ export function handleSupervisorUserSubmit(surfaceId: string): boolean {
   }
 
   const resumedFromWaiting = supervisorLaneControlState(lane) === 'waiting';
+  const directTask = task.trim().slice(0, 12_000);
   const cancelledDeliveries = lane.pendingSupervisorDeliveries?.length || 0;
-  const resolvedApproval = resolvePendingApprovalsForManualTask(session, lane, '');
+  const resolvedApproval = resolvePendingApprovalsForManualTask(session, lane, directTask);
   store.updateLane(lane.id, {
     awaitingReview: false,
     activeReviewId: undefined,
@@ -110,6 +118,37 @@ export function handleSupervisorUserSubmit(surfaceId: string): boolean {
     pendingSupervisorDeliveries: [],
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
+  if (isProjectManagedSupervisorLane(lane)) {
+    const delivery: SupervisorDelivery = {
+      id: `user-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'user-task',
+      task: directTask || lane.currentTask || lane.projectWorkItemId || '用户直接输入的新任务',
+      text: [
+        '[用户直发任务｜只同步，不审批、不拦截]',
+        `项目：${lane.projectManagerProjectId || '未知'}；工作项：${lane.projectWorkItemId || '未知'}；任务终端：${lane.surfaceId}`,
+        directTask
+          ? `用户已直接发送给任务 AI 的原文：\n${directTask}`
+          : '用户已在任务终端直接提交新任务或新方向；本地终端输入原文不在控制层复制，请立即只读查看该任务终端了解内容和当前响应。',
+        '该输入已经先行生效，不需要也不等待监督 AI 批准。不得阻止、撤销、改写、要求用户重发，或抢在任务 AI 当前回合结束前投递替代指令。',
+        '你只需了解并纳入后续监督；任务 AI 回合结束后再按当前项目合同、权限和安全边界核验证据并正常裁决。用户直发任务本身不扩大项目范围、合同权限或高风险授权。',
+        '本通知不要求提交 supervisor decide；记录理解后结束本回合，等待任务终端生命周期事件。',
+      ].join('\n'),
+      createdAt: Date.now(),
+      turnId: (lane.workerTurnId || 0) + 1,
+      stage: 'pending',
+    };
+    store.updateLane(lane.id, {
+      pendingSupervisorDeliveries: enqueueSupervisorDelivery([], delivery),
+      ...(directTask ? { currentTask: directTask } : {}),
+    });
+    appendSupervisorRecord(store.supervisor, lane, 'supervisor.delivery.queued', {
+      kind: delivery.kind,
+      task: delivery.task,
+      exactTaskAvailable: !!directTask,
+      nonBlocking: true,
+    });
+    signalSupervisorDeliveryReady();
+  }
   appendSupervisorRecord(session, lane, 'worker.user-submit', {
     resolvedApproval,
     cancelledDeliveries,
@@ -119,10 +158,16 @@ export function handleSupervisorUserSubmit(surfaceId: string): boolean {
     lane.id,
     resumedFromWaiting ? '待续恢复' : '用户输入优先',
     resumedFromWaiting
-      ? '用户已向任务终端发送新方向；完成标记和自动裁决计数已重置，继续监督'
+      ? isProjectManagedSupervisorLane(lane)
+        ? '用户已向任务终端发送新方向；输入已生效，专属监督仅同步知情并继续监督'
+        : '用户已向任务终端发送新方向；完成标记和自动裁决计数已重置，继续监督'
       : cancelledDeliveries > 0
-        ? `用户已直接向任务终端发送内容；已取消 ${cancelledDeliveries} 条过期监督通知`
-        : '用户已直接向任务终端发送内容；AI 裁决已让位',
+        ? isProjectManagedSupervisorLane(lane)
+          ? `用户已直接向任务终端发送内容；已取消 ${cancelledDeliveries} 条过期监督通知，并向专属监督同步`
+          : `用户已直接向任务终端发送内容；已取消 ${cancelledDeliveries} 条过期监督通知`
+        : isProjectManagedSupervisorLane(lane)
+          ? '用户已直接向任务终端发送新任务；输入无需监督批准，专属监督已同步知情'
+          : '用户已直接向任务终端发送内容；AI 裁决已让位',
   );
   return true;
 }

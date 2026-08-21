@@ -734,6 +734,9 @@ export function buildSupervisorBriefing(
       autonomous
         ? `本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
         : `本终端启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给${decisionOwnerLabel}。`,
+      projectManaged
+        ? '用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向；用户输入先行生效，控制层只向你同步知情。你不得审批、拦截、撤销、改写或要求重发，也不得抢在任务 AI 当前回合结束前投递替代指令；回合结束后照常按项目合同和安全边界核验证据。用户直发本身不扩大项目范围、合同权限或高风险授权。收到“[用户直发任务｜只同步，不审批、不拦截]”时属于下方“每轮必须裁决”规则的唯一例外：只更新理解并结束通知回合，不提交 supervisor decide，等待任务终端结束、阻塞或中断事件再裁决。'
+        : '',
       '',
       ...capabilityBlock,
       ...taskContextBlock,

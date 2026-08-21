@@ -172,6 +172,11 @@ describe('supervisor isolation', () => {
     expect(text).toContain('复杂或高影响决定交给项目管理 AI');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
     expect(text).toContain('# 项目专属 AI 监督');
+    expect(text).toContain('用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向');
+    expect(text).toContain('你不得审批、拦截、撤销、改写或要求重发');
+    expect(text).toContain('用户直发本身不扩大项目范围、合同权限或高风险授权');
+    expect(text).toContain('属于下方“每轮必须裁决”规则的唯一例外');
+    expect(text).toContain('不提交 supervisor decide');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/ordinary/');
     expect(text).not.toContain('# 普通 AI 监督');
   });

@@ -12,6 +12,7 @@ export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): strin
   if (kind === 'task-interrupted') return '任务中断';
   if (kind === 'worker-status') return '任务状态更新';
   if (kind === 'agent-recovery') return 'Agent 恢复';
+  if (kind === 'user-task') return '用户直发任务';
   return '活性检查';
 }
 
@@ -30,13 +31,16 @@ export function enqueueSupervisorDelivery(
   delivery: SupervisorDelivery,
 ): SupervisorDelivery[] {
   const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
-  const current = terminalLifecycle
+  const reviewSupersedesUserTask = terminalLifecycle
+    || (delivery.kind === 'worker-status' && !!delivery.reviewId);
+  const current = reviewSupersedesUserTask
     ? (pending || []).filter((candidate) => {
         const sameTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
           ? candidate.turnId === delivery.turnId
           : candidate.task === delivery.task;
         const obsoleteProbe = candidate.kind === 'liveness-probe'
-          || (candidate.kind === 'worker-status' && sameTurn);
+          || (candidate.kind === 'worker-status' && sameTurn)
+          || (candidate.kind === 'user-task' && reviewSupersedesUserTask);
         return candidate.stage === 'pasted' || !obsoleteProbe;
       })
     : pending || [];

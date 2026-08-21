@@ -1272,6 +1272,43 @@ describe('supervisor decision bridge', () => {
     expect(projectSend.error).toBeUndefined();
     expect(projectSend).toMatchObject({ ok: true });
     expect(writes).toHaveBeenCalledWith('project-manager-a', '用户通过飞书直接补充项目背景');
+    surfaceTerminalRegistry.set('project-task-a', {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    const directTask = remoteControl({
+      action: 'send', terminal: 'project-task-a', task: '用户直接发起新的发布回归任务', mode: 'project', actor: 'ou-user',
+    });
+    expect(directTask).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('专属监督 AI 已同步知情，但不会拦截'),
+    });
+    expect(writes).toHaveBeenCalledWith('project-task-a', '用户直接发起新的发布回归任务');
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.surfaceId === 'project-task-a'))
+      .toMatchObject({
+        currentTask: '用户直接发起新的发布回归任务',
+        pendingSupervisorDeliveries: [expect.objectContaining({
+          kind: 'user-task',
+          task: '用户直接发起新的发布回归任务',
+          text: expect.stringContaining('只同步，不审批、不拦截'),
+        })],
+      });
+    const decideAfterDirectTask = (globalThis.window as any).__wmux_supervisorDecide;
+    const writesBeforeStaleDecision = writes.mock.calls.length;
+    expect(decideAfterDirectTask({
+      surfaceId: 'project-task-a',
+      supervisorSurfaceId: 'project-supervisor-a',
+      outcome: 'continue',
+      next: '旧监督回合试图覆盖用户的新任务',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('用户直发任务已经先行生效'),
+    });
+    expect(writes).toHaveBeenCalledTimes(writesBeforeStaleDecision);
     expect(remoteControl({
       action: 'terminal-escape', terminal: 'project-supervisor-a', mode: 'project', actor: 'ou-user',
     })).toMatchObject({ ok: true });

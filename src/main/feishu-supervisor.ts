@@ -2342,7 +2342,15 @@ export function reduceFeishuAuditTerminalStatus(
   }
   if (record.type === 'supervisor.delivery.queued' || record.type === 'supervisor.delivery.delivered') {
     const deliveryKind = auditPayloadText(record, 'kind');
-    const delivery = deliveryKind === 'task-start' ? '任务开始' : deliveryKind === 'task-end' ? '任务结束' : deliveryKind === 'task-interrupted' ? '任务中断' : '状态更新';
+    const delivery = deliveryKind === 'task-start'
+      ? '任务开始'
+      : deliveryKind === 'task-end'
+        ? '任务结束'
+        : deliveryKind === 'task-interrupted'
+          ? '任务中断'
+          : deliveryKind === 'user-task'
+            ? '用户直发任务'
+            : '状态更新';
     const deliveryState = record.type === 'supervisor.delivery.queued' ? '等待通知监督 AI' : '已通知监督 AI';
     return { ...next, latestResult: `${deliveryState}：${delivery}` };
   }

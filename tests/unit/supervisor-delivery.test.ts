@@ -82,6 +82,25 @@ describe('supervisor delivery queue', () => {
     ], 'unknown')).toBeUndefined();
   });
 
+  it('coalesces an undelivered user-task notice into a later actionable review', () => {
+    const userTask = {
+      id: 'user-task', kind: 'user-task' as const, task: '用户直发回归任务',
+      text: '仅同步用户任务', createdAt: 1, turnId: 2, stage: 'pending' as const,
+    };
+    const completed = event('end', 'task-end', '用户直发回归任务', 2);
+    const blocked = {
+      id: 'blocked', kind: 'worker-status' as const, task: '用户直发回归任务',
+      text: '任务正在等待权限', createdAt: 2, turnId: 2, reviewId: 'review-2', stage: 'pending' as const,
+    };
+
+    expect(enqueueSupervisorDelivery([userTask], completed).map((item) => item.id)).toEqual(['end']);
+    expect(enqueueSupervisorDelivery([userTask], blocked).map((item) => item.id)).toEqual(['blocked']);
+    expect(enqueueSupervisorDelivery([userTask], { ...blocked, reviewId: undefined }).map((item) => item.id))
+      .toEqual(['user-task', 'blocked']);
+    expect(enqueueSupervisorDelivery([{ ...userTask, stage: 'pasted' }], completed).map((item) => item.id))
+      .toEqual(['user-task', 'end']);
+  });
+
   it('wakes only for terminal states that require a supervisor decision', () => {
     expect(supervisorWakeDeliveryKind('UserPromptSubmit')).toBeNull();
     expect(supervisorWakeDeliveryKind('PostToolUse')).toBeNull();
@@ -93,6 +112,7 @@ describe('supervisor delivery queue', () => {
   it('labels liveness probes separately from task lifecycle notifications', () => {
     expect(supervisorDeliveryLabel('liveness-probe')).toBe('活性检查');
     expect(supervisorDeliveryLabel('agent-recovery')).toBe('Agent 恢复');
+    expect(supervisorDeliveryLabel('user-task')).toBe('用户直发任务');
   });
 
   it('reports any active supervisor turn that ended without a structured state handoff', () => {

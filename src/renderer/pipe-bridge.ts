@@ -2218,7 +2218,7 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
   } catch (err) {
     return { ok: false, error: String((err as Error)?.message || err), message: '' };
   }
-  handleSupervisorUserSubmit(terminal.surfaceId);
+  handleSupervisorUserSubmit(terminal.surfaceId, task);
   const session = useStore.getState().supervisor;
   const lane = session.lanes.find((item) => (
     item.surfaceId === terminal.surfaceId
@@ -2253,8 +2253,15 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
     actor: params.actor || 'unknown',
     task,
   });
+  const projectTaskDirect = projectMode
+    && 'role' in terminal
+    && terminal.role === 'task-ai'
+    && !!lane
+    && isProjectManagedSupervisorLane(lane);
   return { ok: true, message: manuallyResolved
     ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
+    : projectTaskDirect
+      ? `已向 ${terminal.label} 直接发送用户任务；专属监督 AI 已同步知情，但不会拦截。`
     : `已向 ${terminal.label} 发送任务。` };
 }
 
@@ -9598,6 +9605,12 @@ export function initPipeBridge(): void {
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
     if (lane.goalConstruction?.status === 'drafting') {
       return { ok: false, error: '目标构建尚未由用户确认；只能更新目标草案并回复用户，不能提交监督裁决' };
+    }
+    if (lane.pendingSupervisorDeliveries?.some((delivery) => delivery.kind === 'user-task')) {
+      return {
+        ok: false,
+        error: '用户直发任务已经先行生效；当前通知只供监督知情，禁止旧监督回合提交裁决或向任务终端注入替代指令。请等待任务结束、阻塞或中断事件后再裁决',
+      };
     }
     if (rawNextFile && !nextFile) {
       return { ok: false, error: '--next-file 必须是当前项目 .wmux/tmp/ 下的单个安全文件名' };
