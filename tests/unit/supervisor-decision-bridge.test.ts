@@ -3433,6 +3433,7 @@ describe('supervisor decision bridge', () => {
     ]);
     expect(recoveryDeliveries).toContain('项目任务冷启动恢复包');
     expect(recoveryDeliveries).toContain('已完成核心实现');
+    expect(recoveryDeliveries).not.toContain('用户恢复时设置的当前情况');
     expect(lane?.surfaceId).toBe(created.surfaceId);
     expect(useStore.getState().projectManager?.workItems[0].workerSurfaceId).toBe(created.surfaceId);
     expect(useStore.getState().projectManager?.recoveryState).toBe('checking');
@@ -3572,12 +3573,31 @@ describe('supervisor decision bridge', () => {
     });
     expect(useStore.getState().projectManagers).toEqual([]);
 
-    await expect(remote({ action: 'restore-projects', projectIds: ['pm-history-b'] })).resolves.toMatchObject({
+    await expect(remote({
+      action: 'restore-projects',
+      projectIds: ['pm-history-b'],
+      currentSituations: {
+        'pm-history-a': '未选择项目的情况不应写入',
+        'pm-history-b': '核心实现已完成，目前只需完成发布前验证。',
+      },
+    })).resolves.toMatchObject({
       ok: true,
       restored: true,
       projects: [{ id: 'pm-history-b', projectDir: 'E:\\history-b' }],
     });
     expect(useStore.getState().projectManagers.map((project) => project.id)).toEqual(['pm-history-b']);
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'user-message',
+        summary: '核心实现已完成，目前只需完成发布前验证。',
+        payload: expect.objectContaining({ source: 'desktop-recovery' }),
+      }),
+    ]));
+    expect(JSON.stringify(useStore.getState().projectManager?.events)).not.toContain('未选择项目的情况不应写入');
+    const recoveryBriefings = JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries);
+    expect(recoveryBriefings).toContain('[用户恢复时设置的当前情况｜优先核对]');
+    expect(recoveryBriefings).toContain('核心实现已完成，目前只需完成发布前验证。');
+    expect(recoveryBriefings).not.toContain('未选择项目的情况不应写入');
     expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
   });
 

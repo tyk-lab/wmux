@@ -538,6 +538,22 @@
   gap: 7px;
 }
 
+.project-manager-dialog__recovery-content,
+.project-manager-dialog__recovery-situation {
+  display: grid;
+  gap: 7px;
+}
+
+.project-manager-dialog__recovery-situation {
+  padding: 0 10px 9px;
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+}
+
+.project-manager-dialog__recovery-situation textarea {
+  resize: vertical;
+}
+
 .project-manager-dialog__recovery-delete {
   min-width: 72px;
   padding-inline: 10px;

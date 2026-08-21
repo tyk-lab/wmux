@@ -56,6 +56,53 @@ function taskWorkModeLabel(mode: string | undefined): string {
   return '固定单线程';
 }
 
+interface ProjectContextTerminal {
+  surfaceId: string;
+  label: string;
+  workspaceTitle: string;
+  projectDir: string;
+}
+
+function collectProjectContextTerminals(
+  tree: SplitNode,
+  workspaceTitle: string,
+  workspaceDir: string,
+  labels: ReadonlyMap<string, { label?: string }>,
+  out: ProjectContextTerminal[],
+): void {
+  if (tree.type === 'leaf') {
+    for (const surface of tree.surfaces) {
+      if (surface.type !== 'terminal'
+        || surface.transientSupervisor
+        || surface.projectManagerTerminal
+        || surface.projectSupervisorProjectId
+        || surface.projectManagerProjectId
+        || surface.projectManagerWorkItemId) continue;
+      out.push({
+        surfaceId: surface.id,
+        label: labels.get(surface.id)?.label?.trim() || surface.customTitle?.trim() || surface.shell || 'terminal',
+        workspaceTitle,
+        projectDir: surface.currentCwd || surface.cwd || workspaceDir,
+      });
+    }
+    return;
+  }
+  collectProjectContextTerminals(tree.children[0], workspaceTitle, workspaceDir, labels, out);
+  collectProjectContextTerminals(tree.children[1], workspaceTitle, workspaceDir, labels, out);
+}
+
+function hasProjectRuntimeTerminal(tree: SplitNode): boolean {
+  if (tree.type === 'leaf') return tree.surfaces.some((surface) => (
+    surface.type === 'terminal' && (
+      surface.projectManagerTerminal
+      || surface.projectSupervisorProjectId
+      || surface.projectManagerProjectId
+      || surface.projectManagerWorkItemId
+    )
+  ));
+  return hasProjectRuntimeTerminal(tree.children[0]) || hasProjectRuntimeTerminal(tree.children[1]);
+}
+
 type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
 type ProjectWorkItemIntervention = 'skip' | 'close';
 
@@ -71,9 +118,11 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
 
 function projectActivityLabel(session: {
   status: string;
+  goalConstruction?: { status: 'drafting' | 'confirmed' };
   activeGoalId?: string;
   workItems: Array<{ goalId?: string; status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }>;
 }): string {
+  if (session.goalConstruction?.status === 'drafting') return '目标构建中';
   if (session.status !== 'active') return STATUS_LABELS[session.status] || session.status;
   const workItems = session.workItems.filter((item) => (
     !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
@@ -229,6 +278,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const sessions = useStore((state) => state.projectManagers);
   const supervisor = useStore((state) => state.supervisor);
   const workspaces = useStore((state) => state.workspaces);
+  const agentMeta = useStore((state) => state.agentMeta);
   const activeWorkspaceId = useStore((state) => state.activeWorkspaceId);
   const close = useStore((state) => state.closeProjectManagerDialog);
   const selectProjectManager = useStore((state) => state.selectProjectManager);
@@ -259,10 +309,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     normalizeProjectManagementAgentConfig(DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG)
   ));
   const [creating, setCreating] = useState(false);
-  const [creationMode, setCreationMode] = useState<'direct' | 'conversation'>('direct');
+  const [creationMode, setCreationMode] = useState<'direct' | 'terminal'>('direct');
+  const [contextTerminalId, setContextTerminalId] = useState('');
   const [recoveryStatus, setRecoveryStatus] = useState<'unchecked' | 'checking' | 'prompt' | 'done'>('unchecked');
   const [recoveryCandidates, setRecoveryCandidates] = useState<ProjectRecoveryCandidate[]>([]);
   const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
+  const [recoverySituationDrafts, setRecoverySituationDrafts] = useState<Record<string, string>>({});
   const [recoveryDeleteCandidate, setRecoveryDeleteCandidate] = useState<ProjectRecoveryCandidate | null>(null);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
@@ -326,6 +378,22 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     if (!active) return '';
     return active.cwd || firstTerminalDirectory(active.splitTree);
   }, [activeWorkspaceId, workspaces]);
+
+  const contextTerminals = useMemo(() => {
+    const terminals: ProjectContextTerminal[] = [];
+    for (const workspace of workspaces) {
+      if (hasProjectRuntimeTerminal(workspace.splitTree)) continue;
+      collectProjectContextTerminals(
+        workspace.splitTree,
+        workspace.title,
+        workspace.cwd || '',
+        agentMeta,
+        terminals,
+      );
+    }
+    return terminals;
+  }, [agentMeta, workspaces]);
+  const contextTerminal = contextTerminals.find((terminal) => terminal.surfaceId === contextTerminalId);
 
   useEffect(() => {
     if (!open || (!creating && session) || projectDir) return;
@@ -421,7 +489,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       }
       const candidates = Array.isArray(result.candidates) ? result.candidates : [];
       setRecoveryCandidates(candidates);
-      setSelectedRecoveryIds(candidates.map((candidate: ProjectRecoveryCandidate) => candidate.id));
+      setSelectedRecoveryIds([]);
+      setRecoverySituationDrafts({});
       setRecoveryStatus(candidates.length > 0 ? 'prompt' : 'done');
     }).catch((error) => {
       setNotice(String((error as Error)?.message || error));
@@ -485,11 +554,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         action: restore ? 'restore-projects' : 'skip-project-recovery',
         ...(restore ? {
           projectIds: selectedRecoveryIds,
+          currentSituations: Object.fromEntries(selectedRecoveryIds
+            .map((projectId) => [projectId, recoverySituationDrafts[projectId]?.trim() || ''])
+            .filter(([, situation]) => situation)),
           agentConfig: normalizeProjectManagementAgentConfig(agentDraft),
         } : {}),
       });
       setRecoveryCandidates([]);
       setSelectedRecoveryIds([]);
+      setRecoverySituationDrafts({});
       setRecoveryStatus('done');
       setCreating(addNewProject);
       if (addNewProject) setProjectDir('');
@@ -520,6 +593,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       const remaining = recoveryCandidates.filter((item) => item.id !== candidate.id);
       setRecoveryCandidates(remaining);
       setSelectedRecoveryIds((current) => current.filter((id) => id !== candidate.id));
+      setRecoverySituationDrafts((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
       if (remaining.length === 0) {
         setRecoveryStatus('done');
         window.requestAnimationFrame(() => goalRef.current?.focus({ preventScroll: true }));
@@ -537,7 +615,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     const projectPreconditions = conditionLines(preconditions);
     const projectSupervisorNotes = conditionLines(supervisorNotes);
     const conditions = conditionLines(doneWhen);
-    if (!projectDir.trim() || !goal.trim()) {
+    if (creationMode === 'terminal' && !contextTerminal) {
+      setNotice('请选择一个包含当前 Agent 对话的已有终端。');
+      return;
+    }
+    const initialGoal = goal.trim() || (creationMode === 'terminal' && contextTerminal
+      ? `梳理并继续“${contextTerminal.label}”终端中的当前项目工作`
+      : '');
+    if (!projectDir.trim() || !initialGoal) {
       setNotice('请填写项目目录和当前主目标。');
       return;
     }
@@ -546,11 +631,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     try {
       const result = await invoke({
         action: 'start',
-        goalConstruction: creationMode === 'conversation',
+        sourceTerminalId: creationMode === 'terminal' ? contextTerminal?.surfaceId : undefined,
         projectDir: projectDir.trim(),
         projectName: projectName.trim(),
         projectScope: projectScope.trim(),
-        goal: goal.trim(),
+        goal: initialGoal,
         preconditions: projectPreconditions,
         supervisorNotes: projectSupervisorNotes,
         planFiles,
@@ -558,6 +643,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       });
       setCreating(false);
       setCreationMode('direct');
+      setContextTerminalId('');
       setProjectName('');
       setProjectScope('');
       setGoal('');
@@ -932,23 +1018,42 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   <div className="project-manager-dialog__recovery-list">
                     {recoveryCandidates.map((candidate) => (
                       <div key={candidate.id} className="project-manager-dialog__recovery-item">
-                        <label data-selected={selectedRecoveryIds.includes(candidate.id) ? '1' : '0'}>
-                          <input
-                            type="checkbox"
-                            checked={selectedRecoveryIds.includes(candidate.id)}
-                            onChange={() => toggleRecoveryCandidate(candidate.id)}
-                          />
-                          <span>
-                            <strong>{candidate.projectName || candidate.goal}</strong>
-                            {candidate.projectName && <small>当前主目标：{candidate.goal}</small>}
-                            <small>{candidate.projectDir}</small>
-                            <em>
-                              {STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项
-                              {candidate.requiresProtocolMigration ? ' · 恢复时升级到最新执行协议' : ''}
-                              {' · '}最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}
-                            </em>
-                          </span>
-                        </label>
+                        <div className="project-manager-dialog__recovery-content">
+                          <label data-selected={selectedRecoveryIds.includes(candidate.id) ? '1' : '0'}>
+                            <input
+                              type="checkbox"
+                              checked={selectedRecoveryIds.includes(candidate.id)}
+                              onChange={() => toggleRecoveryCandidate(candidate.id)}
+                            />
+                            <span>
+                              <strong>{candidate.projectName || candidate.goal}</strong>
+                              {candidate.projectName && <small>当前主目标：{candidate.goal}</small>}
+                              <small>{candidate.projectDir}</small>
+                              <em>
+                                {STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项
+                                {candidate.requiresProtocolMigration ? ' · 恢复时升级到最新执行协议' : ''}
+                                {' · '}最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}
+                              </em>
+                            </span>
+                          </label>
+                          {selectedRecoveryIds.includes(candidate.id) && (
+                            <div className="project-manager-dialog__recovery-situation">
+                              <span>当前情况（可选）</span>
+                              <textarea
+                                className="supervisor-dialog__textarea"
+                                rows={2}
+                                maxLength={12_000}
+                                value={recoverySituationDrafts[candidate.id] || ''}
+                                onChange={(event) => setRecoverySituationDrafts((current) => ({
+                                  ...current,
+                                  [candidate.id]: event.target.value,
+                                }))}
+                                placeholder="例如：核心实现已完成，当前只剩发布前验证；留空则沿用原记录"
+                                aria-label={`设置“${candidate.projectName || candidate.goal}”恢复时的当前情况`}
+                              />
+                            </div>
+                          )}
+                        </div>
                         <button
                           type="button"
                           className="confirm-dialog__btn confirm-dialog__btn--danger project-manager-dialog__recovery-delete"
@@ -1110,18 +1215,35 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           {!awaitingRecovery && (
             creating || (!embedded && !session) ? <section className="supervisor-dialog__group">
               <div className="supervisor-dialog__group-title">添加项目</div>
-              <div className="supervisor-dialog__hint">选择直接填写，或先创建项目 AI，通过对话共同构建目标。对话模式确认前不会规划或执行。</div>
+              <div className="supervisor-dialog__hint">可以直接填写项目定义，也可以让项目 AI 从已有终端的 Agent 对话和当前目录进度开始梳理。</div>
               <div className="supervisor-dialog__label">创建方式</div>
               <div className="supervisor-dialog__freedom">
                 <label className="supervisor-dialog__radio" data-active={creationMode === 'direct'}>
                   <input type="radio" name="project-creation-mode" checked={creationMode === 'direct'} onChange={() => setCreationMode('direct')} />
                   <span>直接填写并创建 — 已明确项目目标</span>
                 </label>
-                <label className="supervisor-dialog__radio" data-active={creationMode === 'conversation'}>
-                  <input type="radio" name="project-creation-mode" checked={creationMode === 'conversation'} onChange={() => setCreationMode('conversation')} />
-                  <span>对话构建项目目标 — 先创建项目 AI（推荐）</span>
+                <label className="supervisor-dialog__radio" data-active={creationMode === 'terminal'}>
+                  <input type="radio" name="project-creation-mode" checked={creationMode === 'terminal'} onChange={() => setCreationMode('terminal')} />
+                  <span>从已有终端创建 — 自动汇总 Agent 对话与项目进度（推荐）</span>
                 </label>
               </div>
+              {creationMode === 'terminal' && <>
+                <div className="supervisor-dialog__label supervisor-dialog__label--required">上下文来源终端</div>
+                <select className="supervisor-dialog__input" value={contextTerminalId} onChange={(event) => {
+                  const terminal = contextTerminals.find((candidate) => candidate.surfaceId === event.target.value);
+                  setContextTerminalId(event.target.value);
+                  if (terminal?.projectDir) setProjectDir(terminal.projectDir);
+                  setNotice('');
+                }}>
+                  <option value="">选择已有终端…</option>
+                  {contextTerminals.map((terminal) => (
+                    <option key={terminal.surfaceId} value={terminal.surfaceId}>
+                      {terminal.label} · {terminal.workspaceTitle} · {terminal.projectDir || '目录未知'}
+                    </option>
+                  ))}
+                </select>
+                <div className="supervisor-dialog__hint">该终端仅作为只读上下文来源，不会被停止、接管或自动纳入新项目。项目 AI 会核对目录快照；只有关键目标、权限边界或验收条件无法可靠判断时才向你提问。</div>
+              </>}
               <div className="supervisor-dialog__label">项目名称（可选）</div>
               <input className="supervisor-dialog__input" value={projectName} onChange={(event) => {
                 setProjectName(event.target.value);
@@ -1140,16 +1262,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 setProjectScope(event.target.value);
                 setNotice('');
               }} placeholder="留空则默认仅处理项目目录内与当前项目直接相关的工作" />
-              <div className="supervisor-dialog__label supervisor-dialog__label--required">
-                {creationMode === 'conversation' ? '初始项目想法' : '当前主目标'}
+              <div className={creationMode === 'terminal' ? 'supervisor-dialog__label' : 'supervisor-dialog__label supervisor-dialog__label--required'}>
+                {creationMode === 'terminal' ? '当前主目标（可选补充）' : '当前主目标'}
               </div>
               <textarea ref={goalRef} className="supervisor-dialog__textarea" rows={3} value={goal} onChange={(event) => {
                 setGoal(event.target.value);
                 setNotice('');
-              }} placeholder={creationMode === 'conversation'
-                ? '用一句话描述想做什么，例如：帮我把这个旧项目整理成可发布版本'
+              }} placeholder={creationMode === 'terminal'
+                ? '留空则由项目 AI 根据所选终端对话和目录进度归纳；也可在此补充新的方向'
                 : '描述用户当前希望项目最终达到的结果；同一项目以后可以切换新的主目标'} />
-              {creationMode === 'conversation' && <div className="supervisor-dialog__hint">下面的计划、前置条件和完成条件均可留空，由项目 AI 只读了解目录后与你对话补全。</div>}
+              {creationMode === 'terminal' && <div className="supervisor-dialog__hint">下面的计划、前置条件和完成条件均可留空；项目 AI 会先汇总已有事实，再按需请求补全。</div>}
               <div className="supervisor-dialog__label">计划文件（可选，最多 {MAX_PROJECT_PLAN_FILES} 个）</div>
               <div className="project-manager-dialog__directory-row">
                 <input className="supervisor-dialog__input" value={planFilePath} onChange={(event) => setPlanFilePath(event.target.value)} placeholder={'C:\\project\\PLAN.md'} />
@@ -1613,7 +1735,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             >{busy ? '正在应用…' : '确认生效'}</button>
           </>}
           {!embedded && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={closeDialog}>{projectDefinitionDraftDirty ? '关闭（取消变更）' : '关闭'}</button>}
-          {!awaitingRecovery && (creating || (!embedded && !session)) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : creationMode === 'conversation' ? '创建项目 AI 并对话' : '添加项目'}</button>}
+          {!awaitingRecovery && (creating || (!embedded && !session)) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : creationMode === 'terminal' ? '基于终端创建项目 AI' : '添加项目'}</button>}
         </div>
 
         {recoveryDeleteCandidate && (

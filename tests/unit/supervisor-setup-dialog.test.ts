@@ -82,7 +82,7 @@ describe('supervisor setup dialog feedback', () => {
     const startHandler = projectManagerDialogSource.match(
       /const start = async \(\) => \{[\s\S]*?^  \};/m,
     )?.[0] || '';
-    expect(startHandler).toContain('if (!projectDir.trim() || !goal.trim())');
+    expect(startHandler).toContain('if (!projectDir.trim() || !initialGoal)');
     expect(startHandler).not.toContain('!projectName.trim()');
     expect(startHandler).not.toContain('projectPreconditions.length === 0');
     expect(startHandler).not.toContain('conditions.length === 0');
@@ -124,6 +124,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('删除选中项目');
     expect(projectManagerDialogSource).toContain("action: 'delete-project'");
     expect(projectManagerDialogSource).toContain('恢复所选项目');
+    expect(projectManagerDialogSource).toContain('setSelectedRecoveryIds([])');
+    expect(projectManagerDialogSource).not.toContain('setSelectedRecoveryIds(candidates.map');
+    expect(projectManagerDialogSource).toContain('当前情况（可选）');
+    expect(projectManagerDialogSource).toContain('currentSituations: Object.fromEntries');
+    expect(projectManagerDialogSource).toContain('留空则沿用原记录');
     expect(projectManagerDialogSource).toContain('本次恢复使用的 Agent 配置');
     expect(projectManagerDialogSource).toContain('可在恢复前重新选择');
     expect(projectManagerDialogSource).toContain('agentConfig: normalizeProjectManagementAgentConfig(agentDraft)');
@@ -169,21 +174,27 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
   });
 
-  it('offers conversational goal construction for projects and ordinary supervision', () => {
-    expect(dialogSource).toContain('对话构建任务目标');
-    expect(dialogSource).toContain('创建监督 AI 并对话');
+  it('creates project and ordinary supervisors from existing terminal context', () => {
+    expect(dialogSource).toContain('从已有终端创建 — 自动汇总 Agent 对话与项目进度');
+    expect(dialogSource).toContain('基于终端创建监督 AI');
     expect(dialogSource).toContain('buildSupervisorGoalConstructionBriefing');
-    expect(dialogSource).toContain("creationMode === 'conversation'");
-    expect(panelSource).toContain('监督 AI 目标构建');
-    expect(panelSource).toContain('确认目标并开始');
+    expect(dialogSource).toContain("creationMode === 'terminal'");
+    expect(dialogSource).toContain("origin: 'terminal-context'");
+    expect(panelSource).toContain('监督 AI 正在汇总终端上下文');
+    expect(panelSource).toContain('确认补全并开始');
     expect(panelSource).toContain("action: 'confirm-goal-construction'");
-    expect(projectManagerDialogSource).toContain('对话构建项目目标');
-    expect(projectManagerDialogSource).toContain('创建项目 AI 并对话');
-    expect(projectManagerDialogSource).toContain('待确认的项目目标草案');
-    expect(projectManagerDialogSource).toContain("goalConstruction: creationMode === 'conversation'");
+    expect(projectManagerDialogSource).toContain('上下文来源终端');
+    expect(projectManagerDialogSource).toContain('基于终端创建项目 AI');
+    expect(projectManagerDialogSource).toContain('sourceTerminalId: creationMode === \'terminal\'');
+    expect(projectManagerDialogSource).toContain('该终端仅作为只读上下文来源');
     expect(projectManagerDialogSource).toContain("action: 'confirm-goal-construction'");
+    expect(pipeBridgeSource).toContain('terminalBootstrapContext');
+    expect(pipeBridgeSource).toContain('[已有终端上下文｜只读证据，不继承权限]');
+    expect(pipeBridgeSource).toContain('只有会实质改变目标、范围、权限边界或验收的缺口');
     expect(pipeBridgeSource).toContain('目标构建期间只能更新项目定义、向用户提问或回复');
     expect(pipeBridgeSource).toContain('目标构建尚未由用户确认');
+    expect(dialogSource).not.toContain('创建监督 AI 并对话');
+    expect(projectManagerDialogSource).not.toContain('创建项目 AI 并对话');
   });
 
   it('defaults new supervision lanes to wait for the next direction after completion', () => {
