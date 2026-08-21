@@ -119,20 +119,23 @@ export function buildSupervisorWakeEventEnvelope(
   surfaceId: string,
   reviewId = '',
   projectManaged = true,
+  evidenceReadMode: 'required' | 'on-demand' = 'required',
 ): string {
   const target = surfaceId.trim() || '（未指定）';
   const normalizedReviewId = reviewId.trim();
   const reviewInstruction = normalizedReviewId
-    ? `本轮 reviewId=${normalizedReviewId}；先运行 wmux supervisor evidence --review-id ${normalizedReviewId} 读取任务结束瞬间的冻结证据，hasMore=true 时按 nextPage 分页读完；提交裁决时必须附 --review-id ${normalizedReviewId}，不得用旧 reviewId 回报新任务回合。`
+    ? evidenceReadMode === 'on-demand'
+      ? `reviewId=${normalizedReviewId}｜evidence=on-demand：先用事件内摘要裁决；摘要截断、证据不足、验收不一致、返工或风险异常时，运行 wmux supervisor evidence --review-id ${normalizedReviewId} --file，并用文件读取/搜索工具检查关键区段。仅当返回 accessMode=page-fallback 时按 nextPage 兜底。裁决必须附本 reviewId。`
+      : `reviewId=${normalizedReviewId}｜evidence=required：先运行 wmux supervisor evidence --review-id ${normalizedReviewId} --file；用文件读取/搜索工具优先检查 suggestedRanges、错误、测试和验收相关区段，证据仍矛盾或不足时才读完整文件。仅当返回 accessMode=page-fallback 时按 nextPage 兜底。裁决必须附本 reviewId。`
     : '';
   return [
     `[监督事件｜控制层｜surface=${target}${normalizedReviewId ? `｜review=${normalizedReviewId}` : ''}｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
-    '当前运行时与完整 briefing 继续有效，无需重读协议、重新确认角色或复述身份。运行 wmux context 只刷新 capability 绑定的实时权限、预算和可用命令；发现绑定或协议变化时停止沿用旧授权。',
+    '沿用已加载 briefing；无需重读协议或复述身份。仅需刷新实时权限/预算或发现绑定、版本变化时运行 wmux context。',
     projectManaged
-      ? '你负责在项目 AI 给定的硬边界内完成整个阶段成果并维护自己的阶段计划；任务 AI 的检查点只是证据输入，不要把内部里程碑原样转交项目 AI 决定。'
-      : '你只负责当前普通监督通道；依据用户配置、任务终端证据和既有裁决处理本轮，不得扩展目标或读取其他终端。',
+      ? '项目硬边界内由你维护阶段路线；任务检查点只是证据，不上交内部微步骤。'
+      : '只处理当前普通监督通道，不扩展目标或读取其他终端。',
     reviewInstruction,
-    `再运行 wmux read-screen --surface ${target} --lines 100 核对当前实时状态；冻结证据负责本轮历史，read-screen 不得替代完整证据。只形成一个裁决并用 wmux supervisor decide 提交，成功后立即结束本回合。`,
+    `用 wmux read-screen --surface ${target} --lines 100 核对实时状态；只提交一个 wmux supervisor decide 裁决，成功后结束本回合。`,
   ].filter(Boolean).join('\n');
 }
 
@@ -594,8 +597,8 @@ export function buildSupervisorBriefing(
       ]
     : [];
   const decisionReadStep = planFilePath
-    ? `1. 收到带 reviewId 的任务事件时，先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据；再检查计划文件（${planFilePath}）是否更新，最后用 read-screen --surface ${lane.surfaceId} --lines 100 核对当前实时状态。`
-    : `1. 收到带 reviewId 的任务事件时，先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据；再用 read-screen --surface ${lane.surfaceId} --lines 100 核对当前实时状态。`;
+    ? `1. 收到带 reviewId 的任务事件时先看摘要；evidence=required，或摘要截断、证据不足、验收不一致、返工/风险异常时，运行 wmux supervisor evidence --review-id <本轮ID> --file，并用文件工具检查 suggestedRanges 和相关区段；只有文件不可用时分页兜底，证据仍矛盾或不足时才读全文。随后检查计划文件（${planFilePath}）是否更新，并用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态。`
+    : `1. 收到带 reviewId 的任务事件时先看摘要；evidence=required，或摘要截断、证据不足、验收不一致、返工/风险异常时，运行 wmux supervisor evidence --review-id <本轮ID> --file，并用文件工具检查 suggestedRanges 和相关区段；只有文件不可用时分页兜底，证据仍矛盾或不足时才读全文。随后用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态。`;
   const decisionEvidence = planFilePath
     ? '综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。'
     : '综合停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。';

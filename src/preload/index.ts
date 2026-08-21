@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld('wmux', {
     appendRecord: (record: any) => ipcRenderer.invoke('supervisor:append-record', record),
     saveEvidence: (options: any) => ipcRenderer.invoke('supervisor:save-evidence', options),
     readEvidence: (options: any) => ipcRenderer.invoke('supervisor:read-evidence', options),
+    readEvidenceFile: (options: any) => ipcRenderer.invoke('supervisor:read-evidence-file', options),
     readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
     listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),

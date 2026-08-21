@@ -6,6 +6,7 @@ import {
   appendSupervisorRecord,
   listSupervisorRestoreCandidates,
   readSupervisorEvidence,
+  readSupervisorEvidenceFile,
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
   saveSupervisorEvidence,
@@ -74,6 +75,35 @@ describe('supervisor records', () => {
       surfaceId: 'surf-b',
       isolationScope: 'project',
     })).toEqual({ ok: false, error: 'supervisor evidence binding mismatch' });
+
+    const fileReference = readSupervisorEvidenceFile({
+      projectDir: project,
+      sessionId: 'sup-evidence',
+      reviewId: 'review-123',
+      surfaceId: 'surf-a',
+      isolationScope: 'project',
+    });
+    expect(fileReference).toMatchObject({
+      ok: true,
+      accessMode: 'file',
+      reviewId: 'review-123',
+      surfaceId: 'surf-a',
+      format: 'text/plain; charset=utf-8',
+      totalLines: 4,
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      suggestedRanges: expect.arrayContaining([
+        expect.objectContaining({ reason: 'tail', startLine: 1, endLine: 4 }),
+      ]),
+    });
+    expect(fileReference.ok && fs.readFileSync(fileReference.path, 'utf8'))
+      .toBe(`${snapshot.text}\n`);
+    expect(readSupervisorEvidenceFile({
+      projectDir: project,
+      sessionId: 'sup-evidence',
+      reviewId: 'review-123',
+      surfaceId: 'surf-b',
+      isolationScope: 'project',
+    })).toEqual({ ok: false, error: 'supervisor evidence binding mismatch' });
   });
 
   it('bounds durable evidence retention per supervision scope', () => {
@@ -98,6 +128,15 @@ describe('supervisor records', () => {
           text: `证据 ${index}`,
         },
       });
+      if (index === 0) {
+        expect(readSupervisorEvidenceFile({
+          projectDir: project,
+          sessionId: 'sup-retention',
+          reviewId: 'review-0',
+          surfaceId: 'surf-a',
+          isolationScope: 'ordinary',
+        })).toMatchObject({ ok: true, accessMode: 'file' });
+      }
     }
 
     const evidenceDirectory = path.join(
@@ -109,6 +148,7 @@ describe('supervisor records', () => {
       'ordinary',
     );
     expect(fs.readdirSync(evidenceDirectory)).toHaveLength(50);
+    expect(fs.readdirSync(evidenceDirectory).some((name) => name.endsWith('.txt'))).toBe(false);
   });
 
   it('keeps duplicate terminal labels distinct by surface id and ignores the audit directory', () => {

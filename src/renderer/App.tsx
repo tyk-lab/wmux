@@ -874,6 +874,9 @@ function handleSupervisorHookEvent(event: any): void {
       reviewId,
       String(event.message || ''),
     );
+    const evidenceReadMode = lifecycle === 'Stop' && evidence && !evidence.truncated
+      ? 'on-demand' as const
+      : 'required' as const;
     store.updateLane(lane.id, { awaitingReview: true, userDirectTaskTurnId: undefined });
     if (lane.autoDecisionLimitReached) return;
     queueSupervisorDelivery(
@@ -888,11 +891,18 @@ function handleSupervisorHookEvent(event: any): void {
           ? [
               `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
               evidence.summary ? `任务 AI 最终回答摘要：\n${evidence.summary}` : '',
-              `完整证据：wmux supervisor evidence --review-id ${reviewId}`,
-              '若 hasMore=true，按 nextPage 继续读取；read-screen 仅用于核对当前实时状态，不再作为本轮完整历史。',
+              `冻结证据文件（${evidenceReadMode === 'on-demand' ? '按需' : '必查'}）：wmux supervisor evidence --review-id ${reviewId} --file`,
+              evidenceReadMode === 'required'
+                ? '使用文件读取/搜索工具优先检查 suggestedRanges、错误、测试和验收区段；证据仍矛盾或不足时才读全文。若返回 accessMode=page-fallback，再按 nextPage 兜底。read-screen 只核对实时状态。'
+                : '摘要足以支持普通成功裁决时无需读取文件；摘要截断、证据不足、验收不一致、返工或风险异常时再获取文件。若返回 accessMode=page-fallback，再按 nextPage 兜底。',
             ].filter(Boolean).join('\n')
           : `[冻结证据不可用｜review=${reviewId}] 只能使用 read-screen 核对当前状态，并结合项目文件、测试日志和差异证据谨慎裁决。`,
-        buildSupervisorWakeEventEnvelope(surfaceId, reviewId, isProjectManagedSupervisorLane(lane)),
+        buildSupervisorWakeEventEnvelope(
+          surfaceId,
+          reviewId,
+          isProjectManagedSupervisorLane(lane),
+          evidenceReadMode,
+        ),
         '',
       ].join('\n'),
       reviewId,
@@ -1673,8 +1683,8 @@ export default function App() {
                 ? [
                     `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
                     evidence.summary ? `任务 AI 当前核心信息：\n${evidence.summary}` : '',
-                    `完整证据：wmux supervisor evidence --review-id ${reviewId}`,
-                    'read-screen 仅用于核对当前实时状态。',
+                    `冻结证据文件：wmux supervisor evidence --review-id ${reviewId} --file`,
+                    '用文件工具优先检查 suggestedRanges 和当前异常相关区段；文件不可用时分页兜底，证据仍不足时才读全文。read-screen 仅核对实时状态。',
                   ].filter(Boolean).join('\n')
                 : '';
               queueSupervisorDelivery(

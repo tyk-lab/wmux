@@ -125,6 +125,9 @@ describe('supervisor runtime context', () => {
       'wmux supervisor decide --surface task-a --outcome <结果>',
     );
     expect(context.commands.available).toContain('wmux supervisor context');
+    expect(context.commands.available).toContain(
+      'wmux supervisor evidence --review-id <本轮ID> --file（优先）',
+    );
   });
 
   it('does not advertise project permission confirmation when the contract denies it', () => {

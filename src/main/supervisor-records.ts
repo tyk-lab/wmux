@@ -1,8 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import {
   SUPERVISOR_EVIDENCE_MAX_CHARS,
   supervisorEvidencePage,
+  supervisorEvidenceSuggestedRanges,
+  type SupervisorEvidenceFileReference,
   type SupervisorEvidencePage,
   type SupervisorEvidenceSnapshot,
 } from '../shared/supervisor-evidence';
@@ -100,15 +103,32 @@ function supervisorEvidenceDirectory(
 
 function pruneSupervisorEvidence(evidenceDirectory: string): void {
   try {
-    const files = fs.readdirSync(evidenceDirectory, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && REVIEW_ID.test(entry.name.replace(/\.json$/u, '')))
+    const entries = fs.readdirSync(evidenceDirectory, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => (
+        entry.isFile()
+        && entry.name.endsWith('.json')
+        && REVIEW_ID.test(entry.name.replace(/\.json$/u, ''))
+      ))
       .map((entry) => {
         const filePath = path.join(evidenceDirectory, entry.name);
-        return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+        return {
+          filePath,
+          reviewId: entry.name.replace(/\.json$/u, ''),
+          mtimeMs: fs.statSync(filePath).mtimeMs,
+        };
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const retainedReviewIds = new Set(
+      files.slice(0, MAX_EVIDENCE_FILES_PER_SCOPE).map((file) => file.reviewId),
+    );
     for (const stale of files.slice(MAX_EVIDENCE_FILES_PER_SCOPE)) {
       try { fs.unlinkSync(stale.filePath); } catch { /* Best-effort retention cleanup. */ }
+    }
+    for (const entry of entries) {
+      const match = /^([A-Za-z0-9_-]{1,200})\.[a-f0-9]{16}\.txt$/u.exec(entry.name);
+      if (!entry.isFile() || !match || retainedReviewIds.has(match[1])) continue;
+      try { fs.unlinkSync(path.join(evidenceDirectory, entry.name)); } catch { /* Best effort. */ }
     }
   } catch {
     // Evidence persistence already succeeded; retention failure must not drop the review event.
@@ -155,17 +175,41 @@ export function readSupervisorEvidence(options: {
   page?: number;
   pageLines?: number;
 }): SupervisorEvidencePage | { ok: false; error: string } {
+  const loaded = loadSupervisorEvidence(options);
+  if (loaded.ok === false) return loaded;
+  return supervisorEvidencePage(loaded.snapshot, options.page, options.pageLines);
+}
+
+function loadSupervisorEvidence(options: {
+  projectDir: string;
+  sessionId: string;
+  reviewId: string;
+  surfaceId: string;
+  isolationScope: TerminalInputIsolationScope;
+}): {
+  ok: true;
+  snapshot: SupervisorEvidenceSnapshot;
+  evidenceDirectory: string;
+} | { ok: false; error: string } {
   if (!REVIEW_ID.test(options.reviewId)) return { ok: false, error: 'invalid supervisor review id' };
   if (!options.surfaceId) return { ok: false, error: 'surfaceId is required' };
   let evidencePath: string;
+  let evidenceDirectory: string;
   try {
-    const evidenceDirectory = supervisorEvidenceDirectory(
+    evidenceDirectory = supervisorEvidenceDirectory(
       options.projectDir,
       options.sessionId,
       options.isolationScope,
     );
     evidencePath = path.join(evidenceDirectory, `${options.reviewId}.json`);
-    if (fs.statSync(evidencePath).size > SUPERVISOR_EVIDENCE_MAX_CHARS + 64_000) {
+    const stat = fs.lstatSync(evidencePath);
+    const realEvidencePath = fs.realpathSync(evidencePath);
+    const relative = path.relative(evidenceDirectory, realEvidencePath);
+    if (!stat.isFile() || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return { ok: false, error: 'supervisor evidence not found' };
+    }
+    evidencePath = realEvidencePath;
+    if (stat.size > SUPERVISOR_EVIDENCE_MAX_CHARS + 64_000) {
       return { ok: false, error: 'supervisor evidence file is too large' };
     }
   } catch {
@@ -179,12 +223,70 @@ export function readSupervisorEvidence(options: {
       || snapshot.reviewId !== options.reviewId
       || snapshot.surfaceId !== options.surfaceId
       || snapshot.isolationScope !== options.isolationScope
+      || typeof snapshot.text !== 'string'
     ) {
       return { ok: false, error: 'supervisor evidence binding mismatch' };
     }
-    return supervisorEvidencePage(snapshot, options.page, options.pageLines);
+    return { ok: true, snapshot, evidenceDirectory };
   } catch {
     return { ok: false, error: 'supervisor evidence is unreadable' };
+  }
+}
+
+export function readSupervisorEvidenceFile(options: {
+  projectDir: string;
+  sessionId: string;
+  reviewId: string;
+  surfaceId: string;
+  isolationScope: TerminalInputIsolationScope;
+}): SupervisorEvidenceFileReference | { ok: false; error: string } {
+  const loaded = loadSupervisorEvidence(options);
+  if (loaded.ok === false) return loaded;
+  const content = loaded.snapshot.text.endsWith('\n')
+    ? loaded.snapshot.text
+    : `${loaded.snapshot.text}\n`;
+  const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
+  const evidencePath = path.join(
+    loaded.evidenceDirectory,
+    `${options.reviewId}.${sha256.slice(0, 16)}.txt`,
+  );
+  try {
+    if (!fs.existsSync(evidencePath)) {
+      fs.writeFileSync(evidencePath, content, { encoding: 'utf8', flag: 'wx', mode: 0o400 });
+      fs.chmodSync(evidencePath, 0o400);
+    }
+    const stat = fs.lstatSync(evidencePath);
+    const realEvidencePath = fs.realpathSync(evidencePath);
+    const relative = path.relative(loaded.evidenceDirectory, realEvidencePath);
+    if (!stat.isFile() || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return { ok: false, error: 'supervisor evidence text file is unsafe' };
+    }
+    if (createHash('sha256').update(fs.readFileSync(realEvidencePath)).digest('hex') !== sha256) {
+      return { ok: false, error: 'supervisor evidence text file hash mismatch' };
+    }
+    pruneSupervisorEvidence(loaded.evidenceDirectory);
+    const totalLines = loaded.snapshot.text.replace(/\r\n?/gu, '\n').split('\n').length;
+    return {
+      ok: true,
+      accessMode: 'file',
+      sessionId: loaded.snapshot.sessionId,
+      reviewId: loaded.snapshot.reviewId,
+      surfaceId: loaded.snapshot.surfaceId,
+      isolationScope: loaded.snapshot.isolationScope,
+      task: loaded.snapshot.task,
+      capturedAt: loaded.snapshot.capturedAt,
+      bufferType: loaded.snapshot.bufferType,
+      truncated: loaded.snapshot.truncated,
+      summary: loaded.snapshot.summary,
+      path: realEvidencePath,
+      format: 'text/plain; charset=utf-8',
+      sha256,
+      totalLines,
+      suggestedRanges: supervisorEvidenceSuggestedRanges(loaded.snapshot.text),
+      fallbackCommand: `wmux supervisor evidence --review-id ${loaded.snapshot.reviewId} --page 1 --page-lines 200`,
+    };
+  } catch {
+    return { ok: false, error: 'supervisor evidence text file is unavailable' };
   }
 }
 

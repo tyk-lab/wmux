@@ -30,6 +30,7 @@ import {
   appendSupervisorRecord,
   listSupervisorRestoreCandidates,
   readSupervisorEvidence,
+  readSupervisorEvidenceFile,
   readLatestSupervisorHistory,
   readSupervisorAuditTrail,
   saveSupervisorEvidence,
@@ -658,6 +659,13 @@ app.whenReady().then(() => {
     isolationScope: options?.isolationScope,
     page: Number(options?.page),
     pageLines: Number(options?.pageLines),
+  }));
+  ipcMain.handle('supervisor:read-evidence-file', (_event, options) => readSupervisorEvidenceFile({
+    projectDir: String(options?.projectDir || ''),
+    sessionId: String(options?.sessionId || ''),
+    reviewId: String(options?.reviewId || ''),
+    surfaceId: String(options?.surfaceId || ''),
+    isolationScope: options?.isolationScope,
   }));
   ipcMain.handle('supervisor:read-latest-history', (_event, options) =>
     readLatestSupervisorHistory(String(options?.projectDir || ''), {

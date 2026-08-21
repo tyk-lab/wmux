@@ -123,9 +123,9 @@ export function withProjectManagerRoleAnchor(text: string, projectId: string): s
 export function projectManagerEventEnvelope(projectId: string): string {
   return [
     `[项目事件｜控制层｜project=${projectId}｜protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}]`,
-    '先运行 wmux context 获取实时状态；若本消息协议版本与已加载版本一致，继续使用当前协议，无需重读技能或重新确认角色；若不一致，先重读 manage-project 技能再处理事件。',
-    '项目 AI 只处理主目标、可验收阶段、依赖和硬安全边界；监督 AI 在该边界内自行维护路线与内部里程碑，不要把任务 AI 的每个检查点拆成新工作项。',
-    'baseline.status=required 时只安排一次 [项目基线调查] 当前工作树核对，不得因旧屏幕已有报告而反复要求监督重提批准；同一基线门禁再次拒绝时暂停并处理结构化状态。',
+    '先运行 wmux context 刷新实时状态；协议版本一致时无需重读技能或重新确认角色，版本变化时再重载协议。',
+    '只处理主目标、可验收阶段、依赖和硬安全边界；监督内部路线与任务检查点不拆成项目工作项。',
+    'baseline.status=required 时只安排一次 [项目基线调查]；重复拒绝时处理结构化门禁，不重放同义决定。',
   ].join('\n');
 }
 

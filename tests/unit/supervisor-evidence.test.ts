@@ -5,6 +5,7 @@ import {
   createSupervisorEvidenceSnapshot,
   registerSupervisorEvidence,
 } from '../../src/renderer/supervisor/evidence';
+import { supervisorEvidenceSuggestedRanges } from '../../src/shared/supervisor-evidence';
 
 afterEach(() => clearSupervisorEvidenceCache());
 
@@ -58,5 +59,41 @@ describe('supervisor evidence snapshots', () => {
     });
 
     expect(snapshot).toMatchObject({ bufferType: 'alternate', truncated: true });
+  });
+
+  it('keeps the result head and tail while compacting only the inline summary', () => {
+    const fullSummary = `完成：已修改核心逻辑。${'中间执行细节。'.repeat(300)}剩余：无；验证：定向测试通过。`;
+    const evidenceText = `完整终端证据\n${'证据行\n'.repeat(500)}`;
+    const snapshot = createSupervisorEvidenceSnapshot({
+      sessionId: 'sup-1',
+      reviewId: 'review-long-summary',
+      laneId: 'lane-1',
+      surfaceId: 'worker-a',
+      isolationScope: 'project',
+      task: '压缩跨角色消息',
+      bufferType: 'normal',
+      bufferLines: 501,
+      capturedLines: 501,
+      summary: fullSummary,
+      text: evidenceText,
+    });
+
+    expect(snapshot.summary.length).toBeLessThanOrEqual(1_200);
+    expect(snapshot.summary).toContain('完成：已修改核心逻辑');
+    expect(snapshot.summary).toContain('摘要已压缩');
+    expect(snapshot.summary).toContain('剩余：无；验证：定向测试通过。');
+    expect(snapshot.text).toBe(evidenceText.trim());
+  });
+
+  it('suggests bounded diagnostic, validation and tail ranges for file inspection', () => {
+    const lines = Array.from({ length: 180 }, (_, index) => `日志 ${index + 1}`);
+    lines[79] = '测试通过：42/42';
+    lines[149] = 'Error: final validation mismatch';
+
+    expect(supervisorEvidenceSuggestedRanges(lines.join('\n'))).toEqual([
+      { startLine: 144, endLine: 156, reason: 'diagnostic' },
+      { startLine: 74, endLine: 86, reason: 'validation' },
+      { startLine: 61, endLine: 180, reason: 'tail' },
+    ]);
   });
 });

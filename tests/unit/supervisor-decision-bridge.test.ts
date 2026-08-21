@@ -511,6 +511,49 @@ describe('supervisor decision bridge', () => {
       page: 2,
       text: '第三行',
     });
+    const saveEvidence = vi.fn(async () => ({ ok: true }));
+    const readEvidenceFile = vi.fn(async (options: any) => ({
+      ok: true,
+      accessMode: 'file',
+      reviewId: options.reviewId,
+      surfaceId: options.surfaceId,
+      path: 'E:\\repo\\.wmux\\supervisor\\evidence.txt',
+      sha256: 'a'.repeat(64),
+      totalLines: 3,
+      suggestedRanges: [{ startLine: 1, endLine: 3, reason: 'tail' }],
+    }));
+    (globalThis.window as any).wmux.supervisor = { saveEvidence, readEvidenceFile };
+    await expect(readEvidence({
+      callerSurfaceId: 'supervisor-a',
+      reviewId: 'review-evidence',
+      file: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      accessMode: 'file',
+      surfaceId: 'worker-a',
+      totalLines: 3,
+    });
+    expect(saveEvidence).toHaveBeenCalledTimes(1);
+    expect(readEvidenceFile).toHaveBeenCalledWith(expect.objectContaining({
+      reviewId: 'review-evidence',
+      surfaceId: 'worker-a',
+      isolationScope: 'ordinary',
+    }));
+    (globalThis.window as any).wmux.supervisor.readEvidenceFile = vi.fn(async () => {
+      throw new Error('旧主进程不支持文件引用');
+    });
+    await expect(readEvidence({
+      callerSurfaceId: 'supervisor-a',
+      reviewId: 'review-evidence',
+      file: true,
+      pageLines: 2,
+    })).resolves.toMatchObject({
+      ok: true,
+      accessMode: 'page-fallback',
+      fallbackReason: '只读证据文件不可用',
+      page: 1,
+      hasMore: true,
+    });
     await expect(readEvidence({
       callerSurfaceId: 'worker-a',
       reviewId: 'review-evidence',
@@ -6156,6 +6199,29 @@ describe('supervisor decision bridge', () => {
       }),
     ]));
 
+    const longSummary = `阶段摘要头。${'摘要细节。'.repeat(300)}阶段摘要尾。`;
+    const longEvidence = `证据头。${'完整证据。'.repeat(300)}证据尾。`;
+    const longContext = `上下文头。${'上下文细节。'.repeat(250)}上下文尾。`;
+    await remote({
+      ...handoff,
+      summary: longSummary,
+      payload: { ...handoff.payload, evidence: longEvidence, contextSummary: longContext },
+    });
+    const compactedTransition = useStore.getState().projectManager?.pendingSupervisorTransitions[0];
+    const compactedDelivery = useStore.getState().projectManager?.pendingManagerDeliveries
+      ?.find((delivery) => delivery.transitionId === first.transitionId);
+    expect(compactedTransition).toMatchObject({
+      evidence: longEvidence,
+      contextSummary: longContext,
+    });
+    expect(compactedTransition?.summary).toContain(longSummary);
+    expect(compactedDelivery?.text).toContain('内联已压缩');
+    expect(compactedDelivery?.text).toContain('阶段摘要头');
+    expect(compactedDelivery?.text).toContain('阶段摘要尾');
+    expect(compactedDelivery?.text).toContain(`pendingSupervisorTransitions 中 ID=${first.transitionId}`);
+    expect(compactedDelivery?.text).not.toContain(longEvidence);
+    expect(compactedDelivery?.text.length).toBeLessThan(5_000);
+
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
     await expect(request({
       action: 'transition-ack', callerSurfaceId: managerSurfaceId, projectId: project.id,
@@ -7157,7 +7223,8 @@ describe('supervisor decision bridge', () => {
 
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: '已采用 AI 监督当前方案；AI 监督将整理后发送到任务终端。' });
-    expect(queuedOwnerDecision()?.text).toContain('[AI 原建议] 按现有方案完成实现并运行测试');
+    expect(queuedOwnerDecision()?.text).toContain('[用户选择] 按现有方案完成实现并运行测试');
+    expect(queuedOwnerDecision()?.text).not.toContain('[AI 原建议] 按现有方案完成实现并运行测试');
     expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
     expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);

@@ -1,6 +1,8 @@
 import {
+  compactSupervisorEvidenceSummary,
   SUPERVISOR_EVIDENCE_MAX_CHARS,
   supervisorEvidencePage,
+  type SupervisorEvidenceFileReference,
   type SupervisorEvidencePage,
   type SupervisorEvidenceSnapshot,
 } from '../../shared/supervisor-evidence';
@@ -53,7 +55,7 @@ export function createSupervisorEvidenceSnapshot(
     bufferLines: Math.max(0, Math.floor(options.bufferLines || 0)),
     capturedLines: Math.max(0, Math.floor(options.capturedLines || 0)),
     truncated: options.truncated === true || textWasTruncated || bufferType === 'alternate',
-    summary: options.summary.trim().slice(0, 4_000),
+    summary: compactSupervisorEvidenceSummary(options.summary),
     text,
   };
 }
@@ -75,11 +77,27 @@ export function cachedSupervisorEvidencePage(
   page?: number,
   pageLines?: number,
 ): SupervisorEvidencePage | undefined {
+  const snapshot = cachedSupervisorEvidenceSnapshot(
+    sessionId,
+    reviewId,
+    surfaceId,
+    isolationScope,
+  );
+  if (!snapshot) return undefined;
+  return supervisorEvidencePage(snapshot, page, pageLines);
+}
+
+export function cachedSupervisorEvidenceSnapshot(
+  sessionId: string,
+  reviewId: string,
+  surfaceId: string,
+  isolationScope: TerminalInputIsolationScope,
+): SupervisorEvidenceSnapshot | undefined {
   const snapshot = evidenceCache.get(cacheKey(sessionId, reviewId));
   if (!snapshot
     || snapshot.surfaceId !== surfaceId
     || snapshot.isolationScope !== isolationScope) return undefined;
-  return supervisorEvidencePage(snapshot, page, pageLines);
+  return snapshot;
 }
 
 export async function persistSupervisorEvidence(
@@ -104,6 +122,25 @@ export async function readPersistedSupervisorEvidencePage(options: {
   if (!api?.readEvidence) return undefined;
   const result = await api.readEvidence(options);
   return result?.ok === true ? result as SupervisorEvidencePage : undefined;
+}
+
+export async function readPersistedSupervisorEvidenceFile(options: {
+  projectDir: string;
+  sessionId: string;
+  reviewId: string;
+  surfaceId: string;
+  isolationScope: TerminalInputIsolationScope;
+}): Promise<SupervisorEvidenceFileReference | undefined> {
+  const api = (window as any).wmux?.supervisor;
+  if (!api?.readEvidenceFile) return undefined;
+  try {
+    const result = await api.readEvidenceFile(options);
+    return result?.ok === true && result?.accessMode === 'file'
+      ? result as SupervisorEvidenceFileReference
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function clearSupervisorEvidenceCache(): void {

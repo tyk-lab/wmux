@@ -174,6 +174,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     if (!reviewId) throw new Error('--review-id is required');
     print(await sendV2('supervisor.evidence', {
       reviewId,
+      file: args.includes('--file'),
       page: parseInt(getFlag(args, '--page') || '1', 10),
       pageLines: parseInt(getFlag(args, '--page-lines') || '200', 10),
     }));
@@ -1306,7 +1307,7 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode]
             (write Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor context
-             supervisor evidence --review-id <id> [--page N] [--page-lines N]
+             supervisor evidence --review-id <id> [--file] [--page N] [--page-lines N]
              supervisor draft --surface <id> --json-file <.wmux/tmp/file>
              supervisor finalize --surface <id> --json-file <.wmux/tmp/file>
              supervisor reply --surface <id> --message <text>

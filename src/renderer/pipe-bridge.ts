@@ -58,9 +58,16 @@ import {
   SUPERVISOR_NO_DECISION_OPTION,
   supervisorDecisionOptions,
 } from '../shared/supervisor-decision-options';
+import {
+  compactSupervisorEvidenceSummary,
+  SUPERVISOR_EVIDENCE_SUMMARY_MAX_CHARS,
+} from '../shared/supervisor-evidence';
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   cachedSupervisorEvidencePage,
+  cachedSupervisorEvidenceSnapshot,
+  persistSupervisorEvidence,
+  readPersistedSupervisorEvidenceFile,
   readPersistedSupervisorEvidencePage,
 } from './supervisor/evidence';
 import {
@@ -2958,6 +2965,7 @@ function decideRemoteSupervisor(
         : baselineStatus === 'approved'
           ? '[控制层项目基线状态] baseline.status=approved。继续前仍须核对当前合同、工作区版本和最新终端证据。'
           : '';
+    const originalSuggestion = approval.text.trim();
     const briefing = [
       clarification
         ? '[需求对齐答复] 用户已集中回答普通监督提出的实质歧义问题。'
@@ -2977,7 +2985,9 @@ function decideRemoteSupervisor(
       chosenPlan ? `[${decisionOwnerLabel}选择] ${chosenPlan}` : '',
       decisionInput ? `[${decisionOwnerLabel}补充信息] ${decisionInput}` : '',
       baselineGuidance,
-      approval.text.trim() ? `[AI 原建议] ${approval.text.trim()}` : '',
+      originalSuggestion && originalSuggestion !== chosenPlan
+        ? `[AI 原建议] ${originalSuggestion}`
+        : '',
       approval.reason?.trim() ? `[原判断依据] ${approval.reason.trim()}` : '',
       approval.impact?.trim() ? `[影响] ${approval.impact.trim()}` : '',
       approval.alternatives?.trim() ? `[AI 备选方案] ${approval.alternatives.trim()}` : '',
@@ -6084,15 +6094,37 @@ function projectSupervisorTransitionText(
   transition: ProjectSupervisorTransition,
   instruction = '',
 ): string {
+  const compactMarker = '\n…（内联已压缩，完整内容见项目状态）\n';
+  const summary = compactSupervisorEvidenceSummary(
+    transition.summary,
+    SUPERVISOR_EVIDENCE_SUMMARY_MAX_CHARS,
+    compactMarker,
+  );
+  const evidence = transition.evidence
+    ? compactSupervisorEvidenceSummary(
+        transition.evidence,
+        SUPERVISOR_EVIDENCE_SUMMARY_MAX_CHARS,
+        compactMarker,
+      )
+    : '';
+  const contextSummary = transition.contextSummary
+    ? compactSupervisorEvidenceSummary(transition.contextSummary, 800, compactMarker)
+    : '';
+  const compacted = summary !== transition.summary
+    || evidence !== (transition.evidence || '')
+    || contextSummary !== (transition.contextSummary || '');
   return [
     '[项目专属监督状态交接｜事件驱动｜必须处理并回执]',
     `项目：${session.id} · ${session.projectDir}`,
     `交接 ID：${transition.id}`,
     `任务：${transition.workItemId || '未绑定'}`,
     `监督状态：${transition.kind}`,
-    `摘要：${transition.summary}`,
-    transition.evidence ? `证据：${transition.evidence}` : '',
-    transition.contextSummary ? `上下文：${transition.contextSummary}` : '',
+    `摘要：${summary}`,
+    evidence ? `证据摘要：${evidence}` : '',
+    contextSummary ? `上下文摘要：${contextSummary}` : '',
+    compacted
+      ? `完整交接已保留：运行 wmux project status --project ${session.id}，读取 pendingSupervisorTransitions 中 ID=${transition.id} 的结构化记录。`
+      : '',
     '',
     instruction || '请依据结构化项目状态决定继续、验收、重规划、暂停或恢复；不要绕过专属监督直接指挥任务 AI。',
     `完成相应的 task-update、decide、supervise 或项目状态更新后，执行 wmux project transition-ack --project ${session.id} --transition ${transition.id} --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary "<处理结果和新方向>"。该回执是项目 AI 的内部状态同步，不需要用户确认。`,
@@ -10807,7 +10839,7 @@ export function initPipeBridge(): void {
       const session = projectSessionForParams(params);
       if (!session) return { ok: false, error: '当前没有项目管理会话' };
       const workItemId = String(params?.workItemId || '').trim();
-      const summary = String(params?.summary || params?.eventType || '').trim().slice(0, 1200);
+      const summary = String(params?.summary || params?.eventType || '').trim().slice(0, 4000);
       const eventType = String(params?.eventType || '');
       const stageHandoff = eventType === 'supervisor.waiting-for-direction'
         && params?.payload?.handoffKind === 'stage-complete';
@@ -11762,6 +11794,30 @@ export function initPipeBridge(): void {
     const page = Number(params?.page);
     const pageLines = Number(params?.pageLines);
     const isolationScope = supervisorLaneInputIsolationScope(lane);
+    const fileRequested = params?.file === true || params?.accessMode === 'file';
+    if (fileRequested) {
+      const cachedSnapshot = cachedSupervisorEvidenceSnapshot(
+        sessionId,
+        reviewId,
+        lane.surfaceId,
+        isolationScope,
+      );
+      if (cachedSnapshot) {
+        try {
+          await persistSupervisorEvidence(lane.projectDir, cachedSnapshot);
+        } catch {
+          // The immutable in-memory snapshot can still serve the page fallback below.
+        }
+      }
+      const fileReference = await readPersistedSupervisorEvidenceFile({
+        projectDir: lane.projectDir,
+        sessionId,
+        reviewId,
+        surfaceId: lane.surfaceId,
+        isolationScope,
+      });
+      if (fileReference) return fileReference;
+    }
     const cached = cachedSupervisorEvidencePage(
       sessionId,
       reviewId,
@@ -11770,7 +11826,9 @@ export function initPipeBridge(): void {
       page,
       pageLines,
     );
-    if (cached) return cached;
+    if (cached) return fileRequested
+      ? { ...cached, accessMode: 'page-fallback', fallbackReason: '只读证据文件不可用' }
+      : cached;
     const persisted = await readPersistedSupervisorEvidencePage({
       projectDir: lane.projectDir,
       sessionId,
@@ -11780,7 +11838,10 @@ export function initPipeBridge(): void {
       page,
       pageLines,
     });
-    return persisted || { ok: false, error: '未找到与当前监督 lane 匹配的冻结证据' };
+    if (persisted) return fileRequested
+      ? { ...persisted, accessMode: 'page-fallback', fallbackReason: '只读证据文件不可用' }
+      : persisted;
+    return { ok: false, error: '未找到与当前监督 lane 匹配的冻结证据' };
   };
 
   w.__wmux_supervisorGoalDraft = (params: any) => updateSupervisorGoalDraft(params);

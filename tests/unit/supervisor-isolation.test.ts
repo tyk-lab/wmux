@@ -65,8 +65,8 @@ describe('supervisor wake event envelope', () => {
 
     expect(text).toContain('[监督事件｜控制层｜surface=worker-a｜protocol=');
     expect(text).toContain('wmux read-screen --surface worker-a');
-    expect(text).toContain('wmux context 只刷新');
-    expect(text).toContain('无需重读协议、重新确认角色或复述身份');
+    expect(text).toContain('仅需刷新实时权限/预算');
+    expect(text).toContain('无需重读协议或复述身份');
     expect(text).not.toContain('专属监督，不是任务执行者');
   });
 
@@ -79,6 +79,20 @@ describe('supervisor wake event envelope', () => {
     expect(text).toContain('--lines 100');
     expect(text).toContain('当前普通监督通道');
     expect(text).not.toContain('项目 AI 给定的硬边界');
+  });
+
+  it('uses inline evidence for ordinary success and requires the file for risky events', () => {
+    const success = buildSupervisorWakeEventEnvelope('worker-a', 'review-ok', true, 'on-demand');
+    const risky = buildSupervisorWakeEventEnvelope('worker-a', 'review-risk');
+
+    expect(success).toContain('evidence=on-demand');
+    expect(success).toContain('先用事件内摘要裁决');
+    expect(success).toContain('摘要截断、证据不足、验收不一致、返工或风险异常');
+    expect(success).toContain('--file');
+    expect(success).toContain('accessMode=page-fallback');
+    expect(risky).toContain('evidence=required');
+    expect(risky).toContain('suggestedRanges');
+    expect(risky).toContain('证据仍矛盾或不足时才读完整文件');
   });
 
   it('retries the controlled task-terminal startup instead of reading a reserved surface', () => {
@@ -1365,8 +1379,13 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
     expect(briefing).toContain('每次裁决前先检查文件是否更新');
     expect(briefing).toContain('首次使用或发现更新时才重新读取正文');
-    expect(briefing).toContain('先用 wmux supervisor evidence --review-id <本轮ID> 分页读完冻结证据');
-    expect(briefing).toContain('再检查计划文件（D:\\plans\\auth.md）是否更新');
+    expect(briefing).toContain('收到带 reviewId 的任务事件时先看摘要');
+    expect(briefing).toContain('evidence=required');
+    expect(briefing).toContain('摘要截断、证据不足、验收不一致、返工/风险异常');
+    expect(briefing).toContain('--file');
+    expect(briefing).toContain('只有文件不可用时分页兜底');
+    expect(briefing).toContain('证据仍矛盾或不足时才读全文');
+    expect(briefing).toContain('随后检查计划文件（D:\\plans\\auth.md）是否更新');
     expect(briefing).toContain('综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');
