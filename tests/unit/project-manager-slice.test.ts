@@ -750,7 +750,13 @@ describe('project-manager slice', () => {
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '目标级验收全部通过',
-    })).toMatchObject({ ok: true });
+    })).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'project-goal-completed',
+        payload: { attentionRequired: true },
+      },
+    });
     expect(useStore.getState().projectManager).toMatchObject({
       status: 'waiting', goals: [expect.objectContaining({ status: 'achieved' })],
     });

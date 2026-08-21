@@ -14,6 +14,12 @@ describe('project manager attention events', () => {
     expect(projectManagerEventNeedsUserAttention({
       kind: 'guard-triggered', payload: { decision: 'replan' },
     })).toBe(false);
+    expect(projectManagerEventNeedsUserAttention({
+      kind: 'project-goal-completed', payload: { attentionRequired: true },
+    })).toBe(true);
+    expect(projectManagerEventNeedsUserAttention({
+      kind: 'project-stopped', payload: { attentionRequired: true },
+    })).toBe(true);
   });
 
   it('clears an active alert after a recovery event', () => {
@@ -42,6 +48,16 @@ describe('project manager attention events', () => {
         ts: 6,
         payload: { resolvedAttentionKinds: ['guard-triggered'] },
       },
+    ])).toBeUndefined();
+    const completedGoalAlert = {
+      kind: 'project-goal-completed' as const,
+      ts: 7,
+      payload: { attentionRequired: true },
+    };
+    expect(activeProjectManagerAttentionEvent([completedGoalAlert])).toBe(completedGoalAlert);
+    expect(activeProjectManagerAttentionEvent([
+      completedGoalAlert,
+      { kind: 'project-resumed' as const, ts: 8 },
     ])).toBeUndefined();
   });
 });

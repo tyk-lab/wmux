@@ -708,6 +708,10 @@ describe('supervisor decision bridge', () => {
       action: 'stop', callerSurfaceId: previous.managerSurfaceId, projectId: previous.id,
       reason: '旧项目已停止',
     })).resolves.toMatchObject({ ok: true });
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目已停止，请查看',
+      text: expect.stringContaining('旧项目已停止'),
+    }));
 
     await expect(remote({
       action: 'start', projectDir: 'e:/reused-project/.', goal: '新项目',
@@ -3119,6 +3123,27 @@ describe('supervisor decision bridge', () => {
       ],
       recommendedOptionId: 'done',
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('reasonCode') });
+
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'manual-check', patch: { status: 'running' },
+    }, session.id);
+    await expect(request({
+      action: 'user-question', callerSurfaceId: session.managerSurfaceId, projectId: session.id,
+      category: 'manual-intervention', question: '项目内部执行链是否需要人工恢复？',
+      context: '当前工作项仍标记运行中。', workItemId: 'manual-check',
+      blocker: '任务暂时没有输出', reasonCode: 'internal-project-failure',
+      options: [
+        { id: 'retry', label: '恢复执行', description: '重新启动当前工作项的执行链。' },
+        { id: 'pause', label: '保持暂停', description: '保留当前状态并暂不继续执行。' },
+      ],
+      recommendedOptionId: 'retry',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('仅用于控制层确认全部执行链停止'),
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'manual-check', patch: { status: 'waiting-decision' },
+    }, session.id);
 
     (globalThis.window as any).wmux.notification.fire.mockClear();
     await expect(request({
@@ -6183,6 +6208,184 @@ describe('supervisor decision bridge', () => {
     expect(shouldScheduleProjectSupervisorTransitionReminder(1)).toBe(true);
     expect(shouldScheduleProjectSupervisorTransitionReminder(2)).toBe(false);
     expect(shouldScheduleProjectSupervisorTransitionReminder(20)).toBe(false);
+  });
+
+  it('escalates a fully stopped paused project chain to structured user intervention', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-deadlock-intervention' });
+    const managerSurfaceId = 'project-manager-deadlock';
+    useStore.getState().restoreProjectManager({ ...project, managerSurfaceId: managerSurfaceId as any });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-deadlock' as any,
+      title: '项目死等测试',
+      cwd: project.projectDir,
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf' as const,
+        paneId: 'pane-deadlock' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [
+          {
+            id: managerSurfaceId as any,
+            type: 'terminal' as const,
+            shell: 'pwsh.exe',
+            projectManagerTerminal: true,
+            projectManagerProjectId: project.id,
+            projectManagerAgent: 'codex',
+          },
+          {
+            id: 'worker-a' as any,
+            type: 'terminal' as const,
+            shell: 'pwsh.exe',
+            projectManagerProjectId: project.id,
+            projectManagerWorkItemId: 'task-a',
+          },
+          {
+            id: 'supervisor-a' as any,
+            type: 'terminal' as const,
+            shell: 'pi',
+            transientSupervisor: true,
+            projectSupervisorProjectId: project.id,
+          },
+        ],
+      },
+    }]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const transition = await remote({
+      action: 'event', projectId: project.id, laneId: 'lane-a', workItemId: 'task-a',
+      eventType: 'supervisor.decision-error-loop',
+      summary: '监督裁决协议错误重复，执行链已经暂停',
+      payload: { blocker: '基线批准参数连续被协议门禁拒绝' },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'task-a',
+      patch: { status: 'paused', latestBlocker: '基线批准参数连续被协议门禁拒绝' },
+    }, project.id);
+    useStore.getState().pauseSupervisorLane('lane-a', '协议纠错暂停');
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'transition-ack', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      transitionId: transition.transitionId, resolution: 'paused',
+      summary: '当前监督和任务执行链均已暂停',
+    })).resolves.toMatchObject({
+      ok: true,
+      resolution: 'paused',
+      userInterventionRequired: true,
+      question: {
+        category: 'manual-intervention',
+        workItemId: 'task-a',
+        reasonCode: 'internal-project-failure',
+        recommendedOptionId: 'retry-latest-protocol',
+      },
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({
+        status: 'waiting',
+        pendingUserQuestion: {
+          category: 'manual-intervention',
+          reasonCode: 'internal-project-failure',
+        },
+        workItems: [expect.objectContaining({ id: 'task-a', status: 'waiting-decision' })],
+      });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions).toEqual([]);
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'guard-triggered',
+          payload: expect.objectContaining({ attentionRequired: true, reason: 'project-execution-deadlock' }),
+        }),
+      ]));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要你的处理',
+    }));
+  });
+
+  it('detects a restored active project whose only execution chain was already paused', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-restored-deadlock' });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'task-a',
+      patch: { status: 'paused', latestBlocker: '旧会话在协议纠错后没有留下恢复事件' },
+    }, project.id);
+    useStore.getState().pauseSupervisorLane('lane-a', '模拟旧版本遗留的暂停监督链');
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        category: 'manual-intervention',
+        reasonCode: 'internal-project-failure',
+      },
+    }));
+  });
+
+  it('escalates an unplanned active goal only after the project AI turn ends', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-unplanned-deadlock' });
+    const managerSurfaceId = 'project-manager-unplanned';
+    useStore.getState().restoreProjectManager({
+      ...project,
+      managerSurfaceId: managerSurfaceId as any,
+      workItems: [],
+    });
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-unplanned' as any,
+      title: '项目未规划死等测试',
+      cwd: project.projectDir,
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf' as const,
+        paneId: 'pane-unplanned' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [{
+          id: managerSurfaceId as any,
+          type: 'terminal' as const,
+          shell: 'pwsh.exe',
+          projectManagerTerminal: true,
+          projectManagerProjectId: project.id,
+          projectManagerAgent: 'codex',
+        }],
+      },
+    }]);
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: {
+        state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now(),
+      },
+    });
+
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: managerSurfaceId,
+      event: 'UserPromptSubmit',
+      task: '为当前主目标规划首个工作项',
+    });
+    await Promise.resolve();
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.status)
+      .toBe('active');
+
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: managerSurfaceId,
+      event: 'Stop',
+    });
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        category: 'manual-intervention',
+        reasonCode: 'internal-project-failure',
+      },
+    }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'guard-triggered',
+          payload: expect.objectContaining({ obligation: 'plan-work' }),
+        }),
+      ]));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要你的处理',
+    }));
   });
 
   it('does not send the first project task contract while the new task Agent state is unknown', () => {

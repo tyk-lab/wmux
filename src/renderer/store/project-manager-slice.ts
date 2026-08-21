@@ -979,11 +979,19 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = {
         kind: 'project-goal-completed',
         summary: `主目标 G${activeGoal.sequence} 已完成，项目等待下一目标`,
-        payload: { goalId: activeGoal.id, evidence: action.evidence.trim() },
+        payload: {
+          goalId: activeGoal.id,
+          evidence: action.evidence.trim(),
+          attentionRequired: true,
+        },
       };
     } else if (action.type === 'stop-project') {
       next = { ...session, status: 'stopped' };
-      eventInput = { kind: 'project-stopped', summary: action.reason || '项目已停止', payload: { emergency: action.emergency === true } };
+      eventInput = {
+        kind: 'project-stopped',
+        summary: action.reason || '项目已停止',
+        payload: { emergency: action.emergency === true, attentionRequired: true },
+      };
     } else {
       eventInput = { kind: 'manager-reply', summary: action.message, correlationId: action.correlationId };
     }

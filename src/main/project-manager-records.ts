@@ -221,7 +221,7 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.blocker === undefined || typeof question.blocker === 'string')
     && (question.reasonCode === undefined || [
       'physical-action', 'credentials', 'access-grant', 'business-choice',
-      'destructive-action', 'production-action',
+      'destructive-action', 'production-action', 'internal-project-failure',
     ].includes(String(question.reasonCode)))
     && typeof question.question === 'string'
     && typeof question.context === 'string'

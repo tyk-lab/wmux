@@ -134,6 +134,7 @@ export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
   'business-choice',
   'destructive-action',
   'production-action',
+  'internal-project-failure',
 ] as const;
 
 export type ProjectManagerManualInterventionReasonCode =
@@ -603,6 +604,7 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
     if (event.kind === 'project-resumed') {
       resolvedKinds.add('project-paused');
       resolvedKinds.add('guard-triggered');
+      resolvedKinds.add('project-goal-completed');
     } else if (event.kind === 'manager-runtime-restarted') {
       resolvedKinds.add('manager-runtime-failed');
       resolvedKinds.add('manager-delivery-failed');
