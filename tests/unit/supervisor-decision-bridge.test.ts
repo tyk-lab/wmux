@@ -28,8 +28,12 @@ import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decis
 import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
+  createProjectWorkerGroup,
+  resolveProjectParallelismDecision,
   type ProjectManagerSession,
   type ProjectProgressSnapshot,
+  type ProjectResourceLease,
+  type ProjectWorkerAssignment,
 } from '../../src/shared/project-manager';
 import {
   USER_RECORDS_TERMINAL_AGENT,
@@ -379,7 +383,6 @@ describe('supervisor decision bridge', () => {
             ensureSkill: vi.fn(async () => ({
               ok: true,
               runtimeDir: 'E:\\wmux-data\\project-manager\\runtime',
-              bypassCodexHookTrust: true,
             })),
             saveSession: vi.fn(async () => ({ ok: true })),
             captureProgress: vi.fn(async () => ({ ok: true, snapshot: progressSnapshot() })),
@@ -2458,7 +2461,7 @@ describe('supervisor decision bridge', () => {
       projectManagerProjectId: project.id,
       projectManagerAgent: 'codex',
       projectManagerModel: '',
-      startupCommands: [expect.stringMatching(/^codex --dangerously-bypass-hook-trust -- \(ConvertFrom-Json /)],
+      startupCommands: [expect.stringMatching(/^codex -- \(ConvertFrom-Json /)],
     });
     expect(surface?.startupInput).toBeUndefined();
     expect(controlWorkspace?.title).toContain(`${PROJECT_MANAGER_WORKSPACE_TITLE} ·`);
@@ -3734,7 +3737,7 @@ describe('supervisor decision bridge', () => {
       projectManagerAgent: 'codex',
       projectManagerModel: 'gpt-5.6-sol',
       projectManagerReasoningEffort: 'high',
-      startupCommands: [expect.stringMatching(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' --dangerously-bypass-hook-trust -- /)],
+      startupCommands: [expect.stringMatching(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /)],
     });
     expect(runtimes[0].id).not.toBe(before);
     expect(useStore.getState().projectManager?.managerSurfaceId).toBe(runtimes[0].id);
@@ -7048,6 +7051,85 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor).toMatchObject({ active: true, paused: false });
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({ controlState: 'stopped' });
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.controlState).toBe('active');
+  });
+
+  it('accepts one resource wait without polling and quarantines leases on worker failure', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-worker-lock', workItemId: 'worker_task' });
+    const assignments: ProjectWorkerAssignment[] = [
+      {
+        workerId: 'worker-main', role: 'integrator', outcome: '集成', dependencies: ['worker-tests'],
+        writeClaims: ['src'], resourceClaims: ['device-a'], validation: ['检查集成'],
+      },
+      {
+        workerId: 'worker-tests', role: 'worker', outcome: '验证', dependencies: [],
+        writeClaims: ['tests'], resourceClaims: ['device-a', 'device-b'], validation: ['运行测试'],
+      },
+    ];
+    const decision = resolveProjectParallelismDecision({
+      execution: {
+        taskWorkMode: 'single-thread', parallelismSelection: 'worker-group', modeReason: '隔离验证',
+        mainThreadResponsibility: '集成', childThreadResponsibilities: [],
+      },
+      stagePlan: { workerAssignments: assignments },
+      requirementsVersion: 1,
+    });
+    const workerGroup = createProjectWorkerGroup({ decision, assignments, now: 10 });
+    workerGroup.workers = workerGroup.workers.map((worker) => ({ ...worker, status: 'running' }));
+    const resourceLeases: ProjectResourceLease[] = [
+      {
+        leaseId: 'lease-main', resourceId: 'device-a', mode: 'exclusive-write',
+        ownerWorkerId: 'worker-main', operationId: 'main-op', status: 'in-use',
+        idempotent: false, grantedAt: 10, updatedAt: 10,
+      },
+      {
+        leaseId: 'lease-tests', resourceId: 'device-b', mode: 'exclusive-write',
+        ownerWorkerId: 'worker-tests', operationId: 'tests-op', status: 'in-use',
+        idempotent: false, grantedAt: 10, updatedAt: 10,
+      },
+    ];
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'worker_task',
+      patch: { parallelismDecision: decision, workerGroup, resourceLeases, finalApplyBlocked: true },
+    }, project.id);
+    useStore.getState().updateLane('lane-a', {
+      projectWorkerId: 'worker-tests', projectWorkerRole: 'worker',
+      projectWorkerExecutionEpoch: decision.executionEpoch,
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const acquire = {
+      action: 'worker-resource-acquire', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', resourceId: 'device-a',
+      mode: 'exclusive-write', operationId: 'wait-op',
+    };
+    const firstWait = await request(acquire);
+    expect(firstWait).toMatchObject({ ok: true, waiting: true });
+    const requestedAt = useStore.getState().projectManagers.find((entry) => entry.id === project.id)
+      ?.workItems[0].workerGroup?.workers.find((worker) => worker.workerId === 'worker-tests')?.resourceWait?.requestedAt;
+    await expect(request(acquire)).resolves.toMatchObject({ ok: true, waiting: true, reused: true });
+    expect(useStore.getState().projectManagers.find((entry) => entry.id === project.id)
+      ?.workItems[0].workerGroup?.workers.find((worker) => worker.workerId === 'worker-tests')?.resourceWait?.requestedAt)
+      .toBe(requestedAt);
+    await expect(request({
+      action: 'worker-status', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', status: 'superseded',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('不得自行切换') });
+    await expect(request({
+      action: 'worker-status', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', status: 'failed', checkpoint: '运行时退出',
+    })).resolves.toMatchObject({ ok: true, status: 'failed' });
+    const updated = useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0];
+    expect(updated?.resourceLeases?.find((lease) => lease.leaseId === 'lease-tests'))
+      .toMatchObject({ status: 'quarantined' });
+    expect(updated?.resourceLeases?.find((lease) => lease.leaseId === 'lease-main'))
+      .toMatchObject({ status: 'in-use' });
+    expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: 'supervisor-a' }))
+      .toMatchObject({
+        workerGroup: {
+          activeLeases: expect.arrayContaining([
+            expect.objectContaining({ leaseId: 'lease-tests', status: 'quarantined' }),
+          ]),
+        },
+      });
   });
 
   it('adds a new supervised terminal from Feishu without replacing the active session', async () => {

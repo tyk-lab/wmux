@@ -134,6 +134,8 @@ import {
   projectDirectoryIdentity,
   projectTaskBaselineApproved,
   projectResourceLeaseViolation,
+  projectResourceIdentity,
+  projectWorkerDependencyViolation,
   projectWorkerGroupCompletionViolation,
   projectWorkerGroupAggregateMinutes,
   projectWorkerAssignmentsViolation,
@@ -1375,7 +1377,6 @@ interface RemoteDirectTerminalTask {
   reasoningEffort?: string;
   preset?: 'project-manager' | 'user-records';
   replaceProjectManager?: boolean;
-  bypassCodexHookTrust?: boolean;
   cwd: string;
   displayPath?: string;
   anchorWorkspace?: string;
@@ -1829,9 +1830,7 @@ function createRemoteDirectTerminalTask(
     if (!controlWorkspace || !targetPaneId) return { ok: false, error: '无法创建项目调度控制层运行时。', message: '' };
     const placeholderSurfaceId = findLeaf(controlWorkspace.splitTree, targetPaneId)?.surfaces
       .find((surface) => surface.type === 'supervisor')?.id;
-    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort, {
-      bypassCodexHookTrust: agent === 'codex' && params.bypassCodexHookTrust === true,
-    });
+    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort);
     const surfaceId = store.addSurface(controlWorkspace.id, targetPaneId, 'terminal', {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       shell: 'pwsh.exe',
@@ -4269,7 +4268,9 @@ function restoredProjectManagerSession(session: ProjectManagerSession, managerSu
           ...item.workerGroup,
           workers: item.workerGroup.workers.map((worker) => ({
             ...worker,
-            status: 'recovering' as const,
+            status: ['completed', 'superseded'].includes(worker.status)
+              ? worker.status
+              : 'recovering' as const,
             surfaceId: undefined,
             laneId: undefined,
             accumulatedActiveMs: Math.max(0, worker.accumulatedActiveMs || 0)
@@ -5899,7 +5900,6 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
     reasoningEffort: selection.reasoningEffort,
     preset: 'project-manager',
     replaceProjectManager: replaceRuntime,
-    bypassCodexHookTrust: skill.bypassCodexHookTrust === true,
     cwd: runtimeDir,
     projectManagerProjectId: initialSession.id,
     actor: 'project-management-control-plane',
@@ -6955,6 +6955,9 @@ async function activateProjectWorkerGroupRuntime(
   }> = [];
   for (const assignment of plan.workerAssignments) {
     const worktreePath = worktreeByWorker.get(assignment.workerId)!;
+    const previousWorker = item.workerGroup?.executionEpoch === decision.executionEpoch
+      ? item.workerGroup.workers.find((worker) => worker.workerId === assignment.workerId)
+      : undefined;
     const created = createRemoteDirectTerminalTask({
       action: 'create-task',
       name: `${item.title || item.id} · ${assignment.workerId}`,
@@ -6968,9 +6971,13 @@ async function activateProjectWorkerGroupRuntime(
         `共享资源声明：${assignment.resourceClaims.join('、') || '无'}`,
         `验证：${assignment.validation.join('；') || '按阶段合同提供证据'}`,
         '你是独立任务 AI，不是监督 AI；本轮禁止内部多线程或再创建任务 AI。只在当前 worktree 和 writeClaims 内工作，不得修改其他 worker 的写域。共享硬件、设备、烧录器、串口、仿真器和共享测试环境必须先由控制层授予租约；没有租约时只等待，不得用反复探测抢占资源。',
-        assignment.role === 'integrator'
-          ? '你是主任务 AI（集成者）。先等待监督 AI 的基线批准指令；负责共享接口、候选合并、冲突裁决和最终验证，不替普通 worker 重复实现。'
-          : '阶段计划已经批准本分工；核对当前 worktree 后可开始执行。完成时向监督 AI 报告变更、验证和候选合并证据，不得直接改用户项目目录。',
+        previousWorker && ['completed', 'superseded'].includes(previousWorker.status)
+          ? `该任务 AI 在恢复前已是 ${previousWorker.status}；只读核对既有结果并保持等待，不得重做已经完成或已安全终止的工作。`
+          : assignment.dependencies.length > 0
+          ? `依赖任务 AI 尚未完成：${assignment.dependencies.join('、')}。先只读核对 worktree 并保持等待；只有监督 AI 将你的状态切换为 running 后才能开始主动执行。`
+          : assignment.role === 'integrator'
+            ? '你是主任务 AI（集成者）。先等待监督 AI 的基线批准指令；负责共享接口、候选合并、冲突裁决和最终验证，不替普通 worker 重复实现。'
+            : '阶段计划已经批准本分工；核对当前 worktree 后可开始执行。完成时向监督 AI 报告变更、验证和候选合并证据，不得直接改用户项目目录。',
       ].join('\n'),
       agent: taskDefaults.agent,
       model: taskDefaults.model,
@@ -7060,13 +7067,21 @@ async function activateProjectWorkerGroupRuntime(
     const recoveredWorker = item.workerGroup?.executionEpoch === decision.executionEpoch
       ? item.workerGroup.workers.find((candidate) => candidate.workerId === worker.workerId)
       : undefined;
+    const dependenciesReady = !projectWorkerDependencyViolation({
+      workerGroup: item.workerGroup?.executionEpoch === decision.executionEpoch ? item.workerGroup : runtime,
+      mergeCandidates: item.mergeCandidates,
+    }, worker);
+    const status: ProjectWorkerRuntime['status'] = recoveredWorker
+      && ['completed', 'superseded'].includes(recoveredWorker.status)
+      ? recoveredWorker.status
+      : dependenciesReady ? 'running' : 'planned';
     return {
       ...worker,
-      status: 'running',
+      status,
       assignmentVersion: recoveredWorker?.assignmentVersion || worker.assignmentVersion,
       directiveEpoch: recoveredWorker?.directiveEpoch || worker.directiveEpoch,
       checkpoint: recoveredWorker?.checkpoint,
-      startedAt: now,
+      startedAt: status === 'running' ? now : undefined,
       accumulatedActiveMs: recoveredWorker?.accumulatedActiveMs || worker.accumulatedActiveMs,
       surfaceId: workerLane?.surfaceId,
       laneId: workerLane?.id,
@@ -7141,18 +7156,21 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     'worker-recover',
     'worker-resource-acquire',
     'worker-resource-release',
+    'worker-resource-reconcile',
     'worker-directive-reconcile',
     'worker-merge-submit',
     'worker-merge-apply',
+    'worker-merge-reject',
     'worker-finalize',
   ]);
   const requestedWorkerId = String(params?.workerId || '').trim();
   const workerActionLane = workerRuntimeActions.has(action)
     ? store.supervisor.lanes.find((lane) => (
-        lane.supervisorSurfaceId === callerSurfaceId
+        !!requestedWorkerId
+        && lane.supervisorSurfaceId === callerSurfaceId
         && lane.projectManagerProjectId === String(params?.projectId || '').trim()
         && lane.projectWorkItemId === String(params?.workItemId || '').trim()
-        && (!requestedWorkerId || lane.projectWorkerId === requestedWorkerId)
+        && lane.projectWorkerId === requestedWorkerId
         && supervisorLaneControlState(lane) !== 'stopped'
       ))
     : undefined;
@@ -7199,6 +7217,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   session = projectSessionForParams(params);
   if (!session) return { ok: false, error: '当前没有项目管理会话' };
   if (workerRuntimeActions.has(action)) {
+    if (!requestedWorkerId) return { ok: false, error: '多任务 AI 运行时动作必须显式指定 --worker' };
     if (!workerActionLane) return { ok: false, error: '只有当前工作项绑定的项目监督 AI 可以管理多任务 AI 运行时' };
     const item = session.workItems.find((candidate) => candidate.id === String(params?.workItemId || '').trim());
     const group = item?.workerGroup;
@@ -7208,12 +7227,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (group.executionEpoch !== item.parallelismDecision.executionEpoch) {
       return { ok: false, error: '任务 AI 运行时轮次已过期，必须先恢复或重新基线' };
     }
-    const workerId = requestedWorkerId || group.integratorWorkerId;
+    const workerId = requestedWorkerId;
     const worker = group.workers.find((candidate) => candidate.workerId === workerId);
     if (!worker) return { ok: false, error: `当前执行轮次不存在任务 AI：${workerId}` };
-    if ((action === 'worker-merge-apply' || action === 'worker-finalize')
+    if ((action === 'worker-merge-apply' || action === 'worker-merge-reject' || action === 'worker-finalize')
       && workerId !== group.integratorWorkerId) {
-      return { ok: false, error: `${action === 'worker-finalize' ? '最终回填' : '候选合并'}只能由集成任务 AI ${group.integratorWorkerId} 执行` };
+      return { ok: false, error: `${action === 'worker-finalize' ? '最终回填' : '候选处置'}只能由集成任务 AI ${group.integratorWorkerId} 执行` };
     }
     if (action === 'worker-merge-submit' && workerId === group.integratorWorkerId) {
       return { ok: false, error: '集成任务 AI 的变更已直接位于集成 worktree，不得把自身差异再次作为候选回放' };
@@ -7227,17 +7246,128 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       store.appendProjectManagerEvent({ ...event, workItemId: item.id }, session!.id);
       saveProjectManagerSnapshot(session!.id);
     };
+    const queueWorkerControlNotice = (
+      target: ProjectWorkerRuntime,
+      text: string,
+      kind: SupervisorDelivery['kind'] = 'worker-status',
+    ): void => {
+      if (!target.laneId) return;
+      const targetLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === target.laneId);
+      if (!targetLane) return;
+      const delivery: SupervisorDelivery = {
+        id: `worker-control-${uuid()}`,
+        kind,
+        task: targetLane.currentTask || item.id,
+        text,
+        createdAt: Date.now(),
+        turnId: targetLane.workerTurnId,
+        stage: 'pending',
+      };
+      store.updateLane(targetLane.id, {
+        pendingSupervisorDeliveries: enqueueSupervisorDelivery(
+          targetLane.pendingSupervisorDeliveries,
+          delivery,
+        ),
+      });
+      // 先让调用方同步提交项目状态，再唤醒监督，避免通知先于租约或依赖状态可见。
+      queueMicrotask(signalSupervisorDeliveryReady);
+    };
+    const activateReadyDependents = (
+      sourceWorkers: ProjectWorkerRuntime[],
+      mergeCandidates: ProjectMergeCandidate[],
+      reason: string,
+    ): ProjectWorkerRuntime[] => {
+      let workers = sourceWorkers;
+      for (const candidate of sourceWorkers) {
+        if (candidate.status !== 'planned') continue;
+        const candidateGroup = { ...group, workers };
+        if (projectWorkerDependencyViolation({ workerGroup: candidateGroup, mergeCandidates }, candidate)) continue;
+        const now = Date.now();
+        workers = workers.map((entry) => entry.workerId === candidate.workerId
+          ? { ...entry, status: 'running' as const, startedAt: now, updatedAt: now }
+          : entry);
+        queueWorkerControlNotice(candidate, [
+          '[任务 AI 依赖已就绪｜单次事件通知]',
+          `任务 AI：${candidate.workerId}`,
+          `原因：${reason}`,
+          '上游当前版本候选已经处置并传播到本 worktree；可按既有分工继续。不要轮询依赖状态。',
+        ].join('\n'));
+      }
+      return workers;
+    };
+    const grantNextResourceWaiter = (
+      releasedLeases: ProjectResourceLease[],
+      resourceId: string,
+    ): { leases: ProjectResourceLease[]; workers: ProjectWorkerRuntime[]; awakened?: ProjectWorkerRuntime; lease?: ProjectResourceLease } => {
+      let workers = group.workers;
+      const waiting = [...workers]
+        .filter((candidate) => candidate.status === 'waiting-resource'
+          && candidate.resourceWait
+          && projectResourceIdentity(candidate.resourceWait.resourceId) === projectResourceIdentity(resourceId))
+        .sort((left, right) => (left.resourceWait?.requestedAt || 0) - (right.resourceWait?.requestedAt || 0));
+      for (const candidate of waiting) {
+        const wait = candidate.resourceWait!;
+        if (projectWorkerDependencyViolation({ workerGroup: { ...group, workers }, mergeCandidates: item.mergeCandidates }, candidate)) {
+          continue;
+        }
+        const violation = projectResourceLeaseViolation(releasedLeases, {
+          resourceId: wait.resourceId,
+          mode: wait.mode,
+          ownerWorkerId: candidate.workerId,
+        });
+        // 已满足依赖的队首请求形成公平屏障；后来的共享读不能越过独占写请求。
+        if (violation) return { leases: releasedLeases, workers };
+        const now = Date.now();
+        const lease: ProjectResourceLease = {
+          leaseId: `lease-${uuid()}`,
+          resourceId: wait.resourceId,
+          mode: wait.mode,
+          ownerWorkerId: candidate.workerId,
+          operationId: wait.operationId,
+          status: 'in-use',
+          idempotent: wait.idempotent,
+          grantedAt: now,
+          updatedAt: now,
+          evidence: '前一租约已正常释放；控制层按等待顺序单次授予',
+        };
+        workers = workers.map((entry) => entry.workerId === candidate.workerId
+          ? { ...entry, status: 'running' as const, resourceWait: undefined, startedAt: now, updatedAt: now }
+          : entry);
+        const awakened = workers.find((entry) => entry.workerId === candidate.workerId)!;
+        queueWorkerControlNotice(awakened, [
+          '[共享资源已授予｜单次事件通知]',
+          `资源：${lease.resourceId}；模式：${lease.mode}`,
+          `租约：${lease.leaseId}；操作：${lease.operationId}`,
+          '控制层已按等待顺序授予租约，可继续对应操作；无需再次轮询 acquire。',
+        ].join('\n'));
+        return { leases: [...releasedLeases, lease], workers, awakened, lease };
+      }
+      return { leases: releasedLeases, workers };
+    };
     if (action === 'worker-status') {
       const status = String(params?.status || '').trim() as ProjectWorkerRuntime['status'];
       const allowed = new Set<ProjectWorkerRuntime['status']>([
-        'running', 'waiting-resource', 'awaiting-review', 'completed', 'failed', 'exited', 'recovering', 'frozen', 'superseded',
+        'running', 'awaiting-review', 'completed', 'failed', 'exited',
       ]);
-      if (!allowed.has(status)) return { ok: false, error: '无效任务 AI 状态' };
+      if (!allowed.has(status)) {
+        return { ok: false, error: '该状态只能由资源队列、恢复流程或控制层分工变更设置，任务 AI 不得自行切换' };
+      }
+      if (['completed', 'superseded', 'frozen'].includes(worker.status) && status !== worker.status) {
+        return { ok: false, error: `任务 AI ${workerId} 当前为终态 ${worker.status}，只能通过用户直发或新执行轮次恢复` };
+      }
       if (status === 'running') {
-        const incomplete = worker.dependencies.find((dependency) => (
-          !['completed', 'superseded'].includes(group.workers.find((candidate) => candidate.workerId === dependency)?.status || '')
+        const dependencyError = projectWorkerDependencyViolation(item, worker);
+        if (dependencyError) return { ok: false, error: dependencyError };
+      }
+      if (status === 'completed') {
+        const activeLease = (item.resourceLeases || []).find((lease) => (
+          lease.ownerWorkerId === workerId && lease.status !== 'released'
         ));
-        if (incomplete) return { ok: false, error: `依赖任务 AI ${incomplete} 尚未完成` };
+        if (activeLease) return { ok: false, error: `任务 AI 仍持有资源 ${activeLease.resourceId} 的 ${activeLease.status} 租约` };
+        const pendingDirective = (item.userDirectives || []).find((directive) => (
+          directive.workerId === workerId && directive.reconciliationStatus === 'pending'
+        ));
+        if (pendingDirective) return { ok: false, error: `用户直发指令 ${pendingDirective.directiveId} 尚未协调` };
       }
       const now = Date.now();
       const workers = group.workers.map((candidate) => {
@@ -7255,10 +7385,36 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           updatedAt: now,
         };
       });
-      persistWorkerMutation({ workerGroup: { ...group, workers, updatedAt: now } }, {
+      const activatedWorkers = status === 'completed'
+        ? activateReadyDependents(workers, item.mergeCandidates || [], `${workerId} 已完成且当前候选已处置`)
+        : workers;
+      const runtimeFailed = status === 'failed' || status === 'exited';
+      const resourceLeases = runtimeFailed
+        ? (item.resourceLeases || []).map((lease) => (
+            lease.ownerWorkerId === workerId && lease.status !== 'released'
+              ? {
+                  ...lease,
+                  status: 'quarantined' as const,
+                  evidence: lease.evidence || '任务 AI 运行时异常结束；必须核对设备状态后显式解除隔离',
+                  updatedAt: now,
+                }
+              : lease
+          ))
+        : item.resourceLeases;
+      persistWorkerMutation({
+        workerGroup: { ...group, workers: activatedWorkers, updatedAt: now },
+        ...(runtimeFailed ? { resourceLeases, finalApplyBlocked: true } : {}),
+      }, {
         kind: 'worker-status',
-        summary: `任务 AI ${workerId} 状态更新为 ${status}`,
-        payload: { workerId, status, checkpoint: String(params?.checkpoint || '').trim().slice(0, 4000) },
+        summary: runtimeFailed
+          ? `任务 AI ${workerId} 状态更新为 ${status}；其未释放资源租约已隔离`
+          : `任务 AI ${workerId} 状态更新为 ${status}`,
+        payload: {
+          workerId,
+          status,
+          checkpoint: String(params?.checkpoint || '').trim().slice(0, 4000),
+          resourceLeasesQuarantined: runtimeFailed,
+        },
       });
       return { ok: true, workerId, status };
     }
@@ -7270,6 +7426,24 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       const currentRuntime = worker.surfaceId ? terminalRuntimeStatus(worker.surfaceId) : undefined;
       if (currentRuntime && !['failed', 'exited'].includes(currentRuntime.state)) {
         return { ok: false, error: '任务 AI 原终端仍然有效，拒绝创建重复恢复终端' };
+      }
+      const quarantineAt = Date.now();
+      const quarantinedLeases = (item.resourceLeases || []).map((lease) => (
+        lease.ownerWorkerId === workerId && lease.status !== 'released'
+          ? {
+              ...lease,
+              status: 'quarantined' as const,
+              evidence: lease.evidence || '任务 AI 运行时异常退出；恢复前必须核对设备状态并显式解除隔离',
+              updatedAt: quarantineAt,
+            }
+          : lease
+      ));
+      if (JSON.stringify(quarantinedLeases) !== JSON.stringify(item.resourceLeases || [])) {
+        persistWorkerMutation({ resourceLeases: quarantinedLeases, finalApplyBlocked: true }, {
+          kind: 'resource-lease-updated',
+          summary: `任务 AI ${workerId} 异常退出；其未释放资源租约已进入阻塞隔离`,
+          payload: { workerId, quarantined: true },
+        });
       }
       const executionWorkspaceId = projectExecutionWorkspaceId(workerActionLane);
       if (!executionWorkspaceId) return { ok: false, error: '项目执行会话已失效，不能恢复任务 AI' };
@@ -7285,6 +7459,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           `最近检查点：${worker.checkpoint || '无可靠检查点；先只读核对 worktree'}`,
           `directiveEpoch：${worker.directiveEpoch}；assignmentVersion：${worker.assignmentVersion}`,
           '原任务 AI 已退出。先核对当前 worktree、未提交 diff、已执行证据和资源租约；不要从头覆盖已有工作，不要重放可能有副作用的命令。共享资源必须重新申请租约；禁止内部多线程。',
+          worker.dependencies.length > 0
+            ? `依赖：${worker.dependencies.join('、')}。依赖未完成时只恢复上下文并等待监督 AI 切换为 running。`
+            : '',
         ].join('\n'),
         agent: taskDefaults.agent,
         model: taskDefaults.model,
@@ -7307,6 +7484,17 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         return { ok: false, error: `任务 AI 恢复终端未就绪：${ready.error || '未知错误'}` };
       }
       const now = Date.now();
+      const latestItem = useStore.getState().projectManagers
+        .find((candidate) => candidate.id === session!.id)?.workItems
+        .find((candidate) => candidate.id === item.id);
+      const latestGroup = latestItem?.workerGroup;
+      const latestWorker = latestGroup?.workers.find((candidate) => candidate.workerId === workerId);
+      if (!latestItem || !latestGroup || !latestWorker || latestGroup.executionEpoch !== group.executionEpoch) {
+        closeLiveSurfaceById(terminal.surfaceId);
+        return { ok: false, error: '任务 AI 恢复期间执行轮次或分工已经变化，已关闭新终端' };
+      }
+      const dependenciesReady = !projectWorkerDependencyViolation(latestItem, latestWorker);
+      const recoveredStatus: ProjectWorkerRuntime['status'] = dependenciesReady ? 'running' : 'planned';
       if (worker.surfaceId) closeLiveSurfaceById(worker.surfaceId as SurfaceId);
       store.updateLane(workerActionLane.id, {
         surfaceId: terminal.surfaceId,
@@ -7319,17 +7507,24 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         projectTaskContractPending: true,
         awaitingReview: true,
       });
-      const workers = group.workers.map((candidate) => candidate.workerId === workerId
-        ? { ...candidate, status: 'running' as const, surfaceId: terminal.surfaceId, laneId: workerActionLane.id, startedAt: now, updatedAt: now }
+      const workers = latestGroup.workers.map((candidate) => candidate.workerId === workerId
+        ? {
+            ...candidate,
+            status: recoveredStatus,
+            surfaceId: terminal.surfaceId,
+            laneId: workerActionLane.id,
+            startedAt: recoveredStatus === 'running' ? now : undefined,
+            updatedAt: now,
+          }
         : candidate);
       const integrator = workerId === group.integratorWorkerId;
       persistWorkerMutation({
-        workerGroup: { ...group, workers, updatedAt: now },
+        workerGroup: { ...latestGroup, workers, updatedAt: now },
         ...(integrator ? { workerSurfaceId: terminal.surfaceId } : {}),
       }, {
         kind: 'worker-status',
-        summary: `任务 AI ${workerId} 已在原 worktree 恢复，未重放旧命令`,
-        payload: { workerId, surfaceId: terminal.surfaceId, executionEpoch: group.executionEpoch },
+        summary: `任务 AI ${workerId} 已在原 worktree 恢复为 ${recoveredStatus}，未重放旧命令`,
+        payload: { workerId, surfaceId: terminal.surfaceId, executionEpoch: group.executionEpoch, status: recoveredStatus },
       });
       if (integrator) {
         const latest = useStore.getState().projectManagers.find((candidate) => candidate.id === session!.id);
@@ -7344,31 +7539,68 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       if (!resourceId || !operationId || !['shared-read', 'exclusive-write', 'snapshot-read', 'brokered-read'].includes(mode)) {
         return { ok: false, error: '资源租约必须指定 resource、operation 和有效 mode' };
       }
-      if (!worker.resourceClaims.includes(resourceId)) {
+      const declaredResource = worker.resourceClaims.find((claim) => (
+        projectResourceIdentity(claim) === projectResourceIdentity(resourceId)
+      ));
+      if (!declaredResource) {
         return { ok: false, error: `资源 ${resourceId} 不在任务 AI ${workerId} 的 resourceClaims 内` };
       }
+      const dependencyError = projectWorkerDependencyViolation(item, worker);
+      if (dependencyError) return { ok: false, error: dependencyError };
+      if (!['running', 'waiting-resource'].includes(worker.status)) {
+        return { ok: false, error: `任务 AI ${workerId} 当前为 ${worker.status}，不能申请共享资源` };
+      }
       const existing = (item.resourceLeases || []).find((lease) => (
-        lease.resourceId === resourceId && lease.ownerWorkerId === workerId
+        projectResourceIdentity(lease.resourceId) === projectResourceIdentity(declaredResource)
+        && lease.ownerWorkerId === workerId
         && lease.mode === mode && lease.operationId === operationId
-        && !['released', 'quarantined'].includes(lease.status)
+        && ['reserved', 'in-use'].includes(lease.status)
       ));
       if (existing) return { ok: true, lease: existing, reused: true };
-      const violation = projectResourceLeaseViolation(item.resourceLeases || [], { resourceId, mode, ownerWorkerId: workerId });
+      const existingWait = worker.resourceWait;
+      if (worker.status === 'waiting-resource' && existingWait
+        && projectResourceIdentity(existingWait.resourceId) === projectResourceIdentity(declaredResource)
+        && existingWait.mode === mode && existingWait.operationId === operationId) {
+        return { ok: true, waiting: true, reused: true, resourceWait: existingWait };
+      }
+      if (worker.status === 'waiting-resource' && existingWait) {
+        return {
+          ok: false,
+          error: `任务 AI 已在等待资源 ${existingWait.resourceId} 的操作 ${existingWait.operationId}；不能用新请求覆盖队列位置`,
+        };
+      }
+      const violation = projectResourceLeaseViolation(item.resourceLeases || [], {
+        resourceId: declaredResource,
+        mode,
+        ownerWorkerId: workerId,
+      });
       if (violation) {
+        const requestedAt = Date.now();
         const workers = group.workers.map((candidate) => candidate.workerId === workerId
-          ? { ...candidate, status: 'waiting-resource' as const, updatedAt: Date.now() }
+          ? {
+              ...candidate,
+              status: 'waiting-resource' as const,
+              resourceWait: {
+                resourceId: declaredResource,
+                mode,
+                operationId,
+                idempotent: params?.idempotent === true,
+                requestedAt,
+              },
+              updatedAt: requestedAt,
+            }
           : candidate);
-        persistWorkerMutation({ workerGroup: { ...group, workers, updatedAt: Date.now() } }, {
+        persistWorkerMutation({ workerGroup: { ...group, workers, updatedAt: requestedAt } }, {
           kind: 'resource-lease-updated',
           summary: `${workerId} 等待资源 ${resourceId}：${violation}`,
           payload: { workerId, resourceId, mode, waiting: true },
         });
-        return { ok: false, waiting: true, error: violation };
+        return { ok: true, waiting: true, message: violation };
       }
       const now = Date.now();
       const lease: ProjectResourceLease = {
         leaseId: `lease-${uuid()}`,
-        resourceId,
+        resourceId: declaredResource,
         mode,
         ownerWorkerId: workerId,
         operationId,
@@ -7377,7 +7609,13 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         grantedAt: now,
         updatedAt: now,
       };
-      persistWorkerMutation({ resourceLeases: [...(item.resourceLeases || []), lease] }, {
+      const workers = group.workers.map((candidate) => candidate.workerId === workerId
+        ? { ...candidate, status: 'running' as const, resourceWait: undefined, updatedAt: now }
+        : candidate);
+      persistWorkerMutation({
+        resourceLeases: [...(item.resourceLeases || []), lease],
+        workerGroup: { ...group, workers, updatedAt: now },
+      }, {
         kind: 'resource-lease-updated',
         summary: `已向 ${workerId} 授予资源 ${resourceId} 的 ${mode} 租约`,
         payload: { ...lease },
@@ -7389,15 +7627,63 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       const lease = (item.resourceLeases || []).find((candidate) => candidate.leaseId === leaseId);
       if (!lease || lease.ownerWorkerId !== workerId) return { ok: false, error: '资源租约不存在或不属于该任务 AI' };
       const now = Date.now();
+      if (lease.status === 'released') return { ok: true, leaseId, alreadyReleased: true };
+      if (lease.status === 'quarantined') {
+        return { ok: false, error: '隔离租约不能直接释放；必须使用 worker-resource-reconcile 并提供设备状态证据' };
+      }
       const leases = (item.resourceLeases || []).map((candidate) => candidate.leaseId === leaseId
         ? { ...candidate, status: 'released' as const, updatedAt: now, evidence: String(params?.evidence || '').trim().slice(0, 2000) || candidate.evidence }
         : candidate);
-      persistWorkerMutation({ resourceLeases: leases }, {
+      const wake = grantNextResourceWaiter(leases, lease.resourceId);
+      persistWorkerMutation({
+        resourceLeases: wake.leases,
+        workerGroup: { ...group, workers: wake.workers, updatedAt: now },
+      }, {
         kind: 'resource-lease-updated',
-        summary: `任务 AI ${workerId} 已释放资源 ${lease.resourceId}`,
-        payload: { leaseId, workerId, resourceId: lease.resourceId },
+        summary: wake.awakened
+          ? `任务 AI ${workerId} 已释放资源 ${lease.resourceId}；按等待顺序授予 ${wake.awakened.workerId}`
+          : `任务 AI ${workerId} 已释放资源 ${lease.resourceId}`,
+        payload: {
+          leaseId,
+          workerId,
+          resourceId: lease.resourceId,
+          awakenedWorkerId: wake.awakened?.workerId,
+          grantedLeaseId: wake.lease?.leaseId,
+        },
       });
       return { ok: true, leaseId };
+    }
+    if (action === 'worker-resource-reconcile') {
+      const leaseId = String(params?.leaseId || '').trim();
+      const evidence = String(params?.evidence || '').trim().slice(0, 2000);
+      const lease = (item.resourceLeases || []).find((candidate) => candidate.leaseId === leaseId);
+      if (!lease || lease.ownerWorkerId !== workerId || lease.status !== 'quarantined') {
+        return { ok: false, error: '隔离租约不存在、不属于该任务 AI，或已经完成协调' };
+      }
+      if (!evidence) return { ok: false, error: '解除隔离租约必须提供设备已停止、复位或接口已关闭的核验证据' };
+      const now = Date.now();
+      const leases = (item.resourceLeases || []).map((candidate) => candidate.leaseId === leaseId
+        ? { ...candidate, status: 'released' as const, updatedAt: now, evidence }
+        : candidate);
+      const wake = grantNextResourceWaiter(leases, lease.resourceId);
+      persistWorkerMutation({
+        resourceLeases: wake.leases,
+        workerGroup: { ...group, workers: wake.workers, updatedAt: now },
+      }, {
+        kind: 'resource-lease-updated',
+        summary: wake.awakened
+          ? `已依据设备状态证据解除资源 ${lease.resourceId} 隔离；按等待顺序授予 ${wake.awakened.workerId}`
+          : `已依据设备状态证据解除资源 ${lease.resourceId} 隔离`,
+        payload: {
+          leaseId,
+          workerId,
+          resourceId: lease.resourceId,
+          evidence,
+          awakenedWorkerId: wake.awakened?.workerId,
+          grantedLeaseId: wake.lease?.leaseId,
+        },
+      });
+      return { ok: true, leaseId, reconciled: true, awakenedWorkerId: wake.awakened?.workerId };
     }
     if (action === 'worker-directive-reconcile') {
       const directiveId = String(params?.directiveId || '').trim();
@@ -7420,6 +7706,11 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       return { ok: true, directiveId, classification };
     }
     if (action === 'worker-merge-submit') {
+      const dependencyError = projectWorkerDependencyViolation(item, worker);
+      if (dependencyError) return { ok: false, error: dependencyError };
+      if (!['running', 'awaiting-review', 'completed'].includes(worker.status)) {
+        return { ok: false, error: `任务 AI ${workerId} 当前为 ${worker.status}，不能提交合并候选` };
+      }
       if ((item.userDirectives || []).some((directive) => (
         directive.workerId === workerId && directive.reconciliationStatus === 'pending'
       ))) return { ok: false, error: '该任务 AI 仍有未协调的用户直发指令，禁止生成可能过期的合并候选' };
@@ -7429,6 +7720,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         executionEpoch: group.executionEpoch,
         workerId,
         assignmentVersion: worker.assignmentVersion,
+        directiveEpoch: worker.directiveEpoch,
         evidence: projectStringArray(params?.evidence),
       });
       if (!submitted?.ok) return { ok: false, error: String(submitted?.error || '生成合并候选失败') };
@@ -7442,6 +7734,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         candidateId: String(submitted.candidateId),
         workerId,
         assignmentVersion: worker.assignmentVersion,
+        directiveEpoch: worker.directiveEpoch,
         baselineCommit: String(submitted.baselineCommit),
         patchHash: String(submitted.patchHash),
         changedFiles: projectStringArray(submitted.changedFiles),
@@ -7465,8 +7758,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       const candidate = (item.mergeCandidates || []).find((entry) => entry.candidateId === candidateId);
       if (!candidate || candidate.status !== 'submitted') return { ok: false, error: '合并候选不存在或已处理' };
       const candidateWorker = group.workers.find((entry) => entry.workerId === candidate.workerId);
-      if (!candidateWorker || candidate.assignmentVersion !== candidateWorker.assignmentVersion) {
-        return { ok: false, error: '合并候选对应的任务分工版本已过期' };
+      if (!candidateWorker
+        || candidate.assignmentVersion !== candidateWorker.assignmentVersion
+        || (candidate.directiveEpoch ?? 0) !== candidateWorker.directiveEpoch) {
+        return { ok: false, error: '合并候选对应的任务分工或用户指令轮次已过期' };
       }
       if ((item.userDirectives || []).some((directive) => (
         directive.workerId === candidate.workerId && directive.reconciliationStatus === 'pending'
@@ -7491,15 +7786,58 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       });
       if (!applied?.ok) return { ok: false, error: String(applied?.error || '集成候选冲突') };
       const now = Date.now();
-      const candidates = (item.mergeCandidates || []).map((entry) => entry.candidateId === candidateId
+      const latestItem = useStore.getState().projectManagers
+        .find((entry) => entry.id === session!.id)?.workItems.find((entry) => entry.id === item.id);
+      const latestGroup = latestItem?.workerGroup;
+      if (!latestItem || !latestGroup || latestGroup.executionEpoch !== group.executionEpoch) {
+        return { ok: false, error: '候选已应用，但持久化执行轮次在回写前变化；已停止自动完成并等待复核' };
+      }
+      const candidates = (latestItem.mergeCandidates || []).map((entry) => entry.candidateId === candidateId
         ? { ...entry, status: 'applied' as const, updatedAt: now }
         : entry);
-      persistWorkerMutation({ mergeCandidates: candidates }, {
+      const workers = activateReadyDependents(
+        latestGroup.workers,
+        candidates,
+        `候选 ${candidateId} 已应用并传播`,
+      );
+      persistWorkerMutation({
+        mergeCandidates: candidates,
+        workerGroup: { ...latestGroup, workers, updatedAt: now },
+      }, {
         kind: 'merge-candidate-updated',
         summary: `集成者已应用候选 ${candidateId}`,
         payload: { candidateId, integrationWorktreePath: applied.integrationWorktreePath },
       });
       return { ok: true, candidateId };
+    }
+    if (action === 'worker-merge-reject') {
+      const candidateId = String(params?.candidateId || '').trim();
+      const reason = String(params?.reason || '').trim().slice(0, 2000);
+      const candidate = (item.mergeCandidates || []).find((entry) => entry.candidateId === candidateId);
+      if (!candidate || candidate.status !== 'submitted') {
+        return { ok: false, error: '合并候选不存在、已冻结或已经完成处置' };
+      }
+      if (!reason) return { ok: false, error: '拒绝合并候选必须提供核验理由' };
+      const candidateWorker = group.workers.find((entry) => entry.workerId === candidate.workerId);
+      if (!candidateWorker
+        || candidate.assignmentVersion !== candidateWorker.assignmentVersion
+        || (candidate.directiveEpoch ?? 0) !== candidateWorker.directiveEpoch) {
+        return { ok: false, error: '合并候选对应的任务分工或用户指令轮次已过期' };
+      }
+      const now = Date.now();
+      const candidates = (item.mergeCandidates || []).map((entry) => entry.candidateId === candidateId
+        ? { ...entry, status: 'rejected' as const, evidence: [...entry.evidence, reason].slice(-20), updatedAt: now }
+        : entry);
+      const workers = activateReadyDependents(group.workers, candidates, `候选 ${candidateId} 已明确拒绝：${reason}`);
+      persistWorkerMutation({
+        mergeCandidates: candidates,
+        workerGroup: { ...group, workers, updatedAt: now },
+      }, {
+        kind: 'merge-candidate-updated',
+        summary: `集成者已拒绝候选 ${candidateId}：${reason}`,
+        payload: { candidateId, workerId: candidate.workerId, reason },
+      });
+      return { ok: true, candidateId, rejected: true };
     }
     if (action === 'worker-finalize') {
       const completionError = projectWorkerGroupCompletionViolation({ ...item, finalApplyBlocked: false });
@@ -8235,6 +8573,68 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
               workerId: failedWorker.workerId,
             });
           }
+        }
+        if (supervisorUnavailable && currentTaskUnavailable && item.workerGroup) {
+          const now = Date.now();
+          const affectedLanes = projectLanes.filter((lane) => lane.projectWorkItemId === item.id);
+          const taskSurfaceIds = [...new Set(affectedLanes.map((lane) => lane.surfaceId).filter(Boolean))];
+          await Promise.all(taskSurfaceIds.map((surfaceId) => (
+            writeProjectSupervisorControl(surfaceId, '\x1b').catch(() => false)
+          )));
+          for (const surfaceId of taskSurfaceIds) closeLiveSurfaceById(surfaceId);
+          const supervisorSurfaceIds = [...new Set(affectedLanes
+            .map((lane) => lane.supervisorSurfaceId)
+            .filter((surfaceId): surfaceId is SurfaceId => !!surfaceId))];
+          for (const surfaceId of supervisorSurfaceIds) closeLiveSurfaceById(surfaceId);
+          for (const lane of affectedLanes) {
+            store.stopSupervisorLane(lane.id, '监督与主任务 AI 同时失效；已终止同组旧终端并保留 worktree，防止重复 agent 并发写入');
+          }
+          const workers = item.workerGroup.workers.map((worker) => ({
+            ...worker,
+            status: ['completed', 'superseded'].includes(worker.status)
+              ? worker.status
+              : 'recovering' as const,
+            accumulatedActiveMs: Math.max(0, worker.accumulatedActiveMs || 0)
+              + (worker.status === 'running' && worker.startedAt ? Math.max(0, now - worker.startedAt) : 0),
+            startedAt: undefined,
+            surfaceId: undefined,
+            laneId: undefined,
+            updatedAt: now,
+          }));
+          store.applyProjectManagerAction({
+            type: 'update-work-item',
+            workItemId: item.id,
+            patch: {
+              supervisorLaneId: undefined,
+              workerSurfaceId: undefined,
+              workerGroup: { ...item.workerGroup, workers, updatedAt: now },
+              resourceLeases: (item.resourceLeases || []).map((lease) => ({
+                ...lease,
+                status: ['released', 'quarantined'].includes(lease.status) ? lease.status : 'quarantined' as const,
+                evidence: lease.evidence || '监督与主任务 AI 同时失效；旧运行时资源租约已隔离，恢复后必须重新申请',
+                updatedAt: now,
+              })),
+              mergeCandidates: (item.mergeCandidates || []).map((candidate) => ({
+                ...candidate,
+                status: ['submitted', 'checking', 'accepted'].includes(candidate.status)
+                  ? 'frozen' as const
+                  : candidate.status,
+                updatedAt: now,
+              })),
+              finalApplyBlocked: true,
+              latestBlocker: '监督与主任务 AI 同时失效；已在一次性中断后关闭同组旧终端，将从原 worktree 恢复',
+            },
+          }, session.id);
+          const currentProject = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+          if (currentProject) {
+            store.restoreProjectManager({
+              ...currentProject,
+              taskTerminalSurfaceId: undefined,
+              updatedAt: now,
+            });
+          }
+          saveProjectManagerSnapshot(session.id);
+          return handleProjectManagerRequest(params);
         }
         if (supervisorUnavailable || currentTaskUnavailable) {
           const taskRuntime = existingLane.projectTaskStartupPending
@@ -10261,7 +10661,7 @@ export function initPipeBridge(): void {
           resourceClaims: worker.resourceClaims,
         })),
         pendingDirectives: (workItem.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending'),
-        activeLeases: (workItem.resourceLeases || []).filter((lease) => !['released', 'quarantined'].includes(lease.status)),
+        activeLeases: (workItem.resourceLeases || []).filter((lease) => lease.status !== 'released'),
         mergeCandidates: workItem.mergeCandidates || [],
       },
     } : context;
@@ -10749,7 +11149,9 @@ export function initPipeBridge(): void {
         if (projectWorkItem.workerGroup
           && projectWorkItem.parallelismDecision?.resolvedMode === 'worker-group'
           && projectWorkItem.parallelismDecision.requirementsVersion === (projectWorkItem.requirementsVersion ?? projectRequirementsVersion(projectSession!))
-          && projectWorkItem.workerGroup.workers.every((worker) => worker.status === 'recovering')
+          && projectWorkItem.workerGroup.workers.every((worker) => (
+            ['recovering', 'completed', 'superseded'].includes(worker.status)
+          ))
           && proposedParallelismDecision.resolvedMode === 'worker-group') {
           proposedParallelismDecision = projectWorkItem.parallelismDecision;
         }

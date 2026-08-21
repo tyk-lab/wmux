@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   createProjectWorkerGroup,
+  normalizeProjectWorkerAssignments,
   normalizeProjectParallelismSelection,
   projectResourceLeaseViolation,
   projectWorkerAssignmentsViolation,
+  projectWorkerDependencyViolation,
   projectWorkerGroupCompletionViolation,
   resolveProjectParallelismDecision,
   type ProjectResourceLease,
@@ -87,6 +89,19 @@ describe('project parallelism control plane', () => {
       { ...assignments[0], dependencies: ['worker-tests'] },
       { ...assignments[1], dependencies: ['worker-main'] },
     ])).toContain('循环');
+    expect(projectWorkerAssignmentsViolation([
+      { ...assignments[0], dependencies: [] },
+      { ...assignments[1], dependencies: ['worker-main'] },
+    ])).toContain('最终汇聚点');
+    const canonicalized = normalizeProjectWorkerAssignments([
+      assignments[0],
+      { ...assignments[1], writeClaims: ['./src/integration/generated/'] },
+    ]);
+    expect(projectWorkerAssignmentsViolation(canonicalized)).toContain('重叠');
+    expect(projectWorkerAssignmentsViolation([
+      assignments[0],
+      { ...assignments[1], writeClaims: ['../outside'] },
+    ])).toContain('规范相对路径');
   });
 
   it('creates one integrator and bounded isolated worker runtimes', () => {
@@ -137,6 +152,34 @@ describe('project parallelism control plane', () => {
     expect(projectResourceLeaseViolation([lease], {
       resourceId: 'device-a', mode: 'exclusive-write', ownerWorkerId: 'worker-tests',
     })).toContain('占用');
+    expect(projectResourceLeaseViolation([lease], {
+      resourceId: 'device-a', mode: 'snapshot-read', ownerWorkerId: 'worker-tests',
+    })).toContain('shared-read');
+    expect(projectResourceLeaseViolation([{ ...lease, resourceId: 'COM3', status: 'quarantined' }], {
+      resourceId: 'com3', mode: 'shared-read', ownerWorkerId: 'worker-tests',
+    })).toContain('隔离状态');
+  });
+
+  it('waits for the current dependency candidate disposition instead of worker status alone', () => {
+    const decision = resolveProjectParallelismDecision({
+      execution: {
+        taskWorkMode: 'single-thread', parallelismSelection: 'worker-group', modeReason: '固定',
+        mainThreadResponsibility: '集成', childThreadResponsibilities: [],
+      },
+      stagePlan: { workerAssignments: assignments },
+      requirementsVersion: 1,
+    });
+    const workerGroup = createProjectWorkerGroup({ decision, assignments });
+    workerGroup.workers = workerGroup.workers.map((worker) => ({ ...worker, status: 'completed' }));
+    const integrator = workerGroup.workers.find((worker) => worker.workerId === 'worker-main')!;
+    const item: Pick<ProjectWorkItem, 'workerGroup' | 'mergeCandidates'> = { workerGroup, mergeCandidates: [] };
+    expect(projectWorkerDependencyViolation(item, integrator)).toContain('候选尚未应用或明确拒绝');
+    item.mergeCandidates.push({
+      candidateId: 'candidate-tests', workerId: 'worker-tests', assignmentVersion: 1,
+      directiveEpoch: 0, baselineCommit: 'abc', patchHash: 'hash', changedFiles: [], evidence: [],
+      status: 'rejected', createdAt: 1, updatedAt: 1,
+    });
+    expect(projectWorkerDependencyViolation(item, integrator)).toBeNull();
   });
 
   it('blocks completion on pending direct input, leases, worker state, merge state, and final apply', () => {
@@ -162,7 +205,25 @@ describe('project parallelism control plane', () => {
     expect(projectWorkerGroupCompletionViolation(item)).toContain('用户直发指令');
     item.userDirectives![0].reconciliationStatus = 'reconciled';
     expect(projectWorkerGroupCompletionViolation(item)).toContain('尚未完成');
-    item.workerGroup!.workers = item.workerGroup!.workers.map((worker) => ({ ...worker, status: 'completed' }));
+    item.workerGroup!.workers = item.workerGroup!.workers.map((worker) => ({
+      ...worker,
+      status: 'completed',
+      directiveEpoch: worker.workerId === 'worker-tests' ? 1 : worker.directiveEpoch,
+    }));
+    expect(projectWorkerGroupCompletionViolation(item)).toContain('尚无已应用或明确拒绝');
+    item.mergeCandidates = [{
+      candidateId: 'candidate-tests',
+      workerId: 'worker-tests',
+      assignmentVersion: 1,
+      directiveEpoch: 1,
+      baselineCommit: 'abc123',
+      patchHash: 'hash',
+      changedFiles: ['tests/unit/example.test.ts'],
+      evidence: ['passed'],
+      status: 'applied',
+      createdAt: 1,
+      updatedAt: 1,
+    }];
     expect(projectWorkerGroupCompletionViolation(item)).toContain('最终应用');
     item.finalApplyBlocked = false;
     expect(projectWorkerGroupCompletionViolation(item)).toBeNull();

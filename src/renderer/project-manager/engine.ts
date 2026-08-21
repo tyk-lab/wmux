@@ -580,7 +580,7 @@ export function buildProjectSupervisorBriefing(options: {
       `主任务 AI 职责：${execution?.mainThreadResponsibility || contract.objective}`,
       '基线批准时阶段计划必须提供 2-3 个 workerAssignments，且只能有一个 integrator；控制层验证依赖、写域和资源后创建工人。',
       '监督 AI 只能申请控制层创建工人，不得自行创建子代理；所有任务 AI 都保持 single-thread。',
-      `运行时命令：worker-status/recover；worker-resource-acquire/release；worker-directive-reconcile；普通 worker 使用 worker-merge-submit，集成者使用 worker-merge-apply；全部收敛后由集成者 worker-finalize。每条命令必须显式指定 --project ${executionIdentity?.projectId || '<项目ID>'} --task ${workItemId} --worker <workerId>。`,
+      `运行时命令：worker-status/recover；worker-resource-acquire/release/reconcile；worker-directive-reconcile；普通 worker 使用 worker-merge-submit，集成者使用 worker-merge-apply/reject；全部收敛后由集成者 worker-finalize。隔离租约必须凭设备状态证据执行 reconcile；空候选必须明确 reject。每条命令必须显式指定 --project ${executionIdentity?.projectId || '<项目ID>'} --task ${workItemId} --worker <workerId>。`,
     ];
   } else if (parallelismSelection === 'auto') {
     executionLines = [
@@ -660,7 +660,7 @@ export function buildProjectSupervisorBriefing(options: {
     `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、累计任务 AI 时间 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
     '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
-    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一 integrator、无循环依赖和互斥 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。',
+    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一且作为依赖图最终汇聚点的 integrator、无循环依赖和规范化后仍互斥的 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。',
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,

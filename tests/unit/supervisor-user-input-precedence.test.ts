@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { handleSupervisorUserSubmit } from '../../src/renderer/supervisor/user-input-precedence';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
+import {
+  createProjectWorkerGroup,
+  DEFAULT_PROJECT_EXECUTION_BUDGET,
+  resolveProjectParallelismDecision,
+  type ProjectWorkerAssignment,
+} from '../../src/shared/project-manager';
 
 const workerLane = (): SupervisorLane => ({
   id: 'lane-user',
@@ -48,8 +54,10 @@ describe('supervisor user input precedence', () => {
   });
 
   afterEach(() => {
-    useStore.getState().setProjectSupervisorLanes([]);
-    useStore.getState().resetOrdinarySupervisorSession();
+    const store = useStore.getState();
+    store.setProjectSupervisorLanes([]);
+    store.resetOrdinarySupervisorSession();
+    for (const project of store.projectManagers) store.removeProjectManager(project.id);
     Reflect.deleteProperty(globalThis, 'window');
   });
 
@@ -123,6 +131,133 @@ describe('supervisor user input precedence', () => {
       action: '用户输入优先',
       detail: expect.stringContaining('并向专属监督同步'),
     });
+  });
+
+  it('reopens a completed worker and advances its directive epoch for direct user work', () => {
+    const store = useStore.getState();
+    const project = store.startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['完成'],
+    });
+    store.applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        id: 'task-user',
+        title: 'task-user',
+        status: 'running',
+        dependencies: [],
+        attempts: 0,
+        decisionsUsed: 0,
+        executionHistory: [],
+        updatedAt: 1,
+        contract: {
+          objective: '完成项目任务',
+          description: '',
+          preconditions: [],
+          scope: { root: 'E:\\repo', allowPaths: ['src', 'tests'], denyPaths: [], forbiddenActions: [] },
+          authority: { technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false },
+          stopWhen: ['完成'],
+          validation: ['检查结果'],
+          budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      },
+    }, project.id);
+    const assignments: ProjectWorkerAssignment[] = [
+      {
+        workerId: 'worker-main', role: 'integrator', outcome: '集成', dependencies: ['worker-tests'],
+        writeClaims: ['src'], resourceClaims: [], validation: ['检查'],
+      },
+      {
+        workerId: 'worker-tests', role: 'worker', outcome: '测试', dependencies: [],
+        writeClaims: ['tests'], resourceClaims: [], validation: ['测试'],
+      },
+    ];
+    const decision = resolveProjectParallelismDecision({
+      execution: {
+        taskWorkMode: 'single-thread', parallelismSelection: 'worker-group', modeReason: '测试',
+        mainThreadResponsibility: '集成', childThreadResponsibilities: [],
+      },
+      stagePlan: { workerAssignments: assignments },
+      requirementsVersion: 1,
+    });
+    const group = createProjectWorkerGroup({ decision, assignments, now: 10 });
+    group.workers = group.workers.map((worker) => ({
+      ...worker,
+      status: worker.workerId === 'worker-main' ? 'waiting-resource' : 'completed',
+      resourceWait: worker.workerId === 'worker-main'
+        ? {
+            resourceId: 'device-main', mode: 'exclusive-write' as const,
+            operationId: 'integrate-old', idempotent: false, requestedAt: 9,
+          }
+        : undefined,
+      startedAt: undefined,
+    }));
+    store.applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'task-user',
+      patch: { workerGroup: group, parallelismDecision: decision, finalApplyBlocked: false },
+    }, project.id);
+    store.setOrdinarySupervisorLanes([]);
+    store.setProjectSupervisorLanes([{
+      ...workerLane(),
+      projectManagerProjectId: project.id,
+      projectWorkItemId: 'task-user',
+      projectWorkerId: 'worker-tests',
+      projectWorkerRole: 'worker',
+      projectWorkerExecutionEpoch: decision.executionEpoch,
+    }]);
+    store.startProjectSupervisor(['lane-user']);
+
+    expect(handleSupervisorUserSubmit('worker-user', '补充新的测试')).toBe(true);
+
+    const updated = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.workItems[0];
+    const worker = updated?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-tests');
+    expect(worker).toMatchObject({ status: 'running', directiveEpoch: 1 });
+    expect(worker?.startedAt).toEqual(expect.any(Number));
+    expect(updated?.finalApplyBlocked).toBe(true);
+    expect(updated?.userDirectives?.[0]).toMatchObject({
+      workerId: 'worker-tests', directiveEpoch: 1, reconciliationStatus: 'pending',
+    });
+    expect(updated?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-main'))
+      .toMatchObject({ status: 'planned', resourceWait: undefined });
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
+      .toContain('下游旧资源等待：device-main/integrate-old');
+
+    store.applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'task-user',
+      patch: {
+        workerGroup: {
+          ...updated!.workerGroup!,
+          workers: updated!.workerGroup!.workers.map((candidate) => candidate.workerId === 'worker-tests'
+            ? {
+                ...candidate,
+                status: 'waiting-resource' as const,
+                resourceWait: {
+                  resourceId: 'device-a', mode: 'exclusive-write' as const,
+                  operationId: 'flash-old', idempotent: false, requestedAt: 20,
+                },
+              }
+            : candidate),
+        },
+      },
+    }, project.id);
+    expect(handleSupervisorUserSubmit('worker-user', '改做新的安全检查')).toBe(true);
+    const afterWaitCancelled = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(afterWaitCancelled?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-tests'))
+      .toMatchObject({ status: 'running', directiveEpoch: 2, resourceWait: undefined });
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
+      .toContain('旧资源等待 device-a/flash-old 已取消');
+
+    store.updateLane('lane-user', { projectWorkerId: 'worker-main', projectWorkerRole: 'integrator' });
+    expect(handleSupervisorUserSubmit('worker-user', '继续最终集成')).toBe(true);
+    const afterBlockedDirect = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(afterBlockedDirect?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-main'))
+      .toMatchObject({ status: 'planned', directiveEpoch: 1, startedAt: undefined });
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
+      .toContain('当前依赖门禁');
   });
 
   it('tells the supervisor to read the task terminal when local input text is not copied', () => {

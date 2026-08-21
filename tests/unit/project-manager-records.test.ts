@@ -330,6 +330,17 @@ describe('project manager records', () => {
         serializedOperations: ['硬件重上电', '最终验证'],
         } },
       });
+
+    saveProjectManagerSession({
+      ...saved,
+      updatedAt: 30,
+      workItems: saved.workItems.map((item) => ({ ...item, mutationRevision: 2, updatedAt: 30 })),
+    }, appData);
+    expect(() => saveProjectManagerSession({
+      ...saved,
+      updatedAt: 31,
+      workItems: saved.workItems.map((item) => ({ ...item, mutationRevision: 1, updatedAt: 31 })),
+    }, appData)).toThrow('拒绝保存过期工作项快照');
   });
 
   it('rejects a non-continuous contract without a real continuation boundary', () => {

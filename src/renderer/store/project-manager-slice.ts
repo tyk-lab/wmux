@@ -96,7 +96,14 @@ function updateWorkItem(
   if (!session.workItems.some((item) => item.id === workItemId)) return null;
   return {
     ...session,
-    workItems: session.workItems.map((item) => item.id === workItemId ? update(item) : item),
+    workItems: session.workItems.map((item) => {
+      if (item.id !== workItemId) return item;
+      const updated = update(item);
+      return {
+        ...updated,
+        mutationRevision: Math.max(0, Math.trunc(item.mutationRevision || 0)) + 1,
+      };
+    }),
   };
 }
 
@@ -634,6 +641,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const activeGoal = activeProjectGoal(session);
       const workItem = {
         ...action.workItem,
+        mutationRevision: Math.max(0, Math.trunc(action.workItem.mutationRevision || 0)),
         goalId: action.workItem.goalId || activeGoal.id,
         requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
         authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),

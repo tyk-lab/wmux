@@ -18,7 +18,6 @@ import { getLatestUpdate } from './update-checker';
 import { ensureOpencodeContext, ensureOpencodePlugin } from './opencode-context';
 import { ensureKimiHooks } from './kimi-context';
 import {
-  canSafelyBypassCodexHookTrust,
   ensureCodexHooks,
   ensureCodexProjectTrusted,
 } from './codex-context';
@@ -76,6 +75,7 @@ import {
   prepareProjectWorkerGroup,
   submitProjectMergeCandidate,
 } from './project-worker-worktrees';
+import { projectWorkerGroupCompletionViolation } from '../shared/project-manager';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -695,18 +695,18 @@ app.whenReady().then(() => {
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
     }, agent);
-    return agent === 'codex'
-      ? { ...result, bypassCodexHookTrust: result.ok && canSafelyBypassCodexHookTrust() }
-      : result;
+    return result;
   });
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
   ipcMain.handle('project-manager:prepare-worker-group', (_event, request) => {
     const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
     const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
-    if (!session || !item || path.resolve(session.projectDir) !== path.resolve(String(request?.projectDir || ''))) {
+    const assignments = item?.supervisorPlan?.workerAssignments;
+    if (!session || !item || !assignments?.length
+      || path.resolve(session.projectDir) !== path.resolve(String(request?.projectDir || ''))) {
       return { ok: false, error: '多任务 AI 请求不属于已登记的活动项目工作项' };
     }
-    return prepareProjectWorkerGroup({ ...request, projectDir: session.projectDir });
+    return prepareProjectWorkerGroup({ ...request, projectDir: session.projectDir, assignments });
   });
   ipcMain.handle('project-manager:submit-merge-candidate', (_event, request) => {
     const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
@@ -714,30 +714,79 @@ app.whenReady().then(() => {
     const worker = item?.workerGroup?.workers.find((candidate) => candidate.workerId === String(request?.workerId || ''));
     if (!session || !item?.workerGroup || !worker
       || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)
-      || worker.assignmentVersion !== Number(request?.assignmentVersion)) {
+      || worker.assignmentVersion !== Number(request?.assignmentVersion)
+      || worker.directiveEpoch !== Number(request?.directiveEpoch)) {
       return { ok: false, error: '合并候选请求不属于当前持久化的任务 AI 执行轮次' };
     }
-    return submitProjectMergeCandidate(request);
+    return submitProjectMergeCandidate({
+      ...request,
+      projectDir: session.projectDir,
+      authoritativeWorker: {
+        workerId: worker.workerId,
+        role: worker.role,
+        writeClaims: worker.writeClaims,
+      },
+    });
   });
   ipcMain.handle('project-manager:apply-merge-candidate', (_event, request) => {
     const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
     const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
     const candidate = item?.mergeCandidates?.find((entry) => entry.candidateId === String(request?.candidateId || ''));
-    if (!session || !item?.workerGroup || candidate?.status !== 'submitted'
+    const worker = item?.workerGroup?.workers.find((entry) => entry.workerId === candidate?.workerId);
+    if (!session || !item?.workerGroup || candidate?.status !== 'submitted' || !worker
+      || candidate.assignmentVersion !== worker.assignmentVersion
+      || (candidate.directiveEpoch ?? 0) !== worker.directiveEpoch
       || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)) {
       return { ok: false, error: '待应用候选不属于当前持久化的任务 AI 执行轮次' };
     }
-    return applyProjectMergeCandidate(request);
+    return applyProjectMergeCandidate({
+      ...request,
+      projectDir: session.projectDir,
+      workerId: candidate.workerId,
+      expectedPatchHash: candidate.patchHash,
+      expectedChangedFiles: candidate.changedFiles,
+      authoritativeWorkers: item.workerGroup.workers.map((entry) => ({
+        workerId: entry.workerId,
+        role: entry.role,
+        writeClaims: entry.writeClaims,
+      })),
+      verifyCurrentRevision: () => {
+        const latestSession = readActiveProjectManagerSessions()
+          .find((entry) => entry.id === session.id);
+        const latestItem = latestSession?.workItems.find((entry) => entry.id === item.id);
+        return Math.max(0, Math.trunc(latestItem?.mutationRevision || 0))
+          === Math.max(0, Math.trunc(item.mutationRevision || 0));
+      },
+    });
   });
   ipcMain.handle('project-manager:finalize-worker-group', (_event, request) => {
     const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
     const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    const completionError = item
+      ? projectWorkerGroupCompletionViolation({ ...item, finalApplyBlocked: false })
+      : '工作项不存在';
     if (!session || !item?.workerGroup
       || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)
-      || item.finalApplyBlocked !== true) {
+      || item.finalApplyBlocked !== true
+      || completionError) {
       return { ok: false, error: '最终应用请求不属于当前持久化的任务 AI 执行轮次' };
     }
-    return finalizeProjectWorkerGroup(request);
+    return finalizeProjectWorkerGroup({
+      ...request,
+      projectDir: session.projectDir,
+      authoritativeWorkers: item.workerGroup.workers.map((entry) => ({
+        workerId: entry.workerId,
+        role: entry.role,
+        writeClaims: entry.writeClaims,
+      })),
+      verifyCurrentRevision: () => {
+        const latestSession = readActiveProjectManagerSessions()
+          .find((entry) => entry.id === session.id);
+        const latestItem = latestSession?.workItems.find((entry) => entry.id === item.id);
+        return Math.max(0, Math.trunc(latestItem?.mutationRevision || 0))
+          === Math.max(0, Math.trunc(item.mutationRevision || 0));
+      },
+    });
   });
   ipcMain.handle('project-manager:capture-progress', (_event, request) => {
     const requestedDir = String(request?.projectDir || '').trim();

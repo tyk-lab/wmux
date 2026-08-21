@@ -274,6 +274,7 @@ export interface ProjectWorkerRuntime extends ProjectWorkerAssignment {
   worktreeId?: string;
   worktreePath?: string;
   checkpoint?: string;
+  resourceWait?: ProjectResourceWait;
   startedAt?: number;
   accumulatedActiveMs: number;
   updatedAt: number;
@@ -325,10 +326,20 @@ export interface ProjectResourceLease {
   evidence?: string;
 }
 
+export interface ProjectResourceWait {
+  resourceId: string;
+  mode: ProjectResourceMode;
+  operationId: string;
+  idempotent: boolean;
+  requestedAt: number;
+}
+
 export interface ProjectMergeCandidate {
   candidateId: string;
   workerId: string;
   assignmentVersion: number;
+  /** User-directive generation captured when this candidate was submitted. */
+  directiveEpoch?: number;
   baselineCommit: string;
   patchHash: string;
   changedFiles: string[];
@@ -532,6 +543,8 @@ export interface ProjectWorkItem {
   resourceLeases?: ProjectResourceLease[];
   mergeCandidates?: ProjectMergeCandidate[];
   finalApplyBlocked?: boolean;
+  /** Monotonic control-plane revision used to fence stale merge/finalize requests. */
+  mutationRevision?: number;
   attempts: number;
   decisionsUsed: number;
   startedAt?: number;
@@ -1016,12 +1029,20 @@ function normalizeProjectWorkerAssignment(value: ProjectWorkerAssignment): Proje
       ? items.slice(0, maximum).map((item) => String(item || '').trim()).filter(Boolean)
       : []
   );
+  const writeClaims = [...new Set(strings(value?.writeClaims).map((item) => {
+    const normalized = item
+      .replace(/\\/gu, '/')
+      .replace(/^(?:\.\/)+/u, '')
+      .replace(/\/{2,}/gu, '/')
+      .replace(/\/+$/u, '');
+    return normalized || '.';
+  }))];
   return {
     workerId: String(value?.workerId || '').trim().slice(0, 100),
     role: value?.role === 'integrator' || value?.role === 'hardware-executor' ? value.role : 'worker',
     outcome: String(value?.outcome || '').trim().slice(0, 4000),
     dependencies: strings(value?.dependencies, MAX_PROJECT_ACTIVE_WORKERS),
-    writeClaims: strings(value?.writeClaims),
+    writeClaims,
     resourceClaims: strings(value?.resourceClaims),
     validation: strings(value?.validation),
   };
@@ -1044,15 +1065,27 @@ export function projectWorkerAssignmentsViolation(assignments: readonly ProjectW
     return `多任务 AI 必须包含 2-${MAX_PROJECT_ACTIVE_WORKERS} 个执行 AI`;
   }
   const workerIds = new Set(assignments.map((item) => item.workerId));
+  if (workerIds.size !== assignments.length) return '多任务 AI 的 workerId 不能重复';
   const integrators = assignments.filter((item) => item.role === 'integrator');
   if (integrators.length !== 1) return '多任务 AI 必须且只能包含一个主任务 AI';
+  const integratorId = integrators[0].workerId;
   if (assignments.filter((item) => item.role === 'hardware-executor').length > 1) {
     return '多任务 AI 最多只能包含一个硬件执行 AI；共享硬件必须通过租约串行使用';
   }
   for (const assignment of assignments) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u.test(assignment.workerId)) {
+      return `无效 workerId：${assignment.workerId}`;
+    }
     if (assignment.dependencies.includes(assignment.workerId)) return `${assignment.workerId} 不能依赖自己`;
     const unknownDependency = assignment.dependencies.find((dependency) => !workerIds.has(dependency));
     if (unknownDependency) return `${assignment.workerId} 依赖了未知 worker：${unknownDependency}`;
+    const invalidClaim = assignment.writeClaims.find((claim) => (
+      !claim
+      || claim === '.'
+      || /^(?:[A-Za-z]:\/|\/)/u.test(claim)
+      || claim.split('/').includes('..')
+    ));
+    if (invalidClaim) return `${assignment.workerId} 的 writeClaims 只能是项目内规范相对路径：${invalidClaim}`;
   }
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -1069,6 +1102,12 @@ export function projectWorkerAssignmentsViolation(assignments: readonly ProjectW
     return true;
   };
   if (assignments.some((item) => !visit(item.workerId))) return '多任务 AI 的依赖关系不能形成循环';
+  const downstreamOfIntegrator = assignments.find((item) => (
+    item.role !== 'integrator' && item.dependencies.includes(integratorId)
+  ));
+  if (downstreamOfIntegrator) {
+    return `${downstreamOfIntegrator.workerId} 不能依赖集成者；集成者必须是 worker 依赖图的最终汇聚点`;
+  }
   const pathOwner = new Map<string, string>();
   for (const assignment of assignments) {
     for (const claim of assignment.writeClaims.map((item) => item.replace(/\\/gu, '/').toLowerCase())) {
@@ -1134,19 +1173,57 @@ export function projectResourceLeaseViolation(
   leases: readonly ProjectResourceLease[],
   request: Pick<ProjectResourceLease, 'resourceId' | 'mode' | 'ownerWorkerId'>,
 ): string | null {
+  const resourceIdentity = projectResourceIdentity(request.resourceId);
   const active = leases.filter((lease) => (
-    lease.resourceId === request.resourceId
-    && !['released', 'quarantined'].includes(lease.status)
+    projectResourceIdentity(lease.resourceId) === resourceIdentity
+    && lease.status !== 'released'
   ));
+  const quarantined = active.find((lease) => lease.status === 'quarantined');
+  if (quarantined) {
+    return `资源 ${request.resourceId} 因任务 AI ${quarantined.ownerWorkerId} 异常退出仍处于隔离状态，必须先核对设备并解除隔离`;
+  }
   if (request.mode === 'shared-read' && active.every((lease) => lease.mode === 'shared-read')) return null;
   if (request.mode === 'snapshot-read' || request.mode === 'brokered-read') {
-    return active.some((lease) => lease.mode === 'exclusive-write')
-      ? `资源 ${request.resourceId} 正由 ${active[0].ownerWorkerId} 独占写入`
+    const blocking = active.find((lease) => (
+      lease.mode === 'exclusive-write' || lease.mode === 'shared-read'
+    ));
+    return blocking
+      ? `资源 ${request.resourceId} 的 ${blocking.mode} 租约正由 ${blocking.ownerWorkerId} 持有`
       : null;
   }
   return active.length > 0
     ? `资源 ${request.resourceId} 已由 ${active.map((lease) => lease.ownerWorkerId).join('、')} 占用`
     : null;
+}
+
+export function projectResourceIdentity(resourceId: unknown): string {
+  return String(resourceId || '').normalize('NFKC').trim().toLocaleLowerCase('en-US');
+}
+
+export function projectWorkerDependencyViolation(
+  item: Pick<ProjectWorkItem, 'workerGroup' | 'mergeCandidates'>,
+  worker: Pick<ProjectWorkerRuntime, 'workerId' | 'dependencies'>,
+): string | null {
+  const group = item.workerGroup;
+  if (!group) return '多任务 AI 运行时不存在';
+  for (const dependencyId of worker.dependencies) {
+    const dependency = group.workers.find((candidate) => candidate.workerId === dependencyId);
+    if (!dependency || !['completed', 'superseded'].includes(dependency.status)) {
+      return `依赖任务 AI ${dependencyId} 尚未完成`;
+    }
+    if (dependency.status === 'completed'
+      && dependency.role !== 'integrator'
+      && dependency.writeClaims.length > 0
+      && !(item.mergeCandidates || []).some((candidate) => (
+        candidate.workerId === dependency.workerId
+        && candidate.assignmentVersion === dependency.assignmentVersion
+        && (candidate.directiveEpoch ?? 0) === dependency.directiveEpoch
+        && ['applied', 'rejected'].includes(candidate.status)
+      ))) {
+      return `依赖任务 AI ${dependencyId} 的当前候选尚未应用或明确拒绝`;
+    }
+  }
+  return null;
 }
 
 export function projectWorkerGroupAggregateMinutes(group: ProjectWorkerGroup, now = Date.now()): number {
@@ -1164,10 +1241,24 @@ export function projectWorkerGroupCompletionViolation(item: Pick<ProjectWorkItem
   if (!item.workerGroup) return null;
   const pendingDirective = (item.userDirectives || []).find((directive) => directive.reconciliationStatus === 'pending');
   if (pendingDirective) return `用户直发指令 ${pendingDirective.directiveId} 尚未完成范围与分工协调`;
-  const activeLease = (item.resourceLeases || []).find((lease) => !['released', 'quarantined'].includes(lease.status));
+  const activeLease = (item.resourceLeases || []).find((lease) => lease.status !== 'released');
   if (activeLease) return `共享资源 ${activeLease.resourceId} 的租约尚未释放`;
   const unfinishedWorker = item.workerGroup.workers.find((worker) => !['completed', 'superseded'].includes(worker.status));
   if (unfinishedWorker) return `任务 AI ${unfinishedWorker.workerId} 尚未完成或安全终止`;
+  const unaccountedWorker = item.workerGroup.workers.find((worker) => (
+    worker.role !== 'integrator'
+    && worker.status === 'completed'
+    && worker.writeClaims.length > 0
+    && !(item.mergeCandidates || []).some((candidate) => (
+      candidate.workerId === worker.workerId
+      && candidate.assignmentVersion === worker.assignmentVersion
+      && (candidate.directiveEpoch ?? 0) === worker.directiveEpoch
+      && ['applied', 'rejected'].includes(candidate.status)
+    ))
+  ));
+  if (unaccountedWorker) {
+    return `任务 AI ${unaccountedWorker.workerId} 有写入职责，但尚无已应用或明确拒绝的当前版本候选`;
+  }
   const unapplied = (item.mergeCandidates || []).find((candidate) => !['applied', 'rejected', 'superseded'].includes(candidate.status));
   if (unapplied) return `集成候选 ${unapplied.candidateId} 尚未完成处理`;
   if (item.finalApplyBlocked) return '多任务 AI 最终应用仍被用户直发、基线漂移或合并门禁阻止';
@@ -1370,6 +1461,15 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
                 worktreeId: worker.worktreeId,
                 worktreePath: worker.worktreePath,
                 checkpoint: worker.checkpoint,
+                resourceWait: worker.resourceWait && Number.isFinite(worker.resourceWait.requestedAt)
+                  ? {
+                      resourceId: String(worker.resourceWait.resourceId || '').slice(0, 200),
+                      mode: worker.resourceWait.mode,
+                      operationId: String(worker.resourceWait.operationId || '').slice(0, 200),
+                      idempotent: worker.resourceWait.idempotent === true,
+                      requestedAt: worker.resourceWait.requestedAt,
+                    }
+                  : undefined,
                 startedAt: Number.isFinite(worker.startedAt) ? worker.startedAt : undefined,
                 accumulatedActiveMs: Math.max(0, Number(worker.accumulatedActiveMs) || 0),
                 updatedAt: Number.isFinite(worker.updatedAt) ? worker.updatedAt : item.updatedAt,
@@ -1383,6 +1483,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         resourceLeases: Array.isArray(item.resourceLeases) ? item.resourceLeases.slice(-100) : [],
         mergeCandidates: Array.isArray(item.mergeCandidates) ? item.mergeCandidates.slice(-100) : [],
         finalApplyBlocked: item.finalApplyBlocked === true,
+        mutationRevision: Math.max(0, Math.trunc(item.mutationRevision || 0)),
         supervisorPlanRequired: item.supervisorPlanRequired
           ?? !['completed', 'stopped'].includes(item.status),
       };

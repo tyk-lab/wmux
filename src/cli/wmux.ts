@@ -469,6 +469,19 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
+  if (sub === 'worker-resource-reconcile') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const leaseId = getFlag(args, '--lease') || '';
+    const evidence = getFlag(args, '--evidence') || '';
+    if (!projectId || !workItemId || !workerId || !leaseId || !evidence) {
+      throw new Error('project worker-resource-reconcile requires --project, --task, --worker, --lease, and --evidence');
+    }
+    print(await sendV2('project.worker.resource.reconcile', {
+      projectId, workItemId, workerId, leaseId, evidence,
+    }));
+    return;
+  }
   if (sub === 'worker-directive-reconcile') {
     const workItemId = getFlag(args, '--task') || '';
     const workerId = getFlag(args, '--worker') || '';
@@ -501,6 +514,19 @@ async function cmdProject(args: string[]): Promise<void> {
       throw new Error('project worker-merge-apply requires --project, --task, --worker, and --candidate');
     }
     print(await sendV2('project.worker.merge.apply', { projectId, workItemId, workerId, candidateId }));
+    return;
+  }
+  if (sub === 'worker-merge-reject') {
+    const workItemId = getFlag(args, '--task') || '';
+    const workerId = getFlag(args, '--worker') || '';
+    const candidateId = getFlag(args, '--candidate') || '';
+    const reason = getFlag(args, '--reason') || '';
+    if (!projectId || !workItemId || !workerId || !candidateId || !reason) {
+      throw new Error('project worker-merge-reject requires --project, --task, --worker, --candidate, and --reason');
+    }
+    print(await sendV2('project.worker.merge.reject', {
+      projectId, workItemId, workerId, candidateId, reason,
+    }));
     return;
   }
   if (sub === 'worker-finalize') {
@@ -586,7 +612,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
 }
 
 function agentSpawn(args: string[]): Promise<any> {
@@ -1282,7 +1308,7 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>

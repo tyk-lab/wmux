@@ -234,6 +234,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-release' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.worker.resource.reconcile': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-reconcile' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.worker.directive.reconcile': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-directive-reconcile' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -244,6 +248,10 @@ const SPECS: Record<string, BridgeSpec> = {
   },
   'project.worker.merge.apply': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-apply' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.worker.merge.reject': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-reject' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.worker.finalize': {

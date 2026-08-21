@@ -71,6 +71,15 @@ function isWorkerRuntime(value: unknown): boolean {
     && (worker.worktreeId === undefined || typeof worker.worktreeId === 'string')
     && (worker.worktreePath === undefined || typeof worker.worktreePath === 'string')
     && (worker.checkpoint === undefined || typeof worker.checkpoint === 'string')
+    && (worker.resourceWait === undefined || (
+      !!worker.resourceWait && typeof worker.resourceWait === 'object'
+      && typeof (worker.resourceWait as Record<string, unknown>).resourceId === 'string'
+      && typeof (worker.resourceWait as Record<string, unknown>).operationId === 'string'
+      && ['shared-read', 'exclusive-write', 'snapshot-read', 'brokered-read']
+        .includes(String((worker.resourceWait as Record<string, unknown>).mode))
+      && typeof (worker.resourceWait as Record<string, unknown>).idempotent === 'boolean'
+      && Number.isFinite((worker.resourceWait as Record<string, unknown>).requestedAt)
+    ))
     && (worker.startedAt === undefined || Number.isFinite(worker.startedAt))
     && (worker.accumulatedActiveMs === undefined || (Number.isFinite(worker.accumulatedActiveMs) && Number(worker.accumulatedActiveMs) >= 0))
     && Number.isFinite(worker.updatedAt);
@@ -126,6 +135,8 @@ function isMergeCandidate(value: unknown): boolean {
   const candidate = value as Record<string, unknown>;
   return ['candidateId', 'workerId', 'baselineCommit', 'patchHash'].every((key) => typeof candidate[key] === 'string')
     && Number.isInteger(candidate.assignmentVersion) && Number(candidate.assignmentVersion) >= 1
+    && (candidate.directiveEpoch === undefined
+      || (Number.isInteger(candidate.directiveEpoch) && Number(candidate.directiveEpoch) >= 0))
     && isStringArray(candidate.changedFiles) && isStringArray(candidate.evidence)
     && ['submitted', 'checking', 'accepted', 'applied', 'rejected', 'superseded', 'frozen']
       .includes(String(candidate.status))
@@ -401,6 +412,9 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.resourceLeases === undefined || (Array.isArray(item.resourceLeases) && item.resourceLeases.every(isResourceLease)))
       && (item.mergeCandidates === undefined || (Array.isArray(item.mergeCandidates) && item.mergeCandidates.every(isMergeCandidate)))
       && (item.finalApplyBlocked === undefined || typeof item.finalApplyBlocked === 'boolean')
+      && (item.mutationRevision === undefined || (
+        Number.isInteger(item.mutationRevision) && item.mutationRevision >= 0
+      ))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)
@@ -525,6 +539,16 @@ export function saveProjectManagerSession(
   const normalized = normalizeProjectManagerSession(session);
   validateIdentity(normalized.id, normalized.projectDir);
   if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
+  const current = readProjectManagerSessions(appDataDir).find((candidate) => candidate.id === normalized.id);
+  if (current) {
+    const staleItem = normalized.workItems.find((item) => {
+      const persisted = current.workItems.find((candidate) => candidate.id === item.id);
+      return persisted
+        && Math.max(0, Math.trunc(item.mutationRevision || 0))
+          < Math.max(0, Math.trunc(persisted.mutationRevision || 0));
+    });
+    if (staleItem) throw new Error(`拒绝保存过期工作项快照：${staleItem.id}`);
+  }
   const duplicate = ['active', 'paused', 'waiting'].includes(normalized.status)
     ? readProjectManagerSessions(appDataDir).find((candidate) => (
         candidate.id !== normalized.id

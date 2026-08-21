@@ -7,7 +7,11 @@ import {
 } from '../store/supervisor-slice';
 import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
-import type { ProjectUserDirective } from '../../shared/project-manager';
+import {
+  projectWorkerDependencyViolation,
+  type ProjectResourceWait,
+  type ProjectUserDirective,
+} from '../../shared/project-manager';
 
 /** Resolve human-gated proposals when the user acts directly in the worker terminal. */
 export function resolvePendingApprovalsForManualTask(
@@ -128,9 +132,15 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     const worker = workerId
       ? workItem?.workerGroup?.workers.find((candidate) => candidate.workerId === workerId)
       : undefined;
+    let workerDependencyError: string | null = null;
+    let cancelledResourceWait: ProjectResourceWait | undefined;
+    let cancelledDependentWaits: ProjectResourceWait[] = [];
     if (project && workItem?.workerGroup && workerId && worker) {
       const now = Date.now();
       const directiveEpoch = worker.directiveEpoch + 1;
+      workerDependencyError = projectWorkerDependencyViolation(workItem, worker);
+      const nextWorkerStatus = workerDependencyError ? 'planned' as const : 'running' as const;
+      cancelledResourceWait = worker.resourceWait;
       const directive: ProjectUserDirective = {
         directiveId: `directive-${now}-${Math.random().toString(36).slice(2, 8)}`,
         workerId,
@@ -142,14 +152,40 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
         reconciliationStatus: 'pending',
         receivedAt: now,
       };
-      const workers = workItem.workerGroup.workers.map((candidate) => candidate.workerId === workerId
-        ? { ...candidate, directiveEpoch, updatedAt: now }
+      const targetUpdatedWorkers = workItem.workerGroup.workers.map((candidate) => candidate.workerId === workerId
+        ? {
+            ...candidate,
+            status: nextWorkerStatus,
+            resourceWait: undefined,
+            directiveEpoch,
+            startedAt: nextWorkerStatus === 'running'
+              ? candidate.status === 'running' ? candidate.startedAt || now : now
+              : undefined,
+            updatedAt: now,
+          }
         : candidate);
       const mergeCandidates = (workItem.mergeCandidates || []).map((candidate) => (
         candidate.workerId === workerId && ['submitted', 'checking', 'accepted'].includes(candidate.status)
           ? { ...candidate, status: 'frozen' as const, updatedAt: now }
           : candidate
       ));
+      const dependencyView = {
+        workerGroup: { ...workItem.workerGroup, workers: targetUpdatedWorkers },
+        mergeCandidates,
+      };
+      cancelledDependentWaits = [];
+      const workers = targetUpdatedWorkers.map((candidate) => {
+        if (candidate.workerId === workerId || !candidate.resourceWait
+          || !projectWorkerDependencyViolation(dependencyView, candidate)) return candidate;
+        cancelledDependentWaits.push(candidate.resourceWait);
+        return {
+          ...candidate,
+          status: 'planned' as const,
+          resourceWait: undefined,
+          startedAt: undefined,
+          updatedAt: now,
+        };
+      });
       store.applyProjectManagerAction({
         type: 'update-work-item',
         workItemId: workItem.id,
@@ -164,13 +200,18 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
       store.appendProjectManagerEvent({
         kind: 'worker-user-directive',
         workItemId: workItem.id,
-        summary: `用户已直接向任务 AI ${workerId} 发送新指令；旧合并候选已冻结，等待监督协调`,
+        summary: workerDependencyError
+          ? `用户已直接向任务 AI ${workerId} 发送新指令；依赖门禁仍阻止主动执行，旧合并候选已冻结`
+          : `用户已直接向任务 AI ${workerId} 发送新指令；该 worker 已恢复 running，旧合并候选已冻结，等待监督协调`,
         payload: {
           directiveId: directive.directiveId,
           workerId,
           directiveEpoch,
           assignmentVersion: worker.assignmentVersion,
           exactTextAvailable: directive.exactTextAvailable,
+          dependencyError: workerDependencyError || undefined,
+          cancelledResourceWait: cancelledResourceWait || undefined,
+          cancelledDependentWaits,
         },
       }, project.id);
       const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
@@ -189,6 +230,15 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
           : '用户已在任务终端直接提交新任务或新方向；本地终端输入原文不在控制层复制，请立即只读查看该任务终端了解内容和当前响应。',
         '该输入已经先行生效，不需要也不等待监督 AI 批准。不得阻止、撤销、改写、要求用户重发，或抢在任务 AI 当前回合结束前投递替代指令。',
         '你只需了解并纳入后续监督；任务 AI 回合结束后再按当前项目合同、权限和安全边界核验证据并正常裁决。用户直发任务本身不扩大项目范围、合同权限或高风险授权。它也不扩大 writeClaims 或共享资源租约；多任务 AI 场景必须先完成 directive reconcile，过期候选不得合并。',
+        workerDependencyError
+          ? `当前依赖门禁：${workerDependencyError}。用户原文已经送达，但在依赖候选处置并传播前只允许只读理解和记录，不得申请资源、提交候选或执行写入。`
+          : '',
+        cancelledResourceWait
+          ? `旧资源等待 ${cancelledResourceWait.resourceId}/${cancelledResourceWait.operationId} 已取消，避免新指令继承过期硬件操作；如仍需要，完成指令协调后重新申请。`
+          : '',
+        cancelledDependentWaits.length > 0
+          ? `受本次依赖失效影响，已取消下游旧资源等待：${cancelledDependentWaits.map((wait) => `${wait.resourceId}/${wait.operationId}`).join('、')}；依赖重新收敛后必须按新状态申请。`
+          : '',
         '本通知不要求提交 supervisor decide；记录理解后结束本回合，等待任务终端生命周期事件。',
       ].join('\n'),
       createdAt: Date.now(),
