@@ -1206,13 +1206,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   {!laneProjectManaged && lane.goalConstruction?.status === 'drafting' && (() => {
                     const construction = lane.goalConstruction;
                     const draft = construction.draft;
-                    const terminalContext = construction.origin === 'terminal-context';
                     return (
-                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的${terminalContext ? '终端上下文汇总' : '任务目标构建对话'}`}>
+                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的终端上下文汇总`}>
                         <header>
                           <div>
-                            <span>{terminalContext ? '监督 AI 正在汇总终端上下文' : '监督 AI 目标构建'}</span>
-                            <strong>{terminalContext ? '信息充分时自动开始；关键条件不足时在此询问' : '确认前只读，不会启动任务'}</strong>
+                            <span>监督 AI 正在汇总终端上下文</span>
+                            <strong>信息充分时自动开始；关键条件不足时在此询问</strong>
                           </div>
                           <em>同一个 Agent</em>
                         </header>
@@ -1241,8 +1240,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           rows={2}
                           value={goalConstructionInputs[lane.id] || ''}
                           onChange={(event) => setGoalConstructionInputs((current) => ({ ...current, [lane.id]: event.target.value }))}
-                          placeholder={terminalContext ? '仅在监督 AI 提问时补充目标、边界或验收信息' : '回答监督 AI 的问题，或继续补充目标、范围和验收要求'}
-                          aria-label={`回复 ${lane.label} 的目标构建 Agent`}
+                          placeholder="仅在监督 AI 提问时补充目标、边界或验收信息"
+                          aria-label={`回复 ${lane.label} 的终端上下文汇总问题`}
                         />
                         {goalConstructionNotices[lane.id] && <div className="sup-panel__goal-notice" role="status">{goalConstructionNotices[lane.id]}</div>}
                         <div className="sup-panel__approval-actions">
@@ -1251,7 +1250,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             type="button"
                             disabled={!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()}
                             onClick={() => confirmGoalConstruction(lane)}
-                          >{terminalContext ? '确认补全并开始' : '确认目标并开始'}</button>
+                          >确认补全并开始</button>
                         </div>
                       </section>
                     );

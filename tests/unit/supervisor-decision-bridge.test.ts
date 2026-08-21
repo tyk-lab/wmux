@@ -462,7 +462,7 @@ describe('supervisor decision bridge', () => {
     });
   });
 
-  it('keeps an ordinary supervisor read-only while conversationally building a goal, then reuses it after confirmation', async () => {
+  it('keeps terminal-context supervision read-only while the user fills a material gap', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-goal-builder' as any,
       title: '目标构建测试',
@@ -503,7 +503,7 @@ describe('supervisor decision bridge', () => {
 
     expect((globalThis.window as any).__wmux_supervisorDecide({
       surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a', outcome: 'continue', reason: '开始执行', next: '修改登录逻辑',
-    })).toMatchObject({ ok: false, error: expect.stringContaining('目标构建尚未由用户确认') });
+    })).toMatchObject({ ok: false, error: expect.stringContaining('终端上下文尚未汇总完成') });
 
     expect((globalThis.window as any).__wmux_supervisorGoalDraft({
       surfaceId: 'worker-a', callerSurfaceId: 'supervisor-a',
@@ -527,8 +527,8 @@ describe('supervisor decision bridge', () => {
     const remote = (globalThis.window as any).__wmux_supervisorRemoteControl;
     expect(remote({
       action: 'send-supervisor-message', terminal: 'worker-a', message: '保持旧接口兼容', actor: 'desktop',
-    })).toMatchObject({ ok: true, message: expect.stringContaining('目标构建答复') });
-    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[目标构建对话｜用户回复]'));
+    })).toMatchObject({ ok: true, message: expect.stringContaining('终端上下文补充') });
+    expect(writes).toHaveBeenCalledWith('supervisor-a', expect.stringContaining('[终端上下文补充｜用户回复]'));
 
     expect(remote({ action: 'confirm-goal-construction', terminal: 'worker-a', actor: 'desktop' }))
       .toMatchObject({ ok: true, message: expect.stringContaining('原地进入正式') });
@@ -545,7 +545,7 @@ describe('supervisor decision bridge', () => {
       expect([
         ...writes.mock.calls.map(([, text]) => String(text)),
         ...stagedInput.mock.calls.map(([, text]) => String(text)),
-      ].some((text) => text.includes('[目标构建完成｜用户已确认｜现在进入正式监督]'))).toBe(true);
+      ].some((text) => text.includes('[终端上下文补全完成｜用户已确认｜现在进入正式监督]'))).toBe(true);
     });
   });
 
@@ -575,7 +575,6 @@ describe('supervisor decision bridge', () => {
       awaitingReview: false,
       goalConstruction: {
         status: 'drafting',
-        origin: 'terminal-context',
         initialIdea: '从已有终端继续',
         draft: {
           taskGoal: '', taskDescription: '', preconditions: '', stopWhen: '', stopWhenKind: 'concrete',
@@ -601,7 +600,7 @@ describe('supervisor decision bridge', () => {
 
     const confirmed = useStore.getState().supervisor.lanes[0];
     expect(confirmed.goalConstruction).toMatchObject({
-      status: 'confirmed', origin: 'terminal-context', confirmedAt: expect.any(Number),
+      status: 'confirmed', confirmedAt: expect.any(Number),
     });
     expect(confirmed.config).toMatchObject({ taskGoal: '完成认证收尾', stopWhen: '集成测试通过' });
     const stagedInput = (globalThis.window as any).wmux.pty.stageInputFile as ReturnType<typeof vi.fn>;

@@ -1096,7 +1096,6 @@ export default function SupervisorSetupDialog() {
         ...(!keepsCurrentContext && creationMode === 'terminal' ? {
           goalConstruction: {
             status: 'drafting' as const,
-            origin: 'terminal-context' as const,
             initialIdea: config.taskGoal.trim() || `基于“${c.label}”终端已有对话和项目进度继续监督`,
             draft: {
               taskGoal: config.taskGoal.trim(),

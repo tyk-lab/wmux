@@ -151,7 +151,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('项目管理 AI 邀请你对齐需求');
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
-    expect(projectManagerDialogSource).toContain('`当前项目：${session.goal}。');
+    expect(projectManagerDialogSource).toContain('当前项目：{session.goal}。');
     expect(projectManagerDialogSource).toContain('项目 AI · 回复');
     expect(projectManagerDialogSource).toContain('你 · 询问');
     expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
@@ -179,7 +179,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('基于终端创建监督 AI');
     expect(dialogSource).toContain('buildSupervisorGoalConstructionBriefing');
     expect(dialogSource).toContain("creationMode === 'terminal'");
-    expect(dialogSource).toContain("origin: 'terminal-context'");
+    expect(dialogSource).not.toContain("origin: 'conversation'");
     expect(panelSource).toContain('监督 AI 正在汇总终端上下文');
     expect(panelSource).toContain('确认补全并开始');
     expect(panelSource).toContain("action: 'confirm-goal-construction'");
@@ -187,12 +187,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('基于终端创建项目 AI');
     expect(projectManagerDialogSource).toContain('sourceTerminalId: creationMode === \'terminal\'');
     expect(projectManagerDialogSource).toContain('该终端仅作为只读上下文来源');
-    expect(projectManagerDialogSource).toContain("action: 'confirm-goal-construction'");
+    expect(projectManagerDialogSource).not.toContain("action: 'confirm-goal-construction'");
     expect(pipeBridgeSource).toContain('terminalBootstrapContext');
     expect(pipeBridgeSource).toContain('[已有终端上下文｜只读证据，不继承权限]');
     expect(pipeBridgeSource).toContain('只有会实质改变目标、范围、权限边界或验收的缺口');
-    expect(pipeBridgeSource).toContain('目标构建期间只能更新项目定义、向用户提问或回复');
-    expect(pipeBridgeSource).toContain('目标构建尚未由用户确认');
+    expect(pipeBridgeSource).not.toContain('项目目标草案尚未由用户确认');
     expect(dialogSource).not.toContain('创建监督 AI 并对话');
     expect(projectManagerDialogSource).not.toContain('创建项目 AI 并对话');
   });
@@ -265,7 +264,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('补充给 AI 监督的信息（可选）');
     expect(panelSource).toContain('没有可选方案时，也可以只提交这段信息');
     expect(panelSource).toContain("(!selectedOption && !userGuidance.trim())");
-    expect(panelSource).toContain("isClarification\n                            ? '提交对齐答复'");
+    expect(panelSource).toMatch(/isClarification\s*\? '提交对齐答复'/);
     expect(panelSource).toContain("selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'");
   });
 

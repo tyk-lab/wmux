@@ -2386,7 +2386,7 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   try {
     sendTaskToSurface(
       supervisorSurfaceId,
-      buildingGoal ? `[目标构建对话｜用户回复]\n${message}` : `[用户调整监督方向]\n${message}`,
+      buildingGoal ? `[终端上下文补充｜用户回复]\n${message}` : `[用户调整监督方向]\n${message}`,
       true,
       'ordinary',
     );
@@ -2417,13 +2417,13 @@ function sendRemoteSupervisorMessage(params: RemoteSupervisorMessage): { ok: boo
   });
   useStore.getState().appendSupervisorLog(
     lane.id,
-    buildingGoal ? '目标构建对话' : '用户调整监督方向',
+    buildingGoal ? '终端上下文补充' : '用户调整监督方向',
     message,
   );
   return {
     ok: true,
     message: buildingGoal
-      ? `已向监督 AI“${lane.label}”发送目标构建答复。`
+      ? `已向监督 AI“${lane.label}”发送终端上下文补充。`
       : `已向 AI 监督终端（管家）“${lane.label}”发送监督方向信息。`,
   };
 }
@@ -2434,13 +2434,13 @@ function updateSupervisorGoalDraft(params: any): { ok: boolean; error?: string; 
   const supervisorSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
   const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
   if (!lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId)) {
-    return { ok: false, error: '当前终端不是该普通监督通道绑定的目标构建 Agent' };
+    return { ok: false, error: '当前终端不是该普通监督通道绑定的上下文汇总 Agent' };
   }
   if (isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
-    return { ok: false, error: '当前普通监督通道不处于目标构建状态' };
+    return { ok: false, error: '当前普通监督通道不处于终端上下文汇总状态' };
   }
   if (!store.supervisor.active || supervisorLaneControlState(lane) !== 'active') {
-    return { ok: false, error: '目标构建通道当前未运行，不能更新草案' };
+    return { ok: false, error: '终端上下文汇总通道当前未运行，不能更新草案' };
   }
   const input = params?.draft && typeof params.draft === 'object' ? params.draft : params;
   const textLines = (value: unknown): string => (
@@ -2475,13 +2475,13 @@ function appendSupervisorGoalReply(params: any): { ok: boolean; error?: string; 
   const supervisorSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
   const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
   if (!lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId)) {
-    return { ok: false, error: '当前终端不是该普通监督通道绑定的目标构建 Agent' };
+    return { ok: false, error: '当前终端不是该普通监督通道绑定的上下文汇总 Agent' };
   }
   if (isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
-    return { ok: false, error: '当前普通监督通道不处于目标构建状态' };
+    return { ok: false, error: '当前普通监督通道不处于终端上下文汇总状态' };
   }
   if (!store.supervisor.active || supervisorLaneControlState(lane) !== 'active') {
-    return { ok: false, error: '目标构建通道当前未运行，不能写入回复' };
+    return { ok: false, error: '终端上下文汇总通道当前未运行，不能写入回复' };
   }
   const message = String(params?.message || '').trim().slice(0, 5000);
   if (!message) return { ok: false, error: '目标构建回复不能为空' };
@@ -2507,18 +2507,17 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
     candidate.surfaceId === terminal || candidate.managementSessionId === terminal
   ));
   if (!lane || isProjectManagedSupervisorLane(lane) || lane.goalConstruction?.status !== 'drafting') {
-    return { ok: false, error: '当前没有可确认的普通监督目标草案' };
+    return { ok: false, error: '当前没有可确认的终端上下文汇总草案' };
   }
   const inferredFromTerminal = params?.inferredFromTerminal === true;
   if (inferredFromTerminal) {
     const callerSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
-    if (lane.goalConstruction.origin !== 'terminal-context'
-      || !isSupervisorDecisionAuthorised(lane, callerSurfaceId)) {
+    if (!isSupervisorDecisionAuthorised(lane, callerSurfaceId)) {
       return { ok: false, error: '只有该通道绑定的监督 AI 才能从终端上下文自动完成目标归纳' };
     }
   }
   if (supervisorLaneControlState(lane) !== 'active') {
-    return { ok: false, error: '目标构建通道当前未运行；请先恢复该监督 AI 再确认目标' };
+    return { ok: false, error: '终端上下文汇总通道当前未运行；请先恢复该监督 AI 再确认' };
   }
   const draft = lane.goalConstruction.draft;
   if (!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()) {
@@ -2556,7 +2555,7 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
       [
         inferredFromTerminal
           ? '[终端上下文汇总完成｜条件充分｜现在进入正式监督]'
-          : '[目标构建完成｜用户已确认｜现在进入正式监督]',
+          : '[终端上下文补全完成｜用户已确认｜现在进入正式监督]',
         buildSupervisorBriefing(current, {
           lane: confirmedLane,
           state: String(states[confirmedLane.surfaceId]?.state || 'unknown'),
@@ -2571,14 +2570,14 @@ function confirmSupervisorGoalConstruction(params: any): { ok: boolean; error?: 
   store.updateLane(lane.id, confirmedPatch);
   store.appendSupervisorLog(
     lane.id,
-    inferredFromTerminal ? '终端上下文已汇总' : '目标草案已确认',
+    inferredFromTerminal ? '终端上下文已汇总' : '终端上下文补充已确认',
     `${draft.taskGoal}；正式监督开始`,
   );
   return {
     ok: true,
     message: inferredFromTerminal
       ? '已有终端上下文信息充分，同一个监督 AI 已完成汇总并进入正式规划与监督流程。'
-      : '任务目标已确认，同一个监督 AI 已原地进入正式规划与监督流程。',
+      : '终端上下文补充已确认，同一个监督 AI 已原地进入正式规划与监督流程。',
   };
 }
 
@@ -2587,7 +2586,7 @@ function finalizeSupervisorGoalFromTerminal(params: any): { ok: boolean; error?:
   const surfaceId = String(params?.surfaceId || '').trim();
   const callerSurfaceId = String(params?.callerSurfaceId || params?.supervisorSurfaceId || '').trim();
   const lane = store.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
-  if (!lane || lane.goalConstruction?.origin !== 'terminal-context'
+  if (!lane || lane.goalConstruction?.status !== 'drafting'
     || !isSupervisorDecisionAuthorised(lane, callerSurfaceId)) {
     return { ok: false, error: '只有该通道绑定的监督 AI 才能从终端上下文自动完成目标归纳' };
   }
@@ -9639,7 +9638,7 @@ export function initPipeBridge(): void {
     const lane = session.lanes.find((item) => item.surfaceId === surfaceId);
     if (!session.active || !lane || !isSupervisorDecisionAuthorised(lane, supervisorSurfaceId) || !valid.has(outcome)) return null;
     if (lane.goalConstruction?.status === 'drafting') {
-      return { ok: false, error: '目标构建尚未由用户确认；只能更新目标草案并回复用户，不能提交监督裁决' };
+      return { ok: false, error: '终端上下文尚未汇总完成；只能更新汇总草案并回复用户，不能提交监督裁决' };
     }
     if (lane.pendingSupervisorDeliveries?.some((delivery) => delivery.kind === 'user-task')) {
       return {
