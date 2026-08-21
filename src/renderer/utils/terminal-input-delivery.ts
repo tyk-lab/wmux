@@ -31,7 +31,8 @@ interface StartupInputDeliveryOptions {
 }
 
 export type StartupTrustPromptAgent = 'codex' | 'kimi' | 'grok' | 'pi';
-export type StartupTrustPromptAction = 'confirm-selected' | 'select-previous' | 'type-yes';
+export type StartupTrustPromptAction = 'confirm-selected' | 'select-previous' | 'select-next' | 'type-yes';
+export type StartupTrustPromptKind = 'directory' | 'hooks' | 'folder' | 'repo-config';
 
 const ANSI_ESCAPE = new RegExp(
   String.raw`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`,
@@ -50,26 +51,46 @@ interface StartupTrustPromptOptions extends Pick<
   selectionDelayMs?: number;
 }
 
-export function isStartupTrustPromptReady(agent: StartupTrustPromptAgent, output: string): boolean {
+export function startupTrustPromptKind(
+  agent: StartupTrustPromptAgent,
+  output: string,
+): StartupTrustPromptKind | null {
   const normalizedOutput = normalizedTerminalOutput(output);
   if (agent === 'codex') {
-    return /Do you trust the contents of this directory\?[\s\S]{0,2000}Yes, continue/i.test(normalizedOutput)
+    const directoryIndex = Math.max(
+      normalizedOutput.lastIndexOf('Do you trust the contents of this directory?'),
+      normalizedOutput.lastIndexOf('Yes, continue'),
+    );
+    const hooksIndex = normalizedOutput.lastIndexOf('Hooks need review');
+    const directoryReady = /Do you trust the contents of this directory\?[\s\S]{0,2000}Yes, continue/i.test(normalizedOutput)
       || /Yes, continue[\s\S]{0,1000}No, quit/i.test(normalizedOutput);
+    const hooksReady = /Hooks need review[\s\S]{0,2000}1\.\s*Review hooks[\s\S]{0,1000}2\.\s*Trust all and continue[\s\S]{0,1000}3\.\s*Continue without trust(?:ing)?/i.test(normalizedOutput);
+    if (hooksReady && hooksIndex > directoryIndex) return 'hooks';
+    if (directoryReady) return 'directory';
+    if (hooksReady) return 'hooks';
+    return null;
   }
   if (agent === 'kimi') {
-    return /Trust this folder\?[\s\S]{0,2000}Trust this folder/i.test(normalizedOutput);
+    return /Trust this folder\?[\s\S]{0,2000}Trust this folder/i.test(normalizedOutput) ? 'folder' : null;
   }
   if (agent === 'grok') {
-    return /This folder contains repo-local config[\s\S]{0,2000}Trust the authors of this folder and allow these servers to start\?\s*\[y\/N\]/i.test(normalizedOutput);
+    return /This folder contains repo-local config[\s\S]{0,2000}Trust the authors of this folder and allow these servers to start\?\s*\[y\/N\]/i.test(normalizedOutput)
+      ? 'repo-config'
+      : null;
   }
   // Pi isolated supervisors receive --approve, so no interactive fallback is
   // accepted until a stable Pi trust prompt can be identified precisely.
-  return false;
+  return null;
+}
+
+export function isStartupTrustPromptReady(agent: StartupTrustPromptAgent, output: string): boolean {
+  return startupTrustPromptKind(agent, output) !== null;
 }
 
 export function startupTrustPromptAction(
   agent: StartupTrustPromptAgent,
   output: string,
+  kind = startupTrustPromptKind(agent, output),
 ): StartupTrustPromptAction | null {
   if (agent === 'grok') {
     return isStartupTrustPromptReady(agent, output) ? 'type-yes' : null;
@@ -78,6 +99,27 @@ export function startupTrustPromptAction(
 
   const normalizedOutput = normalizedTerminalOutput(output);
   const selectedMarker = '(?:[>❯›➜→]|[●◉])';
+  if (agent === 'codex' && kind === 'hooks') {
+    const hookOptions = [
+      {
+        action: 'select-next' as const,
+        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*1\\.\\s*Review hooks\\b`, 'giu'),
+      },
+      {
+        action: 'confirm-selected' as const,
+        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*2\\.\\s*Trust all and continue\\b`, 'giu'),
+      },
+      {
+        action: 'select-previous' as const,
+        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*3\\.\\s*Continue without trust(?:ing)?\\b`, 'giu'),
+      },
+    ];
+    const latest = hookOptions.map((option) => ({
+      action: option.action,
+      index: [...normalizedOutput.matchAll(option.pattern)].at(-1)?.index ?? -1,
+    })).sort((left, right) => right.index - left.index)[0];
+    if (latest.index >= 0) return latest.action;
+  }
   const selectedTrust = agent === 'codex'
     ? new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*(?:1\\.\\s*)?Yes, continue\\b`, 'giu')
     : new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*Trust this folder\\b`, 'giu');
@@ -112,11 +154,11 @@ export async function confirmStartupTrustPrompt(
   if (options.action === 'type-yes') {
     return writeWhenAvailable(writer, surfaceId, 'y\r', wait, retryDelayMs, maxAttempts);
   }
-  if (options.action === 'select-previous') {
+  if (options.action === 'select-previous' || options.action === 'select-next') {
     const selectedTrust = await writeWhenAvailable(
       writer,
       surfaceId,
-      '\x1b[A',
+      options.action === 'select-previous' ? '\x1b[A' : '\x1b[B',
       wait,
       retryDelayMs,
       maxAttempts,

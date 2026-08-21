@@ -22,6 +22,7 @@ import {
   isKimiInteractiveInputReady,
   isStartupTrustPromptReady,
   startupTrustPromptAction,
+  startupTrustPromptKind,
 } from '../utils/terminal-input-delivery';
 import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/terminal-user-submit';
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
@@ -932,8 +933,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       startupCommandsRef.current,
       startupInputRef.current,
     );
-    let startupTrustConfirmationScheduled = false;
-    let startupTrustConfirmed = false;
+    let startupTrustConfirmationScheduled: ReturnType<typeof startupTrustPromptKind> = null;
+    const confirmedStartupTrustPrompts = new Set<NonNullable<ReturnType<typeof startupTrustPromptKind>>>();
     let runtimeReadyTimer: ReturnType<typeof setTimeout> | undefined;
     let innerAgentExitHandled = false;
 
@@ -955,21 +956,22 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       if (
         innerAgentExitHandled
         || !automatedStartupAgent
-        || startupTrustConfirmed
         || startupTrustConfirmationScheduled
       ) return;
       const visibleOutput = `${startupInputOutput}\n${startupInputScreenText()}`;
       if (!isStartupTrustPromptReady(automatedStartupAgent, visibleOutput)) return;
+      const promptKind = startupTrustPromptKind(automatedStartupAgent, visibleOutput);
+      if (!promptKind || confirmedStartupTrustPrompts.has(promptKind)) return;
       if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
       runtimeReadyTimer = undefined;
-      const action = startupTrustPromptAction(automatedStartupAgent, visibleOutput);
+      const action = startupTrustPromptAction(automatedStartupAgent, visibleOutput, promptKind);
       if (!action) return;
-      startupTrustConfirmationScheduled = true;
+      startupTrustConfirmationScheduled = promptKind;
       void confirmStartupTrustPrompt(window.wmux.pty, id, {
         action,
       }).then((confirmed) => {
-        startupTrustConfirmationScheduled = false;
-        startupTrustConfirmed = confirmed;
+        startupTrustConfirmationScheduled = null;
+        if (confirmed) confirmedStartupTrustPrompts.add(promptKind);
       });
     };
 

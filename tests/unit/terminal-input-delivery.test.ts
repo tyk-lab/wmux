@@ -7,6 +7,7 @@ import {
   pasteSubmitDelayMs,
   prepareAutomatedTerminalInput,
   startupTrustPromptAction,
+  startupTrustPromptKind,
 } from '../../src/renderer/utils/terminal-input-delivery';
 
 describe('terminal startup input delivery', () => {
@@ -29,6 +30,10 @@ describe('terminal startup input delivery', () => {
   it('精确识别 Codex、Kimi 和 Grok 的目录信任页', () => {
     expect(isStartupTrustPromptReady('codex', 'Do you trust the contents of this directory? 1. Yes, continue')).toBe(true);
     expect(isStartupTrustPromptReady('codex', '1. Yes, continue\n2. No, quit')).toBe(true);
+    expect(isStartupTrustPromptReady(
+      'codex',
+      'Hooks need review\n5 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won\'t run)',
+    )).toBe(true);
     expect(isStartupTrustPromptReady('kimi', "Trust this folder? Trust this folder Don't trust")).toBe(true);
     expect(isStartupTrustPromptReady(
       'grok',
@@ -45,11 +50,38 @@ describe('terminal startup input delivery', () => {
     expect(startupTrustPromptAction('codex', '  1. Yes, continue\n› 2. No, quit')).toBe('select-previous');
     expect(startupTrustPromptAction('codex', '› 1. Yes, continue\n  2. No, quit')).toBe('confirm-selected');
     expect(startupTrustPromptAction(
+      'codex',
+      'Hooks need review\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won\'t run)',
+    )).toBe('select-next');
+    expect(startupTrustPromptAction(
+      'codex',
+      'Hooks need review\n  1. Review hooks\n› 2. Trust all and continue\n  3. Continue without trusting (hooks won\'t run)',
+    )).toBe('confirm-selected');
+    expect(startupTrustPromptAction(
+      'codex',
+      'Hooks need review\n  1. Review hooks\n  2. Trust all and continue\n› 3. Continue without trusting (hooks won\'t run)',
+    )).toBe('select-previous');
+    expect(startupTrustPromptAction(
       'kimi',
       "❯ Don't trust\n\n\x1b[2J❯ Trust this folder\n  Don't trust",
     )).toBe('confirm-selected');
     expect(startupTrustPromptAction('kimi', 'Trust this folder?')).toBeNull();
     expect(startupTrustPromptAction('pi', 'Trust this folder?')).toBeNull();
+  });
+
+  it('同一 Codex 启动中优先处理后出现的 Hook 审核页', () => {
+    const sequentialPrompts = [
+      'Do you trust the contents of this directory?',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+      'Hooks need review',
+      '› 1. Review hooks',
+      '  2. Trust all and continue',
+      '  3. Continue without trusting (hooks won\'t run)',
+    ].join('\n');
+
+    expect(startupTrustPromptKind('codex', sequentialPrompts)).toBe('hooks');
+    expect(startupTrustPromptAction('codex', sequentialPrompts)).toBe('select-next');
   });
 
   it('信任页就绪后只发送一次 Enter，并在 PTY 忙时重试', async () => {
@@ -91,6 +123,22 @@ describe('terminal startup input delivery', () => {
       wait: async () => undefined,
     })).resolves.toBe(true);
     expect(writeChecked.mock.calls).toEqual([['surf-kimi-selected', '\r']]);
+  });
+
+  it('Codex Hook 审核页从 Review hooks 下移到 Trust all 后确认', async () => {
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-codex-hooks', {
+      action: 'select-next',
+      readyDelayMs: 0,
+      selectionDelayMs: 0,
+      wait: async () => undefined,
+    })).resolves.toBe(true);
+
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-codex-hooks', '\x1b[B'],
+      ['surf-codex-hooks', '\r'],
+    ]);
   });
 
   it('Grok 精确信任提示只写入一次 y 和 Enter', async () => {
