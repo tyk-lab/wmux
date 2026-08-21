@@ -26,6 +26,14 @@ export function detectSupervisorLauncher(command: string): SupervisorLauncherKin
   return 'other';
 }
 
+/** Return a canonical executable name without retaining possibly sensitive arguments. */
+export function supportedAgentLauncherExecutable(command: string): string | null {
+  const normalized = command.trim();
+  const launcher = detectSupervisorLauncher(normalized);
+  if (launcher !== 'other') return launcher;
+  return matchesLauncherCommand(normalized, 'opencode') ? 'opencode' : null;
+}
+
 export function supervisorLauncherDisplayName(launcher: SupervisorLauncherKind): string {
   if (launcher === 'codex') return 'Codex';
   if (launcher === 'kimi') return 'Kimi Code';

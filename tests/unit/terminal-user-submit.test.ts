@@ -37,6 +37,21 @@ describe('terminal user submit detection', () => {
     });
   });
 
+  it('never exposes arbitrary terminal text such as credentials', () => {
+    resetTerminalUserInputTracking();
+    expect(prepareForUserTerminalInput('worker-a', 'sk-secret-value').shouldSubmit).toBe(false);
+    expect(prepareForUserTerminalInput('worker-a', '\r')).toEqual({
+      shouldSubmit: true,
+      clearAutomatedDraft: false,
+    });
+    expect(prepareForUserTerminalInput('worker-a', 'kimi --api-key sk-secret-value').shouldSubmit).toBe(false);
+    expect(prepareForUserTerminalInput('worker-a', '\r')).toEqual({
+      shouldSubmit: true,
+      clearAutomatedDraft: false,
+      submittedText: 'kimi',
+    });
+  });
+
   it('keeps Shift+Enter as draft content and lets Ctrl+C clear it', () => {
     resetTerminalUserInputTracking();
     expect(trackTerminalUserInput('worker-a', '\x1b\r')).toBe(false);

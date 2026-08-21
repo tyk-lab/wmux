@@ -33,6 +33,7 @@ import {
 } from './terminal-runtime-lifecycle';
 import {
   handleSupervisorUserSubmit,
+  hasPendingTaskUserSubmit,
   resumeWaitingLaneFromSupervisorInput,
 } from './supervisor/user-input-precedence';
 import {
@@ -215,6 +216,7 @@ import {
   type ManagedAgentWatchdogRuntime,
   type ManagedProjectAgentRole,
 } from './project-manager/liveness';
+import { compactProjectManagerPendingDeliveries } from './project-manager/delivery-mailbox';
 import {
   enqueueSupervisorDelivery,
   signalSupervisorDeliveryReady,
@@ -2254,7 +2256,6 @@ function startRemoteSupervisor(
 }
 
 function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskResult {
-  const store = useStore.getState();
   const projectMode = params.mode === 'project';
   if (params.mode !== undefined && !projectMode) {
     return { ok: false, error: '终端发送模式无效。', message: '' };
@@ -2297,29 +2298,6 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
     item.surfaceId === terminal.surfaceId
     || (projectMode && dedicatedSupervisorSurfaceId(item) === terminal.surfaceId)
   ));
-  let manuallyResolved = false;
-  if (lane?.surfaceId === terminal.surfaceId) {
-    const resolved = store.resolvePendingWithManualTask(lane.id, task);
-    manuallyResolved = resolved.length > 0;
-    for (const approval of resolved) {
-      if (approval.source !== 'supervisor-route'
-        && approval.source !== 'supervisor-important'
-        && approval.source !== 'supervisor-context-recovery') continue;
-      remoteAudit(session, lane, 'supervisor.proposal.resolved', {
-        approvalId: approval.id,
-        resolution: 'handled-manually',
-        proposalKind: approval.proposalKind || 'important',
-        text: task,
-        actor: params.actor || 'unknown',
-      });
-    }
-    store.updateLane(lane.id, {
-      currentTask: task,
-      ...(resolved.some((approval) => approval.source === 'supervisor-context-recovery')
-        ? { contextRecoveryStatus: 'sent' as const }
-        : {}),
-    });
-  }
   remoteAudit(session, lane, 'supervisor.remote-command', {
     action: projectMode ? 'send-project-terminal-content' : 'send-task',
     terminal: terminal.surfaceId,
@@ -2331,11 +2309,9 @@ function sendRemoteTerminalTask(params: RemoteTerminalTask): RemoteTerminalTaskR
     && terminal.role === 'task-ai'
     && !!lane
     && isProjectManagedSupervisorLane(lane);
-  return { ok: true, message: manuallyResolved
-    ? `已向 ${terminal.label} 发送任务，并将内容记录为人工裁决。`
-    : projectTaskDirect
-      ? `已向 ${terminal.label} 直接发送用户任务；专属监督 AI 已同步知情，但不会拦截。`
-    : `已向 ${terminal.label} 发送任务。` };
+  return { ok: true, message: projectTaskDirect
+    ? `已向 ${terminal.label} 提交用户任务；任务 Agent 确认接收后将同步专属监督 AI。`
+    : `已向 ${terminal.label} 提交任务；等待任务 Agent 生命周期确认。` };
 }
 
 function sendRemoteTerminalEscape(params: RemoteTerminalEscape): { ok: boolean; message: string; error?: string } {
@@ -4242,6 +4218,10 @@ function restoredProjectManagerSession(session: ProjectManagerSession, managerSu
     managerSurfaceId,
     taskTerminalSurfaceId: undefined,
     recoveryState: 'checking' as const,
+    pendingManagerDeliveries: compactProjectManagerPendingDeliveries(
+      normalized.pendingManagerDeliveries,
+      new Set((normalized.pendingSupervisorTransitions || []).map((transition) => transition.id)),
+    ),
     ...(protocolMigrationRequired ? {
       pendingManagerDeliveries: [],
       pendingSupervisorTransitions: [],
@@ -5286,6 +5266,15 @@ function flushProjectManagerDeliveries(): void {
       : undefined;
     const managerRuntime = manager ? terminalRuntimeStatus(manager.surfaceId) : undefined;
     const managerActivity = manager ? remoteTerminalActivity(manager.surfaceId) : undefined;
+    const transitionStillPending = !delivery.transitionId || !!session?.pendingSupervisorTransitions?.some(
+      (transition) => transition.id === delivery.transitionId,
+    );
+    if (!transitionStillPending) {
+      pendingProjectManagerDeliveries.splice(index, 1);
+      if (session) removePersistedProjectManagerDelivery(session.id, delivery.id);
+      index -= 1;
+      continue;
+    }
     if (!manager) {
       delivery.attempts += 1;
     } else if (managerRuntime?.state === 'failed' || managerRuntime?.state === 'exited') {
@@ -5426,7 +5415,15 @@ function notifyProjectManagerDeliveryUnavailable(delivery: PendingProjectManager
 function hydrateProjectManagerDeliveries(sessions: readonly ProjectManagerSession[]): void {
   const queued = new Set(pendingProjectManagerDeliveries.map((delivery) => delivery.id));
   for (const session of sessions) {
-    for (const delivery of session.pendingManagerDeliveries || []) {
+    const validTransitionIds = new Set((session.pendingSupervisorTransitions || []).map((transition) => transition.id));
+    const compacted = compactProjectManagerPendingDeliveries(
+      session.pendingManagerDeliveries,
+      validTransitionIds,
+    );
+    if (compacted !== session.pendingManagerDeliveries) {
+      updatePersistedProjectManagerDeliveries(session.id, () => compacted);
+    }
+    for (const delivery of compacted) {
       if (queued.has(delivery.id)) continue;
       queued.add(delivery.id);
       pendingProjectManagerDeliveries.push({
@@ -5451,10 +5448,20 @@ function queueProjectManagerDelivery(
     text: withProjectManagerEventEnvelope(text, sessionId),
     createdAt: Date.now(),
     ...(options.transitionId ? { transitionId: options.transitionId } : {}),
+    ...(options.priority ? { priority: true } : {}),
     sessionId,
     attempts: 0,
     alerted: false,
   };
+  if (delivery.transitionId) {
+    for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
+      const candidate = pendingProjectManagerDeliveries[index];
+      if (candidate.sessionId === sessionId
+        && candidate.transitionId === delivery.transitionId) {
+        pendingProjectManagerDeliveries.splice(index, 1);
+      }
+    }
+  }
   if (options.priority) pendingProjectManagerDeliveries.unshift(delivery);
   else pendingProjectManagerDeliveries.push(delivery);
   if (sessionId) {
@@ -5464,11 +5471,15 @@ function queueProjectManagerDelivery(
         text: delivery.text,
         createdAt: delivery.createdAt,
         ...(delivery.transitionId ? { transitionId: delivery.transitionId } : {}),
+        ...(delivery.priority ? { priority: true } : {}),
       };
-      const existing = deliveries.filter((candidate) => candidate.id !== delivery.id);
-      return options.priority
-        ? [persisted, ...existing.slice(-99)]
-        : [...existing, persisted].slice(-100);
+      const existing = deliveries.filter((candidate) => (
+        candidate.id !== delivery.id
+        && (!delivery.transitionId || candidate.transitionId !== delivery.transitionId)
+      ));
+      return compactProjectManagerPendingDeliveries(
+        options.priority ? [persisted, ...existing] : [...existing, persisted],
+      );
     });
   }
   flushProjectManagerDeliveries();
@@ -11115,6 +11126,18 @@ export function initPipeBridge(): void {
     const lane: SupervisorLane = foundLane;
     if (lane.goalConstruction?.status === 'drafting') {
       return { ok: false, error: '终端上下文尚未汇总完成；只能更新汇总草案并回复用户，不能提交监督裁决' };
+    }
+    if (hasPendingTaskUserSubmit(lane.id, session.sessionId)) {
+      return {
+        ok: false,
+        error: '用户输入已提交到任务终端，正在等待 UserPromptSubmit 生命周期确认；禁止旧监督回合抢先注入指令',
+      };
+    }
+    if (lane.userDirectTaskTurnId !== undefined && lane.userDirectTaskTurnId === lane.workerTurnId) {
+      return {
+        ok: false,
+        error: '用户直发任务已经由任务 Agent 确认接收；禁止旧监督回合提交裁决或注入替代指令，请等待本回合结束、阻塞或中断事件',
+      };
     }
     if (lane.pendingSupervisorDeliveries?.some((delivery) => delivery.kind === 'user-task')) {
       return {

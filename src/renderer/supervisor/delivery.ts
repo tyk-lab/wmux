@@ -25,41 +25,91 @@ export function supervisorWakeDeliveryKind(lifecycle: unknown): SupervisorWakeDe
   return null;
 }
 
-/** Keep one copy of an unconsumed lifecycle fact without merging different task turns. */
+function sameDeliveryTurn(left: SupervisorDelivery, right: SupervisorDelivery): boolean {
+  return left.turnId !== undefined && right.turnId !== undefined
+    ? left.turnId === right.turnId
+    : left.task === right.task;
+}
+
+function deliveryPriority(delivery: SupervisorDelivery): number {
+  if (delivery.reviewId || delivery.kind === 'task-end' || delivery.kind === 'task-interrupted') return 0;
+  if (delivery.kind === 'user-task') return 1;
+  if (delivery.kind === 'agent-recovery') return 2;
+  if (delivery.kind === 'worker-status') return 3;
+  if (delivery.kind === 'liveness-probe') return 4;
+  return 5;
+}
+
+function appendCompactedSupervisorDelivery(
+  pending: SupervisorDelivery[],
+  delivery: SupervisorDelivery,
+): SupervisorDelivery[] {
+  if (delivery.kind === 'task-start' && delivery.stage !== 'pasted') return pending;
+
+  const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
+  const duplicatePasted = pending.some((candidate) => (
+    candidate.stage === 'pasted'
+    && candidate.kind === delivery.kind
+    && (candidate.reviewId && delivery.reviewId
+      ? candidate.reviewId === delivery.reviewId
+      : sameDeliveryTurn(candidate, delivery))
+  ));
+  if (duplicatePasted && terminalLifecycle) return pending;
+
+  const filtered = pending.filter((candidate) => {
+    if (candidate.stage === 'pasted') return true;
+    const sameTurn = sameDeliveryTurn(candidate, delivery);
+    if (delivery.reviewId && candidate.reviewId === delivery.reviewId) return false;
+    if (terminalLifecycle) {
+      if (candidate.kind === 'liveness-probe' || candidate.kind === 'task-start') return false;
+      if (sameTurn && ['worker-status', 'agent-recovery', 'user-task'].includes(candidate.kind)) return false;
+      if (candidate.kind === delivery.kind) return !sameTurn;
+      return true;
+    }
+    if (delivery.kind === 'user-task') {
+      if (['task-start', 'user-task', 'liveness-probe', 'agent-recovery'].includes(candidate.kind)) return false;
+      if (candidate.kind === 'worker-status' && !candidate.reviewId) return false;
+      const olderTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
+        && candidate.turnId < delivery.turnId;
+      if (olderTurn && (candidate.kind === 'task-end' || candidate.kind === 'task-interrupted')) return false;
+      return true;
+    }
+    if (delivery.kind === 'worker-status') {
+      if (candidate.kind === 'liveness-probe') return false;
+      if (delivery.reviewId && sameTurn && candidate.kind === 'user-task') return false;
+      if (candidate.kind !== 'worker-status') return true;
+      if (delivery.reviewId || candidate.reviewId) return candidate.reviewId !== delivery.reviewId;
+      return !sameTurn;
+    }
+    if (delivery.kind === 'agent-recovery') {
+      return candidate.kind !== 'agent-recovery' || !sameTurn;
+    }
+    if (delivery.kind === 'liveness-probe') return candidate.kind !== 'liveness-probe';
+    return true;
+  });
+  return [...filtered, delivery];
+}
+
+/** Reduce delayed lifecycle facts to the current actionable mailbox. */
+export function compactSupervisorDeliveries(
+  pending: SupervisorDelivery[] | undefined,
+): SupervisorDelivery[] {
+  const source = pending || [];
+  let compacted: SupervisorDelivery[] = [];
+  for (const delivery of source) compacted = appendCompactedSupervisorDelivery(compacted, delivery);
+  return compacted.length === source.length
+    && compacted.every((delivery, index) => delivery === source[index])
+    ? source
+    : compacted;
+}
+
+/** Keep only the actionable facts that remain after semantic supersession. */
 export function enqueueSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   delivery: SupervisorDelivery,
 ): SupervisorDelivery[] {
-  const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
-  const taskStartSupersedesUserTask = delivery.kind === 'task-start';
-  const reviewSupersedesUserTask = terminalLifecycle
-    || (delivery.kind === 'worker-status' && !!delivery.reviewId);
-  const source = pending || [];
-  const filtered = reviewSupersedesUserTask || taskStartSupersedesUserTask
-    ? source.filter((candidate) => {
-        const sameTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
-          ? candidate.turnId === delivery.turnId
-          : candidate.task === delivery.task;
-        const sameStartedTask = taskStartSupersedesUserTask && candidate.task === delivery.task;
-        const obsoleteProbe = candidate.kind === 'liveness-probe'
-          || (candidate.kind === 'worker-status' && sameTurn)
-          || (candidate.kind === 'user-task' && (reviewSupersedesUserTask || sameStartedTask));
-        return candidate.stage === 'pasted' || !obsoleteProbe;
-      })
-    : source;
-  const current = filtered.length === source.length ? source : filtered;
-  const previous = current[current.length - 1];
-  const sameTurn = previous?.turnId !== undefined && delivery.turnId !== undefined
-    ? previous.turnId === delivery.turnId
-    : previous?.task === delivery.task;
-  if (previous?.kind === delivery.kind && sameTurn) {
-    if (delivery.kind === 'worker-status' && previous.stage !== 'pasted') {
-      return [...current.slice(0, -1), delivery];
-    }
-    if (delivery.kind === 'worker-status') return [...current, delivery];
-    return current;
-  }
-  return [...current, delivery];
+  const source = compactSupervisorDeliveries(pending);
+  return appendCompactedSupervisorDelivery(source, delivery);
 }
 
 /**
@@ -70,18 +120,17 @@ export function nextDeliverableSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   supervisorState: unknown,
 ): SupervisorDelivery | undefined {
-  const queue = pending || [];
+  const queue = compactSupervisorDeliveries(pending);
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
     return pasted.kind === 'liveness-probe'
       ? supervisorState === 'idle' ? pasted : undefined
       : canDeliverToSupervisor(supervisorState) ? pasted : undefined;
   }
-  return queue.find((delivery) => (
-    delivery.kind === 'liveness-probe'
-      ? supervisorState === 'idle'
-      : canDeliverToSupervisor(supervisorState)
-  ));
+  if (!canDeliverToSupervisor(supervisorState)) return undefined;
+  return [...queue]
+    .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
+    .find((delivery) => delivery.kind !== 'liveness-probe' || supervisorState === 'idle');
 }
 
 /** A busy or blocked supervisor must finish its current turn before receiving another command. */

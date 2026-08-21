@@ -32,9 +32,14 @@ export function taskTerminalRuntimeKind(evidence: TaskTerminalRuntimeEvidence): 
   // A current shell prompt wins over stale Agent chrome left in scrollback or a
   // state/runtime-ready flag that was not cleared when the inner Agent exited.
   if (hasShellPrompt(screen)) return 'shell';
+  // Explicit activity and the current Agent UI can recover a stale exited flag
+  // after a manual relaunch. A visible shell prompt above already wins over both.
   if (['working', 'idle', 'blocked'].includes(String(evidence.agentState || ''))) return 'agent';
-  if (evidence.runtimeState === 'ready' || evidence.spawnedAgentStatus === 'running') return 'agent';
   if (hasAgentScreen(screen)) return 'agent';
+  // The inner Agent lifecycle is stronger than outer PTY metadata. A shell can
+  // remain alive and keep agentMeta=running after its nested Agent exits.
+  if (evidence.runtimeState === 'failed' || evidence.runtimeState === 'exited') return 'unknown';
+  if (evidence.runtimeState === 'ready' && evidence.spawnedAgentStatus === 'running') return 'agent';
   return 'unknown';
 }
 

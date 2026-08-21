@@ -1,3 +1,5 @@
+import { supportedAgentLauncherExecutable } from '../supervisor/launch-command';
+
 export const TERMINAL_USER_SUBMIT_EVENT = 'wmux:terminal-user-submit';
 
 const pendingUserInput = new Map<string, string>();
@@ -45,8 +47,11 @@ export function trackTerminalUserInput(surfaceId: string, data: string): boolean
   if (isTerminalUserSubmit(data)) {
     const pending = pendingUserInput.get(surfaceId);
     const submitted = pending?.trim() || '';
+    // Arbitrary terminal input may contain passwords, tokens or permission
+    // answers. Only an allowlisted Agent launcher may leave this local tracker.
+    const safeSubmitted = supportedAgentLauncherExecutable(submitted) || '';
     pendingUserInput.delete(surfaceId);
-    if (submitted) submittedUserInput.set(surfaceId, submitted);
+    if (safeSubmitted) submittedUserInput.set(surfaceId, safeSubmitted);
     else submittedUserInput.delete(surfaceId);
     return pending !== undefined;
   }
@@ -64,7 +69,7 @@ export function trackTerminalUserInput(surfaceId: string, data: string): boolean
 
   const visible = stripBracketedPasteMarkers(data).split('\x1b\r').join('\n');
   if (hasUserContent(visible)) {
-    pendingUserInput.set(surfaceId, `${pendingUserInput.get(surfaceId) || ''}${visible}`.slice(-12_000));
+    pendingUserInput.set(surfaceId, `${pendingUserInput.get(surfaceId) || ''}${visible}`.slice(-2_048));
   }
   return false;
 }
@@ -140,10 +145,11 @@ export function prepareForUserTerminalInput(
     clearAutomatedDraft = cancelled && !clearDraftLocally;
   }
   const shouldSubmit = trackTerminalUserInput(surfaceId, data);
+  const submittedText = shouldSubmit ? consumeTerminalUserSubmittedText(surfaceId) : '';
   return {
     shouldSubmit,
     clearAutomatedDraft,
-    ...(shouldSubmit ? { submittedText: consumeTerminalUserSubmittedText(surfaceId) } : {}),
+    ...(submittedText ? { submittedText } : {}),
   };
 }
 

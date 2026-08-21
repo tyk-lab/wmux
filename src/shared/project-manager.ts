@@ -629,6 +629,8 @@ export interface ProjectManagerPendingDelivery {
   createdAt: number;
   /** Keeps an actionable supervisor transition traceable after PTY delivery. */
   transitionId?: string;
+  /** Actionable decisions stay ahead of informational messages, including after restore. */
+  priority?: boolean;
 }
 
 export type ProjectSupervisorTransitionKind =

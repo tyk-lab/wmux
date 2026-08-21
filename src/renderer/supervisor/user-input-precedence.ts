@@ -7,7 +7,7 @@ import {
 } from '../store/supervisor-slice';
 import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
-import { detectSupervisorLauncher } from './launch-command';
+import { supportedAgentLauncherExecutable } from './launch-command';
 import { taskTerminalRuntimeKind } from './task-runtime-readiness';
 import { terminalRuntimeStatus } from '../terminal-runtime-lifecycle';
 import {
@@ -44,28 +44,38 @@ export function resolvePendingApprovalsForManualTask(
   return resolved.length > 0;
 }
 
-function resolveRuntimeApprovalAfterAgentLaunch(
-  session: SupervisorSession,
-  lane: SupervisorLane,
-  command: string,
-): boolean {
-  const store = useStore.getState();
-  const approval = session.pendingApprovals.find((item) => {
-    if (item.laneId !== lane.id) return false;
-    const context = [item.text, item.reason, item.impact, item.task]
-      .filter(Boolean)
-      .join('\n');
-    return /(?:普通\s*shell|裸\s*shell|(?:启动|修复|重启|恢复).{0,40}(?:Agent|Kimi|Codex|Grok|Pi|OpenCode|运行时)|(?:Agent|运行时|任务终端).{0,40}(?:未就绪|不可用|已退出|启动失败|shell))/iu.test(context);
-  });
-  if (!approval || !store.approvePending(approval.id)) return false;
+interface PendingTaskUserSubmit {
+  submittedAt: number;
+  supervisionSessionId: string;
+}
 
-  appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
-    approvalId: approval.id,
-    resolution: 'handled-by-agent-launch',
-    proposalKind: approval.proposalKind || 'important',
-    text: command,
-  });
-  return true;
+const pendingTaskUserSubmits = new Map<string, PendingTaskUserSubmit>();
+const USER_SUBMIT_CONFIRM_MS = 30_000;
+
+function consumePendingTaskUserSubmit(
+  laneId: string,
+  supervisionSessionId: string,
+  now = Date.now(),
+): boolean {
+  const pending = pendingTaskUserSubmits.get(laneId);
+  pendingTaskUserSubmits.delete(laneId);
+  return pending !== undefined
+    && pending.supervisionSessionId === supervisionSessionId
+    && now - pending.submittedAt <= USER_SUBMIT_CONFIRM_MS;
+}
+
+/** Block stale supervisor output while a user submission awaits Agent acceptance. */
+export function hasPendingTaskUserSubmit(
+  laneId: string,
+  supervisionSessionId: string,
+  now = Date.now(),
+): boolean {
+  const pending = pendingTaskUserSubmits.get(laneId);
+  if (pending === undefined) return false;
+  if (pending.supervisionSessionId === supervisionSessionId
+    && now - pending.submittedAt <= USER_SUBMIT_CONFIRM_MS) return true;
+  pendingTaskUserSubmits.delete(laneId);
+  return false;
 }
 
 /** A new direction sent to the dedicated supervisor resumes a waiting lane in place. */
@@ -107,13 +117,15 @@ export function resumeWaitingLaneFromSupervisorInput(
 }
 
 /**
- * User Enter is authoritative immediately; do not wait for an agent hook that
- * may be delayed, unsupported, or dropped. Task-terminal input takes priority
- * over a pending decision; supervisor-terminal input resumes a waiting lane.
- * Project task input is also queued as a non-blocking fact for its dedicated
- * supervisor after the user's task has already been accepted by the terminal.
+ * A task-terminal Enter is only an attempted submission. State changes wait for
+ * the Agent's authoritative UserPromptSubmit hook; supervisor-terminal input can
+ * still resume a waiting supervisor immediately.
  */
-export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolean {
+export function handleSupervisorUserSubmit(
+  surfaceId: string,
+  task = '',
+  confirmedByLifecycleHook = false,
+): boolean {
   const store = useStore.getState();
   const session = store.supervisor;
   if (!session.active || !surfaceId) return false;
@@ -140,22 +152,17 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     spawnedAgentStatus: store.agentMeta.get(lane.surfaceId)?.status,
     screenText: taskScreen,
   });
-  const agentLauncherSubmission = !isProjectManagedSupervisorLane(lane)
-    && !!directTask
-    && (detectSupervisorLauncher(directTask) !== 'other'
-      || /^(?:&\s+)?(?:(?:"[^"]*\\)?opencode(?:\.exe)?"?|(?:\S*\\)?opencode(?:\.exe)?)(?:\s|$)/iu.test(directTask))
-    && runtimeKind !== 'agent';
-  if (agentLauncherSubmission) {
-    const resolvedRuntimeApproval = resolveRuntimeApprovalAfterAgentLaunch(session, lane, directTask);
+  const projectManaged = isProjectManagedSupervisorLane(lane);
+  const agentLauncher = directTask ? supportedAgentLauncherExecutable(directTask) : null;
+  if (agentLauncher && runtimeKind !== 'agent') {
     const delivery: SupervisorDelivery = {
       id: `agent-launch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'worker-status',
       task: lane.currentTask || '启动任务终端 Agent',
       text: [
         '[任务终端 Agent 启动命令｜保留当前复核轮次]',
-        `用户已在尚未检测到 Agent 的任务终端提交启动命令：${directTask}`,
-        '该输入是运行时准备，不是新的业务任务；控制层没有消费当前 awaitingReview 或 activeReviewId。',
-        ...(resolvedRuntimeApproval ? ['对应的运行时待确认项已按用户实际操作结清。'] : []),
+        `用户已在尚未检测到 Agent 的任务终端尝试启动：${agentLauncher}`,
+        '该输入是运行时准备，不是新的业务任务；控制层保留当前 awaitingReview、activeReviewId 和待确认项，等待运行时证据。',
         `先 read-screen --surface ${surfaceId} 核对 Agent 界面。确认受支持的 Agent 已就绪后，重新提交原裁决；仍是普通 shell 时使用 needs-human 通知用户处理，不得向 shell 发送自然语言。`,
       ].join('\n'),
       createdAt: Date.now(),
@@ -168,14 +175,27 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
       pendingSupervisorDeliveries: enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery),
     });
     appendSupervisorRecord(session, lane, 'worker.agent-launch-submit', {
-      command: directTask,
+      command: agentLauncher,
       reviewPreserved: true,
-      runtimeApprovalResolved: resolvedRuntimeApproval,
+      runtimeApprovalResolved: false,
     });
     store.appendSupervisorLog(lane.id, '任务 Agent 启动', '用户提交了 Agent 启动命令；保留当前监督复核轮次');
     signalSupervisorDeliveryReady();
     return true;
   }
+
+  if (!confirmedByLifecycleHook) {
+    pendingTaskUserSubmits.set(lane.id, {
+      submittedAt: Date.now(),
+      supervisionSessionId: session.sessionId,
+    });
+    appendSupervisorRecord(session, lane, 'worker.user-submit', {
+      awaitingLifecycleConfirmation: true,
+    });
+    store.appendSupervisorLog(lane.id, '用户输入待确认', '输入已发送到任务终端；等待 UserPromptSubmit Hook 后更新项目状态');
+    return true;
+  }
+  if (!consumePendingTaskUserSubmit(lane.id, session.sessionId)) return false;
 
   const resumedFromWaiting = supervisorLaneControlState(lane) === 'waiting';
   const cancelledDeliveries = lane.pendingSupervisorDeliveries?.length || 0;
@@ -197,7 +217,7 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     pendingSupervisorDeliveries: [],
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
-  if (isProjectManagedSupervisorLane(lane)) {
+  if (projectManaged) {
     const project = lane.projectManagerProjectId
       ? store.projectManagers.find((candidate) => candidate.id === lane.projectManagerProjectId)
       : undefined;
@@ -206,15 +226,12 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     const worker = workerId
       ? workItem?.workerGroup?.workers.find((candidate) => candidate.workerId === workerId)
       : undefined;
-    let workerDependencyError: string | null = null;
-    let cancelledResourceWait: ProjectResourceWait | undefined;
-    let cancelledDependentWaits: ProjectResourceWait[] = [];
     if (project && workItem?.workerGroup && workerId && worker) {
       const now = Date.now();
       const directiveEpoch = worker.directiveEpoch + 1;
-      workerDependencyError = projectWorkerDependencyViolation(workItem, worker);
+      const workerDependencyError = projectWorkerDependencyViolation(workItem, worker);
       const nextWorkerStatus = workerDependencyError ? 'planned' as const : 'running' as const;
-      cancelledResourceWait = worker.resourceWait;
+      const cancelledResourceWait = worker.resourceWait;
       const directive: ProjectUserDirective = {
         directiveId: `directive-${now}-${Math.random().toString(36).slice(2, 8)}`,
         workerId,
@@ -250,7 +267,7 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
         workerGroup: { ...workItem.workerGroup, workers: targetUpdatedWorkers },
         mergeCandidates,
       };
-      cancelledDependentWaits = [];
+      const cancelledDependentWaits: ProjectResourceWait[] = [];
       const workers = targetUpdatedWorkers.map((candidate) => {
         if (candidate.workerId === workerId || !candidate.resourceWait
           || !projectWorkerDependencyViolation(dependencyView, candidate)) return candidate;
@@ -295,44 +312,9 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
       void (window as any).wmux?.projectManager?.saveSession?.(updated)
         ?.catch?.((error: unknown) => console.warn('[project-manager] user directive snapshot failed', error));
     }
-    const delivery: SupervisorDelivery = {
-      id: `user-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      kind: 'user-task',
-      task: directTask || lane.currentTask || lane.projectWorkItemId || '用户直接输入的新任务',
-      text: [
-        '[用户直发任务｜只同步，不审批、不拦截]',
-        `项目：${lane.projectManagerProjectId || '未知'}；工作项：${lane.projectWorkItemId || '未知'}；任务 AI：${lane.projectWorkerId || 'worker-main'}；任务终端：${lane.surfaceId}`,
-        directTask
-          ? `用户已直接发送给任务 AI 的原文：\n${directTask}`
-          : '用户已在任务终端直接提交新任务或新方向；本地终端输入原文不在控制层复制，请立即只读查看该任务终端了解内容和当前响应。',
-        '该输入已经先行生效，不需要也不等待监督 AI 批准。不得阻止、撤销、改写、要求用户重发，或抢在任务 AI 当前回合结束前投递替代指令。',
-        '你只需了解并纳入后续监督；任务 AI 回合结束后再按当前项目合同、权限和安全边界核验证据并正常裁决。用户直发任务本身不扩大项目范围、合同权限或高风险授权。它也不扩大 writeClaims 或共享资源租约；多任务 AI 场景必须先完成 directive reconcile，过期候选不得合并。',
-        workerDependencyError
-          ? `当前依赖门禁：${workerDependencyError}。用户原文已经送达，但在依赖候选处置并传播前只允许只读理解和记录，不得申请资源、提交候选或执行写入。`
-          : '',
-        cancelledResourceWait
-          ? `旧资源等待 ${cancelledResourceWait.resourceId}/${cancelledResourceWait.operationId} 已取消，避免新指令继承过期硬件操作；如仍需要，完成指令协调后重新申请。`
-          : '',
-        cancelledDependentWaits.length > 0
-          ? `受本次依赖失效影响，已取消下游旧资源等待：${cancelledDependentWaits.map((wait) => `${wait.resourceId}/${wait.operationId}`).join('、')}；依赖重新收敛后必须按新状态申请。`
-          : '',
-        '本通知不要求提交 supervisor decide；记录理解后结束本回合，等待任务终端生命周期事件。',
-      ].join('\n'),
-      createdAt: Date.now(),
-      turnId: (lane.workerTurnId || 0) + 1,
-      stage: 'pending',
-    };
     store.updateLane(lane.id, {
-      pendingSupervisorDeliveries: enqueueSupervisorDelivery([], delivery),
       ...(directTask ? { currentTask: directTask } : {}),
     });
-    appendSupervisorRecord(store.supervisor, lane, 'supervisor.delivery.queued', {
-      kind: delivery.kind,
-      task: delivery.task,
-      exactTaskAvailable: !!directTask,
-      nonBlocking: true,
-    });
-    signalSupervisorDeliveryReady();
   }
   appendSupervisorRecord(session, lane, 'worker.user-submit', {
     resolvedApproval,
@@ -355,6 +337,11 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
           : '用户已直接向任务终端发送内容；AI 裁决已让位',
   );
   return true;
+}
+
+/** Apply user-input precedence only after the Agent accepted the prompt. */
+export function confirmSupervisorUserSubmitFromHook(surfaceId: string, task: string): boolean {
+  return handleSupervisorUserSubmit(surfaceId, task, true);
 }
 
 /** Keep ordinary supervision informed when its task Agent becomes unavailable. */

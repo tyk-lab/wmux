@@ -137,6 +137,8 @@ export interface SupervisorLane {
   activeReviewId?: string;
   /** Worker generation that opened activeReviewId. */
   reviewWorkerTurnId?: number;
+  /** User-direct task generation; stale supervisor output is blocked until this turn ends. */
+  userDirectTaskTurnId?: number;
   /** Wall-clock time at which the current review was opened. */
   reviewOpenedAt?: number;
   /** Time at which the current review prompt was accepted by the supervisor terminal. */

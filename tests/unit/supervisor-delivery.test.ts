@@ -19,14 +19,15 @@ const event = (id: string, kind: 'task-start' | 'task-end', task: string, turnId
 });
 
 describe('supervisor delivery queue', () => {
-  it('deduplicates an unconsumed lifecycle fact but preserves turn order', () => {
+  it('keeps task-start as control state and delivers only the terminal review', () => {
     const start = event('start', 'task-start', '运行测试', 1);
     const once = enqueueSupervisorDelivery([], start);
     const duplicate = enqueueSupervisorDelivery(once, { ...start, id: 'duplicate' });
     const complete = enqueueSupervisorDelivery(duplicate, event('end', 'task-end', '运行测试', 1));
 
     expect(duplicate).toBe(once);
-    expect(complete.map((item) => item.id)).toEqual(['start', 'end']);
+    expect(once).toEqual([]);
+    expect(complete.map((item) => item.id)).toEqual(['end']);
   });
 
   it('preserves repeated task text from different worker turns', () => {
@@ -74,7 +75,7 @@ describe('supervisor delivery queue', () => {
     const completed = event('end', 'task-end', '运行测试', 2);
 
     expect(nextDeliverableSupervisorDelivery([liveness, completed], 'unknown')?.id).toBe('end');
-    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'idle')?.id).toBe('probe');
+    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'idle')?.id).toBe('end');
     expect(nextDeliverableSupervisorDelivery([liveness, completed], 'working')).toBeUndefined();
     expect(enqueueSupervisorDelivery([liveness], completed).map((item) => item.id)).toEqual(['end']);
     expect(nextDeliverableSupervisorDelivery([
@@ -101,16 +102,47 @@ describe('supervisor delivery queue', () => {
       .toEqual(['user-task', 'end']);
   });
 
-  it('replaces an undelivered user-task notice with the authoritative task-start hook', () => {
+  it('keeps only the latest actionable fact for one review generation', () => {
+    const completed = {
+      ...event('end', 'task-end', '运行测试', 2),
+      reviewId: 'review-2',
+      stage: 'pending' as const,
+    };
+    const blocked = {
+      id: 'blocked', kind: 'worker-status' as const, task: '运行测试',
+      text: '补充发现权限阻塞', createdAt: 2, turnId: 2,
+      reviewId: 'review-2', stage: 'pending' as const,
+    };
+    expect(enqueueSupervisorDelivery([completed], blocked)).toEqual([blocked]);
+  });
+
+  it('does not turn an authoritative task-start hook into another AI message', () => {
     const userTask = {
       id: 'user-task', kind: 'user-task' as const, task: '用户直发回归任务',
       text: '仅同步用户任务', createdAt: 1, turnId: 1, stage: 'pending' as const,
     };
     const started = event('start', 'task-start', '用户直发回归任务', 2);
 
-    expect(enqueueSupervisorDelivery([userTask], started).map((item) => item.id)).toEqual(['start']);
+    expect(enqueueSupervisorDelivery([userTask], started).map((item) => item.id)).toEqual(['user-task']);
     expect(enqueueSupervisorDelivery([{ ...userTask, stage: 'pasted' }], started).map((item) => item.id))
-      .toEqual(['user-task', 'start']);
+      .toEqual(['user-task']);
+  });
+
+  it('lets a newer user-direct task supersede an undelivered older review', () => {
+    const completed = {
+      ...event('end-1', 'task-end', '旧任务', 1),
+      reviewId: 'review-1',
+      stage: 'pending' as const,
+    };
+    const userTask = {
+      id: 'user-task-2', kind: 'user-task' as const, task: '用户新任务',
+      text: '用户新任务已确认', createdAt: 2, turnId: 2, stage: 'pending' as const,
+    };
+
+    expect(enqueueSupervisorDelivery([completed], userTask).map((item) => item.id))
+      .toEqual(['user-task-2']);
+    expect(enqueueSupervisorDelivery([{ ...completed, stage: 'pasted' }], userTask).map((item) => item.id))
+      .toEqual(['end-1', 'user-task-2']);
   });
 
   it('wakes only for terminal states that require a supervisor decision', () => {

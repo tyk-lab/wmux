@@ -27,6 +27,21 @@ describe('stripWmuxHookGroups', () => {
     expect(next).toHaveLength(1);
     expect(next[0].hooks[0].command).toBe('echo user');
   });
+
+  it('preserves user commands sharing a matcher group with wmux', () => {
+    const groups = [{
+      matcher: 'Edit',
+      hooks: [
+        { type: 'command', command: `node "${SCRIPT}" --event PostToolUse` },
+        { type: 'command', command: 'notify-user' },
+      ],
+    }];
+
+    expect(stripWmuxHookGroups(groups)).toEqual([{
+      matcher: 'Edit',
+      hooks: [{ type: 'command', command: 'notify-user' }],
+    }]);
+  });
 });
 
 describe('applyWmuxLifecycleHooks', () => {

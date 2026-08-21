@@ -35,11 +35,13 @@ export function isWmuxHookCommand(command: string | undefined | null): boolean {
   return command.includes('wmux-hook') || /wmux["']?\s+report-agent/.test(command);
 }
 
-/** Drop matcher groups that only exist to run wmux (preserve user hooks). */
+/** Remove wmux commands while preserving user commands in the same matcher group. */
 export function stripWmuxHookGroups(entries: unknown): any[] {
-  return (Array.isArray(entries) ? entries : []).filter((e: any) => {
-    if (!Array.isArray(e?.hooks)) return true;
-    return !e.hooks.some((h: any) => isWmuxHookCommand(h?.command));
+  return (Array.isArray(entries) ? entries : []).flatMap((entry: any) => {
+    if (!Array.isArray(entry?.hooks)) return [entry];
+    const hooks = entry.hooks.filter((hook: any) => !isWmuxHookCommand(hook?.command));
+    if (hooks.length === entry.hooks.length) return [entry];
+    return hooks.length > 0 ? [{ ...entry, hooks }] : [];
   });
 }
 

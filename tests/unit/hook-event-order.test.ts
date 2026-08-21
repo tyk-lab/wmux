@@ -34,10 +34,16 @@ describe('hook event ordering', () => {
     expect(hookSource).toContain('process.exitCode = 1;');
   });
 
-  it('queues task-start only after advancing the worker turn', () => {
+  it('records every task start but wakes supervision only for confirmed user-direct work', () => {
     const handler = appSource.match(/function handleSupervisorHookEvent\(event: any\): void \{[\s\S]*?^\}/m)?.[0] || '';
     expect(handler).toContain("lifecycle === 'UserPromptSubmit'");
-    expect(handler).toContain("'task-start'");
-    expect(handler.indexOf('workerTurnId: nextWorkerTurnId')).toBeLessThan(handler.indexOf("'task-start'"));
+    expect(handler).toContain('confirmSupervisorUserSubmitFromHook');
+    expect(handler).toContain('userDirectTaskTurnId: confirmedUserSubmit ? nextWorkerTurnId : undefined');
+    expect(handler).toContain('userDirectTaskTurnId: undefined');
+    expect(handler).toContain('if (confirmedUserSubmit)');
+    expect(handler).toContain("'user-task'");
+    expect(handler).not.toContain("'task-start'");
+    expect(handler.indexOf('workerTurnId: nextWorkerTurnId')).toBeLessThan(handler.indexOf("'user-task'"));
+    expect(handler.indexOf('confirmSupervisorUserSubmitFromHook')).toBeLessThan(handler.indexOf("'user-task'"));
   });
 });

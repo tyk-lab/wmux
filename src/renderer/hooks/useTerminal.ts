@@ -1238,21 +1238,25 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         const shouldBroadcast = shouldBroadcastTerminalInput(data, st.broadcastInputActive);
         if (ws && shouldBroadcast) {
           const targetIds = collectActiveTerminalSurfaceIds(ws.splitTree);
+          const submitted = new Map<string, string | undefined>();
           for (const id of targetIds) {
             const preparation = prepareForUserTerminalInput(id, data);
-            if (preparation.shouldSubmit) signalTerminalUserSubmit(id, preparation.submittedText);
+            if (preparation.shouldSubmit) submitted.set(id, preparation.submittedText);
           }
           for (const id of targetIds) {
             window.wmux.pty.write(id, data);
+          }
+          for (const [id, submittedText] of submitted) {
+            signalTerminalUserSubmit(id, submittedText);
           }
           return;
         }
       }
       const preparation = prepareForUserTerminalInput(ptyIdRef.current, data);
+      window.wmux.pty.write(ptyIdRef.current, data);
       if (preparation.shouldSubmit) {
         signalTerminalUserSubmit(ptyIdRef.current, preparation.submittedText);
       }
-      window.wmux.pty.write(ptyIdRef.current, data);
     });
 
     // ResizeObserver to auto-fit and relay size to PTY (debounced to prevent IPC spam)

@@ -227,7 +227,6 @@ function buildShellArgs(
     return ['/K', path.join(integrationDir, 'wmux-cmd-integration.cmd')];
   }
   if (shellType === 'wsl') {
-    env.WMUX_INTEGRATION = '1';
     // Propagate WMUX_* vars into the WSL distro (issue #60). Without WSLENV, WSL
     // strips every Windows env var, so the notification framework, sidebar and
     // `wmux` CLI inside WSL can't reach the host. /u = pass through, /up = pass
@@ -361,6 +360,7 @@ export class PtyManager {
       ...processEnvClean,
       ...options.env,
       WMUX: '1',
+      WMUX_INTEGRATION: '1',
       WMUX_SURFACE_ID: id,
       WMUX_PIPE: getPipePath(),
       WMUX_PIPE_TOKEN: uuidv4(),

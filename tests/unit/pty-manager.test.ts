@@ -84,6 +84,33 @@ describe('PtyManager', () => {
     expect(output).toContain('xterm-256color');
   });
 
+  it('injects the hook integration marker and terminal capability into local shells', async () => {
+    const manager = makeManager();
+    const { id } = manager.create({
+      shell: TEST_SHELL,
+      cwd: process.env.USERPROFILE || 'C:\\',
+      env: TEST_ENV,
+    });
+    await firstData(manager, id);
+    const output = await new Promise<string>((resolve) => {
+      let collected = '';
+      let unsub = () => undefined;
+      const timeout = setTimeout(() => {
+        unsub();
+        resolve(collected);
+      }, 5000);
+      unsub = manager.onData(id, (data) => {
+        collected += data;
+        if (!collected.includes(`1|${id}`)) return;
+        clearTimeout(timeout);
+        unsub();
+        resolve(collected);
+      });
+      manager.write(id, 'echo %WMUX_INTEGRATION%^|%WMUX_SURFACE_ID%\r');
+    });
+    expect(output).toContain(`1|${id}`);
+  });
+
   it('has() returns true after create and false after kill', () => {
     const manager = makeManager();
     const { id } = manager.create({

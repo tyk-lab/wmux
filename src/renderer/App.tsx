@@ -73,6 +73,7 @@ import {
   registerSupervisorEvidence,
 } from './supervisor/evidence';
 import {
+  compactSupervisorDeliveries,
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
   signalSupervisorDeliveryReady,
@@ -87,8 +88,8 @@ import {
   shouldInitializeWorkspaceLayout,
 } from './supervisor/session-restore';
 import {
+  confirmSupervisorUserSubmitFromHook,
   handleSupervisorUserSubmit,
-  resolvePendingApprovalsForManualTask,
 } from './supervisor/user-input-precedence';
 import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
 import { terminalRuntimeStatus } from './terminal-runtime-lifecycle';
@@ -763,9 +764,9 @@ function handleSupervisorHookEvent(event: any): void {
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
     const nextWorkerTurnId = (lane.workerTurnId || 0) + 1;
-    const manuallyResolved = resolvePendingApprovalsForManualTask(session, auditLane, task);
+    const confirmedUserSubmit = confirmSupervisorUserSubmitFromHook(surfaceId, task);
     store.updateLane(lane.id, {
-      awaitingReview: manuallyResolved ? false : !!lane.autoDecisionLimitReached,
+      awaitingReview: confirmedUserSubmit ? false : !!lane.autoDecisionLimitReached,
       activeReviewId: undefined,
       reviewWorkerTurnId: undefined,
       reviewOpenedAt: undefined,
@@ -773,7 +774,7 @@ function handleSupervisorHookEvent(event: any): void {
       reviewWatchdogState: undefined,
       ...(lane.supervisorProblem?.kind === 'unreported-decision' ? { supervisorProblem: undefined } : {}),
       unreportedIdleRecoveryAttempts: 0,
-      ...(manuallyResolved ? {
+      ...(confirmedUserSubmit ? {
         awaitingStopCheck: false,
         stopConfirmed: false,
         resumeAfterCancelledDecision: false,
@@ -783,6 +784,7 @@ function handleSupervisorHookEvent(event: any): void {
       ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
       workerTurnId: nextWorkerTurnId,
+      userDirectTaskTurnId: confirmedUserSubmit ? nextWorkerTurnId : undefined,
     });
     const startedLane = useStore.getState().supervisor.lanes
       .find((candidate) => candidate.id === lane.id) || {
@@ -795,17 +797,22 @@ function handleSupervisorHookEvent(event: any): void {
       task: event.task || '',
       cwd: event.cwd || '',
     });
-    queueSupervisorDelivery(
-      session,
-      startedLane,
-      'task-start',
-      reportedTask,
-      [
-        `[任务开始] ${lane.label} (${surfaceId}) 已接受新任务。`,
-        `[权威生命周期｜event=UserPromptSubmit｜workerTurn=${nextWorkerTurnId}] ${reportedTask}`,
-        '这只是任务开始同步：继续监听即可，不要据此向任务终端重复下发指令，也不要提前提交完成裁决。',
-      ].join('\n'),
-    );
+    if (confirmedUserSubmit) {
+      queueSupervisorDelivery(
+        session,
+        startedLane,
+        'user-task',
+        reportedTask,
+        [
+          `[用户直发任务已确认] ${lane.label} (${surfaceId}) 已接受新任务。`,
+          `[权威生命周期｜event=UserPromptSubmit｜workerTurn=${nextWorkerTurnId}] ${reportedTask}`,
+          ...(isProjectManagedSupervisorLane(startedLane)
+            ? ['该输入无需监督批准，但不扩大项目范围、合同权限、writeClaims 或共享资源租约；更早的未投递检查点只保留审计，不得覆盖当前任务。']
+            : ['更早的未投递检查点只保留审计，不得覆盖当前任务。']),
+          '请把当前监督对象切换到本任务并继续监听；不要向任务终端重复下发指令，也不要提前提交完成裁决。',
+        ].join('\n'),
+      );
+    }
     return;
   }
 
@@ -825,7 +832,7 @@ function handleSupervisorHookEvent(event: any): void {
       reviewId,
       String(event.message || ''),
     );
-    store.updateLane(lane.id, { awaitingReview: true });
+    store.updateLane(lane.id, { awaitingReview: true, userDirectTaskTurnId: undefined });
     if (lane.autoDecisionLimitReached) return;
     queueSupervisorDelivery(
       session,
@@ -1384,8 +1391,12 @@ export default function App() {
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !supervisorSurfaceId) continue;
           const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
+          const compactedDeliveries = compactSupervisorDeliveries(lane.pendingSupervisorDeliveries);
+          if (compactedDeliveries !== lane.pendingSupervisorDeliveries) {
+            useStore.getState().updateLane(lane.id, { pendingSupervisorDeliveries: compactedDeliveries });
+          }
           let delivery = nextDeliverableSupervisorDelivery(
-            lane.pendingSupervisorDeliveries,
+            compactedDeliveries,
             supervisorState,
           );
           if (!delivery) continue;
@@ -1746,9 +1757,8 @@ export default function App() {
     setFocusedPaneId(paneId);
   }, []);
 
-  // A local user Enter outranks an in-flight AI review immediately. The agent's
-  // UserPromptSubmit hook remains useful task metadata, but is no longer the
-  // safety boundary because hook delivery can lag behind terminal input.
+  // A local Enter records an attempted submission. The authoritative
+  // UserPromptSubmit hook applies task-state changes after the Agent accepts it.
   useEffect(() => {
     const onUserSubmit = (event: Event) => {
       const detail = (event as CustomEvent<{ surfaceId?: string; task?: string }>).detail;

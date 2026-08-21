@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  confirmSupervisorUserSubmitFromHook,
   handleSupervisorUserSubmit,
   notifyOrdinaryTaskRuntimeFailure,
 } from '../../src/renderer/supervisor/user-input-precedence';
@@ -64,8 +65,10 @@ describe('supervisor user input precedence', () => {
     Reflect.deleteProperty(globalThis, 'window');
   });
 
-  it('cancels stale AI review state before forwarding the user Enter', () => {
+  it('waits for UserPromptSubmit before cancelling stale AI review state', () => {
     expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '用户确认的新任务')).toBe(true);
     expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
       awaitingReview: false,
@@ -93,6 +96,12 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'waiting',
+      stopConfirmed: true,
+      autoDecisionsUsed: 5,
+    });
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '继续执行')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
       controlState: 'active',
       stopConfirmed: false,
       awaitingStopCheck: false,
@@ -114,22 +123,17 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user', '直接执行新的回归任务')).toBe(true);
 
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.kind).toBe('task-end');
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '直接执行新的回归任务')).toBe(true);
+
     expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
       currentTask: '直接执行新的回归任务',
       awaitingReview: false,
       autoDecisionLimitReached: false,
-      pendingSupervisorDeliveries: [expect.objectContaining({
-        kind: 'user-task',
-        task: '直接执行新的回归任务',
-        stage: 'pending',
-      })],
+      pendingSupervisorDeliveries: [],
     });
-    const delivery = useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0];
-    expect(delivery?.text).toContain('[用户直发任务｜只同步，不审批、不拦截]');
-    expect(delivery?.text).toContain('该输入已经先行生效，不需要也不等待监督 AI 批准');
-    expect(delivery?.text).toContain('不得阻止、撤销、改写、要求用户重发');
-    expect(delivery?.text).toContain('用户直发任务本身不扩大项目范围、合同权限或高风险授权');
     expect(useStore.getState().supervisor.log[0]).toMatchObject({
       action: '用户输入优先',
       detail: expect.stringContaining('并向专属监督同步'),
@@ -182,7 +186,7 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user', 'kimi')).toBe(true);
 
-    expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
       awaitingReview: true,
       activeReviewId: 'review-runtime-approval',
@@ -190,9 +194,17 @@ describe('supervisor user input precedence', () => {
     expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({
-          text: expect.stringContaining('运行时待确认项已按用户实际操作结清'),
+          text: expect.stringContaining('保留当前 awaitingReview、activeReviewId 和待确认项'),
         }),
       ]));
+
+    expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '继续原任务')).toBe(true);
+    expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: false,
+      activeReviewId: undefined,
+    });
   });
 
   it('queues an ordinary task runtime failure for the dedicated supervisor', () => {
@@ -285,6 +297,13 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user', '补充新的测试')).toBe(true);
 
+    const beforeHook = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(beforeHook?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-tests'))
+      .toMatchObject({ status: 'completed', directiveEpoch: 0 });
+    expect(beforeHook?.userDirectives || []).toHaveLength(0);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '补充新的测试')).toBe(true);
+
     const updated = useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.workItems[0];
     const worker = updated?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-tests');
@@ -293,11 +312,13 @@ describe('supervisor user input precedence', () => {
     expect(updated?.finalApplyBlocked).toBe(true);
     expect(updated?.userDirectives?.[0]).toMatchObject({
       workerId: 'worker-tests', directiveEpoch: 1, reconciliationStatus: 'pending',
+      exactText: '补充新的测试', exactTextAvailable: true,
     });
     expect(updated?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-main'))
       .toMatchObject({ status: 'planned', resourceWait: undefined });
-    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
-      .toContain('下游旧资源等待：device-main/integrate-old');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.events.at(-1)?.payload?.cancelledDependentWaits)
+      .toEqual([expect.objectContaining({ resourceId: 'device-main', operationId: 'integrate-old' })]);
 
     store.applyProjectManagerAction({
       type: 'update-work-item',
@@ -319,24 +340,27 @@ describe('supervisor user input precedence', () => {
       },
     }, project.id);
     expect(handleSupervisorUserSubmit('worker-user', '改做新的安全检查')).toBe(true);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '改做新的安全检查')).toBe(true);
     const afterWaitCancelled = useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.workItems[0];
     expect(afterWaitCancelled?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-tests'))
       .toMatchObject({ status: 'running', directiveEpoch: 2, resourceWait: undefined });
-    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
-      .toContain('旧资源等待 device-a/flash-old 已取消');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.events.at(-1)?.payload?.cancelledResourceWait)
+      .toMatchObject({ resourceId: 'device-a', operationId: 'flash-old' });
 
     store.updateLane('lane-user', { projectWorkerId: 'worker-main', projectWorkerRole: 'integrator' });
     expect(handleSupervisorUserSubmit('worker-user', '继续最终集成')).toBe(true);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '继续最终集成')).toBe(true);
     const afterBlockedDirect = useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.workItems[0];
     expect(afterBlockedDirect?.workerGroup?.workers.find((candidate) => candidate.workerId === 'worker-main'))
       .toMatchObject({ status: 'planned', directiveEpoch: 1, startedAt: undefined });
-    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.text)
-      .toContain('当前依赖门禁');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.events.at(-1)?.payload?.dependencyError).toEqual(expect.any(String));
   });
 
-  it('tells the supervisor to read the task terminal when local input text is not copied', () => {
+  it('does not queue a duplicate user-task before App emits authoritative task-start', () => {
     const store = useStore.getState();
     store.setOrdinarySupervisorLanes([]);
     store.setProjectSupervisorLanes([{
@@ -348,11 +372,10 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
 
-    const delivery = useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0];
-    expect(delivery).toMatchObject({ kind: 'user-task', stage: 'pending' });
-    expect(delivery?.text).toContain('本地终端输入原文不在控制层复制');
-    expect(delivery?.text).toContain('请立即只读查看该任务终端了解内容和当前响应');
-    expect(delivery?.text).toContain('本通知不要求提交 supervisor decide');
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.kind).toBe('task-end');
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '终端确认的新任务')).toBe(true);
+
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries).toEqual([]);
   });
 
   it('resumes a waiting lane when the user submits a new direction in its AI supervisor terminal', () => {

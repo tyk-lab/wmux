@@ -7,8 +7,10 @@ export type WmuxHookRuntimeContext =
 export function resolveWmuxHookRuntimeContext(
   env: Readonly<Record<string, string | undefined>>,
 ): WmuxHookRuntimeContext {
-  if (env.WMUX_INTEGRATION?.trim() !== '1') return { state: 'inactive', missing: [] };
   const required = ['WMUX_SURFACE_ID', 'WMUX_PIPE', 'WMUX_PIPE_TOKEN'] as const;
+  const integrationDeclared = env.WMUX_INTEGRATION?.trim() === '1';
+  const capabilityDeclared = required.some((name) => !!env[name]?.trim());
+  if (!integrationDeclared && !capabilityDeclared) return { state: 'inactive', missing: [] };
   const missing = required.filter((name) => !env[name]?.trim());
   return missing.length > 0
     ? { state: 'invalid', missing }
