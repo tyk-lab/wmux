@@ -182,9 +182,9 @@ export function noteManagedAgentSemanticProgress(
   now: number,
   policy: ManagedAgentDeadlinePolicy,
 ): ManagedAgentWatchdogRuntime {
-  if (runtime.phase === 'paused') return runtime;
+  const resumed = runtime.phase === 'paused' ? resumeManagedAgentWatchdog(runtime, now) : runtime;
   return {
-    ...runtime,
+    ...resumed,
     phase: 'watching',
     lastLivenessAt: now,
     lastSemanticProgressAt: now,
