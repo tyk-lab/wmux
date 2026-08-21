@@ -1200,6 +1200,62 @@ function permissionCommandSignature(command: string): string {
   return (hash >>> 0).toString(36);
 }
 
+function supervisorDecisionTextSignature(value: unknown): string {
+  const text = String(value || '').trim().toLowerCase().replace(/\s+/gu, ' ');
+  let fnvHash = 0x811c9dc5;
+  let djbHash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    fnvHash ^= code;
+    fnvHash = Math.imul(fnvHash, 0x01000193);
+    djbHash = Math.imul(djbHash, 33) ^ code;
+  }
+  return `${text.length}:${(fnvHash >>> 0).toString(36)}:${(djbHash >>> 0).toString(36)}`;
+}
+
+function stableSupervisorDecisionValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableSupervisorDecisionValue);
+  if (!value || typeof value !== 'object') {
+    return typeof value === 'string' ? value.trim() : value;
+  }
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, stableSupervisorDecisionValue(entry)]));
+}
+
+function supervisorDecisionInputSignature(params: any): string {
+  const materialInput = {
+    outcome: params?.outcome,
+    next: params?.next,
+    nextFile: params?.nextFile,
+    stagePlan: params?.stagePlan,
+    stagePlanFile: params?.stagePlanFile,
+    proposalKind: params?.proposalKind,
+    escalationBoundary: params?.escalationBoundary,
+    reason: params?.reason,
+    impact: params?.impact,
+    alternatives: params?.alternatives,
+    permissionCommand: params?.permissionCommand,
+    permissionResponse: params?.permissionResponse,
+    executionAction: params?.executionAction,
+    command: params?.command,
+    error: params?.error,
+    workspaceVersion: params?.workspaceVersion,
+    testCommand: params?.testCommand,
+    testResult: params?.testResult,
+    changedFiles: params?.changedFiles,
+    diffSummary: params?.diffSummary,
+    evidence: params?.evidence,
+    contextSummary: params?.contextSummary,
+    completionStopWhen: params?.completionStopWhen,
+    completionValidation: params?.completionValidation,
+    remainingWork: params?.remainingWork,
+    fullSuite: params?.fullSuite === true,
+    retry: params?.retry === true,
+  };
+  return supervisorDecisionTextSignature(JSON.stringify(stableSupervisorDecisionValue(materialInput)));
+}
+
 export function permissionConfirmationLoopReason(
   lane: Pick<SupervisorLane, 'permissionConfirmations'>,
   command: string,
@@ -9595,7 +9651,7 @@ export function initPipeBridge(): void {
   // The dedicated supervisor terminal records its judgment through a silent CLI
   // call. Routing by surfaceId, not display label, keeps duplicate tab names
   // distinct inside the same workspace/session.
-  w.__wmux_supervisorDecide = (params: any) => {
+  const decideSupervisor = (params: any) => {
     const store = useStore.getState();
     const session = store.supervisor;
     const surfaceId = String(params?.surfaceId || '');
@@ -10858,6 +10914,144 @@ export function initPipeBridge(): void {
       supervisorDeliveriesInFlight.delete(lane.id);
     }
     return finishDecision();
+  };
+
+  w.__wmux_supervisorDecide = (params: any) => {
+    const initialStore = useStore.getState();
+    const surfaceId = String(params?.surfaceId || '');
+    const initialLane = initialStore.supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
+    const initialProject = initialLane?.projectManagerProjectId
+      ? initialStore.projectManagers.find((candidate) => candidate.id === initialLane.projectManagerProjectId)
+      : undefined;
+    const initialWorkItem = initialProject?.workItems.find((candidate) => (
+      candidate.id === initialLane?.projectWorkItemId
+    ));
+    const authorized = initialLane
+      && isSupervisorDecisionAuthorised(initialLane, String(params?.supervisorSurfaceId || ''));
+    const validOutcome = ['continue', 'rework', 'complete', 'needs-human']
+      .includes(String(params?.outcome || ''));
+    if (!initialLane || !initialProject || !initialWorkItem || !authorized || !validOutcome) {
+      return decideSupervisor(params);
+    }
+
+    const inputSignature = supervisorDecisionInputSignature(params);
+    const previousGuard = initialLane.supervisorDecisionErrorGuard;
+    const requirementsVersion = initialWorkItem.requirementsVersion
+      ?? projectRequirementsVersion(initialProject);
+    const authorizationVersion = initialWorkItem.authorizationVersion
+      ?? projectAuthorizationVersion(initialProject);
+    const sameScope = !!previousGuard
+      && previousGuard.workItemId === initialWorkItem.id
+      && previousGuard.requirementsVersion === requirementsVersion
+      && previousGuard.authorizationVersion === authorizationVersion
+      && (previousGuard.reviewId || '') === (initialLane.activeReviewId || '');
+    if (previousGuard?.blocked && sameScope && previousGuard.inputSignature === inputSignature) {
+      return {
+        ok: false,
+        protocolCorrectionPaused: true,
+        error: '相同的监督裁决错误已连续出现两次，当前项目专属监督处于协议纠错暂停；请修改实质输入，或由项目 AI 更新方向/工作项版本后再继续',
+      };
+    }
+    if (previousGuard?.blocked && supervisorLaneControlState(initialLane) === 'paused') {
+      initialStore.resumeSupervisorLane(initialLane.id, '监督裁决输入或项目版本已变化，尝试解除协议纠错暂停');
+      // Keep the old latch until the revised decision either succeeds or
+      // proves that it now fails for a genuinely different reason.
+      initialStore.updateLane(initialLane.id, { supervisorDecisionErrorGuard: previousGuard });
+    }
+
+    const finishGuardedDecision = (result: any) => {
+      const currentStore = useStore.getState();
+      const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === initialLane.id);
+      if (!currentLane) return result;
+      if (!result || result.ok !== false || !String(result.error || '').trim()) {
+        if (result?.ok === true && currentLane.supervisorDecisionErrorGuard) {
+          currentStore.updateLane(currentLane.id, { supervisorDecisionErrorGuard: undefined });
+        }
+        return result;
+      }
+
+      const currentProject = currentLane.projectManagerProjectId
+        ? currentStore.projectManagers.find((candidate) => candidate.id === currentLane.projectManagerProjectId)
+        : undefined;
+      const currentWorkItem = currentProject?.workItems.find((candidate) => (
+        candidate.id === currentLane.projectWorkItemId
+      ));
+      if (!currentProject || !currentWorkItem) return result;
+      const currentRequirementsVersion = currentWorkItem.requirementsVersion
+        ?? projectRequirementsVersion(currentProject);
+      const currentAuthorizationVersion = currentWorkItem.authorizationVersion
+        ?? projectAuthorizationVersion(currentProject);
+      const errorSignature = supervisorDecisionTextSignature(result.error);
+      const previousMatches = !!previousGuard
+        && previousGuard.errorSignature === errorSignature
+        && previousGuard.workItemId === currentWorkItem.id
+        && previousGuard.requirementsVersion === currentRequirementsVersion
+        && previousGuard.authorizationVersion === currentAuthorizationVersion
+        && (previousGuard.reviewId || '') === (currentLane.activeReviewId || '');
+      const occurrences = previousMatches ? previousGuard!.occurrences + 1 : 1;
+      const blocked = previousMatches && (previousGuard!.blocked || occurrences >= 2);
+      currentStore.updateLane(currentLane.id, {
+        awaitingReview: true,
+        supervisorDecisionErrorGuard: {
+          errorSignature,
+          inputSignature,
+          occurrences,
+          blocked,
+          workItemId: currentWorkItem.id,
+          requirementsVersion: currentRequirementsVersion,
+          authorizationVersion: currentAuthorizationVersion,
+          ...(currentLane.activeReviewId ? { reviewId: currentLane.activeReviewId } : {}),
+          detectedAt: Date.now(),
+        },
+      });
+      if (!blocked) return result;
+
+      if (supervisorLaneControlState(currentLane) === 'active') {
+        currentStore.pauseSupervisorLane(currentLane.id, '相同监督裁决错误连续出现两次，已进入协议纠错暂停');
+      }
+      currentStore.applyProjectManagerAction({
+        type: 'update-work-item',
+        workItemId: currentWorkItem.id,
+        patch: {
+          status: 'waiting-decision',
+          latestBlocker: `监督裁决协议错误重复：${String(result.error).slice(0, 1200)}`,
+        },
+      }, currentProject.id);
+      if (!previousGuard?.blocked) {
+        queueProjectSupervisorAnomaly(
+          currentProject,
+          currentLane,
+          currentWorkItem,
+          'supervisor.decision-error-loop',
+          '监督 AI 连续两次提交相同的无效裁决，控制层已暂停该监督通道并保留当前基线与阶段计划草稿',
+          {
+            evidence: String(result.error).slice(0, 12_000),
+            contextSummary: '请项目 AI 核对错误、合同边界与当前工作项版本，更新方向后使用同一工作项恢复监督；不要新建重复任务。',
+          },
+        );
+        saveProjectManagerSnapshot(currentProject.id);
+      }
+      return {
+        ...result,
+        protocolCorrectionPaused: true,
+        error: `${result.error}；相同错误已连续出现两次，当前项目专属监督已进入协议纠错暂停，等待实质输入变化或项目 AI 更新方向`,
+      };
+    };
+
+    const result: any = decideSupervisor(params);
+    if (result && typeof result.then === 'function') {
+      return result.then((resolved: any) => {
+        if (resolved?.ok === true) {
+          const latestLane = useStore.getState().supervisor.lanes
+            .find((candidate) => candidate.id === initialLane.id);
+          if (latestLane?.supervisorDecisionErrorGuard) {
+            useStore.getState().updateLane(latestLane.id, { supervisorDecisionErrorGuard: undefined });
+          }
+        }
+        return resolved;
+      });
+    }
+    return finishGuardedDecision(result);
   };
 
   // The Feishu main-process gateway authenticates the caller; this renderer

@@ -157,6 +157,18 @@ export interface SupervisorLane {
   autoDecisionLimitReached?: boolean;
   /** Number of AI decisions since this terminal was last acknowledged by a human. */
   autoDecisionsUsed?: number;
+  /** Repeated invalid project-supervisor decisions are latched until the input or project scope changes. */
+  supervisorDecisionErrorGuard?: {
+    errorSignature: string;
+    inputSignature: string;
+    occurrences: number;
+    blocked: boolean;
+    workItemId?: string;
+    requirementsVersion?: number;
+    authorizationVersion?: number;
+    reviewId?: string;
+    detectedAt: number;
+  };
   /** Latest task reported by the worker hook, shown with its decision history. */
   currentTask?: string;
   /** Monotonic worker turn generation advanced by UserPromptSubmit hooks. */
@@ -402,6 +414,7 @@ export function clearSupervisorLaneContext(
     lastBlockedResponseId: undefined,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
+    supervisorDecisionErrorGuard: undefined,
     pendingSupervisorDeliveries: [],
     taskRoleAnchorPending: true,
     permissionConfirmations: [],
@@ -743,6 +756,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ? {
             ...item,
             controlState: 'active' as const,
+            supervisorDecisionErrorGuard: undefined,
             ...(previousState === 'waiting' ? {
               awaitingStopCheck: false,
               stopConfirmed: false,

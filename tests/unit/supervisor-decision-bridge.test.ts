@@ -4770,6 +4770,101 @@ describe('supervisor decision bridge', () => {
       .toBe(0);
   });
 
+  it('explains why generated outputs do not belong in supervisor expected paths', () => {
+    const project = bindProjectLaneToWorkItem();
+    project.workItems[0].contract.scope.allowPaths = ['src'];
+    useStore.getState().restoreProjectManager(project);
+
+    expect(decide({
+      next: '按阶段计划完成合同内实现和验证',
+      executionAction: 'implement-and-validate',
+      stagePlanFile: '.wmux/tmp/generated-output-plan.json',
+      stagePlan: {
+        selectedRoute: '修改源码后生成并验证控制台程序',
+        milestones: [{
+          id: 'build_console', title: '构建控制台程序', outcome: '完成源码实现与构建验证', status: 'active',
+        }],
+        expectedPaths: ['console_app.exe'],
+        targetedValidation: ['npm test'],
+        serializedBoundaries: [],
+        remainingWork: ['完成源码实现与验证'],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('构建工具自动生成的二进制'),
+    });
+  });
+
+  it('pauses a project supervisor after the same invalid decision is rejected twice', () => {
+    const project = bindProjectLaneToWorkItem({ baselineRequired: true });
+    expect(decide({
+      next: '[项目基线调查] 只读核对当前工作树、入口和测试约定；不得写入或运行测试',
+      executionAction: 'readonly-project-baseline',
+    })).toMatchObject({ ok: true });
+    useStore.getState().updateLane('lane-a', { awaitingReview: true });
+
+    const invalidApproval = {
+      next: '[批准项目基线] 基线证据已核对，开始合同内实现',
+      executionAction: 'approve-project-baseline',
+      workspaceVersion: 'head:test,status:known',
+      evidence: '已审核当前工作树、入口、测试约定和改动边界',
+      changedFiles: ['src/auth.ts'],
+      testCommand: 'npm test -- auth',
+      testResult: 'planned',
+    };
+    expect(decide(invalidApproval)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('原子裁决不得携带'),
+    });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      supervisorDecisionErrorGuard: { occurrences: 1, blocked: false },
+    });
+
+    expect(decide(invalidApproval)).toMatchObject({
+      ok: false,
+      protocolCorrectionPaused: true,
+      error: expect.stringContaining('协议纠错暂停'),
+    });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'paused',
+      supervisorDecisionErrorGuard: { occurrences: 2, blocked: true },
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0])
+      .toMatchObject({ status: 'waiting-decision', baseline: { status: 'investigating' } });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventType: 'supervisor.decision-error-loop' }),
+    ]));
+    const transitionCount = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions?.length;
+    expect(decide({ ...invalidApproval, supervisorSurfaceId: 'unbound-supervisor' })).toBeNull();
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'paused',
+      supervisorDecisionErrorGuard: { occurrences: 2, blocked: true },
+    });
+    expect(decide(invalidApproval)).toMatchObject({
+      ok: false,
+      protocolCorrectionPaused: true,
+      error: expect.stringContaining('已连续出现两次'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions).toHaveLength(transitionCount || 0);
+
+    expect(decide({
+      next: '[批准项目基线] 基线证据已核对，开始合同内实现',
+      executionAction: 'approve-project-baseline',
+      workspaceVersion: 'head:test,status:known',
+      evidence: '已审核当前工作树、入口、测试约定和改动边界',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      supervisorDecisionErrorGuard: undefined,
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0])
+      .toMatchObject({ status: 'running', baseline: { status: 'approved' } });
+  });
+
   it('matches permission evidence only in the active prompt tail', () => {
     const staleEvidence = [
       'Permission required: npm test -- auth',
