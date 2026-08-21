@@ -2098,6 +2098,18 @@
       'main';
   }
 
+  .project-manager-dialog__workspace[data-console='0'][data-has-projects='1'][data-creating='0'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'projects';
+  }
+
+  .project-manager-dialog__workspace[data-console='0'][data-has-projects='1'][data-creating='1'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'projects'
+      'main';
+  }
+
   .project-manager-dialog__workspace[data-has-projects='0'] {
     grid-template-areas: 'main';
   }

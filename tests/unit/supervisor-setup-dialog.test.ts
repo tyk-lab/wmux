@@ -67,6 +67,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('项目数量不受限制');
     expect(projectManagerDialogSource).toContain('查看当前项目 AI 处理日志');
     expect(projectManagerDialogSource).toContain('添加项目');
+    expect(projectManagerDialogSource).toContain('disabled={creating}');
+    expect(projectManagerDialogSource).toContain('onClick={beginCreatingProject}');
+    expect(projectManagerDialogSource).toContain('id="project-manager-create-form"');
+    expect(projectManagerDialogSource).toContain("form.scrollIntoView({ block: 'start' })");
+    expect(projectManagerDialogSource).toContain("?.focus({ preventScroll: true })");
+    expect(projectManagerDialogSource).not.toContain("setCreating(dialogView === 'create' || sessions.length === 0)");
     expect(projectManagerDialogSource).toContain('项目管理模式 Agent 配置');
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
@@ -336,6 +342,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(supervisorCssSource).toContain("grid-template-areas: 'projects main'");
     expect(supervisorCssSource).toContain('@media (max-width: 1100px)');
     expect(supervisorCssSource).toContain('@media (max-width: 820px)');
+    expect(supervisorCssSource).toMatch(
+      /\[data-console='0'\]\[data-has-projects='1'\]\[data-creating='1'\][\s\S]*?grid-template-areas:\s*'projects'\s*'main'/,
+    );
   });
 
   it('keeps the project message composer in normal flow so it cannot cover history', () => {

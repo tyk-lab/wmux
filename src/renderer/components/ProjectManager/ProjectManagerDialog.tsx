@@ -332,6 +332,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [workItemInterventionNotice, setWorkItemInterventionNotice] = useState('');
   const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('conversation');
   const goalRef = useRef<HTMLTextAreaElement | null>(null);
+  const creationFormRef = useRef<HTMLElement | null>(null);
   const recoveryDeleteCancelRef = useRef<HTMLButtonElement | null>(null);
   const clarificationRef = useRef<HTMLElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
@@ -420,10 +421,27 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   }, [open, session?.id]);
 
   useEffect(() => {
-    if (embedded || !dialogOpen) return;
-    setCreating(dialogView === 'create' || sessions.length === 0);
+    if (embedded) return;
+    if (!dialogOpen) {
+      setCreating(false);
+      return;
+    }
+    if (dialogView === 'create' || sessions.length === 0) setCreating(true);
     if (dialogView === 'create') setNotice('');
   }, [dialogOpen, dialogView, embedded, sessions.length]);
+
+  useEffect(() => {
+    if (!open || !creating || (sessions.length === 0 && recoveryStatus !== 'done')) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const form = creationFormRef.current;
+      if (!form) return;
+      form.scrollIntoView({ block: 'start' });
+      form.querySelector<HTMLElement>(
+        'input:not([type="radio"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      )?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [creating, open, recoveryStatus, sessions.length]);
 
   useEffect(() => {
     setWorkItemInterventionId('');
@@ -506,6 +524,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setRecoveryStatus('done');
     });
   }, [open, recoveryStatus, sessions.length]);
+
+  const beginCreatingProject = () => {
+    if (creating) return;
+    setCreating(true);
+    setProjectDir('');
+    setProjectName('');
+    setProjectScope('');
+    setNotice('');
+  };
 
   if (!open) return null;
 
@@ -1184,13 +1211,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   <div className="supervisor-dialog__group-title">项目（{activeSessionCount} 个活动）</div>
                   <div className="supervisor-dialog__hint">项目数量不受限制；同一项目目录同时只允许一个活动项目 AI，已完成或停止的历史记录会保留。每个活动项目使用独立会话，内部始终只有一个项目 AI 和一条监督链。</div>
                 </div>
-                <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
-                  setCreating(true);
-                  setProjectDir('');
-                  setProjectName('');
-                  setProjectScope('');
-                  setNotice('');
-                }}>添加项目</button>
+                <button
+                  type="button"
+                  className="confirm-dialog__btn"
+                  disabled={creating}
+                  aria-controls="project-manager-create-form"
+                  onClick={beginCreatingProject}
+                >{creating ? '正在填写' : '添加项目'}</button>
               </div>
               <div className="project-manager-dialog__project-list">
                 {sessions.map((candidate) => (
@@ -1236,7 +1263,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           )}
 
           {!awaitingRecovery && (
-            creating || (!embedded && !session) ? <section className="supervisor-dialog__group">
+            creating || (!embedded && !session) ? <section
+              id="project-manager-create-form"
+              ref={creationFormRef}
+              className="supervisor-dialog__group"
+            >
               <div className="supervisor-dialog__group-title">添加项目</div>
               <div className="supervisor-dialog__hint">可以直接填写项目定义，也可以让项目 AI 从已有终端的 Agent 对话和当前目录进度开始梳理。</div>
               <div className="supervisor-dialog__label">创建方式</div>
