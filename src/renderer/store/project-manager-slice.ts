@@ -708,10 +708,16 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const updated = updateWorkItem(session, action.workItemId, (item) => {
         const nextRequirementsVersion = safePatch.requirementsVersion || item.requirementsVersion
           || projectRequirementsVersion(session);
-        const resetBaseline = nextRequirementsVersion !== item.requirementsVersion
-          || (safePatch.contract !== undefined
-            && JSON.stringify(safePatch.contract) !== JSON.stringify(item.contract))
-          || (safePatch.subgoalId !== undefined && safePatch.subgoalId !== item.subgoalId);
+        const requirementsChanged = nextRequirementsVersion !== item.requirementsVersion;
+        const contractChanged = safePatch.contract !== undefined
+          && JSON.stringify(safePatch.contract) !== JSON.stringify(item.contract);
+        const subgoalChanged = safePatch.subgoalId !== undefined && safePatch.subgoalId !== item.subgoalId;
+        // A contract clarification must not erase an already-delivered read-only
+        // investigation. Approved evidence is stricter and is invalidated because
+        // the new contract may require inspecting additional paths or boundaries.
+        const resetBaseline = requirementsChanged
+          || subgoalChanged
+          || (contractChanged && item.baseline?.status === 'approved');
         return {
           ...item,
           ...safePatch,
@@ -918,6 +924,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           ? { ...goal, status: 'active' as const, activatedAt: now }
           : goal),
         pausedByPortfolio: false,
+        safeExit: undefined,
         ...(action.acceptRequirementsVersion
           ? { acceptedRequirementsVersion: projectRequirementsVersion(session) }
           : {}),

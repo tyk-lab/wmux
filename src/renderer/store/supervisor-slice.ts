@@ -34,7 +34,7 @@ export interface SupervisorDecision {
 /** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */
 export interface SupervisorDelivery {
   id: string;
-  kind: 'task-start' | 'task-end' | 'task-interrupted' | 'worker-status' | 'liveness-probe' | 'agent-recovery' | 'user-task';
+  kind: 'task-end' | 'task-interrupted' | 'worker-status' | 'liveness-probe' | 'agent-recovery' | 'user-task' | 'owner-decision' | 'control-message';
   text: string;
   task: string;
   createdAt: number;
@@ -42,8 +42,11 @@ export interface SupervisorDelivery {
   turnId?: number;
   /** Review generation that must be acknowledged by the matching supervisor decision. */
   reviewId?: string;
-  /** Paste succeeded; only Enter remains, so retries must not duplicate text. */
-  stage?: 'pending' | 'pasted';
+  /** Owner decision identity used to coalesce decisions that have not reached the supervisor yet. */
+  correlationId?: string;
+  /** Transport progress; submitted remains queued until the Agent hook confirms consumption. */
+  stage: 'pending' | 'pasted' | 'submitted';
+  submittedAt?: number;
 }
 
 /** Explicitly chosen historical terminal whose audit context may be restored. */
@@ -174,7 +177,10 @@ export interface SupervisorLane {
     workItemId?: string;
     requirementsVersion?: number;
     authorizationVersion?: number;
+    contractSignature?: string;
     reviewId?: string;
+    /** Stable semantic blocker class; survives wording and review-id changes. */
+    blockerCategory?: string;
     detectedAt: number;
   };
   /** Latest task reported by the worker hook, shown with its decision history. */
@@ -422,8 +428,9 @@ export function clearSupervisorLaneContext(
     lastBlockedResponseId: undefined,
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
-    supervisorDecisionErrorGuard: undefined,
-    pendingSupervisorDeliveries: [],
+    pendingSupervisorDeliveries: (lane.pendingSupervisorDeliveries || [])
+      .filter((delivery) => delivery.kind === 'owner-decision' || delivery.kind === 'control-message')
+      .map((delivery) => ({ ...delivery, stage: 'pending' as const, submittedAt: undefined })),
     taskRoleAnchorPending: true,
     permissionConfirmations: [],
     decisions: [],
@@ -764,7 +771,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
         ? {
             ...item,
             controlState: 'active' as const,
-            supervisorDecisionErrorGuard: undefined,
             ...(previousState === 'waiting' ? {
               awaitingStopCheck: false,
               stopConfirmed: false,
@@ -778,6 +784,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
               resumeAfterCancelledDecision: false,
               autoDecisionLimitReached: false,
               autoDecisionsUsed: 0,
+              supervisorDecisionErrorGuard: undefined,
               pendingSupervisorDeliveries: [],
             } : {}),
           }

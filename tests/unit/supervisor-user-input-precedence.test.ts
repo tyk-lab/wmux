@@ -360,7 +360,7 @@ describe('supervisor user input precedence', () => {
       ?.events.at(-1)?.payload?.dependencyError).toEqual(expect.any(String));
   });
 
-  it('does not queue a duplicate user-task before App emits authoritative task-start', () => {
+  it('does not queue a duplicate user-task before App handles the authoritative UserPromptSubmit hook', () => {
     const store = useStore.getState();
     store.setOrdinarySupervisorLanes([]);
     store.setProjectSupervisorLanes([{

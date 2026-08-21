@@ -326,6 +326,34 @@ function isProjectSupervisorStagePlan(value: unknown): boolean {
     && activeMilestones <= 1;
 }
 
+function isProjectSafeExitState(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Record<string, unknown>;
+  if (
+    !['saving', 'blocked', 'saved', 'restoring'].includes(String(state.status))
+    || !Number.isFinite(state.requestedAt)
+    || !Number.isFinite(state.updatedAt)
+    || (state.completedAt !== undefined && !Number.isFinite(state.completedAt))
+    || typeof state.reason !== 'string'
+    || (state.progressFingerprint !== undefined && typeof state.progressFingerprint !== 'string')
+    || !Array.isArray(state.terminalCheckpoints)
+    || state.terminalCheckpoints.length > 100
+    || (state.blockedTerminalIds !== undefined && !isStringArray(state.blockedTerminalIds))
+    || (state.error !== undefined && typeof state.error !== 'string')
+  ) return false;
+  return state.terminalCheckpoints.every((checkpoint) => {
+    if (!checkpoint || typeof checkpoint !== 'object') return false;
+    const item = checkpoint as Record<string, unknown>;
+    return typeof item.surfaceId === 'string'
+      && ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(item.role))
+      && typeof item.label === 'string'
+      && (item.workItemId === undefined || typeof item.workItemId === 'string')
+      && ['idle', 'working', 'blocked', 'unknown'].includes(String(item.activityState))
+      && (item.activityUpdatedAt === undefined || Number.isFinite(item.activityUpdatedAt))
+      && (item.excerpt === undefined || typeof item.excerpt === 'string');
+  });
+}
+
 function isProjectManagerSession(value: unknown): value is ProjectManagerSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
@@ -381,6 +409,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
     || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
     || (session.orientation !== undefined && !normalizeProjectOrientationState(session.orientation))
+    || (session.safeExit !== undefined && !isProjectSafeExitState(session.safeExit))
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')

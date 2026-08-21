@@ -195,10 +195,18 @@ function operationalEventMarkdown(event: AuditEvent): string | null {
     const error = payloadText(payload, 'error') || '未知错误';
     return `- ${at} · **${kind}发送失败**：${inlineMarkdownText(error)}`;
   }
-  if (event.type === 'supervisor.delivery.queued' || event.type === 'supervisor.delivery.delivered') {
+  if (
+    event.type === 'supervisor.delivery.queued'
+    || event.type === 'supervisor.delivery.submitted'
+    || event.type === 'supervisor.delivery.delivered'
+  ) {
     const kind = payloadText(payload, 'kind');
     const label = supervisorDeliveryLabel(kind as SupervisorDelivery['kind']);
-    const status = event.type === 'supervisor.delivery.queued' ? '待投递' : '已送达';
+    const status = event.type === 'supervisor.delivery.queued'
+      ? '待投递'
+      : event.type === 'supervisor.delivery.submitted'
+        ? '已提交，等待 Agent 确认'
+        : '已送达';
     return `- ${at} · 监督通知${status}：${label}`;
   }
   if (event.type === 'session.started') {

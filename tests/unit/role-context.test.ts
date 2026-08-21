@@ -364,6 +364,7 @@ describe('unified managed AI role context', () => {
     const event = withProjectManagerEventEnvelope('进度通知', 'project-a');
     expect(event).toContain(projectManagerEventEnvelope('project-a'));
     expect(event).toContain('无需重读技能或重新确认角色');
+    expect(event).toContain('baseline.status=required 时只安排一次 [项目基线调查]');
     expect(event).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(withProjectManagerEventEnvelope(event, 'project-a')).toBe(event);
 

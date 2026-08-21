@@ -814,7 +814,13 @@ describe('supervisor isolation', () => {
   it('clears supervisor context but retains monitored-terminal facts on restart', () => {
     const monitored = lane({
       currentTask: '修复登录',
-      pendingSupervisorDeliveries: [{ id: 'delivery-1', kind: 'task-end', text: '已结束', task: '修复登录', createdAt: 1 }],
+      pendingSupervisorDeliveries: [
+        { id: 'delivery-1', kind: 'task-end', text: '已结束', task: '修复登录', createdAt: 1 },
+        {
+          id: 'owner-1', kind: 'owner-decision', text: '项目 AI 最新方向', task: '修复登录',
+          createdAt: 2, correlationId: 'approval-1', stage: 'pasted',
+        },
+      ],
       decisions: [{ ts: 1, task: '修复登录', outcome: 'continue', reason: '继续', next: '' }],
       restoredHistory: '上一轮记录',
       restoredFromSessionId: 'sup-old',
@@ -822,6 +828,11 @@ describe('supervisor isolation', () => {
       awaitingReview: true,
       autoDecisionLimitReached: true,
       autoDecisionsUsed: 2,
+      supervisorDecisionErrorGuard: {
+        errorSignature: 'baseline-error', inputSignature: 'approval-input',
+        occurrences: 2, blocked: true, workItemId: 'task-a',
+        blockerCategory: 'project-baseline-not-investigating', detectedAt: 1,
+      },
     });
 
     const restarted = clearSupervisorLaneContext(monitored, 'supervisor-new' as any);
@@ -830,11 +841,17 @@ describe('supervisor isolation', () => {
       surfaceId: 'worker-a',
       supervisorSurfaceId: 'supervisor-new',
       currentTask: '修复登录',
-      pendingSupervisorDeliveries: [],
+      pendingSupervisorDeliveries: [{
+        id: 'owner-1', kind: 'owner-decision', text: '项目 AI 最新方向', task: '修复登录',
+        createdAt: 2, correlationId: 'approval-1', stage: 'pending',
+      }],
       decisions: [],
       awaitingReview: false,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
+      supervisorDecisionErrorGuard: {
+        occurrences: 2, blocked: true, blockerCategory: 'project-baseline-not-investigating',
+      },
     });
     expect(restarted.restoredHistory).toBeUndefined();
     expect(restarted.restoreSource).toBeUndefined();

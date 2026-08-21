@@ -11,27 +11,17 @@ import {
 } from '../../src/renderer/supervisor/delivery';
 import { isAwaitingNextPromptState } from '../../src/renderer/agent-state-semantics';
 
-const event = (id: string, kind: 'task-start' | 'task-end', task: string, turnId?: number) => ({
+const event = (id: string, kind: 'task-end', task: string, turnId?: number) => ({
   id,
   kind,
   task,
   text: task,
   createdAt: 1,
   turnId,
+  stage: 'pending' as const,
 });
 
 describe('supervisor delivery queue', () => {
-  it('keeps task-start as control state and delivers only the terminal review', () => {
-    const start = event('start', 'task-start', '运行测试', 1);
-    const once = enqueueSupervisorDelivery([], start);
-    const duplicate = enqueueSupervisorDelivery(once, { ...start, id: 'duplicate' });
-    const complete = enqueueSupervisorDelivery(duplicate, event('end', 'task-end', '运行测试', 1));
-
-    expect(duplicate).toBe(once);
-    expect(once).toEqual([]);
-    expect(complete.map((item) => item.id)).toEqual(['end']);
-  });
-
   it('preserves repeated task text from different worker turns', () => {
     const first = event('end-1', 'task-end', '运行测试', 1);
     const second = event('end-2', 'task-end', '运行测试', 2);
@@ -62,13 +52,43 @@ describe('supervisor delivery queue', () => {
       .toEqual(['status-pasted', 'status-latest']);
   });
 
+  it('coalesces owner decisions while the supervisor is busy and keeps the latest direction', () => {
+    const first = {
+      id: 'owner-1', kind: 'owner-decision' as const, task: '实现功能',
+      text: '采用旧方向', createdAt: 1, correlationId: 'approval-1', stage: 'pending' as const,
+    };
+    const latest = {
+      ...first, id: 'owner-2', text: '采用最新方向', createdAt: 2, correlationId: 'approval-2',
+    };
+
+    expect(enqueueSupervisorDelivery([first], latest)).toEqual([latest]);
+    expect(nextDeliverableSupervisorDelivery([latest], { state: 'working' })).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([latest], { state: 'unknown' })).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([latest], { state: 'idle' })?.id).toBe('owner-2');
+  });
+
+  it('does not replace owner decision text after it has already been pasted', () => {
+    const pasted = {
+      id: 'owner-pasted', kind: 'owner-decision' as const, task: '实现功能',
+      text: '已粘贴方向', createdAt: 1, correlationId: 'approval-1', stage: 'pasted' as const,
+    };
+    const latest = {
+      ...pasted, id: 'owner-latest', text: '后续方向', createdAt: 2,
+      correlationId: 'approval-2', stage: 'pending' as const,
+    };
+
+    expect(enqueueSupervisorDelivery([pasted], latest).map((item) => item.id))
+      .toEqual(['owner-pasted', 'owner-latest']);
+    expect(nextDeliverableSupervisorDelivery([pasted, latest], { state: 'working' })).toBeUndefined();
+  });
+
   it('waits while the dedicated supervisor is working or blocked', () => {
     expect(canDeliverToSupervisor('working')).toBe(false);
     expect(canDeliverToSupervisor('blocked')).toBe(false);
     expect(canDeliverToSupervisor({ state: 'blocked', blockedReason: 'permission: npm test' })).toBe(false);
     expect(canDeliverToSupervisor({ state: 'blocked', blockedReason: 'question: choose A or B' })).toBe(false);
     expect(canDeliverToSupervisor('idle')).toBe(true);
-    expect(canDeliverToSupervisor('unknown')).toBe(true);
+    expect(canDeliverToSupervisor('unknown')).toBe(false);
   });
 
   it('delivers a queued lifecycle fact when the supervisor is only waiting for its next prompt', () => {
@@ -117,7 +137,7 @@ describe('supervisor delivery queue', () => {
     };
     const completed = event('end', 'task-end', '运行测试', 2);
 
-    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'unknown')?.id).toBe('end');
+    expect(nextDeliverableSupervisorDelivery([liveness, completed], 'unknown')).toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([liveness, completed], 'idle')?.id).toBe('end');
     expect(nextDeliverableSupervisorDelivery([liveness, completed], 'working')).toBeUndefined();
     expect(enqueueSupervisorDelivery([liveness], completed).map((item) => item.id)).toEqual(['end']);
@@ -145,6 +165,18 @@ describe('supervisor delivery queue', () => {
       .toEqual(['user-task', 'end']);
   });
 
+  it('keeps a submitted delivery as an acknowledgement barrier', () => {
+    const submitted = {
+      id: 'submitted-control', kind: 'control-message' as const, task: '同步新约束',
+      text: '重新核对约束', createdAt: 1, stage: 'submitted' as const, submittedAt: 2,
+    };
+    const later = event('end', 'task-end', '运行测试', 3);
+
+    expect(nextDeliverableSupervisorDelivery([submitted, later], 'idle')).toBeUndefined();
+    expect(enqueueSupervisorDelivery([submitted], later).map((item) => item.id))
+      .toEqual(['submitted-control', 'end']);
+  });
+
   it('keeps only the latest actionable fact for one review generation', () => {
     const completed = {
       ...event('end', 'task-end', '运行测试', 2),
@@ -157,18 +189,6 @@ describe('supervisor delivery queue', () => {
       reviewId: 'review-2', stage: 'pending' as const,
     };
     expect(enqueueSupervisorDelivery([completed], blocked)).toEqual([blocked]);
-  });
-
-  it('does not turn an authoritative task-start hook into another AI message', () => {
-    const userTask = {
-      id: 'user-task', kind: 'user-task' as const, task: '用户直发回归任务',
-      text: '仅同步用户任务', createdAt: 1, turnId: 1, stage: 'pending' as const,
-    };
-    const started = event('start', 'task-start', '用户直发回归任务', 2);
-
-    expect(enqueueSupervisorDelivery([userTask], started).map((item) => item.id)).toEqual(['user-task']);
-    expect(enqueueSupervisorDelivery([{ ...userTask, stage: 'pasted' }], started).map((item) => item.id))
-      .toEqual(['user-task']);
   });
 
   it('lets a newer user-direct task supersede an undelivered older review', () => {
@@ -200,6 +220,7 @@ describe('supervisor delivery queue', () => {
     expect(supervisorDeliveryLabel('liveness-probe')).toBe('活性检查');
     expect(supervisorDeliveryLabel('agent-recovery')).toBe('Agent 恢复');
     expect(supervisorDeliveryLabel('user-task')).toBe('用户直发任务');
+    expect(supervisorDeliveryLabel('owner-decision')).toBe('上级决策');
   });
 
   it('reports any active supervisor turn that ended without a structured state handoff', () => {

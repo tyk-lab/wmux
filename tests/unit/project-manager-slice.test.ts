@@ -233,6 +233,18 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
       status: 'investigating', investigationRounds: 1,
     });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'baseline-task',
+      patch: {
+        contract: {
+          ...forged.contract,
+          description: '调查期间补充合同边界',
+        },
+      },
+    });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
+      status: 'investigating', investigationRounds: 1,
+    });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'start-work-item-baseline', workItemId: 'baseline-task',
     })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
@@ -583,6 +595,31 @@ describe('project-manager slice', () => {
     useStore.getState().applyProjectManagerAction({ type: 'resume-project', reason: '继续' });
     expect(useStore.getState().projectManager?.status).toBe('active');
     expect(useStore.getState().projectManager?.workItems[0].id).toBe('auth');
+  });
+
+  it('clears the safe-exit marker only after the project actually resumes', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'],
+    });
+    useStore.getState().restoreProjectManager({
+      ...project,
+      status: 'paused',
+      safeExit: {
+        status: 'saved',
+        requestedAt: 10,
+        updatedAt: 20,
+        completedAt: 20,
+        reason: '用户关闭项目',
+        progressFingerprint: 'snapshot-1',
+        terminalCheckpoints: [],
+      },
+    });
+
+    useStore.getState().applyProjectManagerAction({ type: 'resume-project', reason: '恢复检查完成' });
+
+    expect(useStore.getState().projectManager).toMatchObject({ status: 'active' });
+    expect(useStore.getState().projectManager?.safeExit).toBeUndefined();
   });
 
   it('pauses one project without changing another and tracks portfolio pauses separately', () => {

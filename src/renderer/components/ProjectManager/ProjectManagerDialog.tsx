@@ -115,15 +115,21 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
   'task-runtime-failed': '任务终端 AI 故障',
   'manager-delivery-failed': '项目管理消息投递失败',
   'requirements-quiesce-failed': '需求变更停机确认失败',
+  'project-safe-exit-failed': '项目安全退出等待处理',
   'guard-triggered': '项目执行护栏已停止推进',
   'project-paused': '项目 AI 主动暂停',
 };
 
 function projectActivityLabel(session: {
   status: string;
+  safeExit?: { status: string };
   activeGoalId?: string;
   workItems: Array<{ goalId?: string; status: string; workerSurfaceId?: string; supervisorLaneId?: string; latestBlocker?: string }>;
 }): string {
+  if (session.safeExit?.status === 'saving') return '正在保存进度';
+  if (session.safeExit?.status === 'blocked') return '安全退出受阻';
+  if (session.safeExit?.status === 'saved') return '已安全退出';
+  if (session.safeExit?.status === 'restoring') return '正在恢复';
   if (session.status !== 'active') return STATUS_LABELS[session.status] || session.status;
   const workItems = session.workItems.filter((item) => (
     !session.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
@@ -864,6 +870,28 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     }
   };
 
+  const saveProgressAndExit = async () => {
+    if (!session || busy) return;
+    const retrying = session.safeExit?.status === 'blocked';
+    if (!retrying && !window.confirm(
+      `将暂停“${projectDisplayName(session)}”，保存项目状态、目录快照和终端恢复摘要，再关闭该项目的项目 AI、监督 AI 与任务 AI 运行时。不会自动提交 Git。是否继续？`,
+    )) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await invoke({
+        action: 'save-and-exit',
+        projectId: session.id,
+        reason: '用户准备关闭项目，保存当前进度以便后续恢复',
+      });
+      if (!result.safeExited) setNotice(result.message || '部分终端尚未到达安全检查点，项目保持暂停。');
+    } catch (error) {
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const controlPortfolio = async (action: 'pause-all-projects' | 'resume-all-projects') => {
     setBusy(true);
     setNotice('');
@@ -1184,6 +1212,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               <div className="project-manager-dialog__portfolio-actions">
                 {canPausePortfolio && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void controlPortfolio('pause-all-projects')}>全部暂停</button>}
                 {canResumePortfolio && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void controlPortfolio('resume-all-projects')}>全部恢复</button>}
+                {session && !['completed', 'stopped'].includes(session.status) && !['saved', 'restoring'].includes(session.safeExit?.status || '') && (
+                  <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void saveProgressAndExit()}>
+                    {session.safeExit?.status === 'blocked' ? '重试安全退出' : '保存进度并安全退出'}
+                  </button>
+                )}
                 {session && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void deleteSelectedProject()}>删除选中项目</button>}
               </div>
             </section>
@@ -1654,6 +1687,31 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div><dt>待决策</dt><dd>{currentWorkItems.filter((item) => item.status === 'waiting-decision').length}</dd></div>
                 <div><dt>项目总数</dt><dd>{sessions.length}</dd></div>
               </dl>
+              {session.safeExit && (
+                <section className="project-manager-dialog__safe-exit" data-status={session.safeExit.status} role="status">
+                  <span>{session.safeExit.status === 'saved'
+                    ? '项目进度已保存'
+                    : session.safeExit.status === 'blocked'
+                      ? '安全退出尚未完成'
+                      : session.safeExit.status === 'restoring'
+                        ? '正在恢复项目运行链'
+                        : '正在等待安全检查点'}</span>
+                  <strong>{session.safeExit.status === 'saved'
+                    ? '项目运行时已关闭，可随时恢复'
+                    : session.safeExit.status === 'blocked'
+                      ? session.safeExit.error || '部分终端仍在工作或状态未知'
+                      : session.safeExit.status === 'restoring'
+                        ? '项目 AI 正在核对目录与恢复摘要'
+                        : '不会强制中断正在工作的 Agent'}</strong>
+                  {session.safeExit.status === 'blocked' && session.safeExit.blockedTerminalIds?.length ? (
+                    <small>{session.safeExit.terminalCheckpoints
+                      .filter((checkpoint) => session.safeExit?.blockedTerminalIds?.includes(checkpoint.surfaceId))
+                      .map((checkpoint) => `${checkpoint.label}（${checkpoint.activityState === 'working' ? '工作中' : '状态未知'}）`)
+                      .join('、')}</small>
+                  ) : null}
+                  {session.safeExit.completedAt ? <small>{new Date(session.safeExit.completedAt).toLocaleString('zh-CN', { hour12: false })}</small> : null}
+                </section>
+              )}
               {activeAlert && (
                 <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView('execution')}>
                   <span>需要处理</span>
@@ -1664,7 +1722,20 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 {session.status === 'active' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('pause')}>暂停项目</button>}
                 {(session.status === 'paused' || session.status === 'waiting')
                   && currentGoal?.status !== 'achieved'
-                  && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('resume')}>恢复项目</button>}
+                  && session.safeExit?.status !== 'blocked'
+                  && session.safeExit?.status !== 'saving'
+                  && <button type="button" className="confirm-dialog__btn" disabled={busy || session.safeExit?.status === 'restoring'} onClick={() => void control('resume')}>
+                    {session.safeExit?.status === 'saved' ? '恢复已保存项目' : session.safeExit?.status === 'restoring' ? '正在恢复…' : '恢复项目'}
+                  </button>}
+                {!['completed', 'stopped'].includes(session.status) && !['saved', 'restoring'].includes(session.safeExit?.status || '') && (
+                  <button type="button" className="confirm-dialog__btn project-manager-dialog__safe-exit-btn" disabled={busy} onClick={() => void saveProgressAndExit()}>
+                    {busy && session.safeExit?.status === 'saving'
+                      ? '正在保存…'
+                      : session.safeExit?.status === 'blocked'
+                        ? '重试保存并安全退出'
+                        : '保存进度并安全退出'}
+                  </button>
+                )}
                 {session.status === 'waiting' && currentGoal?.status === 'achieved' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
                   setGoalChangeMode('pivot');
                   setActiveView('requirements');

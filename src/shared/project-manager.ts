@@ -105,6 +105,9 @@ export type ProjectManagerEventKind =
   | 'guard-triggered'
   | 'project-paused'
   | 'project-resumed'
+  | 'project-safe-exit-requested'
+  | 'project-safe-exit-failed'
+  | 'project-safe-exit-completed'
   | 'project-completed'
   | 'project-stopped'
   | 'manager-reply';
@@ -609,6 +612,9 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
       resolvedKinds.add('manager-runtime-failed');
       resolvedKinds.add('supervisor-runtime-failed');
       resolvedKinds.add('task-runtime-failed');
+      resolvedKinds.add('project-safe-exit-failed');
+    } else if (event.kind === 'project-safe-exit-completed') {
+      resolvedKinds.add('project-safe-exit-failed');
     } else if (event.kind === 'requirements-quiesced') {
       resolvedKinds.add('requirements-quiesce-failed');
     }
@@ -631,6 +637,32 @@ export interface ProjectManagerPendingDelivery {
   transitionId?: string;
   /** Actionable decisions stay ahead of informational messages, including after restore. */
   priority?: boolean;
+  /** PTY transport progress; submitted messages await an Agent lifecycle acknowledgement. */
+  stage?: 'pending' | 'submitting' | 'submitted';
+  submittedAt?: number;
+}
+
+export interface ProjectSafeExitTerminalCheckpoint {
+  surfaceId: string;
+  role: 'project-ai' | 'supervisor-ai' | 'task-ai';
+  label: string;
+  workItemId?: string;
+  activityState: 'idle' | 'working' | 'blocked' | 'unknown';
+  activityUpdatedAt?: number;
+  excerpt?: string;
+}
+
+/** Durable state for a user-requested, recoverable shutdown of one project runtime. */
+export interface ProjectSafeExitState {
+  status: 'saving' | 'blocked' | 'saved' | 'restoring';
+  requestedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  reason: string;
+  progressFingerprint?: string;
+  terminalCheckpoints: ProjectSafeExitTerminalCheckpoint[];
+  blockedTerminalIds?: string[];
+  error?: string;
 }
 
 export type ProjectSupervisorTransitionKind =
@@ -690,6 +722,8 @@ export interface ProjectManagerSession {
   managerSurfaceId?: string;
   feishuChatId?: string;
   recoveryState?: 'ready' | 'checking';
+  /** Present while a project is saving, safely detached, or rebuilding from a safe exit. */
+  safeExit?: ProjectSafeExitState;
   /** Last workspace state explicitly seen by the project AI or a trusted stage checkpoint. */
   progressSnapshot?: ProjectProgressSnapshot;
   /** Blocks stale task dispatch until the project AI has reviewed a changed recovery snapshot. */
@@ -697,7 +731,7 @@ export interface ProjectManagerSession {
   /** Blocks project-level planning and dispatch until the project AI records a structured understanding. */
   orientation?: ProjectOrientationState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
-  /** Manager-bound messages that have not yet been written to the manager terminal. */
+  /** Manager-bound messages retained until the manager Agent acknowledges prompt submission. */
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
   /** Actionable supervisor handoffs remain here until the project AI records a resolution. */
   pendingSupervisorTransitions?: ProjectSupervisorTransition[];
@@ -1321,6 +1355,43 @@ export function resolveProjectParallelismDecision(options: {
   };
 }
 
+function normalizeProjectSafeExitState(value: ProjectSafeExitState | undefined): ProjectSafeExitState | undefined {
+  if (!value || !['saving', 'blocked', 'saved', 'restoring'].includes(value.status)) return undefined;
+  if (!Number.isFinite(value.requestedAt) || !Number.isFinite(value.updatedAt)) return undefined;
+  return {
+    status: value.status,
+    requestedAt: value.requestedAt,
+    updatedAt: value.updatedAt,
+    ...(Number.isFinite(value.completedAt) ? { completedAt: value.completedAt } : {}),
+    reason: String(value.reason || '').trim().slice(0, 2000),
+    ...(value.progressFingerprint?.trim()
+      ? { progressFingerprint: value.progressFingerprint.trim().slice(0, 500) }
+      : {}),
+    terminalCheckpoints: (Array.isArray(value.terminalCheckpoints) ? value.terminalCheckpoints : [])
+      .slice(0, 100)
+      .filter((checkpoint) => (
+        !!checkpoint
+        && typeof checkpoint.surfaceId === 'string'
+        && ['project-ai', 'supervisor-ai', 'task-ai'].includes(checkpoint.role)
+        && ['idle', 'working', 'blocked', 'unknown'].includes(checkpoint.activityState)
+      ))
+      .map((checkpoint) => ({
+        surfaceId: checkpoint.surfaceId.trim().slice(0, 200),
+        role: checkpoint.role,
+        label: String(checkpoint.label || '').trim().slice(0, 500),
+        ...(checkpoint.workItemId?.trim() ? { workItemId: checkpoint.workItemId.trim().slice(0, 200) } : {}),
+        activityState: checkpoint.activityState,
+        ...(Number.isFinite(checkpoint.activityUpdatedAt) ? { activityUpdatedAt: checkpoint.activityUpdatedAt } : {}),
+        ...(checkpoint.excerpt?.trim() ? { excerpt: checkpoint.excerpt.trim().slice(0, 4000) } : {}),
+      })),
+    blockedTerminalIds: (Array.isArray(value.blockedTerminalIds) ? value.blockedTerminalIds : [])
+      .map((id) => String(id || '').trim().slice(0, 200))
+      .filter(Boolean)
+      .slice(0, 100),
+    ...(value.error?.trim() ? { error: value.error.trim().slice(0, 4000) } : {}),
+  };
+}
+
 /** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
@@ -1379,6 +1450,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
+    safeExit: normalizeProjectSafeExitState(session.safeExit),
     pendingSupervisorTransitions: (Array.isArray(session.pendingSupervisorTransitions)
       ? session.pendingSupervisorTransitions
       : [])

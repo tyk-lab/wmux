@@ -511,6 +511,36 @@ describe('project manager records', () => {
     expect(fs.readFileSync(result.path, 'utf8')).toContain('manager-reply');
   });
 
+  it('persists a recoverable safe-exit checkpoint', () => {
+    const appData = root();
+    saveProjectManagerSession({
+      ...session('pm-safe-exit', 30),
+      status: 'paused',
+      safeExit: {
+        status: 'saved',
+        requestedAt: 20,
+        updatedAt: 30,
+        completedAt: 30,
+        reason: '用户关闭项目',
+        progressFingerprint: 'fingerprint-1',
+        terminalCheckpoints: [{
+          surfaceId: 'surface-manager',
+          role: 'project-ai',
+          label: '项目 AI',
+          activityState: 'idle',
+          activityUpdatedAt: 25,
+          excerpt: '已完成当前安全检查点',
+        }],
+      },
+    }, appData);
+
+    expect(recoveredSession(appData, 'pm-safe-exit')?.safeExit).toMatchObject({
+      status: 'saved',
+      progressFingerprint: 'fingerprint-1',
+      terminalCheckpoints: [expect.objectContaining({ role: 'project-ai', activityState: 'idle' })],
+    });
+  });
+
   it('deletes the selected project snapshot and audit trail without touching the project directory', () => {
     const appData = root();
     const projectDir = path.join(appData, 'project-files');

@@ -91,7 +91,7 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
   return '.wmux\\project-manager\\manage-project\\SKILL.md';
 }
 
-export const PROJECT_MANAGER_PROTOCOL_REVISION = '3';
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '4';
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。同一运行时收到相同协议版本的普通事件时，复用已加载协议，不得重复读取 manage-project 技能；仅新建/恢复运行时、显式调用技能或协议版本变化时重读。',
@@ -100,6 +100,7 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
   '执行阶段的技术方案、任务路由、依赖调整、有限重试和原目标内重规划由项目管理 AI 决定；只有确需人工操作或用户专属决定时才用 category=manual-intervention，并附 workItemId、blocker 及允许的 reasonCode。',
+  '项目基线以 wmux project status 返回的结构化 baseline.status 为准：required 时不得反复要求监督重提批准，必须只安排一次以 [项目基线调查] 开头的有界当前工作树核对；investigating 时才可基于报告批准。若同一 baseline 状态再次拒绝，暂停并处理结构化门禁，不得继续发送同义决定。',
   '用户已写入项目的前置条件及其中明确授权，在当前需求版本内持续有效；用户未通知变化且没有具体反证时，不得让项目 AI、监督 AI 或任务 AI 逐步重复确认。任务 AI 自身再次询问不代表条件已变化。',
   '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',
 ].join('\n');
@@ -122,8 +123,9 @@ export function withProjectManagerRoleAnchor(text: string, projectId: string): s
 export function projectManagerEventEnvelope(projectId: string): string {
   return [
     `[项目事件｜控制层｜project=${projectId}｜protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}]`,
-    '先运行 wmux context 获取实时状态；协议版本未变化，继续使用本运行时已加载的协议，无需重读技能或重新确认角色。',
+    '先运行 wmux context 获取实时状态；若本消息协议版本与已加载版本一致，继续使用当前协议，无需重读技能或重新确认角色；若不一致，先重读 manage-project 技能再处理事件。',
     '项目 AI 只处理主目标、可验收阶段、依赖和硬安全边界；监督 AI 在该边界内自行维护路线与内部里程碑，不要把任务 AI 的每个检查点拆成新工作项。',
+    'baseline.status=required 时只安排一次 [项目基线调查] 当前工作树核对，不得因旧屏幕已有报告而反复要求监督重提批准；同一基线门禁再次拒绝时暂停并处理结构化状态。',
   ].join('\n');
 }
 

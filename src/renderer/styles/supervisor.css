@@ -378,9 +378,45 @@
   font-size: 10px;
 }
 
+.project-manager-dialog__safe-exit {
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 7px;
+  background: rgba(30, 64, 175, 0.1);
+}
+
+.project-manager-dialog__safe-exit[data-status='saved'] {
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(20, 83, 45, 0.13);
+}
+
+.project-manager-dialog__safe-exit[data-status='blocked'] {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(120, 53, 15, 0.14);
+}
+
+.project-manager-dialog__safe-exit > span,
+.project-manager-dialog__safe-exit > small {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.project-manager-dialog__safe-exit > strong {
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .project-manager-dialog__inspector-actions {
   display: grid;
   gap: 7px;
+}
+
+.project-manager-dialog__safe-exit-btn {
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #bfdbfe;
 }
 
 .project-manager-dialog__inspector-path {

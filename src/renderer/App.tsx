@@ -25,6 +25,7 @@ import BrowserPane from './components/Browser/BrowserPane';
 import Tutorial from './components/Tutorial/Tutorial';
 import SplitPreviewOverlay from './components/SplitPane/SplitPreviewOverlay';
 import {
+  acknowledgeSupervisorDelivery,
   initPipeBridge,
   readTerminalScreen,
   terminalSupervisorCoreExcerpt,
@@ -531,6 +532,37 @@ function queueSupervisorDelivery(
   signalSupervisorDeliveryReady();
 }
 
+function confirmSubmittedSupervisorDelivery(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  supervisorSurfaceId: string,
+): boolean {
+  const delivery = lane.pendingSupervisorDeliveries?.find((candidate) => candidate.stage === 'submitted');
+  if (!delivery) return false;
+  acknowledgeSupervisorDelivery(lane.id, delivery);
+  const store = useStore.getState();
+  const current = store.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+  if (!current) return false;
+  store.updateLane(lane.id, {
+    pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || [])
+      .filter((candidate) => candidate.id !== delivery.id),
+    ...(delivery.reviewId && current.activeReviewId === delivery.reviewId ? {
+      reviewDeliveryConfirmedAt: Date.now(),
+    } : {}),
+  });
+  if (delivery.reviewId) noteSupervisorReviewScreen(delivery.reviewId, supervisorSurfaceId);
+  appendSupervisorRecord(session, current, 'supervisor.delivery.delivered', {
+    kind: delivery.kind,
+    task: delivery.task,
+    reviewId: delivery.reviewId,
+    deliveryId: delivery.id,
+    acknowledgement: 'UserPromptSubmit',
+  });
+  store.appendSupervisorLog(lane.id, '监督通知已确认', supervisorDeliveryLabel(delivery.kind));
+  signalSupervisorDeliveryReady();
+  return true;
+}
+
 function freezeSupervisorEvidence(
   session: SupervisorSession,
   lane: SupervisorLane,
@@ -744,16 +776,17 @@ function handleSupervisorHookEvent(event: any): void {
   const session = store.supervisor;
   const surfaceId = typeof event?.surfaceId === 'string' ? event.surfaceId : '';
   const lifecycle = String(event.event || '');
-  if (['Stop', 'StopFailure', 'Interrupt', 'Notification'].includes(lifecycle)) {
+  if (['Stop', 'StopFailure', 'Interrupt'].includes(lifecycle)) {
     (window as any).__wmux_flushProjectManagerDeliveries?.();
   }
   if (!session.active || !surfaceId) return;
   const supervisorLane = session.lanes.find((item) => (
     dedicatedSupervisorSurfaceId(item) === surfaceId
-    && (supervisorLaneControlState(item) === 'active' || supervisorLaneControlState(item) === 'waiting')
+    && supervisorLaneControlState(item) !== 'stopped'
   ));
   if (supervisorLane) {
     if (lifecycle === 'UserPromptSubmit') {
+      confirmSubmittedSupervisorDelivery(session, supervisorLane, surfaceId);
       clearSupervisorProviderLimitAlert(session, supervisorLane);
     } else if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Notification') {
       const providerLimited = reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
@@ -1473,43 +1506,53 @@ export default function App() {
             await pty.writeChecked(supervisorSurfaceId, '\x15');
             continue;
           }
+          const submittedAt = Date.now();
+          const beforeEnterStore = useStore.getState();
+          const beforeEnterLane = beforeEnterStore.supervisor.lanes.find((item) => item.id === lane.id);
+          if (!beforeEnterLane) continue;
+          beforeEnterStore.updateLane(lane.id, {
+            pendingSupervisorDeliveries: (beforeEnterLane.pendingSupervisorDeliveries || []).map((item) => (
+              item.id === delivery!.id ? { ...item, stage: 'submitted' as const, submittedAt } : item
+            )),
+          });
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
           if (!submitted) {
             const stillExists = await pty.has(supervisorSurfaceId);
-            if (!stillExists) {
-              const store = useStore.getState();
-              const current = store.supervisor.lanes.find((item) => item.id === lane.id);
-              if (current) {
-                store.updateLane(lane.id, {
-                  pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
-                    item.id === delivery!.id ? { ...item, stage: 'pending' as const } : item
-                  )),
-                });
-              }
-              continue;
+            const store = useStore.getState();
+            const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+            if (current) {
+              store.updateLane(lane.id, {
+                pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
+                  item.id === delivery!.id
+                    ? { ...item, stage: stillExists ? 'pasted' as const : 'pending' as const, submittedAt: undefined }
+                    : item
+                )),
+              });
             }
+            if (!stillExists) continue;
             scheduleRetry();
             continue;
           }
           const store = useStore.getState();
           const current = store.supervisor.lanes.find((item) => item.id === lane.id);
           if (!current) continue;
-          store.updateLane(lane.id, {
-            pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).filter((item) => item.id !== delivery.id),
-            ...(delivery.reviewId && current.activeReviewId === delivery.reviewId ? {
-              reviewDeliveryConfirmedAt: Date.now(),
-            } : {}),
-          });
-          if (delivery.reviewId) {
-            noteSupervisorReviewScreen(delivery.reviewId, supervisorSurfaceId);
+          const stillSubmitted = current.pendingSupervisorDeliveries?.some((item) => (
+            item.id === delivery!.id && item.stage === 'submitted'
+          ));
+          if (!stillSubmitted) {
+            // A synchronous UserPromptSubmit hook may already have committed
+            // the Agent acknowledgement and removed this delivery.
+            supervisorDeliveryRetryAttemptRef.current = 0;
+            continue;
           }
-          appendSupervisorRecord(store.supervisor, current, 'supervisor.delivery.delivered', {
+          appendSupervisorRecord(store.supervisor, current, 'supervisor.delivery.submitted', {
             kind: delivery.kind,
             task: delivery.task,
             reviewId: delivery.reviewId,
+            deliveryId: delivery.id,
           });
           supervisorDeliveryRetryAttemptRef.current = 0;
-          store.appendSupervisorLog(lane.id, '监督通知已送达', supervisorDeliveryLabel(delivery.kind));
+          store.appendSupervisorLog(lane.id, '监督通知已提交', `${supervisorDeliveryLabel(delivery.kind)}；等待 Agent 接收确认`);
         }
       } catch {
         // Keep the event queued; transient failures get only a small bounded retry window.

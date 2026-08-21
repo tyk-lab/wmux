@@ -1,8 +1,5 @@
 import type { SupervisorDelivery } from '../store/supervisor-slice';
-import {
-  isAgentPromptReadyState,
-  isAwaitingNextPromptState,
-} from '../agent-state-semantics';
+import { isAgentPromptReadyState } from '../agent-state-semantics';
 
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
 
@@ -11,22 +8,17 @@ export function signalSupervisorDeliveryReady(): void {
 }
 
 export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): string {
-  if (kind === 'task-start') return '任务开始';
   if (kind === 'task-end') return '任务结束';
   if (kind === 'task-interrupted') return '任务中断';
   if (kind === 'worker-status') return '任务状态更新';
   if (kind === 'agent-recovery') return 'Agent 恢复';
   if (kind === 'user-task') return '用户直发任务';
+  if (kind === 'owner-decision') return '上级决策';
+  if (kind === 'control-message') return '控制消息';
   return '活性检查';
 }
 
 export type SupervisorWakeDeliveryKind = 'task-end' | 'task-interrupted';
-
-function supervisorDeliveryAgentState(agentState: unknown): unknown {
-  return agentState && typeof agentState === 'object'
-    ? (agentState as { state?: unknown }).state
-    : agentState;
-}
 
 export const MAX_SUPERVISOR_DELIVERY_RETRY_ATTEMPTS = 2;
 
@@ -50,7 +42,9 @@ function sameDeliveryTurn(left: SupervisorDelivery, right: SupervisorDelivery): 
 }
 
 function deliveryPriority(delivery: SupervisorDelivery): number {
+  if (delivery.kind === 'owner-decision') return 0;
   if (delivery.reviewId || delivery.kind === 'task-end' || delivery.kind === 'task-interrupted') return 0;
+  if (delivery.kind === 'control-message') return 1;
   if (delivery.kind === 'user-task') return 1;
   if (delivery.kind === 'agent-recovery') return 2;
   if (delivery.kind === 'worker-status') return 3;
@@ -62,11 +56,9 @@ function appendCompactedSupervisorDelivery(
   pending: SupervisorDelivery[],
   delivery: SupervisorDelivery,
 ): SupervisorDelivery[] {
-  if (delivery.kind === 'task-start' && delivery.stage !== 'pasted') return pending;
-
   const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
   const duplicatePasted = pending.some((candidate) => (
-    candidate.stage === 'pasted'
+    (candidate.stage === 'pasted' || candidate.stage === 'submitted')
     && candidate.kind === delivery.kind
     && (candidate.reviewId && delivery.reviewId
       ? candidate.reviewId === delivery.reviewId
@@ -75,17 +67,20 @@ function appendCompactedSupervisorDelivery(
   if (duplicatePasted && terminalLifecycle) return pending;
 
   const filtered = pending.filter((candidate) => {
-    if (candidate.stage === 'pasted') return true;
+    if (candidate.stage === 'pasted' || candidate.stage === 'submitted') return true;
     const sameTurn = sameDeliveryTurn(candidate, delivery);
     if (delivery.reviewId && candidate.reviewId === delivery.reviewId) return false;
+    if (delivery.kind === 'owner-decision') {
+      return candidate.kind !== 'owner-decision';
+    }
     if (terminalLifecycle) {
-      if (candidate.kind === 'liveness-probe' || candidate.kind === 'task-start') return false;
+      if (candidate.kind === 'liveness-probe') return false;
       if (sameTurn && ['worker-status', 'agent-recovery', 'user-task'].includes(candidate.kind)) return false;
       if (candidate.kind === delivery.kind) return !sameTurn;
       return true;
     }
     if (delivery.kind === 'user-task') {
-      if (['task-start', 'user-task', 'liveness-probe', 'agent-recovery'].includes(candidate.kind)) return false;
+      if (['user-task', 'liveness-probe', 'agent-recovery'].includes(candidate.kind)) return false;
       if (candidate.kind === 'worker-status' && !candidate.reviewId) return false;
       const olderTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
         && candidate.turnId < delivery.turnId;
@@ -131,31 +126,33 @@ export function enqueueSupervisorDelivery(
 }
 
 /**
- * Pick the oldest currently deliverable fact instead of letting an idle-only
- * liveness probe block a later lifecycle event while state detection is stale.
+ * Pick the highest-priority deliverable fact while preserving one submitted
+ * message as an acknowledgement barrier.
  */
 export function nextDeliverableSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   supervisorAgentState: unknown,
 ): SupervisorDelivery | undefined {
   const queue = compactSupervisorDeliveries(pending);
+  if (queue.some((delivery) => delivery.stage === 'submitted')) return undefined;
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
-    return pasted.kind === 'liveness-probe'
+    return ['liveness-probe', 'owner-decision', 'control-message'].includes(pasted.kind)
       ? isAgentPromptReadyState(supervisorAgentState) ? pasted : undefined
       : canDeliverToSupervisor(supervisorAgentState) ? pasted : undefined;
   }
   if (!canDeliverToSupervisor(supervisorAgentState)) return undefined;
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
-    .find((delivery) => delivery.kind !== 'liveness-probe' || isAgentPromptReadyState(supervisorAgentState));
+    .find((delivery) => (
+      !['liveness-probe', 'owner-decision', 'control-message'].includes(delivery.kind)
+      || isAgentPromptReadyState(supervisorAgentState)
+    ));
 }
 
 /** A busy or genuinely blocked supervisor must finish its current turn before receiving another command. */
 export function canDeliverToSupervisor(agentState: unknown): boolean {
-  const state = supervisorDeliveryAgentState(agentState);
-  return state !== 'working'
-    && (state !== 'blocked' || isAwaitingNextPromptState(agentState));
+  return isAgentPromptReadyState(agentState);
 }
 
 /** Detect a supervisor Agent turn that ended without publishing a state handoff. */
