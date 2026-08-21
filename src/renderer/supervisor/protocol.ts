@@ -534,7 +534,7 @@ export function buildSupervisorBriefing(
         ? '无（若任务终端非运行且已有明确、低风险、合同内的补证步骤，仍可主动提交 continue/rework）'
         : '无（监听中，等待任务结束或阻塞事件）'}`,
     `任务终端 Agent 活动状态: ${taskAgentState}${state === 'unknown' ? '（原始值 unknown）' : ''}`,
-    '状态说明: 任务终端 Agent 活动状态与监督通道状态相互独立；unknown 只表示没有可信 Agent 状态报告，不得据此断言监督通道异常或任务尚未启动，应先 read-screen 核对终端正文。',
+    '状态说明: 任务终端 Agent 活动状态与监督通道状态相互独立；unknown 只表示没有可信 Agent 状态报告，应先 read-screen 核对终端正文。若屏幕是 PS/CMD/Unix shell 提示符而不是受支持的 Agent 界面，禁止通过 --next 发送自然语言或代替用户发送 Agent 启动命令；使用 needs-human 通知用户先启动 Agent。控制层会保留当前复核轮次，并在检测到 Agent 就绪后允许重试。',
   ].join('\n');
   const taskGoal = effectiveSupervisorTaskGoal(lane);
   const currentTask = lane.currentTask?.trim() || '';

@@ -219,6 +219,7 @@ import {
   enqueueSupervisorDelivery,
   signalSupervisorDeliveryReady,
 } from './supervisor/delivery';
+import { ordinaryTaskDeliveryBlockReason } from './supervisor/task-runtime-readiness';
 
 export function isSupervisorDecisionAuthorised(
   lane: Pick<SupervisorLane, 'surfaceId' | 'supervisorSurfaceId'>,
@@ -10757,7 +10758,9 @@ export function initPipeBridge(): void {
     }
     const preparation = prepareForUserTerminalInput(id, String(data || ''), false);
     return {
-      handled: preparation.shouldSubmit ? handleSupervisorUserSubmit(id) : false,
+      handled: preparation.shouldSubmit
+        ? handleSupervisorUserSubmit(id, preparation.submittedText)
+        : false,
       clearAutomatedDraft: preparation.clearAutomatedDraft,
     };
   };
@@ -11546,6 +11549,24 @@ export function initPipeBridge(): void {
       }
     }
     const agentState = ((w.__wmux_getAgentStates?.() || {})[surfaceId] || undefined) as SupervisorAgentStateView | undefined;
+    if (!projectManagedLane && next) {
+      const runtimeBlock = ordinaryTaskDeliveryBlockReason({
+        agentState: agentState?.state,
+        runtimeState: terminalRuntimeStatus(lane.surfaceId)?.state,
+        spawnedAgentStatus: store.agentMeta.get(lane.surfaceId)?.status,
+        screenText: terminalScreenTail(surfaceId, 40),
+      });
+      if (runtimeBlock) {
+        store.updateLane(lane.id, { awaitingReview: true });
+        appendSupervisorRecord(session, lane, 'supervisor.delivery.blocked', {
+          kind: 'next',
+          error: runtimeBlock,
+          taskRuntimeState: agentState?.state || 'unknown',
+        });
+        store.appendSupervisorLog(lane.id, '下一步发送已阻止', runtimeBlock);
+        return { ok: false, error: runtimeBlock, taskRuntimeBlocked: true };
+      }
+    }
     const proactiveProjectFollowUp = !lane.awaitingReview
       && !!lane.projectManagerProjectId
       && autonomous

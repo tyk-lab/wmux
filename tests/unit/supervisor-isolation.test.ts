@@ -188,7 +188,8 @@ describe('supervisor isolation', () => {
     expect(text).toContain('监督通道状态: 运行中');
     expect(text).toContain('待裁决轮次: 无（监听中，等待任务结束或阻塞事件）');
     expect(text).toContain('任务终端 Agent 活动状态: 未检测到可信 Agent 状态（原始值 unknown）');
-    expect(text).toContain('不得据此断言监督通道异常或任务尚未启动');
+    expect(text).toContain('若屏幕是 PS/CMD/Unix shell 提示符');
+    expect(text).toContain('控制层会保留当前复核轮次');
     expect(text).not.toContain('监督通道状态: unknown');
   });
 

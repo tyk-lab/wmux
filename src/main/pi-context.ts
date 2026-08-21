@@ -12,7 +12,7 @@ import * as path from 'path';
 import { resolveWmuxHookScriptPath } from './wmux-hook-path';
 
 export const WMUX_PI_EXTENSION_MARKER = '// wmux-pi-extension: managed';
-const WMUX_PI_EXTENSION_VERSION = '// wmux-pi-extension-version: 1';
+const WMUX_PI_EXTENSION_VERSION = '// wmux-pi-extension-version: 2';
 
 export function resolvePiAgentDir(homeDir = os.homedir(), env = process.env): string {
   const configured = env.PI_CODING_AGENT_DIR?.trim();
@@ -35,7 +35,23 @@ ${WMUX_PI_EXTENSION_VERSION}
 import { spawn } from "node:child_process";
 
 const WMUX_HOOK_SCRIPT = ${script};
+const WMUX_SESSION_ID = String(process.pid) + "-" + Date.now();
 let promptReported = false;
+let turnSequence = 0;
+let currentTurnId = "";
+
+function beginWmuxTurn(prompt) {
+  currentTurnId = "pi-" + WMUX_SESSION_ID + "-" + (++turnSequence);
+  sendWmuxEvent("UserPromptSubmit", withWmuxTurn({ prompt }));
+}
+
+function withWmuxTurn(payload = {}) {
+  return {
+    ...payload,
+    wmux_session_id: WMUX_SESSION_ID,
+    ...(currentTurnId ? { wmux_turn_id: currentTurnId } : {}),
+  };
+}
 
 function wmuxToolName(toolName) {
   if (toolName === "edit") return "Edit";
@@ -66,31 +82,34 @@ export default function wmuxAgentHooks(pi) {
   pi.on("input", (event) => {
     if (event.source === "extension") return;
     promptReported = true;
-    sendWmuxEvent("UserPromptSubmit", { prompt: event.text });
+    beginWmuxTurn(event.text);
   });
 
   pi.on("before_agent_start", (event) => {
-    if (!promptReported) sendWmuxEvent("UserPromptSubmit", { prompt: event.prompt });
+    if (!promptReported) beginWmuxTurn(event.prompt);
     promptReported = false;
   });
 
   pi.on("tool_call", (event) => {
-    sendWmuxEvent("PreToolUse", { tool_input: event.input }, wmuxToolName(event.toolName));
+    sendWmuxEvent("PreToolUse", withWmuxTurn({ tool_input: event.input }), wmuxToolName(event.toolName));
     if (event.toolName === "ask_question") {
-      sendWmuxEvent("Notification", { message: "Pi Agent 正在等待用户回答" });
+      sendWmuxEvent("Notification", withWmuxTurn({ message: "Pi Agent 正在等待用户回答" }));
     }
   });
 
   pi.on("tool_result", (event) => {
-    if (event.toolName === "ask_question") sendWmuxEvent("PermissionResult");
-    sendWmuxEvent("PostToolUse", { tool_input: event.input }, wmuxToolName(event.toolName));
+    if (event.toolName === "ask_question") sendWmuxEvent("PermissionResult", withWmuxTurn());
+    sendWmuxEvent("PostToolUse", withWmuxTurn({ tool_input: event.input }), wmuxToolName(event.toolName));
   });
 
   pi.on("agent_settled", () => {
     promptReported = false;
-    sendWmuxEvent("Stop");
+    sendWmuxEvent("Stop", withWmuxTurn());
+    currentTurnId = "";
   });
-  pi.on("session_shutdown", () => sendWmuxEvent("Interrupt"));
+  pi.on("session_shutdown", () => {
+    if (currentTurnId) sendWmuxEvent("Interrupt", withWmuxTurn());
+  });
 }
 `;
 }

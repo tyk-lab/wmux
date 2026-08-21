@@ -9,6 +9,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
 import { isProjectManagedSupervisorLane } from '../store/supervisor-slice';
+import { notifyOrdinaryTaskRuntimeFailure } from '../supervisor/user-input-precedence';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
 import { disconnectWorkspaceSsh } from '../store/pty-teardown';
 import { SplitNode, SurfaceRef, ThemeConfig } from '../../shared/types';
@@ -233,7 +234,8 @@ function notifyProjectManagerRuntimeFailure(
         },
       });
     }
-    state.pauseSupervisorLane(lane.id, text);
+    const taskFailureQueued = role === 'task' && notifyOrdinaryTaskRuntimeFailure(surfaceId, detail);
+    if (!taskFailureQueued) state.pauseSupervisorLane(lane.id, text);
     void window.wmux?.supervisor?.appendRecord?.({
       sessionId: lane.managementSessionId || state.supervisor.sessionId,
       projectDir: lane.projectDir,
@@ -1237,7 +1239,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         if (ws && shouldBroadcast) {
           const targetIds = collectActiveTerminalSurfaceIds(ws.splitTree);
           for (const id of targetIds) {
-            if (prepareForUserTerminalInput(id, data).shouldSubmit) signalTerminalUserSubmit(id);
+            const preparation = prepareForUserTerminalInput(id, data);
+            if (preparation.shouldSubmit) signalTerminalUserSubmit(id, preparation.submittedText);
           }
           for (const id of targetIds) {
             window.wmux.pty.write(id, data);
@@ -1245,8 +1248,9 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           return;
         }
       }
-      if (prepareForUserTerminalInput(ptyIdRef.current, data).shouldSubmit) {
-        signalTerminalUserSubmit(ptyIdRef.current);
+      const preparation = prepareForUserTerminalInput(ptyIdRef.current, data);
+      if (preparation.shouldSubmit) {
+        signalTerminalUserSubmit(ptyIdRef.current, preparation.submittedText);
       }
       window.wmux.pty.write(ptyIdRef.current, data);
     });

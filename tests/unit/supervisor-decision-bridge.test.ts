@@ -7157,6 +7157,36 @@ describe('supervisor decision bridge', () => {
       });
   });
 
+  it('keeps the review open instead of sending natural language to a bare PowerShell terminal', () => {
+    agentState = { ...agentState, state: 'unknown' };
+    screenText = 'ParserError: Missing ] at end of attribute or type literal.\nPS E:\\repo> ';
+
+    expect(decide({ next: '创建 string-extractor 并运行测试' })).toMatchObject({
+      ok: false,
+      taskRuntimeBlocked: true,
+      error: expect.stringContaining('普通 shell'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      decisions: [],
+    });
+  });
+
+  it('allows the first task when an idle Kimi screen is visible before hooks exist', () => {
+    agentState = { ...agentState, state: 'unknown' };
+    screenText = '✦ Kimi Code\nNo session yet — send your first message\ncontext: 0';
+
+    expect(decide({ next: '创建 string-extractor 并运行测试' })).toMatchObject({
+      ok: true,
+      outcome: 'continue',
+    });
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      ordinaryTaskDelivery('创建 string-extractor 并运行测试'),
+    );
+  });
+
   it('keeps escalated direct-user instructions pending until a real rebind is recorded', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-worker-directive', workItemId: 'worker_task' });
     const assignments: ProjectWorkerAssignment[] = [

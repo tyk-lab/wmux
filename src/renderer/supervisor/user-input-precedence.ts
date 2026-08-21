@@ -7,6 +7,9 @@ import {
 } from '../store/supervisor-slice';
 import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
+import { detectSupervisorLauncher } from './launch-command';
+import { taskTerminalRuntimeKind } from './task-runtime-readiness';
+import { terminalRuntimeStatus } from '../terminal-runtime-lifecycle';
 import {
   projectAuthorizationVersion,
   projectRequirementsVersion,
@@ -39,6 +42,30 @@ export function resolvePendingApprovalsForManualTask(
     store.updateLane(lane.id, { contextRecoveryStatus: 'sent' });
   }
   return resolved.length > 0;
+}
+
+function resolveRuntimeApprovalAfterAgentLaunch(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  command: string,
+): boolean {
+  const store = useStore.getState();
+  const approval = session.pendingApprovals.find((item) => {
+    if (item.laneId !== lane.id) return false;
+    const context = [item.text, item.reason, item.impact, item.task]
+      .filter(Boolean)
+      .join('\n');
+    return /(?:普通\s*shell|裸\s*shell|(?:启动|修复|重启|恢复).{0,40}(?:Agent|Kimi|Codex|Grok|Pi|OpenCode|运行时)|(?:Agent|运行时|任务终端).{0,40}(?:未就绪|不可用|已退出|启动失败|shell))/iu.test(context);
+  });
+  if (!approval || !store.approvePending(approval.id)) return false;
+
+  appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
+    approvalId: approval.id,
+    resolution: 'handled-by-agent-launch',
+    proposalKind: approval.proposalKind || 'important',
+    text: command,
+  });
+  return true;
 }
 
 /** A new direction sent to the dedicated supervisor resumes a waiting lane in place. */
@@ -104,8 +131,53 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
     return resumeWaitingLaneFromSupervisorInput(session, lane, 'supervisor-terminal');
   }
 
-  const resumedFromWaiting = supervisorLaneControlState(lane) === 'waiting';
   const directTask = task.trim().slice(0, 12_000);
+  const taskAgentState = ((globalThis as any).window?.__wmux_getAgentStates?.() || {})[surfaceId]?.state;
+  const taskScreen = (globalThis as any).window?.__wmux_readScreen?.(surfaceId, 40)?.text || '';
+  const runtimeKind = taskTerminalRuntimeKind({
+    agentState: taskAgentState,
+    runtimeState: terminalRuntimeStatus(lane.surfaceId)?.state,
+    spawnedAgentStatus: store.agentMeta.get(lane.surfaceId)?.status,
+    screenText: taskScreen,
+  });
+  const agentLauncherSubmission = !isProjectManagedSupervisorLane(lane)
+    && !!directTask
+    && (detectSupervisorLauncher(directTask) !== 'other'
+      || /^(?:&\s+)?(?:(?:"[^"]*\\)?opencode(?:\.exe)?"?|(?:\S*\\)?opencode(?:\.exe)?)(?:\s|$)/iu.test(directTask))
+    && runtimeKind !== 'agent';
+  if (agentLauncherSubmission) {
+    const resolvedRuntimeApproval = resolveRuntimeApprovalAfterAgentLaunch(session, lane, directTask);
+    const delivery: SupervisorDelivery = {
+      id: `agent-launch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'worker-status',
+      task: lane.currentTask || '启动任务终端 Agent',
+      text: [
+        '[任务终端 Agent 启动命令｜保留当前复核轮次]',
+        `用户已在尚未检测到 Agent 的任务终端提交启动命令：${directTask}`,
+        '该输入是运行时准备，不是新的业务任务；控制层没有消费当前 awaitingReview 或 activeReviewId。',
+        ...(resolvedRuntimeApproval ? ['对应的运行时待确认项已按用户实际操作结清。'] : []),
+        `先 read-screen --surface ${surfaceId} 核对 Agent 界面。确认受支持的 Agent 已就绪后，重新提交原裁决；仍是普通 shell 时使用 needs-human 通知用户处理，不得向 shell 发送自然语言。`,
+      ].join('\n'),
+      createdAt: Date.now(),
+      turnId: lane.workerTurnId,
+      stage: 'pending',
+    };
+    store.updateLane(lane.id, {
+      controlState: 'active',
+      awaitingReview: true,
+      pendingSupervisorDeliveries: enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery),
+    });
+    appendSupervisorRecord(session, lane, 'worker.agent-launch-submit', {
+      command: directTask,
+      reviewPreserved: true,
+      runtimeApprovalResolved: resolvedRuntimeApproval,
+    });
+    store.appendSupervisorLog(lane.id, '任务 Agent 启动', '用户提交了 Agent 启动命令；保留当前监督复核轮次');
+    signalSupervisorDeliveryReady();
+    return true;
+  }
+
+  const resumedFromWaiting = supervisorLaneControlState(lane) === 'waiting';
   const cancelledDeliveries = lane.pendingSupervisorDeliveries?.length || 0;
   const resolvedApproval = resolvePendingApprovalsForManualTask(session, lane, directTask);
   store.updateLane(lane.id, {
@@ -282,5 +354,39 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
           ? '用户已直接向任务终端发送新任务；输入无需监督批准，专属监督已同步知情'
           : '用户已直接向任务终端发送内容；AI 裁决已让位',
   );
+  return true;
+}
+
+/** Keep ordinary supervision informed when its task Agent becomes unavailable. */
+export function notifyOrdinaryTaskRuntimeFailure(surfaceId: string, detail: string): boolean {
+  const store = useStore.getState();
+  const session = store.supervisor;
+  const lane = session.lanes.find((candidate) => (
+    candidate.surfaceId === surfaceId
+    && !isProjectManagedSupervisorLane(candidate)
+    && supervisorLaneControlState(candidate) === 'active'
+    && !!dedicatedSupervisorSurfaceId(candidate)
+  ));
+  if (!session.active || !lane) return false;
+  const delivery: SupervisorDelivery = {
+    id: `task-runtime-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'worker-status',
+    task: lane.currentTask || '任务终端 Agent 运行时',
+    text: [
+      '[任务终端 Agent 不可用｜必须处理]',
+      `任务终端：${lane.label} · ${surfaceId}`,
+      `事实：${detail}`,
+      '当前监督复核轮次已保留。先 read-screen 和 agent-state 核对；若已回到普通 shell，使用 needs-human 通知用户启动或修复 Agent，不得继续发送自然语言任务。',
+    ].join('\n'),
+    createdAt: Date.now(),
+    turnId: lane.workerTurnId,
+    stage: 'pending',
+  };
+  store.updateLane(lane.id, {
+    awaitingReview: true,
+    pendingSupervisorDeliveries: enqueueSupervisorDelivery(lane.pendingSupervisorDeliveries, delivery),
+  });
+  store.appendSupervisorLog(lane.id, '任务 Agent 不可用', detail);
+  signalSupervisorDeliveryReady();
   return true;
 }

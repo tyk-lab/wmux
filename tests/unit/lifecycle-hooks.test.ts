@@ -54,6 +54,23 @@ describe('applyWmuxLifecycleHooks', () => {
     expect(twice.hooks.UserPromptSubmit).toHaveLength(1);
     expect(twice.hooks.Stop).toHaveLength(1);
   });
+
+  it('normalizes native event names and removes stale wmux groups only', () => {
+    const existing = {
+      hooks: {
+        StopFailure: [{ hooks: [{ command: `node "${SCRIPT}" --event StopFailure` }] }],
+        Custom: [{ hooks: [{ command: 'echo user' }] }],
+      },
+    };
+    const next = applyWmuxLifecycleHooks(existing, SCRIPT, [
+      'UserPromptSubmit',
+      { hookEvent: 'StopCancelled', protocolEvent: 'Interrupt' },
+    ], 'Grok');
+
+    expect(next.hooks.StopFailure).toBeUndefined();
+    expect(next.hooks.Custom[0].hooks[0].command).toBe('echo user');
+    expect(next.hooks.StopCancelled[0].hooks[0].command).toContain('--event Interrupt');
+  });
 });
 
 describe('buildWmuxHooksJsonFile', () => {

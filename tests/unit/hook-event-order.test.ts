@@ -26,10 +26,18 @@ describe('hook event ordering', () => {
 
   it('waits for the pipe response instead of treating a socket write as acceptance', () => {
     expect(hookSource).toContain("client.on('data'");
-    expect(hookSource).toContain('params.hookId = randomUUID();');
+    expect(hookSource).toContain('stableWmuxHookId({');
+    expect(hookSource).toContain('}) || randomUUID();');
     expect(hookSource).toContain("const reply = JSON.parse(response.trim())");
     expect(hookSource).not.toContain('client.write(wireMessage, () =>');
     expect(hookSource).toContain('if (attempt >= MAX_PIPE_ATTEMPTS)');
     expect(hookSource).toContain('process.exitCode = 1;');
+  });
+
+  it('queues task-start only after advancing the worker turn', () => {
+    const handler = appSource.match(/function handleSupervisorHookEvent\(event: any\): void \{[\s\S]*?^\}/m)?.[0] || '';
+    expect(handler).toContain("lifecycle === 'UserPromptSubmit'");
+    expect(handler).toContain("'task-start'");
+    expect(handler.indexOf('workerTurnId: nextWorkerTurnId')).toBeLessThan(handler.indexOf("'task-start'"));
   });
 });

@@ -762,6 +762,7 @@ function handleSupervisorHookEvent(event: any): void {
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
     const task = String(event.task || '').trim().slice(0, 800);
+    const nextWorkerTurnId = (lane.workerTurnId || 0) + 1;
     const manuallyResolved = resolvePendingApprovalsForManualTask(session, auditLane, task);
     store.updateLane(lane.id, {
       awaitingReview: manuallyResolved ? false : !!lane.autoDecisionLimitReached,
@@ -781,12 +782,30 @@ function handleSupervisorHookEvent(event: any): void {
       } : {}),
       ...(projectDir ? { projectDir } : {}),
       ...(task ? { currentTask: task } : {}),
-      workerTurnId: (lane.workerTurnId || 0) + 1,
+      workerTurnId: nextWorkerTurnId,
     });
-    appendSupervisorRecord(session, auditLane, 'worker.task', {
+    const startedLane = useStore.getState().supervisor.lanes
+      .find((candidate) => candidate.id === lane.id) || {
+        ...auditLane,
+        workerTurnId: nextWorkerTurnId,
+        ...(task ? { currentTask: task } : {}),
+      };
+    const reportedTask = task || startedLane.currentTask || '（任务未上报）';
+    appendSupervisorRecord(session, startedLane, 'worker.task', {
       task: event.task || '',
       cwd: event.cwd || '',
     });
+    queueSupervisorDelivery(
+      session,
+      startedLane,
+      'task-start',
+      reportedTask,
+      [
+        `[任务开始] ${lane.label} (${surfaceId}) 已接受新任务。`,
+        `[权威生命周期｜event=UserPromptSubmit｜workerTurn=${nextWorkerTurnId}] ${reportedTask}`,
+        '这只是任务开始同步：继续监听即可，不要据此向任务终端重复下发指令，也不要提前提交完成裁决。',
+      ].join('\n'),
+    );
     return;
   }
 
@@ -1732,8 +1751,9 @@ export default function App() {
   // safety boundary because hook delivery can lag behind terminal input.
   useEffect(() => {
     const onUserSubmit = (event: Event) => {
-      const surfaceId = String((event as CustomEvent<{ surfaceId?: string }>).detail?.surfaceId || '');
-      handleSupervisorUserSubmit(surfaceId);
+      const detail = (event as CustomEvent<{ surfaceId?: string; task?: string }>).detail;
+      const surfaceId = String(detail?.surfaceId || '');
+      handleSupervisorUserSubmit(surfaceId, String(detail?.task || ''));
     };
     window.addEventListener(TERMINAL_USER_SUBMIT_EVENT, onUserSubmit);
     return () => window.removeEventListener(TERMINAL_USER_SUBMIT_EVENT, onUserSubmit);

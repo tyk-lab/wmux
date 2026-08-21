@@ -17,6 +17,7 @@
 import net from 'net';
 import { randomUUID } from 'node:crypto';
 import { resolveWmuxHookRuntimeContext } from './wmux-hook-context';
+import { parseWmuxHookPayload, stableWmuxHookId } from './wmux-hook-payload';
 
 const runtimeContext = resolveWmuxHookRuntimeContext(process.env);
 if (runtimeContext.state === 'inactive') process.exit(0);
@@ -56,48 +57,32 @@ let stdinData = '';
 let sent = false;
 let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
 const MAX_STDIN = 64 * 1024; // 64KB cap
-const MAX_TASK = 800;
 const MAX_PIPE_ATTEMPTS = 3;
-
-function compact(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  const text = value.trim();
-  return text.length > MAX_TASK ? `${text.slice(0, MAX_TASK - 1)}…` : text;
-}
 
 function sendHook(): void {
   if (sent) return;
   sent = true;
   if (fallbackTimer) clearTimeout(fallbackTimer);
 
-  let file = '';
-  let message = '';
-  let task = '';
-  let command = '';
-  try {
-    if (stdinData.trim()) {
-      const data = JSON.parse(stdinData);
-      file = data.tool_input?.file_path
-        || data.tool_input?.path
-        || data.input?.file_path
-        || '';
-      message = data.message || data.tool_input?.description || '';
-      task = compact(data.prompt || data.user_prompt || data.input?.prompt);
-      command = compact(data.tool_input?.command || data.input?.command);
-    }
-  } catch {
-    // stdin wasn't valid JSON — that's fine.
-  }
+  const payload = parseWmuxHookPayload(stdinData);
 
   const params: Record<string, string> = {};
-  params.hookId = randomUUID();
+  params.hookId = stableWmuxHookId({
+    event,
+    agent,
+    surfaceId,
+    sessionId: payload.sessionId,
+    turnId: payload.turnId,
+  }) || randomUUID();
   if (event) params.event = event;
   if (tool) params.tool = tool;
-  if (file) params.file = file;
-  if (message) params.message = message;
-  if (task) params.task = task;
-  if (command) params.command = command;
-  const cwd = process.cwd();
+  if (payload.file) params.file = payload.file;
+  if (payload.message) params.message = payload.message;
+  if (payload.task) params.task = payload.task;
+  if (payload.command) params.command = payload.command;
+  if (payload.sessionId) params.agentSessionId = payload.sessionId;
+  if (payload.turnId) params.agentTurnId = payload.turnId;
+  const cwd = payload.cwd || process.cwd();
   if (cwd) params.cwd = cwd;
   if (surfaceId) params.surfaceId = surfaceId;
   if (agent) params.agent = agent;

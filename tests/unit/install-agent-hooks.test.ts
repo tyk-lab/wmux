@@ -43,11 +43,19 @@ describe('supported hook installers', () => {
       path.resolve(__dirname, '../../scripts/install-agent-hooks.ps1'),
       'utf8',
     );
+    const nodeInstaller = fs.readFileSync(
+      path.resolve(__dirname, '../../scripts/install-agent-hooks.mjs'),
+      'utf8',
+    );
 
     expect(implementation).not.toContain('ensureClaudeHooks');
     expect(implementation).not.toContain("safeRun('claude'");
     expect(powershellInstaller).not.toContain('~/.claude');
     expect(powershellInstaller).not.toContain('Claude Code');
+    for (const runtimeFile of ['wmux-hook.js', 'wmux-hook-context.js', 'wmux-hook-payload.js']) {
+      expect(powershellInstaller).toContain(runtimeFile);
+      expect(nodeInstaller).toContain(runtimeFile);
+    }
   });
 });
 

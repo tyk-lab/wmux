@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { handleSupervisorUserSubmit } from '../../src/renderer/supervisor/user-input-precedence';
+import {
+  handleSupervisorUserSubmit,
+  notifyOrdinaryTaskRuntimeFailure,
+} from '../../src/renderer/supervisor/user-input-precedence';
 import { useStore } from '../../src/renderer/store';
 import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
 import {
@@ -130,6 +133,79 @@ describe('supervisor user input precedence', () => {
     expect(useStore.getState().supervisor.log[0]).toMatchObject({
       action: '用户输入优先',
       detail: expect.stringContaining('并向专属监督同步'),
+    });
+  });
+
+  it('preserves the review when the user starts an Agent in a bare shell', () => {
+    const store = useStore.getState();
+    store.updateLane('lane-user', { activeReviewId: 'review-shell-start' });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      'worker-user': { state: 'unknown' },
+    });
+    (globalThis.window as any).__wmux_readScreen = () => ({ text: 'PS E:\\repo> kimi' });
+
+    expect(handleSupervisorUserSubmit('worker-user', 'kimi')).toBe(true);
+
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      activeReviewId: 'review-shell-start',
+      pendingSupervisorDeliveries: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'worker-status',
+          text: expect.stringContaining('保留当前复核轮次'),
+        }),
+      ]),
+    });
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '任务 Agent 启动',
+    });
+  });
+
+  it('resolves only a runtime approval when the user starts the requested Agent', () => {
+    const store = useStore.getState();
+    store.updateLane('lane-user', { activeReviewId: 'review-runtime-approval' });
+    store.enqueueApproval({
+      laneId: 'lane-user',
+      surfaceId: 'worker-user' as any,
+      laneLabel: 'worker',
+      text: '任务终端仍是普通 shell，请先启动 Kimi Agent',
+      source: 'supervisor-important',
+      proposalKind: 'important',
+      reason: '任务运行时未就绪',
+      task: '启动任务 Agent',
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      'worker-user': { state: 'unknown' },
+    });
+    (globalThis.window as any).__wmux_readScreen = () => ({ text: 'PS E:\\repo> kimi' });
+
+    expect(handleSupervisorUserSubmit('worker-user', 'kimi')).toBe(true);
+
+    expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      activeReviewId: 'review-runtime-approval',
+    });
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringContaining('运行时待确认项已按用户实际操作结清'),
+        }),
+      ]));
+  });
+
+  it('queues an ordinary task runtime failure for the dedicated supervisor', () => {
+    expect(notifyOrdinaryTaskRuntimeFailure('worker-user', 'Agent 已退出到 PowerShell')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      awaitingReview: true,
+      pendingSupervisorDeliveries: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'worker-status',
+          text: expect.stringContaining('Agent 已退出到 PowerShell'),
+        }),
+      ]),
     });
   });
 

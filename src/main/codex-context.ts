@@ -14,6 +14,16 @@ import * as os from 'os';
 import { applyWmuxLifecycleHooks } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
+/** Events supported by the current Codex lifecycle Hooks API. */
+export const CODEX_WMUX_HOOK_EVENTS = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'PermissionRequest',
+  'Stop',
+  'SubagentStop',
+] as const;
+
 export function resolveCodexHome(homeDir = os.homedir()): string {
   const fromEnv = process.env.CODEX_HOME?.trim();
   if (fromEnv) return fromEnv;
@@ -99,7 +109,7 @@ export function applyWmuxCodexHooks(existing: any, hookScriptPosix: string): any
     ...base,
     hooks: { ...(base.hooks || {}) },
   };
-  return applyWmuxLifecycleHooks(withDesc, hookScriptPosix, undefined, 'Codex');
+  return applyWmuxLifecycleHooks(withDesc, hookScriptPosix, CODEX_WMUX_HOOK_EVENTS, 'Codex');
 }
 
 /**

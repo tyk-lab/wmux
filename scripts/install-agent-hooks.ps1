@@ -4,7 +4,8 @@
   Install wmux turn-level hooks for Kimi / Codex / Grok / Pi / OpenCode.
 
 .DESCRIPTION
-  Rebuilds and synchronizes the CLI / Hook helper, then runs `wmux install-hooks` which writes:
+  Rebuilds and synchronizes the Hook helper plus its runtime dependencies, then
+  runs `wmux install-hooks` which writes:
     - ~/.kimi-code/config.toml         (Kimi)
     - ~/.codex/hooks.json              (Codex — may need /hooks trust)
     - ~/.grok/hooks/wmux.json          (Grok Build)
@@ -37,7 +38,7 @@ Set-Location -LiteralPath $Root
 
 $cli = Join-Path $Root 'dist\cli\wmux.js'
 $builtHook = Join-Path $Root 'dist\cli\wmux-hook.js'
-$resourceHook = Join-Path $Root 'resources\cli\wmux-hook.js'
+$hookRuntimeFiles = @('wmux-hook.js', 'wmux-hook-context.js', 'wmux-hook-payload.js')
 
 function Resolve-InstalledWmuxHook {
   param([string]$RequestedExe)
@@ -58,15 +59,7 @@ function Resolve-InstalledWmuxHook {
   }
 
   $resolvedExe = (Resolve-Path -LiteralPath $exe).Path
-  $hook = Join-Path (Split-Path -Parent $resolvedExe) 'resources\cli\wmux-hook.js'
-  if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) {
-    throw "wmux-hook.js not found beside wmux.exe: $hook"
-  }
-  return (Resolve-Path -LiteralPath $hook).Path
-}
-
-if (-not (Test-Path -LiteralPath $resourceHook)) {
-  Write-Error "Missing resources/cli/wmux-hook.js under $Root"
+  return (Join-Path (Split-Path -Parent $resolvedExe) 'resources\cli\wmux-hook.js')
 }
 
 if (-not $SkipBuild) {
@@ -80,19 +73,33 @@ if (-not $SkipBuild) {
 if (-not (Test-Path -LiteralPath $cli)) {
   Write-Error "dist/cli/wmux.js not found. Run: npm run build:main"
 }
-if (-not (Test-Path -LiteralPath $builtHook)) {
-  Write-Error "dist/cli/wmux-hook.js not found. Run: npm run build:main"
+function Sync-HookRuntime {
+  param([Parameter(Mandatory)][string]$TargetDirectory)
+
+  if (-not (Test-Path -LiteralPath $TargetDirectory -PathType Container)) {
+    New-Item -ItemType Directory -Path $TargetDirectory -Force | Out-Null
+  }
+  foreach ($file in $hookRuntimeFiles) {
+    $source = Join-Path $Root "dist\cli\$file"
+    $target = Join-Path $TargetDirectory $file
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+      throw "Missing $source. Run: npm run build:main"
+    }
+    $same = (Test-Path -LiteralPath $target -PathType Leaf) -and
+      ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -eq
+       (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)
+    if (-not $same) {
+      Write-Host "→ Sync $target"
+      Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+  }
 }
 
-$builtHash = (Get-FileHash -LiteralPath $builtHook -Algorithm SHA256).Hash
-$resourceHash = (Get-FileHash -LiteralPath $resourceHook -Algorithm SHA256).Hash
-if ($builtHash -ne $resourceHash) {
-  Write-Host '→ Sync resources/cli/wmux-hook.js'
-  Copy-Item -LiteralPath $builtHook -Destination $resourceHook -Force
-}
+Sync-HookRuntime -TargetDirectory (Join-Path $Root 'resources\cli')
 
 $installedHook = Resolve-InstalledWmuxHook -RequestedExe $WmuxExe
 if ($installedHook) {
+  Sync-HookRuntime -TargetDirectory (Split-Path -Parent $installedHook)
   $env:WMUX_HOOK_SCRIPT = $installedHook
   Write-Host "→ Use installed wmux Hook: $installedHook"
 } else {

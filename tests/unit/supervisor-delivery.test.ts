@@ -101,6 +101,18 @@ describe('supervisor delivery queue', () => {
       .toEqual(['user-task', 'end']);
   });
 
+  it('replaces an undelivered user-task notice with the authoritative task-start hook', () => {
+    const userTask = {
+      id: 'user-task', kind: 'user-task' as const, task: '用户直发回归任务',
+      text: '仅同步用户任务', createdAt: 1, turnId: 1, stage: 'pending' as const,
+    };
+    const started = event('start', 'task-start', '用户直发回归任务', 2);
+
+    expect(enqueueSupervisorDelivery([userTask], started).map((item) => item.id)).toEqual(['start']);
+    expect(enqueueSupervisorDelivery([{ ...userTask, stage: 'pasted' }], started).map((item) => item.id))
+      .toEqual(['user-task', 'start']);
+  });
+
   it('wakes only for terminal states that require a supervisor decision', () => {
     expect(supervisorWakeDeliveryKind('UserPromptSubmit')).toBeNull();
     expect(supervisorWakeDeliveryKind('PostToolUse')).toBeNull();

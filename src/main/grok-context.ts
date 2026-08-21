@@ -5,8 +5,8 @@
  * We write a dedicated `wmux.json` file (overwrite when content changes) so we
  * never edit the user's other hook files.
  *
- * Events match Grok's table: UserPromptSubmit, PostToolUse, Notification,
- * Stop, StopFailure, SubagentStop, plus PermissionRequest when present.
+ * Events match Grok's published table. StopCancelled is normalized to wmux's
+ * Interrupt event so Esc/Ctrl+C and rejected permission end the active turn.
  */
 
 import * as fs from 'fs';
@@ -14,6 +14,17 @@ import * as path from 'path';
 import * as os from 'os';
 import { buildWmuxHooksJsonFile } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
+
+export const GROK_WMUX_HOOK_EVENTS = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Notification',
+  'Stop',
+  'StopFailure',
+  { hookEvent: 'StopCancelled', protocolEvent: 'Interrupt' },
+  'SubagentStop',
+] as const;
 
 export function resolveGrokHome(homeDir = os.homedir()): string {
   const fromEnv = process.env.GROK_HOME?.trim();
@@ -30,7 +41,7 @@ export function buildGrokWmuxHooksFile(hookScriptPosix: string): any {
   return buildWmuxHooksJsonFile(
     hookScriptPosix,
     'wmux agent lifecycle (managed — edit via wmux, not by hand)',
-    undefined,
+    GROK_WMUX_HOOK_EVENTS,
     'Grok',
   );
 }

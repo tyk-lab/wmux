@@ -26,6 +26,17 @@ describe('terminal user submit detection', () => {
     expect(trackTerminalUserInput('worker-a', '\r')).toBe(false);
   });
 
+  it('returns the exact submitted launcher text and applies backspace edits', () => {
+    resetTerminalUserInputTracking();
+    expect(prepareForUserTerminalInput('worker-a', 'kimii').shouldSubmit).toBe(false);
+    expect(prepareForUserTerminalInput('worker-a', '\x7f').shouldSubmit).toBe(false);
+    expect(prepareForUserTerminalInput('worker-a', '\r')).toEqual({
+      shouldSubmit: true,
+      clearAutomatedDraft: false,
+      submittedText: 'kimi',
+    });
+  });
+
   it('keeps Shift+Enter as draft content and lets Ctrl+C clear it', () => {
     resetTerminalUserInputTracking();
     expect(trackTerminalUserInput('worker-a', '\x1b\r')).toBe(false);

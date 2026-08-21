@@ -31,19 +31,23 @@ export function enqueueSupervisorDelivery(
   delivery: SupervisorDelivery,
 ): SupervisorDelivery[] {
   const terminalLifecycle = delivery.kind === 'task-end' || delivery.kind === 'task-interrupted';
+  const taskStartSupersedesUserTask = delivery.kind === 'task-start';
   const reviewSupersedesUserTask = terminalLifecycle
     || (delivery.kind === 'worker-status' && !!delivery.reviewId);
-  const current = reviewSupersedesUserTask
-    ? (pending || []).filter((candidate) => {
+  const source = pending || [];
+  const filtered = reviewSupersedesUserTask || taskStartSupersedesUserTask
+    ? source.filter((candidate) => {
         const sameTurn = candidate.turnId !== undefined && delivery.turnId !== undefined
           ? candidate.turnId === delivery.turnId
           : candidate.task === delivery.task;
+        const sameStartedTask = taskStartSupersedesUserTask && candidate.task === delivery.task;
         const obsoleteProbe = candidate.kind === 'liveness-probe'
           || (candidate.kind === 'worker-status' && sameTurn)
-          || (candidate.kind === 'user-task' && reviewSupersedesUserTask);
+          || (candidate.kind === 'user-task' && (reviewSupersedesUserTask || sameStartedTask));
         return candidate.stage === 'pasted' || !obsoleteProbe;
       })
-    : pending || [];
+    : source;
+  const current = filtered.length === source.length ? source : filtered;
   const previous = current[current.length - 1];
   const sameTurn = previous?.turnId !== undefined && delivery.turnId !== undefined
     ? previous.turnId === delivery.turnId

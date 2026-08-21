@@ -19,8 +19,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const cli = path.join(root, 'dist', 'cli', 'wmux.js');
-const builtHook = path.join(root, 'dist', 'cli', 'wmux-hook.js');
-const hook = path.join(root, 'resources', 'cli', 'wmux-hook.js');
+const hookRuntimeFiles = ['wmux-hook.js', 'wmux-hook-context.js', 'wmux-hook-payload.js'];
 
 const args = process.argv.slice(2);
 const skipBuild = args.includes('--skip-build');
@@ -54,13 +53,7 @@ function resolveInstalledWmuxHook() {
     return undefined;
   }
 
-  const installedHook = path.join(path.dirname(resolvedExe), 'resources', 'cli', 'wmux-hook.js');
-  if (!fs.existsSync(installedHook)) die(`wmux-hook.js not found beside wmux.exe: ${installedHook}`);
-  return installedHook;
-}
-
-if (!fs.existsSync(hook)) {
-  die(`Missing ${hook}`);
+  return path.join(path.dirname(resolvedExe), 'resources', 'cli', 'wmux-hook.js');
 }
 
 function mtime(p) {
@@ -99,18 +92,25 @@ if (!skipBuild && needsBuild()) {
 if (!fs.existsSync(cli)) {
   die(`Missing ${cli}. Run: npm run build:main`);
 }
-if (!fs.existsSync(builtHook)) {
-  die(`Missing ${builtHook}. Run: npm run build:main`);
+function syncHookRuntime(targetDirectory) {
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  for (const file of hookRuntimeFiles) {
+    const source = path.join(root, 'dist', 'cli', file);
+    const target = path.join(targetDirectory, file);
+    if (!fs.existsSync(source)) die(`Missing ${source}. Run: npm run build:main`);
+    if (!fs.existsSync(target) || fs.readFileSync(target).compare(fs.readFileSync(source)) !== 0) {
+      fs.copyFileSync(source, target);
+      console.log(`→ Sync ${target}`);
+    }
+  }
 }
-if (!fs.existsSync(hook) || fs.readFileSync(hook).compare(fs.readFileSync(builtHook)) !== 0) {
-  fs.mkdirSync(path.dirname(hook), { recursive: true });
-  fs.copyFileSync(builtHook, hook);
-  console.log(`→ Sync ${path.relative(root, hook)}`);
-}
+
+syncHookRuntime(path.join(root, 'resources', 'cli'));
 
 const argv = [cli, 'install-hooks'];
 if (noOpencode) argv.push('--no-opencode');
 const installedHook = resolveInstalledWmuxHook();
+if (installedHook) syncHookRuntime(path.dirname(installedHook));
 const env = installedHook ? { ...process.env, WMUX_HOOK_SCRIPT: installedHook } : process.env;
 console.log(installedHook
   ? `→ Use installed wmux Hook: ${installedHook}`

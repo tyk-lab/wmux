@@ -6,7 +6,8 @@
  * on stdin, so we reuse `wmux-hook.js --event <Name>` and the shared
  * agent-hook-bridge mapping (UserPromptSubmit → working, Stop → idle, …).
  *
- * Config path matches Kimi 0.30: `$KIMI_CODE_HOME` or `~/.kimi-code/config.toml`.
+ * Config path matches current Kimi Code: `$KIMI_CODE_HOME` or
+ * `~/.kimi-code/config.toml`.
  */
 
 import * as fs from 'fs';
@@ -17,15 +18,17 @@ import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 export const WMUX_KIMI_START = '# wmux-hooks:start';
 export const WMUX_KIMI_END = '# wmux-hooks:end';
 
-/** Turn-level + permission events Kimi documents (0.30 HOOK_EVENT_TYPES). */
+/** Turn-level + permission events supported by Kimi Code 0.38. */
 export const KIMI_WMUX_HOOK_EVENTS = [
   'UserPromptSubmit',
+  'PreToolUse',
   'PostToolUse',
   'Notification',
   'PermissionRequest',
   'PermissionResult',
   'Stop',
   'StopFailure',
+  'Interrupt',
   'SubagentStop',
 ] as const;
 

@@ -1,6 +1,7 @@
 export const TERMINAL_USER_SUBMIT_EVENT = 'wmux:terminal-user-submit';
 
-const pendingUserInput = new Set<string>();
+const pendingUserInput = new Map<string, string>();
+const submittedUserInput = new Map<string, string>();
 
 interface AutomatedSubmitToken {
   surfaceId: string;
@@ -42,20 +43,36 @@ export function isTerminalUserSubmit(data: string): boolean {
 export function trackTerminalUserInput(surfaceId: string, data: string): boolean {
   if (!surfaceId) return false;
   if (isTerminalUserSubmit(data)) {
-    const shouldSubmit = pendingUserInput.has(surfaceId);
+    const pending = pendingUserInput.get(surfaceId);
+    const submitted = pending?.trim() || '';
     pendingUserInput.delete(surfaceId);
-    return shouldSubmit;
+    if (submitted) submittedUserInput.set(surfaceId, submitted);
+    else submittedUserInput.delete(surfaceId);
+    return pending !== undefined;
   }
   if (data === '\x03' || data === '\x15') {
     pendingUserInput.delete(surfaceId);
+    submittedUserInput.delete(surfaceId);
     return false;
   }
+  if (data === '\x7f' || data === '\b') {
+    const current = pendingUserInput.get(surfaceId) || '';
+    pendingUserInput.set(surfaceId, current.slice(0, -1));
+    return false;
+  }
+  if (isControlSequenceOnly(data)) return false;
 
   const visible = stripBracketedPasteMarkers(data).split('\x1b\r').join('\n');
   if (hasUserContent(visible)) {
-    pendingUserInput.add(surfaceId);
+    pendingUserInput.set(surfaceId, `${pendingUserInput.get(surfaceId) || ''}${visible}`.slice(-12_000));
   }
   return false;
+}
+
+export function consumeTerminalUserSubmittedText(surfaceId: string): string {
+  const submitted = submittedUserInput.get(surfaceId) || '';
+  submittedUserInput.delete(surfaceId);
+  return submitted;
 }
 
 export function beginAutomatedTerminalSubmit(
@@ -96,6 +113,7 @@ export function cancelPendingAutomatedTerminalSubmit(
 export interface TerminalUserInputPreparation {
   shouldSubmit: boolean;
   clearAutomatedDraft: boolean;
+  submittedText?: string;
 }
 
 /** Cancel a pending AI Enter before forwarding user-originated terminal bytes. */
@@ -121,14 +139,17 @@ export function prepareForUserTerminalInput(
     const cancelled = cancelPendingAutomatedTerminalSubmit(surfaceId, clearDraftLocally);
     clearAutomatedDraft = cancelled && !clearDraftLocally;
   }
+  const shouldSubmit = trackTerminalUserInput(surfaceId, data);
   return {
-    shouldSubmit: trackTerminalUserInput(surfaceId, data),
+    shouldSubmit,
     clearAutomatedDraft,
+    ...(shouldSubmit ? { submittedText: consumeTerminalUserSubmittedText(surfaceId) } : {}),
   };
 }
 
 export function resetTerminalUserInputTracking(): void {
   pendingUserInput.clear();
+  submittedUserInput.clear();
   for (const token of pendingAutomatedSubmits.values()) {
     if (token.timer !== undefined) globalThis.clearTimeout(token.timer);
   }
@@ -136,9 +157,9 @@ export function resetTerminalUserInputTracking(): void {
 }
 
 /** Notify supervision before the user's Enter is forwarded to the PTY. */
-export function signalTerminalUserSubmit(surfaceId: string): void {
+export function signalTerminalUserSubmit(surfaceId: string, task = ''): void {
   if (!surfaceId) return;
   window.dispatchEvent(new CustomEvent(TERMINAL_USER_SUBMIT_EVENT, {
-    detail: { surfaceId },
+    detail: { surfaceId, task: task.trim().slice(0, 12_000) },
   }));
 }

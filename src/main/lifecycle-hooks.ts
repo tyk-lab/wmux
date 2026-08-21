@@ -21,6 +21,15 @@ export const WMUX_LIFECYCLE_EVENTS = [
 
 export type WmuxLifecycleEvent = (typeof WMUX_LIFECYCLE_EVENTS)[number];
 
+export interface WmuxLifecycleEventBinding {
+  /** Native event name used in the agent's hook configuration. */
+  hookEvent: string;
+  /** Normalized event reported to wmux when it differs from the native name. */
+  protocolEvent?: string;
+}
+
+export type WmuxLifecycleEventSpec = string | WmuxLifecycleEventBinding;
+
 export function isWmuxHookCommand(command: string | undefined | null): boolean {
   if (!command) return false;
   return command.includes('wmux-hook') || /wmux["']?\s+report-agent/.test(command);
@@ -51,20 +60,32 @@ function makeEventGroup(hookScriptPosix: string, event: string, agent?: string):
 export function applyWmuxLifecycleHooks(
   root: any,
   hookScriptPosix: string,
-  events: readonly string[] = WMUX_LIFECYCLE_EVENTS,
+  events: readonly WmuxLifecycleEventSpec[] = WMUX_LIFECYCLE_EVENTS,
   agent?: string,
 ): any {
   const isFullSettings = root && typeof root === 'object' && root.hooks !== undefined
-    && !WMUX_LIFECYCLE_EVENTS.some((e) => Array.isArray(root[e]));
+    && !events.some((spec) => Array.isArray(root[typeof spec === 'string' ? spec : spec.hookEvent]));
   const next = isFullSettings
     ? { ...root, hooks: { ...(root.hooks || {}) } }
     : { ...(root || {}) };
   const hooksMap = isFullSettings ? next.hooks : next;
 
-  for (const event of events) {
-    hooksMap[event] = [
-      ...stripWmuxHookGroups(hooksMap[event]),
-      makeEventGroup(hookScriptPosix, event, agent),
+  // Remove stale wmux-owned handlers first. This matters when an agent drops
+  // support for an event, while preserving every user-owned matcher group.
+  for (const [event, entries] of Object.entries(hooksMap)) {
+    if (!Array.isArray(entries)) continue;
+    const remaining = stripWmuxHookGroups(entries);
+    if (remaining.length > 0) hooksMap[event] = remaining;
+    else delete hooksMap[event];
+  }
+
+  for (const spec of events) {
+    const binding = typeof spec === 'string'
+      ? { hookEvent: spec, protocolEvent: spec }
+      : { ...spec, protocolEvent: spec.protocolEvent || spec.hookEvent };
+    hooksMap[binding.hookEvent] = [
+      ...stripWmuxHookGroups(hooksMap[binding.hookEvent]),
+      makeEventGroup(hookScriptPosix, binding.protocolEvent, agent),
     ];
   }
 
@@ -75,12 +96,15 @@ export function applyWmuxLifecycleHooks(
 export function buildWmuxHooksJsonFile(
   hookScriptPosix: string,
   description: string,
-  events: readonly string[] = WMUX_LIFECYCLE_EVENTS,
+  events: readonly WmuxLifecycleEventSpec[] = WMUX_LIFECYCLE_EVENTS,
   agent?: string,
 ): any {
   const hooks: Record<string, any[]> = {};
-  for (const event of events) {
-    hooks[event] = [makeEventGroup(hookScriptPosix, event, agent)];
+  for (const spec of events) {
+    const binding = typeof spec === 'string'
+      ? { hookEvent: spec, protocolEvent: spec }
+      : { ...spec, protocolEvent: spec.protocolEvent || spec.hookEvent };
+    hooks[binding.hookEvent] = [makeEventGroup(hookScriptPosix, binding.protocolEvent, agent)];
   }
   return {
     description,

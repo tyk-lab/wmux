@@ -29,11 +29,15 @@ describe('Pi Agent wmux hooks', () => {
     expect(source).toContain('event.source === "extension"');
     expect(source).toContain('before_agent_start');
     expect(source).toContain('UserPromptSubmit');
+    expect(source).toContain('wmux_session_id');
+    expect(source).toContain('wmux_turn_id');
+    expect(source).toContain('const WMUX_SESSION_ID = String(process.pid) + "-" + Date.now()');
     expect(source).toContain('tool_result');
     expect(source).toContain('PreToolUse');
     expect(source).toContain('PostToolUse');
     expect(source).toContain('agent_settled');
     expect(source).toContain('session_shutdown');
+    expect(source).toContain('if (currentTurnId) sendWmuxEvent("Interrupt"');
     expect(source).toContain('args.push("--tool", toolName)');
     expect(source).toContain('if (toolName === "edit") return "Edit"');
     expect(source).toContain('if (toolName === "write") return "Write"');

@@ -14,7 +14,24 @@ describe('applyWmuxCodexHooks', () => {
   it('creates hooks for an empty file', () => {
     const next = applyWmuxCodexHooks({}, SCRIPT);
     expect(next.hooks.UserPromptSubmit).toBeDefined();
+    expect(next.hooks.PreToolUse).toBeDefined();
     expect(next.hooks.Stop[0].hooks[0].command).toContain('--event Stop');
+    expect(next.hooks.Notification).toBeUndefined();
+    expect(next.hooks.StopFailure).toBeUndefined();
+  });
+
+  it('removes stale unsupported wmux hooks while preserving user hooks', () => {
+    const next = applyWmuxCodexHooks({
+      hooks: {
+        Notification: [
+          { hooks: [{ type: 'command', command: `node "${SCRIPT}" --event Notification` }] },
+          { hooks: [{ type: 'command', command: 'notify-user' }] },
+        ],
+      },
+    }, SCRIPT);
+
+    expect(next.hooks.Notification).toHaveLength(1);
+    expect(next.hooks.Notification[0].hooks[0].command).toBe('notify-user');
   });
 
   it('preserves existing non-wmux Stop hooks', () => {
