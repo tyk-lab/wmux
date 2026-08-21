@@ -3,11 +3,13 @@ import {
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
+  nextSupervisorDeliveryRetryAttempt,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
 } from '../../src/renderer/supervisor/delivery';
+import { isAwaitingNextPromptState } from '../../src/renderer/agent-state-semantics';
 
 const event = (id: string, kind: 'task-start' | 'task-end', task: string, turnId?: number) => ({
   id,
@@ -63,8 +65,49 @@ describe('supervisor delivery queue', () => {
   it('waits while the dedicated supervisor is working or blocked', () => {
     expect(canDeliverToSupervisor('working')).toBe(false);
     expect(canDeliverToSupervisor('blocked')).toBe(false);
+    expect(canDeliverToSupervisor({ state: 'blocked', blockedReason: 'permission: npm test' })).toBe(false);
+    expect(canDeliverToSupervisor({ state: 'blocked', blockedReason: 'question: choose A or B' })).toBe(false);
     expect(canDeliverToSupervisor('idle')).toBe(true);
     expect(canDeliverToSupervisor('unknown')).toBe(true);
+  });
+
+  it('delivers a queued lifecycle fact when the supervisor is only waiting for its next prompt', () => {
+    const completed = event('end', 'task-end', '运行测试', 2);
+    const promptReady = { state: 'blocked', blockedReason: 'Waiting for your next prompt' };
+
+    expect(isAwaitingNextPromptState(promptReady)).toBe(true);
+    expect(canDeliverToSupervisor(promptReady)).toBe(true);
+    expect(nextDeliverableSupervisorDelivery([completed], promptReady)?.id).toBe('end');
+    const liveness = {
+      id: 'probe', kind: 'liveness-probe' as const, task: '检查状态',
+      text: '请检查', createdAt: 1, stage: 'pending' as const,
+    };
+    expect(nextDeliverableSupervisorDelivery([liveness], promptReady)?.id).toBe('probe');
+  });
+
+  it.each([
+    'Waiting for next prompt',
+    'Awaiting another instruction.',
+    '等待下一条指令。',
+  ])('recognizes a supported Agent idle nudge without broadening real blockers: %s', (blockedReason) => {
+    expect(isAwaitingNextPromptState({ state: 'blocked', blockedReason })).toBe(true);
+  });
+
+  it('bounds transient delivery retries until a new lifecycle event resets the attempt counter', () => {
+    expect(nextSupervisorDeliveryRetryAttempt(0)).toBe(1);
+    expect(nextSupervisorDeliveryRetryAttempt(1)).toBe(2);
+    expect(nextSupervisorDeliveryRetryAttempt(2)).toBeNull();
+    expect(nextSupervisorDeliveryRetryAttempt(200)).toBeNull();
+  });
+
+  it('does not mistake a real blocked question containing prompt words for prompt-ready idle', () => {
+    const blocked = {
+      state: 'blocked',
+      blockedReason: 'Waiting for your next prompt: choose adapter A or B',
+    };
+
+    expect(isAwaitingNextPromptState(blocked)).toBe(false);
+    expect(canDeliverToSupervisor(blocked)).toBe(false);
   });
 
   it('does not let an idle-only liveness probe block a later lifecycle fact', () => {

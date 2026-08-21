@@ -142,6 +142,17 @@ describe('declared agent state precedence', () => {
     expect(out.blocked).toBe(0);
   });
 
+  it('does not show an Agent waiting for its next prompt as needing the user', () => {
+    const tree = leaf('pane-1', [{ id: 'surf-a' }]);
+    const out = agentSessionsForWorkspace(
+      tree, {}, {}, NOW,
+      { 'surf-a': declared('blocked', 'Waiting for your next prompt') },
+    );
+
+    expect(out.sessions[0]).toMatchObject({ working: false, blocked: false, blockedReason: null });
+    expect(out.blocked).toBe(0);
+  });
+
   it('a declared state alone makes a surface a session', () => {
     const tree = leaf('pane-1', [{ id: 'surf-a' }]);
     const out = agentSessionsForWorkspace(tree, {}, {}, NOW, { 'surf-a': declared('working') });

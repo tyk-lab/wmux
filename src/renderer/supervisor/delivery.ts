@@ -1,4 +1,8 @@
 import type { SupervisorDelivery } from '../store/supervisor-slice';
+import {
+  isAgentPromptReadyState,
+  isAwaitingNextPromptState,
+} from '../agent-state-semantics';
 
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
 
@@ -17,6 +21,20 @@ export function supervisorDeliveryLabel(kind: SupervisorDelivery['kind']): strin
 }
 
 export type SupervisorWakeDeliveryKind = 'task-end' | 'task-interrupted';
+
+function supervisorDeliveryAgentState(agentState: unknown): unknown {
+  return agentState && typeof agentState === 'object'
+    ? (agentState as { state?: unknown }).state
+    : agentState;
+}
+
+export const MAX_SUPERVISOR_DELIVERY_RETRY_ATTEMPTS = 2;
+
+/** Bound transient delivery retries; later lifecycle events may start a fresh bounded attempt. */
+export function nextSupervisorDeliveryRetryAttempt(attempts: number): number | null {
+  const current = Number.isFinite(attempts) ? Math.max(0, Math.trunc(attempts)) : 0;
+  return current >= MAX_SUPERVISOR_DELIVERY_RETRY_ATTEMPTS ? null : current + 1;
+}
 
 /** Only terminal states that need a decision should wake the dedicated supervisor. */
 export function supervisorWakeDeliveryKind(lifecycle: unknown): SupervisorWakeDeliveryKind | null {
@@ -118,24 +136,26 @@ export function enqueueSupervisorDelivery(
  */
 export function nextDeliverableSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
-  supervisorState: unknown,
+  supervisorAgentState: unknown,
 ): SupervisorDelivery | undefined {
   const queue = compactSupervisorDeliveries(pending);
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
     return pasted.kind === 'liveness-probe'
-      ? supervisorState === 'idle' ? pasted : undefined
-      : canDeliverToSupervisor(supervisorState) ? pasted : undefined;
+      ? isAgentPromptReadyState(supervisorAgentState) ? pasted : undefined
+      : canDeliverToSupervisor(supervisorAgentState) ? pasted : undefined;
   }
-  if (!canDeliverToSupervisor(supervisorState)) return undefined;
+  if (!canDeliverToSupervisor(supervisorAgentState)) return undefined;
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
-    .find((delivery) => delivery.kind !== 'liveness-probe' || supervisorState === 'idle');
+    .find((delivery) => delivery.kind !== 'liveness-probe' || isAgentPromptReadyState(supervisorAgentState));
 }
 
-/** A busy or blocked supervisor must finish its current turn before receiving another command. */
-export function canDeliverToSupervisor(state: unknown): boolean {
-  return state !== 'working' && state !== 'blocked';
+/** A busy or genuinely blocked supervisor must finish its current turn before receiving another command. */
+export function canDeliverToSupervisor(agentState: unknown): boolean {
+  const state = supervisorDeliveryAgentState(agentState);
+  return state !== 'working'
+    && (state !== 'blocked' || isAwaitingNextPromptState(agentState));
 }
 
 /** Detect a supervisor Agent turn that ended without publishing a state handoff. */

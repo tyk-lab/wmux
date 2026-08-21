@@ -65,6 +65,7 @@ import {
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../../store/supervisor-slice';
+import { isAwaitingNextPromptState } from '../../agent-state-semantics';
 import '../../styles/supervisor.css';
 
 interface SupervisorPanelProps {
@@ -240,7 +241,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const ordinaryAttentionLaneCount = new Set(ordinaryBoundLanes.filter((lane) => (
     supervisorLaneControlState(lane) === 'waiting'
     || supervisorLaneControlState(lane) === 'paused'
-    || visibleAgentStates[lane.surfaceId]?.state === 'blocked'
+    || (visibleAgentStates[lane.surfaceId]?.state === 'blocked'
+      && !isAwaitingNextPromptState(visibleAgentStates[lane.surfaceId]))
     || !!lane.supervisorProblem
   )).map((lane) => lane.id)).size;
   const ordinaryAttentionCount = ordinaryAttentionLaneCount + pendingCount;

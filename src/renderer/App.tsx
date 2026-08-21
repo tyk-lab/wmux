@@ -76,6 +76,7 @@ import {
   compactSupervisorDeliveries,
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
+  nextSupervisorDeliveryRetryAttempt,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_READY_EVENT,
@@ -83,6 +84,10 @@ import {
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
 } from './supervisor/delivery';
+import {
+  isAgentPromptReadyState,
+  isAwaitingNextPromptState,
+} from './agent-state-semantics';
 import {
   omitNonRestorableWorkspaces,
   shouldInitializeWorkspaceLayout,
@@ -428,6 +433,10 @@ function handleAgentLifecycleEvent(
   const isNeedsInput = ev === 'Notification' || ev === 'PermissionRequest';
   const isTurnFinished = ev === 'Stop' || ev === 'StopFailure';
   if (!isNeedsInput && !isTurnFinished) return;
+  if (ev === 'Notification' && isAwaitingNextPromptState({
+    state: 'blocked',
+    blockedReason: event?.message,
+  })) return;
 
   if (isNeedsInput && prefs.agentInputNotify === false) return;
   if (isTurnFinished && prefs.agentStopNotify === false) return;
@@ -1305,7 +1314,10 @@ export default function App() {
       const next = { ...agentStatesRef.current, [data.surfaceId]: data };
       agentStatesRef.current = next;
       setAgentStates(next);
-      signalSupervisorDeliveryReady();
+      const isSupervisorTerminal = useStore.getState().supervisor.lanes.some((lane) => (
+        dedicatedSupervisorSurfaceId(lane) === data.surfaceId
+      ));
+      if (isSupervisorTerminal) signalSupervisorDeliveryReady();
     });
     return unsub;
   }, []);
@@ -1320,6 +1332,7 @@ export default function App() {
   const supervisorRuntimeRef = useRef<Record<string, LaneRuntime>>({});
   const supervisorRuntimeSessionIdRef = useRef('');
   const supervisorDeliveryInFlightRef = useRef(false);
+  const supervisorDeliveryRetryAttemptRef = useRef(0);
   const recordedSupervisorManagementIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!supervisorActive) return;
@@ -1365,11 +1378,15 @@ export default function App() {
 
   useEffect(() => {
     if (!supervisorActive) return;
+    supervisorDeliveryRetryAttemptRef.current = 0;
     let cancelled = false;
     let retryTimer: number | null = null;
 
     const scheduleRetry = () => {
       if (cancelled || retryTimer != null) return;
+      const nextAttempt = nextSupervisorDeliveryRetryAttempt(supervisorDeliveryRetryAttemptRef.current);
+      if (nextAttempt === null) return;
+      supervisorDeliveryRetryAttemptRef.current = nextAttempt;
       retryTimer = window.setTimeout(() => {
         retryTimer = null;
         void flushDeliveries();
@@ -1390,19 +1407,18 @@ export default function App() {
         for (const lane of session.lanes) {
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !supervisorSurfaceId) continue;
-          const supervisorState = agentStatesRef.current[supervisorSurfaceId]?.state || 'unknown';
+          const supervisorAgentState = agentStatesRef.current[supervisorSurfaceId] || { state: 'unknown' };
           const compactedDeliveries = compactSupervisorDeliveries(lane.pendingSupervisorDeliveries);
           if (compactedDeliveries !== lane.pendingSupervisorDeliveries) {
             useStore.getState().updateLane(lane.id, { pendingSupervisorDeliveries: compactedDeliveries });
           }
           let delivery = nextDeliverableSupervisorDelivery(
             compactedDeliveries,
-            supervisorState,
+            supervisorAgentState,
           );
           if (!delivery) continue;
           const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
-            scheduleRetry();
             continue;
           }
           const exists = await pty.has(supervisorSurfaceId);
@@ -1418,7 +1434,6 @@ export default function App() {
                 });
               }
             }
-            scheduleRetry();
             continue;
           }
 
@@ -1460,7 +1475,8 @@ export default function App() {
           }
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
           if (!submitted) {
-            if (!await pty.has(supervisorSurfaceId)) {
+            const stillExists = await pty.has(supervisorSurfaceId);
+            if (!stillExists) {
               const store = useStore.getState();
               const current = store.supervisor.lanes.find((item) => item.id === lane.id);
               if (current) {
@@ -1470,6 +1486,7 @@ export default function App() {
                   )),
                 });
               }
+              continue;
             }
             scheduleRetry();
             continue;
@@ -1491,10 +1508,11 @@ export default function App() {
             task: delivery.task,
             reviewId: delivery.reviewId,
           });
+          supervisorDeliveryRetryAttemptRef.current = 0;
           store.appendSupervisorLog(lane.id, '监督通知已送达', supervisorDeliveryLabel(delivery.kind));
         }
       } catch {
-        // Keep the undelivered event queued and retry only while delivery work exists.
+        // Keep the event queued; transient failures get only a small bounded retry window.
         scheduleRetry();
       } finally {
         supervisorDeliveryInFlightRef.current = false;
@@ -1502,7 +1520,10 @@ export default function App() {
     };
 
     void flushDeliveries();
-    const onDeliveryReady = () => void flushDeliveries();
+    const onDeliveryReady = () => {
+      supervisorDeliveryRetryAttemptRef.current = 0;
+      void flushDeliveries();
+    };
     window.addEventListener(SUPERVISOR_DELIVERY_READY_EVENT, onDeliveryReady);
     return () => {
       cancelled = true;
@@ -1528,7 +1549,10 @@ export default function App() {
         }
         const runtime = supervisorRuntimeRef.current[lane.id];
         const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-        const supervisorState = supervisorSurfaceId ? states[supervisorSurfaceId]?.state || 'unknown' : 'unknown';
+        const supervisorAgentState = supervisorSurfaceId
+          ? states[supervisorSurfaceId] || { state: 'unknown' }
+          : { state: 'unknown' };
+        const supervisorState = supervisorAgentState.state || 'unknown';
         if (supervisorSurfaceId && supervisorState !== 'working') {
           const screen = readTerminalScreen(supervisorSurfaceId, 30);
           if (screen.text) reportSupervisorProviderLimit(session, lane, screen.text);
@@ -1555,7 +1579,7 @@ export default function App() {
           && lane.reviewDeliveryConfirmedAt
           && reviewScreenActivity
           && supervisorSurfaceId
-          && supervisorState === 'idle'
+          && isAgentPromptReadyState(supervisorAgentState)
           && currentReviewScreenSignature === reviewScreenActivity.signature
           && now - reviewScreenActivity.stableAt >= ORDINARY_REVIEW_IDLE_GRACE_MS
         ) {

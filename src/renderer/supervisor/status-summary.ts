@@ -3,6 +3,7 @@ import type {
   SupervisorLaneControlState,
 } from '../store/supervisor-slice';
 import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
+import { isAgentPromptReadyState } from '../agent-state-semantics';
 
 export interface SupervisorTaskAgentState {
   state?: string;
@@ -164,7 +165,7 @@ export function summarizeTaskExecution(
       title: '实时 Agent 状态：working',
     };
   }
-  if (agentState?.state === 'blocked') {
+  if (agentState?.state === 'blocked' && !isAgentPromptReadyState(agentState)) {
     const reason = agentState.blockedReason?.trim() || '等待输入、权限或外部条件';
     return {
       label: '已阻塞',
@@ -172,7 +173,7 @@ export function summarizeTaskExecution(
       title: `实时 Agent 状态：blocked\n${reason}`,
     };
   }
-  if (agentState?.state === 'idle') {
+  if (isAgentPromptReadyState(agentState)) {
     return {
       label: options.awaitingReview ? '等待监督复核' : '空闲待命',
       detail: options.awaitingReview

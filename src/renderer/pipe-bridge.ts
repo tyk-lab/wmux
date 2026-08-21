@@ -221,6 +221,7 @@ import {
   enqueueSupervisorDelivery,
   signalSupervisorDeliveryReady,
 } from './supervisor/delivery';
+import { isAwaitingNextPromptState } from './agent-state-semantics';
 import { ordinaryTaskDeliveryBlockReason } from './supervisor/task-runtime-readiness';
 
 export function isSupervisorDecisionAuthorised(
@@ -1080,6 +1081,7 @@ function isQuestionBlockedState(
   state: SupervisorAgentStateView | undefined,
 ): state is SupervisorAgentStateView & { state: 'blocked' } {
   return state?.state === 'blocked'
+    && !isAwaitingNextPromptState(state)
     && /question|input|choice|choose|select|prompt|询问|选择|输入|问题|决定/i.test(state.blockedReason || '');
 }
 
@@ -1094,15 +1096,6 @@ function isLowRiskTechnicalQuestion(
   const blockedReason = state.blockedReason || '';
   return !USER_ONLY_DECISION.test(`${blockedReason}\n${proposedAnswer}`)
     && TECHNICAL_DECISION.test(`${blockedReason}\n${proposedAnswer}`);
-}
-
-/** Hooks also report an idle agent waiting for another prompt as blocked. It is not a decision blocker. */
-function isAwaitingNextPromptState(
-  state: SupervisorAgentStateView | undefined,
-): state is SupervisorAgentStateView & { state: 'blocked' } {
-  return state?.state === 'blocked'
-    && /\b(?:wait(?:ing)?|await(?:ing)?)\b.{0,32}\b(?:next|another|new)\b.{0,16}\b(?:prompt|instruction|message|task)\b|等待.{0,16}(?:下一|新的).{0,12}(?:提示|指令|消息|任务|输入)/iu
-      .test(state.blockedReason || '');
 }
 
 function blockedRequestAlreadyAnswered(lane: SupervisorLane, state: SupervisorAgentStateView): boolean {
@@ -1454,7 +1447,9 @@ function remoteTerminalActivity(surfaceId: SurfaceId, preserveStaleWorking = fal
 } {
   const record = (window as any).__wmux_getAgentStates?.()?.[surfaceId];
   const updatedAt = Number.isFinite(record?.updatedAt) ? Number(record.updatedAt) : null;
-  const state = ['idle', 'working', 'blocked', 'unknown'].includes(String(record?.state))
+  const state = isAwaitingNextPromptState(record)
+    ? 'idle'
+    : ['idle', 'working', 'blocked', 'unknown'].includes(String(record?.state))
     ? record.state as RemoteTerminalActivityState
     : 'unknown';
   if (!preserveStaleWorking && state === 'working' && (!updatedAt || Date.now() - updatedAt > REMOTE_WORKING_STATE_MAX_AGE_MS)) {

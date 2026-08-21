@@ -55,6 +55,19 @@ describe('supervisor-engine', () => {
     expect(actions).toEqual([]);
   });
 
+  it('treats an Agent waiting for its next prompt as idle instead of opening a false blocked review', () => {
+    const { actions, runtime } = tickLane({
+      session: session(),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
+      surfaceState: { state: 'blocked', blockedReason: 'Waiting for your next prompt' },
+      runtime: blankRuntime(),
+      now: 10_000,
+    });
+
+    expect(actions).toEqual([]);
+    expect(runtime.lastState).toBe('idle');
+  });
+
   it('notifies the user when a blocked lane has no dedicated supervisor', () => {
     const { actions, runtime } = tickLane({
       session: session(),

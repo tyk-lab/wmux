@@ -55,6 +55,12 @@ describe('supervisor status summary', () => {
     })).toMatchObject({
       label: '已阻塞', detail: '等待选择目标接口',
     });
+    expect(summarizeTaskExecution({ ...active, awaitingReview: true }, {
+      state: 'blocked',
+      blockedReason: 'Waiting for your next prompt',
+    })).toMatchObject({
+      label: '等待监督复核', detail: '任务回合已结束，监督 AI 正在复核',
+    });
     expect(summarizeTaskExecution({ controlState: 'paused' }, { state: 'unknown' }).label).toBe('已暂停');
   });
 

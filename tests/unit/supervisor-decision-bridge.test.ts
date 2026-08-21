@@ -772,6 +772,17 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({ action: 'terminal-interrupt', terminal: 'worker-a', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: '已向 Codex worker 发送 Ctrl+C 中断请求。' });
     expect(writes).toHaveBeenLastCalledWith('worker-a', '\x03');
+
+    agentState = {
+      state: 'blocked',
+      blockedReason: 'Waiting for your next prompt',
+      blockedVersion: 1,
+      updatedAt: Date.now(),
+    };
+    const promptReadyList = remoteControl({ action: 'list' });
+    const promptReadyTerminal = JSON.parse(promptReadyList.message).terminals
+      .find((terminal: any) => terminal.surfaceId === 'worker-a');
+    expect(promptReadyTerminal).toMatchObject({ activityState: 'idle' });
   });
 
   it('stops only the selected project work-item runtime and delivers the user reason to project AI', async () => {
@@ -6089,6 +6100,7 @@ describe('supervisor decision bridge', () => {
       executionAction: 'continue-next-batch',
     })).toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledWith('worker-a', expect.stringContaining('继续执行合同内下一批'));
+    expect(useStore.getState().supervisor.lanes[0].lastBlockedResponseVersion).toBeUndefined();
   });
 
   it('allows completion from an agent waiting for the next prompt and reuses prior test evidence', () => {

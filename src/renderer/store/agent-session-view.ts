@@ -1,4 +1,5 @@
 import { SplitNode, SurfaceId, PaneId } from '../../shared/types';
+import { isAwaitingNextPromptState } from '../agent-state-semantics';
 
 /** One sidebar hook-activity entry written by App.tsx from lifecycle hook events. */
 export interface HookActivityEntry {
@@ -107,7 +108,7 @@ function resolveActivity(
     && now - reported.lastUpdate < SESSION_ACTIVITY_TTL_MS;
 
   const declaredKnown = !!declared && declared.state !== 'unknown';
-  const blocked = declared?.state === 'blocked';
+  const blocked = declared?.state === 'blocked' && !isAwaitingNextPromptState(declared);
   const working = declaredKnown ? declared.state === 'working' : (hookFresh || reportFresh);
 
   let tool: string | null = null;

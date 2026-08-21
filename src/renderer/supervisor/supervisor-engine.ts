@@ -21,6 +21,7 @@ import {
   prepareAutomatedTerminalInput,
 } from '../utils/terminal-input-delivery';
 import { terminalRuntimeInputError } from '../terminal-runtime-lifecycle';
+import { isAwaitingNextPromptState } from '../agent-state-semantics';
 
 export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 
@@ -97,7 +98,9 @@ export function tickLane(opts: {
   // scheduler injects another instruction or treats an idle state as success.
   if (lane.awaitingReview) return { actions, runtime: rt };
 
-  const st = String(surfaceState.state || 'unknown');
+  const st = isAwaitingNextPromptState(surfaceState)
+    ? 'idle'
+    : String(surfaceState.state || 'unknown');
   const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
 
   let permissionInstruction: string;
