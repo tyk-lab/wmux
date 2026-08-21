@@ -11,8 +11,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { applyWmuxLifecycleHooks, WMUX_LIFECYCLE_EVENTS } from './lifecycle-hooks';
-import { makeWmuxHookEventCommand, resolveWmuxHookScriptPosix } from './wmux-hook-path';
+import { applyWmuxLifecycleHooks } from './lifecycle-hooks';
+import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 
 export function resolveCodexHome(homeDir = os.homedir()): string {
   const fromEnv = process.env.CODEX_HOME?.trim();
@@ -74,7 +74,7 @@ export function applyCodexProjectTrust(current: string, projectPath: string): st
   return `${current}${separator}${header}${newline}trust_level = "trusted"${newline}`;
 }
 
-/** Persists trust before Codex starts so its interactive confirmation cannot swallow the initial prompt. */
+/** Trusts the user-selected directory before launch; Codex still reviews every project-local Hook separately. */
 export function ensureCodexProjectTrusted(projectPath: string, configPath = resolveCodexConfigPath()): void {
   const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
   const next = applyCodexProjectTrust(current, projectPath);
@@ -100,46 +100,6 @@ export function applyWmuxCodexHooks(existing: any, hookScriptPosix: string): any
     hooks: { ...(base.hooks || {}) },
   };
   return applyWmuxLifecycleHooks(withDesc, hookScriptPosix, undefined, 'Codex');
-}
-
-/** Only application-owned Hook commands may bypass Codex's interactive trust review. */
-export function containsOnlyWmuxCodexHooks(
-  value: unknown,
-  hookScriptPosix = resolveWmuxHookScriptPosix(),
-): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const hooks = (value as { hooks?: unknown }).hooks;
-  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return false;
-  const hookMap = hooks as Record<string, unknown>;
-  if (Object.keys(hookMap).some((event) => !(WMUX_LIFECYCLE_EVENTS as readonly string[]).includes(event))) {
-    return false;
-  }
-  return WMUX_LIFECYCLE_EVENTS.every((event) => {
-    const entries = hookMap[event];
-    if (!Array.isArray(entries) || entries.length !== 1) return false;
-    const handlers = entries[0] && typeof entries[0] === 'object'
-      ? (entries[0] as { hooks?: unknown }).hooks
-      : undefined;
-    if (!Array.isArray(handlers) || handlers.length !== 1) return false;
-    const handler = handlers[0] as { type?: unknown; command?: unknown } | undefined;
-    return handler?.type === 'command'
-      && handler.command === makeWmuxHookEventCommand(hookScriptPosix, event, 'Codex');
-  });
-}
-
-export function canSafelyBypassCodexHookTrust(
-  hooksPath = resolveCodexHooksPath(),
-  hookScriptPosix = resolveWmuxHookScriptPosix(),
-): boolean {
-  try {
-    if (!fs.existsSync(hooksPath)) return false;
-    return containsOnlyWmuxCodexHooks(
-      JSON.parse(fs.readFileSync(hooksPath, 'utf-8')),
-      hookScriptPosix,
-    );
-  } catch {
-    return false;
-  }
 }
 
 /**

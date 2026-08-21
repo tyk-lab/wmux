@@ -163,7 +163,7 @@ export function formatInstallAgentHooksReport(results: AgentHookInstallResult[])
   lines.push('');
   lines.push('Notes:');
   lines.push('  - Restart each agent session to load new hooks.');
-  lines.push('  - Codex may require `/hooks` trust for wmux-hook commands.');
+  lines.push('  - Review wmux commands once in Codex `/hooks`; wmux never bypasses Hook trust.');
   lines.push('  - On Windows, Pi uses Git Bash when available; an existing valid shellPath is preserved.');
   lines.push('  - Run inside a wmux pane so WMUX_SURFACE_ID is set when agents fire hooks.');
   return lines.join('\n');

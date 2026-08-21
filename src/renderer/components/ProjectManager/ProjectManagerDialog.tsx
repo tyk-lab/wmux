@@ -1133,6 +1133,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               setAgentDraft(next);
               setConfigNotice('');
             }} />
+            {agentDraft.manager.agent === 'codex' && (
+              <div className="supervisor-dialog__hint" role="note">
+                Codex Hook 信任由 Codex 管理：首次使用请在任一 Codex 会话执行 /hooks 审查 wmux-hook，确认一次后所有项目复用。wmux 不会绕过 Hook 信任，也不会代替你信任项目自带的 Hook。
+              </div>
+            )}
             {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
           </details>}
 

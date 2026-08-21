@@ -28,6 +28,7 @@ describe('formatInstallAgentHooksReport', () => {
     expect(text).toContain('[OK] Pi Agent');
     expect(text).toContain('[FAIL] Codex CLI');
     expect(text).toContain('/hooks');
+    expect(text).toContain('never bypasses Hook trust');
     expect(text).toContain('Restart each agent');
   });
 });

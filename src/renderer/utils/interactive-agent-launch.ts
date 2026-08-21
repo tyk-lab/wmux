@@ -7,11 +7,6 @@ export interface InteractiveAgentLaunch {
   startupInput?: string;
 }
 
-export interface InteractiveAgentLaunchOptions {
-  /** The caller owns and vets every enabled hook in this automated Codex runtime. */
-  bypassCodexHookTrust?: boolean;
-}
-
 const AUTOMATED_KIMI_STARTUP_MARKER = '# wmux-automated-agent-task';
 
 function powerShellStringExpression(value: string): string {
@@ -29,7 +24,6 @@ export function buildInteractiveAgentLaunch(
   prompt: string,
   model = '',
   reasoningEffort = '',
-  options: InteractiveAgentLaunchOptions = {},
 ): InteractiveAgentLaunch {
   const launchCommand = buildSupervisorLaunchCommand(agent, model, reasoningEffort);
   if (agent === 'kimi') {
@@ -41,9 +35,7 @@ export function buildInteractiveAgentLaunch(
 
   return {
     startupCommands: [
-      `${launchCommand}${agent === 'codex' && options.bypassCodexHookTrust
-        ? ' --dangerously-bypass-hook-trust'
-        : ''} -- ${powerShellStringExpression(prompt)}`,
+      `${launchCommand} -- ${powerShellStringExpression(prompt)}`,
     ],
   };
 }

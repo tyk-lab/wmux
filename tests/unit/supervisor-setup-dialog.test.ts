@@ -71,6 +71,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
+    expect(projectManagerDialogSource).toContain('首次使用请在任一 Codex 会话执行 /hooks');
+    expect(projectManagerDialogSource).toContain('wmux 不会绕过 Hook 信任');
+    expect(projectManagerDialogSource).toContain('不会代替你信任项目自带的 Hook');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('使用 Grok 默认 Thinking');
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
