@@ -1115,7 +1115,14 @@ export function buildProjectClarificationCard(
 export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): object {
   const watchdogRebuild = record.type === 'guard-triggered'
     && String(record.payload?.action || '').startsWith('watchdog-rebuild-');
-  const role = record.type === 'manager-runtime-failed'
+  const goalCompleted = record.type === 'project-goal-completed';
+  const projectStopped = record.type === 'project-stopped';
+  const terminalState = goalCompleted || projectStopped;
+  const role = goalCompleted
+    ? '当前主目标'
+    : projectStopped
+      ? '项目运行状态'
+      : record.type === 'manager-runtime-failed'
     ? '项目管理 AI'
     : record.type === 'project-paused'
       ? '项目 AI 主动暂停'
@@ -1130,8 +1137,17 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
               : record.type === 'guard-triggered'
                 ? watchdogRebuild ? '项目 Agent 卡死看门狗' : '项目执行护栏'
                 : '项目执行异常';
-  const detail = String(record.payload?.message || record.payload?.detail || '运行时或控制链路不可用').trim();
-  const suggestion = record.type === 'manager-runtime-failed'
+  const fallbackDetail = goalCompleted
+    ? '当前主目标已完成，项目正在等待下一目标'
+    : projectStopped
+      ? '项目已停止'
+      : '运行时或控制链路不可用';
+  const detail = String(record.payload?.message || record.payload?.detail || fallbackDetail).trim();
+  const suggestion = goalCompleted
+    ? '打开项目工作台核对完成证据，并设置或确认下一主目标；新目标建立前保持等待。'
+    : projectStopped
+      ? '打开项目工作台查看停止原因和保留记录，再决定是否创建新目标或新项目。'
+      : record.type === 'manager-runtime-failed'
     ? '在 wmux 中重建项目管理 AI 运行时；恢复后会使用结构化项目记录继续。'
     : record.type === 'project-paused'
       ? '打开项目工作台查看暂停原因和当前阻塞；处理完成后再恢复项目，避免继续复用失效运行链。'
@@ -1148,19 +1164,35 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
                   ? '控制层正在使用持久化上下文重建该 Agent；打开项目工作台查看恢复结果，不要向旧终端重复发送任务。'
                   : '打开项目工作台查看预算与护栏原因；调整任务合同或恢复项目后再继续。'
                 : '打开项目工作台查看异常详情，排除阻塞后再恢复自动推进。';
+  const headerTitle = goalCompleted
+    ? 'wmux · 主目标已完成'
+    : projectStopped
+      ? 'wmux · 项目已停止'
+      : 'wmux · 项目需要处理';
+  const headerTemplate = goalCompleted ? 'green' : projectStopped ? 'orange' : 'red';
+  const lead = goalCompleted
+    ? `✅ **当前主目标已经完成**\n项目：\`${record.sessionId}\`\n状态：**等待下一主目标**`
+    : projectStopped
+      ? `🟠 **项目已停止运行**\n项目：\`${record.sessionId}\`\n状态：**等待人工查看**`
+      : `🔴 **项目自动推进需要处理**\n项目：\`${record.sessionId}\`\n异常环节：**${role}**`;
+  const footer = goalCompleted
+    ? '请在专属项目工作台设置下一主目标。'
+    : projectStopped
+      ? '请在专属项目工作台决定后续处理。'
+      : '该异常不会由普通 AI 监督接管；请在专属项目工作台处理。';
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: 'wmux · 项目需要处理' },
+      title: { tag: 'plain_text', content: headerTitle },
       subtitle: { tag: 'plain_text', content: role },
-      template: 'red',
+      template: headerTemplate,
     },
     body: {
       elements: [
-        { tag: 'markdown', content: `🔴 **项目自动推进需要处理**\n项目：\`${record.sessionId}\`\n异常环节：**${role}**` },
-        { tag: 'markdown', content: `**告警详情**\n${compactProjectCardText(detail, 1200)}` },
-        { tag: 'markdown', content: `**建议处理**\n${suggestion}\n\n该异常不会由普通 AI 监督接管；请在专属项目工作台处理。` },
+        { tag: 'markdown', content: lead },
+        { tag: 'markdown', content: `**${terminalState ? goalCompleted ? '完成信息' : '停止信息' : '告警详情'}**\n${compactProjectCardText(detail, 1200)}` },
+        { tag: 'markdown', content: `**建议处理**\n${suggestion}\n\n${footer}` },
         { tag: 'hr' },
         ...responsiveButtonRows([
           cardButton({ wmux_action: 'project_ai_workspace', projectId: record.sessionId }, '打开项目工作台', 'primary'),

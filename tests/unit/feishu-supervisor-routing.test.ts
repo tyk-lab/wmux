@@ -2446,6 +2446,35 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify((send.mock.calls[4][1] as { card?: unknown }).card)).toContain('新增控制链异常');
   });
 
+  it('项目目标完成和项目停止使用对应的终态通知语义', async () => {
+    vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project-terminal-state');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-completed', projectDir: 'E:\\repo', type: 'project-goal-completed',
+      payload: { message: '主目标已经完成，等待用户设置下一目标', attentionRequired: true },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    const completedCard = JSON.stringify((send.mock.calls[0][1] as { card?: unknown }).card);
+    expect(completedCard).toContain('wmux · 主目标已完成');
+    expect(completedCard).toContain('"template":"green"');
+    expect(completedCard).toContain('等待下一主目标');
+    expect(completedCard).not.toContain('项目执行异常');
+    expect(completedCard).not.toContain('排除阻塞后再恢复');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-stopped', projectDir: 'E:\\repo', type: 'project-stopped',
+      payload: { message: '项目已停止，运行记录已保留', attentionRequired: true },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    const stoppedCard = JSON.stringify((send.mock.calls[1][1] as { card?: unknown }).card);
+    expect(stoppedCard).toContain('wmux · 项目已停止');
+    expect(stoppedCard).toContain('"template":"orange"');
+    expect(stoppedCard).toContain('项目已停止，运行记录已保留');
+    expect(stoppedCard).not.toContain('项目自动推进需要处理');
+  });
+
   it('项目人工介入阻塞推送到专用飞书群，答复进入对应项目且不自动恢复', async () => {
     vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project');
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-project');

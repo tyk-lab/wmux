@@ -118,6 +118,7 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
   'project-safe-exit-failed': '项目安全退出等待处理',
   'guard-triggered': '项目执行护栏已停止推进',
   'project-paused': '项目 AI 主动暂停',
+  'project-goal-completed': '当前主目标已完成',
 };
 
 function projectActivityLabel(session: {
@@ -358,6 +359,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     if (!session) return null;
     return activeProjectManagerAttentionEvent(session.events) || null;
   }, [session]);
+  const goalCompletionAlert = activeAlert?.kind === 'project-goal-completed';
   const message = session ? messageDrafts[session.id] || '' : '';
   const lastConversationEvent = conversation.at(-1);
   const sessionDefinitionFingerprint = session ? JSON.stringify([
@@ -1347,9 +1349,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   <div>
                     <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
                     <p>{activeAlert.summary}</p>
-                    <small>{new Date(activeAlert.ts).toLocaleString('zh-CN', { hour12: false })} · 项目与对应执行链会保持暂停，处理后再恢复。</small>
+                    <small>{new Date(activeAlert.ts).toLocaleString('zh-CN', { hour12: false })} · {goalCompletionAlert ? '项目正在等待你核对完成证据并设置下一主目标。' : '项目与对应执行链会保持暂停，处理后再恢复。'}</small>
                   </div>
-                  <button type="button" className="confirm-dialog__btn" onClick={() => setActiveView('execution')}>查看执行链</button>
+                  <button type="button" className="confirm-dialog__btn" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : 'execution')}>{goalCompletionAlert ? '设置下一主目标' : '查看执行链'}</button>
                 </section>
               )}
               {activeView === 'requirements' && <section className="supervisor-dialog__group project-manager-dialog__preconditions">
@@ -1713,8 +1715,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 </section>
               )}
               {activeAlert && (
-                <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView('execution')}>
-                  <span>需要处理</span>
+                <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : 'execution')}>
+                  <span>{goalCompletionAlert ? '等待下一目标' : '需要处理'}</span>
                   <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
                 </button>
               )}
