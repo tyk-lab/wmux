@@ -3293,7 +3293,8 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
-  it('keeps one project message pending until its flattened body and final Enter are acknowledged', async () => {
+  it('accepts a later tool lifecycle as proof when project message submit hook is missing', async () => {
+    vi.useFakeTimers();
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-atomic-message' });
     const managerSurfaceId = 'project-manager-atomic';
     useStore.getState().restoreProjectManager({
@@ -3369,12 +3370,22 @@ describe('supervisor decision bridge', () => {
     acknowledgeEnter?.(true);
     await vi.waitFor(() => expect(useStore.getState().projectManager?.pendingManagerDeliveries?.[0])
       .toMatchObject({ stage: 'submitted' }));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'manager-delivery-failed' }),
+    ]));
     (globalThis.window as any).__wmux_noteManagedAgentHook({
       surfaceId: managerSurfaceId,
-      event: 'UserPromptSubmit',
-      task: body,
+      event: 'PreToolUse',
+      command: 'wmux project status',
     });
     expect(useStore.getState().projectManager?.pendingManagerDeliveries).toHaveLength(0);
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'manager-delivery-restored',
+        payload: expect.objectContaining({ acknowledgement: 'PreToolUse' }),
+      }),
+    ]));
     surfaceTerminalRegistry.delete(managerSurfaceId);
     clearTerminalRuntimeStatus(managerSurfaceId);
   });
@@ -6460,6 +6471,139 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
       title: '项目需要你的处理',
     }));
+  });
+
+  it('escalates when project AI ends a turn without applying the user answer', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-unhandled-answer' });
+    const managerSurfaceId = 'project-manager-unhandled-answer';
+    useStore.getState().restoreProjectManager({ ...project, managerSurfaceId: managerSurfaceId as any });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-unhandled-answer' as any,
+      title: '用户答复未落实测试',
+      cwd: project.projectDir,
+      splitTree: {
+        type: 'leaf' as const,
+        paneId: 'pane-unhandled-answer' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [{
+          id: managerSurfaceId as any,
+          type: 'terminal' as const,
+          shell: 'pwsh.exe',
+          projectManagerTerminal: true,
+          projectManagerProjectId: project.id,
+          projectManagerAgent: 'codex',
+        }],
+      },
+    }]);
+    const store = useStore.getState();
+    const question = {
+      id: 'question-unhandled-answer',
+      category: 'manual-intervention' as const,
+      workItemId: 'task-a',
+      blocker: '执行链需要用户选择恢复方式',
+      reasonCode: 'internal-project-failure' as const,
+      question: '是否按最新协议恢复？',
+      context: '当前执行链已暂停。',
+      options: [
+        { id: 'retry', label: '恢复', description: '按最新协议恢复。' },
+        { id: 'pause', label: '暂停', description: '继续保持暂停。' },
+      ],
+      recommendedOptionId: 'retry',
+      previousStatus: 'active' as const,
+      createdAt: Date.now(),
+    };
+    expect(store.applyProjectManagerAction({ type: 'request-user-clarification', question }, project.id))
+      .toMatchObject({ ok: true });
+    expect(store.applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: question.id,
+      answer: '按最新协议恢复', optionId: 'retry', answeredBy: 'desktop',
+    }, project.id)).toMatchObject({ ok: true });
+
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: managerSurfaceId,
+      event: 'UserPromptSubmit',
+      task: '处理用户答复',
+    });
+    (globalThis.window as any).__wmux_noteManagedAgentHook({ surfaceId: managerSurfaceId, event: 'Stop' });
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        category: 'manual-intervention',
+        reasonCode: 'internal-project-failure',
+        recommendedOptionId: 'retry-latest-protocol',
+      },
+    }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'guard-triggered',
+          payload: expect.objectContaining({ reason: 'project-user-answer-unhandled' }),
+        }),
+      ]));
+  });
+
+  it('escalates an exhausted supervisor transition after the final manager reminder turn', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-transition-exhausted' });
+    const managerSurfaceId = 'project-manager-transition-exhausted';
+    useStore.getState().restoreProjectManager({
+      ...project,
+      managerSurfaceId: managerSurfaceId as any,
+      pendingManagerDeliveries: [],
+      pendingSupervisorTransitions: [{
+        id: 'transition-exhausted',
+        laneId: 'lane-a',
+        workItemId: 'task-a',
+        kind: 'project-action-required',
+        eventType: 'supervisor.decision-error-loop',
+        summary: '监督协议异常等待项目 AI 处理',
+        createdAt: 1,
+        notifiedAt: 2,
+        notificationCount: 2,
+      }],
+    });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-transition-exhausted' as any,
+      title: '交接提醒耗尽测试',
+      cwd: project.projectDir,
+      splitTree: {
+        type: 'leaf' as const,
+        paneId: 'pane-transition-exhausted' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [{
+          id: managerSurfaceId as any,
+          type: 'terminal' as const,
+          shell: 'pwsh.exe',
+          projectManagerTerminal: true,
+          projectManagerProjectId: project.id,
+          projectManagerAgent: 'codex',
+        }],
+      },
+    }]);
+
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: managerSurfaceId,
+      event: 'UserPromptSubmit',
+      task: '再次处理监督交接',
+    });
+    (globalThis.window as any).__wmux_noteManagedAgentHook({ surfaceId: managerSurfaceId, event: 'Stop' });
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        category: 'manual-intervention',
+        reasonCode: 'internal-project-failure',
+      },
+    }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'guard-triggered',
+          payload: expect.objectContaining({ reason: 'project-transition-unhandled' }),
+        }),
+      ]));
   });
 
   it('does not send the first project task contract while the new task Agent state is unknown', () => {

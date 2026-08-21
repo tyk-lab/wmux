@@ -624,6 +624,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = { ...session, status: 'waiting', pendingUserQuestion: undefined };
       eventInput = {
         kind: 'user-clarification-answered',
+        workItemId: pending.workItemId,
         summary: `用户答复：${answer}`,
         correlationId: pending.id,
         payload: {
