@@ -105,6 +105,33 @@ describe('supervisor delivery queue', () => {
     expect(nextDeliverableSupervisorDelivery([liveness], promptReady)?.id).toBe('probe');
   });
 
+  it('delivers only the first bootstrap briefing when a new TUI is ready but has no hook state yet', () => {
+    const bootstrap = {
+      id: 'startup', kind: 'control-message' as const, task: '启动监督',
+      text: '完整监督协议', createdAt: 1, stage: 'pending' as const,
+      bootstrapOnRuntimeReady: true,
+    };
+    const later = {
+      id: 'later', kind: 'control-message' as const, task: '更新方向',
+      text: '后续控制消息', createdAt: 2, stage: 'pending' as const,
+    };
+    const legacyBootstrap = {
+      ...bootstrap,
+      id: 'legacy-startup',
+      bootstrapOnRuntimeReady: undefined,
+      text: '# 项目监督 AI · 首次启动任务终端\n旧版持久化协议',
+    };
+
+    expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, false)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, true)?.id).toBe('startup');
+    expect(nextDeliverableSupervisorDelivery([legacyBootstrap], { state: 'unknown' }, true)?.id)
+      .toBe('legacy-startup');
+    expect(nextDeliverableSupervisorDelivery([later], { state: 'unknown' }, true)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'working' }, true)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'blocked', blockedReason: 'permission' }, true))
+      .toBeUndefined();
+  });
+
   it.each([
     'Waiting for next prompt',
     'Awaiting another instruction.',

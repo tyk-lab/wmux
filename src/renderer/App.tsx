@@ -1441,6 +1441,7 @@ export default function App() {
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (supervisorLaneControlState(lane) !== 'active' || !supervisorSurfaceId) continue;
           const supervisorAgentState = agentStatesRef.current[supervisorSurfaceId] || { state: 'unknown' };
+          const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
           const compactedDeliveries = compactSupervisorDeliveries(lane.pendingSupervisorDeliveries);
           if (compactedDeliveries !== lane.pendingSupervisorDeliveries) {
             useStore.getState().updateLane(lane.id, { pendingSupervisorDeliveries: compactedDeliveries });
@@ -1448,9 +1449,9 @@ export default function App() {
           let delivery = nextDeliverableSupervisorDelivery(
             compactedDeliveries,
             supervisorAgentState,
+            supervisorRuntime?.state === 'ready',
           );
           if (!delivery) continue;
-          const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
             continue;
           }

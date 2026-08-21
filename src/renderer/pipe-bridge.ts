@@ -1156,9 +1156,50 @@ interface SupervisorDeliveryObservation {
   confirmed: boolean;
   agentState: string;
   screenChanged: boolean;
+  acknowledgement?: 'UserPromptSubmit';
 }
 
 const supervisorDeliveriesInFlight = new Set<string>();
+const pendingTaskPromptAcknowledgements = new Map<string, {
+  finish: (confirmed: boolean) => void;
+}>();
+
+/** Wait for the Agent hook that proves a submitted task became a new turn. */
+function beginTaskPromptAcknowledgement(
+  surfaceId: string,
+  beforeScreen: string,
+  timeoutMs = 15_000,
+): { promise: Promise<SupervisorDeliveryObservation>; cancel: () => void } {
+  pendingTaskPromptAcknowledgements.get(surfaceId)?.finish(false);
+  let settled = false;
+  let resolvePromise: (observation: SupervisorDeliveryObservation) => void = () => undefined;
+  const observation = (confirmed: boolean): SupervisorDeliveryObservation => ({
+    confirmed,
+    agentState: String(((window as any).__wmux_getAgentStates?.() || {})[surfaceId]?.state || 'unknown'),
+    screenChanged: terminalScreenTail(surfaceId) !== beforeScreen,
+    ...(confirmed ? { acknowledgement: 'UserPromptSubmit' as const } : {}),
+  });
+  const promise = new Promise<SupervisorDeliveryObservation>((resolve) => {
+    resolvePromise = resolve;
+  });
+  const timer = globalThis.setTimeout(() => finish(false), Math.max(1, timeoutMs));
+  (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+  function finish(confirmed: boolean): void {
+    if (settled) return;
+    settled = true;
+    globalThis.clearTimeout(timer);
+    if (pendingTaskPromptAcknowledgements.get(surfaceId)?.finish === finish) {
+      pendingTaskPromptAcknowledgements.delete(surfaceId);
+    }
+    resolvePromise(observation(confirmed));
+  }
+  pendingTaskPromptAcknowledgements.set(surfaceId, { finish });
+  return { promise, cancel: () => finish(false) };
+}
+
+function acknowledgeTaskPromptDelivery(surfaceId: string): void {
+  pendingTaskPromptAcknowledgements.get(surfaceId)?.finish(true);
+}
 
 async function observeSupervisorDelivery(
   surfaceId: string,
@@ -1988,6 +2029,8 @@ async function deliverSupervisorStartupBriefing(laneId: string): Promise<void> {
   queueSupervisorControlMessage(
     lane,
     projectAwareSupervisorBriefing(current, lane, String(states[lane.surfaceId]?.state || 'unknown')),
+    undefined,
+    true,
   );
 }
 
@@ -3040,6 +3083,7 @@ function queueSupervisorControlMessage(
   lane: SupervisorLane,
   text: string,
   task = lane.currentTask || lane.projectWorkItemId || lane.label,
+  bootstrapOnRuntimeReady = false,
 ): SupervisorDelivery {
   const store = useStore.getState();
   const current = store.supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
@@ -3050,6 +3094,7 @@ function queueSupervisorControlMessage(
     text,
     createdAt: Date.now(),
     turnId: current.workerTurnId,
+    ...(bootstrapOnRuntimeReady ? { bootstrapOnRuntimeReady: true } : {}),
     stage: 'pending',
   };
   store.updateLane(current.id, {
@@ -5162,6 +5207,7 @@ function armManagedAgentWatchdog(surfaceId: string): void {
 function handleManagedAgentHookEvent(event: any): void {
   const surfaceId = String(event?.surfaceId || '').trim();
   const lifecycle = String(event?.event || '').trim();
+  if (surfaceId && lifecycle === 'UserPromptSubmit') acknowledgeTaskPromptDelivery(surfaceId);
   const target = surfaceId ? managedProjectAgentTarget(surfaceId) : undefined;
   if (!target) return;
   const now = Date.now();
@@ -10074,6 +10120,11 @@ export function initPipeBridge(): void {
   };
 
   pendingProjectManagerDeliveries.splice(0);
+  for (const acknowledgement of [...pendingTaskPromptAcknowledgements.values()]) {
+    acknowledgement.finish(false);
+  }
+  pendingTaskPromptAcknowledgements.clear();
+  supervisorDeliveriesInFlight.clear();
   projectManagerDeliveryScheduled = false;
   projectManagerDeliverySurfacesInFlight.clear();
   projectManagerRuntimeRecoveries.clear();
@@ -12178,6 +12229,12 @@ export function initPipeBridge(): void {
       && outcome !== 'needs-human' && !next) {
       return { ok: false, error: '工作终端仍在阻塞；请明确回答技术问题、确认低风险权限，或使用 needs-human' };
     } else if (next && outcome !== 'needs-human') {
+      if (projectManagedLane && (!agentState?.state || agentState.state === 'unknown')) {
+        return {
+          ok: false,
+          error: '项目任务终端尚未产生可信 Agent 生命周期，禁止投递首条任务契约；请等待冷启动任务的 UserPromptSubmit/Stop hook 后重新读取状态，不要盲目重发',
+        };
+      }
       if (agentState?.state === 'working') {
         return { ok: false, error: '工作终端仍在运行，不能注入下一步' };
       }
@@ -12930,6 +12987,7 @@ export function initPipeBridge(): void {
         ?? (lane.taskRoleAnchorPending !== false
           ? `${ORDINARY_TASK_ROLE_ANCHOR}\n\n${unanchoredDeliveryText}`
           : `${buildOrdinaryTaskEventEnvelope(lane.surfaceId)}\n\n${unanchoredDeliveryText}`);
+      let taskPromptAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
       supervisorDeliveriesInFlight.add(lane.id);
       try {
         const pendingDelivery = sendTaskToSurfaceReliably(
@@ -12938,15 +12996,17 @@ export function initPipeBridge(): void {
           session.submitEnter,
           supervisorLaneInputIsolationScope(lane),
           () => terminalScreenTail(lane.surfaceId),
+          () => {
+            taskPromptAcknowledgement = beginTaskPromptAcknowledgement(
+              lane.surfaceId,
+              terminalScreenTail(lane.surfaceId),
+            );
+          },
         );
         if (pendingDelivery) {
           return pendingDelivery
-            .then((receipt) => session.submitEnter
-              ? observeSupervisorDelivery(
-                lane.surfaceId,
-                receipt.beforeSubmitScreen ?? beforeScreen,
-                agentState,
-              )
+            .then(() => session.submitEnter
+              ? taskPromptAcknowledgement!.promise
               : {
                 confirmed: true,
                 agentState: String(((window as any).__wmux_getAgentStates?.() || {})[lane.surfaceId]?.state || 'unknown'),
@@ -12957,7 +13017,7 @@ export function initPipeBridge(): void {
               : failDelivery(
                 'next',
                 '下一步发送',
-                `PTY 已接受输入，但未观察到新的任务状态（当前 ${delivery.agentState}${delivery.screenChanged ? '，仅检测到屏幕变化' : ''}）；请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后改用短指令重试`,
+                `PTY 已接受输入，但 15 秒内未收到任务 AI 的 UserPromptSubmit 确认（当前 ${delivery.agentState}${delivery.screenChanged ? '，仅检测到屏幕变化' : ''}）；消息可能已经进入终端，请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后才能重试`,
                 delivery,
               ))
             .catch((err) => failDelivery(
@@ -12965,12 +13025,17 @@ export function initPipeBridge(): void {
               '下一步发送',
               String((err as Error)?.message || err),
             ))
-            .finally(() => supervisorDeliveriesInFlight.delete(lane.id));
+            .finally(() => {
+              taskPromptAcknowledgement?.cancel();
+              supervisorDeliveriesInFlight.delete(lane.id);
+            });
         }
       } catch (err) {
+        taskPromptAcknowledgement?.cancel();
         supervisorDeliveriesInFlight.delete(lane.id);
         return failDelivery('next', '下一步发送', String((err as Error)?.message || err));
       }
+      taskPromptAcknowledgement?.cancel();
       supervisorDeliveriesInFlight.delete(lane.id);
     }
     return finishDecision();

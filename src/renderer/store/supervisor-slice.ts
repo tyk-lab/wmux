@@ -44,6 +44,8 @@ export interface SupervisorDelivery {
   reviewId?: string;
   /** Owner decision identity used to coalesce decisions that have not reached the supervisor yet. */
   correlationId?: string;
+  /** First briefing may use verified TUI readiness before the new Agent has emitted its first hook. */
+  bootstrapOnRuntimeReady?: boolean;
   /** Transport progress; submitted remains queued until the Agent hook confirms consumption. */
   stage: 'pending' | 'pasted' | 'submitted';
   submittedAt?: number;

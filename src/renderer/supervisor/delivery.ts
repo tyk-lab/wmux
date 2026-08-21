@@ -52,6 +52,15 @@ function deliveryPriority(delivery: SupervisorDelivery): number {
   return 5;
 }
 
+function isRuntimeBootstrapDelivery(delivery: SupervisorDelivery): boolean {
+  if (delivery.bootstrapOnRuntimeReady === true) return true;
+  // Compatibility for startup briefings persisted before the explicit flag was added.
+  return delivery.kind === 'control-message' && (
+    delivery.text.startsWith('# 项目监督 AI · 首次启动任务终端')
+    || delivery.text.startsWith('[普通监督终端上下文启动｜控制层｜')
+  );
+}
+
 function appendCompactedSupervisorDelivery(
   pending: SupervisorDelivery[],
   delivery: SupervisorDelivery,
@@ -132,21 +141,31 @@ export function enqueueSupervisorDelivery(
 export function nextDeliverableSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   supervisorAgentState: unknown,
+  runtimeReady = false,
 ): SupervisorDelivery | undefined {
   const queue = compactSupervisorDeliveries(pending);
   if (queue.some((delivery) => delivery.stage === 'submitted')) return undefined;
+  const promptReady = canDeliverToSupervisor(supervisorAgentState);
+  const bootstrapReady = (delivery: SupervisorDelivery) => (
+    isRuntimeBootstrapDelivery(delivery)
+    && runtimeReady
+    && (
+      supervisorAgentState === undefined
+      || supervisorAgentState === 'unknown'
+      || (typeof supervisorAgentState === 'object'
+        && supervisorAgentState !== null
+        && (supervisorAgentState as { state?: unknown }).state === 'unknown')
+    )
+  );
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
-    return ['liveness-probe', 'owner-decision', 'control-message'].includes(pasted.kind)
-      ? isAgentPromptReadyState(supervisorAgentState) ? pasted : undefined
-      : canDeliverToSupervisor(supervisorAgentState) ? pasted : undefined;
+    return promptReady || bootstrapReady(pasted) ? pasted : undefined;
   }
-  if (!canDeliverToSupervisor(supervisorAgentState)) return undefined;
+  if (!promptReady && !runtimeReady) return undefined;
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
     .find((delivery) => (
-      !['liveness-probe', 'owner-decision', 'control-message'].includes(delivery.kind)
-      || isAgentPromptReadyState(supervisorAgentState)
+      promptReady || bootstrapReady(delivery)
     ));
 }
 

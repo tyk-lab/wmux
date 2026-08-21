@@ -143,6 +143,14 @@ function queuedControlText(laneId = 'lane-a'): string {
     .map((delivery) => delivery.text).join('\n') || '';
 }
 
+function acknowledgeTaskPrompt(surfaceId = 'worker-a'): void {
+  (globalThis.window as any).__wmux_noteManagedAgentHook({
+    surfaceId,
+    event: 'UserPromptSubmit',
+    task: '测试中的监督任务投递',
+  });
+}
+
 async function confirmAndResumeProject(projectId: string): Promise<void> {
   const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
   const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -304,6 +312,15 @@ async function startTaskThroughDedicatedSupervisor(projectId: string, workItemId
     workScopeOverride: 'project',
     forbiddenActionsOverride: expect.any(Array),
   });
+  await vi.waitFor(() => expect(useStore.getState().supervisor.lanes
+    .find((lane) => lane.id === pendingLane?.id)?.pendingSupervisorDeliveries)
+    .toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'control-message',
+        bootstrapOnRuntimeReady: true,
+        text: expect.stringContaining('项目监督 AI · 首次启动任务终端'),
+      }),
+    ])));
   expect(pendingLane?.autonomyPermissionsOverride).toContain('same-route-next');
   const effectivePermissions = effectiveSupervisorAutonomyPermissions(
     useStore.getState().supervisor,
@@ -450,6 +467,7 @@ describe('supervisor decision bridge', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     useStore.getState().setProjectSupervisorLanes([]);
     useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().restoreProjectManager(null);
@@ -5137,20 +5155,28 @@ describe('supervisor decision bridge', () => {
   });
 
   it('waits for a long next step and Enter, then confirms task-terminal activity', async () => {
+    vi.useFakeTimers();
     const next = '继续检查当前实现并分段运行相关测试。'.repeat(120);
     const writeReliable = vi.fn(async (surfaceId: string, data: string) => {
       writes(surfaceId, data);
-      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      if (data === '\r') {
+        globalThis.setTimeout(() => {
+          agentState = { ...agentState, state: 'working', updatedAt: 2 };
+          acknowledgeTaskPrompt(surfaceId);
+        }, 5_000);
+      }
       else screenText = data;
       return true;
     });
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
     useStore.getState().patchSupervisor({ submitEnter: true });
 
-    await expect(decide({ next })).resolves.toMatchObject({
+    const result = decide({ next });
+    await vi.advanceTimersByTimeAsync(5_001);
+    await expect(result).resolves.toMatchObject({
       ok: true,
       outcome: 'continue',
-      delivery: { confirmed: true, agentState: 'working' },
+      delivery: { confirmed: true, agentState: 'working', acknowledgement: 'UserPromptSubmit' },
     });
     expect(writeReliable.mock.calls).toEqual([
       ['worker-a', ordinaryTaskDelivery(next)],
@@ -5162,7 +5188,10 @@ describe('supervisor decision bridge', () => {
   it('flattens a multi-line next step even when the terminal reports bracketed paste', async () => {
     (surfaceTerminalRegistry.get('worker-a') as any).modes = { bracketedPasteMode: true };
     const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
-      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      if (data === '\r') {
+        agentState = { ...agentState, state: 'working', updatedAt: 2 };
+        acknowledgeTaskPrompt();
+      }
       return true;
     });
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
@@ -5177,7 +5206,10 @@ describe('supervisor decision bridge', () => {
 
   it('flattens a multi-line next step when bracketed paste is unavailable', async () => {
     const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
-      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      if (data === '\r') {
+        agentState = { ...agentState, state: 'working', updatedAt: 2 };
+        acknowledgeTaskPrompt();
+      }
       return true;
     });
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
@@ -5191,11 +5223,14 @@ describe('supervisor decision bridge', () => {
   });
 
   it('keeps review open when PTY accepts input but terminal state and screen do not change', async () => {
+    vi.useFakeTimers();
     const writeReliable = vi.fn(async () => true);
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
     useStore.getState().patchSupervisor({ submitEnter: true });
 
-    await expect(decide({ next: '运行相关单元测试' })).resolves.toMatchObject({
+    const result = decide({ next: '运行相关单元测试' });
+    await vi.advanceTimersByTimeAsync(15_001);
+    await expect(result).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining('agent-state'),
       delivery: { confirmed: false, agentState: 'idle', screenChanged: false },
@@ -5210,6 +5245,7 @@ describe('supervisor decision bridge', () => {
   });
 
   it('does not treat an unrelated screen repaint as delivery confirmation', async () => {
+    vi.useFakeTimers();
     const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
       if (data === '\r') screenText = '后台日志刷新，但任务状态未变化';
       return true;
@@ -5217,7 +5253,9 @@ describe('supervisor decision bridge', () => {
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
     useStore.getState().patchSupervisor({ submitEnter: true });
 
-    await expect(decide({ next: '运行相关单元测试' })).resolves.toMatchObject({
+    const result = decide({ next: '运行相关单元测试' });
+    await vi.advanceTimersByTimeAsync(15_001);
+    await expect(result).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining('仅检测到屏幕变化'),
       delivery: { confirmed: false, agentState: 'idle', screenChanged: true },
@@ -5231,7 +5269,10 @@ describe('supervisor decision bridge', () => {
       if (data === ordinaryTaskDelivery('第一条裁决')) {
         return new Promise<boolean>((resolve) => { acceptBody = resolve; });
       }
-      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 2 };
+      if (data === '\r') {
+        agentState = { ...agentState, state: 'working', updatedAt: 2 };
+        acknowledgeTaskPrompt();
+      }
       return Promise.resolve(true);
     });
     (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
@@ -6142,6 +6183,17 @@ describe('supervisor decision bridge', () => {
     expect(shouldScheduleProjectSupervisorTransitionReminder(1)).toBe(true);
     expect(shouldScheduleProjectSupervisorTransitionReminder(2)).toBe(false);
     expect(shouldScheduleProjectSupervisorTransitionReminder(20)).toBe(false);
+  });
+
+  it('does not send the first project task contract while the new task Agent state is unknown', () => {
+    bindProjectLaneToWorkItem();
+    agentState = { ...agentState, state: 'unknown', updatedAt: 2 };
+
+    expect(decide({ next: '开始执行项目任务契约' })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('尚未产生可信 Agent 生命周期'),
+    });
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('enforces project anti-loop limits on supervisor decisions', () => {

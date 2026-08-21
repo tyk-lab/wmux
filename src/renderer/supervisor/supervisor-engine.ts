@@ -324,6 +324,7 @@ function sendSurfaceInputReliably(
   isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
   validateBeforeSubmit?: () => string | null,
+  onBeforeSubmit?: () => void,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
   const runtimeError = terminalRuntimeInputError(surfaceId);
   if (runtimeError) throw new Error(`终端 Agent 已不可用：${runtimeError}`);
@@ -337,6 +338,7 @@ function sendSurfaceInputReliably(
         isolationScope,
         captureBeforeSubmit,
         validateBeforeSubmit,
+        onBeforeSubmit,
       ) || { beforeSubmitScreen: captureBeforeSubmit?.() }
     ));
   }
@@ -384,6 +386,7 @@ function sendSurfaceInputReliably(
         }
         const beforeSubmitScreen = captureBeforeSubmit?.();
         try {
+          onBeforeSubmit?.();
           pty.write(surfaceId, '\r');
           resolve({ beforeSubmitScreen });
         } catch (error) {
@@ -420,6 +423,7 @@ function sendSurfaceInputReliably(
       throw new Error('正文投递期间检测到用户输入，已取消自动提交');
     }
     const beforeSubmitScreen = captureBeforeSubmit?.();
+    onBeforeSubmit?.();
     if (!await pty.writeReliable(surfaceId, '\r')) {
       void pty.writeReliable(surfaceId, '\x15');
       throw new Error('任务终端未接受提交键；已尝试清理未提交正文');
@@ -445,9 +449,18 @@ export function sendTaskToSurfaceReliably(
   submitEnter: boolean,
   isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
+  onBeforeSubmit?: () => void,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
   assertTaskTerminalInputAvailable(surfaceId);
-  return sendSurfaceInputReliably(surfaceId, text, submitEnter, isolationScope, captureBeforeSubmit);
+  return sendSurfaceInputReliably(
+    surfaceId,
+    text,
+    submitEnter,
+    isolationScope,
+    captureBeforeSubmit,
+    undefined,
+    onBeforeSubmit,
+  );
 }
 
 /** Permission prompts are the current terminal input, so they intentionally bypass the empty-draft guard. */
