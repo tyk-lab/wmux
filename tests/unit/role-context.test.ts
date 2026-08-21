@@ -310,6 +310,12 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-a', task: 'work-a',
     }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(supervisor, 'project.worker.resource.reconcile', {
+      projectId: 'project-a', workItemId: 'work-a', workerId: 'worker-a',
+    }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(supervisor, 'project.worker.merge.reject', {
+      projectId: 'project-a', workItemId: 'work-a', workerId: 'worker-a',
+    }).allowed).toBe(true);
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-b', task: 'work-a',
     }).allowed).toBe(false);
@@ -328,6 +334,8 @@ describe('unified managed AI role context', () => {
 
     const manager = { role: 'project-ai' as const, callerSurfaceId: 'manager-a', projectId: 'project-a' };
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-a' }).allowed)
+      .toBe(true);
+    expect(authorizeManagedRoleV2(manager, 'project.directive.resolve', { projectId: 'project-a' }).allowed)
       .toBe(true);
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-b' }).allowed)
       .toBe(false);

@@ -99,6 +99,13 @@ export interface FinalizeProjectWorkerGroupRequest {
   verifyCurrentRevision?: RevisionVerifier;
 }
 
+export interface CleanupProjectWorkerGroupRequest {
+  projectId: string;
+  workItemId: string;
+  executionEpoch: number;
+  projectDir: string;
+}
+
 function safeId(value: unknown, label: string): string {
   const text = String(value || '').trim();
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/u.test(text)) {
@@ -245,6 +252,19 @@ async function captureTree(repoRoot: string, projectRelativePath: string): Promi
   });
 }
 
+async function captureWorkerRepositoryTree(record: WorkerGroupRecord, worker: WorkerWorktreeRecord): Promise<string> {
+  const parent = await git(worker.repoWorktreePath, ['rev-parse', 'HEAD']);
+  return withTemporaryIndex(record.repoRoot, async (env) => {
+    await git(worker.repoWorktreePath, ['read-tree', parent], { env });
+    const exclusions = [':(exclude).wmux/tmp'];
+    if (record.projectRelativePath !== '.') {
+      exclusions.push(`:(exclude)${record.projectRelativePath}/.wmux/tmp`);
+    }
+    await git(worker.repoWorktreePath, ['add', '-A', '--', '.', ...exclusions], { env });
+    return git(worker.repoWorktreePath, ['write-tree'], { env });
+  });
+}
+
 function writeGroupRecord(groupDir: string, record: WorkerGroupRecord): void {
   fs.writeFileSync(metadataPath(groupDir), `${JSON.stringify(record, null, 2)}\n`, 'utf8');
 }
@@ -280,6 +300,60 @@ async function persistAppliedWorkerSnapshot(
   return snapshotCommit;
 }
 
+function workerSnapshotRef(record: WorkerGroupRecord, workerId: string): string {
+  const refKey = crypto.createHash('sha256').update([
+    record.projectId,
+    record.workItemId,
+    record.executionEpoch,
+    workerId,
+  ].join('\0')).digest('hex');
+  return `refs/wmux/project-worker-snapshots/${refKey}`;
+}
+
+function workerBaselineRef(record: WorkerGroupRecord): string {
+  const refKey = crypto.createHash('sha256').update([
+    record.projectId,
+    record.workItemId,
+    record.executionEpoch,
+  ].join('\0')).digest('hex');
+  return `refs/wmux/project-worker-baselines/${refKey}`;
+}
+
+function candidateTreesForWorker(groupDir: string, workerId: string): string[] {
+  const directory = path.join(groupDir, 'candidates');
+  if (!fs.existsSync(directory)) return [];
+  const candidates: WorkerMergeCandidateRecord[] = [];
+  for (const file of fs.readdirSync(directory)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const candidate = JSON.parse(fs.readFileSync(path.join(directory, file), 'utf8')) as WorkerMergeCandidateRecord;
+      if (candidate.version === 1 && candidate.workerId === workerId && typeof candidate.targetTree === 'string') {
+        candidates.push(candidate);
+      }
+    } catch {
+      // Invalid candidate metadata is not an allowed cleanup baseline.
+    }
+  }
+  return candidates.sort((left, right) => right.createdAt - left.createdAt).map((candidate) => candidate.targetTree);
+}
+
+async function allowedCleanupTrees(
+  groupDir: string,
+  record: WorkerGroupRecord,
+  worker: WorkerWorktreeRecord,
+): Promise<Set<string>> {
+  if (worker.role === 'integrator') return new Set([record.baselineTree]);
+  const references = [
+    ...(worker.appliedTree ? [worker.appliedTree] : []),
+    ...candidateTreesForWorker(groupDir, worker.workerId),
+    await git(worker.repoWorktreePath, ['rev-parse', 'HEAD']),
+  ];
+  const trees = await Promise.all(references.map((reference) => (
+    git(record.repoRoot, ['rev-parse', `${reference}^{tree}`])
+  )));
+  return new Set(trees);
+}
+
 async function advanceWorkerGroupBaseline(
   groupDir: string,
   record: WorkerGroupRecord,
@@ -291,19 +365,67 @@ async function advanceWorkerGroupBaseline(
     'commit-tree', tree, '-p', record.baselineCommit,
     '-m', `wmux finalized worker-group baseline ${record.projectId}/${record.workItemId}`,
   ], { env }));
-  const refKey = crypto.createHash('sha256').update([
-    record.projectId,
-    record.workItemId,
-    record.executionEpoch,
-  ].join('\0')).digest('hex');
   await git(record.repoRoot, [
-    'update-ref', `refs/wmux/project-worker-baselines/${refKey}`, baselineCommit,
+    'update-ref', workerBaselineRef(record), baselineCommit,
   ]);
   record.baselineCommit = baselineCommit;
   record.baselineTree = tree;
   record.baselineScopeTree = scopedTree;
   record.lastFinalPatchHash = patchHash;
   writeGroupRecord(groupDir, record);
+}
+
+async function cleanupProjectWorkerGroupUnlocked(request: CleanupProjectWorkerGroupRequest): Promise<Record<string, unknown>> {
+  try {
+    const currentGroupDir = existingGroupDirectory(request);
+    if (!currentGroupDir) {
+      const expected = [groupDirectory(request), legacyGroupDirectory(request)];
+      if (expected.some((candidate) => fs.existsSync(candidate))) {
+        return { ok: false, error: '隔离运行目录仍存在但缺少完整元数据；为避免删除未知工作，拒绝自动清理' };
+      }
+      return { ok: true, alreadyCleaned: true, cleanedWorktrees: 0 };
+    }
+    const { groupDir, record } = readGroupRecord(request);
+    if (!record.lastFinalPatchHash) {
+      return { ok: false, error: '多任务 AI 结果尚未完成最终应用；未完成 worktree 必须保留以便恢复' };
+    }
+    const root = runtimeRoot();
+    if (!realPathInside(root, groupDir) || path.resolve(groupDir) === path.resolve(root)) {
+      return { ok: false, error: '隔离运行目录越出 wmux 受控运行根目录，拒绝清理' };
+    }
+    let cleanedWorktrees = 0;
+    for (const worker of record.workers) {
+      if (!pathInside(groupDir, worker.repoWorktreePath)) {
+        return { ok: false, error: `任务 AI ${worker.workerId} 的 worktree 路径不在当前隔离组内，拒绝清理` };
+      }
+      if (!fs.existsSync(worker.repoWorktreePath)) continue;
+      const currentTree = await captureWorkerRepositoryTree(record, worker);
+      const allowedTrees = await allowedCleanupTrees(groupDir, record, worker);
+      if (!allowedTrees.has(currentTree)) {
+        return {
+          ok: false,
+          error: `任务 AI ${worker.workerId} 的 worktree 存在候选或持久化快照之外的未收敛改动；已保留目录等待复核`,
+        };
+      }
+    }
+    for (const worker of record.workers) {
+      if (!fs.existsSync(worker.repoWorktreePath)) continue;
+      await git(record.repoRoot, ['worktree', 'remove', '--force', worker.repoWorktreePath]);
+      cleanedWorktrees += 1;
+    }
+    for (const worker of record.workers) {
+      await git(record.repoRoot, ['update-ref', '-d', workerSnapshotRef(record, worker.workerId)]);
+    }
+    await git(record.repoRoot, ['update-ref', '-d', workerBaselineRef(record)]);
+    await git(record.repoRoot, ['worktree', 'prune', '--expire', 'now']);
+    fs.rmSync(groupDir, { recursive: true, force: false });
+    if (fs.existsSync(groupDir)) {
+      return { ok: false, error: '隔离 worktree 已移除，但运行元数据目录仍然存在' };
+    }
+    return { ok: true, cleanedWorktrees, patchHash: record.lastFinalPatchHash };
+  } catch (error) {
+    return { ok: false, error: `清理已完成的多任务 AI 隔离环境失败：${String((error as Error)?.message || error)}` };
+  }
 }
 
 function readGroupRecord(request: Pick<PrepareProjectWorkerGroupRequest, 'projectId' | 'workItemId' | 'executionEpoch'>): {
@@ -762,4 +884,8 @@ export function applyProjectMergeCandidate(request: ApplyProjectMergeCandidateRe
 
 export function finalizeProjectWorkerGroup(request: FinalizeProjectWorkerGroupRequest): Promise<Record<string, unknown>> {
   return withWorkerGroupOperationLock(request, () => finalizeProjectWorkerGroupUnlocked(request));
+}
+
+export function cleanupProjectWorkerGroup(request: CleanupProjectWorkerGroupRequest): Promise<Record<string, unknown>> {
+  return withWorkerGroupOperationLock(request, () => cleanupProjectWorkerGroupUnlocked(request));
 }

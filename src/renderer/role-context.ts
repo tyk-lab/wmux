@@ -185,9 +185,11 @@ const PROJECT_SUPERVISOR_METHODS = new Set([
   'project.worker.recover',
   'project.worker.resource.acquire',
   'project.worker.resource.release',
+  'project.worker.resource.reconcile',
   'project.worker.directive.reconcile',
   'project.worker.merge.submit',
   'project.worker.merge.apply',
+  'project.worker.merge.reject',
   'project.worker.finalize',
 ]);
 
@@ -200,6 +202,7 @@ const PROJECT_AI_METHODS = new Set([
   'project.terminals',
   'project.task.create',
   'project.task.update',
+  'project.directive.resolve',
   'project.task.supervise',
   'project.progress.sync',
   'project.supervisor.transition.ack',

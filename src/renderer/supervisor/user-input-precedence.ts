@@ -8,6 +8,8 @@ import {
 import { enqueueSupervisorDelivery, signalSupervisorDeliveryReady } from './delivery';
 import { appendSupervisorRecord } from './recording';
 import {
+  projectAuthorizationVersion,
+  projectRequirementsVersion,
   projectWorkerDependencyViolation,
   type ProjectResourceWait,
   type ProjectUserDirective,
@@ -146,6 +148,9 @@ export function handleSupervisorUserSubmit(surfaceId: string, task = ''): boolea
         workerId,
         directiveEpoch,
         assignmentVersion: worker.assignmentVersion,
+        executionEpoch: workItem.workerGroup.executionEpoch,
+        requirementsVersion: workItem.requirementsVersion ?? projectRequirementsVersion(project),
+        authorizationVersion: workItem.authorizationVersion ?? projectAuthorizationVersion(project),
         ...(directTask ? { exactText: directTask } : {}),
         exactTextAvailable: !!directTask,
         classification: 'pending',

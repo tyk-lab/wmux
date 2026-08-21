@@ -64,6 +64,7 @@ export type ProjectManagerEventKind =
   | 'user-work-item-intervention'
   | 'dispatch-mode-selected'
   | 'worker-group-created'
+  | 'worker-group-cleaned'
   | 'worker-status'
   | 'worker-user-directive'
   | 'worker-assignment-updated'
@@ -303,10 +304,19 @@ export interface ProjectUserDirective {
   workerId: string;
   directiveEpoch: number;
   assignmentVersion: number;
+  /** Execution generation in which the direct user input was observed. */
+  executionEpoch?: number;
+  /** Requirements generation in which the direct user input was observed. */
+  requirementsVersion?: number;
+  /** Authorization generation in which the direct user input was observed. */
+  authorizationVersion?: number;
   exactText?: string;
   exactTextAvailable: boolean;
   classification: ProjectUserDirectiveClassification;
   reconciliationStatus: 'pending' | 'reconciled' | 'superseded';
+  resolution?: 'replanned' | 'rebound';
+  resolutionReason?: string;
+  resolvedAt?: number;
   receivedAt: number;
 }
 

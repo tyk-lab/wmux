@@ -164,6 +164,7 @@ import {
   type ProjectWorkerRuntime,
   type ProjectResourceLease,
   type ProjectResourceMode,
+  type ProjectResourceWait,
   type ProjectMergeCandidate,
   type ProjectWorkItem,
 } from '../shared/project-manager';
@@ -5226,6 +5227,52 @@ function teardownManagedProject(session: ProjectManagerSession): void {
   projectAlignmentTimers.delete(session.id);
 }
 
+async function cleanupCompletedWorkerGroupRuntime(
+  session: ProjectManagerSession,
+  item: ProjectWorkItem,
+): Promise<Record<string, unknown>> {
+  if (!item.workerGroup || item.status !== 'completed' || item.finalApplyBlocked !== false) {
+    return { ok: false, error: '工作项尚未达到可清理状态' };
+  }
+  const state = useStore.getState();
+  const lanes = state.supervisor.lanes.filter((lane) => (
+    lane.projectManagerProjectId === session.id && lane.projectWorkItemId === item.id
+  ));
+  for (const lane of lanes) state.stopSupervisorLane(lane.id, '工作项已完成；关闭运行终端后清理隔离 worktree');
+  closeStoppedSupervisorSurfaces(lanes);
+  const taskSurfaceIds = new Set<string>([
+    ...item.workerGroup.workers.map((worker) => worker.surfaceId || ''),
+    ...lanes.map((lane) => lane.surfaceId),
+  ].filter(Boolean));
+  for (const surfaceId of taskSurfaceIds) closeLiveSurfaceById(surfaceId as SurfaceId);
+  for (const surfaceId of [
+    ...taskSurfaceIds,
+    ...lanes.map((lane) => lane.supervisorSurfaceId || ''),
+  ].filter(Boolean)) clearManagedAgentWatchdog(surfaceId);
+  const cleanup = await (window as any).wmux?.projectManager?.cleanupWorkerGroup?.({
+    projectId: session.id,
+    workItemId: item.id,
+    executionEpoch: item.workerGroup.executionEpoch,
+  });
+  state.appendProjectManagerEvent({
+    kind: 'worker-group-cleaned',
+    workItemId: item.id,
+    summary: cleanup?.ok
+      ? `已清理完成工作项的 ${Number(cleanup.cleanedWorktrees || 0)} 个隔离 worktree`
+      : `工作项已完成，但隔离 worktree 自动清理失败：${String(cleanup?.error || '清理接口不可用')}`,
+    payload: {
+      executionEpoch: item.workerGroup.executionEpoch,
+      cleanedWorktrees: cleanup?.cleanedWorktrees,
+      alreadyCleaned: cleanup?.alreadyCleaned,
+      error: cleanup?.ok ? undefined : String(cleanup?.error || '清理接口不可用'),
+    },
+  }, session.id);
+  await (window as any).wmux?.projectManager?.saveSession?.(
+    useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+  );
+  return cleanup || { ok: false, error: '清理接口不可用' };
+}
+
 function flushProjectManagerDeliveries(): void {
   if (projectManagerDeliveryScheduled || pendingProjectManagerDeliveries.length === 0) return;
   for (let index = 0; index < pendingProjectManagerDeliveries.length; index += 1) {
@@ -7216,6 +7263,76 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
   store = useStore.getState();
   session = projectSessionForParams(params);
   if (!session) return { ok: false, error: '当前没有项目管理会话' };
+  if (action === 'directive-resolve') {
+    const workItemId = String(params?.workItemId || '').trim();
+    const directiveId = String(params?.directiveId || '').trim();
+    const resolution = String(params?.resolution || '').trim() as 'replanned' | 'rebound';
+    const reason = String(params?.reason || '').trim().slice(0, 4000);
+    const item = session.workItems.find((candidate) => candidate.id === workItemId);
+    const directive = item?.userDirectives?.find((candidate) => candidate.directiveId === directiveId);
+    if (!item || !directive || directive.reconciliationStatus !== 'pending') {
+      return { ok: false, error: '待处理用户直发指令不存在或已经完成协调' };
+    }
+    if (!['reassignment-required', 'contract-change', 'high-risk'].includes(directive.classification)) {
+      return { ok: false, error: '只有监督 AI 已升级的改分工、改合同或高风险指令可由项目 AI 回执' };
+    }
+    if (!['replanned', 'rebound'].includes(resolution) || !reason) {
+      return { ok: false, error: '指令回执必须指定 replanned 或 rebound，并提供可审计的处理理由' };
+    }
+    const currentWorker = item.workerGroup?.workers.find((candidate) => candidate.workerId === directive.workerId);
+    const executionChanged = !item.workerGroup
+      || (directive.executionEpoch !== undefined
+        && item.workerGroup.executionEpoch !== directive.executionEpoch);
+    const requirementsChanged = directive.requirementsVersion !== undefined
+      && (item.requirementsVersion ?? projectRequirementsVersion(session)) > directive.requirementsVersion;
+    const authorizationChanged = directive.authorizationVersion !== undefined
+      && (item.authorizationVersion ?? projectAuthorizationVersion(session)) > directive.authorizationVersion;
+    const assignmentChanged = !!currentWorker
+      && currentWorker.assignmentVersion > directive.assignmentVersion;
+    const safelyReplanned = executionChanged || ['failed', 'stopped'].includes(item.status);
+    const safelyRebound = directive.classification === 'high-risk'
+      ? authorizationChanged
+      : directive.classification === 'contract-change'
+        ? executionChanged || requirementsChanged
+        : executionChanged || assignmentChanged;
+    if ((resolution === 'replanned' && !safelyReplanned)
+      || (resolution === 'rebound' && !safelyRebound)) {
+      return {
+        ok: false,
+        error: resolution === 'replanned'
+          ? '尚未形成新的执行轮次或停止旧工作项，不能把原执行轮次内的升级指令标记为已重规划'
+          : directive.classification === 'high-risk'
+            ? '高风险授权版本未变化，不能把高风险指令标记为已重绑'
+            : '该分类要求的需求、分工或执行轮次均未变化，不能把升级指令标记为已重绑',
+      };
+    }
+    const now = Date.now();
+    const userDirectives = (item.userDirectives || []).map((candidate) => candidate.directiveId === directiveId
+      ? {
+          ...candidate,
+          reconciliationStatus: resolution === 'replanned' ? 'superseded' as const : 'reconciled' as const,
+          resolution,
+          resolutionReason: reason,
+          resolvedAt: now,
+        }
+      : candidate);
+    store.applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId,
+      patch: {
+        userDirectives,
+        latestBlocker: item.latestBlocker?.includes(directiveId) ? undefined : item.latestBlocker,
+      },
+    }, session.id);
+    store.appendProjectManagerEvent({
+      kind: 'worker-user-directive',
+      workItemId,
+      summary: `项目 AI 已将升级指令 ${directiveId} 回执为 ${resolution}`,
+      payload: { directiveId, workerId: directive.workerId, classification: directive.classification, resolution, reason },
+    }, session.id);
+    saveProjectManagerSnapshot(session.id);
+    return { ok: true, directiveId, resolution };
+  }
   if (workerRuntimeActions.has(action)) {
     if (!requestedWorkerId) return { ok: false, error: '多任务 AI 运行时动作必须显式指定 --worker' };
     if (!workerActionLane) return { ok: false, error: '只有当前工作项绑定的项目监督 AI 可以管理多任务 AI 运行时' };
@@ -7307,7 +7424,21 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         .sort((left, right) => (left.resourceWait?.requestedAt || 0) - (right.resourceWait?.requestedAt || 0));
       for (const candidate of waiting) {
         const wait = candidate.resourceWait!;
-        if (projectWorkerDependencyViolation({ workerGroup: { ...group, workers }, mergeCandidates: item.mergeCandidates }, candidate)) {
+        const dependencyError = projectWorkerDependencyViolation({
+          workerGroup: { ...group, workers },
+          mergeCandidates: item.mergeCandidates,
+        }, candidate);
+        if (dependencyError) {
+          const now = Date.now();
+          workers = workers.map((entry) => entry.workerId === candidate.workerId
+            ? { ...entry, status: 'planned' as const, resourceWait: undefined, startedAt: undefined, updatedAt: now }
+            : entry);
+          queueWorkerControlNotice(candidate, [
+            '[共享资源等待已取消｜依赖失效]',
+            `资源：${wait.resourceId}；操作：${wait.operationId}`,
+            `原因：${dependencyError}`,
+            '依赖重新收敛后按当前状态重新申请；不要重放旧操作或轮询 acquire。',
+          ].join('\n'));
           continue;
         }
         const violation = projectResourceLeaseViolation(releasedLeases, {
@@ -7370,7 +7501,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         if (pendingDirective) return { ok: false, error: `用户直发指令 ${pendingDirective.directiveId} 尚未协调` };
       }
       const now = Date.now();
-      const workers = group.workers.map((candidate) => {
+      let workers = group.workers.map((candidate) => {
         if (candidate.workerId !== workerId) return candidate;
         const accumulatedActiveMs = Math.max(0, candidate.accumulatedActiveMs || 0)
           + (candidate.status === 'running' && candidate.startedAt && status !== 'running'
@@ -7380,11 +7511,29 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           ...candidate,
           status,
           checkpoint: String(params?.checkpoint || '').trim().slice(0, 4000) || candidate.checkpoint,
+          ...((status === 'failed' || status === 'exited') ? { resourceWait: undefined } : {}),
           accumulatedActiveMs,
           startedAt: status === 'running' ? candidate.startedAt || now : undefined,
           updatedAt: now,
         };
       });
+      const cancelledDependentWaits: Array<{ workerId: string; wait: ProjectResourceWait; reason: string }> = [];
+      if (status === 'failed' || status === 'exited') {
+        const dependencyView = { workerGroup: { ...group, workers }, mergeCandidates: item.mergeCandidates };
+        workers = workers.map((candidate) => {
+          if (!candidate.resourceWait || candidate.workerId === workerId) return candidate;
+          const reason = projectWorkerDependencyViolation(dependencyView, candidate);
+          if (!reason) return candidate;
+          cancelledDependentWaits.push({ workerId: candidate.workerId, wait: candidate.resourceWait, reason });
+          return {
+            ...candidate,
+            status: 'planned' as const,
+            resourceWait: undefined,
+            startedAt: undefined,
+            updatedAt: now,
+          };
+        });
+      }
       const activatedWorkers = status === 'completed'
         ? activateReadyDependents(workers, item.mergeCandidates || [], `${workerId} 已完成且当前候选已处置`)
         : workers;
@@ -7416,6 +7565,16 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           resourceLeasesQuarantined: runtimeFailed,
         },
       });
+      for (const cancelled of cancelledDependentWaits) {
+        const target = activatedWorkers.find((candidate) => candidate.workerId === cancelled.workerId);
+        if (!target) continue;
+        queueWorkerControlNotice(target, [
+          '[共享资源等待已取消｜上游异常]',
+          `资源：${cancelled.wait.resourceId}；操作：${cancelled.wait.operationId}`,
+          `原因：${cancelled.reason}`,
+          '上游恢复并重新形成候选后再申请；不要沿用或轮询旧请求。',
+        ].join('\n'));
+      }
       return { ok: true, workerId, status };
     }
     if (action === 'worker-recover') {
@@ -7557,6 +7716,15 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         && ['reserved', 'in-use'].includes(lease.status)
       ));
       if (existing) return { ok: true, lease: existing, reused: true };
+      const activeOwnedLease = (item.resourceLeases || []).find((lease) => (
+        lease.ownerWorkerId === workerId && lease.status !== 'released'
+      ));
+      if (activeOwnedLease) {
+        return {
+          ok: false,
+          error: `任务 AI 已持有资源 ${activeOwnedLease.resourceId} 的 ${activeOwnedLease.status} 租约；必须先释放或协调该租约，禁止持有并等待多个资源`,
+        };
+      }
       const existingWait = worker.resourceWait;
       if (worker.status === 'waiting-resource' && existingWait
         && projectResourceIdentity(existingWait.resourceId) === projectResourceIdentity(declaredResource)
@@ -7567,6 +7735,19 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         return {
           ok: false,
           error: `任务 AI 已在等待资源 ${existingWait.resourceId} 的操作 ${existingWait.operationId}；不能用新请求覆盖队列位置`,
+        };
+      }
+      const nonIdempotentReplay = (item.resourceLeases || []).find((lease) => (
+        projectResourceIdentity(lease.resourceId) === projectResourceIdentity(declaredResource)
+        && lease.ownerWorkerId === workerId
+        && lease.operationId === operationId
+        && lease.idempotent === false
+        && lease.status === 'released'
+      ));
+      if (nonIdempotentReplay) {
+        return {
+          ok: false,
+          error: `非幂等操作 ${operationId} 已进入过租约生命周期，禁止自动重放；请核验证据并由项目 AI 规划新的操作标识`,
         };
       }
       const violation = projectResourceLeaseViolation(item.resourceLeases || [], {
@@ -7631,8 +7812,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       if (lease.status === 'quarantined') {
         return { ok: false, error: '隔离租约不能直接释放；必须使用 worker-resource-reconcile 并提供设备状态证据' };
       }
+      const evidence = String(params?.evidence || '').trim().slice(0, 2000);
+      if (!evidence) return { ok: false, error: '释放共享资源租约必须提供设备、接口或读取操作已经安全结束的核验证据' };
       const leases = (item.resourceLeases || []).map((candidate) => candidate.leaseId === leaseId
-        ? { ...candidate, status: 'released' as const, updatedAt: now, evidence: String(params?.evidence || '').trim().slice(0, 2000) || candidate.evidence }
+        ? { ...candidate, status: 'released' as const, updatedAt: now, evidence }
         : candidate);
       const wake = grantNextResourceWaiter(leases, lease.resourceId);
       persistWorkerMutation({
@@ -7692,18 +7875,50 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         return { ok: false, error: '用户直发指令不存在、已协调或不属于该任务 AI' };
       }
       const classification = String(params?.classification || '').trim();
-      if (classification !== 'within-assignment') {
-        return { ok: false, error: '只有不扩大既有分工的用户直发指令可由监督 AI 原地协调；改分工、改合同或高风险输入必须交回项目 AI' };
+      const allowedClassifications = new Set([
+        'within-assignment', 'reassignment-required', 'contract-change', 'high-risk',
+      ]);
+      if (!allowedClassifications.has(classification)) {
+        return { ok: false, error: '无效指令分类；必须明确属于既有分工、需要改分工、修改合同或高风险边界' };
       }
+      const reason = String(params?.reason || '').trim().slice(0, 4000);
+      if (classification !== 'within-assignment' && !reason) {
+        return { ok: false, error: '升级给项目 AI 的用户直发指令必须说明需要重规划或重新授权的原因' };
+      }
+      const escalated = classification !== 'within-assignment';
       const directives = (item.userDirectives || []).map((candidate) => candidate.directiveId === directiveId
-        ? { ...candidate, classification: 'within-assignment' as const, reconciliationStatus: 'reconciled' as const }
+        ? {
+            ...candidate,
+            classification: classification as typeof candidate.classification,
+            reconciliationStatus: escalated ? 'pending' as const : 'reconciled' as const,
+          }
         : candidate);
-      persistWorkerMutation({ userDirectives: directives }, {
+      persistWorkerMutation({
+        userDirectives: directives,
+        ...(escalated ? {
+          status: 'waiting-decision' as const,
+          latestBlocker: `用户直发指令 ${directiveId} 已升级：${reason}`,
+          finalApplyBlocked: true,
+        } : {}),
+      }, {
         kind: 'worker-user-directive',
-        summary: `用户直发指令 ${directiveId} 已确认为 ${workerId} 既有分工内任务`,
-        payload: { directiveId, workerId, classification },
+        summary: escalated
+          ? `用户直发指令 ${directiveId} 已分类为 ${classification} 并升级给项目 AI`
+          : `用户直发指令 ${directiveId} 已确认为 ${workerId} 既有分工内任务`,
+        payload: { directiveId, workerId, classification, reason: reason || undefined },
       });
-      return { ok: true, directiveId, classification };
+      if (escalated) {
+        queueProjectManagerDelivery([
+          '[用户直发指令升级｜必须重规划或重绑后回执]',
+          `项目：${session.id}；工作项：${item.id}；任务 AI：${workerId}`,
+          `指令 ID：${directiveId}；分类：${classification}`,
+          `原因：${reason}`,
+          '该指令仍为 pending，最终回填保持冻结。请更新需求/合同/分工或建立新执行轮次；完成后执行：',
+          `wmux project directive-resolve --project ${session.id} --task ${item.id} --directive ${directiveId} --resolution <replanned|rebound> --reason "<处理结果与版本证据>"`,
+          '不要在版本未变化时仅发送回执，也不要通过轮询催促任务 AI。',
+        ].join('\n'), session.id, { priority: true });
+      }
+      return { ok: true, directiveId, classification, escalated };
     }
     if (action === 'worker-merge-submit') {
       const dependencyError = projectWorkerDependencyViolation(item, worker);
@@ -7842,6 +8057,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (action === 'worker-finalize') {
       const completionError = projectWorkerGroupCompletionViolation({ ...item, finalApplyBlocked: false });
       if (completionError) return { ok: false, error: completionError };
+      const expectedRevision = Math.max(0, Math.trunc(item.mutationRevision || 0));
       await (window as any).wmux?.projectManager?.saveSession?.(
         useStore.getState().projectManagers.find((candidateSession) => candidateSession.id === session!.id),
       );
@@ -7851,6 +8067,24 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         executionEpoch: group.executionEpoch,
       });
       if (!finalized?.ok) return { ok: false, error: String(finalized?.error || '最终应用失败') };
+      const latestItem = useStore.getState().projectManagers
+        .find((candidateSession) => candidateSession.id === session!.id)
+        ?.workItems.find((candidateItem) => candidateItem.id === item.id);
+      if (!latestItem || Math.max(0, Math.trunc(latestItem.mutationRevision || 0)) !== expectedRevision) {
+        store.appendProjectManagerEvent({
+          kind: 'merge-candidate-updated',
+          workItemId: item.id,
+          summary: '最终补丁已应用，但回填期间工作项出现新修订；保留最终应用锁并等待协调',
+          payload: { patchHash: finalized.patchHash, expectedRevision, actualRevision: latestItem?.mutationRevision },
+        }, session.id);
+        saveProjectManagerSnapshot(session.id);
+        return {
+          ok: false,
+          applied: true,
+          patchHash: finalized.patchHash,
+          error: '最终补丁已应用，但回填期间收到新的工作项更新；已保留最终应用锁，禁止用旧结果覆盖新指令',
+        };
+      }
       persistWorkerMutation({ finalApplyBlocked: false }, {
         kind: 'merge-candidate-updated',
         summary: '多任务 AI 集成结果已在基线无漂移前提下应用到用户项目目录',
@@ -8399,10 +8633,23 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         error: '工作项尚未收到监督 AI 的完整 complete 交接并进入 validating；项目 AI 不能绕过监督阶段验收直接完成',
       };
     }
-    return persistProjectManagerMutation(
+    if (normalized.workItem.status === 'completed') {
+      const workerCompletionError = projectWorkerGroupCompletionViolation(normalized.workItem);
+      if (workerCompletionError) return { ok: false, error: workerCompletionError };
+    }
+    const result = await persistProjectManagerMutation(
       store.applyProjectManagerAction({ type: 'update-work-item', workItemId, patch: normalized.workItem }, session.id),
       session.id,
     );
+    if (previous.status !== 'completed' && normalized.workItem.status === 'completed' && normalized.workItem.workerGroup) {
+      const latestSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+      const latestItem = latestSession?.workItems.find((candidate) => candidate.id === workItemId);
+      if (latestSession && latestItem) {
+        const cleanup = await cleanupCompletedWorkerGroupRuntime(latestSession, latestItem);
+        return cleanup.ok ? result : { ...result, cleanupWarning: cleanup.error };
+      }
+    }
+    return result;
   }
   if (action === 'task-supervise') {
     const workItemId = String(params?.workItemId || '').trim();

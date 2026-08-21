@@ -71,6 +71,7 @@ import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './
 import { captureProjectProgress } from './project-progress-sync';
 import {
   applyProjectMergeCandidate,
+  cleanupProjectWorkerGroup,
   finalizeProjectWorkerGroup,
   prepareProjectWorkerGroup,
   submitProjectMergeCandidate,
@@ -697,7 +698,31 @@ app.whenReady().then(() => {
     }, agent);
     return result;
   });
-  ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
+  ipcMain.handle('project-manager:list-active-sessions', () => {
+    const sessions = readActiveProjectManagerSessions();
+    const cleanupRequests: Parameters<typeof cleanupProjectWorkerGroup>[0][] = [];
+    for (const session of sessions) {
+      for (const item of session.workItems) {
+        if (item.status !== 'completed' || !item.workerGroup || item.finalApplyBlocked !== false) continue;
+        if (projectWorkerGroupCompletionViolation(item)) continue;
+        cleanupRequests.push({
+          projectId: session.id,
+          workItemId: item.id,
+          executionEpoch: item.workerGroup.executionEpoch,
+          projectDir: session.projectDir,
+        });
+      }
+    }
+    void (async () => {
+      for (const request of cleanupRequests) {
+        const result = await cleanupProjectWorkerGroup(request);
+        if (!result.ok) {
+          console.warn('[project-manager] completed worker-group cleanup failed', result.error);
+        }
+      }
+    })();
+    return sessions;
+  });
   ipcMain.handle('project-manager:prepare-worker-group', (_event, request) => {
     const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
     const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
@@ -786,6 +811,23 @@ app.whenReady().then(() => {
         return Math.max(0, Math.trunc(latestItem?.mutationRevision || 0))
           === Math.max(0, Math.trunc(item.mutationRevision || 0));
       },
+    });
+  });
+  ipcMain.handle('project-manager:cleanup-worker-group', (_event, request) => {
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === String(request?.projectId || ''));
+    const item = session?.workItems.find((candidate) => candidate.id === String(request?.workItemId || ''));
+    if (!session || !item?.workerGroup
+      || item.status !== 'completed'
+      || item.finalApplyBlocked !== false
+      || item.workerGroup.executionEpoch !== Number(request?.executionEpoch)
+      || projectWorkerGroupCompletionViolation(item)) {
+      return { ok: false, error: '只有已经完成、最终结果已应用且没有未决运行状态的多任务 AI worktree 才能自动清理' };
+    }
+    return cleanupProjectWorkerGroup({
+      projectId: session.id,
+      workItemId: item.id,
+      executionEpoch: item.workerGroup.executionEpoch,
+      projectDir: session.projectDir,
     });
   });
   ipcMain.handle('project-manager:capture-progress', (_event, request) => {

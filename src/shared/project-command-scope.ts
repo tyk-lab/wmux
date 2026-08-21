@@ -24,6 +24,7 @@ const PROJECT_SCOPED_COMMANDS = new Set([
   'worker-resource-release',
   'worker-resource-reconcile',
   'worker-directive-reconcile',
+  'directive-resolve',
   'worker-merge-submit',
   'worker-merge-apply',
   'worker-merge-reject',

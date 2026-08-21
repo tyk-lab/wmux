@@ -21,6 +21,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const net_1 = __importDefault(require("net"));
 const node_crypto_1 = require("node:crypto");
+const wmux_hook_context_1 = require("./wmux-hook-context");
+const runtimeContext = (0, wmux_hook_context_1.resolveWmuxHookRuntimeContext)(process.env);
+if (runtimeContext.state === 'inactive')
+    process.exit(0);
+if (runtimeContext.state === 'invalid') {
+    console.error(`[wmux-hook] wmux integration is missing: ${runtimeContext.missing.join(', ')}`);
+    process.exit(1);
+}
 const argv = process.argv.slice(2);
 function takeFlag(args, name) {
     const i = args.indexOf(name);

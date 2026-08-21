@@ -12,6 +12,7 @@ vi.mock('../../src/shared/instance', () => ({
 
 import {
   applyProjectMergeCandidate,
+  cleanupProjectWorkerGroup,
   finalizeProjectWorkerGroup,
   prepareProjectWorkerGroup,
   submitProjectMergeCandidate,
@@ -217,6 +218,20 @@ describe('project worker Git worktrees', () => {
       projectDir: repoRoot,
     })).toMatchObject({ ok: true, changed: true });
     expect(fs.readFileSync(path.join(repoRoot, 'src', 'follow-up.txt'), 'utf8')).toBe('follow up\n');
+    const unaccountedWorkerFile = path.join(restoredWorker.worktreePath, 'tests', 'unaccounted.tmp');
+    fs.writeFileSync(unaccountedWorkerFile, 'not submitted\n', 'utf8');
+    expect(await cleanupProjectWorkerGroup({
+      projectId: 'project-test', workItemId: 'task-test', executionEpoch: 1, projectDir: repoRoot,
+    })).toMatchObject({ ok: false, error: expect.stringContaining('未收敛改动') });
+    expect(fs.existsSync(restoredWorker.repoWorktreePath)).toBe(true);
+    fs.rmSync(unaccountedWorkerFile, { force: true });
+    expect(await cleanupProjectWorkerGroup({
+      projectId: 'project-test', workItemId: 'task-test', executionEpoch: 1, projectDir: repoRoot,
+    })).toMatchObject({ ok: true, cleanedWorktrees: 3 });
+    for (const worker of prepared.workers) expect(fs.existsSync(worker.repoWorktreePath)).toBe(false);
+    expect(await cleanupProjectWorkerGroup({
+      projectId: 'project-test', workItemId: 'task-test', executionEpoch: 1, projectDir: repoRoot,
+    })).toMatchObject({ ok: true, alreadyCleaned: true });
   });
 
   it('does not treat a commit outside a subdirectory project as project baseline drift', async () => {

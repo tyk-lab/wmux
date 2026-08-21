@@ -242,6 +242,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-directive-reconcile' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.directive.resolve': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'directive-resolve' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.worker.merge.submit': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-submit' })})`,
     requireResult: 'Project manager bridge is unavailable',

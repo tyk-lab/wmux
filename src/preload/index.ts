@@ -293,6 +293,7 @@ contextBridge.exposeInMainWorld('wmux', {
     submitMergeCandidate: (request: any) => ipcRenderer.invoke('project-manager:submit-merge-candidate', request),
     applyMergeCandidate: (request: any) => ipcRenderer.invoke('project-manager:apply-merge-candidate', request),
     finalizeWorkerGroup: (request: any) => ipcRenderer.invoke('project-manager:finalize-worker-group', request),
+    cleanupWorkerGroup: (request: any) => ipcRenderer.invoke('project-manager:cleanup-worker-group', request),
     captureProgress: (projectDir: string, planFilePaths: string[]) => ipcRenderer.invoke(
       'project-manager:capture-progress',
       { projectDir, planFilePaths },

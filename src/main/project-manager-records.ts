@@ -111,11 +111,20 @@ function isUserDirective(value: unknown): boolean {
   const directive = value as Record<string, unknown>;
   return typeof directive.directiveId === 'string' && typeof directive.workerId === 'string'
     && Number.isInteger(directive.directiveEpoch) && Number.isInteger(directive.assignmentVersion)
+    && (directive.executionEpoch === undefined
+      || (Number.isInteger(directive.executionEpoch) && Number(directive.executionEpoch) >= 1))
+    && (directive.requirementsVersion === undefined
+      || (Number.isInteger(directive.requirementsVersion) && Number(directive.requirementsVersion) >= 1))
+    && (directive.authorizationVersion === undefined
+      || (Number.isInteger(directive.authorizationVersion) && Number(directive.authorizationVersion) >= 1))
     && typeof directive.exactTextAvailable === 'boolean'
     && (directive.exactText === undefined || typeof directive.exactText === 'string')
     && ['pending', 'within-assignment', 'reassignment-required', 'contract-change', 'high-risk']
       .includes(String(directive.classification))
     && ['pending', 'reconciled', 'superseded'].includes(String(directive.reconciliationStatus))
+    && (directive.resolution === undefined || ['replanned', 'rebound'].includes(String(directive.resolution)))
+    && (directive.resolutionReason === undefined || typeof directive.resolutionReason === 'string')
+    && (directive.resolvedAt === undefined || Number.isFinite(directive.resolvedAt))
     && Number.isFinite(directive.receivedAt);
 }
 

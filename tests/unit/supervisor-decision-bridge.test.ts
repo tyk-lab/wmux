@@ -7053,7 +7053,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-project')?.controlState).toBe('active');
   });
 
-  it('accepts one resource wait without polling and quarantines leases on worker failure', async () => {
+  it('prevents hold-and-wait and replay, requires release evidence, and quarantines failed owners', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-worker-lock', workItemId: 'worker_task' });
     const assignments: ProjectWorkerAssignment[] = [
       {
@@ -7101,6 +7101,20 @@ describe('supervisor decision bridge', () => {
       workItemId: 'worker_task', workerId: 'worker-tests', resourceId: 'device-a',
       mode: 'exclusive-write', operationId: 'wait-op',
     };
+    await expect(request(acquire)).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('禁止持有并等待多个资源'),
+    });
+    await expect(request({
+      action: 'worker-resource-release', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', leaseId: 'lease-tests',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('核验证据') });
+    await expect(request({
+      action: 'worker-resource-release', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', leaseId: 'lease-tests', evidence: '接口已关闭且设备空闲',
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      ...acquire, resourceId: 'device-b', operationId: 'tests-op',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('禁止自动重放') });
     const firstWait = await request(acquire);
     expect(firstWait).toMatchObject({ ok: true, waiting: true });
     const requestedAt = useStore.getState().projectManagers.find((entry) => entry.id === project.id)
@@ -7117,19 +7131,193 @@ describe('supervisor decision bridge', () => {
       action: 'worker-status', callerSurfaceId: 'supervisor-a', projectId: project.id,
       workItemId: 'worker_task', workerId: 'worker-tests', status: 'failed', checkpoint: '运行时退出',
     })).resolves.toMatchObject({ ok: true, status: 'failed' });
+    expect(useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0]
+      .workerGroup?.workers.find((worker) => worker.workerId === 'worker-tests'))
+      .toMatchObject({ status: 'failed', resourceWait: undefined });
+    useStore.getState().updateLane('lane-a', {
+      projectWorkerId: 'worker-main', projectWorkerRole: 'integrator',
+      projectWorkerExecutionEpoch: decision.executionEpoch,
+    });
+    await expect(request({
+      action: 'worker-status', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-main', status: 'failed', checkpoint: '集成运行时退出',
+    })).resolves.toMatchObject({ ok: true, status: 'failed' });
     const updated = useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0];
     expect(updated?.resourceLeases?.find((lease) => lease.leaseId === 'lease-tests'))
-      .toMatchObject({ status: 'quarantined' });
+      .toMatchObject({ status: 'released', evidence: '接口已关闭且设备空闲' });
     expect(updated?.resourceLeases?.find((lease) => lease.leaseId === 'lease-main'))
-      .toMatchObject({ status: 'in-use' });
+      .toMatchObject({ status: 'quarantined' });
     expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: 'supervisor-a' }))
       .toMatchObject({
         workerGroup: {
           activeLeases: expect.arrayContaining([
-            expect.objectContaining({ leaseId: 'lease-tests', status: 'quarantined' }),
+            expect.objectContaining({ leaseId: 'lease-main', status: 'quarantined' }),
           ]),
         },
       });
+  });
+
+  it('keeps escalated direct-user instructions pending until a real rebind is recorded', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-worker-directive', workItemId: 'worker_task' });
+    const assignments: ProjectWorkerAssignment[] = [
+      {
+        workerId: 'worker-main', role: 'integrator', outcome: '集成', dependencies: ['worker-tests'],
+        writeClaims: ['src'], resourceClaims: [], validation: ['检查集成'],
+      },
+      {
+        workerId: 'worker-tests', role: 'worker', outcome: '验证', dependencies: [],
+        writeClaims: ['tests'], resourceClaims: [], validation: ['运行测试'],
+      },
+    ];
+    const decision = resolveProjectParallelismDecision({
+      execution: {
+        taskWorkMode: 'single-thread', parallelismSelection: 'worker-group', modeReason: '隔离验证',
+        mainThreadResponsibility: '集成', childThreadResponsibilities: [],
+      },
+      stagePlan: { workerAssignments: assignments },
+      requirementsVersion: 1,
+    });
+    const workerGroup = createProjectWorkerGroup({ decision, assignments, now: 10 });
+    workerGroup.workers = workerGroup.workers.map((worker) => ({ ...worker, status: 'running' }));
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'worker_task', patch: {
+        parallelismDecision: decision,
+        workerGroup,
+        finalApplyBlocked: true,
+        userDirectives: [{
+          directiveId: 'directive-risk', workerId: 'worker-tests', directiveEpoch: 1,
+          assignmentVersion: 1, executionEpoch: decision.executionEpoch, requirementsVersion: 1,
+          authorizationVersion: 1,
+          exactTextAvailable: true, exactText: '改为操作生产设备', classification: 'pending',
+          reconciliationStatus: 'pending', receivedAt: 20,
+        }],
+      },
+    }, project.id);
+    useStore.getState().updateLane('lane-a', {
+      projectWorkerId: 'worker-tests', projectWorkerRole: 'worker',
+      projectWorkerExecutionEpoch: decision.executionEpoch,
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'worker-directive-reconcile', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-tests', directiveId: 'directive-risk',
+      classification: 'high-risk', reason: '生产设备操作超出当前授权',
+    })).resolves.toMatchObject({ ok: true, escalated: true });
+    expect(useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0])
+      .toMatchObject({
+        status: 'waiting-decision', finalApplyBlocked: true,
+        userDirectives: [expect.objectContaining({ classification: 'high-risk', reconciliationStatus: 'pending' })],
+      });
+
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManagers.find((entry) => entry.id === project.id)!,
+      managerSurfaceId: 'manager-directive' as any,
+    });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-directive' as any,
+      title: 'Project',
+      splitTree: {
+        type: 'leaf', paneId: 'pane-directive' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          {
+            id: 'manager-directive' as any, type: 'terminal', projectManagerTerminal: true,
+            projectManagerProjectId: project.id,
+          },
+          { id: 'worker-a' as any, type: 'terminal', projectManagerProjectId: project.id, projectManagerWorkItemId: 'worker_task' },
+          { id: 'supervisor-a' as any, type: 'terminal', transientSupervisor: true },
+        ],
+      },
+    }]);
+    const resolveRequest = {
+      action: 'directive-resolve', callerSurfaceId: 'manager-directive', projectId: project.id,
+      workItemId: 'worker_task', directiveId: 'directive-risk', resolution: 'rebound',
+      reason: '已将生产设备范围纳入新授权版本',
+    };
+    await expect(request(resolveRequest)).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('授权版本未变化'),
+    });
+    const current = useStore.getState().projectManagers.find((entry) => entry.id === project.id)!.workItems[0];
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'worker_task', patch: {
+        workerGroup: {
+          ...current.workerGroup!,
+          workers: current.workerGroup!.workers.map((worker) => worker.workerId === 'worker-tests'
+            ? { ...worker, assignmentVersion: 2 }
+            : worker),
+        },
+      },
+    }, project.id);
+    await expect(request(resolveRequest)).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('授权版本未变化'),
+    });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManagers.find((entry) => entry.id === project.id)!,
+      authorizationVersion: 2,
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'worker_task', patch: { authorizationVersion: 2 },
+    }, project.id);
+    await expect(request(resolveRequest)).resolves.toMatchObject({ ok: true, resolution: 'rebound' });
+    expect(useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0]
+      .userDirectives?.[0]).toMatchObject({
+        reconciliationStatus: 'reconciled', resolution: 'rebound', resolvedAt: expect.any(Number),
+      });
+  });
+
+  it('keeps final apply blocked when a newer work-item revision arrives during finalization', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-worker-finalize-race', workItemId: 'worker_task' });
+    const assignments: ProjectWorkerAssignment[] = [
+      {
+        workerId: 'worker-main', role: 'integrator', outcome: '集成', dependencies: ['worker-tests'],
+        writeClaims: ['src'], resourceClaims: [], validation: ['检查集成'],
+      },
+      {
+        workerId: 'worker-tests', role: 'worker', outcome: '验证', dependencies: [],
+        writeClaims: ['tests'], resourceClaims: [], validation: ['运行测试'],
+      },
+    ];
+    const decision = resolveProjectParallelismDecision({
+      execution: {
+        taskWorkMode: 'single-thread', parallelismSelection: 'worker-group', modeReason: '隔离验证',
+        mainThreadResponsibility: '集成', childThreadResponsibilities: [],
+      },
+      stagePlan: { workerAssignments: assignments },
+      requirementsVersion: 1,
+    });
+    const workerGroup = createProjectWorkerGroup({ decision, assignments, now: 10 });
+    workerGroup.workers = workerGroup.workers.map((worker) => ({ ...worker, status: 'completed' }));
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'worker_task', patch: {
+        parallelismDecision: decision,
+        workerGroup,
+        finalApplyBlocked: true,
+        mergeCandidates: [{
+          candidateId: 'candidate-tests', workerId: 'worker-tests', assignmentVersion: 1,
+          directiveEpoch: 0, baselineCommit: 'base', patchHash: 'patch', changedFiles: ['tests/result.ts'],
+          evidence: ['测试通过'], status: 'applied', createdAt: 10, updatedAt: 10,
+        }],
+      },
+    }, project.id);
+    useStore.getState().updateLane('lane-a', {
+      projectWorkerId: 'worker-main', projectWorkerRole: 'integrator',
+      projectWorkerExecutionEpoch: decision.executionEpoch,
+    });
+    (globalThis.window as any).wmux.projectManager.finalizeWorkerGroup = vi.fn(async () => {
+      useStore.getState().applyProjectManagerAction({
+        type: 'update-work-item', workItemId: 'worker_task', patch: {
+          finalApplyBlocked: true,
+          latestContextSummary: '回填期间收到新的用户方向',
+        },
+      }, project.id);
+      return { ok: true, patchHash: 'final-patch' };
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'worker-finalize', callerSurfaceId: 'supervisor-a', projectId: project.id,
+      workItemId: 'worker_task', workerId: 'worker-main',
+    })).resolves.toMatchObject({ ok: false, applied: true, error: expect.stringContaining('保留最终应用锁') });
+    expect(useStore.getState().projectManagers.find((entry) => entry.id === project.id)?.workItems[0])
+      .toMatchObject({ finalApplyBlocked: true, latestContextSummary: '回填期间收到新的用户方向' });
   });
 
   it('adds a new supervised terminal from Feishu without replacing the active session', async () => {
