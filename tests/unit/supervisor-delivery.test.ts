@@ -8,6 +8,7 @@ import {
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
+  unacknowledgedSubmittedSupervisorDelivery,
 } from '../../src/renderer/supervisor/delivery';
 import { isAwaitingNextPromptState } from '../../src/renderer/agent-state-semantics';
 
@@ -202,6 +203,17 @@ describe('supervisor delivery queue', () => {
     expect(nextDeliverableSupervisorDelivery([submitted, later], 'idle')).toBeUndefined();
     expect(enqueueSupervisorDelivery([submitted], later).map((item) => item.id))
       .toEqual(['submitted-control', 'end']);
+  });
+
+  it('detects an expired submitted delivery without making it retryable', () => {
+    const submitted = {
+      id: 'submitted-control', kind: 'control-message' as const, task: '同步新约束',
+      text: '重新核对约束', createdAt: 1, stage: 'submitted' as const, submittedAt: 10,
+    };
+
+    expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_009)).toBeUndefined();
+    expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_010)?.id).toBe('submitted-control');
+    expect(submitted.stage).toBe('submitted');
   });
 
   it('keeps only the latest actionable fact for one review generation', () => {

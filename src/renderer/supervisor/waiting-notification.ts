@@ -1,5 +1,6 @@
 import { useStore } from '../store';
 import {
+  dedicatedSupervisorSurfaceId,
   isProjectManagedSupervisorLane,
   supervisorLaneControlState,
   type SupervisorLane,
@@ -38,7 +39,8 @@ export function announceSupervisorWaitingForDirection(
 
   const text = `AI 监督通道“${lane.label}”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
-  if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text });
-  window.wmux?.notification?.fire({ surfaceId: lane.surfaceId, title: 'AI 监督待续', text });
+  const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
+  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text });
+  window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督待续', text });
   return true;
 }

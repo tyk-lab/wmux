@@ -9,9 +9,9 @@
 
 export type LifecycleNotifyKind = 'needs_input' | 'turn_finished';
 
-/** Supervision owns user-facing status while it is actively scheduling lanes. */
-export function shouldNotifyAgentLifecycle(supervisorActive: boolean): boolean {
-  return !supervisorActive;
+/** Supervision owns lifecycle status only for surfaces bound to one of its live lanes. */
+export function shouldNotifyAgentLifecycle(supervisorOwnsSurface: boolean): boolean {
+  return !supervisorOwnsSurface;
 }
 
 export interface LifecycleNotifyInput {

@@ -80,10 +80,12 @@ import {
   nextSupervisorDeliveryRetryAttempt,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
+  SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
   SUPERVISOR_DELIVERY_READY_EVENT,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
+  unacknowledgedSubmittedSupervisorDelivery,
 } from './supervisor/delivery';
 import {
   isAgentPromptReadyState,
@@ -426,7 +428,12 @@ function handleAgentLifecycleEvent(
   agentStates?: Record<string, any>,
 ): void {
   const state = useStore.getState();
-  if (!shouldNotifyAgentLifecycle(state.supervisor.active)) return;
+  const sid = (event?.surfaceId as string) || '';
+  const supervisorOwnsSurface = state.supervisor.active && state.supervisor.lanes.some((lane) => (
+    supervisorLaneControlState(lane) !== 'stopped'
+    && (lane.surfaceId === sid || dedicatedSupervisorSurfaceId(lane) === sid)
+  ));
+  if (!shouldNotifyAgentLifecycle(supervisorOwnsSurface)) return;
 
   const prefs = state.notificationPrefs;
   const ev = event?.event as string;
@@ -442,7 +449,6 @@ function handleAgentLifecycleEvent(
   if (isNeedsInput && prefs.agentInputNotify === false) return;
   if (isTurnFinished && prefs.agentStopNotify === false) return;
 
-  const sid = (event.surfaceId as string) || '';
   const ws = workspaceForSurface(sid);
   const wsId = ws?.id || state.activeWorkspaceId;
   if (!wsId) return;
@@ -536,6 +542,7 @@ function confirmSubmittedSupervisorDelivery(
   session: SupervisorSession,
   lane: SupervisorLane,
   supervisorSurfaceId: string,
+  acknowledgement = 'UserPromptSubmit',
 ): boolean {
   const delivery = lane.pendingSupervisorDeliveries?.find((candidate) => candidate.stage === 'submitted');
   if (!delivery) return false;
@@ -556,11 +563,51 @@ function confirmSubmittedSupervisorDelivery(
     task: delivery.task,
     reviewId: delivery.reviewId,
     deliveryId: delivery.id,
-    acknowledgement: 'UserPromptSubmit',
+    acknowledgement,
   });
   store.appendSupervisorLog(lane.id, '监督通知已确认', supervisorDeliveryLabel(delivery.kind));
   signalSupervisorDeliveryReady();
   return true;
+}
+
+function handleSupervisorDeliveryAcknowledgementTimeout(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  delivery: SupervisorDelivery,
+): void {
+  const detail = `${supervisorDeliveryLabel(delivery.kind)}已写入监督 AI 终端，但 ${Math.round(SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS / 1000)} 秒内没有收到任何 Agent 生命周期确认。控制层无法判断消息是否已执行，已停止后续自动投递，禁止盲目重发。`;
+  const store = useStore.getState();
+  store.updateLane(lane.id, {
+    supervisorProblem: {
+      kind: 'unreported-decision',
+      detail,
+      detectedAt: Date.now(),
+    },
+  });
+  store.pauseSupervisorLane(lane.id, detail);
+  appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', {
+    deliveryId: delivery.id,
+    kind: delivery.kind,
+    reviewId: delivery.reviewId,
+    submittedAt: delivery.submittedAt,
+    acknowledgementTimeout: true,
+    reason: detail,
+  });
+  const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+  const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
+  if (workspaceId) {
+    store.addNotification({
+      surfaceId: notificationSurfaceId,
+      workspaceId,
+      title: 'AI 监督投递确认异常',
+      text: detail,
+    });
+  }
+  window.wmux?.notification?.fire({
+    surfaceId: notificationSurfaceId,
+    title: 'AI 监督投递确认异常',
+    text: detail,
+  });
 }
 
 function freezeSupervisorEvidence(
@@ -766,8 +813,9 @@ function handleUnacknowledgedSupervisorReview(
     reason: detail,
   });
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
-  if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text: detail });
-  window.wmux?.notification?.fire({ surfaceId: lane.surfaceId, title: 'AI 监督已暂停', text: detail });
+  const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
+  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text: detail });
+  window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督已暂停', text: detail });
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -785,8 +833,10 @@ function handleSupervisorHookEvent(event: any): void {
     && supervisorLaneControlState(item) !== 'stopped'
   ));
   if (supervisorLane) {
+    if (['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop', 'StopFailure'].includes(lifecycle)) {
+      confirmSubmittedSupervisorDelivery(session, supervisorLane, surfaceId, lifecycle);
+    }
     if (lifecycle === 'UserPromptSubmit') {
-      confirmSubmittedSupervisorDelivery(session, supervisorLane, surfaceId);
       clearSupervisorProviderLimitAlert(session, supervisorLane);
     } else if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Notification') {
       const providerLimited = reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
@@ -1598,6 +1648,14 @@ export default function App() {
 
       for (const lane of session.lanes) {
         if (supervisorLaneControlState(lane) !== 'active') continue;
+        const unacknowledgedDelivery = unacknowledgedSubmittedSupervisorDelivery(
+          lane.pendingSupervisorDeliveries,
+          now,
+        );
+        if (unacknowledgedDelivery) {
+          handleSupervisorDeliveryAcknowledgementTimeout(session, lane, unacknowledgedDelivery);
+          continue;
+        }
         if (!supervisorRuntimeRef.current[lane.id]) {
           supervisorRuntimeRef.current[lane.id] = blankRuntime();
         }

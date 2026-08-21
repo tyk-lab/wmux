@@ -2,6 +2,7 @@ import type { SupervisorDelivery } from '../store/supervisor-slice';
 import { isAgentPromptReadyState } from '../agent-state-semantics';
 
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
+export const SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS = 20_000;
 
 export function signalSupervisorDeliveryReady(): void {
   (globalThis as any).window?.dispatchEvent?.(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
@@ -167,6 +168,18 @@ export function nextDeliverableSupervisorDelivery(
     .find((delivery) => (
       promptReady || bootstrapReady(delivery)
     ));
+}
+
+export function unacknowledgedSubmittedSupervisorDelivery(
+  pending: readonly SupervisorDelivery[] | undefined,
+  now: number,
+  timeoutMs = SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
+): SupervisorDelivery | undefined {
+  return (pending || []).find((delivery) => (
+    delivery.stage === 'submitted'
+    && !!delivery.submittedAt
+    && now - delivery.submittedAt >= timeoutMs
+  ));
 }
 
 /** A busy or genuinely blocked supervisor must finish its current turn before receiving another command. */

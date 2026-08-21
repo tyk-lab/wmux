@@ -87,6 +87,7 @@ describe('AI supervisor provider limit detection', () => {
       }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      surfaceId: 'supervisor-limit',
       title: 'AI 监督模型受限',
       text: expect.stringContaining('代码审查'),
     }));

@@ -1645,6 +1645,10 @@ describe('supervisor decision bridge', () => {
     expect(decide({
       outcome: 'needs-human', proposalKind: 'important', next: '保留接口并补齐适配层',
     })).toMatchObject({ ok: true });
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      surfaceId: 'supervisor-a',
+      title: 'AI 监督',
+    }));
     const approval = useStore.getState().supervisor.pendingApprovals[0];
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
 
@@ -5374,6 +5378,10 @@ describe('supervisor decision bridge', () => {
       type: 'supervisor.decision',
       payload: expect.objectContaining({ requiresHuman: true }),
     }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      surfaceId: 'supervisor-a',
+      title: 'AI 监督',
+    }));
   });
 
   it('routes project-managed approvals internally without notifying the user', () => {
@@ -6695,7 +6703,7 @@ describe('supervisor decision bridge', () => {
       }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith({
-      surfaceId: 'worker-a',
+      surfaceId: 'supervisor-a',
       title: 'AI 监督待续',
       text: 'AI 监督通道“worker”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。',
     });

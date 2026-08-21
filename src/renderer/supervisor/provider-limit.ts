@@ -1,5 +1,9 @@
 import { useStore } from '../store';
-import type { SupervisorLane, SupervisorSession } from '../store/supervisor-slice';
+import {
+  dedicatedSupervisorSurfaceId,
+  type SupervisorLane,
+  type SupervisorSession,
+} from '../store/supervisor-slice';
 import { appendSupervisorRecord } from './recording';
 
 export interface SupervisorProviderLimitError {
@@ -71,9 +75,10 @@ export function reportSupervisorProviderLimit(
   store.appendSupervisorLog(lane.id, '监督模型受限', error.summary);
   const notificationText = `AI 监督通道“${lane.label}”的模型请求受限：${error.summary}`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
-  if (workspaceId) store.addNotification({ surfaceId: lane.surfaceId, workspaceId, text: notificationText });
+  const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
+  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text: notificationText });
   window.wmux?.notification?.fire({
-    surfaceId: lane.surfaceId,
+    surfaceId: notificationSurfaceId,
     title: 'AI 监督模型受限',
     text: notificationText,
   });

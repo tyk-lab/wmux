@@ -74,7 +74,7 @@ describe('lifecycle dedupe', () => {
 });
 
 describe('supervisor notification ownership', () => {
-  it('suppresses ordinary agent lifecycle notifications while supervision is active', () => {
+  it('suppresses lifecycle notifications only when supervision owns the event surface', () => {
     expect(shouldNotifyAgentLifecycle(true)).toBe(false);
     expect(shouldNotifyAgentLifecycle(false)).toBe(true);
   });
