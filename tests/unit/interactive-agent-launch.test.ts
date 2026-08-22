@@ -2,9 +2,23 @@ import { describe, expect, it } from 'vitest';
 import {
   buildInteractiveAgentLaunch,
   detectAutomatedInteractiveAgent,
+  surfaceAllowsManagedCodexHookTrust,
 } from '../../src/renderer/utils/interactive-agent-launch';
+import { buildSupervisorLaunchCommand } from '../../src/renderer/supervisor/launch-command';
 
 describe('interactive Agent launch', () => {
+  it('allows automatic Codex Hook trust only for wmux-managed project, task and supervisor AI surfaces', () => {
+    expect(surfaceAllowsManagedCodexHookTrust({ projectManagerTerminal: true })).toBe(true);
+    expect(surfaceAllowsManagedCodexHookTrust({ transientSupervisor: true })).toBe(true);
+    expect(surfaceAllowsManagedCodexHookTrust({ projectManagerProjectId: 'pm-1' })).toBe(true);
+    expect(surfaceAllowsManagedCodexHookTrust({})).toBe(false);
+    expect(surfaceAllowsManagedCodexHookTrust({
+      projectManagerProjectId: '',
+      projectManagerTerminal: false,
+      transientSupervisor: false,
+    })).toBe(false);
+  });
+
   it.each(['codex', 'grok'] as const)('passes the initial %s prompt in the launch command', (agent) => {
     const prompt = "检查第一行\n修复用户的 '登录' 流程";
     const launch = buildInteractiveAgentLaunch(agent, prompt);
@@ -75,5 +89,36 @@ describe('interactive Agent launch', () => {
     expect(detectAutomatedInteractiveAgent([`${prelude}grok -m grok-4.6`], undefined)).toBe('grok');
     expect(detectAutomatedInteractiveAgent([`${prelude}pi --model openai/gpt-5`], undefined)).toBe('pi');
     expect(detectAutomatedInteractiveAgent([`${prelude}& "C:\\Tools\\codex.exe"`], undefined)).toBe('codex');
+  });
+
+  it.each(['codex', 'kimi', 'grok', 'pi'] as const)(
+    'detects %s after the isolated supervisor shell-exit wrapper is applied',
+    (agent) => {
+      const command = buildSupervisorLaunchCommand(
+        agent,
+        '',
+        '',
+        { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: `lane-${agent}` },
+      );
+
+      expect(command).toContain('finally { exit');
+      expect(detectAutomatedInteractiveAgent([command], undefined)).toBe(agent);
+    },
+  );
+
+  it('recovers a managed Codex identity from its precise trust screen when the wrapper is unknown', () => {
+    const futureWrapper = [
+      "$wmuxSupervisorRuntimeDir = 'C:\\runtime'",
+      'Invoke-WmuxSupervisor { codex --model gpt-5.6-terra }',
+    ].join('; ');
+    const trustScreen = [
+      'Do you trust the contents of this directory?',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+    ].join('\n');
+
+    expect(detectAutomatedInteractiveAgent([futureWrapper], undefined)).toBeUndefined();
+    expect(detectAutomatedInteractiveAgent([futureWrapper], undefined, trustScreen)).toBe('codex');
+    expect(detectAutomatedInteractiveAgent(['codex'], undefined, trustScreen)).toBeUndefined();
   });
 });

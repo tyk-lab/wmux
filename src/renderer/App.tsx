@@ -78,6 +78,7 @@ import {
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
+  removeFailedSupervisorDelivery,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
@@ -100,7 +101,11 @@ import {
   handleSupervisorUserSubmit,
 } from './supervisor/user-input-precedence';
 import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
-import { terminalRuntimeStatus } from './terminal-runtime-lifecycle';
+import { markTerminalRuntimeFailed, terminalRuntimeStatus } from './terminal-runtime-lifecycle';
+import {
+  interactiveAgentInputReady,
+  interactiveAgentShellPromptFailureDetail,
+} from './utils/interactive-agent-runtime';
 import {
   clearSupervisorProviderLimitAlert,
   reportSupervisorProviderLimit,
@@ -578,6 +583,10 @@ function handleSupervisorDeliveryAcknowledgementTimeout(
   const detail = `${supervisorDeliveryLabel(delivery.kind)}已写入监督 AI 终端，但 ${Math.round(SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS / 1000)} 秒内没有收到任何 Agent 生命周期确认。控制层无法判断消息是否已执行，已停止后续自动投递，禁止盲目重发。`;
   const store = useStore.getState();
   store.updateLane(lane.id, {
+    pendingSupervisorDeliveries: removeFailedSupervisorDelivery(
+      lane.pendingSupervisorDeliveries,
+      delivery.id,
+    ),
     supervisorProblem: {
       kind: 'unreported-decision',
       detail,
@@ -608,6 +617,38 @@ function handleSupervisorDeliveryAcknowledgementTimeout(
     title: 'AI 监督投递确认异常',
     text: detail,
   });
+}
+
+function rejectUnavailableSupervisorShell(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  supervisorSurfaceId: string,
+  screenText?: string,
+): boolean {
+  const screen = screenText ?? readTerminalScreen(supervisorSurfaceId, 80).text ?? '';
+  const detail = interactiveAgentShellPromptFailureDetail(screen);
+  if (!detail) return false;
+  markTerminalRuntimeFailed(supervisorSurfaceId, detail);
+  const store = useStore.getState();
+  store.updateLane(lane.id, {
+    supervisorProblem: { kind: 'runtime-failed', detail, detectedAt: Date.now() },
+  });
+  store.pauseSupervisorLane(lane.id, detail);
+  appendSupervisorRecord(session, lane, 'supervisor.runtime-failed', {
+    detail,
+    startupGuard: true,
+  });
+  if (lane.projectManagerProjectId) {
+    (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
+      projectId: lane.projectManagerProjectId,
+      workItemId: lane.projectWorkItemId,
+      laneId: lane.id,
+      surfaceId: supervisorSurfaceId,
+      role: 'supervisor',
+      detail,
+    });
+  }
+  return true;
 }
 
 function freezeSupervisorEvidence(
@@ -840,6 +881,9 @@ function handleSupervisorHookEvent(event: any): void {
       clearSupervisorProviderLimitAlert(session, supervisorLane);
     } else if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Notification') {
       const providerLimited = reportSupervisorProviderLimit(session, supervisorLane, String(event.message || ''));
+      if (providerLimited) {
+        (window as any).__wmux_reportProjectAgentLimit?.(surfaceId, String(event.message || ''));
+      }
       const freshLane = useStore.getState().supervisor.lanes
         .find((candidate) => candidate.id === supervisorLane.id) || supervisorLane;
       if (!providerLimited && (lifecycle === 'Stop' || lifecycle === 'StopFailure')) {
@@ -1502,6 +1546,13 @@ export default function App() {
           if (supervisorLaneControlState(lane) !== 'active' || !supervisorSurfaceId) continue;
           const supervisorAgentState = agentStatesRef.current[supervisorSurfaceId] || { state: 'unknown' };
           const supervisorRuntime = terminalRuntimeStatus(supervisorSurfaceId);
+          const supervisorScreen = readTerminalScreen(supervisorSurfaceId, 80).text || '';
+          if (
+            supervisorRuntime?.state === 'ready'
+            && rejectUnavailableSupervisorShell(session, lane, supervisorSurfaceId, supervisorScreen)
+          ) {
+            continue;
+          }
           const compactedDeliveries = compactSupervisorDeliveries(lane.pendingSupervisorDeliveries);
           if (compactedDeliveries !== lane.pendingSupervisorDeliveries) {
             useStore.getState().updateLane(lane.id, { pendingSupervisorDeliveries: compactedDeliveries });
@@ -1510,6 +1561,7 @@ export default function App() {
             compactedDeliveries,
             supervisorAgentState,
             supervisorRuntime?.state === 'ready',
+            supervisorRuntime?.state === 'ready' && interactiveAgentInputReady(supervisorScreen),
           );
           if (!delivery) continue;
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
@@ -1667,7 +1719,12 @@ export default function App() {
         const supervisorState = supervisorAgentState.state || 'unknown';
         if (supervisorSurfaceId && supervisorState !== 'working') {
           const screen = readTerminalScreen(supervisorSurfaceId, 30);
-          if (screen.text) reportSupervisorProviderLimit(session, lane, screen.text);
+          if (screen.text) {
+            const providerLimited = reportSupervisorProviderLimit(session, lane, screen.text);
+            if (providerLimited) {
+              (window as any).__wmux_reportProjectAgentLimit?.(supervisorSurfaceId, screen.text);
+            }
+          }
         }
         const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
         const reviewScreenActivity = lane.activeReviewId

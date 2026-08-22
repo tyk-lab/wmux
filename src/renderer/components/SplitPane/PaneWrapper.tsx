@@ -16,6 +16,7 @@ import {
   parseSurfaceDragData,
   type SurfaceDragData,
 } from './surface-drag-preview';
+import { surfaceAllowsManagedCodexHookTrust } from '../../utils/interactive-agent-launch';
 import '../../styles/splitpane.css';
 import '../../styles/terminal.css';
 
@@ -250,6 +251,8 @@ export default function PaneWrapper({
               colorScheme={surface.colorScheme}
               startupCommands={surface.startupCommands}
               startupInput={surface.startupInput}
+              supervisorRuntimeIsolationKey={surface.supervisorRuntimeIsolationKey}
+              allowManagedCodexHookTrust={surfaceAllowsManagedCodexHookTrust(surface)}
               sshProfileId={surface.sshProfileId}
               sshConnectionState={sshTerminalState(surface, workspace?.sshConnectionState)}
               focused={isFocused && isActive}

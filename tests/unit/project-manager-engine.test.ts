@@ -147,6 +147,46 @@ describe('project-manager engine', () => {
     expect(projectProgressObligation(mixed)).toMatchObject({ kind: 'reconcile-stale-work' });
   });
 
+  it('keeps refine and pivot waiting states on deterministic internal gates', () => {
+    const refine = session([item('stale-stage', 'planned')], 'waiting');
+    refine.authorizationVersion = 2;
+    refine.orientation = { ...refine.orientation!, authorizationVersion: 2 };
+    expect(projectProgressObligation(refine)).toMatchObject({ kind: 'reconcile-stale-work' });
+
+    const completedEvidence = session([item('completed-evidence', 'completed')], 'waiting');
+    completedEvidence.requirementsVersion = 2;
+    completedEvidence.acceptedRequirementsVersion = 2;
+    completedEvidence.orientation = {
+      ...completedEvidence.orientation!, requirementsVersion: 2, status: 'ready',
+    };
+    completedEvidence.subgoals = [{
+      id: 'old-achieved-stage', goalId: completedEvidence.activeGoalId!, title: '旧阶段', outcome: '旧成果',
+      acceptance: ['旧成果已验收'], dependencies: [], status: 'achieved', order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    expect(projectProgressObligation(completedEvidence)).toMatchObject({ kind: 'plan-work' });
+
+    const pivot = session([], 'waiting');
+    pivot.acceptedRequirementsVersion = 0;
+    pivot.events = [
+      { id: 'alignment-required', sessionId: pivot.id, ts: 1, kind: 'requirements-alignment-required', summary: '重新对齐' },
+      { id: 'alignment-confirmed', sessionId: pivot.id, ts: 2, kind: 'requirements-alignment-confirmed', summary: '已确认' },
+    ];
+    pivot.orientation = { ...pivot.orientation!, status: 'required' };
+    expect(projectProgressObligation(pivot)).toMatchObject({ kind: 'orient-project' });
+
+    pivot.orientation = { ...pivot.orientation, status: 'ready' };
+    expect(projectProgressObligation(pivot)).toMatchObject({ kind: 'plan-work' });
+
+    pivot.subgoals = [{
+      id: 'new-goal-plan', goalId: pivot.activeGoalId!, title: '新目标阶段', outcome: '形成新目标成果',
+      acceptance: ['成果可验收'], dependencies: [], status: 'planned', order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    expect(projectProgressObligation(pivot)).toMatchObject({ kind: 'resume-project' });
+
+    pivot.goals = pivot.goals.map((goal) => goal.id === pivot.activeGoalId ? { ...goal, status: 'achieved' as const } : goal);
+    expect(projectProgressObligation(pivot)).toBeNull();
+  });
+
   it('builds a bounded supervisor briefing with anti-loop instructions', () => {
     const executionIdentity = {
       projectId: 'project-auth',

@@ -4,6 +4,7 @@ import {
   enqueueSupervisorDelivery,
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
+  removeFailedSupervisorDelivery,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
   supervisorWakeDeliveryKind,
@@ -124,12 +125,15 @@ describe('supervisor delivery queue', () => {
     };
 
     expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, false)).toBeUndefined();
-    expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, true)?.id).toBe('startup');
-    expect(nextDeliverableSupervisorDelivery([legacyBootstrap], { state: 'unknown' }, true)?.id)
+    expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, true, false))
+      .toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, true, true)?.id)
+      .toBe('startup');
+    expect(nextDeliverableSupervisorDelivery([legacyBootstrap], { state: 'unknown' }, true, true)?.id)
       .toBe('legacy-startup');
-    expect(nextDeliverableSupervisorDelivery([later], { state: 'unknown' }, true)).toBeUndefined();
-    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'working' }, true)).toBeUndefined();
-    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'blocked', blockedReason: 'permission' }, true))
+    expect(nextDeliverableSupervisorDelivery([later], { state: 'unknown' }, true, true)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'working' }, true, true)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'blocked', blockedReason: 'permission' }, true, true))
       .toBeUndefined();
   });
 
@@ -214,6 +218,27 @@ describe('supervisor delivery queue', () => {
     expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_009)).toBeUndefined();
     expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_010)?.id).toBe('submitted-control');
     expect(submitted.stage).toBe('submitted');
+  });
+
+  it('removes a timed-out submission so recovery cannot count the same delivery twice', () => {
+    const submitted = {
+      id: 'submitted-control', kind: 'control-message' as const, task: '同步新约束',
+      text: '重新核对约束', createdAt: 1, stage: 'submitted' as const, submittedAt: 10,
+    };
+    const recovered = {
+      id: 'recovered-control', kind: 'control-message' as const, task: '重建监督',
+      text: '重新读取当前状态', createdAt: 2, stage: 'pending' as const,
+      bootstrapOnRuntimeReady: true,
+    };
+
+    const cleared = removeFailedSupervisorDelivery([submitted], submitted.id);
+    expect(cleared).toEqual([]);
+    expect(nextDeliverableSupervisorDelivery(
+      enqueueSupervisorDelivery(cleared, recovered),
+      'unknown',
+      true,
+      true,
+    )?.id).toBe('recovered-control');
   });
 
   it('keeps only the latest actionable fact for one review generation', () => {

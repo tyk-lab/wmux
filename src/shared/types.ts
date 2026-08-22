@@ -110,6 +110,8 @@ export interface SurfaceRef {
   startupInput?: string;
   /** Dedicated AI-supervisor terminal; excluded from restart layouts because its state is transient. */
   transientSupervisor?: boolean;
+  /** App-owned runtime key used to pre-trust only this isolated Codex supervisor directory. */
+  supervisorRuntimeIsolationKey?: string;
   /** Project-owned supervisor UI/runtime. Kept separate from project task-terminal ownership. */
   projectSupervisorProjectId?: string;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */

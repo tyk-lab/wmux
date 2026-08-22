@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { applyWmuxLifecycleHooks } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
+import { normalizeSupervisorRuntimeIsolationKey } from '../shared/supervisor-runtime';
 
 /** Events supported by the current Codex lifecycle Hooks API. */
 export const CODEX_WMUX_HOOK_EVENTS = [
@@ -99,6 +100,29 @@ export function ensureCodexProjectTrusted(projectPath: string, configPath = reso
     try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
     throw error;
   }
+}
+
+/** Trust only a wmux-owned isolated supervisor directory, never a renderer-supplied absolute path. */
+export function ensureCodexSupervisorRuntimeTrusted(
+  appDataRoot: string,
+  isolationKey: string,
+  instance = process.env.WMUX_INSTANCE?.trim() || '',
+  configPath = resolveCodexConfigPath(),
+): string {
+  const instanceDirectory = instance ? `wmux-${instance}` : 'wmux';
+  const resolvedAppDataRoot = path.resolve(appDataRoot);
+  const runtimeRoot = path.resolve(resolvedAppDataRoot, instanceDirectory, 'supervisor', 'runtime');
+  const relativeRuntimeRoot = path.relative(resolvedAppDataRoot, runtimeRoot);
+  if (relativeRuntimeRoot.startsWith('..') || path.isAbsolute(relativeRuntimeRoot)) {
+    throw new Error('监督运行根目录超出应用数据目录');
+  }
+  const runtimeDirectory = path.resolve(runtimeRoot, normalizeSupervisorRuntimeIsolationKey(isolationKey));
+  if (path.dirname(runtimeDirectory) !== runtimeRoot) {
+    throw new Error('监督运行目录超出 wmux 隔离根目录');
+  }
+  fs.mkdirSync(runtimeDirectory, { recursive: true });
+  ensureCodexProjectTrusted(runtimeDirectory, configPath);
+  return runtimeDirectory;
 }
 
 /** Pure merge for unit tests — returns the next hooks.json object. */

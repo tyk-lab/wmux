@@ -34,6 +34,10 @@ export type StartupTrustPromptAgent = 'codex' | 'kimi' | 'grok' | 'pi';
 export type StartupTrustPromptAction = 'confirm-selected' | 'select-previous' | 'select-next' | 'type-yes';
 export type StartupTrustPromptKind = 'directory' | 'hooks' | 'folder' | 'repo-config';
 
+export interface StartupTrustPromptActionOptions {
+  allowCodexHookTrust?: boolean;
+}
+
 const ANSI_ESCAPE = new RegExp(
   String.raw`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`,
   'gu',
@@ -45,10 +49,17 @@ function normalizedTerminalOutput(output: string): string {
 
 interface StartupTrustPromptOptions extends Pick<
   StartupInputDeliveryOptions,
-  'readyDelayMs' | 'retryDelayMs' | 'maxAttempts' | 'wait'
+  'cancelWhen' | 'readyDelayMs' | 'retryDelayMs' | 'maxAttempts' | 'wait'
 > {
   action: StartupTrustPromptAction;
   selectionDelayMs?: number;
+  /** Semantic acknowledgement: the trust page changed or the Agent input UI appeared. */
+  confirmedWhen?: () => boolean;
+  /** Re-read the live TUI selection before a bounded retry. */
+  retryActionWhen?: () => StartupTrustPromptAction | null;
+  confirmationPollMs?: number;
+  confirmationPollAttempts?: number;
+  maxConfirmationWrites?: number;
 }
 
 export function startupTrustPromptKind(
@@ -91,11 +102,15 @@ export function startupTrustPromptAction(
   agent: StartupTrustPromptAgent,
   output: string,
   kind = startupTrustPromptKind(agent, output),
+  options: StartupTrustPromptActionOptions = {},
 ): StartupTrustPromptAction | null {
   if (agent === 'grok') {
     return isStartupTrustPromptReady(agent, output) ? 'type-yes' : null;
   }
   if (agent === 'pi') return null;
+  // Hook changes are executable code. Only an explicitly marked wmux-managed
+  // project-AI, task-AI or dedicated supervisor surface may opt into first-run trust.
+  if (agent === 'codex' && kind === 'hooks' && !options.allowCodexHookTrust) return null;
 
   const normalizedOutput = normalizedTerminalOutput(output);
   const selectedMarker = '(?:[>❯›➜→]|[●◉])';
@@ -151,20 +166,63 @@ export async function confirmStartupTrustPrompt(
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? STARTUP_INPUT_RETRY_DELAY_MS);
   const maxAttempts = Math.max(1, options.maxAttempts ?? STARTUP_INPUT_MAX_ATTEMPTS);
   await wait(readyDelayMs);
-  if (options.action === 'type-yes') {
+  if (options.cancelWhen?.()) return false;
+
+  const confirmationPollMs = Math.max(0, options.confirmationPollMs ?? 250);
+  const confirmationPollAttempts = Math.max(1, options.confirmationPollAttempts ?? 20);
+  let remainingWrites = Math.max(1, options.maxConfirmationWrites ?? 3);
+  let action: StartupTrustPromptAction | null = options.action;
+
+  for (let check = 0; check < confirmationPollAttempts; check += 1) {
+    if (options.cancelWhen?.()) return false;
+    if (options.confirmedWhen?.()) return true;
+
+    if (action && remainingWrites > 0) {
+      const written = await writeStartupTrustAction(
+        writer,
+        surfaceId,
+        action,
+        wait,
+        retryDelayMs,
+        maxAttempts,
+        Math.max(0, options.selectionDelayMs ?? 100),
+      );
+      if (!written) return false;
+      remainingWrites -= 1;
+      if (!options.confirmedWhen) return true;
+    }
+
+    await wait(confirmationPollMs);
+    if (options.cancelWhen?.()) return false;
+    if (options.confirmedWhen?.()) return true;
+    action = remainingWrites > 0 ? options.retryActionWhen?.() ?? null : null;
+  }
+  return false;
+}
+
+async function writeStartupTrustAction(
+  writer: TerminalInputWriter,
+  surfaceId: string,
+  action: StartupTrustPromptAction,
+  wait: (delayMs: number) => Promise<void>,
+  retryDelayMs: number,
+  maxAttempts: number,
+  selectionDelayMs: number,
+): Promise<boolean> {
+  if (action === 'type-yes') {
     return writeWhenAvailable(writer, surfaceId, 'y\r', wait, retryDelayMs, maxAttempts);
   }
-  if (options.action === 'select-previous' || options.action === 'select-next') {
+  if (action === 'select-previous' || action === 'select-next') {
     const selectedTrust = await writeWhenAvailable(
       writer,
       surfaceId,
-      options.action === 'select-previous' ? '\x1b[A' : '\x1b[B',
+      action === 'select-previous' ? '\x1b[A' : '\x1b[B',
       wait,
       retryDelayMs,
       maxAttempts,
     );
     if (!selectedTrust) return false;
-    await wait(Math.max(0, options.selectionDelayMs ?? 100));
+    await wait(selectionDelayMs);
   }
   return writeWhenAvailable(writer, surfaceId, '\r', wait, retryDelayMs, maxAttempts);
 }

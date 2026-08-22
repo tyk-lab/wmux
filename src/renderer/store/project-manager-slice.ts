@@ -17,6 +17,7 @@ import {
   type ProjectWorkItem,
 } from '../../shared/project-manager';
 import { projectDependencyError } from '../project-manager/engine';
+import type { ProjectManagementAgentConfig } from '../../shared/project-manager-terminal';
 
 const MAX_PROJECT_EVENTS = 500;
 const MAX_EXECUTION_HISTORY = 100;
@@ -47,6 +48,7 @@ export interface ProjectManagerSlice {
     doneWhen: string[];
     managerSurfaceId?: string;
     feishuChatId?: string;
+    agentConfig?: ProjectManagementAgentConfig;
   }) => ProjectManagerSession;
   restoreProjectManager: (session: ProjectManagerSession | null) => void;
   restoreProjectManagers: (sessions: ProjectManagerSession[], selectedId?: string) => void;
@@ -197,6 +199,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       },
       managerSurfaceId: options.managerSurfaceId,
       feishuChatId: options.feishuChatId,
+      agentConfig: options.agentConfig,
       workItems: [],
       events: [],
       createdAt: now,
@@ -309,7 +312,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     let eventInput: Omit<ProjectManagerEvent, 'id' | 'sessionId' | 'ts'>;
 
     if (action.type === 'require-requirements-alignment') {
-      next = { ...session, status: 'waiting' };
+      next = {
+        ...session,
+        status: 'waiting',
+        pendingSupervisorTransitions: [],
+        pendingManagerDeliveries: (session.pendingManagerDeliveries || []).filter((delivery) => (
+          !delivery.transitionId && !delivery.continuationKey
+        )),
+      };
       eventInput = {
         kind: 'requirements-alignment-required',
         summary: action.reason.trim() || '项目必须先完成需求充分性判定',
@@ -421,6 +431,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         status: 'waiting',
         pausedByPortfolio: false,
         pendingUserQuestion: undefined,
+        pendingSupervisorTransitions: [],
+        pendingManagerDeliveries: (session.pendingManagerDeliveries || []).filter((delivery) => (
+          !delivery.transitionId && !delivery.continuationKey
+        )),
       };
       next = {
         ...next,
@@ -567,6 +581,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         status: 'waiting',
         pausedByPortfolio: false,
         pendingUserQuestion: undefined,
+        pendingSupervisorTransitions: [],
+        pendingManagerDeliveries: (session.pendingManagerDeliveries || []).filter((delivery) => (
+          !delivery.transitionId && !delivery.continuationKey
+        )),
       };
       next = {
         ...next,
@@ -933,9 +951,21 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
     } else if (action.type === 'complete-current-goal') {
       const activeGoal = activeProjectGoal(session);
-      const required = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
+      const activeItems = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
+      const staleOpenItem = activeItems.find((item) => (
+        item.status !== 'completed'
+        && (item.requirementsVersion !== projectRequirementsVersion(session)
+          || item.authorizationVersion !== projectAuthorizationVersion(session))
+      ));
+      if (staleOpenItem) {
+        return { ok: false, error: `任务 ${staleOpenItem.id} 仍属于旧需求或授权版本，必须先重绑或停止` };
+      }
+      const required = activeItems.filter((item) => (
+        item.requirementsVersion === projectRequirementsVersion(session)
+        && item.authorizationVersion === projectAuthorizationVersion(session)
+      ));
       if (required.length === 0 || required.some((item) => item.status !== 'completed')) {
-        return { ok: false, error: '当前主目标的所有未停止任务完成后才能完成主目标' };
+        return { ok: false, error: '当前版本必须至少有一项完成成果，且所有当前版本未停止任务完成后才能完成主目标' };
       }
       const blocked = required.find((item) => !!item.latestBlocker?.trim());
       if (blocked) {
@@ -947,13 +977,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       if (projectAcceptedRequirementsVersion(session) !== projectRequirementsVersion(session)) {
         return { ok: false, error: '最新主目标要求尚未由项目 AI 接受，不能完成主目标' };
-      }
-      const staleEvidence = required.find((item) => (
-        item.requirementsVersion !== projectRequirementsVersion(session)
-        || item.authorizationVersion !== projectAuthorizationVersion(session)
-      ));
-      if (staleEvidence) {
-        return { ok: false, error: `任务 ${staleEvidence.id} 的证据属于旧需求或授权版本，必须先复核并显式重绑` };
       }
       const incompleteSubgoal = (session.subgoals || []).find((subgoal) => (
         subgoal.goalId === activeGoal.id

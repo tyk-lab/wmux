@@ -52,15 +52,15 @@ describe('terminal startup input delivery', () => {
     expect(startupTrustPromptAction(
       'codex',
       'Hooks need review\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won\'t run)',
-    )).toBe('select-next');
+    )).toBeNull();
     expect(startupTrustPromptAction(
       'codex',
       'Hooks need review\n  1. Review hooks\n› 2. Trust all and continue\n  3. Continue without trusting (hooks won\'t run)',
-    )).toBe('confirm-selected');
+    )).toBeNull();
     expect(startupTrustPromptAction(
       'codex',
       'Hooks need review\n  1. Review hooks\n  2. Trust all and continue\n› 3. Continue without trusting (hooks won\'t run)',
-    )).toBe('select-previous');
+    )).toBeNull();
     expect(startupTrustPromptAction(
       'kimi',
       "❯ Don't trust\n\n\x1b[2J❯ Trust this folder\n  Don't trust",
@@ -81,7 +81,7 @@ describe('terminal startup input delivery', () => {
     ].join('\n');
 
     expect(startupTrustPromptKind('codex', sequentialPrompts)).toBe('hooks');
-    expect(startupTrustPromptAction('codex', sequentialPrompts)).toBe('select-next');
+    expect(startupTrustPromptAction('codex', sequentialPrompts)).toBeNull();
   });
 
   it('信任页就绪后只发送一次 Enter，并在 PTY 忙时重试', async () => {
@@ -125,19 +125,90 @@ describe('terminal startup input delivery', () => {
     expect(writeChecked.mock.calls).toEqual([['surf-kimi-selected', '\r']]);
   });
 
-  it('Codex Hook 审核页从 Review hooks 下移到 Trust all 后确认', async () => {
-    const writeChecked = vi.fn(async () => true);
+  it('Codex Hook 审核页必须留给用户处理，不能生成自动确认动作', () => {
+    const hooksPrompt = [
+      'Hooks need review',
+      '› 1. Review hooks',
+      '  2. Trust all and continue',
+      '  3. Continue without trusting (hooks won\'t run)',
+    ].join('\n');
 
-    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-codex-hooks', {
-      action: 'select-next',
+    expect(startupTrustPromptKind('codex', hooksPrompt)).toBe('hooks');
+    expect(startupTrustPromptAction('codex', hooksPrompt)).toBeNull();
+  });
+
+  it('显式的 wmux 项目、监督或任务授权会自动确认 Codex Hook 信任项', async () => {
+    const fromReview = [
+      'Hooks need review',
+      '› 1. Review hooks',
+      '  2. Trust all and continue',
+      '  3. Continue without trusting (hooks won\'t run)',
+    ].join('\n');
+    const alreadySelected = [
+      'Hooks need review',
+      '  1. Review hooks',
+      '› 2. Trust all and continue',
+      '  3. Continue without trusting (hooks won\'t run)',
+    ].join('\n');
+
+    const action = startupTrustPromptAction('codex', fromReview, 'hooks', {
+      allowCodexHookTrust: true,
+    });
+    expect(action).toBe('select-next');
+    expect(startupTrustPromptAction('codex', alreadySelected, 'hooks', {
+      allowCodexHookTrust: true,
+    })).toBe('confirm-selected');
+
+    let confirmed = false;
+    const writeChecked = vi.fn(async () => true);
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-managed-hooks', {
+      action: action!,
       readyDelayMs: 0,
       selectionDelayMs: 0,
-      wait: async () => undefined,
+      confirmationPollMs: 1,
+      confirmedWhen: () => confirmed,
+      retryActionWhen: () => 'confirm-selected',
+      wait: async (delayMs) => { if (delayMs === 1) confirmed = true; },
+    })).resolves.toBe(true);
+    expect(writeChecked.mock.calls).toEqual([
+      ['surf-managed-hooks', '\x1b[B'],
+      ['surf-managed-hooks', '\r'],
+    ]);
+  });
+
+  it('只有信任页得到语义确认后才报告成功', async () => {
+    let confirmed = false;
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-semantic-trust', {
+      action: 'confirm-selected',
+      readyDelayMs: 0,
+      confirmationPollMs: 1,
+      confirmedWhen: () => confirmed,
+      retryActionWhen: () => 'confirm-selected',
+      wait: async (delayMs) => { if (delayMs === 1) confirmed = true; },
     })).resolves.toBe(true);
 
+    expect(writeChecked.mock.calls).toEqual([['surf-semantic-trust', '\r']]);
+  });
+
+  it('信任页未消失时只做有界重试并返回失败', async () => {
+    const writeChecked = vi.fn(async () => true);
+
+    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-stuck-trust', {
+      action: 'confirm-selected',
+      readyDelayMs: 0,
+      confirmationPollMs: 0,
+      confirmationPollAttempts: 4,
+      maxConfirmationWrites: 2,
+      confirmedWhen: () => false,
+      retryActionWhen: () => 'confirm-selected',
+      wait: async () => undefined,
+    })).resolves.toBe(false);
+
     expect(writeChecked.mock.calls).toEqual([
-      ['surf-codex-hooks', '\x1b[B'],
-      ['surf-codex-hooks', '\r'],
+      ['surf-stuck-trust', '\r'],
+      ['surf-stuck-trust', '\r'],
     ]);
   });
 

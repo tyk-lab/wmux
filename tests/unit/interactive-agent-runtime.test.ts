@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   interactiveAgentExitDetail,
+  interactiveAgentInputReady,
+  interactiveAgentShellPromptFailureDetail,
+  interactiveAgentStartupDiagnostic,
   interactiveAgentStartupFailureDetail,
 } from '../../src/renderer/utils/interactive-agent-runtime';
 
@@ -55,5 +58,67 @@ describe('interactive Agent runtime detection', () => {
       .toContain('not recognized');
     expect(interactiveAgentStartupFailureDetail('/bin/sh: agent: command not found'))
       .toContain('command not found');
+  });
+
+  it('rejects an outer shell prompt before a control message can be executed as a command', () => {
+    expect(interactiveAgentShellPromptFailureDetail(
+      'PS C:\\Users\\tester\\AppData\\Roaming\\wmux\\supervisor\\runtime>',
+    )).toContain('外层 Shell 提示符');
+    expect(interactiveAgentShellPromptFailureDetail('C:\\runtime>')).toContain('外层 Shell 提示符');
+    expect(interactiveAgentShellPromptFailureDetail('tester@host:/workspace$')).toContain('外层 Shell 提示符');
+    expect(interactiveAgentShellPromptFailureDetail('OpenAI Codex\nmodel: gpt-5.6-terra')).toBeNull();
+  });
+
+  it('requires recognizable Agent input chrome instead of generic shell output', () => {
+    expect(interactiveAgentInputReady('PS C:\\runtime>')).toBe(false);
+    expect(interactiveAgentInputReady('PowerShell 7.5\nCopyright Microsoft Corporation')).toBe(false);
+    expect(interactiveAgentInputReady('gpt-5.6-terra medium\nAsk Codex to do anything')).toBe(true);
+    expect(interactiveAgentInputReady([
+      '─ Worked for 1m 30s ─',
+      '',
+      '› Ask Codex to do anything',
+      '',
+      '  gpt-5.6-terra medium · ~\\AppData\\Roaming\\wmux\\supervisor\\runtime',
+    ].join('\n'))).toBe(true);
+    expect(interactiveAgentInputReady(
+      '  gpt-5.6-terra medium · ~\\AppData\\Roaming\\wmux\\supervisor\\runtime',
+    )).toBe(true);
+    expect(interactiveAgentInputReady('Kimi Code\nNo session yet — send your first message')).toBe(true);
+    expect(interactiveAgentInputReady('Grok Build 1.0.5\nNew worktree\nCtrl+O')).toBe(true);
+    expect(interactiveAgentInputReady('Pi Agent\nAsk anything')).toBe(true);
+    expect(interactiveAgentInputReady('pi v0.48.2\nctrl+c/ctrl+d clear/exit · / commands\nPi can explain its own features')).toBe(true);
+  });
+
+  it('keeps raw Codex readiness evidence when the current xterm screen contains only blank rows', () => {
+    const rawOutput = [
+      '╭────────────────────────────────────────╮',
+      '│ >_ OpenAI Codex (v0.149.0)             │',
+      '╰────────────────────────────────────────╯',
+      '› Ask Codex to do anything',
+      'gpt-5.6-terra medium · ~\\AppData\\Roaming\\wmux\\supervisor\\runtime',
+    ].join('\n');
+
+    expect(interactiveAgentInputReady(`${rawOutput}\n${'\n'.repeat(29)}`)).toBe(true);
+  });
+
+  it('records only structural startup diagnostics without leaking paths or task text', () => {
+    const diagnostic = interactiveAgentStartupDiagnostic([
+      '执行敏感项目任务',
+      '› Ask Codex to do anything',
+      'gpt-5.6-terra medium · C:\\Users\\tester\\secret-project',
+    ].join('\n'));
+
+    expect(diagnostic).toContain('markers=ask-codex,gpt-model');
+    expect(diagnostic).not.toContain('敏感项目任务');
+    expect(diagnostic).not.toContain('secret-project');
+  });
+
+  it('recognizes a project protocol already pasted after the PowerShell prompt', () => {
+    const contaminated = [
+      'PS C:\\Users\\tester\\AppData\\Roaming\\wmux\\supervisor\\runtime> e> [目标任务终端和项目指令协议正文]',
+      '项目目标：实现功能',
+    ].join('\n');
+    expect(interactiveAgentShellPromptFailureDetail(contaminated)).toContain('外层 Shell 提示符');
+    expect(interactiveAgentInputReady(`OpenAI Codex\n${contaminated}`)).toBe(false);
   });
 });

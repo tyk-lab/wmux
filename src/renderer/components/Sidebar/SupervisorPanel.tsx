@@ -22,8 +22,16 @@ import {
   sendTaskToSurface,
   sendToSurface,
   supervisorLaneInputIsolationScope,
-  SUPERVISOR_TUI_READY_DELAY_MS,
 } from '../../supervisor/supervisor-engine';
+import { readTerminalScreen } from '../../pipe-bridge';
+import {
+  markTerminalRuntimeFailed,
+  waitForTerminalRuntimeReady,
+} from '../../terminal-runtime-lifecycle';
+import {
+  interactiveAgentInputReady,
+  interactiveAgentShellPromptFailureDetail,
+} from '../../utils/interactive-agent-runtime';
 import {
   buildAdoptedPlanBriefing,
   supervisorDecisionOptions,
@@ -804,6 +812,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         cwd: lane.projectDir,
         startupCommands: [launchCommand],
         transientSupervisor: true,
+        supervisorRuntimeIsolationKey: lane.id,
       });
       if (!newSurfaceId || !supervisorSurfaceId) {
         for (const replacement of replacements) {
@@ -853,25 +862,46 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
 
     startOrdinarySupervisor();
     const sessionId = useStore.getState().supervisor.sessionId;
-    window.setTimeout(() => {
-      const session = useStore.getState().supervisor;
+    void (async () => {
+      let session = useStore.getState().supervisor;
       if (!session.active || session.sessionId !== sessionId) return;
-      const states = (window as any).__wmux_getAgentStates?.() || {};
       for (const lane of session.lanes.filter((candidate) => !isProjectManagedSupervisorLane(candidate))) {
         const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
         if (!supervisorSurfaceId) continue;
+        const ready = await waitForTerminalRuntimeReady(supervisorSurfaceId);
+        const screen = readTerminalScreen(supervisorSurfaceId, 80).text || '';
+        if (!ready.ok || !interactiveAgentInputReady(screen)) {
+          const detail = ready.error
+            || interactiveAgentShellPromptFailureDetail(screen)
+            || '未检测到可接收监督任务的 Agent 输入界面；已禁止向未知终端发送监督协议';
+          markTerminalRuntimeFailed(supervisorSurfaceId, detail);
+          const store = useStore.getState();
+          store.updateLane(lane.id, {
+            supervisorProblem: { kind: 'runtime-failed', detail, detectedAt: Date.now() },
+          });
+          store.pauseSupervisorLane(lane.id, detail);
+          store.appendSupervisorLog(lane.id, '监督 Agent 未就绪', detail);
+          continue;
+        }
+        session = useStore.getState().supervisor;
+        const currentLane = session.lanes.find((candidate) => candidate.id === lane.id);
+        if (!session.active || session.sessionId !== sessionId || !currentLane
+          || supervisorLaneControlState(currentLane) !== 'active') continue;
+        const states = (window as any).__wmux_getAgentStates?.() || {};
         const text = buildSupervisorBriefing(session, {
-          lane,
-          state: String(states[lane.surfaceId]?.state || 'unknown'),
+          lane: currentLane,
+          state: String(states[currentLane.surfaceId]?.state || 'unknown'),
         });
         sendToSurface(
           supervisorSurfaceId,
           text,
           true,
-          supervisorLaneInputIsolationScope(lane),
+          supervisorLaneInputIsolationScope(currentLane),
         );
       }
-    }, SUPERVISOR_TUI_READY_DELAY_MS);
+    })().catch((error) => {
+      appendSupervisorLog('-', '监督 Agent 重启失败', error instanceof Error ? error.message : String(error));
+    });
   };
 
   if (expanded && visibleLanes.length === 0 && scopedProjectWorkItems.length === 0) {

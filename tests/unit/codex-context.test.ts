@@ -6,6 +6,7 @@ import {
   applyCodexProjectTrust,
   applyWmuxCodexHooks,
   ensureCodexProjectTrusted,
+  ensureCodexSupervisorRuntimeTrusted,
 } from '../../src/main/codex-context';
 
 const SCRIPT = 'C:/wmux/resources/cli/wmux-hook.js';
@@ -82,6 +83,38 @@ describe('applyCodexProjectTrust', () => {
       expect(saved).toContain('model = "gpt-5"');
       expect(saved).toContain('trust_level = "trusted"');
       expect(fs.readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toHaveLength(0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('trusts only the normalized wmux-owned supervisor runtime directory', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-supervisor-trust-'));
+    const configPath = path.join(directory, 'codex', 'config.toml');
+    const appDataRoot = path.join(directory, 'app-data');
+    try {
+      const runtimeDirectory = ensureCodexSupervisorRuntimeTrusted(
+        appDataRoot,
+        '..',
+        'test-instance',
+        configPath,
+      );
+
+      expect(runtimeDirectory).toBe(path.join(
+        appDataRoot,
+        'wmux-test-instance',
+        'supervisor',
+        'runtime',
+        'default',
+      ));
+      expect(fs.statSync(runtimeDirectory).isDirectory()).toBe(true);
+      expect(fs.readFileSync(configPath, 'utf-8')).toContain('trust_level = "trusted"');
+      expect(() => ensureCodexSupervisorRuntimeTrusted(
+        appDataRoot,
+        'lane-safe',
+        '..\\..\\..\\escape',
+        configPath,
+      )).toThrow('监督运行根目录超出应用数据目录');
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

@@ -205,9 +205,23 @@ describe('project manager records', () => {
       pendingUserQuestion,
       requirementsVersion: 3,
       acceptedRequirementsVersion: 2,
+      agentConfig: {
+        manager: { agent: 'kimi' as const, model: 'kimi-code/k3', reasoningEffort: '' },
+        supervisor: { agent: 'codex' as const, model: 'gpt-5.6-terra', reasoningEffort: 'high' },
+        task: { agent: 'grok' as const, model: 'grok-4.6', reasoningEffort: 'medium' },
+      },
+      agentIssue: {
+        role: 'manager' as const, category: 'quota-limit' as const,
+        summary: 'Weekly limit left: 0%', detectedAt: 12,
+      },
+      agentReconfiguration: {
+        status: 'pending-safe-point' as const, requestedAt: 12,
+        roles: ['manager', 'task'] as const, pendingRoles: ['task'] as const, completedRoles: ['manager'] as const,
+      },
       pendingManagerDeliveries: [{
         id: 'delivery-1', text: '请按新条件重新规划', createdAt: 13,
-        transitionId: 'transition-1',
+        transitionId: 'transition-1', continuationKey: 'goal-2:R3:A1:orient-project:',
+        stage: 'failed' as const, submittedAt: 14,
       }],
       pendingSupervisorTransitions: [{
         id: 'transition-1', laneId: 'lane-1', workItemId: 'wol_validation',
@@ -245,8 +259,19 @@ describe('project manager records', () => {
       },
       requirementsVersion: 3,
       acceptedRequirementsVersion: 2,
+      agentConfig: {
+        manager: { agent: 'kimi', model: 'kimi-code/k3' },
+        supervisor: { agent: 'codex', model: 'gpt-5.6-terra' },
+        task: { agent: 'grok', model: 'grok-4.6' },
+      },
+      agentIssue: { role: 'manager', category: 'quota-limit', summary: 'Weekly limit left: 0%' },
+      agentReconfiguration: {
+        status: 'pending-safe-point', pendingRoles: ['task'], completedRoles: ['manager'],
+      },
       pendingManagerDeliveries: [{
         id: 'delivery-1', text: '请按新条件重新规划', transitionId: 'transition-1',
+        continuationKey: 'goal-2:R3:A1:orient-project:',
+        stage: 'failed', submittedAt: 14,
       }],
       pendingSupervisorTransitions: [{
         id: 'transition-1', kind: 'stage-complete', workItemId: 'wol_validation',

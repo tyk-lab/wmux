@@ -162,7 +162,7 @@ describe('managed agent watchdog bridge', () => {
     expect(writeReliable).toHaveBeenLastCalledWith('manager-watchdog', '\x1b');
   });
 
-  it('records and notifies when a stuck runtime reaches automatic rebuild', async () => {
+  it('records rebuild progress internally and surfaces the final rebuild failure', async () => {
     (globalThis.window as any).__wmux_noteManagedAgentHook({
       surfaceId: 'manager-watchdog', event: 'UserPromptSubmit', task: '继续当前项目',
     });
@@ -172,11 +172,14 @@ describe('managed agent watchdog bridge', () => {
     expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       type: 'guard-triggered',
       payload: expect.objectContaining({
-        action: 'watchdog-rebuild-manager', attentionRequired: true,
+        action: 'watchdog-rebuild-manager', attentionRequired: false,
       }),
     }));
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'manager-runtime-failed',
+    }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-      title: '项目执行护栏需要处理',
+      title: '项目运行异常',
     }));
   });
 });

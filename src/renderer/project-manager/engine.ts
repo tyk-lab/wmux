@@ -329,6 +329,7 @@ export type ProjectProgressObligationKind =
   | 'orient-project'
   | 'reconcile-stale-work'
   | 'plan-work'
+  | 'resume-project'
   | 'dispatch-work'
   | 'recover-work'
   | 'validate-work'
@@ -343,6 +344,22 @@ export interface ProjectProgressObligation {
   workItemId?: string;
 }
 
+export function projectHasRunnableGoalPlan(session: ProjectManagerSession): boolean {
+  return activeProjectSubgoals(session).some((subgoal) => (
+    subgoal.status === 'planned' || subgoal.status === 'active'
+  ));
+}
+
+function projectAlignmentConfirmedAfterLatestRequirement(session: ProjectManagerSession): boolean {
+  let latestRequired = -1;
+  let latestConfirmed = -1;
+  session.events.forEach((event, index) => {
+    if (event.kind === 'requirements-alignment-required') latestRequired = index;
+    if (event.kind === 'requirements-alignment-confirmed') latestConfirmed = index;
+  });
+  return latestRequired >= 0 && latestConfirmed > latestRequired;
+}
+
 /**
  * Describe the next project-owned action when no dedicated supervisor lane is
  * active. This is intentionally pure so the runtime watchdog and tests use the
@@ -351,12 +368,19 @@ export interface ProjectProgressObligation {
 export function projectProgressObligation(
   session: ProjectManagerSession,
 ): ProjectProgressObligation | null {
-  if (session.status !== 'active'
+  if (!['active', 'waiting'].includes(session.status)
     || session.pendingUserQuestion
     || (session.pendingSupervisorTransitions || []).length > 0) {
     return null;
   }
-  if (projectAcceptedRequirementsVersion(session) !== projectRequirementsVersion(session)) {
+  const activeGoal = activeProjectGoal(session);
+  // A completed goal intentionally waits for the user to define the next goal.
+  // It is not an internal liveness obligation and must not be auto-resumed.
+  if (session.status === 'waiting' && activeGoal.status === 'achieved') return null;
+  const alignmentConfirmedWhileWaiting = session.status === 'waiting'
+    && projectAlignmentConfirmedAfterLatestRequirement(session);
+  if (projectAcceptedRequirementsVersion(session) !== projectRequirementsVersion(session)
+    && !alignmentConfirmedWhileWaiting) {
     return { kind: 'align-requirements', summary: '当前需求版本尚未完成项目对齐，不能继续使用旧合同或保持静默' };
   }
   if (session.progressSync?.status === 'review-required') {
@@ -365,7 +389,6 @@ export function projectProgressObligation(
   if (!projectOrientationReady(session)) {
     return { kind: 'orient-project', summary: '项目认知基线尚未绑定当前需求、授权和目录快照，需要先复核现状再规划或派发' };
   }
-  const activeGoal = activeProjectGoal(session);
   const activeGoalItems = session.workItems.filter((item) => (
     item.goalId === activeGoal.id && item.status !== 'stopped'
   ));
@@ -373,11 +396,22 @@ export function projectProgressObligation(
     item.requirementsVersion === projectRequirementsVersion(session)
     && item.authorizationVersion === projectAuthorizationVersion(session)
   ));
-  if (currentItems.length === 0 && activeGoalItems.length > 0) {
+  const staleOpenItems = activeGoalItems.filter((item) => (
+    item.status !== 'completed'
+    && (item.requirementsVersion !== projectRequirementsVersion(session)
+      || item.authorizationVersion !== projectAuthorizationVersion(session))
+  ));
+  if (staleOpenItems.length > 0) {
     return {
       kind: 'reconcile-stale-work',
       summary: '当前主目标仍有旧需求或旧授权版本工作项，需要重绑、停止或替换，不能另建重复任务',
     };
+  }
+  if (session.status === 'waiting') {
+    if (!projectHasRunnableGoalPlan(session)) {
+      return { kind: 'plan-work', summary: '当前主目标尚未建立阶段计划，需要先保存新版本阶段计划再恢复项目' };
+    }
+    return { kind: 'resume-project', summary: '目标变更后的需求、认知和阶段计划门禁已经完成，需要显式恢复项目再继续创建或派发任务' };
   }
   if (currentItems.length === 0) {
     return { kind: 'plan-work', summary: '当前主目标尚无执行工作项，需要规划并派发第一个完整阶段成果' };
@@ -404,12 +438,6 @@ export function projectProgressObligation(
   const paused = currentItems.find((item) => item.status === 'paused');
   if (paused) {
     return { kind: 'resume-paused', workItemId: paused.id, summary: `工作项 ${paused.id} 已暂缓；需要恢复、改派独立工作或向用户升级真实阻塞` };
-  }
-  if (activeGoalItems.length > currentItems.length) {
-    return {
-      kind: 'reconcile-stale-work',
-      summary: '当前版本工作已无可执行动作，但仍残留旧需求或旧授权工作项，需要重绑、停止或替换后再验收目标',
-    };
   }
   if (currentItems.every((item) => item.status === 'completed')) {
     return { kind: 'complete-goal', summary: '当前主目标的工作项均已完成，需要执行目标级验收或关闭主目标' };

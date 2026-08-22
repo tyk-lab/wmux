@@ -143,6 +143,7 @@ export function nextDeliverableSupervisorDelivery(
   pending: SupervisorDelivery[] | undefined,
   supervisorAgentState: unknown,
   runtimeReady = false,
+  runtimeInputReady = false,
 ): SupervisorDelivery | undefined {
   const queue = compactSupervisorDeliveries(pending);
   if (queue.some((delivery) => delivery.stage === 'submitted')) return undefined;
@@ -150,6 +151,7 @@ export function nextDeliverableSupervisorDelivery(
   const bootstrapReady = (delivery: SupervisorDelivery) => (
     isRuntimeBootstrapDelivery(delivery)
     && runtimeReady
+    && runtimeInputReady
     && (
       supervisorAgentState === undefined
       || supervisorAgentState === 'unknown'
@@ -162,7 +164,7 @@ export function nextDeliverableSupervisorDelivery(
   if (pasted) {
     return promptReady || bootstrapReady(pasted) ? pasted : undefined;
   }
-  if (!promptReady && !runtimeReady) return undefined;
+  if (!promptReady && !runtimeInputReady) return undefined;
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
     .find((delivery) => (
@@ -180,6 +182,14 @@ export function unacknowledgedSubmittedSupervisorDelivery(
     && !!delivery.submittedAt
     && now - delivery.submittedAt >= timeoutMs
   ));
+}
+
+/** A timed-out submitted message is terminal audit history, not a retry barrier. */
+export function removeFailedSupervisorDelivery(
+  pending: readonly SupervisorDelivery[] | undefined,
+  deliveryId: string,
+): SupervisorDelivery[] {
+  return (pending || []).filter((delivery) => delivery.id !== deliveryId);
 }
 
 /** A busy or genuinely blocked supervisor must finish its current turn before receiving another command. */

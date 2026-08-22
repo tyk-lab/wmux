@@ -70,6 +70,15 @@ import {
   type SupervisorModelCatalog,
 } from '../../supervisor/model-catalog';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
+import { readTerminalScreen } from '../../pipe-bridge';
+import {
+  markTerminalRuntimeFailed,
+  waitForTerminalRuntimeReady,
+} from '../../terminal-runtime-lifecycle';
+import {
+  interactiveAgentInputReady,
+  interactiveAgentShellPromptFailureDetail,
+} from '../../utils/interactive-agent-runtime';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
@@ -1216,6 +1225,7 @@ export default function SupervisorSetupDialog() {
         cwd: lane.projectDir,
         startupCommands: launchCommand ? [launchCommand] : undefined,
         transientSupervisor: true,
+        supervisorRuntimeIsolationKey: lane.id,
       });
       if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
       return {
@@ -1270,12 +1280,30 @@ export default function SupervisorSetupDialog() {
           if (!laneIds.has(lane.id)) continue;
           const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
           if (!supervisorSurfaceId) continue;
+          const ready = await waitForTerminalRuntimeReady(supervisorSurfaceId);
+          const screen = readTerminalScreen(supervisorSurfaceId, 80).text || '';
+          if (!ready.ok || !interactiveAgentInputReady(screen)) {
+            const detail = ready.error
+              || interactiveAgentShellPromptFailureDetail(screen)
+              || '未检测到可接收监督任务的 Agent 输入界面；已禁止向未知终端发送监督协议';
+            markTerminalRuntimeFailed(supervisorSurfaceId, detail);
+            const store = useStore.getState();
+            store.updateLane(lane.id, {
+              supervisorProblem: { kind: 'runtime-failed', detail, detectedAt: Date.now() },
+            });
+            store.pauseSupervisorLane(lane.id, detail);
+            store.appendSupervisorLog(lane.id, '监督 Agent 未就绪', detail);
+            continue;
+          }
+          session = useStore.getState().supervisor;
+          const currentLane = session.lanes.find((candidate) => candidate.id === lane.id);
+          if (!session.active || !currentLane || supervisorLaneControlState(currentLane) !== 'active') continue;
           const text = buildSupervisorBriefing(session, {
-            lane,
-            state: String(states[lane.surfaceId]?.state || 'unknown'),
+            lane: currentLane,
+            state: String(states[currentLane.surfaceId]?.state || 'unknown'),
           });
-          const briefing = lane.goalConstruction?.status === 'drafting'
-            ? buildSupervisorGoalConstructionBriefing(lane)
+          const briefing = currentLane.goalConstruction?.status === 'drafting'
+            ? buildSupervisorGoalConstructionBriefing(currentLane)
             : text;
           sendToSurface(supervisorSurfaceId, briefing, true, 'ordinary');
         }

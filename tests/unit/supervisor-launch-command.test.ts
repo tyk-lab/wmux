@@ -115,6 +115,19 @@ describe('supervisor launch command', () => {
     expect(command).toContain('--no-skills');
     expect(command).toContain('--no-prompt-templates');
     expect(command).toContain('--no-context-files');
+    expect(command).toContain('finally { exit');
+  });
+
+  it('closes an isolated supervisor shell when the nested Agent returns', () => {
+    const command = buildSupervisorLaunchCommand(
+      'codex',
+      'gpt-5.6-terra',
+      'medium',
+      { isolateSupervisor: true, projectDir: 'E:\\project', isolationKey: 'lane-codex' },
+    );
+
+    expect(command).toContain("try { codex --model 'gpt-5.6-terra'");
+    expect(command).toContain('finally { exit $(if ($null -eq $LASTEXITCODE)');
   });
 
   it('does not override an explicit Pi no-approve choice', () => {

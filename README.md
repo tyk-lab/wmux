@@ -126,7 +126,7 @@ node scripts/install-agent-hooks.mjs --wmux-exe "$env:LOCALAPPDATA\wmux-build\re
 | 目标 | 路径 | 备注 |
 |------|------|------|
 | Kimi Code | `~/.kimi-code/config.toml` | `# wmux-hooks:start/end` 标记块 |
-| Codex CLI | `~/.codex/hooks.json` | 可能需在 Codex 里 `/hooks` **信任** |
+| Codex CLI | `~/.codex/hooks.json` | wmux 项目 AI/专属监督 AI/任务 AI 首次自动信任；其他会话需在 Codex 里 `/hooks` **信任** |
 | Grok Build | `~/.grok/hooks/wmux.json` | 全局 hooks，始终可信 |
 | Pi Agent | `~/.pi/agent/extensions/wmux-agent-hooks.ts` | 独立全局扩展；通过原生生命周期事件上报 |
 | OpenCode | `~/.config/opencode/plugin/wmux.js` | 可用 `--no-opencode` 跳过 |
@@ -147,14 +147,14 @@ node "<仓库>/dist/cli/wmux-hook.js" --event Stop --agent Kimi
 
 1. **重启 wmux**（若刚编过 main/renderer）  
 2. **重启每个 agent 会话**（kimi / codex / grok / pi），否则仍用旧 hooks
-3. Codex：打开 `/hooks`，信任含 `wmux-hook` 的命令（首次）  
+3. Codex：wmux 项目 AI/专属监督 AI/任务 AI 首次自动信任；其他会话打开 `/hooks`，信任含 `wmux-hook` 的命令
 
 ### 支持矩阵（turn 级）
 
 | Agent | 配置落点 | 窗格内用法 | 备注 |
 |-------|----------|------------|------|
 | **Kimi Code** | `~/.kimi-code/config.toml` | `kimi` | 标记块管理 |
-| **Codex CLI** | `~/.codex/hooks.json` | `codex` | 需 trust hooks |
+| **Codex CLI** | `~/.codex/hooks.json` | `codex` | 项目 AI/专属监督 AI/任务 AI 首次自动 trust hooks，其他会话需手动确认 |
 | **Grok Build** | `~/.grok/hooks/wmux.json` | `grok` | 全局可信 |
 | **Pi Agent** | extension `wmux-agent-hooks.ts` | `pi` | 原生扩展事件 |
 | **OpenCode** | plugin `wmux.js` | `opencode` | 插件 API |
@@ -210,7 +210,7 @@ wmux agent-state
 |------|------|
 | 侧栏/通知无 agent 名 | 再跑 `npm run install:hooks`，确认命令含 `--agent`，**重启 agent** |
 | 侧栏一直 Running | 那是 shell 态；turn 级应显示 Working/Idle（需 hooks 生效） |
-| Codex 无 Working | `/hooks` 信任 `wmux-hook` 后重启 codex |
+| Codex 无 Working | wmux 项目/监督/任务 AI 重建终端会自动确认；其他会话在 `/hooks` 信任 `wmux-hook` 后重启 codex |
 | `wrap: no surface id` | 必须在 **wmux 窗格内** 执行 |
 | `could not report agent state` | 使用含 agent-state 的构建并重启 wmux |
 | install-hooks 指向错误路径 | 在本仓库根目录执行；成功后 hook 路径应为当前仓库的 `dist/cli/wmux-hook.js` |

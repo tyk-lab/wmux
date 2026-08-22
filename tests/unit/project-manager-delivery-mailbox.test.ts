@@ -43,10 +43,16 @@ describe('project manager delivery mailbox', () => {
       submittedAt: 123,
     };
     const pending = { ...delivery('pending-2'), stage: 'pending' as const };
+    const failed = {
+      ...delivery('failed-3'),
+      stage: 'failed' as const,
+      submittedAt: 456,
+    };
 
-    expect(resetProjectManagerDeliveryAcknowledgements([submitted, pending])).toEqual([
+    expect(resetProjectManagerDeliveryAcknowledgements([submitted, pending, failed])).toEqual([
       expect.objectContaining({ id: 'submitted-1', stage: 'pending', submittedAt: undefined }),
       pending,
+      expect.objectContaining({ id: 'failed-3', stage: 'pending', submittedAt: undefined }),
     ]);
   });
 
@@ -55,6 +61,27 @@ describe('project manager delivery mailbox', () => {
     const latest = delivery('latest-2', 'transition-a', true);
     expect(compactProjectManagerPendingDeliveries([old, latest])).toEqual([latest]);
     expect(compactProjectManagerPendingDeliveries([latest, old])).toEqual([latest]);
+  });
+
+  it('keeps only the newest runtime recovery notice per work item, including legacy records', () => {
+    const old = {
+      ...delivery('old-1'),
+      text: '[项目运行链自动重建失败]\n项目：pm-a；任务：task-a',
+    };
+    const latest = {
+      ...delivery('latest-2'),
+      text: '[项目运行链自动重建失败]\n项目：pm-a；任务：task-a',
+    };
+    const otherTask = {
+      ...delivery('other-3'),
+      text: '[项目运行链自动重建失败]\n项目：pm-a；任务：task-b',
+    };
+    expect(compactProjectManagerPendingDeliveries([old, latest, otherTask]))
+      .toEqual([latest, otherTask]);
+
+    const keyedOld = { ...delivery('keyed-old-4'), dedupeKey: 'runtime-recovery:task-a' };
+    const keyedLatest = { ...delivery('keyed-latest-5'), dedupeKey: 'runtime-recovery:task-a' };
+    expect(compactProjectManagerPendingDeliveries([keyedOld, keyedLatest])).toEqual([keyedLatest]);
   });
 
   it('drops restored deliveries whose transition has already been resolved', () => {
@@ -79,5 +106,15 @@ describe('project manager delivery mailbox', () => {
 
     expect(compactProjectManagerPendingDeliveries([submitted, latest]).map((item) => item.id))
       .toEqual(['submitted-1', 'latest-2']);
+  });
+
+  it('preserves a failed delivery as a durable barrier until the manager runtime is replaced', () => {
+    const failed = { ...delivery('failed-1', 'transition-a', true), stage: 'failed' as const };
+    const latest = delivery('latest-2', 'transition-a', true);
+
+    expect(compactProjectManagerPendingDeliveries([failed, latest]).map((item) => item.id))
+      .toEqual(['failed-1', 'latest-2']);
+    expect(resetProjectManagerDeliveryAcknowledgements([failed, latest]).map((item) => item.id))
+      .toEqual(['latest-2']);
   });
 });

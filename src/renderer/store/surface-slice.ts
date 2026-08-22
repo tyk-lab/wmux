@@ -25,6 +25,7 @@ export interface SurfaceSlice {
       startupCommands?: string[];
       startupInput?: string;
       transientSupervisor?: boolean;
+      supervisorRuntimeIsolationKey?: string;
       projectSupervisorProjectId?: string;
       projectManagerTerminal?: boolean;
       userRecordsTerminal?: boolean;
@@ -276,6 +277,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.startupCommands?.length ? { startupCommands: options.startupCommands } : {}),
       ...(options?.startupInput ? { startupInput: options.startupInput } : {}),
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
+      ...(options?.supervisorRuntimeIsolationKey ? { supervisorRuntimeIsolationKey: options.supervisorRuntimeIsolationKey } : {}),
       ...(options?.projectSupervisorProjectId ? { projectSupervisorProjectId: options.projectSupervisorProjectId } : {}),
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(options?.userRecordsTerminal ? { userRecordsTerminal: true } : {}),

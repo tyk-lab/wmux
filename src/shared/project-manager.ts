@@ -1,4 +1,5 @@
 import type { TaskWorkMode } from './supervisor-work-mode';
+import type { ProjectManagementAgentConfig } from './project-manager-terminal';
 
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
@@ -84,6 +85,9 @@ export type ProjectManagerEventKind =
   | 'manager-runtime-failed'
   | 'supervisor-runtime-failed'
   | 'task-runtime-failed'
+  | 'project-agent-config-updated'
+  | 'project-agent-limit-detected'
+  | 'project-agent-runtime-switched'
   | 'progress-snapshot'
   | 'progress-sync-required'
   | 'progress-sync-acknowledged'
@@ -590,6 +594,7 @@ export type ProjectManagerEventSummary = Pick<ProjectManagerEvent, 'kind' | 'ts'
 export function projectManagerEventNeedsUserAttention(
   event: Pick<ProjectManagerEvent, 'kind' | 'payload'> | { kind: string; payload?: Record<string, unknown> },
 ): boolean {
+  if (event.payload?.attentionRequired === false) return false;
   return event.payload?.attentionRequired === true || event.kind.endsWith('-failed');
 }
 
@@ -610,6 +615,8 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
       resolvedKinds.add('manager-delivery-failed');
     } else if (event.kind === 'manager-delivery-restored') {
       resolvedKinds.add('manager-delivery-failed');
+    } else if (event.kind === 'project-agent-runtime-switched') {
+      resolvedKinds.add('project-agent-limit-detected');
     } else if (event.kind === 'recovery-restored') {
       resolvedKinds.add('manager-runtime-failed');
       resolvedKinds.add('supervisor-runtime-failed');
@@ -635,13 +642,38 @@ export interface ProjectManagerPendingDelivery {
   id: string;
   text: string;
   createdAt: number;
+  /** Keeps repeated internal recovery notices to one pending message per runtime scope. */
+  dedupeKey?: string;
   /** Keeps an actionable supervisor transition traceable after PTY delivery. */
   transitionId?: string;
+  /** Drops an internal gate continuation when the target/version/obligation has changed. */
+  continuationKey?: string;
   /** Actionable decisions stay ahead of informational messages, including after restore. */
   priority?: boolean;
   /** PTY transport progress; submitted messages await an Agent lifecycle acknowledgement. */
-  stage?: 'pending' | 'submitting' | 'submitted';
+  stage?: 'pending' | 'submitting' | 'submitted' | 'failed';
   submittedAt?: number;
+}
+
+export type ProjectAgentRole = 'manager' | 'supervisor' | 'task';
+
+export interface ProjectAgentRuntimeIssue {
+  role: ProjectAgentRole;
+  category: 'rate-limit' | 'quota-limit';
+  summary: string;
+  detectedAt: number;
+  surfaceId?: string;
+  laneId?: string;
+  workItemId?: string;
+}
+
+export interface ProjectAgentReconfiguration {
+  status: 'applying' | 'pending-safe-point' | 'failed';
+  requestedAt: number;
+  roles: ProjectAgentRole[];
+  pendingRoles: ProjectAgentRole[];
+  completedRoles: ProjectAgentRole[];
+  error?: string;
 }
 
 export interface ProjectSafeExitTerminalCheckpoint {
@@ -733,6 +765,12 @@ export interface ProjectManagerSession {
   /** Blocks project-level planning and dispatch until the project AI records a structured understanding. */
   orientation?: ProjectOrientationState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
+  /** Project-specific runtime selection; absent legacy sessions inherit current defaults. */
+  agentConfig?: ProjectManagementAgentConfig;
+  /** Provider quota/rate-limit issue waiting for a user-selected runtime replacement. */
+  agentIssue?: ProjectAgentRuntimeIssue;
+  /** Durable safe-switch progress so working Agents can rotate at their next Stop. */
+  agentReconfiguration?: ProjectAgentReconfiguration;
   /** Manager-bound messages retained until the manager Agent acknowledges prompt submission. */
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
   /** Actionable supervisor handoffs remain here until the project AI records a resolution. */
@@ -1394,6 +1432,24 @@ function normalizeProjectSafeExitState(value: ProjectSafeExitState | undefined):
   };
 }
 
+/** Keep only the newest unavailable handoff for one work item across replacement lanes. */
+export function compactProjectSupervisorTransitions(
+  transitions: readonly ProjectSupervisorTransition[],
+): ProjectSupervisorTransition[] {
+  const seenUnavailableScopes = new Set<string>();
+  const compacted: ProjectSupervisorTransition[] = [];
+  for (let index = transitions.length - 1; index >= 0; index -= 1) {
+    const transition = transitions[index];
+    if (transition.kind === 'supervisor-unavailable') {
+      const scope = transition.workItemId || `lane:${transition.laneId}`;
+      if (seenUnavailableScopes.has(scope)) continue;
+      seenUnavailableScopes.add(scope);
+    }
+    compacted.push(transition);
+  }
+  return compacted.reverse();
+}
+
 /** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
@@ -1453,7 +1509,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
     safeExit: normalizeProjectSafeExitState(session.safeExit),
-    pendingSupervisorTransitions: (Array.isArray(session.pendingSupervisorTransitions)
+    pendingSupervisorTransitions: compactProjectSupervisorTransitions((Array.isArray(session.pendingSupervisorTransitions)
       ? session.pendingSupervisorTransitions
       : [])
       .slice(-50)
@@ -1483,7 +1539,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
           ? { contextSummary: transition.contextSummary.trim().slice(0, 12_000) }
           : {}),
         notificationCount: Math.max(1, Math.trunc(transition.notificationCount)),
-      })),
+      }))),
     workItems: session.workItems.map((item) => {
       const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
       const activeBaseline = item.baseline?.requirementsVersion === itemRequirementsVersion && (

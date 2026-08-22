@@ -48,6 +48,7 @@ import {
   formatOpenSshFingerprint,
 } from './ssh-known-hosts';
 import { SshCredentialStore } from './ssh-credential-store';
+import { ensureCodexSupervisorRuntimeTrusted } from './codex-context';
 import {
   SshTransferCache,
   validateLocalUploadFiles,
@@ -134,7 +135,11 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         ...options,
         cwd: options.cwd || process.env.USERPROFILE || 'C:\\',
       };
-      const created = ptyManager.create(resolvedOptions);
+      const { codexSupervisorRuntimeIsolationKey, ...ptyOptions } = resolvedOptions;
+      if (typeof codexSupervisorRuntimeIsolationKey === 'string' && codexSupervisorRuntimeIsolationKey.trim()) {
+        ensureCodexSupervisorRuntimeTrusted(app.getPath('appData'), codexSupervisorRuntimeIsolationKey);
+      }
+      const created = ptyManager.create(ptyOptions);
       const id = created.id;
       // Reused PTY (idempotent create — e.g. StrictMode's double create() race):
       // the original create already wired data/exit forwarding. Re-wiring here

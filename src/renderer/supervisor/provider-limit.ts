@@ -38,7 +38,7 @@ export function detectSupervisorProviderLimit(text: string): SupervisorProviderL
     const normalized = summary.toLocaleLowerCase();
     const explicit429 = /(?:error|failed|failure|status(?:\s+code)?|response|returned|received|请求失败|错误|失败|响应)[^\n]{0,80}\b429\b|\b429\b[^\n]{0,80}(?:error|failed|failure|too many requests|错误|失败|请求过多)/iu.test(summary);
     const rateLimit = /too many requests|rate[_ -]?limit(?:ed)?[_ -]?(?:reached|exceeded)|\brate[_ -]?limited\b|(?:error|failed|failure).{0,60}rate limit|rate limit.{0,60}(?:error|failed|failure)|请求(?:过多|频率过高|被限流)|(?:错误|失败|达到|触发|超过).{0,20}速率限制|速率限制.{0,20}(?:错误|失败|已达|触发|超过)/iu.test(normalized);
-    const quotaLimit = /insufficient[_ -]?quota|quota (?:exceeded|reached|exhausted)|resource[_ -]?exhausted|you(?:'ve| have) hit your (?:usage|rate) limit|usage limit (?:reached|exceeded)|(?:额度|配额).{0,16}(?:用尽|耗尽|不足|超限|已达上限).{0,30}(?:重试|错误|失败|购买|升级|等待)/iu.test(normalized);
+    const quotaLimit = /insufficient[_ -]?quota|quota (?:exceeded|reached|exhausted)|resource[_ -]?exhausted|you(?:'ve| have) hit your (?:usage|rate) limit|usage limit (?:reached|exceeded)|(?:weekly|monthly|usage) limit left\s*:\s*0(?:\.0+)?%|(?:本周|本月|每周|每月)?.{0,8}(?:额度|配额).{0,8}(?:剩余|余量)\s*[:：]?\s*0(?:\.0+)?%|(?:额度|配额).{0,16}(?:用尽|耗尽|不足|超限|已达上限).{0,30}(?:重试|错误|失败|购买|升级|等待)/iu.test(normalized);
     if (quotaLimit) return { category: 'quota-limit', summary };
     if (explicit429 || rateLimit) return { category: 'rate-limit', summary };
   }

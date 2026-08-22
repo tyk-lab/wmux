@@ -1,3 +1,5 @@
+import { normalizeSupervisorRuntimeIsolationKey } from '../../shared/supervisor-runtime';
+
 export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'pi' | 'other';
 
 export interface SupervisorLaunchOptions {
@@ -75,10 +77,6 @@ function isKnownSupervisorLauncher(command: string, launcher: SupervisorLauncher
     || matchesLauncherCommand(command, 'opencode');
 }
 
-function normalizedIsolationKey(value: string): string {
-  return value.trim().replace(/[^a-z0-9._-]+/gi, '-').slice(0, 80) || 'default';
-}
-
 function isolatedSupervisorCommand(
   command: string,
   launcher: SupervisorLauncherKind,
@@ -118,7 +116,7 @@ function isolatedSupervisorCommand(
   const prelude = [
     "$wmuxSupervisorDataRoot = [Environment]::GetFolderPath('ApplicationData')",
     "$wmuxSupervisorInstance = if ($env:WMUX_INSTANCE) { 'wmux-' + $env:WMUX_INSTANCE } else { 'wmux' }",
-    `$wmuxSupervisorRuntimeDir = Join-Path $wmuxSupervisorDataRoot ($wmuxSupervisorInstance + '\\supervisor\\runtime\\${normalizedIsolationKey(isolationKey)}')`,
+    `$wmuxSupervisorRuntimeDir = Join-Path $wmuxSupervisorDataRoot ($wmuxSupervisorInstance + '\\supervisor\\runtime\\${normalizeSupervisorRuntimeIsolationKey(isolationKey)}')`,
     '[void][System.IO.Directory]::CreateDirectory($wmuxSupervisorRuntimeDir)',
   ];
   if (projectDir.trim()) {
@@ -129,7 +127,10 @@ function isolatedSupervisorCommand(
     prelude.push('[void][System.IO.Directory]::CreateDirectory($wmuxSupervisorSkillsDir)');
     isolatedCommand = `${isolatedCommand} --skills-dir $wmuxSupervisorSkillsDir`;
   }
-  prelude.push('Set-Location -LiteralPath $wmuxSupervisorRuntimeDir', isolatedCommand);
+  prelude.push(
+    'Set-Location -LiteralPath $wmuxSupervisorRuntimeDir',
+    `try { ${isolatedCommand} } finally { exit $(if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }) }`,
+  );
   return prelude.join('; ');
 }
 

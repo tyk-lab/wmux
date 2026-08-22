@@ -106,13 +106,19 @@ function hasProjectRuntimeTerminal(tree: SplitNode): boolean {
   return hasProjectRuntimeTerminal(tree.children[0]) || hasProjectRuntimeTerminal(tree.children[1]);
 }
 
-type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements';
+type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements' | 'agents';
 type ProjectWorkItemIntervention = 'skip' | 'close';
+const PROJECT_AGENT_ROLE_LABELS = {
+  manager: '项目 AI',
+  supervisor: '专属监督 AI',
+  task: '任务 AI',
+} as const;
 
 const PROJECT_ALERT_LABELS: Record<string, string> = {
   'manager-runtime-failed': '项目管理 AI 运行时故障',
   'supervisor-runtime-failed': '项目专属监督故障',
   'task-runtime-failed': '任务终端 AI 故障',
+  'project-agent-limit-detected': '项目 Agent 额度或速率受限',
   'manager-delivery-failed': '项目管理消息投递失败',
   'requirements-quiesce-failed': '需求变更停机确认失败',
   'project-safe-exit-failed': '项目安全退出等待处理',
@@ -316,6 +322,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [agentDraft, setAgentDraft] = useState<ProjectManagementAgentConfig>(() => (
     normalizeProjectManagementAgentConfig(DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG)
   ));
+  const [saveAgentConfigAsDefault, setSaveAgentConfigAsDefault] = useState(false);
   const [creating, setCreating] = useState(false);
   const [creationMode, setCreationMode] = useState<'direct' | 'terminal'>('direct');
   const [contextTerminalId, setContextTerminalId] = useState('');
@@ -354,13 +361,20 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const selectedInterventionWorkItem = useMemo(() => intervenableWorkItems.find((item) => (
     item.id === workItemInterventionId
   )) || null, [intervenableWorkItems, workItemInterventionId]);
-  const currentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
+  const allCurrentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
+  const currentSubgoals = useMemo(() => (
+    allCurrentSubgoals.filter((subgoal) => subgoal.status !== 'obsolete')
+  ), [allCurrentSubgoals]);
+  const obsoleteSubgoals = useMemo(() => (
+    allCurrentSubgoals.filter((subgoal) => subgoal.status === 'obsolete')
+  ), [allCurrentSubgoals]);
   const goalHistory = useMemo(() => [...(session?.goals || [])].sort((left, right) => right.sequence - left.sequence), [session?.goals]);
   const activeAlert = useMemo(() => {
     if (!session) return null;
     return activeProjectManagerAttentionEvent(session.events) || null;
   }, [session]);
   const goalCompletionAlert = activeAlert?.kind === 'project-goal-completed';
+  const agentLimitAlert = activeAlert?.kind === 'project-agent-limit-detected' || !!session?.agentIssue;
   const message = session ? messageDrafts[session.id] || '' : '';
   const lastConversationEvent = conversation.at(-1);
   const sessionDefinitionFingerprint = session ? JSON.stringify([
@@ -412,9 +426,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
   useEffect(() => {
     if (!open) return;
-    setAgentDraft(normalizeProjectManagementAgentConfig(workspacePrefs.projectManagementAgents));
+    setAgentDraft(normalizeProjectManagementAgentConfig(
+      embedded ? session?.agentConfig ?? workspacePrefs.projectManagementAgents : workspacePrefs.projectManagementAgents,
+    ));
+    setSaveAgentConfigAsDefault(false);
     setConfigNotice('');
-  }, [open, workspacePrefs.projectManagementAgents]);
+  }, [embedded, open, session?.id, session?.agentConfig, workspacePrefs.projectManagementAgents]);
 
   useEffect(() => {
     if (open) setActiveView('conversation');
@@ -525,8 +542,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     });
   }, [open, recoveryStatus, sessions.length]);
 
-  const beginCreatingProject = () => {
-    if (creating) return;
+  const cancelCreatingProject = () => {
+    setCreating(false);
+    setNotice('');
+  };
+
+  const toggleCreatingProject = () => {
+    if (creating) {
+      cancelCreatingProject();
+      return;
+    }
     setCreating(true);
     setProjectDir('');
     setProjectName('');
@@ -556,20 +581,26 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
   const saveAgentConfig = async () => {
     if (busy) return;
-    const previous = normalizeProjectManagementAgentConfig(workspacePrefs.projectManagementAgents);
+    const previousDefault = normalizeProjectManagementAgentConfig(workspacePrefs.projectManagementAgents);
+    const previous = normalizeProjectManagementAgentConfig(
+      embedded ? session?.agentConfig ?? previousDefault : previousDefault,
+    );
     const next = normalizeProjectManagementAgentConfig(agentDraft);
-    const restartManager = previous.manager.agent !== next.manager.agent
-      || previous.manager.model !== next.manager.model
-      || previous.manager.reasoningEffort !== next.manager.reasoningEffort;
+    const setAsDefault = !embedded || saveAgentConfigAsDefault;
     setBusy(true);
     setNotice('');
     setConfigNotice('');
-    setWorkspacePrefs({ projectManagementAgents: next });
+    if (setAsDefault) setWorkspacePrefs({ projectManagementAgents: next });
     try {
-      const result = await invoke({ action: 'configure-agents', restartManager });
+      const result = await invoke({
+        action: 'configure-agents',
+        ...(embedded && session ? { projectId: session.id } : {}),
+        agentConfig: next,
+        setAsDefault,
+      });
       setConfigNotice(result.message || '项目管理模式 Agent 配置已保存。');
     } catch (error) {
-      setWorkspacePrefs({ projectManagementAgents: previous });
+      if (setAsDefault) setWorkspacePrefs({ projectManagementAgents: previousDefault });
       setAgentDraft(previous);
       setNotice(String((error as Error)?.message || error));
     } finally {
@@ -1192,7 +1223,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             }} />
             {agentDraft.manager.agent === 'codex' && (
               <div className="supervisor-dialog__hint" role="note">
-                Codex Hook 信任由 Codex 管理：首次使用请在任一 Codex 会话执行 /hooks 审查 wmux-hook，确认一次后所有项目复用。wmux 不会绕过 Hook 信任，也不会代替你信任项目自带的 Hook。
+                wmux 创建的项目 AI、专属监督 AI 和任务 AI 首次出现 Codex Hook 审核时，会自动选择 Trust all and continue；普通终端仍需在 Codex 中执行 /hooks 人工确认。
               </div>
             )}
             {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
@@ -1214,10 +1245,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <button
                   type="button"
                   className="confirm-dialog__btn"
-                  disabled={creating}
+                  disabled={busy}
                   aria-controls="project-manager-create-form"
-                  onClick={beginCreatingProject}
-                >{creating ? '正在填写' : '添加项目'}</button>
+                  aria-expanded={creating}
+                  onClick={toggleCreatingProject}
+                >{creating ? '取消添加' : '添加项目'}</button>
               </div>
               <div className="project-manager-dialog__project-list">
                 {sessions.map((candidate) => (
@@ -1259,6 +1291,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 执行链{activeAlert ? ' · 告警' : ''}
               </button>
               <button type="button" data-active={activeView === 'requirements' ? '1' : '0'} onClick={() => setActiveView('requirements')}>目标与需求</button>
+              <button type="button" data-active={activeView === 'agents' ? '1' : '0'} onClick={() => setActiveView('agents')}>
+                Agent 配置{session.agentIssue ? ' · 需处理' : session.agentReconfiguration ? ' · 切换中' : ''}
+              </button>
             </nav>
           )}
 
@@ -1382,7 +1417,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     <p>{activeAlert.summary}</p>
                     <small>{new Date(activeAlert.ts).toLocaleString('zh-CN', { hour12: false })} · {goalCompletionAlert ? '项目正在等待你核对完成证据并设置下一主目标。' : '项目与对应执行链会保持暂停，处理后再恢复。'}</small>
                   </div>
-                  <button type="button" className="confirm-dialog__btn" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : 'execution')}>{goalCompletionAlert ? '设置下一主目标' : '查看执行链'}</button>
+                  <button type="button" className="confirm-dialog__btn" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : agentLimitAlert ? 'agents' : 'execution')}>{goalCompletionAlert ? '设置下一主目标' : agentLimitAlert ? '重新配置并恢复' : '查看执行链'}</button>
                 </section>
               )}
               {activeView === 'requirements' && <section className="supervisor-dialog__group project-manager-dialog__preconditions">
@@ -1466,6 +1501,20 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     </details>
                   ))}
                 </div>
+                {obsoleteSubgoals.length > 0 && <details className="project-manager-dialog__history">
+                  <summary>历史已取消阶段（{obsoleteSubgoals.length}）</summary>
+                  <div className="project-manager-dialog__work-items">
+                    {obsoleteSubgoals.map((subgoal) => (
+                      <details key={subgoal.id}>
+                        <summary><strong>S{subgoal.order} · {subgoal.title}</strong><span>已取消</span></summary>
+                        <dl>
+                          <dt>原预期成果</dt><dd>{subgoal.outcome}</dd>
+                          <dt>原验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
+                        </dl>
+                      </details>
+                    ))}
+                  </div>
+                </details>}
               </section>}
               {activeView === 'requirements' && <section className="supervisor-dialog__group">
                 <div className="supervisor-dialog__group-title">主目标历史</div>
@@ -1644,6 +1693,45 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 )}
                 {workItemInterventionNotice && <div className="supervisor-dialog__notice" role="status">{workItemInterventionNotice}</div>}
               </section>}
+              {activeView === 'agents' && <section className="supervisor-dialog__group project-manager-dialog__agent-config">
+                <div className="project-manager-dialog__section-head">
+                  <div>
+                    <div className="supervisor-dialog__group-title">当前项目 Agent 配置</div>
+                    <div className="supervisor-dialog__hint">配置只作用于“{projectDisplayName(session)}”。项目 AI 会立即安全换代；正在工作的监督或任务 AI 会等当前回合结束后再切换，不会强制中断。</div>
+                  </div>
+                </div>
+                {session.agentIssue && <div className="supervisor-dialog__notice" data-kind="error" role="alert">
+                  <strong>{PROJECT_AGENT_ROLE_LABELS[session.agentIssue.role]}额度或速率受限</strong>
+                  <div>{session.agentIssue.summary}</div>
+                  <div>请选择可用 Agent/模型并保存，控制层会从持久化项目状态和最近证据恢复，不会盲目重放任务。</div>
+                </div>}
+                {session.agentReconfiguration && <div className="supervisor-dialog__notice" role="status">
+                  {session.agentReconfiguration.status === 'failed'
+                    ? `安全换代失败：${session.agentReconfiguration.error || '未知错误'}`
+                    : `等待安全切换：${session.agentReconfiguration.pendingRoles.map((role) => PROJECT_AGENT_ROLE_LABELS[role]).join('、') || '正在收口'}`}
+                </div>}
+                <ProjectAgentConfigFields value={agentDraft} onChange={(next) => {
+                  setAgentDraft(next);
+                  setConfigNotice('');
+                }} />
+                <label className="supervisor-dialog__checkbox">
+                  <input
+                    type="checkbox"
+                    checked={saveAgentConfigAsDefault}
+                    disabled={busy}
+                    onChange={(event) => setSaveAgentConfigAsDefault(event.target.checked)}
+                  />
+                  <span>同时保存为以后新建项目的默认配置</span>
+                </label>
+                <div className="project-manager-dialog__section-head">
+                  <div className="supervisor-dialog__hint">如果配置没有变化但当前角色已额度受限，保存仍会重新建立该角色运行时。</div>
+                  <button type="button" className="confirm-dialog__btn project-manager-dialog__apply-btn" disabled={busy} onClick={() => void saveAgentConfig()}>
+                    {busy ? '正在安全换代…' : session.agentIssue ? '重新配置并恢复' : '保存并安全换代'}
+                  </button>
+                </div>
+                {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
+              </section>}
+
               {activeView === 'conversation' && <section className="supervisor-dialog__group project-manager-dialog__chat">
                 <div className="project-manager-dialog__section-head">
                   <div>
@@ -1746,7 +1834,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 </section>
               )}
               {activeAlert && (
-                <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : 'execution')}>
+                <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : agentLimitAlert ? 'agents' : 'execution')}>
                   <span>{goalCompletionAlert ? '等待下一目标' : '需要处理'}</span>
                   <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
                 </button>
@@ -1782,7 +1870,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
         {notice && <div className="supervisor-dialog__notice" data-kind="error" role="alert">{notice}</div>}
         <div className="supervisor-dialog__actions">
-          {creating && session && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => { setCreating(false); setNotice(''); }}>取消添加</button>}
+          {creating && session && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={cancelCreatingProject}>取消添加</button>}
           {embedded && !creating && session && activeView === 'requirements' && (
             <span
               className="project-manager-dialog__definition-state project-manager-dialog__definition-state--footer"
@@ -1801,8 +1889,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             <button
               type="button"
               className="confirm-dialog__btn project-manager-dialog__apply-btn"
-              disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}
-              title={session.pendingUserQuestion ? '请先完成当前需求确认' : undefined}
+              disabled={busy || !projectDefinitionChanged}
+              title={session.pendingUserQuestion ? '应用后将以新的目标与需求替代当前待处理问题' : undefined}
               onClick={() => void updateProjectDefinition()}
             >{busy ? '正在应用…' : '确认生效'}</button>
           </>}

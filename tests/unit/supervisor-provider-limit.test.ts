@@ -55,6 +55,8 @@ describe('AI supervisor provider limit detection', () => {
     ["You've hit your usage limit. Try again later.", 'quota-limit'],
     ['insufficient_quota: monthly quota exceeded', 'quota-limit'],
     ['模型配额已用尽，请稍后重试', 'quota-limit'],
+    ['Weekly limit left: 0% · Grok 4.5 (medium)', 'quota-limit'],
+    ['本周额度剩余 0%', 'quota-limit'],
   ])('recognizes provider failure %s', (message, category) => {
     expect(detectSupervisorProviderLimit(message)).toMatchObject({ category, summary: message });
   });

@@ -29,6 +29,9 @@ import { prepareForUserTerminalInput, signalTerminalUserSubmit } from '../utils/
 import { detectAutomatedInteractiveAgent } from '../utils/interactive-agent-launch';
 import {
   interactiveAgentExitDetail,
+  interactiveAgentInputReady,
+  interactiveAgentShellPromptFailureDetail,
+  interactiveAgentStartupDiagnostic,
   interactiveAgentStartupFailureDetail,
 } from '../utils/interactive-agent-runtime';
 import {
@@ -43,9 +46,17 @@ import {
   markTerminalRuntimeExited,
   markTerminalRuntimeFailed,
   markTerminalRuntimeReady,
+  markTerminalRuntimeStarting,
+  terminalRuntimeAttachAction,
+  terminalRuntimeFailureRecoveryAction,
+  terminalRuntimeStabilityDecision,
+  terminalRuntimeValidationAction,
   terminalRuntimeStatus,
 } from '../terminal-runtime-lifecycle';
 import '@xterm/xterm/css/xterm.css';
+
+const INTERACTIVE_AGENT_RUNTIME_STABILITY_MS = 1_000;
+const INTERACTIVE_AGENT_RUNTIME_VALIDATION_MAX_ATTEMPTS = 15;
 
 declare global {
   interface Window {
@@ -71,6 +82,10 @@ interface UseTerminalOptions {
   startupCommands?: string[];
   /** Text injected after an interactive startup command has initialized. */
   startupInput?: string;
+  /** App-owned key for the isolated supervisor runtime directory. */
+  supervisorRuntimeIsolationKey?: string;
+  /** Explicit wmux-managed project/supervisor/task authorization for first-run Codex Hook trust. */
+  allowManagedCodexHookTrust?: boolean;
   /** Secret-free key used by the main process to inject a saved SSH password once. */
   sshProfileId?: string;
 }
@@ -111,10 +126,16 @@ function findSurfaceRef(node: SplitNode, surfaceId: string): SurfaceRef | null {
   return findSurfaceRef(node.children[0], surfaceId) || findSurfaceRef(node.children[1], surfaceId);
 }
 
+interface ProjectManagerRuntimeFailureOptions {
+  /** The caller that is already awaiting startup owns the single recovery decision. */
+  startupFailure?: boolean;
+}
+
 function notifyProjectManagerRuntimeFailure(
   surfaceId: string,
   detail: string,
   recoverManagerRuntime = false,
+  options: ProjectManagerRuntimeFailureOptions = {},
 ): void {
   const state = useStore.getState();
   const workspace = state.workspaces.find((candidate) => treeHasSurface(candidate.splitTree, surfaceId));
@@ -133,6 +154,10 @@ function notifyProjectManagerRuntimeFailure(
           ? 'user-records'
           : null;
   if (!role) return;
+  const projectManagedStartupFailure = terminalRuntimeFailureRecoveryAction(
+    role === 'manager' || !!lane?.projectManagerProjectId,
+    options.startupFailure === true,
+  ) === 'caller-owned';
   const roleLabel = role === 'manager'
     ? '项目管理 AI'
     : role === 'supervisor'
@@ -142,12 +167,14 @@ function notifyProjectManagerRuntimeFailure(
         : '用户记录终端';
   const text = `${roleLabel}运行时不可用：${detail}`;
   const title = `${roleLabel}已停止`;
-  state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title });
-  window.wmux?.notification?.fire({
-    surfaceId: surface.id,
-    title,
-    text,
-  });
+  if (!projectManagedStartupFailure) {
+    state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title });
+    window.wmux?.notification?.fire({
+      surfaceId: surface.id,
+      title,
+      text,
+    });
+  }
 
   const projectSessions = role === 'manager'
     ? state.projectManagers.filter((candidate) => (
@@ -158,7 +185,8 @@ function notifyProjectManagerRuntimeFailure(
       ? state.projectManagers.filter((candidate) => candidate.id === lane.projectManagerProjectId)
       : [];
   const autoRecoverProjectLane = !!lane?.projectManagerProjectId
-    && (role === 'supervisor' || role === 'task');
+    && (role === 'supervisor' || role === 'task')
+    && !projectManagedStartupFailure;
   for (const session of projectSessions) {
     const kind = role === 'manager'
       ? 'manager-runtime-failed'
@@ -166,7 +194,7 @@ function notifyProjectManagerRuntimeFailure(
         ? 'supervisor-runtime-failed'
         : 'task-runtime-failed';
     if (lane) {
-      if (!autoRecoverProjectLane) state.pauseSupervisorLane(lane.id, text);
+      if (!autoRecoverProjectLane && !projectManagedStartupFailure) state.pauseSupervisorLane(lane.id, text);
       state.updateLane(lane.id, {
         projectTaskRotationPending: false,
         projectTaskRotationSummary: undefined,
@@ -185,7 +213,7 @@ function notifyProjectManagerRuntimeFailure(
           },
         }, session.id);
       }
-    } else {
+    } else if (!projectManagedStartupFailure) {
       for (const projectLane of state.supervisor.lanes.filter((candidate) => (
         candidate.projectManagerProjectId === session.id
       ))) {
@@ -193,8 +221,14 @@ function notifyProjectManagerRuntimeFailure(
       }
     }
     const currentSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-    if (!autoRecoverProjectLane && currentSession && currentSession.status !== 'paused') {
+    if (!autoRecoverProjectLane && !projectManagedStartupFailure
+      && currentSession && currentSession.status !== 'paused') {
       state.applyProjectManagerAction({ type: 'pause-project', reason: text }, session.id);
+    }
+    if (projectManagedStartupFailure) {
+      const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+      void window.wmux?.projectManager?.saveSession?.(updated);
+      continue;
     }
     const event = state.appendProjectManagerEvent({
       kind,
@@ -501,7 +535,7 @@ async function fetchTheme(name: string): Promise<ThemeConfig> {
   }
 }
 
-export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = true, colorScheme, startupCommands, startupInput, sshProfileId }: UseTerminalOptions = {}): UseTerminalResult {
+export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = true, colorScheme, startupCommands, startupInput, supervisorRuntimeIsolationKey, allowManagedCodexHookTrust = false, sshProfileId }: UseTerminalOptions = {}): UseTerminalResult {
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -931,14 +965,16 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     // stash the last observed dims and flush them in attachToPty instead.
     let pendingResizeDims: { cols: number; rows: number } | null = null;
     let startupInputOutput = '';
-    const automatedStartupAgent = detectAutomatedInteractiveAgent(
+    let automatedStartupAgent = detectAutomatedInteractiveAgent(
       startupCommandsRef.current,
       startupInputRef.current,
     );
     let startupTrustConfirmationScheduled: ReturnType<typeof startupTrustPromptKind> = null;
     const confirmedStartupTrustPrompts = new Set<NonNullable<ReturnType<typeof startupTrustPromptKind>>>();
     let runtimeReadyTimer: ReturnType<typeof setTimeout> | undefined;
+    let runtimeReadyValidationAttempts = 0;
     let innerAgentExitHandled = false;
+    let attachedPtyId: string | null = null;
 
     const startupInputScreenText = (): string => {
       try {
@@ -954,42 +990,160 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       }
     };
 
+    const automatedAgentForOutput = (output: string) => {
+      automatedStartupAgent ||= detectAutomatedInteractiveAgent(
+        startupCommandsRef.current,
+        startupInputRef.current,
+        output,
+      );
+      return automatedStartupAgent;
+    };
+
+    const failAutomatedStartup = (id: string, detail: string) => {
+      if (innerAgentExitHandled) return;
+      innerAgentExitHandled = true;
+      if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
+      runtimeReadyTimer = undefined;
+      clearStuckRunningState(id);
+      markTerminalRuntimeFailed(id, detail);
+      notifyProjectManagerRuntimeFailure(id, detail, true, { startupFailure: true });
+      useStore.getState().setSurfaceProgress(id, null);
+    };
+
     const maybeConfirmStartupTrust = (id: string) => {
       if (
         innerAgentExitHandled
-        || !automatedStartupAgent
         || startupTrustConfirmationScheduled
       ) return;
       const visibleOutput = `${startupInputOutput}\n${startupInputScreenText()}`;
-      if (!isStartupTrustPromptReady(automatedStartupAgent, visibleOutput)) return;
-      const promptKind = startupTrustPromptKind(automatedStartupAgent, visibleOutput);
+      const startupAgent = automatedAgentForOutput(visibleOutput);
+      if (!startupAgent || !isStartupTrustPromptReady(startupAgent, visibleOutput)) return;
+      const promptKind = startupTrustPromptKind(startupAgent, visibleOutput);
       if (!promptKind || confirmedStartupTrustPrompts.has(promptKind)) return;
+      if (promptKind === 'hooks' && !allowManagedCodexHookTrust) {
+        failAutomatedStartup(id, 'Codex Hook 需要人工审查：请在任一 Codex 会话执行 /hooks，确认 wmux-hook 后重试');
+        return;
+      }
+      const action = startupTrustPromptAction(startupAgent, visibleOutput, promptKind, {
+        allowCodexHookTrust: allowManagedCodexHookTrust,
+      });
+      if (!action) {
+        const trustKindLabel = promptKind === 'hooks' ? 'Hook 信任' : '目录信任';
+        failAutomatedStartup(id, `Agent 启动失败：无法安全确定${trustKindLabel}页的当前选中项`);
+        return;
+      }
       if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
       runtimeReadyTimer = undefined;
-      const action = startupTrustPromptAction(automatedStartupAgent, visibleOutput, promptKind);
-      if (!action) return;
       startupTrustConfirmationScheduled = promptKind;
       void confirmStartupTrustPrompt(window.wmux.pty, id, {
         action,
+        cancelWhen: () => {
+          const state = terminalRuntimeStatus(id)?.state;
+          return disposed || innerAgentExitHandled || state === 'failed' || state === 'exited';
+        },
+        confirmedWhen: () => {
+          const currentScreen = startupInputScreenText();
+          if (interactiveAgentInputReady(currentScreen)) return true;
+          const currentKind = startupTrustPromptKind(startupAgent, currentScreen);
+          return currentKind !== null && currentKind !== promptKind;
+        },
+        retryActionWhen: () => {
+          const currentScreen = startupInputScreenText();
+          return startupTrustPromptKind(startupAgent, currentScreen) === promptKind
+            ? startupTrustPromptAction(startupAgent, currentScreen, promptKind, {
+                allowCodexHookTrust: allowManagedCodexHookTrust,
+              })
+            : null;
+        },
       }).then((confirmed) => {
         startupTrustConfirmationScheduled = null;
-        if (confirmed) confirmedStartupTrustPrompts.add(promptKind);
+        const runtimeState = terminalRuntimeStatus(id)?.state;
+        if (disposed || innerAgentExitHandled || runtimeState === 'failed' || runtimeState === 'exited') return;
+        if (confirmed) {
+          confirmedStartupTrustPrompts.add(promptKind);
+          maybeConfirmStartupTrust(id);
+          scheduleRuntimeReadyValidation(id);
+          return;
+        }
+        const trustKindLabel = promptKind === 'hooks' ? 'Hook 信任' : '目录信任';
+        failAutomatedStartup(id, `Agent 启动失败：${trustKindLabel}确认未生效或终端不可写`);
       });
     };
 
+    const scheduleRuntimeReadyValidation = (id: string) => {
+      if (runtimeReadyTimer || terminalRuntimeStatus(id)?.state !== 'starting') return;
+      runtimeReadyTimer = setTimeout(() => {
+        runtimeReadyTimer = undefined;
+        if (terminalRuntimeStatus(id)?.state !== 'starting') return;
+        runtimeReadyValidationAttempts += 1;
+        const currentScreen = startupInputScreenText();
+        const visibleOutput = `${startupInputOutput}\n${currentScreen}`;
+        const startupAgent = automatedAgentForOutput(visibleOutput);
+        const lateFailure = interactiveAgentStartupFailureDetail(visibleOutput)
+          || (startupAgent
+            ? interactiveAgentShellPromptFailureDetail(visibleOutput)
+            : null);
+        if (lateFailure) {
+          failAutomatedStartup(id, lateFailure);
+          return;
+        }
+        // xterm's active screen can temporarily consist only of blank rows while
+        // a full-screen Agent switches buffers. Keep the raw PTY stream in the
+        // readiness evidence instead of letting a truthy "\n\n..." screen hide it.
+        const inputReady = !!startupAgent && interactiveAgentInputReady(visibleOutput);
+        const currentPromptKind = startupAgent
+          ? startupTrustPromptKind(startupAgent, currentScreen)
+          : null;
+        const startupInteractionPending = !!startupTrustConfirmationScheduled
+          || !!(currentPromptKind
+            && !confirmedStartupTrustPrompts.has(currentPromptKind)
+            && !inputReady);
+        const stability = terminalRuntimeStabilityDecision(
+          visibleOutput.trim().length > 0,
+          startupInteractionPending,
+          inputReady,
+        );
+        const validationAction = terminalRuntimeValidationAction(
+          stability,
+          startupInteractionPending,
+          runtimeReadyValidationAttempts,
+          INTERACTIVE_AGENT_RUNTIME_VALIDATION_MAX_ATTEMPTS,
+        );
+        if (validationAction === 'ready') {
+          markTerminalRuntimeReady(id);
+        } else if (validationAction === 'handle-interaction') {
+          maybeConfirmStartupTrust(id);
+        } else if (validationAction === 'retry') {
+          scheduleRuntimeReadyValidation(id);
+        } else {
+          const diagnostic = interactiveAgentStartupDiagnostic(visibleOutput);
+          failAutomatedStartup(
+            id,
+            `Agent 启动失败：已有终端输出，但未检测到 Codex、Kimi、Grok 或 Pi 的可输入界面；${diagnostic}`,
+          );
+        }
+      }, INTERACTIVE_AGENT_RUNTIME_STABILITY_MS);
+    };
+
     const attachToPty = (id: string) => {
+      if (disposed || attachedPtyId === id) return;
+      attachedPtyId = id;
       ptyIdRef.current = id;
 
       // Wire PTY data → xterm
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
         if (disposed) return;
         startupInputOutput = `${startupInputOutput}${data}`.slice(-12_000);
+        const startupAgent = automatedAgentForOutput(startupInputOutput);
         const startupFailure = innerAgentExitHandled || terminalRuntimeStatus(id)?.state !== 'starting'
           ? null
-          : interactiveAgentStartupFailureDetail(startupInputOutput);
+          : interactiveAgentStartupFailureDetail(startupInputOutput)
+            || (startupAgent
+              ? interactiveAgentShellPromptFailureDetail(startupInputOutput)
+              : null);
         const innerAgentExit = innerAgentExitHandled || startupFailure
           ? null
-          : interactiveAgentExitDetail(automatedStartupAgent, startupInputOutput);
+          : interactiveAgentExitDetail(startupAgent, startupInputOutput);
         const runtimeFailure = startupFailure || innerAgentExit;
         if (runtimeFailure) {
           innerAgentExitHandled = true;
@@ -998,22 +1152,20 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           clearStuckRunningState(id);
           if (startupFailure) markTerminalRuntimeFailed(id, startupFailure);
           else markTerminalRuntimeExited(id, runtimeFailure);
-          notifyProjectManagerRuntimeFailure(id, runtimeFailure, true);
+          notifyProjectManagerRuntimeFailure(id, runtimeFailure, true, {
+            startupFailure: !!startupFailure,
+          });
           useStore.getState().setSurfaceProgress(id, null);
         }
         if (
           !innerAgentExitHandled
           && !startupInputRef.current
-          && !runtimeReadyTimer
           && terminalRuntimeStatus(id)?.state === 'starting'
         ) {
           // A created surface is not an AI runtime yet. Require observable
           // process output and a short stability window so command-not-found
           // exits cannot be reported as successful startup.
-          runtimeReadyTimer = setTimeout(() => {
-            runtimeReadyTimer = undefined;
-            if (terminalRuntimeStatus(id)?.state === 'starting') markTerminalRuntimeReady(id);
-          }, 300);
+          scheduleRuntimeReadyValidation(id);
         }
         if (!innerAgentExitHandled) maybeConfirmStartupTrust(id);
         // Let explicit inner-Agent exit handling run first. The watchdog then
@@ -1039,9 +1191,12 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         clearStuckRunningState(id);
         if (sshProfileId) detachExitedSshWorkspace(id);
         const detail = `进程已退出（代码 ${code}）`;
+        const failedDuringStartup = terminalRuntimeStatus(id)?.state === 'starting';
         if (!innerAgentExitHandled) {
           markTerminalRuntimeExited(id, detail);
-          notifyProjectManagerRuntimeFailure(id, detail, true);
+          notifyProjectManagerRuntimeFailure(id, detail, true, {
+            startupFailure: failedDuringStartup,
+          });
         }
         // An exited process can't be making progress — drop any leftover
         // OSC 9;4 indicator (same stuck-badge reasoning as above).
@@ -1068,8 +1223,18 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       cleanupFnsRef.current.push(() => clearTimeout(deferredResizeId));
       scheduleBufferRestore();
 
-      const startupStillPending = terminalRuntimeStatus(id)?.state === 'starting';
-      if (!startupInputRef.current && !startupStillPending) markTerminalRuntimeReady(id);
+      if (!startupInputRef.current) {
+        const attachAction = terminalRuntimeAttachAction(
+          terminalRuntimeStatus(id),
+          !!automatedStartupAgent,
+        );
+        if (attachAction === 'validate-interactive') {
+          markTerminalRuntimeStarting(id);
+          scheduleRuntimeReadyValidation(id);
+        } else if (attachAction === 'ready') {
+          markTerminalRuntimeReady(id);
+        }
+      }
     };
 
     // Fallback path for quick-launch startup commands on shells where the main
@@ -1124,7 +1289,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         startupInputScheduledSurfaceIds.delete(id);
         const detail = '首条启动指令未能可靠写入终端';
         markTerminalRuntimeFailed(id, detail);
-        notifyProjectManagerRuntimeFailure(id, detail);
+        notifyProjectManagerRuntimeFailure(id, detail, false, { startupFailure: true });
         terminal.writeln('\r\n\x1b[31m[首条任务发送失败：终端暂不可写，请稍后重新发送]\x1b[0m');
         console.warn(`[terminal] startup input delivery failed for ${id}`);
       });
@@ -1175,12 +1340,30 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     // If surfaceId is given AND a PTY already exists for it (agent spawn or re-mount), attach to it
     if (surfaceId && window.wmux.pty.has) {
       window.wmux.pty.has(surfaceId).then((exists: boolean) => {
+        if (disposed) return;
         if (exists) {
           attachToPty(surfaceId!);
           runStartupInput(surfaceId!);
         } else {
+          // Subscribe before spawning. PowerShell consumes managed startup
+          // commands inside its init script, so a fast Agent can render a trust
+          // screen before pty.create() resolves. Attaching only in .then() loses
+          // that first screen and the automatic trust gate never sees it.
+          attachToPty(surfaceId!);
           // No existing PTY — create a new one, passing surfaceId so PTY ID = Surface ID
-          window.wmux.pty.create({ shell: effectiveShell, cwd: spawnCwd, env: {}, surfaceId, startupCommands: startupCommandsRef.current, sshProfileId, cols: initialCols, rows: initialRows })
+          window.wmux.pty.create({
+            shell: effectiveShell,
+            cwd: spawnCwd,
+            env: {},
+            surfaceId,
+            startupCommands: startupCommandsRef.current,
+            codexSupervisorRuntimeIsolationKey: automatedStartupAgent === 'codex'
+              ? supervisorRuntimeIsolationKey
+              : undefined,
+            sshProfileId,
+            cols: initialCols,
+            rows: initialRows,
+          })
             .then((created: { id: string; shell: string; startupCommandsConsumed?: boolean }) => {
               // PTY persists (keep-alive); a remount re-attaches via pty.has.
               if (disposed) return;
@@ -1194,18 +1377,29 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
               if (surfaceId) {
                 const detail = `无法创建终端：${String(err)}`;
                 markTerminalRuntimeFailed(surfaceId, detail);
-                notifyProjectManagerRuntimeFailure(surfaceId, detail);
+                notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
               }
             });
         }
       }).catch((err: unknown) => {
         const detail = `无法检查终端运行状态：${String(err)}`;
         markTerminalRuntimeFailed(surfaceId, detail);
-        notifyProjectManagerRuntimeFailure(surfaceId, detail);
+        notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
       });
     } else {
       // No surfaceId hint — always create new PTY
-      window.wmux.pty.create({ shell: effectiveShell, cwd: spawnCwd, env: {}, startupCommands: startupCommandsRef.current, sshProfileId, cols: initialCols, rows: initialRows })
+      window.wmux.pty.create({
+        shell: effectiveShell,
+        cwd: spawnCwd,
+        env: {},
+        startupCommands: startupCommandsRef.current,
+        codexSupervisorRuntimeIsolationKey: automatedStartupAgent === 'codex'
+          ? supervisorRuntimeIsolationKey
+          : undefined,
+        sshProfileId,
+        cols: initialCols,
+        rows: initialRows,
+      })
         .then((created: { id: string; shell: string; startupCommandsConsumed?: boolean }) => {
           if (disposed) return;
           setResolvedShellForSurface(surfaceId, created.shell);
@@ -1218,7 +1412,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           if (surfaceId) {
             const detail = `无法创建终端：${String(err)}`;
             markTerminalRuntimeFailed(surfaceId, detail);
-            notifyProjectManagerRuntimeFailure(surfaceId, detail);
+            notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
           }
         });
     }

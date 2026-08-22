@@ -354,6 +354,40 @@ function isProjectSafeExitState(value: unknown): boolean {
   });
 }
 
+function isProjectAgentConfig(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const config = value as Record<string, unknown>;
+  return ['manager', 'supervisor', 'task'].every((role) => {
+    const selection = config[role];
+    return !!selection && typeof selection === 'object'
+      && typeof (selection as Record<string, unknown>).agent === 'string'
+      && typeof (selection as Record<string, unknown>).model === 'string'
+      && typeof (selection as Record<string, unknown>).reasoningEffort === 'string';
+  });
+}
+
+function isProjectAgentIssue(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const issue = value as Record<string, unknown>;
+  return ['manager', 'supervisor', 'task'].includes(String(issue.role))
+    && ['rate-limit', 'quota-limit'].includes(String(issue.category))
+    && typeof issue.summary === 'string'
+    && Number.isFinite(issue.detectedAt);
+}
+
+function isProjectAgentReconfiguration(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Record<string, unknown>;
+  const rolesValid = (roles: unknown) => Array.isArray(roles)
+    && roles.every((role) => ['manager', 'supervisor', 'task'].includes(String(role)));
+  return ['applying', 'pending-safe-point', 'failed'].includes(String(state.status))
+    && Number.isFinite(state.requestedAt)
+    && rolesValid(state.roles)
+    && rolesValid(state.pendingRoles)
+    && rolesValid(state.completedRoles)
+    && (state.error === undefined || typeof state.error === 'string');
+}
+
 function isProjectManagerSession(value: unknown): value is ProjectManagerSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
@@ -370,6 +404,9 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.supervisorNotes !== undefined && !isStringArray(session.supervisorNotes))
     || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
     || (session.pendingUserQuestion !== undefined && !isPendingUserQuestion(session.pendingUserQuestion))
+    || (session.agentConfig !== undefined && !isProjectAgentConfig(session.agentConfig))
+    || (session.agentIssue !== undefined && !isProjectAgentIssue(session.agentIssue))
+    || (session.agentReconfiguration !== undefined && !isProjectAgentReconfiguration(session.agentReconfiguration))
     || (session.pendingManagerDeliveries !== undefined && (
       !Array.isArray(session.pendingManagerDeliveries)
       || session.pendingManagerDeliveries.length > 100
@@ -379,6 +416,10 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
         || typeof delivery.text !== 'string'
         || !Number.isFinite(delivery.createdAt)
         || (delivery.transitionId !== undefined && typeof delivery.transitionId !== 'string')
+        || (delivery.continuationKey !== undefined && typeof delivery.continuationKey !== 'string')
+        || (delivery.stage !== undefined
+          && !['pending', 'submitting', 'submitted', 'failed'].includes(String(delivery.stage)))
+        || (delivery.submittedAt !== undefined && !Number.isFinite(delivery.submittedAt))
       ))
     ))
     || (session.pendingSupervisorTransitions !== undefined && (

@@ -11,6 +11,11 @@ export interface TerminalRuntimeReadyResult {
   error?: string;
 }
 
+export type TerminalRuntimeAttachAction = 'preserve' | 'validate-interactive' | 'ready';
+export type TerminalRuntimeStabilityDecision = 'wait' | 'ready';
+export type TerminalRuntimeValidationAction = 'ready' | 'handle-interaction' | 'retry' | 'fail';
+export type TerminalRuntimeFailureRecoveryAction = 'caller-owned' | 'auto-recover';
+
 type RuntimeListener = (surfaceId: string, status: TerminalRuntimeStatus) => void;
 
 const statuses = new Map<string, TerminalRuntimeStatus>();
@@ -41,6 +46,44 @@ export function markTerminalRuntimeExited(surfaceId: string, detail: string): vo
 
 export function terminalRuntimeStatus(surfaceId: string): TerminalRuntimeStatus | undefined {
   return statuses.get(surfaceId);
+}
+
+/** Reattaching a pane must never resurrect an Agent runtime already known to be unavailable. */
+export function terminalRuntimeAttachAction(
+  status: TerminalRuntimeStatus | undefined,
+  automatedInteractiveAgent: boolean,
+): TerminalRuntimeAttachAction {
+  if (status) return 'preserve';
+  return automatedInteractiveAgent ? 'validate-interactive' : 'ready';
+}
+
+/** Automated runtimes are ready only after output appears and startup menus are gone. */
+export function terminalRuntimeStabilityDecision(
+  hasObservableOutput: boolean,
+  startupInteractionPending: boolean,
+  hasInteractiveAgentInput: boolean,
+): TerminalRuntimeStabilityDecision {
+  return hasObservableOutput && !startupInteractionPending && hasInteractiveAgentInput ? 'ready' : 'wait';
+}
+
+/** Keep unknown startup output bounded while giving a slow TUI time to finish rendering. */
+export function terminalRuntimeValidationAction(
+  stability: TerminalRuntimeStabilityDecision,
+  startupInteractionPending: boolean,
+  attempts: number,
+  maxAttempts: number,
+): TerminalRuntimeValidationAction {
+  if (stability === 'ready') return 'ready';
+  if (startupInteractionPending) return 'handle-interaction';
+  return attempts < Math.max(1, maxAttempts) ? 'retry' : 'fail';
+}
+
+/** Startup callers already await readiness and must own the only recovery decision. */
+export function terminalRuntimeFailureRecoveryAction(
+  projectManaged: boolean,
+  startupFailure: boolean,
+): TerminalRuntimeFailureRecoveryAction {
+  return projectManaged && startupFailure ? 'caller-owned' : 'auto-recover';
 }
 
 /** Reject automated input after the nested Agent has failed or exited. */

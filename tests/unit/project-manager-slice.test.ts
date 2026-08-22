@@ -5,8 +5,10 @@ import {
   type ProjectManagerSlice,
 } from '../../src/renderer/store/project-manager-slice';
 import {
+  compactProjectSupervisorTransitions,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   projectDirectoryIdentity,
+  projectManagerEventNeedsUserAttention,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 
@@ -38,6 +40,40 @@ function item(id: string, dependencies: string[] = []): ProjectWorkItem {
 }
 
 describe('project-manager slice', () => {
+  it('allows an internal recovery failure to suppress duplicate user alerts explicitly', () => {
+    expect(projectManagerEventNeedsUserAttention({ kind: 'supervisor-runtime-failed' })).toBe(true);
+    expect(projectManagerEventNeedsUserAttention({
+      kind: 'supervisor-runtime-failed',
+      payload: { attentionRequired: false },
+    })).toBe(false);
+    expect(projectManagerEventNeedsUserAttention({
+      kind: 'guard-triggered',
+      payload: { attentionRequired: true },
+    })).toBe(true);
+  });
+
+  it('keeps only the newest unavailable handoff across replacement lanes', () => {
+    const compacted = compactProjectSupervisorTransitions([
+      {
+        id: 'old', laneId: 'lane-old', workItemId: 'task-a', kind: 'supervisor-unavailable',
+        eventType: 'supervisor.runtime-unavailable', summary: '第一次启动失败',
+        createdAt: 1, notifiedAt: 1, notificationCount: 1,
+      },
+      {
+        id: 'other', laneId: 'lane-other', workItemId: 'task-b', kind: 'supervisor-unavailable',
+        eventType: 'supervisor.runtime-unavailable', summary: '其他任务失败',
+        createdAt: 2, notifiedAt: 2, notificationCount: 1,
+      },
+      {
+        id: 'new', laneId: 'lane-new', workItemId: 'task-a', kind: 'supervisor-unavailable',
+        eventType: 'supervisor.runtime-unavailable', summary: '替换通道仍启动失败',
+        createdAt: 3, notifiedAt: 3, notificationCount: 1,
+      },
+    ]);
+
+    expect(compacted.map((transition) => transition.id)).toEqual(['other', 'new']);
+  });
+
   it('normalizes project directory roots without collapsing their identity', () => {
     expect(projectDirectoryIdentity('E:\\')).toBe('e:/');
     expect(projectDirectoryIdentity('e:/')).toBe('e:/');
@@ -322,10 +358,51 @@ describe('project-manager slice', () => {
     });
   });
 
+  it('drops obsolete transition and gate deliveries when requirements alignment is re-opened', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '控制设备', preconditions: ['设备已断电'], doneWhen: ['验收通过'],
+    });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      pendingSupervisorTransitions: [{
+        id: 'obsolete-transition', laneId: 'lane-old', kind: 'decision-required',
+        eventType: 'supervisor.approval.requested', summary: '旧合同待决项',
+        createdAt: 1, notifiedAt: 1, notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [
+        { id: 'obsolete-transition-delivery', text: '旧监督交接', createdAt: 1, transitionId: 'obsolete-transition' },
+        { id: 'obsolete-gate-delivery', text: '旧门禁续作', createdAt: 2, continuationKey: 'old:R1:A1:orient-project:' },
+        { id: 'retained-user-message', text: '普通用户消息', createdAt: 3 },
+      ],
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'require-requirements-alignment', reason: '当前定义必须重新核对',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting',
+      pendingSupervisorTransitions: [],
+      pendingManagerDeliveries: [{ id: 'retained-user-message', text: '普通用户消息' }],
+    });
+  });
+
   it('updates user-owned project prerequisites during an active project', () => {
     const useStore = store();
     useStore.getState().startProjectManager({
       projectDir: 'E:\\repo', goal: '控制设备', preconditions: ['设备已断电'], doneWhen: ['验收通过'],
+    });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      pendingSupervisorTransitions: [{
+        id: 'old-prerequisite-transition', laneId: 'lane-old', kind: 'decision-required',
+        eventType: 'supervisor.approval.requested', summary: '旧前置条件下的待决项',
+        createdAt: 1, notifiedAt: 1, notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [{
+        id: 'old-prerequisite-delivery', text: '旧条件续作', createdAt: 1,
+        transitionId: 'old-prerequisite-transition',
+      }],
     });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('hardware-check') });
 
@@ -340,6 +417,8 @@ describe('project-manager slice', () => {
       status: 'waiting',
       requirementsVersion: 2,
       acceptedRequirementsVersion: 0,
+      pendingSupervisorTransitions: [],
+      pendingManagerDeliveries: [],
       workItems: [{
         id: 'hardware-check',
         status: 'waiting-decision',
@@ -366,6 +445,19 @@ describe('project-manager slice', () => {
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('active-task') });
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'active-task', patch: { status: 'running' },
+    });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      pendingSupervisorTransitions: [{
+        id: 'old-goal-transition', laneId: 'lane-old', kind: 'stage-complete',
+        eventType: 'supervisor.waiting-for-direction', summary: '旧目标阶段已经交接',
+        createdAt: 1, notifiedAt: 1, notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [
+        { id: 'old-transition-delivery', text: '旧监督交接', createdAt: 1, transitionId: 'old-goal-transition' },
+        { id: 'old-gate-delivery', text: '旧目标门禁续作', createdAt: 2, continuationKey: 'old-goal:R1:A1:orient-project:' },
+        { id: 'keep-user-message', text: '仍需保留的普通用户消息', createdAt: 3 },
+      ],
     });
 
     const result = useStore.getState().applyProjectManagerAction({
@@ -399,6 +491,8 @@ describe('project-manager slice', () => {
       supervisorNotes: ['阶段完成后同步文档', '形成成果后创建本地提交'],
       doneWhen: ['新验收'],
       status: 'waiting',
+      pendingSupervisorTransitions: [],
+      pendingManagerDeliveries: [{ id: 'keep-user-message', text: '仍需保留的普通用户消息' }],
       workItems: [{ id: 'active-task', status: 'waiting-decision', latestBlocker: expect.stringContaining('重新绑定') }],
     });
   });
@@ -769,5 +863,37 @@ describe('project-manager slice', () => {
       expect.objectContaining({ status: 'achieved' }),
       expect.objectContaining({ statement: '推进同一项目的下一主目标', status: 'transitioning' }),
     ]);
+  });
+
+  it('keeps completed pre-refine work as history without blocking current-version goal completion', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '形成可验收实现',
+      preconditions: ['环境可用'], doneWhen: ['当前版本验收通过'],
+    });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('historical-evidence') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'historical-evidence', patch: { status: 'completed', latestEvidence: '旧版本证据' },
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '形成调整后的可验收实现',
+      preconditions: ['环境可用'], planFiles: [], doneWhen: ['调整后的当前版本验收通过'],
+      source: 'user', mode: 'refine', reason: '调整当前目标',
+    })).toMatchObject({ ok: true });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('current-result') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'current-result', patch: { status: 'completed', latestEvidence: '当前版本证据' },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '当前版本已经重新规划', acceptRequirementsVersion: true,
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '当前版本目标级验收通过',
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'historical-evidence', status: 'completed', requirementsVersion: 1 }),
+      expect.objectContaining({ id: 'current-result', status: 'completed', requirementsVersion: 2 }),
+    ]));
   });
 });

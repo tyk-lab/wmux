@@ -14,6 +14,10 @@ interface TerminalPaneProps {
   startupCommands?: string[];
   /** Text injected after an interactive startup command has initialized. */
   startupInput?: string;
+  /** App-owned key for the isolated supervisor runtime directory. */
+  supervisorRuntimeIsolationKey?: string;
+  /** Explicit wmux-managed project/supervisor/task authorization for first-run Codex Hook trust. */
+  allowManagedCodexHookTrust?: boolean;
   /** Secret-free key used for one-time SSH password injection in the main process. */
   sshProfileId?: string;
   focused?: boolean;
@@ -39,6 +43,8 @@ function ActiveTerminalPane({
   colorScheme,
   startupCommands,
   startupInput,
+  supervisorRuntimeIsolationKey,
+  allowManagedCodexHookTrust = false,
   sshProfileId,
   focused = true,
   visible = true,
@@ -46,7 +52,19 @@ function ActiveTerminalPane({
   onFindBarClose,
   copyModeActive = false,
 }: TerminalPaneProps) {
-  const { terminalRef, xtermRef, searchAddonRef } = useTerminal({ surfaceId, shell, cwd, visible, focused, colorScheme, startupCommands, startupInput, sshProfileId });
+  const { terminalRef, xtermRef, searchAddonRef } = useTerminal({
+    surfaceId,
+    shell,
+    cwd,
+    visible,
+    focused,
+    colorScheme,
+    startupCommands,
+    startupInput,
+    supervisorRuntimeIsolationKey,
+    allowManagedCodexHookTrust,
+    sshProfileId,
+  });
 
   const [_lastQuery, setLastQuery] = useState('');
 

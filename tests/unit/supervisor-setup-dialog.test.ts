@@ -67,8 +67,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('项目数量不受限制');
     expect(projectManagerDialogSource).toContain('查看当前项目 AI 处理日志');
     expect(projectManagerDialogSource).toContain('添加项目');
-    expect(projectManagerDialogSource).toContain('disabled={creating}');
-    expect(projectManagerDialogSource).toContain('onClick={beginCreatingProject}');
+    expect(projectManagerDialogSource).not.toContain("creating ? '正在填写' : '添加项目'");
+    expect(projectManagerDialogSource).toContain("creating ? '取消添加' : '添加项目'");
+    expect(projectManagerDialogSource).toContain('aria-expanded={creating}');
+    expect(projectManagerDialogSource).toContain('onClick={toggleCreatingProject}');
+    expect(projectManagerDialogSource).toContain('onClick={cancelCreatingProject}');
     expect(projectManagerDialogSource).toContain('id="project-manager-create-form"');
     expect(projectManagerDialogSource).toContain("form.scrollIntoView({ block: 'start' })");
     expect(projectManagerDialogSource).toContain("?.focus({ preventScroll: true })");
@@ -77,9 +80,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
-    expect(projectManagerDialogSource).toContain('首次使用请在任一 Codex 会话执行 /hooks');
-    expect(projectManagerDialogSource).toContain('wmux 不会绕过 Hook 信任');
-    expect(projectManagerDialogSource).toContain('不会代替你信任项目自带的 Hook');
+    expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 和任务 AI 首次出现 Codex Hook 审核');
+    expect(projectManagerDialogSource).toContain('自动选择 Trust all and continue');
+    expect(projectManagerDialogSource).toContain('普通终端仍需在 Codex 中执行 /hooks 人工确认');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('使用 Grok 默认 Thinking');
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
@@ -102,12 +105,21 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('未确认变更尚未生效');
     expect(projectManagerDialogSource).toContain('取消变更');
     expect(projectManagerDialogSource).toContain('确认生效');
+    expect(projectManagerDialogSource).toContain('Agent 配置');
+    expect(projectManagerDialogSource).toContain('重新配置并恢复');
+    expect(projectManagerDialogSource).toContain('同时保存为以后新建项目的默认配置');
+    expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
+    expect(projectManagerDialogSource).toContain('disabled={busy || !projectDefinitionChanged}');
+    expect(projectManagerDialogSource).not.toContain('disabled={busy || !!session.pendingUserQuestion || !projectDefinitionChanged}');
+    expect(projectManagerDialogSource).toContain('应用后将以新的目标与需求替代当前待处理问题');
     expect(projectManagerDialogSource).toContain('关闭（取消变更）');
     expect(projectManagerDialogSource).toContain('项目稳定范围');
     expect(projectManagerDialogSource).toContain('调整当前主目标');
     expect(projectManagerDialogSource).toContain('切换新的主目标');
     expect(projectManagerDialogSource).toContain("goalChangeMode === 'pivot'");
     expect(projectManagerDialogSource).toContain('当前主目标的阶段计划');
+    expect(projectManagerDialogSource).toContain("subgoal.status !== 'obsolete'");
+    expect(projectManagerDialogSource).toContain('历史已取消阶段');
     expect(projectManagerDialogSource).toContain('主目标历史');
     const definitionUpdateHandler = projectManagerDialogSource.match(
       /const updateProjectDefinition = async[\s\S]*?^  };/m,
