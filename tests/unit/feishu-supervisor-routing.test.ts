@@ -199,6 +199,39 @@ describe('飞书人工决策单聊路由', () => {
     expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('暂不发布');
   });
 
+  it('恢复待决问题时按 questionId 幂等补发，并在旧内部问题失效时关闭卡片', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+    const question = {
+      id: 'question-restored', category: 'manual-intervention' as const, workItemId: 'hardware',
+      blocker: '需要用户确认硬件操作', question: '是否继续硬件操作？',
+      options: [{ id: 'wait', label: '保持等待' }, { id: 'continue', label: '继续操作' }],
+      recommendedOptionId: 'wait',
+    };
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-restored', projectDir: 'E:\repo', type: 'user-clarification-restored',
+      payload: { question },
+    });
+    service.onProjectManagerRecord({
+      sessionId: 'pm-restored', projectDir: 'E:\repo', type: 'user-clarification-restored',
+      payload: { question },
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(send.mock.calls[0][1])).toContain('是否继续硬件操作');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-restored', projectDir: 'E:\repo', type: 'user-clarification-invalidated',
+      payload: { questionId: question.id, reason: '恢复后旧运行时故障已失效' },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('恢复后旧运行时故障已失效');
+  });
+
   it('待续通道主动发送包含 AI 监督核心信息的决策卡，并可提交新方案继续', async () => {
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
     const control = vi.fn(async (command: { action: string }) => {
@@ -2516,7 +2549,7 @@ describe('飞书人工决策单聊路由', () => {
     }, { openId: 'ou-allowed', source: 'card' }));
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('项目确认已提交');
-    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('项目仍保持暂停');
+    expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('该问题已关闭');
 
     service.onProjectManagerRecord({
       sessionId: 'pm-a', projectDir: 'E:\\repo', type: 'user-clarification-answered',

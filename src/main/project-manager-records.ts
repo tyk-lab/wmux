@@ -350,6 +350,7 @@ function isProjectSafeExitState(value: unknown): boolean {
       && (item.workItemId === undefined || typeof item.workItemId === 'string')
       && ['idle', 'working', 'blocked', 'unknown'].includes(String(item.activityState))
       && (item.activityUpdatedAt === undefined || Number.isFinite(item.activityUpdatedAt))
+      && (item.inputState === undefined || ['empty', 'pending', 'unknown'].includes(String(item.inputState)))
       && (item.excerpt === undefined || typeof item.excerpt === 'string');
   });
 }

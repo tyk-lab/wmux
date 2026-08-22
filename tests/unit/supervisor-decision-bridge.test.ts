@@ -3506,7 +3506,17 @@ describe('supervisor decision bridge', () => {
         supervisor: { agent: 'pi', model: 'openai-codex/gpt-5.5', reasoningEffort: 'medium' },
         task: { agent: 'codex', model: 'gpt-5.5', reasoningEffort: 'medium' },
       },
-      events: [],
+      pendingUserQuestion: {
+        id: 'question-stale-runtime', category: 'manual-intervention', workItemId: 'recover_task',
+        blocker: '旧监督运行时已经失效', reasonCode: 'internal-project-failure',
+        question: '是否按最新协议恢复旧监督链？', context: '旧运行时无法继续。',
+        options: [{ id: 'retry', label: '恢复' }, { id: 'wait', label: '等待' }],
+        recommendedOptionId: 'retry', previousStatus: 'active', createdAt: 19,
+      },
+      events: [{
+        id: 'old-guard', sessionId: 'pm-recover', ts: 19, kind: 'guard-triggered',
+        summary: '旧运行链没有后续处理者', payload: { attentionRequired: true },
+      }],
       createdAt: 10,
       updatedAt: 20,
     };
@@ -3559,6 +3569,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().workspacePrefs.projectManagementAgents).toEqual(normalizedRecoveredAgentConfig);
     expect(useStore.getState().projectManager).toMatchObject({
       id: 'pm-recover', managerSurfaceId: expect.any(String), recoveryState: 'checking',
+      pendingUserQuestion: undefined,
       agentConfig: normalizedRecoveredAgentConfig,
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       progressSync: { status: 'review-required' },
@@ -3578,6 +3589,11 @@ describe('supervisor decision bridge', () => {
       candidate.projectManagerProjectId === persisted.id
     ))).toBe(false);
     expect(useStore.getState().supervisor.lanes.some((candidate) => candidate.id === 'lane-a')).toBe(true);
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'pm-recover',
+      type: 'user-clarification-invalidated',
+      payload: expect.objectContaining({ questionId: 'question-stale-runtime' }),
+    }));
     expect(useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     )).some((surface) => surface.projectManagerTerminal)).toBe(true);
@@ -3739,6 +3755,253 @@ describe('supervisor decision bridge', () => {
       expect.objectContaining({ kind: 'recovery-restored', summary: expect.stringContaining('审核当前任务基线') }),
     ]));
     surfaceTerminalRegistry.delete(created.surfaceId);
+  });
+
+  it('keeps a real user decision across recovery and replays its notification record', async () => {
+    const persisted: ProjectManagerSession = {
+      id: 'pm-recover-user-question', projectDir: 'E:\\recover-user-question',
+      goal: '完成需要人工接线的硬件验证', preconditions: ['设备保持断电'], planFiles: [],
+      doneWhen: ['人工接线后验证通过'], requirementsVersion: 1, acceptedRequirementsVersion: 1,
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+      status: 'waiting', workItems: [], events: [], createdAt: 10, updatedAt: 20,
+      pendingUserQuestion: {
+        id: 'question-physical-action', category: 'manual-intervention',
+        blocker: '需要用户完成设备接线', reasonCode: 'physical-action',
+        question: '是否已经完成设备接线？', context: '接线完成前不能上电。',
+        options: [{ id: 'wait', label: '尚未完成' }, { id: 'ready', label: '已经完成' }],
+        recommendedOptionId: 'wait', previousStatus: 'active', createdAt: 19,
+      },
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([persisted]);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({ action: 'restore-projects' })).resolves.toMatchObject({ ok: true, restored: true });
+
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toMatchObject({
+      id: 'question-physical-action', reasonCode: 'physical-action',
+    });
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: persisted.id,
+      type: 'user-clarification-restored',
+      payload: expect.objectContaining({
+        questionId: 'question-physical-action',
+        question: expect.objectContaining({ question: '是否已经完成设备接线？' }),
+      }),
+    }));
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要你的处理',
+      text: expect.stringContaining('是否已经完成设备接线'),
+    }));
+  });
+
+  it('saves progress, captures orphan project terminals, and confirms every PTY is closed on safe exit', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\safe-exit', goal: '保存并恢复项目',
+      preconditions: ['环境安全'], doneWhen: ['恢复后继续执行'],
+    });
+    const session = useStore.getState().projectManager!;
+    const workspace = useStore.getState().workspaces.find((candidate) => (
+      candidate.splitTree.type === 'leaf'
+      && candidate.splitTree.surfaces.some((surface) => surface.id === session.managerSurfaceId)
+    ))!;
+    const paneId = workspace.splitTree.type === 'leaf' ? workspace.splitTree.paneId : '' as any;
+    const orphanSurfaceId = useStore.getState().addSurface(workspace.id, paneId, 'terminal', {
+      customTitle: '孤立项目任务 AI', projectManagerProjectId: session.id,
+      projectManagerWorkItemId: 'orphan-task', shell: 'pwsh.exe', cwd: session.projectDir,
+    })!;
+    const hiddenPtySurfaceId = 'hidden-project-pty';
+    useStore.getState().restoreProjectManager({
+      ...session,
+      safeExit: {
+        status: 'blocked', requestedAt: 1, updatedAt: 1, reason: '上次关闭未确认',
+        terminalCheckpoints: [{
+          surfaceId: hiddenPtySurfaceId, role: 'task-ai', label: '已脱离 UI 的任务 AI',
+          activityState: 'unknown', inputState: 'unknown',
+        }],
+      },
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [session.managerSurfaceId!]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: 2 },
+      [orphanSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: 2 },
+    });
+    for (const surfaceId of [session.managerSurfaceId!, orphanSurfaceId]) {
+      surfaceTerminalRegistry.set(surfaceId, {
+        buffer: {
+          active: {
+            baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+            getLine: () => ({ translateToString: () => '' }),
+          },
+        },
+      } as any);
+    }
+    const kill = vi.fn();
+    (globalThis.window as any).wmux.pty.kill = kill;
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => false);
+
+    await expect(remote({
+      action: 'save-and-exit', projectId: session.id, reason: '用户保存当前项目进度',
+    })).resolves.toMatchObject({ ok: true, safeExited: true });
+
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'paused', recoveryState: 'checking', managerSurfaceId: undefined,
+      taskTerminalSurfaceId: undefined,
+      safeExit: {
+        status: 'saved',
+        terminalCheckpoints: expect.arrayContaining([
+          expect.objectContaining({ surfaceId: session.managerSurfaceId, role: 'project-ai' }),
+          expect.objectContaining({ surfaceId: orphanSurfaceId, role: 'task-ai', workItemId: 'orphan-task' }),
+          expect.objectContaining({ surfaceId: hiddenPtySurfaceId, role: 'task-ai' }),
+        ]),
+      },
+    });
+    expect(kill).toHaveBeenCalledWith(session.managerSurfaceId);
+    expect(kill).toHaveBeenCalledWith(orphanSurfaceId);
+    expect(kill).toHaveBeenCalledWith(hiddenPtySurfaceId);
+    expect((globalThis.window as any).wmux.pty.has).toHaveBeenCalledWith(session.managerSurfaceId);
+    expect((globalThis.window as any).wmux.pty.has).toHaveBeenCalledWith(orphanSurfaceId);
+    expect((globalThis.window as any).wmux.pty.has).toHaveBeenCalledWith(hiddenPtySurfaceId);
+    expect(useStore.getState().workspaces.flatMap((candidate) => (
+      candidate.splitTree.type === 'leaf' ? candidate.splitTree.surfaces : []
+    )).some((surface) => (
+      surface.projectManagerProjectId === session.id || surface.projectSupervisorProjectId === session.id
+    ))).toBe(false);
+    expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: session.id, type: 'project-safe-exit-completed',
+    }));
+    const appendRecord = (globalThis.window as any).wmux.projectManager.appendRecord;
+    const completionIndex = appendRecord.mock.calls.findIndex((call: any[]) => (
+      call[0]?.type === 'project-safe-exit-completed'
+    ));
+    expect(Math.max(...(globalThis.window as any).wmux.pty.has.mock.invocationCallOrder))
+      .toBeLessThan(appendRecord.mock.invocationCallOrder[completionIndex]);
+    surfaceTerminalRegistry.delete(session.managerSurfaceId!);
+    surfaceTerminalRegistry.delete(orphanSurfaceId);
+  });
+
+  it('rechecks a persisted saved marker when its project runtime still exists', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\safe-exit-recheck', goal: '验证旧完成标记',
+      preconditions: ['环境安全'], doneWhen: ['运行时确实退出'],
+    });
+    const session = useStore.getState().projectManager!;
+    const managerSurfaceId = session.managerSurfaceId!;
+    useStore.getState().restoreProjectManager({
+      ...session,
+      managerSurfaceId: undefined,
+      safeExit: {
+        status: 'saved', requestedAt: 1, updatedAt: 2, completedAt: 2, reason: '旧版本先写完成标记',
+        terminalCheckpoints: [{
+          surfaceId: managerSurfaceId, role: 'project-ai', label: '项目 AI',
+          activityState: 'idle', inputState: 'empty',
+        }],
+      },
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: 2 },
+    });
+    surfaceTerminalRegistry.set(managerSurfaceId, {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: 0, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: () => 'Ask Codex to do anything' }),
+        },
+      },
+    } as any);
+    const kill = vi.fn();
+    (globalThis.window as any).wmux.pty.kill = kill;
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => false);
+
+    await expect(remote({
+      action: 'save-and-exit', projectId: session.id, reason: '重新确认旧完成标记',
+    })).resolves.toMatchObject({ ok: true, safeExited: true });
+
+    expect(kill).toHaveBeenCalledWith(managerSurfaceId);
+    expect((globalThis.window as any).wmux.projectManager.captureProgress).toHaveBeenCalled();
+    expect(useStore.getState().projectManager).toMatchObject({
+      safeExit: { status: 'saved', completedAt: expect.any(Number) },
+    });
+    surfaceTerminalRegistry.delete(managerSurfaceId);
+  });
+
+  it('keeps project runtimes open when safe exit detects an unsubmitted terminal draft', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\safe-exit-draft', goal: '保护未提交输入',
+      preconditions: ['环境安全'], doneWhen: ['草稿不会丢失'],
+    });
+    const session = useStore.getState().projectManager!;
+    const draft = '› 用户尚未提交的恢复说明';
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [session.managerSurfaceId!]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: 2 },
+    });
+    surfaceTerminalRegistry.set(session.managerSurfaceId!, {
+      buffer: {
+        active: {
+          baseY: 0, cursorX: draft.length, cursorY: 0, length: 1,
+          getLine: () => ({ translateToString: (_trimRight?: boolean, start = 0, end?: number) => draft.slice(start, end) }),
+        },
+      },
+    } as any);
+    const kill = vi.fn();
+    (globalThis.window as any).wmux.pty.kill = kill;
+
+    await expect(remote({
+      action: 'save-and-exit', projectId: session.id, reason: '测试草稿保护',
+    })).resolves.toMatchObject({
+      ok: true, safeExited: false,
+      message: expect.stringContaining('未提交输入'),
+    });
+
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'paused',
+      safeExit: {
+        status: 'blocked',
+        error: expect.stringContaining('未提交输入'),
+        terminalCheckpoints: [expect.objectContaining({
+          surfaceId: session.managerSurfaceId, inputState: 'pending',
+        })],
+      },
+    });
+    expect(kill).not.toHaveBeenCalled();
+    expect(useStore.getState().workspaces.flatMap((candidate) => (
+      candidate.splitTree.type === 'leaf' ? candidate.splitTree.surfaces : []
+    )).some((surface) => surface.id === session.managerSurfaceId)).toBe(true);
+    surfaceTerminalRegistry.delete(session.managerSurfaceId!);
+  });
+
+  it('persists a blocked safe-exit state when the first checkpoint save throws', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start', projectDir: 'E:\\safe-exit-persist-failure', goal: '验证安全退出失败恢复',
+      preconditions: ['环境安全'], doneWhen: ['失败状态可恢复'],
+    });
+    const session = useStore.getState().projectManager!;
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [session.managerSurfaceId!]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: 2 },
+    });
+    const projectManagerApi = (globalThis.window as any).wmux.projectManager;
+    projectManagerApi.saveSession.mockRejectedValueOnce(new Error('snapshot write failed'));
+    const kill = vi.fn();
+    (globalThis.window as any).wmux.pty.kill = kill;
+
+    await expect(remote({
+      action: 'save-and-exit', projectId: session.id, reason: '测试持久化失败',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('snapshot write failed') });
+
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'paused',
+      safeExit: { status: 'blocked', error: expect.stringContaining('snapshot write failed') },
+      events: expect.arrayContaining([expect.objectContaining({ kind: 'project-safe-exit-failed' })]),
+    });
+    expect(projectManagerApi.saveSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      safeExit: expect.objectContaining({ status: 'blocked' }),
+    }));
+    expect(kill).not.toHaveBeenCalled();
+    expect(useStore.getState().workspaces.flatMap((candidate) => (
+      candidate.splitTree.type === 'leaf' ? candidate.splitTree.surfaces : []
+    )).some((surface) => surface.id === session.managerSurfaceId)).toBe(true);
   });
 
   it('can skip persisted projects for the current run without deleting them', async () => {

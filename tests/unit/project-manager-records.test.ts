@@ -554,6 +554,7 @@ describe('project manager records', () => {
           label: '项目 AI',
           activityState: 'idle',
           activityUpdatedAt: 25,
+          inputState: 'empty',
           excerpt: '已完成当前安全检查点',
         }],
       },
@@ -562,7 +563,9 @@ describe('project manager records', () => {
     expect(recoveredSession(appData, 'pm-safe-exit')?.safeExit).toMatchObject({
       status: 'saved',
       progressFingerprint: 'fingerprint-1',
-      terminalCheckpoints: [expect.objectContaining({ role: 'project-ai', activityState: 'idle' })],
+      terminalCheckpoints: [expect.objectContaining({
+        role: 'project-ai', activityState: 'idle', inputState: 'empty',
+      })],
     });
   });
 

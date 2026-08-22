@@ -2904,7 +2904,7 @@ export class FeishuSupervisorService {
       }
       return;
     }
-    if (record.type === 'user-clarification-requested') {
+    if (record.type === 'user-clarification-requested' || record.type === 'user-clarification-restored') {
       const question = record.payload?.question;
       if (!question || typeof question !== 'object') return;
       const candidate = question as unknown as FeishuProjectClarification;
@@ -2912,10 +2912,15 @@ export class FeishuSupervisorService {
       void this.enqueueDecisionOperation(() => this.sendProjectClarification(record.sessionId, candidate));
       return;
     }
-    if (record.type === 'user-clarification-answered') {
+    if (record.type === 'user-clarification-answered' || record.type === 'user-clarification-invalidated') {
       const questionId = String(record.payload?.questionId || record.payload?.correlationId || '').trim();
       if (!questionId) return;
-      const resolution = String(record.payload?.answer || record.payload?.message || '用户已答复').trim();
+      const resolution = String(
+        record.payload?.answer
+        || record.payload?.reason
+        || record.payload?.message
+        || (record.type === 'user-clarification-invalidated' ? '恢复时旧问题已失效' : '用户已答复'),
+      ).trim();
       this.removePendingProjectClarification(questionId);
       this.projectQuestionResolutions.set(questionId, resolution);
       void this.resolveProjectClarification(questionId, resolution);
@@ -2948,6 +2953,8 @@ export class FeishuSupervisorService {
       this.queuePendingDecision({ kind: 'project-clarification', projectId, question });
       return;
     }
+    const existing = this.projectQuestionCards.get(question.id);
+    if (existing?.chatId === chatId) return;
     const messageId = await this.sendControlCard(buildProjectClarificationCard(projectId, question), chatId);
     if (!messageId) {
       this.queuePendingDecision({ kind: 'project-clarification', projectId, question });
@@ -2964,7 +2971,7 @@ export class FeishuSupervisorService {
     card.resolving = true;
     await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
       'wmux · 项目确认已提交',
-      `答复：${resolution}\n\n项目仍保持暂停，等待项目管理 AI 决定下一步。`,
+      `处理结果：${resolution}\n\n该问题已关闭；项目将依据当前状态继续恢复，或等待项目管理 AI 决定下一步。`,
       true,
     )).catch(() => undefined);
     this.projectQuestionCards.delete(questionId);

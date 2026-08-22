@@ -98,7 +98,9 @@ export type ProjectManagerEventKind =
   | 'manager-delivery-failed'
   | 'manager-delivery-restored'
   | 'user-clarification-requested'
+  | 'user-clarification-restored'
   | 'user-clarification-answered'
+  | 'user-clarification-invalidated'
   | 'requirements-alignment-required'
   | 'requirements-alignment-confirmed'
   | 'project-definition-updated'
@@ -683,6 +685,7 @@ export interface ProjectSafeExitTerminalCheckpoint {
   workItemId?: string;
   activityState: 'idle' | 'working' | 'blocked' | 'unknown';
   activityUpdatedAt?: number;
+  inputState?: 'empty' | 'pending' | 'unknown';
   excerpt?: string;
 }
 
@@ -1422,6 +1425,9 @@ function normalizeProjectSafeExitState(value: ProjectSafeExitState | undefined):
         ...(checkpoint.workItemId?.trim() ? { workItemId: checkpoint.workItemId.trim().slice(0, 200) } : {}),
         activityState: checkpoint.activityState,
         ...(Number.isFinite(checkpoint.activityUpdatedAt) ? { activityUpdatedAt: checkpoint.activityUpdatedAt } : {}),
+        ...(['empty', 'pending', 'unknown'].includes(checkpoint.inputState || '')
+          ? { inputState: checkpoint.inputState }
+          : {}),
         ...(checkpoint.excerpt?.trim() ? { excerpt: checkpoint.excerpt.trim().slice(0, 4000) } : {}),
       })),
     blockedTerminalIds: (Array.isArray(value.blockedTerminalIds) ? value.blockedTerminalIds : [])

@@ -4979,6 +4979,64 @@ function notifyProjectManagerUserQuestion(
   window.wmux?.notification?.fire({ surfaceId, title, text });
 }
 
+async function reconcileRecoveredProjectQuestion(
+  sessionId: string,
+  recoverySource: 'application-restart' | 'safe-exit',
+): Promise<ProjectManagerSession | undefined> {
+  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
+  const question = current?.pendingUserQuestion;
+  if (!current || !question) return current;
+
+  if (question.reasonCode === 'internal-project-failure') {
+    const updatedAt = Date.now();
+    const next: ProjectManagerSession = {
+      ...current,
+      status: ['active', 'paused', 'waiting'].includes(question.previousStatus)
+        ? question.previousStatus
+        : 'waiting',
+      pendingUserQuestion: undefined,
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        ...(item.id === question.workItemId
+          && item.latestBlocker
+          && (!question.blocker || item.latestBlocker.includes(question.blocker))
+          ? { latestBlocker: undefined, updatedAt }
+          : {}),
+      })),
+      updatedAt,
+    };
+    replaceProjectManagerSession(next);
+    await appendRecordedProjectEvent(next, {
+      kind: 'user-clarification-invalidated',
+      workItemId: question.workItemId,
+      summary: '恢复运行链已使旧内部故障问题失效；控制层将依据当前环境重新检查，不再要求用户重复审批',
+      payload: {
+        questionId: question.id,
+        reasonCode: question.reasonCode,
+        reason: '旧问题绑定的项目 AI、监督 AI 和任务 AI 运行时已经失效，必须由新运行链重新判断',
+        recoverySource,
+        attentionRequired: false,
+        resolvedAttentionKinds: ['guard-triggered'],
+      },
+    });
+    return useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
+  }
+
+  notifyProjectManagerUserQuestion(current, question);
+  await appendRecordedProjectEvent(current, {
+    kind: 'user-clarification-restored',
+    workItemId: question.workItemId,
+    summary: `恢复后仍需用户处理：${question.question}`,
+    payload: {
+      question,
+      questionId: question.id,
+      recoverySource,
+      attentionRequired: false,
+    },
+  });
+  return useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
+}
+
 const pendingProjectManagerDeliveries: PendingProjectManagerDelivery[] = [];
 interface ProjectAgentReconfigurationResult {
   ok: boolean;
@@ -5652,6 +5710,36 @@ function projectRuntimeWorkspaceId(projectId: string): WorkspaceId | undefined {
   ))?.id;
 }
 
+function projectOwnedRuntimeSurfaceIds(projectId: string, seed: readonly string[] = []): string[] {
+  const surfaceIds = new Set(seed.filter(Boolean));
+  for (const workspace of useStore.getState().workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      for (const surface of findLeaf(workspace.splitTree, paneId)?.surfaces || []) {
+        if (surface.type === 'terminal'
+          && (surface.projectManagerProjectId === projectId || surface.projectSupervisorProjectId === projectId)) {
+          surfaceIds.add(surface.id);
+        }
+      }
+    }
+  }
+  return [...surfaceIds];
+}
+
+function projectKnownRuntimeSurfaceIds(session: ProjectManagerSession): string[] {
+  const lanes = useStore.getState().supervisor.lanes.filter((lane) => lane.projectManagerProjectId === session.id);
+  return [...new Set([
+    session.managerSurfaceId,
+    session.taskTerminalSurfaceId,
+    ...lanes.flatMap((lane) => [lane.supervisorSurfaceId, lane.surfaceId]),
+    ...session.workItems.flatMap((item) => [
+      item.workerSurfaceId,
+      ...(item.workerGroup?.workers.map((worker) => worker.surfaceId) || []),
+    ]),
+    ...(session.safeExit?.terminalCheckpoints.map((checkpoint) => checkpoint.surfaceId) || []),
+    ...(session.safeExit?.blockedTerminalIds || []),
+  ].filter((surfaceId): surfaceId is string => !!surfaceId))];
+}
+
 function teardownManagedProject(session: ProjectManagerSession): void {
   const store = useStore.getState();
   for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
@@ -5724,6 +5812,7 @@ function projectSafeExitTerminalCheckpoints(
   ) => {
     if (!surfaceId || !hasLiveSurface(surfaceId as SurfaceId) || checkpoints.has(surfaceId)) return;
     const activity = remoteTerminalActivity(surfaceId as SurfaceId, true);
+    const buffer = surfaceTerminalRegistry.get(surfaceId)?.buffer.active;
     checkpoints.set(surfaceId, {
       surfaceId,
       role,
@@ -5731,6 +5820,7 @@ function projectSafeExitTerminalCheckpoints(
       ...(workItemId ? { workItemId } : {}),
       activityState: activity.activityState,
       ...(activity.activityUpdatedAt ? { activityUpdatedAt: activity.activityUpdatedAt } : {}),
+      inputState: !buffer ? 'unknown' : hasPendingTerminalInput(buffer) ? 'pending' : 'empty',
       ...(includeExcerpt ? {
         excerpt: redactProjectSafeExitExcerpt(
           projectStableTerminalScreen(surfaceId, label, activity.activityState),
@@ -5753,6 +5843,27 @@ function projectSafeExitTerminalCheckpoints(
       add(worker.surfaceId, 'task-ai', `${item.title} · ${worker.workerId}`, item.id);
     }
   }
+  for (const workspace of state.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      for (const surface of findLeaf(workspace.splitTree, paneId)?.surfaces || []) {
+        if (surface.type !== 'terminal'
+          || (surface.projectManagerProjectId !== session.id && surface.projectSupervisorProjectId !== session.id)) {
+          continue;
+        }
+        const role: ProjectSafeExitTerminalCheckpoint['role'] = surface.projectManagerTerminal
+          ? 'project-ai'
+          : surface.projectSupervisorProjectId === session.id
+            ? 'supervisor-ai'
+            : 'task-ai';
+        add(
+          surface.id,
+          role,
+          surface.customTitle || (role === 'project-ai' ? '项目 AI' : role === 'supervisor-ai' ? '监督 AI' : '任务 AI'),
+          surface.projectManagerWorkItemId,
+        );
+      }
+    }
+  }
   for (const checkpoint of session.safeExit?.terminalCheckpoints || []) {
     add(checkpoint.surfaceId, checkpoint.role, checkpoint.label, checkpoint.workItemId);
   }
@@ -5768,7 +5879,13 @@ async function waitForProjectSafeExitCheckpoints(
     const session = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
     if (!session) return [];
     const checkpoints = projectSafeExitTerminalCheckpoints(session, false);
-    if (checkpoints.every((checkpoint) => checkpoint.activityState === 'idle' || checkpoint.activityState === 'blocked')) {
+    if (checkpoints.some((checkpoint) => checkpoint.inputState === 'pending')) {
+      return projectSafeExitTerminalCheckpoints(session, true);
+    }
+    if (checkpoints.every((checkpoint) => (
+      (checkpoint.activityState === 'idle' || checkpoint.activityState === 'blocked')
+      && checkpoint.inputState === 'empty'
+    ))) {
       return projectSafeExitTerminalCheckpoints(session, true);
     }
     if (Date.now() >= deadline) return projectSafeExitTerminalCheckpoints(session, true);
@@ -5776,12 +5893,16 @@ async function waitForProjectSafeExitCheckpoints(
   }
 }
 
-function closeProjectRuntimeAfterSafeExit(projectId: string, surfaceIds: readonly string[]): string[] {
+async function closeProjectRuntimeAfterSafeExit(projectId: string, checkpointSurfaceIds: readonly string[]): Promise<string[]> {
   const store = useStore.getState();
+  const surfaceIds = projectOwnedRuntimeSurfaceIds(projectId, checkpointSurfaceIds);
   const unsafe = surfaceIds.filter((surfaceId) => {
     if (!hasLiveSurface(surfaceId as SurfaceId)) return false;
     const activity = remoteTerminalActivity(surfaceId as SurfaceId, true).activityState;
-    return activity !== 'idle' && activity !== 'blocked';
+    const buffer = surfaceTerminalRegistry.get(surfaceId)?.buffer.active;
+    return (activity !== 'idle' && activity !== 'blocked')
+      || !buffer
+      || hasPendingTerminalInput(buffer);
   });
   if (unsafe.length > 0) return unsafe;
   const lanes = store.supervisor.lanes.filter((lane) => lane.projectManagerProjectId === projectId);
@@ -5789,6 +5910,7 @@ function closeProjectRuntimeAfterSafeExit(projectId: string, surfaceIds: readonl
   for (const surfaceId of new Set(surfaceIds)) {
     cancelPendingAutomatedTerminalSubmit(surfaceId as SurfaceId, true);
     closeLiveSurfaceById(surfaceId as SurfaceId);
+    window.wmux?.pty?.kill?.(surfaceId as SurfaceId);
     clearManagedAgentWatchdog(surfaceId);
   }
   const progressTimer = projectProgressTimers.get(projectId);
@@ -5797,7 +5919,26 @@ function closeProjectRuntimeAfterSafeExit(projectId: string, surfaceIds: readonl
   const alignmentTimer = projectAlignmentTimers.get(projectId);
   if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
   projectAlignmentTimers.delete(projectId);
-  return surfaceIds.filter((surfaceId) => hasLiveSurface(surfaceId as SurfaceId));
+  const ptyHas = (window as any).wmux?.pty?.has as ((surfaceId: string) => Promise<boolean>) | undefined;
+  if (!ptyHas && surfaceIds.length > 0) return surfaceIds;
+  const deadline = Date.now() + 2_000;
+  while (true) {
+    const remaining: string[] = [];
+    for (const surfaceId of surfaceIds) {
+      if (hasLiveSurface(surfaceId as SurfaceId)) {
+        remaining.push(surfaceId);
+        continue;
+      }
+      if (!ptyHas) continue;
+      try {
+        if (await ptyHas(surfaceId)) remaining.push(surfaceId);
+      } catch {
+        remaining.push(surfaceId);
+      }
+    }
+    if (remaining.length === 0 || Date.now() >= deadline) return remaining;
+    await waitForControlPlaneDelay(100);
+  }
 }
 
 async function saveProjectProgressAndExitRuntime(
@@ -5813,12 +5954,37 @@ async function saveProjectProgressAndExitRuntime(
     return { ok: false, error: '已完成或停止的项目没有需要保存的运行时' };
   }
   if (initial.safeExit?.status === 'saved') {
-    return { ok: true, safeExited: true, message: '项目进度已经保存，运行时已安全退出。' };
+    const savedSurfaceIds = projectOwnedRuntimeSurfaceIds(initial.id, projectKnownRuntimeSurfaceIds(initial));
+    const ptyHas = (window as any).wmux?.pty?.has as ((surfaceId: string) => Promise<boolean>) | undefined;
+    let confirmedAbsent = savedSurfaceIds.length === 0;
+    if (savedSurfaceIds.length > 0 && ptyHas) {
+      confirmedAbsent = true;
+      for (const surfaceId of savedSurfaceIds) {
+        if (hasLiveSurface(surfaceId as SurfaceId)) {
+          confirmedAbsent = false;
+          break;
+        }
+        try {
+          if (await ptyHas(surfaceId)) {
+            confirmedAbsent = false;
+            break;
+          }
+        } catch {
+          confirmedAbsent = false;
+          break;
+        }
+      }
+    }
+    if (confirmedAbsent) {
+      return { ok: true, safeExited: true, message: '项目进度已经保存，运行时已确认退出。' };
+    }
   }
 
   savingProjectManagerSessions.add(sessionId);
+  let runtimeCloseConfirmed = false;
   try {
     const requestedAt = initial.safeExit?.requestedAt || Date.now();
+    const initiallyKnownRuntimeSurfaceIds = projectKnownRuntimeSurfaceIds(initial);
     if (initial.status !== 'paused') {
       const paused = useStore.getState().applyProjectManagerAction({
         type: 'pause-project',
@@ -5857,11 +6023,18 @@ async function saveProjectProgressAndExitRuntime(
 
     const checkpoints = await waitForProjectSafeExitCheckpoints(sessionId);
     const blocked = checkpoints.filter((checkpoint) => (
-      checkpoint.activityState !== 'idle' && checkpoint.activityState !== 'blocked'
+      (checkpoint.activityState !== 'idle' && checkpoint.activityState !== 'blocked')
+      || checkpoint.inputState !== 'empty'
     ));
     if (blocked.length > 0) {
       const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId)!;
-      const error = `仍有 ${blocked.length} 个终端未到达安全检查点：${blocked.map((item) => item.label).join('、')}`;
+      const pendingInput = blocked.filter((checkpoint) => checkpoint.inputState === 'pending');
+      const unknownInput = blocked.filter((checkpoint) => checkpoint.inputState === 'unknown');
+      const error = pendingInput.length > 0
+        ? `仍有 ${pendingInput.length} 个终端存在未提交输入：${pendingInput.map((item) => item.label).join('、')}`
+        : unknownInput.length > 0
+          ? `仍有 ${unknownInput.length} 个终端无法确认输入框状态：${unknownInput.map((item) => item.label).join('、')}`
+          : `仍有 ${blocked.length} 个终端未到达安全检查点：${blocked.map((item) => item.label).join('、')}`;
       replaceProjectManagerSession({
         ...current,
         safeExit: {
@@ -5920,10 +6093,17 @@ async function saveProjectProgressAndExitRuntime(
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId)!;
     const finalCheckpoints = projectSafeExitTerminalCheckpoints(current, true);
     const finalBlocked = finalCheckpoints.filter((checkpoint) => (
-      checkpoint.activityState !== 'idle' && checkpoint.activityState !== 'blocked'
+      (checkpoint.activityState !== 'idle' && checkpoint.activityState !== 'blocked')
+      || checkpoint.inputState !== 'empty'
     ));
     if (finalBlocked.length > 0) {
-      const error = `保存快照期间有 ${finalBlocked.length} 个终端重新进入活动状态：${finalBlocked.map((item) => item.label).join('、')}`;
+      const finalPendingInput = finalBlocked.filter((checkpoint) => checkpoint.inputState === 'pending');
+      const finalUnknownInput = finalBlocked.filter((checkpoint) => checkpoint.inputState === 'unknown');
+      const error = finalPendingInput.length > 0
+        ? `保存快照期间有 ${finalPendingInput.length} 个终端出现未提交输入：${finalPendingInput.map((item) => item.label).join('、')}`
+        : finalUnknownInput.length > 0
+          ? `保存快照期间有 ${finalUnknownInput.length} 个终端无法确认输入框状态：${finalUnknownInput.map((item) => item.label).join('、')}`
+          : `保存快照期间有 ${finalBlocked.length} 个终端重新进入活动状态：${finalBlocked.map((item) => item.label).join('、')}`;
       replaceProjectManagerSession({
         ...current,
         safeExit: {
@@ -5945,32 +6125,39 @@ async function saveProjectProgressAndExitRuntime(
       });
       return { ok: true, safeExited: false, message: `${error}。项目保持暂停且未关闭，可稍后重试。` };
     }
-    const completedAt = Date.now();
-    const detached = restoredProjectManagerSession({
+    const runtimeSurfaceIds = [...new Set([
+      ...initiallyKnownRuntimeSurfaceIds,
+      ...projectKnownRuntimeSurfaceIds(current),
+    ])];
+    const checkpointSurfaceIds = new Set(finalCheckpoints.map((checkpoint) => checkpoint.surfaceId));
+    const durableCheckpoints = [
+      ...finalCheckpoints,
+      ...(initial.safeExit?.terminalCheckpoints || []).filter((checkpoint) => {
+        if (checkpointSurfaceIds.has(checkpoint.surfaceId)) return false;
+        checkpointSurfaceIds.add(checkpoint.surfaceId);
+        return true;
+      }),
+    ].slice(0, 100);
+    const checkpointedAt = Date.now();
+    const checkpointed = restoredProjectManagerSession({
       ...current,
       safeExit: {
-        status: 'saved',
+        status: 'saving',
         requestedAt,
-        updatedAt: completedAt,
-        completedAt,
+        updatedAt: checkpointedAt,
         reason,
         progressFingerprint: current.progressSnapshot?.fingerprint,
-        terminalCheckpoints: finalCheckpoints,
+        terminalCheckpoints: durableCheckpoints,
       },
-      updatedAt: completedAt,
+      updatedAt: checkpointedAt,
     }, undefined, 'safe-exit');
-    replaceProjectManagerSession(detached);
-    await appendRecordedProjectEvent(detached, {
-      kind: 'project-safe-exit-completed',
-      summary: `项目进度已保存，${finalCheckpoints.length} 个运行终端已形成恢复检查点`,
-      payload: {
-        terminalCount: finalCheckpoints.length,
-        progressFingerprint: detached.progressSnapshot?.fingerprint,
-        resolvedAttentionKinds: ['project-safe-exit-failed'],
-      },
-    });
+    replaceProjectManagerSession(checkpointed);
+    await (window as any).wmux?.projectManager?.saveSession?.(checkpointed);
 
-    const stillLive = closeProjectRuntimeAfterSafeExit(sessionId, finalCheckpoints.map((item) => item.surfaceId));
+    const stillLive = await closeProjectRuntimeAfterSafeExit(sessionId, [
+      ...runtimeSurfaceIds,
+      ...durableCheckpoints.map((item) => item.surfaceId),
+    ]);
     if (stillLive.length > 0) {
       const latest = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId)!;
       const error = `以下终端未能关闭：${stillLive.join('、')}`;
@@ -5993,6 +6180,30 @@ async function saveProjectProgressAndExitRuntime(
       });
       return { ok: true, safeExited: false, message: `${error}。项目保持暂停，可重试关闭。` };
     }
+    runtimeCloseConfirmed = true;
+    const completedAt = Date.now();
+    const saved: ProjectManagerSession = {
+      ...(useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId) || checkpointed),
+      safeExit: {
+        ...checkpointed.safeExit!,
+        status: 'saved',
+        updatedAt: completedAt,
+        completedAt,
+        blockedTerminalIds: undefined,
+        error: undefined,
+      },
+      updatedAt: completedAt,
+    };
+    replaceProjectManagerSession(saved);
+    await appendRecordedProjectEvent(saved, {
+      kind: 'project-safe-exit-completed',
+      summary: `项目进度已保存，${durableCheckpoints.length} 个运行终端已形成恢复检查点且已确认退出`,
+      payload: {
+        terminalCount: durableCheckpoints.length,
+        progressFingerprint: saved.progressSnapshot?.fingerprint,
+        resolvedAttentionKinds: ['project-safe-exit-failed'],
+      },
+    });
     return {
       ok: true,
       safeExited: true,
@@ -6002,7 +6213,10 @@ async function saveProjectProgressAndExitRuntime(
     const message = String((error as Error)?.message || error || '未知错误');
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
     if (current) {
-      replaceProjectManagerSession({
+      const failureSummary = runtimeCloseConfirmed
+        ? `运行时已退出，但安全退出完成状态持久化失败：${message}`
+        : `保存项目进度失败：${message}`;
+      const failed: ProjectManagerSession = {
         ...current,
         safeExit: {
           status: 'blocked',
@@ -6011,14 +6225,34 @@ async function saveProjectProgressAndExitRuntime(
           reason,
           terminalCheckpoints: current.safeExit?.terminalCheckpoints || [],
           blockedTerminalIds: current.safeExit?.blockedTerminalIds,
-          error: `保存项目进度失败：${message}`,
+          error: failureSummary,
         },
         updatedAt: Date.now(),
-      });
+      };
+      replaceProjectManagerSession(failed);
+      try {
+        await appendRecordedProjectEvent(failed, {
+          kind: 'project-safe-exit-failed',
+          summary: failureSummary,
+          payload: {
+            attentionRequired: true,
+            phase: runtimeCloseConfirmed ? 'completion-persistence' : 'unexpected-error',
+          },
+        });
+      } catch {
+        const latest = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId) || failed;
+        try {
+          await (window as any).wmux?.projectManager?.saveSession?.(latest);
+        } catch {
+          /* The returned error remains authoritative when even fallback persistence is unavailable. */
+        }
+      }
     }
     return {
       ok: false,
-      error: `保存项目进度失败：${message}。项目保持暂停，运行时未被强制关闭，可重试保存。`,
+      error: runtimeCloseConfirmed
+        ? `项目进度已保存且运行时已退出，但完成状态记录失败：${message}。可从已保存检查点恢复。`
+        : `保存项目进度失败：${message}。项目保持暂停，运行时未被强制关闭，可重试保存。`,
     };
   } finally {
     savingProjectManagerSessions.delete(sessionId);
@@ -11413,6 +11647,7 @@ export function initPipeBridge(): void {
         }));
         useStore.getState().restoreProjectManagers(recoveredSessions, recoveredSessions[0]?.id);
         for (const session of recoveredSessions) {
+          await reconcileRecoveredProjectQuestion(session.id, 'application-restart');
           const currentSituation = currentSituations.get(session.id);
           if (currentSituation) {
             const changeSignal = projectMessageChangeSignal(currentSituation);
@@ -12094,10 +12329,11 @@ export function initPipeBridge(): void {
         return { ok: true, restoring: true, message: '项目恢复链已经启动，正在重建认知基线和执行链。' };
       }
       if (action === 'resume' && session.safeExit?.status === 'saved') {
+        const reconciled = await reconcileRecoveredProjectQuestion(session.id, 'safe-exit') || session;
         const restoring = {
-          ...session,
+          ...reconciled,
           safeExit: {
-            ...session.safeExit,
+            ...reconciled.safeExit!,
             status: 'restoring' as const,
             updatedAt: Date.now(),
             error: undefined,
@@ -12112,7 +12348,7 @@ export function initPipeBridge(): void {
           const failed = {
             ...latest,
             safeExit: {
-              ...session.safeExit,
+              ...reconciled.safeExit!,
               status: 'saved' as const,
               updatedAt: Date.now(),
               error: runtime.error || '项目恢复运行时启动失败',
