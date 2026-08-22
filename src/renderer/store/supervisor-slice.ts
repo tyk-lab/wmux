@@ -9,7 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
-import type { ProjectSupervisorStagePlan, ProjectWorkerRole } from '../../shared/project-manager';
+import type { ProjectCompletionResult, ProjectSupervisorStagePlan, ProjectWorkerRole } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -29,6 +29,8 @@ export interface SupervisorDecision {
   next: string;
   /** Supervisor-owned execution plan snapshot; one milestone means direct execution. */
   plan?: ProjectSupervisorStagePlan;
+  /** Final result attached only to a complete decision. */
+  completion?: ProjectCompletionResult;
 }
 
 /** A lifecycle fact waiting to be delivered to this lane's dedicated supervisor. */

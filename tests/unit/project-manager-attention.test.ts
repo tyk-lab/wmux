@@ -59,5 +59,9 @@ describe('project manager attention events', () => {
       completedGoalAlert,
       { kind: 'project-resumed' as const, ts: 8 },
     ])).toBeUndefined();
+    expect(activeProjectManagerAttentionEvent([
+      completedGoalAlert,
+      { kind: 'project-goal-completion-invalidated' as const, ts: 9 },
+    ])).toBeUndefined();
   });
 });

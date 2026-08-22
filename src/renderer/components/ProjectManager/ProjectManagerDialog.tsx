@@ -5,6 +5,8 @@ import {
   activeProjectSubgoals,
   MAX_PROJECT_PLAN_FILES,
   projectDisplayName,
+  projectSubgoalCompletionResult,
+  projectWorkItemCompletionResult,
   type ProjectPlanFileSnapshot,
 } from '../../../shared/project-manager';
 import {
@@ -15,6 +17,7 @@ import {
 } from '../../../shared/project-manager-terminal';
 import type { SplitNode } from '../../../shared/types';
 import { projectDefinitionLines as conditionLines } from '../../project-manager/definition-lines';
+import { formatProjectCompletionCriteria } from '../../project-manager/completion-display';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import { useStore } from '../../store';
 import { supervisorLaneControlState } from '../../store/supervisor-slice';
@@ -443,7 +446,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setCreating(false);
       return;
     }
-    if (dialogView === 'create' || sessions.length === 0) setCreating(true);
+    if (dialogView === 'create' || sessions.length === 0) {
+      setCreating(true);
+    } else {
+      setCreating(false);
+    }
     if (dialogView === 'create') setNotice('');
   }, [dialogOpen, dialogView, embedded, sessions.length]);
 
@@ -498,13 +505,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   useEffect(() => {
     setClarificationOptionId('');
     setClarificationAnswer('');
-    if (!session?.pendingUserQuestion) return undefined;
+    if (!open || !session?.pendingUserQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => {
       clarificationRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
       clarificationRef.current?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [session?.pendingUserQuestion?.id]);
+  }, [open, session?.pendingUserQuestion?.id]);
 
   useEffect(() => {
     if (!open || activeView !== 'conversation' || conversation.length === 0) return undefined;
@@ -1190,7 +1197,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             </section>
           )}
 
-          {embedded && session?.pendingUserQuestion && !creating && (
+          {session?.pendingUserQuestion && !creating && (
             <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
               <div className="supervisor-dialog__group-title">{session.pendingUserQuestion.category === 'manual-intervention' ? '项目阻塞，需要你指示' : '项目管理 AI 邀请你对齐需求'}</div>
               <div className="project-manager-dialog__clarification-question">{session.pendingUserQuestion.question}</div>
@@ -1490,16 +1497,26 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div className="supervisor-dialog__hint">阶段目标由项目 AI 维护，只描述粗粒度成果、依赖和验收；具体终端任务由项目 AI 和专属监督继续拆分。</div>
                 <div className="project-manager-dialog__work-items">
                   {currentSubgoals.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未提交阶段计划，当前主目标不能启动新的监督任务。</div>}
-                  {currentSubgoals.map((subgoal) => (
-                    <details key={subgoal.id} open={subgoal.status === 'active' || subgoal.status === 'blocked'}>
-                      <summary><strong>S{subgoal.order} · {subgoal.title}</strong><span>{STATUS_LABELS[subgoal.status] || subgoal.status}</span></summary>
-                      <dl>
-                        <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
-                        <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
-                        <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
-                      </dl>
-                    </details>
-                  ))}
+                  {currentSubgoals.map((subgoal) => {
+                    const completion = projectSubgoalCompletionResult(subgoal, currentWorkItems);
+                    return (
+                      <details key={subgoal.id} open={subgoal.status === 'active' || subgoal.status === 'blocked'}>
+                        <summary><strong>S{subgoal.order} · {subgoal.title}</strong><span>{STATUS_LABELS[subgoal.status] || subgoal.status}</span></summary>
+                        <dl>
+                          <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
+                          <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
+                          <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
+                          {completion && <>
+                            <dt>完成结果</dt><dd>{completion.summary}</dd>
+                            <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
+                            <dt>完成证据</dt><dd>{completion.evidence || '结果摘要已记录'}</dd>
+                            {!!completion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(completion)}</dd></>}
+                            <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+                          </>}
+                        </dl>
+                      </details>
+                    );
+                  })}
                 </div>
                 {obsoleteSubgoals.length > 0 && <details className="project-manager-dialog__history">
                   <summary>历史已取消阶段（{obsoleteSubgoals.length}）</summary>
@@ -1570,6 +1587,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   {currentSubgoals.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未提交当前目标的阶段规划。</div>}
                   {currentSubgoals.map((subgoal) => {
                     const stageWorkItems = currentWorkItems.filter((item) => item.subgoalId === subgoal.id);
+                    const completion = projectSubgoalCompletionResult(subgoal, stageWorkItems);
                     return (
                       <details key={subgoal.id} open={subgoal.status === 'active' || subgoal.status === 'blocked'}>
                         <summary><strong>S{subgoal.order} · {subgoal.title}</strong><span>{STATUS_LABELS[subgoal.status] || subgoal.status}</span></summary>
@@ -1578,6 +1596,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
                           <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
                           <dt>工作项安排</dt><dd>{stageWorkItems.length > 0 ? stageWorkItems.map((item) => `${item.title}（${STATUS_LABELS[item.status] || item.status}）`).join('\n') : '尚未拆分工作项'}</dd>
+                          {completion && <>
+                            <dt>完成结果</dt><dd>{completion.summary}</dd>
+                            <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
+                            <dt>完成证据</dt><dd>{completion.evidence || '结果摘要已记录'}</dd>
+                            {!!completion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(completion)}</dd></>}
+                            <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+                          </>}
                         </dl>
                       </details>
                     );
@@ -1605,11 +1630,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       baselineStatus: item.baseline?.status,
                     });
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
+                    const itemCompletion = projectWorkItemCompletionResult(item);
                     const latestIntervention = [...decisions].reverse().find((event) => (
                       event.kind === 'user-work-item-intervention'
                     ));
                     const intervention = latestIntervention?.payload?.intervention;
-                    const statusLabel = item.status === 'stopped' && intervention === 'skip'
+                    const statusLabel = item.supersededByWorkItemId
+                      ? '已冻结并接续'
+                      : item.status === 'stopped' && intervention === 'skip'
                       ? '已跳过'
                       : item.status === 'stopped' && intervention === 'close'
                         ? '已关闭'
@@ -1635,6 +1663,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <strong>{item.title}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
+                          {item.predecessorWorkItemId && <><dt>接续来源</dt><dd>{item.predecessorWorkItemId}（{item.successionReason === 'budget-exhausted' ? '前驱预算耗尽' : '执行协议迁移'}）</dd></>}
+                          {item.supersededByWorkItemId && <><dt>审计冻结</dt><dd>预算与执行历史保持不变；仅由后继 {item.supersededByWorkItemId} 继续。</dd></>}
                           <dt>执行模式</dt><dd>{taskWorkModeLabel(item.parallelismDecision?.resolvedMode || execution?.parallelismSelection, execution?.taskWorkMode)}{item.parallelismDecision ? `：${item.parallelismDecision.reason}` : execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
                           {(execution?.parallelismSelection === 'auto' || execution?.taskWorkMode === 'adaptive') && !item.parallelismDecision && <><dt>自动选择边界</dt><dd>基线批准时只会选择一种模式；可并行：{execution.parallelizableOperations?.join('；') || '无'}；必须串行：{execution.serializedOperations?.join('；') || '共享写入、硬件与最终集成'}</dd></>}
                           {item.workerGroup && <><dt>任务 AI 组</dt><dd>{item.workerGroup.workers.map((worker) => `${worker.workerId}（${worker.role}／${STATUS_LABELS[worker.status] || worker.status}）`).join('；')}</dd><dt>合并状态</dt><dd>候选 {item.mergeCandidates?.length || 0}；活动租约 {(item.resourceLeases || []).filter((lease) => !['released', 'quarantined'].includes(lease.status)).length}；待协调直发 {(item.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending').length}；最终应用{item.finalApplyBlocked ? '已锁定' : '已完成'}</dd></>}
@@ -1645,6 +1675,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : '等待形成正式路线'}</dd>
                           <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；多任务 AI 聚合 {item.contract.budget.maxAggregateWorkerMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
+                          {itemCompletion && <>
+                            <dt>完成结果</dt><dd>{itemCompletion.summary}</dd>
+                            <dt>完成验证</dt><dd>{itemCompletion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
+                            <dt>完成证据</dt><dd>{itemCompletion.evidence || item.latestEvidence || '结果摘要已记录'}</dd>
+                            {!!itemCompletion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(itemCompletion)}</dd></>}
+                            <dt>完成时间</dt><dd>{new Date(itemCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+                          </>}
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
                           <dt>阻塞原因</dt><dd>{item.latestBlocker || '无'}</dd>

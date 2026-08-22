@@ -774,7 +774,7 @@ export function buildSupervisorBriefing(
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
       '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
       '3. 任务 AI 每轮结束应提供“[本轮结果]”结构化交接，至少包含完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出必须落到项目内日志或证据文件并报告路径。缺少交接时先结合冻结证据和工程事实补证，不得仅凭屏幕末尾猜测。',
-      '4. 只有完整阶段的全部停止条件与验证要求均满足且没有剩余工作时才提交 complete，并按项目合同附完整 completion checklist；P0/P1/P2、单条命令、单次测试或任务 AI 回合结束都使用 continue / rework 直接推进。异常、外部阻塞、需要人工/项目级决策或预算耗尽使用 needs-human，不得静默等待。',
+      '4. 只有完整阶段的全部停止条件与验证要求均形成可收敛结论且没有剩余工作时才提交 complete。项目监督必须先在 .wmux/tmp/ 创建完成核验 JSON，并用 --completion-file 提交：stopWhen/validation 分别逐项填写 {"index":编号,"status":"satisfied|unsatisfied|unverified","result":"passed|failed|inconclusive|not-run","method":"runtime-test|static-check|evidence-review","evidence":"该项结论","evidenceRefs":["实际结果文件"]}，remainingWork 使用数组。status 判断条件本身是否满足，result 记录测试结果；明确失败可以完成“执行/评估测试”类条件，但不能完成明确要求通过的条件。只读检查不得冒充上机实测。控制层会实际读取 evidenceRefs 并计算内容哈希；任一 unsatisfied、unverified、inconclusive、not-run、不可读证据或非空 remainingWork 都不得 complete。',
       ...(isProjectManagedSupervisorLane(lane) ? [
         '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
       ] : []),

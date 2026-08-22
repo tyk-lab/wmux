@@ -306,6 +306,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'complete' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'supervisor.completion.verify': {
+    js: (p) => `window.__wmux_supervisorVerifyCompletionEvidence?.(${S(p || {})})`,
+    requireResult: 'Supervisor completion evidence verifier is unavailable',
+  },
   'project.reply': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'reply' })})`,
     requireResult: 'Project manager bridge is unavailable',

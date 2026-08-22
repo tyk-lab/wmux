@@ -4,9 +4,11 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   cleanupSupervisorNextInput,
+  cleanupSupervisorCompletionInput,
   cleanupSupervisorStagePlanInput,
   isSupervisorDecideHelp,
   resolveSupervisorNextInput,
+  resolveSupervisorCompletionInput,
   resolveSupervisorStagePlanInput,
   SUPERVISOR_DECIDE_USAGE,
 } from '../../src/cli/supervisor-command';
@@ -36,10 +38,38 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--outcome <continue|rework|complete|needs-human>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--remaining-work <none|text>');
+  });
+
+  it('reads and cleans structured completion evidence from .wmux/tmp', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'completion.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      stopWhen: [{
+        index: 1, status: 'satisfied', result: 'failed', method: 'runtime-test',
+        evidence: '已执行并形成明确失败结论', evidenceRefs: ['runs/run-1/result.json'],
+      }],
+      validation: [{
+        index: 1, status: 'satisfied', result: 'passed', method: 'evidence-review',
+        evidence: '验证证据已复核', evidenceRefs: ['runs/run-1/result.json'],
+      }],
+      remainingWork: [],
+    }), 'utf8');
+
+    const input = resolveSupervisorCompletionInput([
+      'supervisor', 'decide', '--completion-file', '.wmux/tmp/completion.json',
+    ], project);
+
+    expect(input.value).toMatchObject({ remainingWork: [] });
+    expect(input.fileReference).toBe('.wmux/tmp/completion.json');
+    cleanupSupervisorCompletionInput(input, true);
+    expect(fs.existsSync(draftPath)).toBe(false);
   });
 
   it('reads and cleans a structured supervisor stage plan from .wmux/tmp', () => {

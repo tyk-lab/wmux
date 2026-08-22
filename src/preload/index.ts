@@ -299,6 +299,7 @@ contextBridge.exposeInMainWorld('wmux', {
       'project-manager:capture-progress',
       { projectDir, planFilePaths },
     ),
+    verifyEvidenceRefs: (request: any) => ipcRenderer.invoke('project-manager:verify-evidence-refs', request),
     pickPlanFiles: () => ipcRenderer.invoke('project-manager:pick-plan-files'),
     readPlanFiles: (filePaths: string[]) => ipcRenderer.invoke('project-manager:read-plan-files', filePaths),
     appendRecord: (record: any) => ipcRenderer.invoke('project-manager:append-record', record),

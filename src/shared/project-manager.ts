@@ -4,7 +4,7 @@ import type { ProjectManagementAgentConfig } from './project-manager-terminal';
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 /** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
-export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 3;
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 6;
 
 export const PROJECT_PARALLELISM_SELECTIONS = [
   'auto',
@@ -106,6 +106,7 @@ export type ProjectManagerEventKind =
   | 'project-definition-updated'
   | 'project-subgoals-updated'
   | 'project-goal-completed'
+  | 'project-goal-completion-invalidated'
   | 'project-preconditions-updated'
   | 'supervisor-decision'
   | 'guard-triggered'
@@ -400,6 +401,37 @@ export interface ProjectExecutionRecord {
   escalationBoundary?: ProjectEscalationBoundary;
 }
 
+export type ProjectCriterionVerificationStatus = 'satisfied' | 'unsatisfied' | 'unverified';
+export type ProjectCriterionResult = 'passed' | 'failed' | 'inconclusive' | 'not-run';
+export type ProjectCriterionMethod = 'runtime-test' | 'static-check' | 'evidence-review';
+
+export interface ProjectEvidenceArtifact {
+  ref: string;
+  sizeBytes: number;
+  mtimeMs: number;
+  sha256: string;
+}
+
+/** One explicit acceptance judgment. `satisfied` is the only status that can close a stage or goal. */
+export interface ProjectCriterionVerification {
+  criterion: string;
+  status: ProjectCriterionVerificationStatus;
+  result: ProjectCriterionResult;
+  method: ProjectCriterionMethod;
+  evidence: string;
+  evidenceRefs: string[];
+  evidenceArtifacts?: ProjectEvidenceArtifact[];
+}
+
+/** Final result reported by a supervisor or aggregated for a project stage. */
+export interface ProjectCompletionResult {
+  summary: string;
+  validation: string[];
+  evidence?: string;
+  criteria?: ProjectCriterionVerification[];
+  completedAt: number;
+}
+
 export type ProjectSupervisorMilestoneStatus = 'planned' | 'active' | 'completed';
 
 export interface ProjectSupervisorMilestone {
@@ -532,10 +564,15 @@ export interface ProjectSubgoal {
   order: number;
   createdAt: number;
   updatedAt: number;
+  completion?: ProjectCompletionResult;
 }
 
 export interface ProjectWorkItem {
   id: string;
+  /** Immutable predecessor/successor audit chain owned by the control plane. */
+  predecessorWorkItemId?: string;
+  supersededByWorkItemId?: string;
+  successionReason?: 'protocol-migration' | 'budget-exhausted';
   /** Immutable main-goal ownership. Old-goal tasks cannot be rebound across a pivot. */
   goalId?: string;
   /** Coarse project-AI stage that owns this executable task. */
@@ -570,10 +607,200 @@ export interface ProjectWorkItem {
   startedAt?: number;
   updatedAt: number;
   completedAt?: number;
+  completion?: ProjectCompletionResult;
   executionHistory: ProjectExecutionRecord[];
   latestEvidence?: string;
   latestContextSummary?: string;
   latestBlocker?: string;
+}
+
+export function normalizeProjectCompletionResult(
+  value: ProjectCompletionResult | undefined,
+): ProjectCompletionResult | undefined {
+  if (!value || !Number.isFinite(value.completedAt)) return undefined;
+  const summary = String(value.summary || '').trim().slice(0, 12_000);
+  if (!summary) return undefined;
+  const validation = [...new Set((Array.isArray(value.validation) ? value.validation : [])
+    .map((item) => String(item || '').trim().slice(0, 4000))
+    .filter(Boolean))].slice(0, 20);
+  const evidence = String(value.evidence || '').trim().slice(0, 12_000) || undefined;
+  const criteria = (Array.isArray(value.criteria) ? value.criteria : []).slice(0, 100).flatMap((item) => {
+    const criterion = String(item?.criterion || '').trim().slice(0, 4000);
+    const status = String(item?.status || '').trim() as ProjectCriterionVerificationStatus;
+    const result = String(item?.result || '').trim() as ProjectCriterionResult;
+    const method = String(item?.method || '').trim() as ProjectCriterionMethod;
+    const criterionEvidence = String(item?.evidence || '').trim().slice(0, 12_000);
+    const evidenceRefs = [...new Set((Array.isArray(item?.evidenceRefs) ? item.evidenceRefs : [])
+      .map((entry) => String(entry || '').trim().replace(/\\/g, '/').slice(0, 500))
+      .filter(Boolean))].slice(0, 20);
+    const evidenceArtifacts = (Array.isArray(item?.evidenceArtifacts) ? item.evidenceArtifacts : [])
+      .slice(0, 20).flatMap((artifact) => {
+        const ref = String(artifact?.ref || '').trim().replace(/\\/g, '/').slice(0, 500);
+        const sizeBytes = Number(artifact?.sizeBytes);
+        const mtimeMs = Number(artifact?.mtimeMs);
+        const sha256 = String(artifact?.sha256 || '').trim().toLowerCase();
+        return ref
+          && Number.isFinite(sizeBytes) && sizeBytes > 0
+          && Number.isFinite(mtimeMs) && mtimeMs >= 0
+          && /^[a-f0-9]{64}$/u.test(sha256)
+          ? [{ ref, sizeBytes, mtimeMs, sha256 }]
+          : [];
+      });
+    return criterion
+      && criterionEvidence
+      && ['satisfied', 'unsatisfied', 'unverified'].includes(status)
+      && ['passed', 'failed', 'inconclusive', 'not-run'].includes(result)
+      && ['runtime-test', 'static-check', 'evidence-review'].includes(method)
+      && evidenceRefs.length > 0
+      ? [{
+          criterion, status, result, method, evidence: criterionEvidence, evidenceRefs,
+          ...(evidenceArtifacts.length > 0 ? { evidenceArtifacts } : {}),
+        }]
+      : [];
+  });
+  return {
+    summary,
+    validation,
+    ...(evidence ? { evidence } : {}),
+    ...(criteria.length > 0 ? { criteria } : {}),
+    completedAt: value.completedAt,
+  };
+}
+
+export function projectCriterionIdentity(value: string): string {
+  return value.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+export function projectCriterionRequiresRuntimeTest(value: string): boolean {
+  return /(?:上机|实机|复测|实际运行|硬件测试|设备测试|执行.{0,20}(?:测试|验证)|(?:双向|重复一致性).{0,20}(?:测试|验证))/iu.test(value);
+}
+
+export function projectCriterionRequiresPassingResult(value: string): boolean {
+  return /(?:通过|达标|合格|成功|无\s*(?:FAIL|失败)|(?:满足|低于|不超过).{0,20}(?:阈值|标准|要求)|\bPASS\b)/iu.test(value);
+}
+
+/** Reject incomplete, inconclusive, unverified, duplicate, or unrelated acceptance claims. */
+export function projectCompletionCriteriaError(
+  expected: readonly string[],
+  completion: ProjectCompletionResult | undefined,
+  label = '验收条件',
+  options: { allowExtra?: boolean; requireArtifacts?: boolean } = {},
+): string | null {
+  const required = expected.map((criterion) => ({
+    criterion,
+    identity: projectCriterionIdentity(criterion),
+  })).filter((entry) => !!entry.identity);
+  if (required.length === 0) return null;
+  const checks = normalizeProjectCompletionResult(completion)?.criteria || [];
+  if (checks.length === 0) return `${label}缺少逐项结构化核验，不能完成`;
+  const seen = new Set<string>();
+  for (const check of checks) {
+    const identity = projectCriterionIdentity(check.criterion);
+    if (seen.has(identity)) return `${label}存在重复核验项：${check.criterion}`;
+    seen.add(identity);
+  }
+  if (!options.allowExtra) {
+    const unrelated = checks.find((check) => (
+      !required.some((entry) => entry.identity === projectCriterionIdentity(check.criterion))
+    ));
+    if (unrelated) return `${label}包含不属于当前合同的核验项：${unrelated.criterion}`;
+  }
+  for (const entry of required) {
+    const check = checks.find((candidate) => projectCriterionIdentity(candidate.criterion) === entry.identity);
+    if (!check) return `${label}尚未核验：${entry.criterion}`;
+    if (check.status !== 'satisfied') {
+      return `${label}未满足：${entry.criterion}（status=${check.status}, result=${check.result}, method=${check.method}：${check.evidence}）`;
+    }
+    if (check.result === 'not-run' || check.result === 'inconclusive') {
+      return `${label}尚无可收敛结论：${entry.criterion}（result=${check.result}, method=${check.method}：${check.evidence}）`;
+    }
+    if (projectCriterionRequiresRuntimeTest(entry.criterion) && check.method !== 'runtime-test') {
+      return `${label}要求实际运行/实机证据，${check.method} 不能代替：${entry.criterion}`;
+    }
+    if (check.result === 'failed' && projectCriterionRequiresPassingResult(entry.criterion)) {
+      return `${label}明确要求通过/达标，失败结果不能满足：${entry.criterion}`;
+    }
+    if (!check.evidence.trim()) return `${label}缺少证据：${entry.criterion}`;
+    if (check.evidenceRefs.length === 0) return `${label}缺少实际证据引用：${entry.criterion}`;
+    if (options.requireArtifacts && check.evidenceRefs.some((ref) => (
+      !check.evidenceArtifacts?.some((artifact) => artifact.ref === ref)
+    ))) {
+      return `${label}的实际证据尚未由控制层读取并记录内容哈希：${entry.criterion}`;
+    }
+  }
+  return null;
+}
+
+/** Present pre-upgrade completed work without mutating its historical record. */
+export function projectWorkItemCompletionResult(item: ProjectWorkItem): ProjectCompletionResult | undefined {
+  const stored = normalizeProjectCompletionResult(item.completion);
+  if (stored) return stored;
+  if (!['validating', 'completed'].includes(item.status)) return undefined;
+  const summary = item.latestContextSummary?.trim() || item.latestEvidence?.trim();
+  if (!summary) return undefined;
+  return {
+    summary: summary.slice(0, 12_000),
+    validation: item.contract.validation.slice(0, 20),
+    ...(item.latestEvidence?.trim() ? { evidence: item.latestEvidence.trim().slice(0, 12_000) } : {}),
+    completedAt: item.completedAt || item.updatedAt,
+  };
+}
+
+/** Preserve old completed projects by deriving a stage result from their completed work items. */
+export function projectSubgoalCompletionResult(
+  subgoal: Pick<ProjectSubgoal, 'id' | 'status' | 'updatedAt' | 'completion'>,
+  workItems: readonly ProjectWorkItem[],
+): ProjectCompletionResult | undefined {
+  const stored = normalizeProjectCompletionResult(subgoal.completion);
+  if (stored) return stored;
+  if (subgoal.status !== 'achieved') return undefined;
+  const completedItems = workItems.filter((item) => (
+    item.subgoalId === subgoal.id && (item.status === 'completed' || !!item.completion)
+  ));
+  const summaries = completedItems.map((item) => (
+    projectWorkItemCompletionResult(item)?.summary
+    || ''
+  )).filter(Boolean);
+  const validation = [...new Set(completedItems.flatMap((item) => {
+    const completion = projectWorkItemCompletionResult(item);
+    return completion?.validation.length
+      ? completion.validation
+      : item.latestEvidence?.trim() ? [item.latestEvidence.trim()] : [];
+  }))].slice(0, 20);
+  const evidence = completedItems.map((item) => (
+    projectWorkItemCompletionResult(item)?.evidence || item.latestEvidence || ''
+  )).filter(Boolean).join('\n').slice(0, 12_000) || undefined;
+  const criteria = new Map<string, ProjectCriterionVerification>();
+  for (const check of completedItems.flatMap((item) => (
+    projectWorkItemCompletionResult(item)?.criteria || []
+  ))) {
+    const identity = projectCriterionIdentity(check.criterion);
+    const previous = criteria.get(identity);
+    criteria.set(identity, previous ? {
+      ...previous,
+      status: previous.status === 'satisfied' && check.status === 'satisfied'
+        ? 'satisfied'
+        : previous.status === 'unsatisfied' || check.status === 'unsatisfied' ? 'unsatisfied' : 'unverified',
+      result: previous.result === check.result ? previous.result : 'inconclusive',
+      method: previous.method === check.method ? previous.method : 'evidence-review',
+      evidence: `${previous.evidence}\n${check.evidence}`.slice(0, 12_000),
+      evidenceRefs: [...new Set([...previous.evidenceRefs, ...check.evidenceRefs])].slice(0, 20),
+      evidenceArtifacts: [...(previous.evidenceArtifacts || []), ...(check.evidenceArtifacts || [])]
+        .filter((artifact, index, all) => all.findIndex((candidate) => candidate.ref === artifact.ref) === index)
+        .slice(0, 20),
+    } : check);
+  }
+  if (summaries.length === 0 && !evidence) return undefined;
+  return {
+    summary: summaries.join('\n').slice(0, 12_000) || evidence!,
+    validation,
+    ...(evidence ? { evidence } : {}),
+    criteria: [...criteria.values()].slice(0, 100),
+    completedAt: Math.max(
+      subgoal.updatedAt,
+      ...completedItems.map((item) => item.completedAt || item.completion?.completedAt || item.updatedAt),
+    ),
+  };
 }
 
 export interface ProjectManagerEvent {
@@ -611,6 +838,8 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
     if (event.kind === 'project-resumed') {
       resolvedKinds.add('project-paused');
       resolvedKinds.add('guard-triggered');
+      resolvedKinds.add('project-goal-completed');
+    } else if (event.kind === 'project-goal-completion-invalidated') {
       resolvedKinds.add('project-goal-completed');
     } else if (event.kind === 'manager-runtime-restarted') {
       resolvedKinds.add('manager-runtime-failed');
@@ -1477,7 +1706,10 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     || [...goals].reverse().find((goal) => goal.status === 'active' || goal.status === 'transitioning')
     || goals[goals.length - 1];
   const activeGoalId = activeGoal.id;
-  const rawSubgoals = Array.isArray(session.subgoals) ? session.subgoals : [];
+  const rawSubgoals = (Array.isArray(session.subgoals) ? session.subgoals : []).map((subgoal) => ({
+    ...subgoal,
+    completion: normalizeProjectCompletionResult(subgoal.completion),
+  }));
   const needsLegacySubgoal = rawSubgoals.length === 0 && session.workItems.length > 0;
   const legacySubgoalId = `${session.id}-legacy-${activeGoalId}`;
   const subgoals = needsLegacySubgoal
@@ -1556,6 +1788,12 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
       );
       return {
         ...item,
+        predecessorWorkItemId: item.predecessorWorkItemId?.trim() || undefined,
+        supersededByWorkItemId: item.supersededByWorkItemId?.trim() || undefined,
+        successionReason: item.successionReason === 'protocol-migration'
+          || item.successionReason === 'budget-exhausted'
+          ? item.successionReason
+          : undefined,
         contract: {
           ...item.contract,
           execution: item.contract.execution ? {
@@ -1632,6 +1870,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         mergeCandidates: Array.isArray(item.mergeCandidates) ? item.mergeCandidates.slice(-100) : [],
         finalApplyBlocked: item.finalApplyBlocked === true,
         mutationRevision: Math.max(0, Math.trunc(item.mutationRevision || 0)),
+        completion: normalizeProjectCompletionResult(item.completion),
         supervisorPlanRequired: item.supervisorPlanRequired
           ?? !['completed', 'stopped'].includes(item.status),
       };
@@ -1700,7 +1939,7 @@ export type ProjectManagerAction =
     /** Only the authenticated project-manager protocol may accept a new requirements version. */
     acceptRequirementsVersion?: boolean;
   }
-  | { type: 'complete-current-goal'; evidence: string }
+  | { type: 'complete-current-goal'; evidence: string; completion?: ProjectCompletionResult }
   | { type: 'stop-project'; reason: string; emergency?: boolean }
   | { type: 'reply'; correlationId?: string; message: string };
 

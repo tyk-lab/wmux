@@ -162,7 +162,7 @@ describe('unified managed AI role context', () => {
       .toMatchObject({ available: true });
   });
 
-  it('requires old restored work to be re-contracted before advertising supervise', () => {
+  it('requires a control-owned successor before advertising supervise for old work', () => {
     const context = buildProjectAiRuntimeContext(project(workItem({ executionProtocolVersion: 1 })));
 
     expect(context.state.executionProtocol).toBe('migration-required');
@@ -170,7 +170,7 @@ describe('unified managed AI role context', () => {
     expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
       .toMatchObject({ available: false });
     expect(context.commands.conditional.find((item) => item.command.includes('task-update'))?.condition)
-      .toContain('完整 contract');
+      .toContain('控制层会冻结');
   });
 
   it('distinguishes a recorded alignment decision from execution-version acceptance', () => {

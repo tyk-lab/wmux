@@ -9,6 +9,7 @@ import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   projectDirectoryIdentity,
   projectManagerEventNeedsUserAttention,
+  type ProjectCompletionResult,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 
@@ -36,6 +37,29 @@ function item(id: string, dependencies: string[] = []): ProjectWorkItem {
       validation: ['检查结果'],
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
     },
+  };
+}
+
+function verifiedCompletion(
+  criteria: string[],
+  evidence = '逐项验收证据完整',
+): ProjectCompletionResult {
+  return {
+    summary: '全部声明条件已经逐项核验',
+    validation: criteria,
+    evidence,
+    criteria: criteria.map((criterion) => ({
+      criterion,
+      status: 'satisfied',
+      result: 'passed',
+      method: 'runtime-test',
+      evidence,
+      evidenceRefs: ['evidence/result.json'],
+      evidenceArtifacts: [{
+        ref: 'evidence/result.json', sizeBytes: 12, mtimeMs: 1, sha256: 'a'.repeat(64),
+      }],
+    })),
+    completedAt: 10,
   };
 }
 
@@ -322,6 +346,10 @@ describe('project-manager slice', () => {
       workItemId: 'middle',
       patch: { status: 'running', supervisorLaneId: 'lane-middle', workerSurfaceId: 'worker-middle' },
     });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      taskTerminalSurfaceId: 'worker-middle',
+    });
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'intervene-work-item',
@@ -347,6 +375,7 @@ describe('project-manager slice', () => {
       }),
       expect.objectContaining({ id: 'last', status: 'planned' }),
     ]);
+    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBeUndefined();
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'middle', patch: { status: 'planned' },
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能由 AI 恢复') });
@@ -356,6 +385,30 @@ describe('project-manager slice', () => {
       ok: true,
       event: { kind: 'user-work-item-intervention', payload: { intervention: 'close' } },
     });
+  });
+
+  it('clears a rejected completion report when the work item returns to execution', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('rework-result') });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'rework-result',
+      patch: {
+        status: 'validating',
+        completion: {
+          summary: '首次完成报告',
+          validation: ['首次验证通过'],
+          completedAt: 10,
+        },
+      },
+    });
+    expect(useStore.getState().projectManager?.workItems[0].completion?.summary).toBe('首次完成报告');
+
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'rework-result', patch: { status: 'running' },
+    });
+    expect(useStore.getState().projectManager?.workItems[0].completion).toBeUndefined();
   });
 
   it('drops obsolete transition and gate deliveries when requirements alignment is re-opened', () => {
@@ -556,7 +609,7 @@ describe('project-manager slice', () => {
       reason: '建立首轮阶段计划',
       subgoals: [{
         id: 'auth_backend_ready', goalId, title: '认证后端可验收',
-        outcome: '接口、约束和错误行为稳定', acceptance: ['认证定向测试通过'],
+        outcome: '接口、约束和错误行为稳定', acceptance: ['认证验收通过', '认证定向测试通过'],
         dependencies: [], status: 'planned', order: 1, createdAt: 1, updatedAt: 1,
       }],
     })).toMatchObject({ ok: true, event: { kind: 'project-subgoals-updated' } });
@@ -572,6 +625,69 @@ describe('project-manager slice', () => {
     });
   });
 
+  it('rejects a manager plan that drops an unfinished acceptance criterion', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成双向验证', doneWhen: ['双向验证完成'],
+    });
+    const goalId = project.activeGoalId || '';
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        id: 'bidirectional', goalId, title: '双向与重复验证', outcome: '形成双向重复结果',
+        acceptance: ['双向验证完成', '正反方向均完成三次重复'], dependencies: [],
+        status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+      }],
+    })).toMatchObject({ ok: true });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{
+        id: 'narrowed', goalId, title: '只做单次验证', outcome: '形成单次结果',
+        acceptance: ['双向验证完成'], dependencies: [],
+        status: 'planned', order: 1, createdAt: 2, updatedAt: 2,
+      }],
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('正反方向均完成三次重复'),
+    });
+  });
+
+  it('rejects stage achievement when supervisor evidence marks an acceptance unverified', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成实机验证', doneWhen: ['实机验证完成'],
+    });
+    const goalId = project.activeGoalId || '';
+    const stage = {
+      id: 'hardware', goalId, title: '实机验收', outcome: '形成实机证据',
+      acceptance: ['实机验证完成'], dependencies: [], status: 'active' as const,
+      order: 1, createdAt: 1, updatedAt: 1,
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [stage],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: { ...item('hardware-task'), goalId, subgoalId: stage.id },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'hardware-task', patch: {
+        status: 'completed', latestEvidence: '只完成离线检查', completion: {
+          ...verifiedCompletion(['实机验证完成'], '未连接设备'),
+          criteria: [{
+            criterion: '实机验证完成', status: 'unverified', result: 'not-run',
+            method: 'static-check', evidence: '未连接设备', evidenceRefs: ['evidence/offline-check.json'],
+            evidenceArtifacts: [{
+              ref: 'evidence/offline-check.json', sizeBytes: 12, mtimeMs: 1, sha256: 'b'.repeat(64),
+            }],
+          }],
+        },
+      },
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{ ...stage, status: 'achieved' }],
+    })).toMatchObject({ ok: false, error: expect.stringContaining('unverified') });
+  });
+
   it('preserves repeated stage ids across main-goal history and protects live task ownership', () => {
     const useStore = store();
     const project = useStore.getState().startProjectManager({
@@ -581,7 +697,7 @@ describe('project-manager slice', () => {
     useStore.getState().applyProjectManagerAction({
       type: 'set-project-subgoals', source: 'manager', subgoals: [{
         id: 'implementation', goalId: firstGoalId, title: '实现阶段', outcome: '第一目标形成实现',
-        acceptance: ['实现可验证'], dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+        acceptance: ['第一目标验收', '实现可验证'], dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
       }],
     });
     useStore.getState().applyProjectManagerAction({
@@ -590,7 +706,7 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'set-project-subgoals', source: 'manager', subgoals: [{
         id: 'replacement', goalId: firstGoalId, title: '替代阶段', outcome: '替代原阶段',
-        acceptance: ['替代结果可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 2, updatedAt: 2,
+        acceptance: ['第一目标验收', '实现可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 2, updatedAt: 2,
       }],
     })).toMatchObject({ ok: false, error: expect.stringContaining('first-task') });
     expect(useStore.getState().applyProjectManagerAction({
@@ -604,7 +720,7 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'set-project-subgoals', source: 'manager', subgoals: [{
         id: 'implementation', goalId: secondGoalId, title: '实现阶段', outcome: '第二目标形成实现',
-        acceptance: ['实现可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 3, updatedAt: 3,
+        acceptance: ['第二目标验收', '实现可验证'], dependencies: [], status: 'planned', order: 1, createdAt: 3, updatedAt: 3,
       }],
     })).toMatchObject({ ok: true });
     expect(useStore.getState().projectManager?.subgoals.filter((subgoal) => subgoal.id === 'implementation'))
@@ -625,7 +741,7 @@ describe('project-manager slice', () => {
     });
     const goalId = project.activeGoalId || '';
     const stage = {
-      id: 'validation', goalId, title: '验收阶段', outcome: '目标得到验收', acceptance: ['证据完整'],
+      id: 'validation', goalId, title: '验收阶段', outcome: '目标得到验收', acceptance: ['目标验收'],
       dependencies: [], status: 'active' as const, order: 1, createdAt: 1, updatedAt: 1,
     };
     useStore.getState().applyProjectManagerAction({ type: 'set-project-subgoals', source: 'manager', subgoals: [stage] });
@@ -633,13 +749,18 @@ describe('project-manager slice', () => {
       type: 'create-work-item', workItem: { ...item('validate'), goalId, subgoalId: stage.id },
     });
     useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'validate', patch: { status: 'completed', latestEvidence: '证据完整' },
+      type: 'update-work-item', workItemId: 'validate', patch: {
+        status: 'completed',
+        latestEvidence: '证据完整',
+        completion: verifiedCompletion(['目标验收'], '相关回归测试通过'),
+      },
     });
     useStore.getState().applyProjectManagerAction({
       type: 'resume-project', reason: '目标级复核', acceptRequirementsVersion: true,
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '目标验收通过',
+      completion: verifiedCompletion(['目标验收'], '目标级验收通过'),
     })).toMatchObject({ ok: false, error: expect.stringContaining('阶段目标尚未验收') });
     useStore.getState().applyProjectManagerAction({
       type: 'set-project-subgoals', source: 'manager', subgoals: [{ ...stage, status: 'achieved' }],
@@ -654,9 +775,15 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({
       outcome: stage.outcome,
       status: 'achieved',
+      completion: {
+        summary: '全部声明条件已经逐项核验',
+        validation: ['目标验收'],
+        evidence: '相关回归测试通过',
+      },
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '目标验收通过',
+      completion: verifiedCompletion(['目标验收'], '目标级验收通过'),
     })).toMatchObject({ ok: true });
   });
 
@@ -828,7 +955,10 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false });
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'auth',
-      patch: { status: 'completed', latestEvidence: '认证测试通过', latestBlocker: '等待用户现场验收' },
+      patch: {
+        status: 'completed', latestEvidence: '认证测试通过', latestBlocker: '等待用户现场验收',
+        completion: verifiedCompletion(['验收通过'], '认证测试通过'),
+      },
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '单元测试通过',
@@ -844,6 +974,7 @@ describe('project-manager slice', () => {
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '目标级验收全部通过',
+      completion: verifiedCompletion(['验收通过'], '目标级验收全部通过'),
     })).toMatchObject({
       ok: true,
       event: {
@@ -865,6 +996,71 @@ describe('project-manager slice', () => {
     ]);
   });
 
+  it('rejects a forged goal completion that lacks matching supervisor criteria', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成上机验收', doneWhen: ['上机验收通过'],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: {
+        ...item('offline-only'),
+        goalId: project.activeGoalId,
+      },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'offline-only', patch: {
+        status: 'completed', latestEvidence: '离线检查通过',
+        completion: verifiedCompletion(['离线检查通过'], '没有上机'),
+      },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '尝试目标级验收', acceptRequirementsVersion: true,
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '项目 AI 声称上机验收通过',
+      completion: verifiedCompletion(['上机验收通过'], '项目 AI 自报'),
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('监督证据'),
+    });
+  });
+
+  it('allows a conclusive failed runtime result to complete an evaluation criterion', () => {
+    const useStore = store();
+    const criterion = '执行并评估候选实机测试';
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '评估候选是否可用', doneWhen: [criterion],
+    });
+    const failedCompletion: ProjectCompletionResult = {
+      ...verifiedCompletion([criterion], '实机测试已执行，结果为性能失败'),
+      criteria: [{
+        criterion, status: 'satisfied', result: 'failed', method: 'runtime-test',
+        evidence: '实机测试已执行，性能阈值明确失败',
+        evidenceRefs: ['evidence/result.json'],
+        evidenceArtifacts: [{
+          ref: 'evidence/result.json', sizeBytes: 12, mtimeMs: 1, sha256: 'a'.repeat(64),
+        }],
+      }],
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: { ...item('candidate-evaluation'), goalId: project.activeGoalId },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'candidate-evaluation', patch: {
+        status: 'completed', latestEvidence: '候选性能失败证据', completion: failedCompletion,
+      },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '失败结果已形成可复核结论', acceptRequirementsVersion: true,
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '候选已经完成评估，结论为不采用',
+      completion: failedCompletion,
+    })).toMatchObject({ ok: true, event: { kind: 'project-goal-completed' } });
+  });
+
   it('keeps completed pre-refine work as history without blocking current-version goal completion', () => {
     const useStore = store();
     useStore.getState().startProjectManager({
@@ -882,7 +1078,10 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: true });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('current-result') });
     useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'current-result', patch: { status: 'completed', latestEvidence: '当前版本证据' },
+      type: 'update-work-item', workItemId: 'current-result', patch: {
+        status: 'completed', latestEvidence: '当前版本证据',
+        completion: verifiedCompletion(['调整后的当前版本验收通过'], '当前版本证据'),
+      },
     });
     useStore.getState().applyProjectManagerAction({
       type: 'resume-project', reason: '当前版本已经重新规划', acceptRequirementsVersion: true,
@@ -890,6 +1089,7 @@ describe('project-manager slice', () => {
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '当前版本目标级验收通过',
+      completion: verifiedCompletion(['调整后的当前版本验收通过'], '当前版本目标级验收通过'),
     })).toMatchObject({ ok: true });
     expect(useStore.getState().projectManager?.workItems).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'historical-evidence', status: 'completed', requirementsVersion: 1 }),

@@ -101,6 +101,35 @@ describe('project manager records', () => {
       }],
       status: 'completed',
     }, appData)).toThrow('invalid project manager session payload');
+
+    const withStageResult: ProjectManagerSession = {
+      ...created,
+      updatedAt: now + 2,
+      subgoals: [{
+        id: 'alignment-result',
+        goalId: created.activeGoalId!,
+        title: '需求对齐结果',
+        outcome: '形成可执行需求',
+        acceptance: ['需求边界明确'],
+        dependencies: [],
+        status: 'achieved',
+        order: 1,
+        createdAt: now,
+        updatedAt: now + 1,
+        completion: {
+          summary: '需求、范围和验收条件已经完成对齐',
+          validation: ['需求边界明确'],
+          evidence: '项目定义已持久化',
+          completedAt: now + 1,
+        },
+      }],
+    };
+    expect(() => saveProjectManagerSession(withStageResult, appData)).not.toThrow();
+    expect(recoveredSession(appData, created.id)?.subgoals?.[0].completion).toMatchObject({
+      summary: '需求、范围和验收条件已经完成对齐',
+      validation: ['需求边界明确'],
+      evidence: '项目定义已持久化',
+    });
   });
 
   it('drops the abandoned conversational project-goal state during recovery', () => {
@@ -309,6 +338,12 @@ describe('project manager records', () => {
         attempts: 0,
         decisionsUsed: 0,
         updatedAt: 20,
+        completion: {
+          summary: '自适应任务已经完成并形成可验收结果',
+          validation: ['检查结果'],
+          evidence: '定向验证通过',
+          completedAt: 20,
+        },
         executionHistory: [],
         contract: {
           objective: '完成自适应任务',
@@ -348,6 +383,12 @@ describe('project manager records', () => {
           status: 'approved',
           workspaceVersion: 'head:adaptive,status:clean',
         },
+        completion: {
+          summary: '自适应任务已经完成并形成可验收结果',
+          validation: ['检查结果'],
+          evidence: '定向验证通过',
+          completedAt: 20,
+        },
         contract: { execution: {
         taskWorkMode: 'adaptive',
         maxChildThreads: 2,
@@ -366,6 +407,50 @@ describe('project manager records', () => {
       updatedAt: 31,
       workItems: saved.workItems.map((item) => ({ ...item, mutationRevision: 1, updatedAt: 31 })),
     }, appData)).toThrow('拒绝保存过期工作项快照');
+  });
+
+  it('persists a valid work-item successor chain and rejects broken links', () => {
+    const appData = root();
+    const contract = {
+      objective: '完成续作验证', description: '', preconditions: [],
+      scope: { root: 'E:\\repo', allowPaths: ['src'], denyPaths: [], forbiddenActions: [] },
+      authority: {
+        technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false,
+        continuousExecution: true, permissionConfirm: false,
+      },
+      stopWhen: ['验证完成'], validation: ['检查结果'], budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+    };
+    const linked = normalizeProjectManagerSession({
+      ...session('pm-successor-chain', 30),
+      workItems: [
+        {
+          id: 'old-task', title: '旧任务', status: 'stopped', dependencies: [],
+          supersededByWorkItemId: 'new-task', attempts: 1, decisionsUsed: 12,
+          updatedAt: 20, executionHistory: [], contract,
+        },
+        {
+          id: 'new-task', title: '新任务', status: 'planned', dependencies: [],
+          predecessorWorkItemId: 'old-task', successionReason: 'budget-exhausted',
+          attempts: 0, decisionsUsed: 0, updatedAt: 30, executionHistory: [], contract,
+        },
+      ],
+    });
+
+    expect(() => saveProjectManagerSession(linked, appData)).not.toThrow();
+    expect(recoveredSession(appData, linked.id)?.workItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'old-task', supersededByWorkItemId: 'new-task' }),
+      expect.objectContaining({
+        id: 'new-task', predecessorWorkItemId: 'old-task', successionReason: 'budget-exhausted',
+      }),
+    ]));
+
+    expect(() => saveProjectManagerSession({
+      ...linked,
+      id: 'pm-broken-successor-chain',
+      workItems: linked.workItems.map((item) => item.id === 'new-task'
+        ? { ...item, predecessorWorkItemId: 'missing-task' }
+        : item),
+    }, appData)).toThrow('invalid project manager session payload');
   });
 
   it('rejects a non-continuous contract without a real continuation boundary', () => {

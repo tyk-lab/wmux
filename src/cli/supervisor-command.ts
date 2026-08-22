@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--stage-plan-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed|clarification>] [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--execution-action <text> --command <text> --error <text> --workspace-version <hash> --test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text> --evidence <text> --context-summary <text> --completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text> --full-suite --retry] [--verbose]';
+export const SUPERVISOR_DECIDE_USAGE = 'Usage: wmux supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human> [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>] [--stage-plan-file <.wmux/tmp/file>] [--completion-file <.wmux/tmp/file>] [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed|clarification>] [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>] [--impact <text>] [--alternatives <text>] [--permission-command <text> --permission-response <y|yes|allow|approve>] [--execution-action <text> --command <text> --error <text> --workspace-version <hash> --test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text> --evidence <text> --context-summary <text> --completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text> --full-suite --retry] [--verbose]';
 
 const MAX_INLINE_NEXT_CHARS = 4_000;
 const MAX_NEXT_FILE_CHARS = 64_000;
@@ -17,6 +17,8 @@ export interface SupervisorStagePlanInput {
   fileReference?: string;
   cleanup?: () => void;
 }
+
+export type SupervisorCompletionInput = SupervisorStagePlanInput;
 
 function flagValue(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -121,6 +123,46 @@ export function resolveSupervisorStagePlanInput(
 
 export function cleanupSupervisorStagePlanInput(
   input: SupervisorStagePlanInput,
+  decisionSucceeded: boolean,
+): void {
+  if (decisionSucceeded) input.cleanup?.();
+}
+
+/** Read per-condition completion judgments from the ignored project temp boundary. */
+export function resolveSupervisorCompletionInput(
+  args: string[],
+  cwd = process.cwd(),
+): SupervisorCompletionInput {
+  if (!args.includes('--completion-file')) return {};
+  const fileArgument = flagValue(args, '--completion-file');
+  if (!fileArgument) throw new Error('--completion-file requires a JSON file under .wmux/tmp/');
+  let input: SupervisorNextInput;
+  try {
+    input = resolveSupervisorNextInput(['decide', '--next-file', fileArgument], cwd);
+  } catch (error) {
+    throw new Error(
+      String((error as Error)?.message || error).replaceAll('--next-file', '--completion-file'),
+      { cause: error },
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(input.text);
+  } catch {
+    throw new Error('--completion-file must contain valid JSON');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('--completion-file must contain one JSON object');
+  }
+  return {
+    value: value as Record<string, unknown>,
+    fileReference: input.fileReference,
+    cleanup: input.cleanup,
+  };
+}
+
+export function cleanupSupervisorCompletionInput(
+  input: SupervisorCompletionInput,
   decisionSucceeded: boolean,
 ): void {
   if (decisionSucceeded) input.cleanup?.();

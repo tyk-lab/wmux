@@ -9,9 +9,11 @@ import { parseWrapArgs, shouldTrackAgent } from './agent-wrap';
 import { withSurfaceCaller } from './surface-caller';
 import {
   cleanupSupervisorNextInput,
+  cleanupSupervisorCompletionInput,
   cleanupSupervisorStagePlanInput,
   isSupervisorDecideHelp,
   resolveSupervisorNextInput,
+  resolveSupervisorCompletionInput,
   resolveSupervisorStagePlanInput,
   SUPERVISOR_DECIDE_USAGE,
 } from './supervisor-command';
@@ -227,6 +229,30 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     args,
     process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
   );
+  const completionInput = resolveSupervisorCompletionInput(
+    args,
+    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+  );
+  const completionEvidenceRefs = completionInput.value
+    ? [...new Set(['stopWhen', 'validation'].flatMap((group) => (
+        Array.isArray(completionInput.value?.[group])
+          ? (completionInput.value![group] as any[]).flatMap((item) => (
+              Array.isArray(item?.evidenceRefs) ? item.evidenceRefs.map(String) : []
+            ))
+          : []
+      )))]
+    : [];
+  const completionVerification = completionInput.value
+    ? await sendV2('supervisor.completion.verify', {
+        surfaceId,
+        supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
+        refs: completionEvidenceRefs,
+      })
+    : undefined;
+  if (completionVerification?.ok === false) {
+    cleanupSupervisorCompletionInput(completionInput, false);
+    throw new Error(String(completionVerification.error || 'completion evidence verification failed'));
+  }
 
   const result = await sendV2('supervisor.decide', {
     surfaceId,
@@ -238,6 +264,9 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     nextFile: nextInput.fileReference || '',
     stagePlan: stagePlanInput.value,
     stagePlanFile: stagePlanInput.fileReference || '',
+    completionChecklist: completionInput.value,
+    completionFile: completionInput.fileReference || '',
+    completionEvidenceToken: completionVerification?.token || '',
     proposalKind: getFlag(args, '--proposal-kind') || '',
     escalationBoundary: getFlag(args, '--escalation-boundary') || '',
     impact: getFlag(args, '--impact') || '',
@@ -267,6 +296,10 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   cleanupSupervisorStagePlanInput(
     stagePlanInput,
     result?.ok !== false && result?.retainStagePlanFile !== true,
+  );
+  cleanupSupervisorCompletionInput(
+    completionInput,
+    result?.ok !== false && result?.retainCompletionFile !== true,
   );
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
@@ -613,9 +646,15 @@ async function cmdProject(args: string[]): Promise<void> {
     return;
   }
   if (sub === 'complete') {
-    const evidence = getFlag(args, '--evidence') || '';
-    if (!evidence) throw new Error('project complete requires --evidence');
-    print(await sendV2('project.complete', { evidence, projectId }));
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.complete', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
     return;
   }
   if (sub === 'reply') {
@@ -1313,7 +1352,7 @@ Supervisor:  supervisor context
              supervisor reply --surface <id> --message <text>
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
-                          [--stage-plan-file <.wmux/tmp/file>]
+                          [--stage-plan-file <.wmux/tmp/file>] [--completion-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed|clarification>]
                           [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]
                           [--impact <text>] [--alternatives <text>]
@@ -1325,7 +1364,7 @@ Supervisor:  supervisor context
                           [--full-suite --retry]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask use --json or --json-file <.wmux/tmp/file>
+            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)

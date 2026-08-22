@@ -286,7 +286,17 @@ function isProjectSubgoal(value: unknown): boolean {
     && isStringArray(subgoal.dependencies)
     && typeof subgoal.status === 'string' && SUBGOAL_STATUSES.has(subgoal.status)
     && Number.isInteger(subgoal.order) && Number(subgoal.order) >= 1
-    && Number.isFinite(subgoal.createdAt) && Number.isFinite(subgoal.updatedAt);
+    && Number.isFinite(subgoal.createdAt) && Number.isFinite(subgoal.updatedAt)
+    && (subgoal.completion === undefined || isProjectCompletionResult(subgoal.completion));
+}
+
+function isProjectCompletionResult(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const completion = value as Record<string, unknown>;
+  return typeof completion.summary === 'string' && completion.summary.trim().length > 0
+    && isStringArray(completion.validation)
+    && (completion.evidence === undefined || typeof completion.evidence === 'string')
+    && Number.isFinite(completion.completedAt);
 }
 
 function isProjectSupervisorStagePlan(value: unknown): boolean {
@@ -467,6 +477,10 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     const budget = contract?.budget;
     const execution = contract?.execution;
     return typeof item.id === 'string'
+      && (item.predecessorWorkItemId === undefined || typeof item.predecessorWorkItemId === 'string')
+      && (item.supersededByWorkItemId === undefined || typeof item.supersededByWorkItemId === 'string')
+      && (item.successionReason === undefined
+        || ['protocol-migration', 'budget-exhausted'].includes(String(item.successionReason)))
       && (item.goalId === undefined || typeof item.goalId === 'string')
       && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
       && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
@@ -495,6 +509,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.mutationRevision === undefined || (
         Number.isInteger(item.mutationRevision) && item.mutationRevision >= 0
       ))
+      && (item.completion === undefined || isProjectCompletionResult(item.completion))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)
@@ -527,6 +542,32 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (!execution || isProjectTaskExecutionPlan(execution, authority?.internalThreads === true));
   });
   if (!workItemsValid) return false;
+  const workItemsById = new Map(session.workItems.map((item) => [item.id, item]));
+  if (workItemsById.size !== session.workItems.length || session.workItems.some((item) => {
+    const predecessor = item.predecessorWorkItemId
+      ? workItemsById.get(item.predecessorWorkItemId)
+      : undefined;
+    const successor = item.supersededByWorkItemId
+      ? workItemsById.get(item.supersededByWorkItemId)
+      : undefined;
+    return item.predecessorWorkItemId === item.id
+      || item.supersededByWorkItemId === item.id
+      || (!!item.successionReason !== !!item.predecessorWorkItemId)
+      || (!!item.predecessorWorkItemId && !predecessor)
+      || (!!predecessor && predecessor.supersededByWorkItemId !== item.id)
+      || (!!item.supersededByWorkItemId && (
+        !successor || successor.predecessorWorkItemId !== item.id
+      ));
+  })) return false;
+  for (const item of session.workItems) {
+    const visited = new Set<string>();
+    let current: typeof item | undefined = item;
+    while (current?.supersededByWorkItemId) {
+      if (visited.has(current.id)) return false;
+      visited.add(current.id);
+      current = workItemsById.get(current.supersededByWorkItemId);
+    }
+  }
   const goals = Array.isArray(session.goals) ? session.goals as Array<Record<string, unknown>> : [];
   const subgoals = Array.isArray(session.subgoals) ? session.subgoals as Array<Record<string, unknown>> : [];
   if (goals.some((goal) => goal.status === 'completed' && (goal.doneWhen as unknown[]).length === 0)) {

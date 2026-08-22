@@ -3,6 +3,8 @@ import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   MAX_PROJECT_EXECUTION_BUDGET,
   normalizeProjectExecutionBudget,
+  projectSubgoalCompletionResult,
+  projectWorkItemCompletionResult,
   projectWorkItemReady,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
@@ -67,6 +69,30 @@ describe('project-manager domain', () => {
       maxSameTestRuns: 3,
       maxContinuousMinutes: MAX_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes,
       maxFullSuiteRunsPerVersion: MAX_PROJECT_EXECUTION_BUDGET.maxFullSuiteRunsPerVersion,
+    });
+  });
+
+  it('derives completion results for pre-upgrade work items and achieved stages', () => {
+    const completed = {
+      ...workItem('legacy-result', 'completed'),
+      subgoalId: 'legacy-stage',
+      latestContextSummary: '旧工作项已经形成可验收结果',
+      latestEvidence: '旧版本回归测试通过',
+      completedAt: 20,
+    };
+
+    expect(projectWorkItemCompletionResult(completed)).toMatchObject({
+      summary: '旧工作项已经形成可验收结果',
+      validation: ['npm test'],
+      evidence: '旧版本回归测试通过',
+      completedAt: 20,
+    });
+    expect(projectSubgoalCompletionResult({
+      id: 'legacy-stage', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [completed])).toMatchObject({
+      summary: '旧工作项已经形成可验收结果',
+      evidence: '旧版本回归测试通过',
+      completedAt: 21,
     });
   });
 });

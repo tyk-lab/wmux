@@ -70,6 +70,7 @@ import {
 } from './project-manager-records';
 import { captureProjectPlanFiles, PROJECT_PLAN_FILE_DIALOG_EXTENSIONS } from './project-plan-files';
 import { captureProjectProgress } from './project-progress-sync';
+import { verifyProjectEvidenceRefs } from './project-evidence';
 import {
   applyProjectMergeCandidate,
   cleanupProjectWorkerGroup,
@@ -847,6 +848,16 @@ app.whenReady().then(() => {
     ));
     if (!session) return { ok: false, error: '项目进度同步目录未登记为活动项目' };
     return captureProjectProgress(session.projectDir, session.planFiles.map((file) => file.path));
+  });
+  ipcMain.handle('project-manager:verify-evidence-refs', (_event, request) => {
+    const projectId = String(request?.projectId || '').trim();
+    const workItemId = String(request?.workItemId || '').trim();
+    const session = readActiveProjectManagerSessions().find((candidate) => candidate.id === projectId);
+    if (!session) return { ok: false, error: '项目证据核验请求不属于已登记项目' };
+    if (!session.workItems.some((item) => item.id === workItemId)) {
+      return { ok: false, error: '项目证据核验请求不属于已登记工作项' };
+    }
+    return verifyProjectEvidenceRefs(session.projectDir, request?.refs);
   });
   ipcMain.handle('project-manager:read-plan-files', (_event, filePaths) => captureProjectPlanFiles(filePaths));
   ipcMain.handle('project-manager:pick-plan-files', async (event) => {

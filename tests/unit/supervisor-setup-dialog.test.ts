@@ -76,6 +76,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("form.scrollIntoView({ block: 'start' })");
     expect(projectManagerDialogSource).toContain("?.focus({ preventScroll: true })");
     expect(projectManagerDialogSource).not.toContain("setCreating(dialogView === 'create' || sessions.length === 0)");
+    expect(projectManagerDialogSource).toContain("{session?.pendingUserQuestion && !creating && (");
+    expect(projectManagerDialogSource).not.toContain("{embedded && session?.pendingUserQuestion && !creating && (");
     expect(projectManagerDialogSource).toContain('项目管理模式 Agent 配置');
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
@@ -119,6 +121,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("goalChangeMode === 'pivot'");
     expect(projectManagerDialogSource).toContain('当前主目标的阶段计划');
     expect(projectManagerDialogSource).toContain("subgoal.status !== 'obsolete'");
+    expect(projectManagerDialogSource).toContain('projectSubgoalCompletionResult(subgoal');
+    expect(projectManagerDialogSource).toContain('<dt>完成结果</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>完成验证</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>完成时间</dt>');
     expect(projectManagerDialogSource).toContain('历史已取消阶段');
     expect(projectManagerDialogSource).toContain('主目标历史');
     const definitionUpdateHandler = projectManagerDialogSource.match(
@@ -385,6 +391,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(paneWrapperSource).toContain('<ProjectManagerSessionPane projectId={surface.projectManagerProjectId} />');
     expect(consoleSurfaceSource).toContain("surface.type === 'project-manager'");
     expect(consoleSurfaceSource).toContain("store.addSurface(projectWorkspace.id, paneId, 'project-manager'");
+    expect(consoleSurfaceSource).toContain('openProjectManagerAttentionSurface');
+    expect(consoleSurfaceSource).toContain('store.closeProjectManagerDialog()');
+    expect(pipeBridgeSource).not.toContain('openProjectManagerDialog()');
     expect(pipeBridgeSource).toContain("createLeaf(undefined, projectManagedStart ? 'project-manager' : 'supervisor')");
   });
 

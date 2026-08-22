@@ -403,7 +403,7 @@ export function buildProjectAiRuntimeContext(
           command: `wmux project task-update --project ${projectId} --json-file <.wmux/tmp/文件>`,
           available: mutableProject && session.workItems.length > 0,
           condition: executionProtocolMigrationRequired
-            ? `旧项目存在过期工作项；逐项提交完整 contract 以迁移到执行协议 v${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION}，不能只修改状态或版本号`
+            ? `旧项目存在过期工作项；控制层会冻结其预算与审计并建立执行协议 v${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION} 后继，只能更新返回的后继工作项`
             : '持久化工作项状态、证据、上下文或阻塞',
         },
         {

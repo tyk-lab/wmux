@@ -194,6 +194,10 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain("? '已结束'");
     expect(panelSource).toContain(": '已停止';");
     expect(panelSource).toContain('item.latestEvidence || item.latestContextSummary || taskExecution.detail');
+    expect(panelSource).toContain('const completion = projectWorkItemCompletionResult(item)');
+    expect(panelSource).toContain('completion ? <>');
+    expect(panelSource).toContain('监督 AI 完成结果');
+    expect(panelSource).toContain('completion.validation.join');
     expect(panelSource).toContain('打开项目管理');
     expect(panelSource).toContain('{!scopedProjectId && visibleLogs.length > 0 && (');
   });
@@ -204,6 +208,11 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('监督 AI 当前规划');
     expect(panelSource).toContain('当前路线');
     expect(panelSource).toContain('下一步给任务 AI');
+    expect(panelSource).toContain("latestDecision?.outcome === 'complete'");
+    expect(panelSource).toContain('completion.summary');
+    expect(panelSource).toContain('completion.validation.join');
+    expect(panelSource).toContain('laneDetailsCollapsed && completion');
+    expect(panelSource).toContain('完成结果：{completion.summary}');
     expect(panelSource).toContain("planView.mode === 'staged'");
     expect(panelSource).toContain('具体任务不做机械拆分');
     expect(panelSource).toContain('监督决策链');

@@ -1,4 +1,5 @@
 import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   activeProjectGoal,
   activeProjectSubgoals,
   normalizeProjectParallelismSelection,
@@ -21,7 +22,7 @@ export const PROJECT_TASK_EXECUTION_ENVELOPE_MARKER = '[项目任务连续执行
 export const PROJECT_TASK_BASELINE_INVESTIGATION_MARKER = '[项目基线调查]';
 export const PROJECT_TASK_BASELINE_REPORT_MARKER = '[项目基线报告]';
 export const PROJECT_TASK_BASELINE_APPROVAL_MARKER = '[批准项目基线]';
-export const PROJECT_TASK_PROTOCOL_REVISION = '3';
+export const PROJECT_TASK_PROTOCOL_REVISION = String(CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION);
 export const PROJECT_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
   '先运行 wmux context 获取当前 capability 绑定的项目、目标、工作项、需求/授权版本、基线、合同范围和可用动作；不得沿用旧会话身份或自行指定其他项目/工作项。',

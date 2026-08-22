@@ -129,6 +129,19 @@ describe('project-manager engine', () => {
     expect(projectProgressObligation(session([item('ready-stage', 'planned')]))).toMatchObject({
       kind: 'dispatch-work', workItemId: 'ready-stage',
     });
+    const predecessor = {
+      ...item('exhausted-stage', 'stopped'),
+      supersededByWorkItemId: 'successor-stage',
+      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
+    };
+    const successor = {
+      ...item('successor-stage', 'paused'),
+      predecessorWorkItemId: predecessor.id,
+      successionReason: 'budget-exhausted' as const,
+    };
+    expect(projectProgressObligation(session([predecessor, successor]))).toMatchObject({
+      kind: 'resume-paused', workItemId: 'successor-stage',
+    });
     const unaligned = session([]);
     unaligned.acceptedRequirementsVersion = 0;
     expect(projectProgressObligation(unaligned)).toMatchObject({ kind: 'align-requirements' });

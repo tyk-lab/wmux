@@ -5,12 +5,17 @@ import {
   activeProjectGoal,
   normalizeProjectManagerSession,
   projectDirectoryIdentity,
+  normalizeProjectCompletionResult,
+  projectCompletionCriteriaError,
+  projectCriterionIdentity,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
+  projectSubgoalCompletionResult,
   requiredProjectOrientation,
   requiredProjectTaskBaseline,
   type ProjectManagerAction,
+  type ProjectCompletionResult,
   type ProjectManagerEvent,
   type ProjectManagerSession,
   type ProjectSubgoal,
@@ -107,6 +112,22 @@ function updateWorkItem(
       };
     }),
   };
+}
+
+function releaseProjectTaskTerminalBinding(
+  session: ProjectManagerSession,
+  workItemId: string,
+  workerSurfaceId: string | undefined,
+): ProjectManagerSession {
+  if (!workerSurfaceId || session.taskTerminalSurfaceId !== workerSurfaceId) return session;
+  const reusedByAnotherActiveItem = session.workItems.some((item) => (
+    item.id !== workItemId
+    && item.workerSurfaceId === workerSurfaceId
+    && !['completed', 'stopped', 'failed'].includes(item.status)
+  ));
+  return reusedByAnotherActiveItem
+    ? session
+    : { ...session, taskTerminalSurfaceId: undefined };
 }
 
 function isLiveProjectManagerSession(session: Pick<ProjectManagerSession, 'status'>): boolean {
@@ -484,6 +505,38 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const existingCurrentSubgoals = new Map((session.subgoals || [])
         .filter((subgoal) => subgoal.goalId === activeGoal.id)
         .map((subgoal) => [subgoal.id, subgoal]));
+      if (action.source === 'manager') {
+        const incomingAcceptance = new Set(action.subgoals
+          .filter((subgoal) => subgoal.status !== 'obsolete')
+          .flatMap((subgoal) => subgoal.acceptance)
+          .map(projectCriterionIdentity));
+        const invalidGoalCoverage = activeGoal.doneWhen.map((criterion) => ({
+          criterion,
+          count: action.subgoals
+            .filter((subgoal) => subgoal.status !== 'obsolete')
+            .flatMap((subgoal) => subgoal.acceptance)
+            .filter((acceptance) => projectCriterionIdentity(acceptance) === projectCriterionIdentity(criterion)).length,
+        })).find((entry) => entry.count !== 1);
+        if (invalidGoalCoverage) {
+          return {
+            ok: false,
+            error: `主目标完成条件必须由且仅由一个非 obsolete 阶段 acceptance 原文覆盖：${invalidGoalCoverage.criterion}（当前 ${invalidGoalCoverage.count} 处）`,
+          };
+        }
+        const narrowed = [...existingCurrentSubgoals.values()].flatMap((subgoal) => (
+          ['achieved', 'obsolete'].includes(subgoal.status)
+            ? []
+            : subgoal.acceptance
+              .filter((criterion) => !incomingAcceptance.has(projectCriterionIdentity(criterion)))
+              .map((criterion) => ({ subgoal, criterion }))
+        ))[0];
+        if (narrowed) {
+          return {
+            ok: false,
+            error: `不能通过废止或改写阶段缩减尚未满足的验收范围：${narrowed.subgoal.title} · ${narrowed.criterion}`,
+          };
+        }
+      }
       const changedAchievedSubgoal = action.subgoals.find((subgoal) => {
         const previous = existingCurrentSubgoals.get(subgoal.id);
         return previous?.status === 'achieved' && (
@@ -526,7 +579,23 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const byId = new Map(retained.map((subgoal) => [subgoalKey(subgoal), subgoal]));
       for (const subgoal of action.subgoals) {
         const previous = existingCurrentSubgoals.get(subgoal.id);
-        byId.set(subgoalKey(subgoal), previous?.status === 'achieved' ? previous : subgoal);
+        const nextSubgoal = subgoal.status === 'achieved'
+          ? {
+              ...subgoal,
+              completion: normalizeProjectCompletionResult(subgoal.completion)
+                || projectSubgoalCompletionResult(subgoal, session.workItems),
+            }
+          : { ...subgoal, completion: undefined };
+        if (nextSubgoal.status === 'achieved' && previous?.status !== 'achieved') {
+          const completionError = projectCompletionCriteriaError(
+            nextSubgoal.acceptance,
+            nextSubgoal.completion,
+            `阶段目标 ${nextSubgoal.title} 的 acceptance`,
+            { allowExtra: true, requireArtifacts: true },
+          );
+          if (completionError) return { ok: false, error: completionError };
+        }
+        byId.set(subgoalKey(subgoal), previous?.status === 'achieved' ? previous : nextSubgoal);
       }
       const validIds = new Set(action.subgoals.filter((subgoal) => subgoal.status !== 'obsolete').map((subgoal) => subgoal.id));
       const workItems = session.workItems.map((item) => (
@@ -723,7 +792,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         ));
         if (!targetSubgoal) return { ok: false, error: '任务只能重分配到当前主目标下的有效阶段' };
       }
-      const { baseline: _untrustedBaseline, ...safePatch } = action.patch;
+      const { baseline: _untrustedBaseline, ...requestedPatch } = action.patch;
+      const safePatch = requestedPatch.status === 'stopped'
+        ? { ...requestedPatch, supervisorLaneId: undefined, workerSurfaceId: undefined }
+        : requestedPatch;
       const updated = updateWorkItem(session, action.workItemId, (item) => {
         const nextRequirementsVersion = safePatch.requirementsVersion || item.requirementsVersion
           || projectRequirementsVersion(session);
@@ -737,6 +809,12 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         const resetBaseline = requirementsChanged
           || subgoalChanged
           || (contractChanged && item.baseline?.status === 'approved');
+        const nextStatus = safePatch.status || item.status;
+        const completion = safePatch.completion !== undefined
+          ? normalizeProjectCompletionResult(safePatch.completion)
+          : ['validating', 'completed'].includes(nextStatus)
+            ? item.completion
+            : undefined;
         return {
           ...item,
           ...safePatch,
@@ -745,13 +823,16 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           baseline: resetBaseline
             ? requiredProjectTaskBaseline(nextRequirementsVersion)
             : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
+          completion,
           updatedAt: now,
         };
       });
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       const dependencyError = projectDependencyError(updated.workItems);
       if (dependencyError) return { ok: false, error: dependencyError };
-      next = updated;
+      next = safePatch.status === 'stopped'
+        ? releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId)
+        : updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
     } else if (action.type === 'reset-work-item-baseline') {
       const existing = session.workItems.find((item) => item.id === action.workItemId);
@@ -892,7 +973,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = updated;
+      next = releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId);
       eventInput = {
         kind: 'user-work-item-intervention',
         workItemId: existing.id,
@@ -951,6 +1032,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
     } else if (action.type === 'complete-current-goal') {
       const activeGoal = activeProjectGoal(session);
+      const goalCompletion = normalizeProjectCompletionResult(action.completion);
       const activeItems = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
       const staleOpenItem = activeItems.find((item) => (
         item.status !== 'completed'
@@ -972,6 +1054,62 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return { ok: false, error: `任务仍有未解决阻塞，不能完成主目标：${blocked.title} · ${blocked.latestBlocker}` };
       }
       if (!action.evidence.trim()) return { ok: false, error: '完成主目标必须提供目标级验证证据' };
+      const goalCriteriaError = projectCompletionCriteriaError(
+        activeGoal.doneWhen,
+        goalCompletion,
+        '主目标完成条件',
+      );
+      if (goalCriteriaError) return { ok: false, error: goalCriteriaError };
+      const supervisorCriteriaByIdentity = new Map<string, NonNullable<ProjectCompletionResult['criteria']>[number]>();
+      for (const criterion of required.flatMap((item) => (
+        normalizeProjectCompletionResult(item.completion)?.criteria || []
+      ))) {
+        const identity = projectCriterionIdentity(criterion.criterion);
+        const previous = supervisorCriteriaByIdentity.get(identity);
+        supervisorCriteriaByIdentity.set(identity, previous ? {
+          ...previous,
+          status: previous.status === 'satisfied' && criterion.status === 'satisfied'
+            ? 'satisfied'
+            : previous.status === 'unsatisfied' || criterion.status === 'unsatisfied' ? 'unsatisfied' : 'unverified',
+          result: previous.result === criterion.result ? previous.result : 'inconclusive',
+          method: previous.method === criterion.method ? previous.method : 'evidence-review',
+          evidence: `${previous.evidence}\n${criterion.evidence}`.slice(0, 12_000),
+          evidenceRefs: [...new Set([...previous.evidenceRefs, ...criterion.evidenceRefs])].slice(0, 20),
+          evidenceArtifacts: [...(previous.evidenceArtifacts || []), ...(criterion.evidenceArtifacts || [])]
+            .filter((artifact, index, all) => all.findIndex((candidate) => candidate.ref === artifact.ref) === index)
+            .slice(0, 20),
+        } : criterion);
+      }
+      const supervisorCriteria = [...supervisorCriteriaByIdentity.values()];
+      const supervisorSupportError = projectCompletionCriteriaError(
+        activeGoal.doneWhen,
+        normalizeProjectCompletionResult({
+          summary: '当前版本监督工作项的目标条件证据汇总',
+          validation: [],
+          criteria: supervisorCriteria,
+          completedAt: now,
+        }),
+        '主目标完成条件的监督证据',
+        { allowExtra: true, requireArtifacts: true },
+      );
+      if (supervisorSupportError) return { ok: false, error: supervisorSupportError };
+      for (const criterion of activeGoal.doneWhen) {
+        const identity = projectCriterionIdentity(criterion);
+        const declared = goalCompletion?.criteria?.find((item) => (
+          projectCriterionIdentity(item.criterion) === identity
+        ));
+        const supervised = supervisorCriteriaByIdentity.get(identity);
+        if (!declared || !supervised) continue;
+        if (declared.result !== supervised.result || declared.method !== supervised.method) {
+          return {
+            ok: false,
+            error: `主目标完成声明与监督实际证据结论不一致：${criterion}（声明 ${declared.result}/${declared.method}，监督 ${supervised.result}/${supervised.method}）`,
+          };
+        }
+        if (declared.evidenceRefs.some((ref) => !supervised.evidenceRefs.includes(ref))) {
+          return { ok: false, error: `主目标完成声明引用了未经监督核验的证据文件：${criterion}` };
+        }
+      }
       if (session.status !== 'active') {
         return { ok: false, error: '项目必须处于运行中，完成复核后才能结束当前主目标' };
       }
@@ -986,6 +1124,20 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (incompleteSubgoal) {
         return { ok: false, error: `阶段目标尚未验收：${incompleteSubgoal.title}` };
       }
+      const invalidSubgoalCompletion = (session.subgoals || []).flatMap((subgoal) => {
+        if (subgoal.goalId !== activeGoal.id
+          || subgoal.status !== 'achieved'
+          || subgoal.id.startsWith(`${session.id}-legacy-`)) return [];
+        const completion = projectSubgoalCompletionResult(subgoal, session.workItems);
+        const error = projectCompletionCriteriaError(
+          subgoal.acceptance,
+          completion,
+          `阶段目标 ${subgoal.title} 的 acceptance`,
+          { allowExtra: true, requireArtifacts: true },
+        );
+        return error ? [error] : [];
+      })[0];
+      if (invalidSubgoalCompletion) return { ok: false, error: invalidSubgoalCompletion };
       next = {
         ...session,
         status: 'waiting',
@@ -1006,6 +1158,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         payload: {
           goalId: activeGoal.id,
           evidence: action.evidence.trim(),
+          completion: goalCompletion,
           attentionRequired: true,
         },
       };

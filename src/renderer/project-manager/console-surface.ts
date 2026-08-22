@@ -63,3 +63,16 @@ export function openProjectManagerConsole(projectId: string): boolean {
   store.selectWorkspace(workspaceId);
   return true;
 }
+
+/** User-attention events must reveal the project decision surface, never the creation modal. */
+export function openProjectManagerAttentionSurface(projectId: string): boolean {
+  const opened = openProjectManagerConsole(projectId);
+  const store = useStore.getState();
+  if (opened) {
+    store.closeProjectManagerDialog();
+    return true;
+  }
+  store.selectProjectManager(projectId);
+  store.openProjectManagerDialog();
+  return false;
+}
