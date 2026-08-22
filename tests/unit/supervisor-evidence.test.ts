@@ -3,7 +3,11 @@ import {
   cachedSupervisorEvidencePage,
   clearSupervisorEvidenceCache,
   createSupervisorEvidenceSnapshot,
+  latestCachedSupervisorEvidence,
   registerSupervisorEvidence,
+  supervisorEvidenceBufferRewound,
+  supervisorEvidenceContextDiscontinuity,
+  supervisorEvidenceContinuity,
 } from '../../src/renderer/supervisor/evidence';
 import { supervisorEvidenceSuggestedRanges } from '../../src/shared/supervisor-evidence';
 
@@ -59,6 +63,95 @@ describe('supervisor evidence snapshots', () => {
     });
 
     expect(snapshot).toMatchObject({ bufferType: 'alternate', truncated: true });
+  });
+
+  it('detects a material TUI buffer rewind and keeps the pre-rewind review as the authority anchor', () => {
+    const beforeRewind = createSupervisorEvidenceSnapshot({
+      sessionId: 'sup-1', reviewId: 'review-b3', laneId: 'lane-1', surfaceId: 'worker-a',
+      isolationScope: 'project', task: '执行 B3-positive', workerTurnId: 7,
+      bufferType: 'normal', bufferLines: 1_619, capturedLines: 1_619,
+      summary: 'B3-positive 已执行并 consumed/pass', text: 'B3 immutable evidence',
+    });
+    registerSupervisorEvidence(beforeRewind);
+    const previous = latestCachedSupervisorEvidence('sup-1', 'lane-1', 'worker-a', 'project');
+    const rewoundBuffer = { bufferType: 'normal' as const, bufferLines: 928, capturedLines: 928 };
+
+    expect(previous).toBe(beforeRewind);
+    expect(supervisorEvidenceBufferRewound(beforeRewind, rewoundBuffer)).toBe(true);
+    expect(supervisorEvidenceBufferRewound(beforeRewind, {
+      bufferType: 'normal', bufferLines: 1_580, capturedLines: 1_580,
+    })).toBe(false);
+    expect(supervisorEvidenceContinuity(previous, rewoundBuffer)).toEqual({
+      previousReviewId: 'review-b3',
+      continuityAnchorReviewId: 'review-b3',
+      contextContinuity: 'rewound',
+      contextDiscontinuityReason: 'buffer-rewind',
+      previousBufferLines: 1_619,
+    });
+
+    const afterRewind = createSupervisorEvidenceSnapshot({
+      sessionId: 'sup-1', reviewId: 'review-recovery', laneId: 'lane-1', surfaceId: 'worker-a',
+      isolationScope: 'project', task: '只读恢复 B3 证据', workerTurnId: 8,
+      bufferType: 'normal', bufferLines: 928, capturedLines: 928,
+      summary: '当前屏幕显示旧 B1', text: 'stale B1 screen',
+      ...supervisorEvidenceContinuity(previous, rewoundBuffer),
+    });
+    registerSupervisorEvidence(afterRewind);
+    expect(supervisorEvidenceContinuity(afterRewind, {
+      bufferType: 'normal', bufferLines: 1_100, capturedLines: 1_100,
+    })).toMatchObject({
+      previousReviewId: 'review-recovery',
+      continuityAnchorReviewId: 'review-b3',
+      contextContinuity: 'rewound',
+    });
+    expect(cachedSupervisorEvidencePage('sup-1', 'review-recovery', 'worker-a', 'project'))
+      .toMatchObject({
+        workerTurnId: 8,
+        previousReviewId: 'review-b3',
+        continuityAnchorReviewId: 'review-b3',
+        contextContinuity: 'rewound',
+        contextDiscontinuityReason: 'buffer-rewind',
+      });
+  });
+
+  it.each([
+    ['Codex', 640, 300],
+    ['Kimi', 1_619, 928],
+  ])('anchors %s normal-buffer evidence after a material rewind', (_agent, before, after) => {
+    const previous = createSupervisorEvidenceSnapshot({
+      sessionId: 'sup-agents', reviewId: `review-${_agent}`, laneId: 'lane-1',
+      surfaceId: `worker-${_agent}`, isolationScope: 'project', task: '执行一次性任务',
+      bufferType: 'normal', bufferLines: before, capturedLines: before,
+      summary: '执行完成', text: 'immutable result',
+    });
+    const current = { bufferType: 'normal' as const, bufferLines: after, capturedLines: after };
+
+    expect(supervisorEvidenceContextDiscontinuity(previous, current)).toBe('buffer-rewind');
+    expect(supervisorEvidenceContinuity(previous, current)).toMatchObject({
+      contextContinuity: 'rewound',
+      contextDiscontinuityReason: 'buffer-rewind',
+      continuityAnchorReviewId: `review-${_agent}`,
+    });
+  });
+
+  it('anchors Grok evidence when alternate-screen repaints without shrinking line counts', () => {
+    const previous = createSupervisorEvidenceSnapshot({
+      sessionId: 'sup-grok', reviewId: 'review-grok-result', laneId: 'lane-1',
+      surfaceId: 'worker-grok', isolationScope: 'project', task: '执行一次性任务',
+      bufferType: 'alternate', bufferLines: 40, capturedLines: 40,
+      summary: '执行完成', text: 'Grok immutable result',
+    });
+    const repaint = { bufferType: 'alternate' as const, bufferLines: 40, capturedLines: 40 };
+
+    expect(supervisorEvidenceBufferRewound(previous, repaint)).toBe(false);
+    expect(supervisorEvidenceContextDiscontinuity(previous, repaint)).toBe('alternate-repaint');
+    expect(supervisorEvidenceContinuity(previous, repaint)).toEqual({
+      previousReviewId: 'review-grok-result',
+      continuityAnchorReviewId: 'review-grok-result',
+      contextContinuity: 'rewound',
+      contextDiscontinuityReason: 'alternate-repaint',
+      previousBufferLines: 40,
+    });
   });
 
   it('keeps the result head and tail while compacting only the inline summary', () => {

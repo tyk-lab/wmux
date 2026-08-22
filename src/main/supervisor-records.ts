@@ -101,7 +101,10 @@ function supervisorEvidenceDirectory(
   return realEvidenceDirectory;
 }
 
-function pruneSupervisorEvidence(evidenceDirectory: string): void {
+function pruneSupervisorEvidence(
+  evidenceDirectory: string,
+  additionallyRetainedReviewIds: readonly string[] = [],
+): void {
   try {
     const entries = fs.readdirSync(evidenceDirectory, { withFileTypes: true });
     const files = entries
@@ -119,10 +122,13 @@ function pruneSupervisorEvidence(evidenceDirectory: string): void {
         };
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const retainedReviewIds = new Set(
-      files.slice(0, MAX_EVIDENCE_FILES_PER_SCOPE).map((file) => file.reviewId),
-    );
+    const newestFiles = files.slice(0, MAX_EVIDENCE_FILES_PER_SCOPE);
+    const retainedReviewIds = new Set([
+      ...newestFiles.map((file) => file.reviewId),
+      ...additionallyRetainedReviewIds.filter((reviewId) => REVIEW_ID.test(reviewId)),
+    ]);
     for (const stale of files.slice(MAX_EVIDENCE_FILES_PER_SCOPE)) {
+      if (retainedReviewIds.has(stale.reviewId)) continue;
       try { fs.unlinkSync(stale.filePath); } catch { /* Best-effort retention cleanup. */ }
     }
     for (const entry of entries) {
@@ -162,7 +168,10 @@ export function saveSupervisorEvidence(options: {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
-  pruneSupervisorEvidence(evidenceDirectory);
+  pruneSupervisorEvidence(
+    evidenceDirectory,
+    snapshot.continuityAnchorReviewId ? [snapshot.continuityAnchorReviewId] : [],
+  );
   return { path: evidencePath };
 }
 
@@ -264,7 +273,10 @@ export function readSupervisorEvidenceFile(options: {
     if (createHash('sha256').update(fs.readFileSync(realEvidencePath)).digest('hex') !== sha256) {
       return { ok: false, error: 'supervisor evidence text file hash mismatch' };
     }
-    pruneSupervisorEvidence(loaded.evidenceDirectory);
+    pruneSupervisorEvidence(
+      loaded.evidenceDirectory,
+      loaded.snapshot.continuityAnchorReviewId ? [loaded.snapshot.continuityAnchorReviewId] : [],
+    );
     const totalLines = loaded.snapshot.text.replace(/\r\n?/gu, '\n').split('\n').length;
     return {
       ok: true,
@@ -274,6 +286,24 @@ export function readSupervisorEvidenceFile(options: {
       surfaceId: loaded.snapshot.surfaceId,
       isolationScope: loaded.snapshot.isolationScope,
       task: loaded.snapshot.task,
+      ...(Number.isFinite(loaded.snapshot.workerTurnId)
+        ? { workerTurnId: loaded.snapshot.workerTurnId }
+        : {}),
+      ...(loaded.snapshot.previousReviewId
+        ? { previousReviewId: loaded.snapshot.previousReviewId }
+        : {}),
+      ...(loaded.snapshot.continuityAnchorReviewId
+        ? { continuityAnchorReviewId: loaded.snapshot.continuityAnchorReviewId }
+        : {}),
+      ...(loaded.snapshot.contextContinuity
+        ? { contextContinuity: loaded.snapshot.contextContinuity }
+        : {}),
+      ...(loaded.snapshot.contextDiscontinuityReason
+        ? { contextDiscontinuityReason: loaded.snapshot.contextDiscontinuityReason }
+        : {}),
+      ...(Number.isFinite(loaded.snapshot.previousBufferLines)
+        ? { previousBufferLines: loaded.snapshot.previousBufferLines }
+        : {}),
       capturedAt: loaded.snapshot.capturedAt,
       bufferType: loaded.snapshot.bufferType,
       truncated: loaded.snapshot.truncated,

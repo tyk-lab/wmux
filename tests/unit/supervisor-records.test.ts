@@ -35,6 +35,12 @@ describe('supervisor records', () => {
       surfaceId: 'surf-a',
       isolationScope: 'project' as const,
       task: '验证证据读取',
+      workerTurnId: 9,
+      previousReviewId: 'review-122',
+      continuityAnchorReviewId: 'review-120',
+      contextContinuity: 'rewound' as const,
+      contextDiscontinuityReason: 'alternate-repaint' as const,
+      previousBufferLines: 20,
       capturedAt: 100,
       bufferType: 'normal' as const,
       bufferLines: 4,
@@ -66,6 +72,11 @@ describe('supervisor records', () => {
       ok: true,
       page: 2,
       totalPages: 2,
+      workerTurnId: 9,
+      previousReviewId: 'review-122',
+      continuityAnchorReviewId: 'review-120',
+      contextContinuity: 'rewound',
+      contextDiscontinuityReason: 'alternate-repaint',
       text: '第三行\n第四行',
     });
     expect(readSupervisorEvidence({
@@ -88,6 +99,10 @@ describe('supervisor records', () => {
       accessMode: 'file',
       reviewId: 'review-123',
       surfaceId: 'surf-a',
+      workerTurnId: 9,
+      continuityAnchorReviewId: 'review-120',
+      contextContinuity: 'rewound',
+      contextDiscontinuityReason: 'alternate-repaint',
       format: 'text/plain; charset=utf-8',
       totalLines: 4,
       sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -149,6 +164,50 @@ describe('supervisor records', () => {
     );
     expect(fs.readdirSync(evidenceDirectory)).toHaveLength(50);
     expect(fs.readdirSync(evidenceDirectory).some((name) => name.endsWith('.txt'))).toBe(false);
+  });
+
+  it('retains an older evidence review while a recent rewind snapshot still names it as the authority anchor', () => {
+    const project = projectDir();
+    for (let index = 0; index < 52; index += 1) {
+      saveSupervisorEvidence({
+        projectDir: project,
+        snapshot: {
+          version: 1,
+          sessionId: 'sup-anchor-retention',
+          reviewId: `review-${index}`,
+          laneId: 'lane-a',
+          surfaceId: 'surf-a',
+          isolationScope: 'project',
+          task: `证据回合 ${index}`,
+          ...(index >= 49 ? {
+            contextContinuity: 'rewound' as const,
+            continuityAnchorReviewId: 'review-0',
+          } : {}),
+          capturedAt: index,
+          bufferType: 'normal',
+          bufferLines: 100 + index,
+          capturedLines: 100 + index,
+          truncated: index >= 49,
+          summary: `摘要 ${index}`,
+          text: `证据 ${index}`,
+        },
+      });
+    }
+
+    const evidenceDirectory = path.join(
+      fs.realpathSync(project), '.wmux', 'supervisor', 'sup-anchor-retention', 'evidence', 'project',
+    );
+    const jsonFiles = fs.readdirSync(evidenceDirectory).filter((name) => name.endsWith('.json'));
+    expect(jsonFiles).toHaveLength(51);
+    expect(jsonFiles).toContain('review-0.json');
+    expect(jsonFiles).not.toContain('review-1.json');
+    expect(readSupervisorEvidence({
+      projectDir: project,
+      sessionId: 'sup-anchor-retention',
+      reviewId: 'review-0',
+      surfaceId: 'surf-a',
+      isolationScope: 'project',
+    })).toMatchObject({ ok: true, reviewId: 'review-0' });
   });
 
   it('keeps duplicate terminal labels distinct by surface id and ignores the audit directory', () => {

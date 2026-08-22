@@ -5,6 +5,9 @@ export const SUPERVISOR_EVIDENCE_SUMMARY_MAX_CHARS = 1_200;
 export const SUPERVISOR_EVIDENCE_DEFAULT_PAGE_LINES = 200;
 export const SUPERVISOR_EVIDENCE_MAX_PAGE_LINES = 500;
 
+export type SupervisorEvidenceContextContinuity = 'initial' | 'continuous' | 'rewound';
+export type SupervisorEvidenceContextDiscontinuityReason = 'buffer-rewind' | 'alternate-repaint';
+
 export function compactSupervisorEvidenceSummary(
   value: string,
   maxChars = SUPERVISOR_EVIDENCE_SUMMARY_MAX_CHARS,
@@ -27,6 +30,15 @@ export interface SupervisorEvidenceSnapshot {
   surfaceId: string;
   isolationScope: TerminalInputIsolationScope;
   task: string;
+  /** Control-plane worker generation that owns this immutable evidence. */
+  workerTurnId?: number;
+  /** Immediately preceding review for the same lane and task surface. */
+  previousReviewId?: string;
+  /** Last review captured before the terminal view discarded visible history. */
+  continuityAnchorReviewId?: string;
+  contextContinuity?: SupervisorEvidenceContextContinuity;
+  contextDiscontinuityReason?: SupervisorEvidenceContextDiscontinuityReason;
+  previousBufferLines?: number;
   capturedAt: number;
   bufferType: 'normal' | 'alternate' | 'unknown';
   bufferLines: number;
@@ -43,6 +55,12 @@ export interface SupervisorEvidencePage {
   surfaceId: string;
   isolationScope: TerminalInputIsolationScope;
   task: string;
+  workerTurnId?: number;
+  previousReviewId?: string;
+  continuityAnchorReviewId?: string;
+  contextContinuity?: SupervisorEvidenceContextContinuity;
+  contextDiscontinuityReason?: SupervisorEvidenceContextDiscontinuityReason;
+  previousBufferLines?: number;
   capturedAt: number;
   bufferType: SupervisorEvidenceSnapshot['bufferType'];
   bufferLines: number;
@@ -72,6 +90,12 @@ export interface SupervisorEvidenceFileReference {
   surfaceId: string;
   isolationScope: TerminalInputIsolationScope;
   task: string;
+  workerTurnId?: number;
+  previousReviewId?: string;
+  continuityAnchorReviewId?: string;
+  contextContinuity?: SupervisorEvidenceContextContinuity;
+  contextDiscontinuityReason?: SupervisorEvidenceContextDiscontinuityReason;
+  previousBufferLines?: number;
   capturedAt: number;
   bufferType: SupervisorEvidenceSnapshot['bufferType'];
   truncated: boolean;
@@ -147,6 +171,18 @@ export function supervisorEvidencePage(
     surfaceId: snapshot.surfaceId,
     isolationScope: snapshot.isolationScope,
     task: snapshot.task,
+    ...(Number.isFinite(snapshot.workerTurnId) ? { workerTurnId: snapshot.workerTurnId } : {}),
+    ...(snapshot.previousReviewId ? { previousReviewId: snapshot.previousReviewId } : {}),
+    ...(snapshot.continuityAnchorReviewId
+      ? { continuityAnchorReviewId: snapshot.continuityAnchorReviewId }
+      : {}),
+    ...(snapshot.contextContinuity ? { contextContinuity: snapshot.contextContinuity } : {}),
+    ...(snapshot.contextDiscontinuityReason
+      ? { contextDiscontinuityReason: snapshot.contextDiscontinuityReason }
+      : {}),
+    ...(Number.isFinite(snapshot.previousBufferLines)
+      ? { previousBufferLines: snapshot.previousBufferLines }
+      : {}),
     capturedAt: snapshot.capturedAt,
     bufferType: snapshot.bufferType,
     bufferLines: snapshot.bufferLines,

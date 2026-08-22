@@ -70,8 +70,11 @@ import { detectSupervisorLauncher, supervisorLauncherDisplayName } from './super
 import { appendSupervisorRecord } from './supervisor/recording';
 import {
   createSupervisorEvidenceSnapshot,
+  latestCachedSupervisorEvidence,
   persistSupervisorEvidence,
   registerSupervisorEvidence,
+  supervisorEvidenceContextDiscontinuity,
+  supervisorEvidenceContinuity,
 } from './supervisor/evidence';
 import {
   compactSupervisorDeliveries,
@@ -671,23 +674,58 @@ function freezeSupervisorEvidence(
   ].includes(rawActivityState)
     ? rawActivityState as RemoteTerminalActivityState
     : 'unknown';
+  const isolationScope = isProjectManagedSupervisorLane(lane) ? 'project' : 'ordinary';
+  const previous = latestCachedSupervisorEvidence(
+    sessionId,
+    lane.id,
+    lane.surfaceId,
+    isolationScope,
+  );
+  const currentBuffer = {
+    bufferType: screen.bufferType || 'unknown',
+    bufferLines: screen.bufferLines || 0,
+    capturedLines: screen.lines || 0,
+  } as const;
+  const discontinuityThisCapture = previous
+    ? supervisorEvidenceContextDiscontinuity(previous, currentBuffer)
+    : undefined;
+  const continuity = supervisorEvidenceContinuity(previous, currentBuffer);
+  const {
+    contextContinuity,
+    contextDiscontinuityReason,
+    continuityAnchorReviewId,
+  } = continuity;
   const conversation = terminalSupervisorCoreExcerpt(
     screen.text || '',
     lane.label,
     activityState,
   );
-  const summary = conversation.answer || conversation.text || fallbackSummary || '（未提取到任务 AI 最终回答）';
+  const coreSummary = conversation.answer || conversation.text || fallbackSummary || '（未提取到任务 AI 最终回答）';
+  const continuityWarning = contextContinuity === 'rewound'
+    ? [
+        '[终端证据世代中断｜当前屏幕不能替代先前不可变证据]',
+        discontinuityThisCapture === 'alternate-repaint'
+          ? '同一任务终端使用 alternate-screen；当前视口是一次整屏重绘，先前帧不会保留在滚动缓冲中。'
+          : discontinuityThisCapture === 'buffer-rewind'
+            ? `同一任务终端的缓冲从 ${previous?.bufferLines || 0} 行降至 ${currentBuffer.bufferLines} 行；TUI 已丢弃或重绘先前历史。`
+            : `同一任务终端此前已经发生证据世代中断（${contextDiscontinuityReason || '原因未知'}）；当前视图不能恢复被丢弃的先前历史。`,
+        `中断前权威证据：${continuityAnchorReviewId || previous?.reviewId || '未知'}。当前屏幕缺少某项事实，不代表该步骤未执行。`,
+      ].join('\n')
+    : '';
+  const summary = [continuityWarning, coreSummary].filter(Boolean).join('\n\n');
   const snapshot = createSupervisorEvidenceSnapshot({
     sessionId,
     reviewId,
     laneId: lane.id,
     surfaceId: lane.surfaceId,
-    isolationScope: isProjectManagedSupervisorLane(lane) ? 'project' : 'ordinary',
+    isolationScope,
     task: lane.currentTask || '（任务未上报）',
+    workerTurnId: lane.workerTurnId,
+    ...continuity,
     bufferType: screen.bufferType,
     bufferLines: screen.bufferLines,
     capturedLines: screen.lines,
-    truncated: screen.truncated,
+    truncated: screen.truncated || contextContinuity === 'rewound',
     summary,
     text: screen.text || fallbackSummary,
   });
@@ -702,8 +740,27 @@ function freezeSupervisorEvidence(
     capturedLines: snapshot.capturedLines,
     truncated: snapshot.truncated,
     summary: snapshot.summary,
+    workerTurnId: snapshot.workerTurnId,
+    previousReviewId: snapshot.previousReviewId,
+    continuityAnchorReviewId: snapshot.continuityAnchorReviewId,
+    contextContinuity: snapshot.contextContinuity,
+    contextDiscontinuityReason: snapshot.contextDiscontinuityReason,
   });
   return snapshot;
+}
+
+function supervisorEvidenceContinuityInstruction(evidence: ReturnType<typeof freezeSupervisorEvidence>): string {
+  if (!evidence || evidence.contextContinuity !== 'rewound') return '';
+  const anchorReviewId = evidence.continuityAnchorReviewId || evidence.previousReviewId;
+  const reason = evidence.contextDiscontinuityReason === 'alternate-repaint'
+    ? 'alternate-screen 已整屏重绘'
+    : '终端滚动缓冲已回卷';
+  return [
+    '[证据世代门禁｜必须先合并中断前后证据]',
+    `${reason}；先读取中断前锚点 wmux supervisor evidence --review-id ${anchorReviewId || '<缺失>'} --file，再读取当前 review。`,
+    '旧锚点中的已执行、身份消费、run 和安全结果不会因当前屏幕重绘而失效；不得以当前屏幕缺失为由补建、复跑、替换或跳过一次性身份。',
+    '若两份不可变证据冲突，向项目 AI 上报结构化冲突并保持停止；不得把它泛化为需要用户批准的硬件故障。',
+  ].join('\n');
 }
 
 const ORDINARY_REVIEW_IDLE_GRACE_MS = 15_000;
@@ -984,6 +1041,7 @@ function handleSupervisorHookEvent(event: any): void {
         evidence
           ? [
               `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
+              supervisorEvidenceContinuityInstruction(evidence),
               evidence.summary ? `任务 AI 最终回答摘要：\n${evidence.summary}` : '',
               `冻结证据文件（${evidenceReadMode === 'on-demand' ? '按需' : '必查'}）：wmux supervisor evidence --review-id ${reviewId} --file`,
               evidenceReadMode === 'required'
@@ -1797,6 +1855,7 @@ export default function App() {
               const evidenceText = evidence
                 ? [
                     `[冻结证据｜review=${reviewId}｜${evidence.bufferType}｜${evidence.capturedLines}/${evidence.bufferLines} 行${evidence.truncated ? '｜可能不完整' : ''}]`,
+                    supervisorEvidenceContinuityInstruction(evidence),
                     evidence.summary ? `任务 AI 当前核心信息：\n${evidence.summary}` : '',
                     `冻结证据文件：wmux supervisor evidence --review-id ${reviewId} --file`,
                     '用文件工具优先检查 suggestedRanges 和当前异常相关区段；文件不可用时分页兜底，证据仍不足时才读全文。read-screen 仅核对实时状态。',

@@ -4,6 +4,8 @@ import {
   supervisorEvidencePage,
   type SupervisorEvidenceFileReference,
   type SupervisorEvidencePage,
+  type SupervisorEvidenceContextDiscontinuityReason,
+  type SupervisorEvidenceContextContinuity,
   type SupervisorEvidenceSnapshot,
 } from '../../shared/supervisor-evidence';
 import type { TerminalInputIsolationScope } from '../../shared/types';
@@ -22,6 +24,12 @@ export interface CreateSupervisorEvidenceOptions {
   surfaceId: string;
   isolationScope: TerminalInputIsolationScope;
   task: string;
+  workerTurnId?: number;
+  previousReviewId?: string;
+  continuityAnchorReviewId?: string;
+  contextContinuity?: SupervisorEvidenceContextContinuity;
+  contextDiscontinuityReason?: SupervisorEvidenceContextDiscontinuityReason;
+  previousBufferLines?: number;
   capturedAt?: number;
   bufferType?: string;
   bufferLines?: number;
@@ -50,6 +58,18 @@ export function createSupervisorEvidenceSnapshot(
     surfaceId: options.surfaceId,
     isolationScope: options.isolationScope,
     task: options.task.trim(),
+    ...(Number.isFinite(options.workerTurnId) ? { workerTurnId: Math.max(0, Math.floor(options.workerTurnId!)) } : {}),
+    ...(options.previousReviewId?.trim() ? { previousReviewId: options.previousReviewId.trim() } : {}),
+    ...(options.continuityAnchorReviewId?.trim()
+      ? { continuityAnchorReviewId: options.continuityAnchorReviewId.trim() }
+      : {}),
+    ...(options.contextContinuity ? { contextContinuity: options.contextContinuity } : {}),
+    ...(options.contextDiscontinuityReason
+      ? { contextDiscontinuityReason: options.contextDiscontinuityReason }
+      : {}),
+    ...(Number.isFinite(options.previousBufferLines)
+      ? { previousBufferLines: Math.max(0, Math.floor(options.previousBufferLines!)) }
+      : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     bufferType,
     bufferLines: Math.max(0, Math.floor(options.bufferLines || 0)),
@@ -67,6 +87,72 @@ export function registerSupervisorEvidence(snapshot: SupervisorEvidenceSnapshot)
   while (evidenceCache.size > MAX_CACHED_EVIDENCE) {
     evidenceCache.delete(evidenceCache.keys().next().value as string);
   }
+}
+
+export function latestCachedSupervisorEvidence(
+  sessionId: string,
+  laneId: string,
+  surfaceId: string,
+  isolationScope: TerminalInputIsolationScope,
+): SupervisorEvidenceSnapshot | undefined {
+  return [...evidenceCache.values()].reverse().find((snapshot) => (
+    snapshot.sessionId === sessionId
+    && snapshot.laneId === laneId
+    && snapshot.surfaceId === surfaceId
+    && snapshot.isolationScope === isolationScope
+  ));
+}
+
+/** A material line-count collapse means the TUI discarded visible history; growth cannot restore it. */
+export function supervisorEvidenceBufferRewound(
+  previous: Pick<SupervisorEvidenceSnapshot, 'bufferType' | 'bufferLines' | 'capturedLines'>,
+  current: Pick<SupervisorEvidenceSnapshot, 'bufferType' | 'bufferLines' | 'capturedLines'>,
+): boolean {
+  if (previous.bufferType !== 'normal' || current.bufferType !== 'normal') return false;
+  const bufferLoss = previous.bufferLines - current.bufferLines;
+  const capturedLoss = previous.capturedLines - current.capturedLines;
+  return bufferLoss >= Math.max(50, Math.ceil(previous.bufferLines * 0.2))
+    && capturedLoss >= Math.max(50, Math.ceil(previous.capturedLines * 0.2));
+}
+
+/** Alternate-screen frames replace each other; changing buffer generations also drops visible history. */
+export function supervisorEvidenceContextDiscontinuity(
+  previous: Pick<SupervisorEvidenceSnapshot, 'bufferType' | 'bufferLines' | 'capturedLines'>,
+  current: Pick<SupervisorEvidenceSnapshot, 'bufferType' | 'bufferLines' | 'capturedLines'>,
+): SupervisorEvidenceContextDiscontinuityReason | undefined {
+  if (previous.bufferType === 'alternate' || current.bufferType === 'alternate') {
+    return 'alternate-repaint';
+  }
+  return supervisorEvidenceBufferRewound(previous, current) ? 'buffer-rewind' : undefined;
+}
+
+export function supervisorEvidenceContinuity(
+  previous: SupervisorEvidenceSnapshot | undefined,
+  current: Pick<SupervisorEvidenceSnapshot, 'bufferType' | 'bufferLines' | 'capturedLines'>,
+): Pick<
+  SupervisorEvidenceSnapshot,
+  | 'previousReviewId'
+  | 'continuityAnchorReviewId'
+  | 'contextContinuity'
+  | 'contextDiscontinuityReason'
+  | 'previousBufferLines'
+> {
+  if (!previous) return { contextContinuity: 'initial' };
+  const currentDiscontinuity = supervisorEvidenceContextDiscontinuity(previous, current);
+  const contextDiscontinuityReason = currentDiscontinuity
+    || (previous.contextContinuity === 'rewound'
+      ? previous.contextDiscontinuityReason || 'buffer-rewind'
+      : undefined);
+  const rewound = !!contextDiscontinuityReason;
+  return {
+    previousReviewId: previous.reviewId,
+    contextContinuity: rewound ? 'rewound' : 'continuous',
+    ...(contextDiscontinuityReason ? { contextDiscontinuityReason } : {}),
+    previousBufferLines: previous.bufferLines,
+    ...(rewound ? {
+      continuityAnchorReviewId: previous.continuityAnchorReviewId || previous.reviewId,
+    } : {}),
+  };
 }
 
 export function cachedSupervisorEvidencePage(
