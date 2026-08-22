@@ -16,6 +16,7 @@ import {
 } from '../shared/supervisor-policy';
 import { v4 as uuid } from 'uuid';
 import {
+  isTaskTerminalInputBusyError,
   sendPermissionResponseReliably,
   sendTaskToSurface,
   sendTaskToSurfaceReliably,
@@ -23,6 +24,7 @@ import {
   supervisorLaneInputIsolationScope,
   SUPERVISOR_TUI_READY_DELAY_MS,
 } from './supervisor/supervisor-engine';
+import { hasPendingTerminalInput } from './supervisor/pending-input-guard';
 import {
   markTerminalRuntimeFailed,
   markTerminalRuntimeExited,
@@ -87,6 +89,7 @@ import {
   buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
   buildSupervisorGoalConstructionBriefing,
+  buildSupervisorWakeEventEnvelope,
   buildUnacknowledgedSupervisorIdlePrompt,
   effectiveSupervisorAutonomyPermissions,
   effectiveSupervisorAutonomous,
@@ -1184,6 +1187,18 @@ const supervisorDeliveriesInFlight = new Set<string>();
 const pendingTaskPromptAcknowledgements = new Map<string, {
   finish: (confirmed: boolean) => void;
 }>();
+const TASK_INPUT_RECOVERY_POLL_MS = 300;
+const TASK_INPUT_RECOVERY_MAX_POLL_MS = 2_000;
+const TASK_INPUT_RECOVERY_STABLE_SAMPLES = 2;
+interface TaskInputRecoveryWatch {
+  surfaceId: string;
+  supervisorSurfaceId: string;
+  reviewId?: string;
+  stableEmptySamples: number;
+  pollDelayMs: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+const taskInputRecoveryWatches = new Map<string, TaskInputRecoveryWatch>();
 
 /** Wait for the Agent hook that proves a submitted task became a new turn. */
 function beginTaskPromptAcknowledgement(
@@ -3161,6 +3176,109 @@ function queueSupervisorControlMessage(
   });
   signalSupervisorDeliveryReady();
   return delivery;
+}
+
+function stopTaskInputRecoveryWatch(laneId: string, watch: TaskInputRecoveryWatch): void {
+  if (taskInputRecoveryWatches.get(laneId) !== watch) return;
+  if (watch.timer) globalThis.clearTimeout(watch.timer);
+  taskInputRecoveryWatches.delete(laneId);
+}
+
+function clearTaskInputRecoveryWatches(): void {
+  for (const [laneId, watch] of taskInputRecoveryWatches) {
+    stopTaskInputRecoveryWatch(laneId, watch);
+  }
+}
+
+function scheduleTaskInputRecoveryWatch(lane: SupervisorLane): void {
+  const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+  if (!supervisorSurfaceId) return;
+  const existing = taskInputRecoveryWatches.get(lane.id);
+  if (existing
+    && existing.surfaceId === lane.surfaceId
+    && existing.supervisorSurfaceId === supervisorSurfaceId
+    && existing.reviewId === lane.activeReviewId) {
+    return;
+  }
+  if (existing) stopTaskInputRecoveryWatch(lane.id, existing);
+
+  const watch: TaskInputRecoveryWatch = {
+    surfaceId: lane.surfaceId,
+    supervisorSurfaceId,
+    reviewId: lane.activeReviewId,
+    stableEmptySamples: 0,
+    pollDelayMs: TASK_INPUT_RECOVERY_POLL_MS,
+  };
+  taskInputRecoveryWatches.set(lane.id, watch);
+
+  const store = useStore.getState();
+  const notificationText = '任务终端存在未提交输入；监督指令没有发送。提交或清空输入后，控制层会自动通知监督 AI 重新裁决。';
+  const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+  if (workspaceId) {
+    store.addNotification({
+      surfaceId: lane.surfaceId,
+      workspaceId,
+      title: 'AI 监督等待任务终端输入区',
+      text: notificationText,
+    });
+  }
+  window.wmux?.notification?.fire({
+    surfaceId: lane.surfaceId,
+    title: 'AI 监督等待任务终端输入区',
+    text: notificationText,
+  });
+
+  const poll = () => {
+    watch.timer = undefined;
+    if (taskInputRecoveryWatches.get(lane.id) !== watch) return;
+    const currentStore = useStore.getState();
+    const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+    if (!currentLane
+      || currentLane.surfaceId !== watch.surfaceId
+      || dedicatedSupervisorSurfaceId(currentLane) !== watch.supervisorSurfaceId
+      || supervisorLaneControlState(currentLane) !== 'active'
+      || !currentLane.awaitingReview
+      || currentLane.activeReviewId !== watch.reviewId) {
+      stopTaskInputRecoveryWatch(lane.id, watch);
+      return;
+    }
+    const buffer = surfaceTerminalRegistry.get(watch.surfaceId)?.buffer.active;
+    if (!buffer || hasPendingTerminalInput(buffer)) {
+      watch.stableEmptySamples = 0;
+      watch.pollDelayMs = Math.min(
+        TASK_INPUT_RECOVERY_MAX_POLL_MS,
+        Math.ceil(watch.pollDelayMs * 1.5),
+      );
+    } else {
+      watch.stableEmptySamples += 1;
+      watch.pollDelayMs = TASK_INPUT_RECOVERY_POLL_MS;
+    }
+    if (watch.stableEmptySamples < TASK_INPUT_RECOVERY_STABLE_SAMPLES) {
+      watch.timer = globalThis.setTimeout(poll, watch.pollDelayMs);
+      (watch.timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+      return;
+    }
+
+    stopTaskInputRecoveryWatch(lane.id, watch);
+    appendSupervisorRecord(currentStore.supervisor, currentLane, 'supervisor.delivery.retry-ready', {
+      kind: 'next',
+      reason: 'task-terminal-input-cleared',
+    });
+    currentStore.appendSupervisorLog(currentLane.id, '任务终端输入区已恢复', '此前延期的监督裁决可以安全重试');
+    queueSupervisorControlMessage(currentLane, [
+      '[任务终端输入区已恢复为空｜重新裁决]',
+      '上一条 --next 因检测到未提交输入而没有发送；不得假设任务 AI 已经收到。',
+      buildSupervisorWakeEventEnvelope(
+        currentLane.surfaceId,
+        currentLane.activeReviewId,
+        isProjectManagedSupervisorLane(currentLane),
+      ),
+      '先核对任务终端最新输出。若原下一步仍然适用，重新提交一次 continue/rework；若任务已经完成或状态变化，按当前证据重新裁决。',
+    ].join('\n\n'));
+  };
+
+  watch.timer = globalThis.setTimeout(poll, TASK_INPUT_RECOVERY_POLL_MS);
+  (watch.timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
 }
 
 export function normalizedMaxAutoDecisions(value: unknown): number | null {
@@ -11054,6 +11172,7 @@ export function initPipeBridge(): void {
   const w = window as any;
   projectManagerDeliveryGeneration += 1;
   managedAgentWatchdogGeneration += 1;
+  clearTaskInputRecoveryWatches();
 
   w.__wmux_noteManagedAgentHook = (event: any) => handleManagedAgentHookEvent(event);
   w.__wmux_noteManagedAgentOutput = (surfaceId: string, data: string) => {
@@ -13787,6 +13906,29 @@ export function initPipeBridge(): void {
       return { ok: false, error: `${label}失败：${error}`, ...(delivery ? { delivery } : {}) };
     };
 
+    const deferTaskInputBusyDelivery = (error: unknown) => {
+      const detail = String((error as Error)?.message || error);
+      store.updateLane(lane.id, {
+        awaitingReview: true,
+        autoDecisionsUsed: lane.autoDecisionsUsed ?? 0,
+        decisions: lane.decisions || [],
+      });
+      const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
+      appendSupervisorRecord(useStore.getState().supervisor, currentLane, 'supervisor.delivery.deferred', {
+        kind: 'next',
+        reason: 'task-terminal-input-busy',
+        error: detail,
+      });
+      store.appendSupervisorLog(lane.id, '下一步发送已延期', detail);
+      scheduleTaskInputRecoveryWatch(currentLane);
+      return {
+        ok: true,
+        outcome,
+        deliveryDeferred: true,
+        message: detail,
+      };
+    };
+
     const taskShellFailure = next || permissionResponse
       ? nestedAgentShellFailureDetail(lane.surfaceId)
       : null;
@@ -14180,11 +14322,13 @@ export function initPipeBridge(): void {
                 `PTY 已接受输入，但 15 秒内未收到任务 AI 的 UserPromptSubmit 确认（当前 ${delivery.agentState}${delivery.screenChanged ? '，仅检测到屏幕变化' : ''}）；消息可能已经进入终端，请先运行 wmux agent-state --surface ${lane.surfaceId}，必要时再 read-screen，确认未投递后才能重试`,
                 delivery,
               ))
-            .catch((err) => failDelivery(
-              'next',
-              '下一步发送',
-              String((err as Error)?.message || err),
-            ))
+            .catch((err) => isTaskTerminalInputBusyError(err)
+              ? deferTaskInputBusyDelivery(err)
+              : failDelivery(
+                  'next',
+                  '下一步发送',
+                  String((err as Error)?.message || err),
+                ))
             .finally(() => {
               taskPromptAcknowledgement?.cancel();
               supervisorDeliveriesInFlight.delete(lane.id);
@@ -14193,6 +14337,7 @@ export function initPipeBridge(): void {
       } catch (err) {
         taskPromptAcknowledgement?.cancel();
         supervisorDeliveriesInFlight.delete(lane.id);
+        if (isTaskTerminalInputBusyError(err)) return deferTaskInputBusyDelivery(err);
         return failDelivery('next', '下一步发送', String((err as Error)?.message || err));
       }
       taskPromptAcknowledgement?.cancel();

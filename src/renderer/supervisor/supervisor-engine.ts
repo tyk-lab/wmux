@@ -297,8 +297,23 @@ function assertTaskTerminalInputAvailable(surfaceId: string): void {
     throw new Error('任务终端输入状态不可用；为避免覆盖未知输入，已取消本次发送。请等待终端恢复后重试。');
   }
   if (hasPendingTerminalInput(terminal.buffer.active)) {
-    throw new Error('任务终端输入框已有未提交内容；为避免与 AI 裁决粘连，已取消本次发送。请先提交或清空原输入后重试。');
+    throw new TaskTerminalInputBusyError();
   }
+}
+
+export class TaskTerminalInputBusyError extends Error {
+  readonly code = 'task-terminal-input-busy';
+
+  constructor() {
+    super('任务终端输入框已有未提交内容；为避免与 AI 裁决粘连，已延后本次发送。提交或清空原输入后，控制层会通知监督 AI 重新裁决。');
+    this.name = 'TaskTerminalInputBusyError';
+  }
+}
+
+export function isTaskTerminalInputBusyError(error: unknown): error is TaskTerminalInputBusyError {
+  return error instanceof TaskTerminalInputBusyError
+    || (typeof error === 'object' && error !== null
+      && (error as { code?: unknown }).code === 'task-terminal-input-busy');
 }
 
 /** Send a new task without ever appending it to an existing user draft. */

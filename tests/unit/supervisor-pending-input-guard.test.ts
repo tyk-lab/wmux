@@ -58,5 +58,11 @@ describe('supervisor pending terminal input guard', () => {
       { text: '› ' },
     ], 1, 2))).toBe(false);
   });
-});
 
+  it('ignores a transient TUI cursor left on completed output', () => {
+    const result = '• [本轮结果] 修改完成，测试通过';
+    expect(hasPendingTerminalInput(buffer([{ text: result }], 0, result.length))).toBe(false);
+    const boxedResult = '│ 已完成写入和交叉核对';
+    expect(hasPendingTerminalInput(buffer([{ text: boxedResult }], 0, boxedResult.length))).toBe(false);
+  });
+});

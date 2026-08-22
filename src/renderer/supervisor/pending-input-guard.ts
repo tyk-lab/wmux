@@ -14,6 +14,7 @@ interface TerminalBufferLike {
 const MAX_INPUT_ROWS = 20;
 const BOX_INPUT_LINE = /^\s*[│┃|]/;
 const EMPTY_INPUT_CHROME = /^[\s│┃|>›❯»$#╭╮╰╯┌┐└┘─━═]+$/;
+const INPUT_PROMPT_LINE = /^\s*(?:(?:[│┃|]\s*)?(?:>|›|❯|»)\s?|PS\s+[^>]*>\s*|[^\s@]+@[^:]+:[^$#]*[$#]\s*)/i;
 
 function lineText(line: TerminalBufferLineLike | undefined, endColumn?: number): string {
   if (!line) return '';
@@ -58,7 +59,11 @@ export function hasPendingTerminalInput(buffer: TerminalBufferLike | null | unde
     row -= 1;
   }
 
+  // TUI redraws may temporarily leave the cursor on a completed output row.
+  // Treat cursor-local text as a draft only when the wrapped/boxed region is
+  // anchored by a known interactive prompt; otherwise a repaint can stop an
+  // otherwise idle task terminal indefinitely.
+  if (!rows.some((text) => INPUT_PROMPT_LINE.test(text))) return false;
   const combined = rows.map(inputContent).filter(Boolean).join('\n').trim();
   return combined.length > 0 && !EMPTY_INPUT_CHROME.test(combined);
 }
-

@@ -7445,17 +7445,46 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
-  it('does not append a supervisor next step to an unsubmitted user draft', () => {
+  it('defers a project next step until the task composer is stably empty without escalating the project', async () => {
+    vi.useFakeTimers();
+    const project = bindProjectLaneToWorkItem();
     screenText = '│ > 用户尚未提交的任务草稿';
     const terminal = surfaceTerminalRegistry.get('worker-a') as any;
     terminal.buffer.active.cursorX = screenText.length;
 
     expect(decide({ next: '监督建议的下一步' })).toMatchObject({
-      ok: false,
-      error: expect.stringContaining('输入框已有未提交内容'),
+      ok: true,
+      deliveryDeferred: true,
+      message: expect.stringContaining('输入框已有未提交内容'),
     });
     expect(writes).not.toHaveBeenCalled();
-    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ awaitingReview: true });
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      controlState: 'active',
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'active',
+      workItems: [expect.objectContaining({ id: 'task-a', status: 'running' })],
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions || []).toHaveLength(0);
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      surfaceId: 'worker-a',
+      text: expect.stringContaining('提交或清空输入后'),
+    }));
+
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(queuedControlText()).toBe('');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingSupervisorTransitions || []).toHaveLength(0);
+
+    screenText = '│ > ';
+    terminal.buffer.active.cursorX = screenText.length;
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(queuedControlText()).toContain('[任务终端输入区已恢复为空｜重新裁决]');
+    expect(queuedControlText()).toContain('不得假设任务 AI 已经收到');
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('fails closed when the task terminal input state is unavailable', () => {
