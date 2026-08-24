@@ -1755,7 +1755,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
                           <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
                           <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : '等待形成正式路线'}</dd>
-                          <dt>阶段预算</dt><dd>裁决 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；多任务 AI 聚合 {item.contract.budget.maxAggregateWorkerMinutes} 分钟；任务重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
+                          <dt>阶段预算</dt><dd>裁决健康窗口 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；多任务 AI 聚合 {item.contract.budget.maxAggregateWorkerMinutes} 分钟；真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
                           {itemCompletion && <>
                             <dt>完成结果</dt><dd>{itemCompletion.summary}</dd>

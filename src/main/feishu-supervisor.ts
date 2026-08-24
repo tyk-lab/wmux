@@ -1540,7 +1540,7 @@ export function buildProjectManagerConversationCard(
     ] : []),
     ...(visibleWorkItems.length > 0 ? visibleWorkItems.map((item) => ({ tag: 'markdown', content: compactProjectCardText([
       `**${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}**`,
-      `阶段预算：裁决 ${item.decisionsUsed || 0}/${item.contract?.budget?.maxDecisions || '-'} · 连续窗口 ${item.contract?.budget?.maxContinuousMinutes || '-'} 分钟 · 任务重试 ${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
+      `阶段预算：裁决健康窗口 ${item.decisionsUsed || 0}/${item.contract?.budget?.maxDecisions || '-'} · 连续窗口 ${item.contract?.budget?.maxContinuousMinutes || '-'} 分钟 · 真实任务失败重试 ${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
       item.latestEvidence ? `证据：${compactProjectCardText(item.latestEvidence, 350)}` : '', item.latestBlocker ? `阻塞：${compactProjectCardText(item.latestBlocker, 350)}` : '',
     ].filter(Boolean).join('\n'), 900) })) : []),
   ];

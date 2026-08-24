@@ -43,6 +43,7 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--remaining-work <none|text>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--retry-kind <task-failure|command-correction|runtime-recovery|execution-window>');
   });
 
   it('reads and cleans structured completion evidence from .wmux/tmp', () => {

@@ -173,6 +173,15 @@ export interface ProjectExecutionBudget {
   maxFullSuiteRunsPerVersion: number;
 }
 
+export const PROJECT_RETRY_KINDS = [
+  'task-failure',
+  'command-correction',
+  'runtime-recovery',
+  'execution-window',
+] as const;
+
+export type ProjectRetryKind = typeof PROJECT_RETRY_KINDS[number];
+
 export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
   maxDecisions: 12,
   maxContinuousMinutes: 90,
@@ -400,6 +409,8 @@ export interface ProjectExecutionRecord {
   evidenceSummary?: string;
   /** Verified supervisor-plan progress used to renew a healthy autonomy window. */
   planProgressSignature?: string;
+  /** Only task-failure consumes the work item's task retry budget. */
+  retryKind?: ProjectRetryKind;
   escalationBoundary?: ProjectEscalationBoundary;
 }
 

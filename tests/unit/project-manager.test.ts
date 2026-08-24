@@ -11,6 +11,9 @@ import {
 import {
   createProjectExecutionRecord,
   evaluateProjectExecutionGuard,
+  projectBudgetExhaustionSummary,
+  projectRetryConsumesTaskBudget,
+  projectRetryKindEvidenceError,
   type ProjectExecutionProposal,
 } from '../../src/renderer/project-manager/anti-loop';
 
@@ -98,6 +101,46 @@ describe('project-manager domain', () => {
 });
 
 describe('project execution anti-loop guard', () => {
+  it('charges only verified task failures to the task retry budget', () => {
+    expect(projectRetryConsumesTaskBudget('task-failure')).toBe(true);
+    expect(projectRetryConsumesTaskBudget('command-correction')).toBe(false);
+    expect(projectRetryConsumesTaskBudget('runtime-recovery')).toBe(false);
+    expect(projectRetryConsumesTaskBudget('execution-window')).toBe(false);
+    expect(createProjectExecutionRecord(proposal({ retryKind: 'command-correction' })))
+      .toMatchObject({ retryKind: 'command-correction' });
+    expect(projectRetryKindEvidenceError({
+      retryKind: 'task-failure', outcome: 'rework', changedFiles: [], testCommand: 'npm test',
+      testResult: 'passed', executionError: '',
+    })).toContain('真实实现/验证失败证据');
+    expect(projectRetryKindEvidenceError({
+      retryKind: 'task-failure', outcome: 'rework', changedFiles: ['src/auth.ts'], testCommand: 'npm test',
+      testResult: '1 test failed', executionError: '',
+    })).toBeNull();
+    expect(projectRetryKindEvidenceError({
+      retryKind: 'execution-window', outcome: 'rework', changedFiles: ['src/auth.ts'], testCommand: '',
+      testResult: '', executionError: '',
+    })).toContain('零写入');
+    expect(projectRetryKindEvidenceError({
+      retryKind: 'runtime-recovery', outcome: 'rework', changedFiles: [], testCommand: 'npm test',
+      testResult: '', executionError: 'PTY exited',
+    })).toContain('不得携带');
+  });
+
+  it('reports the budget dimension that actually exhausted', () => {
+    expect(projectBudgetExhaustionSummary({
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      attempts: DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries,
+      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions - 1,
+      now: 1_000,
+    })).toBe(`执行预算已耗尽：真实任务失败重试 ${DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries}/${DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries}`);
+    expect(projectBudgetExhaustionSummary({
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      attempts: 0,
+      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
+      now: 1_000,
+    })).toContain('监督自治健康窗口');
+  });
+
   it('rejects a third identical failure without a changed work version', () => {
     const current = proposal({ now: 3_000 });
     const history = [

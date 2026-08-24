@@ -298,6 +298,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     remainingWork: getFlag(args, '--remaining-work') || '',
     fullSuite: args.includes('--full-suite'),
     retry: args.includes('--retry'),
+    retryKind: getFlag(args, '--retry-kind') || '',
   });
   cleanupSupervisorNextInput(
     nextInput,
@@ -1404,7 +1405,7 @@ Supervisor:  supervisor context
                           [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]
                           [--evidence <text> --context-summary <text>]
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
-                          [--full-suite --retry]
+                          [--full-suite --retry --retry-kind <task-failure|command-correction|runtime-recovery|execution-window>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>

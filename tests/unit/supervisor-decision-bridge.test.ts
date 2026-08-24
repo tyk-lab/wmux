@@ -7547,6 +7547,39 @@ describe('supervisor decision bridge', () => {
       .decisionsUsed).toBe(project.workItems[0].contract.budget.maxDecisions);
   });
 
+  it('names an exhausted task retry budget even while decision capacity remains', () => {
+    const project = bindProjectLaneToWorkItem();
+    const workItem = project.workItems[0];
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: workItem.id,
+      patch: {
+        attempts: workItem.contract.budget.maxTaskRetries,
+        decisionsUsed: workItem.contract.budget.maxDecisions - 1,
+      },
+    }, project.id);
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      escalationBoundary: 'budget-exhausted',
+      reason: '真实任务失败重试已经达到硬上限',
+      impact: '旧工作项不得继续执行新的真实任务重试',
+    })).toMatchObject({
+      ok: true,
+      budgetExhausted: true,
+      successorCreated: true,
+    });
+
+    const frozen = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.workItems
+      .find((candidate) => candidate.id === workItem.id);
+    expect(frozen?.latestBlocker).toContain(
+      `真实任务失败重试 ${workItem.contract.budget.maxTaskRetries}/${workItem.contract.budget.maxTaskRetries}`,
+    );
+    expect(frozen?.latestBlocker).not.toContain('监督预算耗尽');
+  });
+
   it('notifies the user when an exhausted execution budget pauses project progress', async () => {
     const project = bindProjectLaneToWorkItem();
     useStore.getState().applyProjectManagerAction({
@@ -9387,10 +9420,12 @@ describe('supervisor decision bridge', () => {
     (globalThis.window as any).__wmux_projectManagerRemoteControl = projectEvent;
 
     const retry = {
+      outcome: 'rework',
       next: '按相同方式重试认证测试',
       executionAction: '重试认证测试',
       command: 'npm test -- auth',
       error: 'expected 200 received 500',
+      retryKind: 'task-failure',
       workspaceVersion: 'diff-a',
       testCommand: 'npm test -- auth',
       testResult: 'failed',
@@ -9405,6 +9440,57 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
       status: 'waiting-decision', attempts: 2, decisionsUsed: 2,
     });
+  });
+
+  it('does not charge command, runtime, or execution-window corrections as task retries', () => {
+    const project = bindProjectLaneToWorkItem();
+    const base = {
+      next: '修正命令入口后继续同一批次',
+      executionAction: '修正测试命令入口',
+      retry: true,
+      workspaceVersion: 'diff-a',
+      diffSummary: '上一命令在进程启动前失败；本轮只修正调用方式',
+      evidence: '终端证据确认零测试执行、零设备动作',
+      contextSummary: '保持当前实现和验收不变',
+    };
+
+    expect(decide(base)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--retry-kind'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0])
+      .toMatchObject({ attempts: 0, decisionsUsed: 0 });
+
+    expect(decide({ ...base, retryKind: 'command-correction' })).toMatchObject({ ok: true });
+    let updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(updated).toMatchObject({ attempts: 0, decisionsUsed: 1 });
+    expect(updated?.executionHistory.at(-1)).toMatchObject({ retryKind: 'command-correction' });
+
+    useStore.getState().updateLane('lane-a', { awaitingReview: true });
+    expect(decide({
+      ...base,
+      next: '在新的任务 AI 执行窗口继续同一最小实现',
+      executionAction: '续接执行窗口',
+      retryKind: 'execution-window',
+      diffSummary: '上一回合因执行窗口不足结束；零写入、零测试、无执行错误',
+    })).toMatchObject({ ok: true });
+    updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(updated).toMatchObject({ attempts: 0, decisionsUsed: 2 });
+    expect(updated?.executionHistory.at(-1)).toMatchObject({ retryKind: 'execution-window' });
+
+    useStore.getState().updateLane('lane-a', { awaitingReview: true });
+    expect(decide({
+      ...base,
+      next: '运行时恢复后继续原批次',
+      executionAction: '恢复任务运行时',
+      retry: false,
+      retryKind: 'runtime-recovery',
+      error: 'PTY exited before task execution',
+      diffSummary: '任务未启动，恢复同一执行身份',
+    })).toMatchObject({ ok: true });
+    updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.workItems[0];
+    expect(updated).toMatchObject({ attempts: 0, decisionsUsed: 3 });
+    expect(updated?.executionHistory.at(-1)).toMatchObject({ retryKind: 'runtime-recovery' });
   });
 
   it('requires evidence before a project-managed supervisor can complete work', () => {

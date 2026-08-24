@@ -2,6 +2,7 @@ import type {
   ProjectEscalationBoundary,
   ProjectExecutionBudget,
   ProjectExecutionRecord,
+  ProjectRetryKind,
 } from '../../shared/project-manager';
 
 export type ProjectExecutionGuardDecision = 'allow' | 'pause' | 'replan' | 'reject';
@@ -18,6 +19,7 @@ export interface ProjectExecutionProposal {
   testResult?: string;
   fullSuite?: boolean;
   planProgressSignature?: string;
+  retryKind?: ProjectRetryKind;
   allowWindowRenewal?: boolean;
   escalationBoundary?: ProjectEscalationBoundary;
   now: number;
@@ -77,8 +79,83 @@ export function createProjectExecutionRecord(
     ...(proposal.planProgressSignature
       ? { planProgressSignature: normalizeText(proposal.planProgressSignature).slice(0, 2_000) }
       : {}),
+    ...(proposal.retryKind ? { retryKind: proposal.retryKind } : {}),
     ...(proposal.escalationBoundary ? { escalationBoundary: proposal.escalationBoundary } : {}),
   };
+}
+
+export function projectRetryConsumesTaskBudget(retryKind: ProjectRetryKind | undefined): boolean {
+  return retryKind === 'task-failure';
+}
+
+export function projectRetryKindEvidenceError(options: {
+  retryKind: ProjectRetryKind;
+  outcome: string;
+  changedFiles: string[];
+  testCommand: string;
+  testResult: string;
+  executionError: string;
+}): string | null {
+  if (options.retryKind === 'task-failure') {
+    if (options.outcome !== 'rework') return 'task-failure 必须使用 rework，并提供真实失败证据';
+    const failureEvidence = `${options.executionError}\n${options.testResult}`;
+    if (!/(?:\bfail(?:ed|ure)?\b|\berror\b|\bexception\b|\btimeout\b|\btimed out\b|\bnon-zero\b|\bexit code\s*[1-9]\d*\b|失败|未通过|错误|异常|超时|退出码\s*[1-9]\d*)/iu.test(failureEvidence)) {
+      return 'task-failure 必须通过 --error 或 --test-result 提供明确的真实实现/验证失败证据';
+    }
+    return null;
+  }
+  if (options.retryKind === 'execution-window' && (
+    options.changedFiles.length > 0
+    || options.testCommand
+    || options.testResult
+    || options.executionError
+  )) {
+    return 'execution-window 仅用于任务 AI 执行窗口不足且本轮零写入、零测试、无执行错误的续接';
+  }
+  if (options.retryKind === 'runtime-recovery' && (
+    options.changedFiles.length > 0
+    || options.testCommand
+    || options.testResult
+  )) {
+    return 'runtime-recovery 仅用于 PTY、Agent、投递或运行时恢复，不得携带交付文件或测试执行结果';
+  }
+  return null;
+}
+
+export function projectBudgetExhaustionSummary(options: {
+  budget: ProjectExecutionBudget;
+  attempts: number;
+  decisionsUsed: number;
+  startedAt?: number;
+  aggregateWorkerMinutes?: number;
+  now?: number;
+}): string {
+  const now = options.now ?? Date.now();
+  const exhausted: string[] = [];
+  if (options.attempts >= options.budget.maxTaskRetries) {
+    exhausted.push(`真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`);
+  }
+  if (options.decisionsUsed >= options.budget.maxDecisions) {
+    exhausted.push(`监督自治健康窗口 ${options.decisionsUsed}/${options.budget.maxDecisions}`);
+  }
+  if (options.startedAt !== undefined) {
+    const elapsedMinutes = Math.max(0, Math.floor((now - options.startedAt) / 60_000));
+    if (elapsedMinutes >= options.budget.maxContinuousMinutes) {
+      exhausted.push(`连续运行窗口 ${elapsedMinutes}/${options.budget.maxContinuousMinutes} 分钟`);
+    }
+  }
+  const aggregateWorkerMinutes = Math.max(0, options.aggregateWorkerMinutes || 0);
+  if (aggregateWorkerMinutes >= options.budget.maxAggregateWorkerMinutes) {
+    exhausted.push(
+      `任务 AI 聚合执行窗口 ${Math.floor(aggregateWorkerMinutes)}/${options.budget.maxAggregateWorkerMinutes} 分钟`,
+    );
+  }
+  if (exhausted.length > 0) return `执行预算已耗尽：${exhausted.join('；')}`;
+  return [
+    '执行预算触发后继，但没有单项达到硬上限',
+    `监督自治健康窗口 ${options.decisionsUsed}/${options.budget.maxDecisions}`,
+    `真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`,
+  ].join('；');
 }
 
 function consecutiveCount(

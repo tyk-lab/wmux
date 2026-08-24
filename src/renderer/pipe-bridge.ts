@@ -141,6 +141,7 @@ import {
   MAX_PROJECT_PLAN_FILE_BYTES,
   MAX_PROJECT_PLAN_FILES,
   PROJECT_PARALLELISM_SELECTIONS,
+  PROJECT_RETRY_KINDS,
   PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES,
   PROJECT_ORIENTATION_DISPOSITIONS,
   diffProjectProgressSnapshots,
@@ -201,6 +202,7 @@ import {
   type ProjectResourceLease,
   type ProjectResourceMode,
   type ProjectResourceWait,
+  type ProjectRetryKind,
   type ProjectMergeCandidate,
   type ProjectWorkItem,
 } from '../shared/project-manager';
@@ -215,7 +217,12 @@ import {
   normalizeTaskWorkMode,
   type TaskWorkMode,
 } from '../shared/supervisor-work-mode';
-import { evaluateProjectExecutionGuard } from './project-manager/anti-loop';
+import {
+  evaluateProjectExecutionGuard,
+  projectBudgetExhaustionSummary,
+  projectRetryConsumesTaskBudget,
+  projectRetryKindEvidenceError,
+} from './project-manager/anti-loop';
 import {
   PROJECT_TASK_BASELINE_APPROVAL_MARKER,
   PROJECT_TASK_BASELINE_INVESTIGATION_MARKER,
@@ -1403,6 +1410,7 @@ function supervisorDecisionInputSignature(params: any): string {
     remainingWork: params?.remainingWork,
     fullSuite: params?.fullSuite === true,
     retry: params?.retry === true,
+    retryKind: params?.retryKind,
   };
   return supervisorDecisionTextSignature(JSON.stringify(stableSupervisorDecisionValue(materialInput)));
 }
@@ -4243,6 +4251,22 @@ function projectWorkItemSuccessorId(
   return `successor-${uuid().replace(/-/gu, '').slice(0, 32)}`;
 }
 
+function projectWorkItemBudgetExhaustionSummary(
+  item: ProjectWorkItem,
+  now = Date.now(),
+): string {
+  return projectBudgetExhaustionSummary({
+    budget: item.contract.budget,
+    attempts: item.attempts,
+    decisionsUsed: item.decisionsUsed,
+    startedAt: item.startedAt,
+    aggregateWorkerMinutes: item.workerGroup
+      ? projectWorkerGroupAggregateMinutes(item.workerGroup)
+      : 0,
+    now,
+  });
+}
+
 function inferredLegacyBudgetSuccessor(
   session: ProjectManagerSession,
   predecessor: ProjectWorkItem,
@@ -4287,7 +4311,7 @@ function buildProjectWorkItemSuccessor(
   const id = projectWorkItemSuccessorId(session, predecessor, reason);
   const reasonText = reason === 'protocol-migration'
     ? `前驱工作项 ${predecessor.id} 使用旧执行协议 P${predecessor.executionProtocolVersion || 0}；本项按 P${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION} 重新建立执行基线`
-    : `前驱工作项 ${predecessor.id} 的监督预算已耗尽（${predecessor.decisionsUsed}/${predecessor.contract.budget.maxDecisions}）；本项只承接尚未被既有证据证明完成的剩余范围`;
+    : `前驱工作项 ${predecessor.id} 的${projectWorkItemBudgetExhaustionSummary(predecessor, now)}；本项只承接尚未被既有证据证明完成的剩余范围`;
   const recentHistory = predecessor.executionHistory.slice(-5).map((record) => [
     record.actionSignature ? `action=${record.actionSignature}` : '',
     record.progressSignature ? `progress=${record.progressSignature}` : '',
@@ -4438,7 +4462,7 @@ function applyProjectWorkItemSuccession(
   const created = !linkedSuccessor && !inferredSuccessor;
   const freezeReason = reason === 'protocol-migration'
     ? `执行协议迁移：前驱 P${predecessor.executionProtocolVersion || 0} 已冻结，由 ${successor.id} 按 P${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION} 接续`
-    : `监督预算耗尽：前驱 ${predecessor.decisionsUsed}/${predecessor.contract.budget.maxDecisions} 已冻结，由 ${successor.id} 使用独立新预算接续`;
+    : `${projectWorkItemBudgetExhaustionSummary(predecessor, now)}：前驱已冻结，由 ${successor.id} 使用独立新预算接续`;
   const frozenPredecessor: ProjectWorkItem = {
     ...predecessor,
     status: 'stopped',
@@ -4568,7 +4592,7 @@ function ensureProjectWorkItemSuccessor(
   }
   queueProjectManagerDelivery([
     '[控制层已建立唯一后继工作项｜无需用户审批]',
-    `前驱：${result.predecessor.id}（${result.predecessor.decisionsUsed}/${result.predecessor.contract.budget.maxDecisions}；审计已冻结）`,
+    `前驱：${result.predecessor.id}（${projectWorkItemBudgetExhaustionSummary(result.predecessor)}；审计已冻结）`,
     `后继：${result.successor.id}（P${result.successor.executionProtocolVersion || 0}；独立预算 0/${result.successor.contract.budget.maxDecisions}）`,
     '只处理后继工作项；先核对继承证据与剩余范围，再按当前协议建立新基线。不得恢复前驱、清空其预算或重做已有证据支持的动作。',
   ].join('\n'), session.id, {
@@ -15539,6 +15563,10 @@ export function initPipeBridge(): void {
     const completionValidation = String(params?.completionValidation || '').trim().slice(0, 500);
     const remainingWork = String(params?.remainingWork || '').trim().slice(0, 2000);
     const reviewId = String(params?.reviewId || '').trim().slice(0, 200);
+    const rawRetryKind = String(params?.retryKind || '').trim();
+    const retryKind = PROJECT_RETRY_KINDS.includes(rawRetryKind as ProjectRetryKind)
+      ? rawRetryKind as ProjectRetryKind
+      : undefined;
     const retryRequested = params?.retry === true
       || ((outcome === 'continue' || outcome === 'rework') && !!executionError);
     const valid = new Set(['continue', 'rework', 'complete', 'needs-human']);
@@ -15625,6 +15653,35 @@ export function initPipeBridge(): void {
     const projectWorkItem = lane.projectWorkItemId
       ? projectSession?.workItems.find((item) => item.id === lane.projectWorkItemId)
       : undefined;
+    if (rawRetryKind && !retryKind) {
+      return {
+        ok: false,
+        error: `无效 retry-kind；必须使用 ${PROJECT_RETRY_KINDS.join('|')}`,
+      };
+    }
+    if (projectManagedLane && retryRequested && !retryKind) {
+      return {
+        ok: false,
+        error: '项目重试必须通过 --retry-kind 明确分类；只有 task-failure 消耗真实任务失败重试预算，命令纠错、运行时恢复和执行窗口续接不得冒充任务失败',
+      };
+    }
+    if (retryKind && !retryRequested) {
+      return { ok: false, error: '--retry-kind 只能与 --retry 或携带 --error 的 continue/rework 裁决一起使用' };
+    }
+    if (retryKind) {
+      const retryKindError = projectRetryKindEvidenceError({
+        retryKind,
+        outcome,
+        changedFiles,
+        testCommand,
+        testResult,
+        executionError,
+      });
+      if (retryKindError) return { ok: false, error: retryKindError };
+    }
+    const consumeProjectTaskRetry = projectManagedLane
+      && retryRequested
+      && projectRetryConsumesTaskBudget(retryKind);
     const decisionAt = Date.now();
     const completionEvidenceToken = String(params?.completionEvidenceToken || '').trim();
     const completionEvidenceGrant = completionEvidenceToken
@@ -16402,7 +16459,8 @@ export function initPipeBridge(): void {
           }
           markProjectRecoveryReady(projectSession.id, projectWorkItem.id);
         }
-        if (retryRequested && projectWorkItem.attempts >= projectWorkItem.contract.budget.maxTaskRetries) {
+        if (consumeProjectTaskRetry
+          && projectWorkItem.attempts >= projectWorkItem.contract.budget.maxTaskRetries) {
           store.updateLane(lane.id, { awaitingReview: true });
           store.applyProjectManagerAction({
             type: 'update-work-item',
@@ -16449,6 +16507,7 @@ export function initPipeBridge(): void {
                 projectWorkItem.supervisorPlan,
                 proposedSupervisorPlan,
               ),
+              retryKind,
               allowWindowRenewal: true,
               now: Date.now(),
             },
@@ -16501,7 +16560,7 @@ export function initPipeBridge(): void {
             return { ok: false, error: `${guard.reason}；已停止自动推进并交回项目管理 AI` };
           }
         }
-        if (retryRequested) {
+        if (consumeProjectTaskRetry) {
           store.applyProjectManagerAction({
             type: 'update-work-item',
             workItemId: projectWorkItem.id,

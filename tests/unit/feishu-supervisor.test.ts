@@ -875,7 +875,7 @@ supervisor_model: k3`)).toEqual({
     expect(collapsedDecisions).toContain('当前显示最近 3/6 项');
     expect(collapsedDecisions).toContain('展开近期工作项（6）');
     expect(collapsedDecisions).toContain('工作项 8');
-    expect(collapsedDecisions).toContain('阶段预算：裁决 7/12 · 连续窗口 90 分钟 · 任务重试 2/3');
+    expect(collapsedDecisions).toContain('阶段预算：裁决健康窗口 7/12 · 连续窗口 90 分钟 · 真实任务失败重试 2/3');
     expect(collapsedDecisions).not.toContain('工作项 5');
 
     const expandedDecisions = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'decisions-expanded'));
