@@ -17,7 +17,13 @@ import {
   resolveSupervisorStagePlanInput,
   SUPERVISOR_DECIDE_USAGE,
 } from './supervisor-command';
-import { cleanupProjectJsonInput, resolveProjectJsonInput } from './project-command';
+import {
+  cleanupProjectJsonInput,
+  normalizeSupervisorChangedFiles,
+  PROJECT_USAGE,
+  resolveProjectCommandHelp,
+  resolveProjectJsonInput,
+} from './project-command';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 import { requireSuccessfulContext } from './context-result';
 
@@ -279,7 +285,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     workspaceVersion: getFlag(args, '--workspace-version') || '',
     testCommand: getFlag(args, '--test-command') || '',
     testResult: getFlag(args, '--test-result') || '',
-    changedFiles: (getFlag(args, '--changed-files') || '').split(',').map((item) => item.trim()).filter(Boolean),
+    changedFiles: normalizeSupervisorChangedFiles(getFlag(args, '--changed-files') || ''),
     diffSummary: getFlag(args, '--diff-summary') || '',
     evidence: getFlag(args, '--evidence') || '',
     contextSummary: getFlag(args, '--context-summary') || '',
@@ -321,6 +327,11 @@ async function resolveProjectScopedJsonInput(args: string[], projectId: string) 
 }
 
 async function cmdProject(args: string[]): Promise<void> {
+  const help = resolveProjectCommandHelp(args);
+  if (help) {
+    console.log(help);
+    return;
+  }
   const sub = args[1];
   const projectId = getFlag(args, '--project') || '';
   if (!projectId && sub && sub !== 'status'
@@ -667,7 +678,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
-  throw new Error('Usage: wmux project <update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply> [--project <id>]');
+  throw new Error(PROJECT_USAGE);
 }
 
 function agentSpawn(args: string[]): Promise<any> {
