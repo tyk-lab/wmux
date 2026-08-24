@@ -245,6 +245,9 @@ describe('project-manager engine', () => {
     expect(text).toContain('小里程碑结束不得进入待续');
     expect(text).toContain('当前需求版本内由监督 AI 和任务 AI 持续继承');
     expect(text).toContain('不得把同一条件拆成逐步确认');
+    expect(text).toContain('你负责逐次确认命中授权前缀的本地权限请求');
+    expect(text).toContain('项目 AI 只定义合同权限外壳');
+    expect(text).toContain('不得因为存在多个可行方案就把选择上抛');
     expect(text).toContain(PROJECT_TASK_EXECUTION_ENVELOPE_MARKER);
     expect(text).toContain('--next 只填写本轮实际执行批次');
     expect(text).toContain('内容过长时自动改用受控临时文件投递');
@@ -286,6 +289,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('不得在整个阶段内绕过监督检查点');
     expect(text).toContain(PROJECT_TASK_BASELINE_REPORT_MARKER);
     expect(text).toContain('任何写入');
+    expect(text).toContain('普通工具/命令确认、工作项内技术问题');
+    expect(text).toContain('只报告给监督 AI');
   });
 
   it('enforces a two-round read-only project baseline before implementation', () => {

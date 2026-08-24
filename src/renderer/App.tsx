@@ -1915,6 +1915,12 @@ export default function App() {
         dedicatedSupervisorSurfaceId(lane) === data.surfaceId
       ));
       if (isSupervisorTerminal) signalSupervisorDeliveryReady();
+      const isProjectManagerTerminal = useStore.getState().projectManagers.some((project) => (
+        project.managerSurfaceId === data.surfaceId
+      ));
+      if (isProjectManagerTerminal) {
+        (window as any).__wmux_flushProjectManagerDeliveries?.();
+      }
     });
     return unsub;
   }, []);

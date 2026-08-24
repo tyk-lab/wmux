@@ -21,6 +21,10 @@ describe('hook event ordering', () => {
     expect(listener.indexOf('signalSupervisorDeliveryReady()')).toBeGreaterThan(
       listener.indexOf('agentStatesRef.current = next;'),
     );
+    expect(listener).toContain('project.managerSurfaceId === data.surfaceId');
+    expect(listener.indexOf('__wmux_flushProjectManagerDeliveries?.()')).toBeGreaterThan(
+      listener.indexOf('agentStatesRef.current = next;'),
+    );
     expect(appSource).toContain('不得据此否定本事件或等待第二次结束 hook');
   });
 

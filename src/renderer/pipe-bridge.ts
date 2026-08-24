@@ -5708,6 +5708,37 @@ interface ProjectAuthorizedTechnicalRoute {
   workItem: ProjectWorkItem;
 }
 
+interface ProjectSupervisorOwnedPermissionPrompt {
+  workItem: ProjectWorkItem;
+  contractChangeRequired: boolean;
+}
+
+function projectSupervisorOwnedPermissionPrompt(
+  session: ProjectManagerSession,
+  question: ProjectManagerUserQuestion,
+): ProjectSupervisorOwnedPermissionPrompt | undefined {
+  if (question.category !== 'manual-intervention'
+    || !question.workItemId
+    || !['access-grant', 'business-choice'].includes(question.reasonCode || '')) return undefined;
+  const workItem = session.workItems.find((candidate) => candidate.id === question.workItemId);
+  if (!workItem) return undefined;
+  const text = [
+    question.question,
+    question.context,
+    question.blocker,
+    ...question.options.flatMap((option) => [option.label, option.description || '']),
+  ].filter(Boolean).join('\n');
+  const localTaskPermission = /(?:(?:任务\s*AI|任务终端|本地|工具|命令|脚本|测试).{0,48}(?:权限|授权|批准|确认|permission|approval))|(?:(?:允许|批准|确认).{0,32}(?:运行|执行).{0,80}(?:命令|脚本|测试|npm|pnpm|yarn|vitest|pytest|cargo|dotnet))/iu.test(text);
+  if (!localTaskPermission) return undefined;
+  const userOwnedOrHighRisk = /(?:凭据|密码|口令|token|密钥|账号|登录|外部访问|网络访问|访问授予|角色授予|管理员|提权|sudo|云端|生产|发布|部署|设备|接线|固件|上电|烧录|删除|覆盖|重写历史|git\s+push|权限变更|新增.{0,8}(?:依赖|包)|安装.{0,8}(?:新|第三方).{0,8}(?:依赖|包)|(?:npm|pnpm|yarn|pip|cargo)\s+(?:add|install)\s+\S+|提高.{0,12}(?:安全|电流|电压|速度).{0,8}上限)/iu.test(text);
+  if (userOwnedOrHighRisk) return undefined;
+  const permissionConfirmReady = workItem.contract.authority.permissionConfirm === true && (
+    workItem.contract.authority.targetedTests === true
+    || (workItem.contract.authority.allowedCommandPrefixes || []).length > 0
+  );
+  return { workItem, contractChangeRequired: !permissionConfirmReady };
+}
+
 function projectAuthorizedTechnicalRoute(
   session: ProjectManagerSession,
   question: ProjectManagerUserQuestion,
@@ -7590,6 +7621,26 @@ function failProjectManagerDelivery(
   notifyProjectManagerDeliveryUnavailable(delivery, detail);
 }
 
+const LEGACY_EMPTY_PROJECT_DECISION = '建议：未提供具体建议';
+const PROJECT_DECISION_EVIDENCE_FALLBACK = '保持当前工作项冻结，由项目 AI 安排一次有界只读证据核对；依据结果直接续作或重规划。若核对后仍无法判定不可变身份是否已消费，或无法确认 recover 是否会重复/越界，才使用 project ask 发起 destructive-action 的结构化用户问题。';
+
+function repairLegacyEmptyProjectDecisionDelivery(
+  session: ProjectManagerSession,
+  delivery: PendingProjectManagerDelivery,
+): void {
+  if (!delivery.transitionId || delivery.text.includes(PROJECT_DECISION_EVIDENCE_FALLBACK)) return;
+  const transition = (session.pendingSupervisorTransitions || []).find((candidate) => (
+    candidate.id === delivery.transitionId
+    && candidate.kind === 'decision-required'
+    && candidate.summary.includes(LEGACY_EMPTY_PROJECT_DECISION)
+  ));
+  if (!transition) return;
+  delivery.text = `${delivery.text}\n\n[旧交接缺失建议兼容修复]\n监督未提供可执行建议；${PROJECT_DECISION_EVIDENCE_FALLBACK}\n先完成核对，再使用当前待决 ID 执行 project decide --decision direct，禁止空等或让用户在缺少依据时盲选。`;
+  updatePersistedProjectManagerDeliveries(session.id, (deliveries) => deliveries.map((candidate) => (
+    candidate.id === delivery.id ? { ...candidate, text: delivery.text } : candidate
+  )));
+}
+
 function flushProjectManagerDeliveries(): void {
   if (projectManagerDeliveryScheduled || pendingProjectManagerDeliveries.length === 0) return;
   for (let index = 0; index < pendingProjectManagerDeliveries.length; index += 1) {
@@ -7598,6 +7649,7 @@ function flushProjectManagerDeliveries(): void {
       ? useStore.getState().projectManagers.find((candidate) => candidate.id === delivery.sessionId)
       : undefined;
     if (session?.safeExit && ['saving', 'blocked', 'saved'].includes(session.safeExit.status)) continue;
+    if (session) repairLegacyEmptyProjectDecisionDelivery(session, delivery);
     const manager = session
       ? projectManagerTerminal({ surfaceId: session.managerSurfaceId, projectId: session.id })
       : undefined;
@@ -8830,6 +8882,47 @@ async function recoverAuthorizedTechnicalRouteQuestion(
   ].join('\n'), session.id, {
     priority: true,
     dedupeKey: `authorized-technical-route:${session.id}:${route.workItem.id}:${question.id}`,
+  });
+  return current;
+}
+
+async function recoverSupervisorOwnedPermissionQuestion(
+  session: ProjectManagerSession,
+): Promise<ProjectManagerSession | undefined> {
+  const question = session.pendingUserQuestion;
+  const permission = question ? projectSupervisorOwnedPermissionPrompt(session, question) : undefined;
+  if (!question || !permission) return undefined;
+  const next: ProjectManagerSession = {
+    ...session,
+    status: 'active',
+    pendingUserQuestion: undefined,
+    updatedAt: Date.now(),
+  };
+  replaceProjectManagerSession(next);
+  await appendRecordedProjectEvent(next, {
+    kind: 'user-clarification-invalidated',
+    workItemId: permission.workItem.id,
+    summary: '控制层撤销了应由监督 AI 处理的任务权限问题',
+    payload: {
+      questionId: question.id,
+      reasonCode: question.reasonCode,
+      reason: 'task-permission-owned-by-supervisor-ai',
+      attentionRequired: false,
+      resolvedAttentionKinds: ['guard-triggered'],
+    },
+  });
+  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || next;
+  queueProjectManagerDelivery([
+    '[控制层已撤销越权用户提问｜任务权限归监督链处理]',
+    `项目：${session.id}；工作项：${permission.workItem.id}`,
+    permission.contractChangeRequired
+      ? '当前合同尚未提供可用的 permissionConfirm 外壳。请判断该本地命令是否属于主目标内低风险动作；若是，更新合同为最小 allowedCommandPrefixes 并启用 permissionConfirm，再恢复同一监督链。'
+      : '当前合同已经提供 permissionConfirm 外壳。恢复同一监督链，由专属监督结合真实 blocked 状态、命令证据、范围、风险和重复确认护栏逐次处理。',
+    '项目 AI 不逐次批准任务 AI 命令，也不得把普通本地权限提示转交用户。只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权时才可重新 ask。',
+    `处理后执行 wmux project status --project ${session.id}，确认工作项已恢复真实责任者。`,
+  ].join('\n'), session.id, {
+    priority: true,
+    dedupeKey: `supervisor-owned-permission:${session.id}:${permission.workItem.id}:${question.id}`,
   });
   return current;
 }
@@ -12157,6 +12250,29 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         error: `推荐路线“${authorizedTechnicalRoute.label}”已被当前主目标、工作项技术权限和既有授权覆盖，属于项目 AI 的内部重规划责任，不能作为 business-choice 询问用户。请保留现有证据，更新阶段计划/工作项合同并 supervise 下一技术路线。`,
       };
     }
+    const supervisorOwnedPermission = projectSupervisorOwnedPermissionPrompt(session, normalized.question);
+    if (supervisorOwnedPermission) {
+      await appendRecordedProjectEvent(session, {
+        kind: 'guard-triggered',
+        workItemId: supervisorOwnedPermission.workItem.id,
+        summary: '项目 AI 试图把任务 AI 的普通本地权限提示转交用户；控制层已拒绝并要求交由监督链处理',
+        payload: {
+          decision: 'continue',
+          attentionRequired: false,
+          reason: 'task-permission-owned-by-supervisor-ai',
+          contractChangeRequired: supervisorOwnedPermission.contractChangeRequired,
+        },
+      });
+      return {
+        ok: false,
+        internalDecisionRequired: true,
+        supervisorOwnedPermission: true,
+        contractChangeRequired: supervisorOwnedPermission.contractChangeRequired,
+        error: supervisorOwnedPermission.contractChangeRequired
+          ? '这是任务 AI 的普通本地权限提示，不是用户问题。请由项目 AI 判断其是否属于主目标内低风险动作；若是，更新合同为最小 allowedCommandPrefixes 并启用 permissionConfirm，再由专属监督结合实时终端证据逐次确认。只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权才能询问用户。'
+          : '这是任务 AI 的普通本地权限提示，当前合同已授权 permissionConfirm，应由专属监督结合真实阻塞状态、命令证据、范围、风险和重复确认护栏逐次处理，不能询问用户或由项目 AI 逐次批准。',
+      };
+    }
     if (normalized.question.reasonCode === 'internal-project-failure') {
       const projectLanes = store.supervisor.lanes.filter((lane) => (
         lane.projectManagerProjectId === session.id
@@ -13692,13 +13808,16 @@ export function initPipeBridge(): void {
           || useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)
           || session;
         const completionRoutingRecovered = await recoverProjectCompletionRoutingConflict(recoverySession);
-        const technicalRouteRecovered = completionRoutingRecovered
+        const supervisorPermissionRecovered = completionRoutingRecovered
+          ? undefined
+          : await recoverSupervisorOwnedPermissionQuestion(recoverySession);
+        const technicalRouteRecovered = completionRoutingRecovered || supervisorPermissionRecovered
           ? undefined
           : await recoverAuthorizedTechnicalRouteQuestion(recoverySession);
-        const baselineRecovered = completionRoutingRecovered || technicalRouteRecovered
+        const baselineRecovered = completionRoutingRecovered || supervisorPermissionRecovered || technicalRouteRecovered
           ? undefined
           : await recoverProjectBaselineSyncConflict(recoverySession);
-        const current = completionRoutingRecovered || technicalRouteRecovered || baselineRecovered || pausedLaneReconciled
+        const current = completionRoutingRecovered || supervisorPermissionRecovered || technicalRouteRecovered || baselineRecovered || pausedLaneReconciled
           || useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)
           || session;
         await processProjectAgentReconfiguration(current.id);
@@ -17020,6 +17139,10 @@ export function initPipeBridge(): void {
           const decisionOptions = approval.proposalKind === 'context-recovery'
             ? []
             : supervisorDecisionOptions(approval.alternatives, approval.text);
+          const projectDecisionRecommendation = approval.text?.trim()
+            || (approval.alternatives?.trim()
+              ? '保持当前工作项冻结，由项目 AI 对比现有备选与证据后直接选择或重规划；不得让用户在缺少依据时盲选。'
+              : PROJECT_DECISION_EVIDENCE_FALLBACK);
           const approveCommand = decisionOptions.length >= 2
             ? `wmux project decide --project ${projectSession.id} --approval ${pending.id} --decision approve --selection "<从备选中原样选择一项>"`
             : `wmux project decide --project ${projectSession.id} --approval ${pending.id} --decision approve`;
@@ -17029,15 +17152,17 @@ export function initPipeBridge(): void {
             workItemId: lane.projectWorkItemId,
             kind: 'decision-required',
             eventType: 'supervisor.approval.requested',
-            summary: `${approval.reason}；建议：${approval.text || '未提供具体建议'}`,
+            summary: `${approval.reason}；建议：${projectDecisionRecommendation}`,
             contextSummary: [
               approval.impact ? `影响：${approval.impact}` : '',
               approval.alternatives ? `备选：${approval.alternatives}` : '',
             ].filter(Boolean).join('\n'),
             instruction: [
               `待决 ID：${pending.id}`,
-              `若属于项目内决策权，执行 ${approveCommand}；需要自定方向时使用 wmux project decide --project ${projectSession.id} --approval ${pending.id} --decision direct --task-message "<方向>"。`,
-              `只有业务选择、目标或范围扩展、凭据/权限、破坏性或不可逆动作、生产发布或必须人工操作时，才使用 wmux project ask --project ${projectSession.id} 请求用户处理。`,
+              approval.text?.trim()
+                ? `若属于项目内决策权，执行 ${approveCommand}；需要自定方向时使用 wmux project decide --project ${projectSession.id} --approval ${pending.id} --decision direct --task-message "<方向>"。`
+                : `监督未提供可执行建议；请执行 wmux project decide --project ${projectSession.id} --approval ${pending.id} --decision direct --task-message "${projectDecisionRecommendation}"，不得空等或让用户在缺少依据时盲选。`,
+              `只有业务选择、目标或范围扩展、未获当前合同授权的凭据/访问授予/权限变更、破坏性或不可逆动作、生产发布或必须人工操作时，才使用 wmux project ask --project ${projectSession.id} 请求用户处理；当前合同 permissionConfirm 范围内的普通终端确认由监督链自行处理。`,
             ].join('\n'),
           });
           saveProjectManagerSnapshot(projectSession.id);

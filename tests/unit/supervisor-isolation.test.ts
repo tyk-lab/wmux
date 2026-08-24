@@ -291,6 +291,10 @@ describe('supervisor isolation', () => {
       ...autonomousDecisionBoundary([], 'project-manager'),
     ].join('\n');
 
+    expect(boundary).toContain('任务 AI 的逐次权限确认');
+    expect(boundary).toContain('任务 AI 的权限提示先由你处理');
+    expect(boundary).toContain('项目内取舍仍由项目 AI 决定');
+
     expect(boundary).toContain('推进当前工作项对主目标的贡献');
     expect(boundary).toContain('增量基线复核');
     expect(boundary).toContain('不能改写主目标、扩大工作项合同');

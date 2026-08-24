@@ -280,6 +280,13 @@ interface ProjectRecoveryCandidate {
   updatedAt: number;
 }
 
+function projectSupervisorTransitionDisplaySummary(summary: string): string {
+  return summary.replace(
+    '建议：未提供具体建议',
+    '建议：保持当前工作项冻结，由项目 AI 安排一次有界只读证据核对；依据结果直接续作或重规划，只有确需用户专属决定时才升级提问。',
+  );
+}
+
 interface ProjectManagerDialogProps {
   embeddedProjectId?: string;
 }
@@ -1079,6 +1086,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const activeSessionCount = sessions.filter((candidate) => !['completed', 'stopped'].includes(candidate.status)).length;
   const canPausePortfolio = sessions.some((candidate) => candidate.status === 'active' || candidate.status === 'waiting');
   const canResumePortfolio = sessions.some((candidate) => candidate.status === 'paused' && candidate.pausedByPortfolio === true);
+  const transitionSafeExitStatus = session?.safeExit?.status;
+  const transitionWaitingForManager = !!transitionSafeExitStatus
+    && ['saving', 'blocked', 'saved'].includes(transitionSafeExitStatus);
   const awaitingRecovery = !embedded
     && recoveryStatus !== 'done'
     && (recoveryMode === 'runtime' || sessions.length === 0);
@@ -1256,20 +1266,37 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           )}
 
           {embedded && !!session?.pendingSupervisorTransitions?.length && !creating && (
-            <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label="项目 AI 正在处理监督状态交接">
-              <div className="supervisor-dialog__group-title">项目 AI 正在处理监督状态交接</div>
-              <div className="supervisor-dialog__warning">监督 AI 已主动上报完成、待续、暂停或异常状态；项目 AI 会据此更新任务方向，不需要用户确认。</div>
+            <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label={transitionWaitingForManager ? '监督交接等待项目 AI 恢复' : '项目 AI 正在处理监督状态交接'}>
+              <div className="supervisor-dialog__group-title">{transitionWaitingForManager ? '监督交接等待项目 AI 恢复' : '项目 AI 正在处理监督状态交接'}</div>
+              <div className="supervisor-dialog__warning">{session.safeExit?.status === 'blocked'
+                ? `项目 AI 因安全退出受阻而暂停，当前交接尚未投递处理：${session.safeExit.error || '项目运行时尚未恢复'}。请选择恢复项目继续处理，或重试保存并安全退出。`
+                : session.safeExit?.status === 'saved'
+                  ? '项目运行时已经安全退出，当前监督交接会保留到项目 AI 恢复后处理。'
+                  : session.safeExit?.status === 'saving'
+                    ? '项目正在保存安全退出检查点，当前监督交接会保留且暂不投递。'
+                : '监督 AI 已主动上报完成、待续、暂停或异常状态；项目 AI 会据此更新任务方向，不需要用户确认。'}</div>
               <details>
                 <summary>查看待处理交接（{session.pendingSupervisorTransitions.length}）</summary>
                 <div className="project-manager-dialog__decision-list">
                   {session.pendingSupervisorTransitions.slice(-5).reverse().map((transition) => (
                     <div key={transition.id} className="project-manager-dialog__decision-item">
                       <strong>{transition.kind} · {transition.workItemId || '未绑定任务'}</strong>
-                      <span>{transition.summary}</span>
+                      <span>{projectSupervisorTransitionDisplaySummary(transition.summary)}</span>
                     </div>
                   ))}
                 </div>
               </details>
+              {session.safeExit?.status === 'blocked' && (
+                <div className="project-manager-dialog__recovery-actions">
+                  <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void control('resume')}>取消安全退出并恢复项目 AI</button>
+                  <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void saveProgressAndExit()}>重试保存并安全退出</button>
+                </div>
+              )}
+              {session.safeExit?.status === 'saved' && (
+                <div className="project-manager-dialog__recovery-actions">
+                  <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void control('resume')}>恢复项目 AI 并处理交接</button>
+                </div>
+              )}
               <div className="supervisor-dialog__hint">交接在项目 AI 回写处理结果前会持久保留；定时看门狗只负责丢事件补投，不再反复询问监督进度。</div>
             </section>
           )}

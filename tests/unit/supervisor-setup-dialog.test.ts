@@ -172,6 +172,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('可在恢复前重新选择');
     expect(projectManagerDialogSource).toContain('agentConfig: normalizeProjectManagementAgentConfig(agentDraft)');
     expect(projectManagerDialogSource).toContain('暂不恢复');
+    expect(projectManagerDialogSource).toContain('监督交接等待项目 AI 恢复');
+    expect(projectManagerDialogSource).toContain('取消安全退出并恢复项目 AI');
+    expect(projectManagerDialogSource).toContain('重试保存并安全退出');
+    expect(projectManagerDialogSource).toContain('projectSupervisorTransitionDisplaySummary(transition.summary)');
     expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
     expect(projectManagerDialogSource).toContain('恢复时升级到最新执行协议');
     expect(projectManagerDialogSource).toContain("'restore-projects'");

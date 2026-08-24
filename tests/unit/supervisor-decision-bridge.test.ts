@@ -3393,6 +3393,91 @@ describe('supervisor decision bridge', () => {
     });
   });
 
+  it('keeps ordinary task-AI permission prompts inside the supervisor chain', async () => {
+    const session = bindProjectLaneToWorkItem({
+      projectId: 'pm-supervisor-owned-permission',
+      permissionConfirm: true,
+      allowedCommandPrefixes: ['npm test -- auth'],
+    });
+    attachProjectManagerSurface(session.id, `manager-${session.id}`);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'user-question', callerSurfaceId: current.managerSurfaceId, projectId: current.id,
+      category: 'manual-intervention', workItemId: 'task-a', reasonCode: 'access-grant',
+      blocker: '任务 AI 正在等待本地命令权限确认。',
+      question: '是否允许任务 AI 运行 npm test -- auth？',
+      context: '该命令是当前工作项已有的定向验证。',
+      options: [
+        { id: 'allow', label: '允许运行', description: '执行合同内的定向认证测试。' },
+        { id: 'deny', label: '不允许', description: '保持任务终端阻塞。' },
+      ],
+      recommendedOptionId: 'allow',
+    })).resolves.toMatchObject({
+      ok: false,
+      internalDecisionRequired: true,
+      supervisorOwnedPermission: true,
+      contractChangeRequired: false,
+      error: expect.stringContaining('应由专属监督'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)
+      ?.pendingUserQuestion).toBeUndefined();
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)?.events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'guard-triggered',
+          payload: expect.objectContaining({ reason: 'task-permission-owned-by-supervisor-ai' }),
+        }),
+      ]));
+  });
+
+  it('keeps a genuinely new external access grant at the user boundary', async () => {
+    const session = bindProjectLaneToWorkItem({ projectId: 'pm-user-owned-external-access' });
+    attachProjectManagerSurface(session.id, `manager-${session.id}`);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'user-question', callerSurfaceId: current.managerSurfaceId, projectId: current.id,
+      category: 'manual-intervention', workItemId: 'task-a', reasonCode: 'access-grant',
+      blocker: '任务 AI 缺少生产云账号和新的部署角色授予。',
+      question: '是否向任务 AI 授予生产云端部署访问？',
+      context: '当前项目合同和既有凭据均未覆盖该外部访问。',
+      options: [
+        { id: 'grant', label: '授予生产访问', description: '新增生产云端部署角色和凭据。' },
+        { id: 'keep-local', label: '保持本地范围', description: '不新增外部访问，项目继续保持暂停。' },
+      ],
+      recommendedOptionId: 'keep-local',
+    })).resolves.toMatchObject({
+      ok: true,
+      question: { reasonCode: 'access-grant', recommendedOptionId: 'keep-local' },
+    });
+  });
+
+  it('keeps authorization for a new third-party dependency at the user boundary', async () => {
+    const session = bindProjectLaneToWorkItem({ projectId: 'pm-user-owned-new-dependency' });
+    attachProjectManagerSurface(session.id, `manager-${session.id}`);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'user-question', callerSurfaceId: current.managerSurfaceId, projectId: current.id,
+      category: 'manual-intervention', workItemId: 'task-a', reasonCode: 'business-choice',
+      blocker: '当前实现需要新增第三方依赖。',
+      question: '是否允许任务 AI 运行 npm install new-package？',
+      context: '该依赖不在现有 package.json 和 lockfile 中。',
+      options: [
+        { id: 'stdlib', label: '保持现有依赖', description: '使用标准库或项目已安装依赖实现。' },
+        { id: 'install', label: '安装新依赖', description: '扩大依赖范围并更新 lockfile。' },
+      ],
+      recommendedOptionId: 'stdlib',
+    })).resolves.toMatchObject({
+      ok: true,
+      question: { reasonCode: 'business-choice', recommendedOptionId: 'stdlib' },
+    });
+  });
+
   it('withdraws a persisted authorized technical-route question and returns it to the project AI', async () => {
     const session = bindAuthorizedPiOptimizationProject('pm-persisted-authorized-pi-route');
     const store = useStore.getState();
@@ -3522,6 +3607,77 @@ describe('supervisor decision bridge', () => {
     expect(projects.find((project) => project.id === second.id)?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'requirements-alignment-required' }),
     ]));
+  });
+
+  it('delivers a queued manager handoff after the project Agent becomes idle', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-manager-idle-wake' });
+    const managerSurfaceId = 'project-manager-idle-wake';
+    useStore.getState().restoreProjectManager({
+      ...project,
+      managerSurfaceId: managerSurfaceId as any,
+    });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-project-manager-idle-wake' as any,
+      title: '项目执行空间',
+      cwd: project.projectDir,
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-project-manager-idle-wake' as any, activeSurfaceIndex: 0,
+        surfaces: [{
+          id: managerSurfaceId as any,
+          type: 'terminal',
+          shell: 'pwsh.exe',
+          cwd: 'E:\\wmux-data\\project-manager\\runtime',
+          projectManagerTerminal: true,
+          projectManagerProjectId: project.id,
+          projectManagerAgent: 'codex',
+          projectManagerModel: '',
+          projectManagerReasoningEffort: '',
+        }],
+      },
+    }]);
+    surfaceTerminalRegistry.set(managerSurfaceId, {
+      buffer: {
+        active: {
+          baseY: 0,
+          cursorX: 0,
+          cursorY: 0,
+          length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+      modes: { bracketedPasteMode: true },
+    } as any);
+    markTerminalRuntimeReady(managerSurfaceId);
+    const managerState = { state: 'working', updatedAt: Date.now() };
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      'worker-a': agentState,
+      [managerSurfaceId]: managerState,
+    });
+    const writeReliable = vi.fn(async () => true);
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'message',
+      source: 'desktop',
+      projectId: project.id,
+      messageId: 'manager-idle-wake-1',
+      message: '处理当前监督交接并留下下一责任者。',
+    })).resolves.toMatchObject({ ok: true });
+    expect(writeReliable).not.toHaveBeenCalled();
+    expect(useStore.getState().projectManager?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'pending' }),
+    ]));
+
+    managerState.state = 'idle';
+    managerState.updatedAt = Date.now() - 1_000;
+    (globalThis.window as any).__wmux_flushProjectManagerDeliveries();
+    await vi.waitFor(() => expect(writeReliable).toHaveBeenCalled());
+    expect(String(writeReliable.mock.calls[0]?.[1] || '')).toContain('处理当前监督交接并留下下一责任者。');
+
+    surfaceTerminalRegistry.delete(managerSurfaceId);
+    clearTerminalRuntimeStatus(managerSurfaceId);
   });
 
   it('accepts a later tool lifecycle as proof when project message submit hook is missing', async () => {
@@ -8146,6 +8302,72 @@ describe('supervisor decision bridge', () => {
         pendingUserQuestion: { id: 'reset-live-binding-question' },
         workItems: [expect.objectContaining({ workerSurfaceId: 'live-project-worker' })],
       });
+  });
+
+  it('gives the project AI a bounded evidence route when a supervisor decision has no recommendation', () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-empty-supervisor-recommendation' });
+
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      escalationBoundary: 'contract-change',
+      reason: '结构化证据冲突，无法确认当前不可变身份是否已经消费',
+      impact: '继续旧路线可能重复执行已经消费的身份',
+    })).toMatchObject({ ok: true, outcome: 'needs-human' });
+
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+    const transition = current?.pendingSupervisorTransitions?.find((candidate) => (
+      candidate.kind === 'decision-required'
+    ));
+    expect(transition?.summary).toContain('保持当前工作项冻结');
+    expect(transition?.summary).toContain('有界只读证据核对');
+    expect(transition?.summary).not.toContain('未提供具体建议');
+    expect(current?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        transitionId: transition?.id,
+        text: expect.stringContaining('监督未提供可执行建议'),
+      }),
+    ]));
+    expect(current?.pendingManagerDeliveries?.find((delivery) => delivery.transitionId === transition?.id)?.text)
+      .toContain('--decision direct');
+    expect(current?.pendingManagerDeliveries?.find((delivery) => delivery.transitionId === transition?.id)?.text)
+      .toContain('当前合同 permissionConfirm 范围内的普通终端确认由监督链自行处理');
+  });
+
+  it('repairs a persisted decision handoff that predates the empty-recommendation fallback', () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-legacy-empty-recommendation' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      pendingSupervisorTransitions: [{
+        id: 'legacy-empty-transition',
+        laneId: 'lane-a',
+        workItemId: 'task-a',
+        kind: 'decision-required',
+        eventType: 'supervisor.approval.requested',
+        summary: '结构化证据冲突；建议：未提供具体建议',
+        createdAt: 1,
+        notifiedAt: 1,
+        notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [{
+        id: 'legacy-empty-delivery',
+        text: '旧版监督交接：等待项目 AI 处理',
+        createdAt: 1,
+        transitionId: 'legacy-empty-transition',
+        stage: 'pending',
+      }],
+    });
+
+    initPipeBridge();
+    (globalThis.window as any).__wmux_flushProjectManagerDeliveries();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingManagerDeliveries?.find((delivery) => delivery.id === 'legacy-empty-delivery')?.text)
+      .toContain('旧交接缺失建议兼容修复');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.pendingManagerDeliveries?.find((delivery) => delivery.id === 'legacy-empty-delivery')?.text)
+      .toContain('有界只读证据核对');
   });
 
   it('lets the owning project manager close a supervisor decision without bypassing the supervisor', async () => {

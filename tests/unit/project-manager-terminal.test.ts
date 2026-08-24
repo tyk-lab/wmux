@@ -34,6 +34,10 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('内部合同、基线同步、证据路径和普通技术失败');
       expect(input).toContain('不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice');
       expect(input).toContain('扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权');
+      expect(input).toContain('项目内部的实现路线、优先级、候选方案、资源分配');
+      expect(input).toContain('任务 AI 权限提示由监督 AI 处理');
+      expect(input).toContain('最小 allowedCommandPrefixes 并启用 permissionConfirm');
+      expect(input).toContain('只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权');
       expect(input).toContain('allowPaths 只是最大安全边界');
       expect(input).toContain('run_templates 等模板目录只保存可复用预执行输入');
     },
