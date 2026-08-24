@@ -240,6 +240,16 @@ export function nextDeliverableSupervisorDelivery(
         && (supervisorAgentState as { state?: unknown }).state === 'unknown')
     )
   );
+  const lifecycleStateMissing = supervisorAgentState === undefined
+    || supervisorAgentState === 'unknown'
+    || (typeof supervisorAgentState === 'object'
+      && supervisorAgentState !== null
+      && (supervisorAgentState as { state?: unknown }).state === 'unknown');
+  const reviewRecoveryReady = (delivery: SupervisorDelivery) => (
+    runtimeInputReady
+    && lifecycleStateMissing
+    && (!!delivery.reviewId || delivery.kind === 'task-end' || delivery.kind === 'task-interrupted')
+  );
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
     return promptReady || recoveredPromptReady || bootstrapReady(pasted) ? pasted : undefined;
@@ -248,8 +258,21 @@ export function nextDeliverableSupervisorDelivery(
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
     .find((delivery) => (
-      promptReady || recoveredPromptReady || bootstrapReady(delivery)
+      promptReady || recoveredPromptReady || bootstrapReady(delivery) || reviewRecoveryReady(delivery)
     ));
+}
+
+/**
+ * A renderer reload can lose the in-memory runtime and Hook snapshots while
+ * leaving the live PTY and its Agent composer intact. The verified composer is
+ * sufficient to resume an actionable review unless the runtime is known dead.
+ */
+export function supervisorComposerRecoveryReady(options: {
+  runtimeState: unknown;
+  inputReady: boolean;
+}): boolean {
+  if (!options.inputReady) return false;
+  return options.runtimeState !== 'failed' && options.runtimeState !== 'exited';
 }
 
 /** A positive idle composer can repair a missed Stop after the hook grace period. */

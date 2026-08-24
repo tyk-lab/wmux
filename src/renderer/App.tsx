@@ -91,6 +91,7 @@ import {
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
   SUPERVISOR_DELIVERY_READY_EVENT,
+  supervisorComposerRecoveryReady,
   supervisorDeliveryLabel,
   supervisorDeliveryTimeoutRecoveryAction,
   supervisorWakeDeliveryKind,
@@ -2088,6 +2089,10 @@ export default function App() {
           }
           transcriptRecoveryAttempts.delete(supervisorSurfaceId);
           const runtimeReady = supervisorRuntime?.state === 'ready';
+          const composerRecoveryReady = supervisorComposerRecoveryReady({
+            runtimeState: supervisorRuntime?.state,
+            inputReady: interactiveAgentInputReady(supervisorScreen),
+          });
           const recoveredPromptReady = isRecoverableStaleSupervisorState({
             agentState: supervisorAgentState,
             runtimeReady,
@@ -2097,7 +2102,7 @@ export default function App() {
             compactedDeliveries,
             supervisorAgentState,
             runtimeReady,
-            runtimeReady && interactiveAgentInputReady(supervisorScreen),
+            composerRecoveryReady,
             recoveredPromptReady,
           );
           if (!delivery) {

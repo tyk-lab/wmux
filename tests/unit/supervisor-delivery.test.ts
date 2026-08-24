@@ -9,6 +9,7 @@ import {
   shouldRecoverProjectSupervisorIdleReview,
   shouldRecoverWorkerStopHookFailure,
   shouldReportUnacknowledgedSupervisorIdle,
+  supervisorComposerRecoveryReady,
   supervisorDeliveryLabel,
   supervisorDeliveryTimeoutRecoveryAction,
   supervisorWakeDeliveryKind,
@@ -155,6 +156,26 @@ describe('supervisor delivery queue', () => {
     expect(nextDeliverableSupervisorDelivery([later], { state: 'unknown' }, true, true)).toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'working' }, true, true)).toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'blocked', blockedReason: 'permission' }, true, true))
+      .toBeUndefined();
+  });
+
+  it('recovers an actionable review from a verified composer after renderer state is lost', () => {
+    const review = {
+      ...event('review-after-reload', 'task-end', '复核恢复结果', 3),
+      reviewId: 'review-reload',
+    };
+    const unrelatedControl = {
+      id: 'control-after-reload', kind: 'control-message' as const, task: '同步普通控制消息',
+      text: '普通控制消息', createdAt: 2, stage: 'pending' as const,
+    };
+
+    expect(supervisorComposerRecoveryReady({ runtimeState: undefined, inputReady: true })).toBe(true);
+    expect(supervisorComposerRecoveryReady({ runtimeState: 'starting', inputReady: true })).toBe(true);
+    expect(supervisorComposerRecoveryReady({ runtimeState: 'failed', inputReady: true })).toBe(false);
+    expect(supervisorComposerRecoveryReady({ runtimeState: undefined, inputReady: false })).toBe(false);
+    expect(nextDeliverableSupervisorDelivery([review], { state: 'unknown' }, false, true)?.id)
+      .toBe('review-after-reload');
+    expect(nextDeliverableSupervisorDelivery([unrelatedControl], { state: 'unknown' }, false, true))
       .toBeUndefined();
   });
 
