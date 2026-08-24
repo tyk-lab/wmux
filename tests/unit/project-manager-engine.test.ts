@@ -404,12 +404,17 @@ describe('project-manager engine', () => {
       childThreadResponsibilities: ['检查 UI 状态', '检查协议和恢复行为'],
     };
     const text = buildProjectSupervisorBriefing({ workItemId: 'auth', contract });
+    const envelope = buildProjectTaskExecutionEnvelope(contract);
     expect(text).toContain('任务终端工作模式：固定多线程');
     expect(text).toContain('主线程职责：整合实现并负责最终验证');
     expect(text).toContain('子线程 1 职责：检查 UI 状态');
     expect(text).toContain('必须把以上线程职责清晰传达给任务终端');
     expect(text).toContain('除批准项目基线的原子裁决外');
     expect(text).toContain('构建工具自动生成的二进制');
+    expect(text).toContain('项目产物策略');
+    expect(text).toContain('run_templates 等模板目录只允许预执行输入');
+    expect(envelope).toContain('适用的 AGENTS/项目指令与匹配技能');
+    expect(envelope).toContain('禁止写入日志、dry-run/validate 输出、results、telemetry');
   });
 
   it('briefs legacy adaptive tasks with automatic mutually exclusive parallelism', () => {
@@ -458,6 +463,35 @@ describe('project-manager engine', () => {
       ...contract,
       authority: { ...contract.authority, targetedTests: false, lowRiskRetries: false },
     }, { testCommand: 'npm test -- auth', retry: true })).toContain('运行测试');
+  });
+
+  it('keeps runtime and validation artifacts out of run template directories', () => {
+    const base = item('auth', 'planned').contract;
+    const contract = {
+      ...base,
+      scope: { ...base.scope, allowPaths: ['runs'], denyPaths: [] },
+    };
+    expect(projectContractViolation(contract, {
+      changedFiles: [
+        'runs/run_templates/candidate.plan.json',
+        'runs/run_templates/candidate.identity.json',
+        'runs/run_templates/candidate.instructions.txt',
+        'runs/20260824-120000_candidate/result.json',
+      ],
+    })).toBeNull();
+    for (const path of [
+      'runs/run_templates/candidate.pytest.log',
+      'runs/run_templates/candidate.dry-run.stdout.json',
+      'runs/run_templates/candidate.validate.output.json',
+      'runs/run_templates/candidate.dry-run.stderr.txt',
+      'runs/run_templates/candidate-results.json',
+      'runs/run_templates/candidate-offline-validation.json',
+    ]) {
+      expect(projectContractViolation(contract, { changedFiles: [path] })).toContain('模板目录只能保存');
+    }
+    expect(projectContractViolation(contract, {
+      command: 'python -m unittest *> runs/run_templates/candidate.pytest.log',
+    })).toContain('模板目录只能保存');
   });
 
   it('distinguishes a negated safety reference from an affirmative forbidden action', () => {

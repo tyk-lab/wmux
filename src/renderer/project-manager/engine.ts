@@ -247,12 +247,12 @@ export function buildProjectTaskExecutionEnvelope(
     authority.continuousExecution
       ? '执行方式：项目基线获批后，每个回合连续完成一个有意义、可验证的执行批次；注册、映射、DRY_RUN、聚焦测试、实测和证据整理等同一批次内的已授权微步骤不得逐步停下来索要同一确认。基线报告必须停止等待审核；批次形成可审查证据、需要监督选择下一批次、出现失败或触及合同边界时结束回合交给监督 AI，不得在整个阶段内绕过监督检查点。'
       : `执行方式：只在“${authority.continuationBoundary || '未声明'}”边界返回监督 AI；边界内仍连续完成完整内部步骤，不得退化为做一步确认一步。`,
-    '项目基线门禁：无论线程模式如何，在任何写入、依赖安装、构建/测试、设备操作或权限确认前，先执行监督 AI 以“[项目基线调查]”下达的有界只读调查。调查至少覆盖当前 git/未提交状态、相关目录与入口/调用链、已有构建测试约定、当前错误或缺口、预期改动路径与共享资源边界。',
-    '调查完成后以“[项目基线报告]”返回工作区快照、证据、建议执行模式及下一安全动作，然后停止等待监督审核。只有收到“[批准项目基线]”才可开始实现；固定单/多线程不得静默改换，自适应模式才可另附“[内部线程提案]”。',
+    '项目基线门禁：无论线程模式如何，在任何写入、依赖安装、构建/测试、设备操作或权限确认前，先执行监督 AI 以“[项目基线调查]”下达的有界只读调查。调查至少覆盖当前 git/未提交状态、适用的 AGENTS/项目指令与匹配技能、相关目录与入口/调用链、已有构建测试约定、产物目录与命名规则、当前错误或缺口、预期改动路径与共享资源边界。',
+    '调查完成后以“[项目基线报告]”返回工作区快照、证据、建议执行模式、下一安全动作，并单列“[项目产物策略]”：模板输入、实际运行/验证证据、临时文件各自目录以及命名规则；没有明确规则时说明依据与建议，不得自行混用目录或重载版本/重复序号。随后停止等待监督审核。只有收到“[批准项目基线]”才可开始实现；固定单/多线程不得静默改换，自适应模式才可另附“[内部线程提案]”。',
     '执行身份分流：上面的项目执行身份已经由控制层建立，不得等待旧身份或自行恢复旧会话。若任务所说的“身份/角色/profile/登记项”是当前项目范围内可创建、推导或注册的产物，把它作为合同内准备步骤，只核对一次依据后直接建立；若它不阻塞其他独立工作，向监督报告“建议暂缓当前工作项”及事实后停止，不要反复重建；只有外部凭据、人工资质、生产签名身份或用户掌握的访问权才是人工阻塞。',
     ...executionModeLines,
     '只有发现已确认条件发生变化的具体证据、命令或目标越出合同、出现不可逆/生产/凭据/权限变更风险，或预算护栏触发时才停止并报告。普通工具确认提示和同一前置条件的重复询问不是停止理由。',
-    '每轮结束以“[本轮结果]”结构化报告完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出保存到项目内日志或证据文件并报告路径，确保监督 AI 不依赖易丢失的终端滚屏。',
+    '每轮结束以“[本轮结果]”结构化报告完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出必须按项目指令和基线中的“[项目产物策略]”保存并报告路径。run_templates 等模板目录只保存可复用预执行输入，禁止写入日志、dry-run/validate 输出、results、telemetry 或其他运行事实；路径或命名与上级计划冲突时停止并报告监督 AI。',
   ].filter(Boolean).join('\n');
 }
 
@@ -506,6 +506,34 @@ function instructionAffirmativelyMentions(instruction: string, term: string): bo
   return false;
 }
 
+function runtimeArtifactInTemplateDirectory(value: string): boolean {
+  const normalized = value.trim().replace(/\\/gu, '/').toLowerCase();
+  if (!/(?:^|\/)run[-_]templates(?:\/|$)/u.test(normalized)) return false;
+  const name = normalized.split('/').pop() || '';
+  return /\.(?:log|csv|tsv|xml|trx|jsonl|ndjson)$/u.test(name)
+    || /\.(?:stdout|stderr|output)\.(?:json|txt)$/u.test(name)
+    || /\.(?:dry-run|validate)(?:\.(?:stdout|stderr|output))?\.json$/u.test(name)
+    || /(?:^|[-_.])(?:results?|offline-validation)(?:[-_.]|$)/u.test(name)
+    || /^(?:manifest|safe-stop|failure|telemetry|report)(?:[-_.]|$)/u.test(name);
+}
+
+function projectTemplateArtifactViolation(value: string): string | null {
+  return runtimeArtifactInTemplateDirectory(value)
+    ? `模板目录只能保存可复用的预执行输入；运行、验证、日志或结果产物必须写入项目约定的实际运行/证据目录：${value}`
+    : null;
+}
+
+function commandArtifactViolation(value: string): string | null {
+  const candidates = value.split(/\s+/u)
+    .map((entry) => entry.replace(/^["'`([{<]+|["'`\])}>;,]+$/gu, ''))
+    .filter((entry) => /run[-_]templates[\\/]/iu.test(entry));
+  for (const candidate of candidates) {
+    const violation = projectTemplateArtifactViolation(candidate);
+    if (violation) return violation;
+  }
+  return null;
+}
+
 /** Enforce the parts of a project contract that can be proven from a structured decision. */
 export function projectContractViolation(
   contract: ProjectSupervisorContract,
@@ -546,6 +574,8 @@ export function projectContractViolation(
     .map((entry) => normalizedContractPath(entry, contract.scope.root))
     .filter(Boolean);
   for (const file of proposal.changedFiles || []) {
+    const artifactViolation = projectTemplateArtifactViolation(file);
+    if (artifactViolation) return artifactViolation;
     const normalizedFile = normalizedContractPath(file, contract.scope.root);
     const denied = denyPaths.find((entry) => pathInside(normalizedFile, entry));
     if (denied) return `变更文件进入任务禁止路径：${file}`;
@@ -557,6 +587,10 @@ export function projectContractViolation(
     entry.length > 1 && instructionAffirmativelyMentions(instruction, entry)
   ));
   if (mentionedDeniedPath) return `下一步涉及任务禁止路径：${mentionedDeniedPath}`;
+  const artifactCommandViolation = commandArtifactViolation(
+    `${proposal.command || ''}\n${proposal.testCommand || ''}`,
+  );
+  if (artifactCommandViolation) return artifactCommandViolation;
   if (proposal.testCommand && !contract.authority.targetedTests) return '任务契约未授权监督 AI 运行测试';
   if (proposal.retry && !contract.authority.lowRiskRetries) return '任务契约未授权监督 AI 自主重试';
   return null;
@@ -679,6 +713,7 @@ export function buildProjectSupervisorBriefing(options: {
           ? `项目基线：合同增量复核中。原批准证据与工作区版本已由控制层继承；只核对“${baseline.deltaSummary || '合同变化'}”是否改变当前范围、权限、安全边界或下一动作。不得重新做整套调查、重跑已有测试或重做设备操作。核对充分后，下一条指令直接包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并提供当前 --workspace-version 与增量 --evidence；该原子裁决不得携带执行结果字段。`
           : `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；只有一个会改变执行路径的关键事实缺失时才可下达一次以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的定向补查，禁止重新做整套调查或第三轮调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。该原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；未来写入路径与验证命令只放入阶段计划。`
         : `项目基线：待审核。首次指令只能以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头，要求任务 AI 做有界只读调查并以“${PROJECT_TASK_BASELINE_REPORT_MARKER}”报告；在你审查报告前不得写入、安装依赖、构建/测试、操作设备或确认权限。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence；该原子裁决不得携带执行结果字段，控制层会阻止绕过。`,
+    '项目基线报告必须核对适用的 AGENTS/项目指令与匹配技能，并单列“[项目产物策略]”：模板输入、运行/验证证据、临时文件的目录和命名规则。监督阶段计划不得用宽泛 allowPaths 覆盖这些规则；规则缺失或互相冲突时先让任务 AI 定向补查，不能自行发明混合命名。',
     supervisorPlan
       ? `[监督自主管理阶段计划 r${supervisorPlan.revision}]
 已选路线：${supervisorPlan.selectedRoute}
@@ -704,7 +739,7 @@ export function buildProjectSupervisorBriefing(options: {
     '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
     'complete 是对已形成证据的只读收口，不要求制造新的代码、测试或错误变化；没有文件变更时省略 --changed-files，禁止填写 none/无变更充当路径。完成文件的读取与哈希核验属于当前专属监督 capability，项目 AI 不能代批；若控制层报告 capability 路由故障，应保留证据并等待内部恢复，不得把它升级为用户决策。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
-    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一且作为依赖图最终汇聚点的 integrator、无循环依赖和规范化后仍互斥的 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。',
+    '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一且作为依赖图最终汇聚点的 integrator、无循环依赖和规范化后仍互斥的 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物。命名优先服从项目规则；未定义时使用稳定工作项 slug，并用 rv/av/rep 等不重载限定词区分需求版本、授权版本和重复序号。run_templates 等模板目录只允许预执行输入，运行、验证、日志和结果产物必须进入项目约定的实际运行/证据目录。',
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,

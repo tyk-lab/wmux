@@ -34,6 +34,8 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('内部合同、基线同步、证据路径和普通技术失败');
       expect(input).toContain('不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice');
       expect(input).toContain('扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权');
+      expect(input).toContain('allowPaths 只是最大安全边界');
+      expect(input).toContain('run_templates 等模板目录只保存可复用预执行输入');
     },
   );
 });

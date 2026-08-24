@@ -6400,6 +6400,35 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ status: 'running', baseline: { status: 'approved' } });
   });
 
+  it('rejects runtime artifacts in a project run template directory', () => {
+    const project = bindProjectLaneToWorkItem();
+    project.workItems[0].contract.scope.allowPaths = ['runs'];
+    useStore.getState().restoreProjectManager(project);
+
+    expect(decide({
+      next: '冻结候选并保存离线验证证据',
+      executionAction: 'freeze-and-validate',
+      stagePlanFile: '.wmux/tmp/runtime-artifact-in-template-plan.json',
+      stagePlan: {
+        selectedRoute: '冻结候选后执行离线验证',
+        milestones: [{
+          id: 'freeze_candidate', title: '冻结候选', outcome: '形成候选与验证证据', status: 'active',
+        }],
+        expectedPaths: [
+          'runs/run_templates/candidate.plan.json',
+          'runs/run_templates/candidate.identity.json',
+          'runs/run_templates/candidate.pytest.log',
+        ],
+        targetedValidation: ['python -m unittest'],
+        serializedBoundaries: [],
+        remainingWork: ['完成候选冻结与验证'],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('模板目录只能保存可复用的预执行输入'),
+    });
+  });
+
   it('opens only a budget-exhausted handoff after protocol-correction pause', async () => {
     const project = bindProjectLaneToWorkItem({
       projectId: 'pm-protocol-budget-handoff',
