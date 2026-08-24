@@ -285,6 +285,20 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('禁止调用 sleep/wait');
   });
 
+  it('keeps project supervisors proactive inside the work-item contract and below project-AI authority', () => {
+    const boundary = [
+      ...humanDecisionBoundary([], 'project-manager'),
+      ...autonomousDecisionBoundary([], 'project-manager'),
+    ].join('\n');
+
+    expect(boundary).toContain('推进当前工作项对主目标的贡献');
+    expect(boundary).toContain('增量基线复核');
+    expect(boundary).toContain('不能改写主目标、扩大工作项合同');
+    expect(boundary).toContain('已有授权覆盖的后续实测');
+    expect(boundary).toContain('不得逐次要求用户重复批准');
+    expect(boundary).toContain('参数上限、设备、接线、固件、控制环或风险层级发生扩大');
+  });
+
   it('allows supervision to inject bounded next work only from valid outcomes', () => {
     expect(isSupervisorNextAllowed('continue', '继续修复')).toBe(true);
     expect(isSupervisorNextAllowed('rework', '补测试')).toBe(true);

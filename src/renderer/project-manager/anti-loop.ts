@@ -17,6 +17,8 @@ export interface ProjectExecutionProposal {
   testCommand?: string;
   testResult?: string;
   fullSuite?: boolean;
+  planProgressSignature?: string;
+  allowWindowRenewal?: boolean;
   escalationBoundary?: ProjectEscalationBoundary;
   now: number;
 }
@@ -25,6 +27,7 @@ export interface ProjectExecutionGuardResult {
   decision: ProjectExecutionGuardDecision;
   reason?: string;
   record: ProjectExecutionRecord;
+  renewWindow?: 'decision-limit' | 'time-limit' | 'decision-and-time';
 }
 
 function normalizeText(value: string | undefined): string {
@@ -62,6 +65,7 @@ export function createProjectExecutionRecord(
       changedFiles.join('|'),
       testResult,
       proposal.error || '',
+      proposal.planProgressSignature || '',
     ]),
     workspaceVersion,
     testCommand: proposal.testCommand ? normalizeText(proposal.testCommand) : undefined,
@@ -70,6 +74,9 @@ export function createProjectExecutionRecord(
     ...(testResult ? { testResult } : {}),
     ...(diffSummary ? { diffSummary } : {}),
     ...(evidenceSummary ? { evidenceSummary } : {}),
+    ...(proposal.planProgressSignature
+      ? { planProgressSignature: normalizeText(proposal.planProgressSignature).slice(0, 2_000) }
+      : {}),
     ...(proposal.escalationBoundary ? { escalationBoundary: proposal.escalationBoundary } : {}),
   };
 }
@@ -94,6 +101,20 @@ function sameMaterialWorkVersion(
     || ((left.changedFiles?.length || 0) === 0 && (right.changedFiles?.length || 0) === 0);
 }
 
+function hasFreshVerifiedProgress(
+  history: readonly ProjectExecutionRecord[],
+  record: ProjectExecutionRecord,
+): boolean {
+  const previous = history[history.length - 1];
+  if (!previous || record.errorSignature || record.progressSignature === previous.progressSignature) return false;
+  const workspaceProgress = record.workspaceVersion !== 'unknown'
+    && (record.changedFiles?.length || 0) > 0;
+  const testProgress = !!record.testCommand && !!record.testResult;
+  const planProgress = !!record.planProgressSignature
+    && record.planProgressSignature !== previous.planProgressSignature;
+  return workspaceProgress || testProgress || planProgress;
+}
+
 export function evaluateProjectExecutionGuard(options: {
   history: readonly ProjectExecutionRecord[];
   proposal: ProjectExecutionProposal;
@@ -103,16 +124,6 @@ export function evaluateProjectExecutionGuard(options: {
 }): ProjectExecutionGuardResult {
   const { history, proposal, budget } = options;
   const record = createProjectExecutionRecord(proposal);
-
-  if (options.decisionsUsed >= budget.maxDecisions) {
-    return { decision: 'pause', reason: `已达到连续自主决策上限 ${budget.maxDecisions} 次`, record };
-  }
-  if (
-    options.startedAt !== undefined
-    && proposal.now - options.startedAt >= budget.maxContinuousMinutes * 60_000
-  ) {
-    return { decision: 'pause', reason: `已达到连续运行上限 ${budget.maxContinuousMinutes} 分钟`, record };
-  }
 
   if (record.errorSignature) {
     const identicalFailures = consecutiveCount(history, (entry) => (
@@ -162,6 +173,29 @@ export function evaluateProjectExecutionGuard(options: {
     return {
       decision: 'replan',
       reason: `连续 ${noProgressRounds} 轮没有产生新的代码、测试或错误证据`,
+      record,
+    };
+  }
+  const decisionLimitReached = options.decisionsUsed >= budget.maxDecisions;
+  const timeLimitReached = options.startedAt !== undefined
+    && proposal.now - options.startedAt >= budget.maxContinuousMinutes * 60_000;
+  if (decisionLimitReached || timeLimitReached) {
+    if (proposal.allowWindowRenewal === true && hasFreshVerifiedProgress(history, record)) {
+      return {
+        decision: 'allow',
+        renewWindow: decisionLimitReached && timeLimitReached
+          ? 'decision-and-time'
+          : decisionLimitReached
+            ? 'decision-limit'
+            : 'time-limit',
+        record,
+      };
+    }
+    return {
+      decision: 'pause',
+      reason: decisionLimitReached
+        ? `已达到连续自主决策健康窗口 ${budget.maxDecisions} 次，且本轮没有可核验的新进展`
+        : `已达到连续运行健康窗口 ${budget.maxContinuousMinutes} 分钟，且本轮没有可核验的新进展`,
       record,
     };
   }

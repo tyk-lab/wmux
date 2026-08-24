@@ -78,6 +78,28 @@ describe('supervisor runtime context', () => {
     ))?.available).toBe(true);
   });
 
+  it('keeps project decisions available at a renewable health-window boundary', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const context = buildSupervisorRuntimeContext(session, lane({
+      awaitingReview: true,
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'work-a',
+      autonomyPermissionsOverride: ['same-route-next'],
+    }), {
+      taskState: 'idle',
+      project: {
+        projectId: 'project-a', goalId: 'goal-a', workItemId: 'work-a',
+        requirementsVersion: 1, authorizationVersion: 1,
+        decisionsUsed: 12, maxDecisions: 12, attempts: 0, maxTaskRetries: 3,
+        bindingCurrent: true,
+      },
+    });
+
+    expect(context.commands.decisionOutcomes).toEqual(['continue', 'rework', 'complete', 'needs-human']);
+    expect(context.budget.projectDecisionsRemaining).toBe(0);
+  });
+
   it('does not advertise continue, rework, or permission confirmation without grants', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;

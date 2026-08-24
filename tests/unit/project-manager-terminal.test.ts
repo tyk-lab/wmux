@@ -27,6 +27,13 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('mode=refine');
       expect(input).toContain('mode=pivot');
       expect(input).toContain('旧 goalId 任务不得在新目标下复活');
+      expect(input).toContain('用户提供的主目标是权威输入');
+      expect(input).toContain('项目 AI 不得自行替换成另一个目标');
+      expect(input).toContain('补全必要前置条件、可验证完成条件、阶段计划和工作项合同');
+      expect(input).toContain('首要活性义务是推进当前主目标');
+      expect(input).toContain('内部合同、基线同步、证据路径和普通技术失败');
+      expect(input).toContain('不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice');
+      expect(input).toContain('扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权');
     },
   );
 });

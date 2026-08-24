@@ -8,6 +8,7 @@ import {
   normalizeProjectCompletionResult,
   projectCompletionCriteriaError,
   projectCriterionIdentity,
+  projectManagerGoalChangeHasUserBasis,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
@@ -26,6 +27,66 @@ import type { ProjectManagementAgentConfig } from '../../shared/project-manager-
 
 const MAX_PROJECT_EVENTS = 500;
 const MAX_EXECUTION_HISTORY = 100;
+
+function projectContractDeltaSummary(
+  previous: ProjectWorkItem['contract'],
+  next: ProjectWorkItem['contract'],
+): string {
+  const changed: string[] = [];
+  const previousAllowPaths = new Set(previous.scope.allowPaths);
+  const nextAllowPaths = new Set(next.scope.allowPaths);
+  const addedAllowPaths = [...nextAllowPaths].filter((entry) => !previousAllowPaths.has(entry));
+  const removedAllowPaths = [...previousAllowPaths].filter((entry) => !nextAllowPaths.has(entry));
+  if (addedAllowPaths.length > 0) changed.push(`新增允许路径：${addedAllowPaths.join('、')}`);
+  if (removedAllowPaths.length > 0) changed.push(`移除允许路径：${removedAllowPaths.join('、')}`);
+  const fields: Array<[keyof ProjectWorkItem['contract'], string]> = [
+    ['objective', '任务目标'],
+    ['description', '任务说明'],
+    ['preconditions', '前置条件'],
+    ['supervisorNotes', '监督注意事项'],
+    ['authority', '执行权限'],
+    ['stopWhen', '完成条件'],
+    ['validation', '验证要求'],
+    ['budget', '执行预算'],
+    ['execution', '执行模式'],
+  ];
+  for (const [field, label] of fields) {
+    if (JSON.stringify(previous[field]) !== JSON.stringify(next[field])) changed.push(label);
+  }
+  if (previous.scope.root !== next.scope.root) changed.push('任务根目录');
+  if (JSON.stringify(previous.scope.denyPaths) !== JSON.stringify(next.scope.denyPaths)) changed.push('禁止路径');
+  if (JSON.stringify(previous.scope.forbiddenActions) !== JSON.stringify(next.scope.forbiddenActions)) changed.push('禁止动作');
+  return [...new Set(changed)].join('；').slice(0, 2000) || '任务合同细节发生变化';
+}
+
+function incrementalProjectTaskBaseline(
+  baseline: NonNullable<ProjectWorkItem['baseline']>,
+  requirementsVersion: number,
+  deltaSummary: string,
+  now: number,
+): NonNullable<ProjectWorkItem['baseline']> {
+  const priorEvidence = baseline.status === 'approved'
+    ? baseline.evidence
+    : baseline.priorEvidence;
+  const priorWorkspaceVersion = baseline.status === 'approved'
+    ? baseline.workspaceVersion
+    : baseline.priorWorkspaceVersion;
+  const priorApprovedAt = baseline.status === 'approved'
+    ? baseline.approvedAt
+    : baseline.priorApprovedAt;
+  return {
+    status: 'investigating',
+    requirementsVersion,
+    requestedAt: now,
+    investigationRounds: Math.max(1, Math.trunc(baseline.investigationRounds || 1)),
+    reviewKind: 'contract-delta',
+    deltaSummary: [baseline.reviewKind === 'contract-delta' ? baseline.deltaSummary : '', deltaSummary]
+      .filter(Boolean).join('；').slice(0, 4000),
+    ...(priorWorkspaceVersion ? { priorWorkspaceVersion } : {}),
+    ...(priorEvidence ? { priorEvidence: priorEvidence.slice(0, 12000) } : {}),
+    ...(priorApprovedAt ? { priorApprovedAt } : {}),
+  };
+}
 
 export interface ProjectManagerMutationResult {
   ok: boolean;
@@ -366,10 +427,15 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         .slice(0, 20).map((item) => item.trim().slice(0, 4000)).filter(Boolean);
       const doneWhen = action.doneWhen.map((item) => item.trim()).filter(Boolean);
       if (!goal) return { ok: false, error: '项目目标不能为空' };
-      if (preconditions.length === 0) {
+      if (action.source === 'manager' && !projectManagerGoalChangeHasUserBasis(session, goal)) {
+        return { ok: false, error: '当前主目标由用户提供；没有新的用户目标变更或澄清答复时，项目 AI 只能补全条件，不能改写主目标' };
+      }
+      const userGoalDraft = action.source === 'user'
+        && (action.mode === 'pivot' || goal !== session.goal);
+      if (preconditions.length === 0 && !userGoalDraft) {
         return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
       }
-      if (doneWhen.length === 0) return { ok: false, error: '项目完成条件不能为空' };
+      if (doneWhen.length === 0 && !userGoalDraft) return { ok: false, error: '项目完成条件不能为空' };
       const previous = {
         goal: session.goal,
         goalId: session.activeGoalId,
@@ -720,6 +786,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           answer,
           optionId: action.optionId,
           answeredBy: action.answeredBy,
+          category: pending.category,
         },
       };
     } else if (action.type === 'create-work-item') {
@@ -803,12 +870,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         const contractChanged = safePatch.contract !== undefined
           && JSON.stringify(safePatch.contract) !== JSON.stringify(item.contract);
         const subgoalChanged = safePatch.subgoalId !== undefined && safePatch.subgoalId !== item.subgoalId;
-        // A contract clarification must not erase an already-delivered read-only
-        // investigation. Approved evidence is stricter and is invalidated because
-        // the new contract may require inspecting additional paths or boundaries.
-        const resetBaseline = requirementsChanged
-          || subgoalChanged
-          || (contractChanged && item.baseline?.status === 'approved');
+        // Requirements/stage changes invalidate the full baseline. Contract-only
+        // changes retain the previous approval and open a bounded delta review.
+        const resetBaseline = requirementsChanged || subgoalChanged;
         const nextStatus = safePatch.status || item.status;
         const completion = safePatch.completion !== undefined
           ? normalizeProjectCompletionResult(safePatch.completion)
@@ -822,7 +886,17 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           goalId: item.goalId,
           baseline: resetBaseline
             ? requiredProjectTaskBaseline(nextRequirementsVersion)
-            : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
+            : contractChanged && item.baseline && (
+                item.baseline.status === 'approved'
+                || item.baseline.reviewKind === 'contract-delta'
+              )
+              ? incrementalProjectTaskBaseline(
+                  item.baseline,
+                  nextRequirementsVersion,
+                  projectContractDeltaSummary(item.contract, safePatch.contract!),
+                  now,
+                )
+              : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
           completion,
           updatedAt: now,
         };
@@ -906,6 +980,16 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (existing.baseline?.status !== 'investigating') {
         return { ok: false, error: '项目基线尚未完成调查轮次，不能预先批准' };
       }
+      const inheritedEvidence = existing.baseline.reviewKind === 'contract-delta'
+        && existing.baseline.priorEvidence?.trim()
+        ? [
+            '[继承的已批准基线证据]',
+            existing.baseline.priorEvidence.trim().slice(0, 7000),
+            '',
+            `[本次合同增量复核｜${existing.baseline.deltaSummary || '合同变化'}]`,
+            evidence.slice(0, 4000),
+          ].join('\n').slice(0, 12000)
+        : evidence;
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
         baseline: {
@@ -913,7 +997,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
           investigationRounds: item.baseline?.investigationRounds,
           workspaceVersion,
-          evidence,
+          evidence: inheritedEvidence,
           approvedAt: now,
         },
         updatedAt: now,
@@ -924,7 +1008,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         kind: 'work-item-baseline-approved',
         workItemId: action.workItemId,
         summary: `监督 AI 已审核项目基线：${action.workItemId}`,
-        payload: { workspaceVersion, evidence },
+        payload: {
+          workspaceVersion,
+          evidence: inheritedEvidence,
+          ...(existing.baseline.reviewKind === 'contract-delta'
+            ? { incremental: true, deltaSummary: existing.baseline.deltaSummary }
+            : {}),
+        },
       };
     } else if (action.type === 'intervene-work-item') {
       if (['completed', 'stopped'].includes(session.status)) {
@@ -993,6 +1083,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
         decisionsUsed: item.decisionsUsed + (action.consumeDecision === false ? 0 : 1),
+        totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed)
+          + (action.consumeDecision === false ? 0 : 1),
         updatedAt: now,
         executionHistory: [...item.executionHistory, action.record].slice(-MAX_EXECUTION_HISTORY),
       }));
@@ -1004,6 +1096,38 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         summary: action.consumeDecision === false
           ? `记录未生效的监督尝试：${action.workItemId}`
           : `记录监督决策：${action.workItemId}`,
+      };
+    } else if (action.type === 'renew-execution-window') {
+      const existing = session.workItems.find((item) => item.id === action.workItemId);
+      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
+        return { ok: false, error: '旧主目标任务已经失效，不能续期监督健康窗口' };
+      }
+      const previousDecisions = existing.decisionsUsed;
+      const renewalCount = (existing.budgetWindowRenewals || 0) + 1;
+      const updated = updateWorkItem(session, action.workItemId, (item) => ({
+        ...item,
+        decisionsUsed: 0,
+        totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed),
+        budgetWindowRenewals: renewalCount,
+        startedAt: action.startedAt,
+        updatedAt: now,
+      }));
+      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      next = updated;
+      eventInput = {
+        kind: 'guard-triggered',
+        workItemId: action.workItemId,
+        summary: `监督 AI 提供了可核验的新进展，已原地续期自治健康窗口（第 ${renewalCount} 次）`,
+        payload: {
+          decision: 'continue',
+          action: 'autonomy-window-renewed',
+          reason: action.reason,
+          attentionRequired: false,
+          previousDecisions,
+          totalDecisionsUsed: existing.totalDecisionsUsed ?? existing.decisionsUsed,
+          renewalCount,
+        },
       };
     } else if (action.type === 'pause-project') {
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
@@ -1024,7 +1148,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           ? { ...goal, status: 'active' as const, activatedAt: now }
           : goal),
         pausedByPortfolio: false,
-        safeExit: undefined,
+        safeExit: session.safeExit?.status === 'restoring' && session.recoveryState === 'checking'
+          ? session.safeExit
+          : undefined,
         ...(action.acceptRequirementsVersion
           ? { acceptedRequirementsVersion: projectRequirementsVersion(session) }
           : {}),

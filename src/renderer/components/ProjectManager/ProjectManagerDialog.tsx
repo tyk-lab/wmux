@@ -329,6 +329,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [creating, setCreating] = useState(false);
   const [creationMode, setCreationMode] = useState<'direct' | 'terminal'>('direct');
   const [contextTerminalId, setContextTerminalId] = useState('');
+  const [safeExitInFlight, setSafeExitInFlight] = useState(false);
+  const safeExitSaving = sessions.some((candidate) => candidate.safeExit?.status === 'saving');
+
+  useEffect(() => {
+    if (!safeExitInFlight && !safeExitSaving) return undefined;
+    const preventPrematureClose = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', preventPrematureClose);
+    return () => window.removeEventListener('beforeunload', preventPrematureClose);
+  }, [safeExitInFlight, safeExitSaving]);
   const [recoveryStatus, setRecoveryStatus] = useState<'unchecked' | 'checking' | 'prompt' | 'done'>('unchecked');
   const [recoveryCandidates, setRecoveryCandidates] = useState<ProjectRecoveryCandidate[]>([]);
   const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
@@ -860,8 +872,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     const projectPreconditions = conditionLines(preconditionsDraft);
     const projectSupervisorNotes = conditionLines(supervisorNotesDraft);
     const projectDoneWhen = conditionLines(definitionDoneWhenDraft);
-    if (!definitionGoalDraft.trim() || projectPreconditions.length === 0 || projectDoneWhen.length === 0) {
-      setNotice('请填写项目目标、至少一个前置条件和至少一个可验证的完成条件。没有额外条件时请明确填写“无额外物理前置条件”。');
+    const goalChanged = goalChangeMode === 'pivot' || definitionGoalDraft.trim() !== session.goal;
+    const unchangedGoalCriteria = projectDoneWhen.join('\n') === session.doneWhen.join('\n');
+    const submittedDoneWhen = goalChanged && unchangedGoalCriteria ? [] : projectDoneWhen;
+    if (!definitionGoalDraft.trim()) {
+      setNotice('请填写新的当前主目标。前置条件和完成条件可以留空，由项目 AI 补全。');
+      return;
+    }
+    if (!goalChanged && (projectPreconditions.length === 0 || submittedDoneWhen.length === 0)) {
+      setNotice('仅修改条件时不能清空项目定义；若正在修改主目标，请先修改目标内容或选择“切换新的主目标”。');
       return;
     }
     setBusy(true);
@@ -875,7 +894,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         preconditions: projectPreconditions,
         supervisorNotes: projectSupervisorNotes,
         planFiles: definitionPlanFiles,
-        doneWhen: projectDoneWhen,
+        doneWhen: submittedDoneWhen,
         mode: goalChangeMode,
         reason: goalChangeMode === 'pivot'
           ? '用户在稳定项目内切换新的主目标'
@@ -944,6 +963,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       `将暂停“${projectDisplayName(session)}”，保存项目状态、目录快照和终端恢复摘要，再关闭该项目的项目 AI、监督 AI 与任务 AI 运行时。不会自动提交 Git。是否继续？`,
     )) return;
     setBusy(true);
+    setSafeExitInFlight(true);
     setNotice('');
     try {
       const result = await invoke({
@@ -951,10 +971,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         projectId: session.id,
         reason: '用户准备关闭项目，保存当前进度以便后续恢复',
       });
-      if (!result.safeExited) setNotice(result.message || '部分终端尚未到达安全检查点，项目保持暂停。');
+      setNotice(result.safeExited
+        ? result.message || '项目断点已保存且运行时已退出，现在可以安全关闭软件。'
+        : result.message || '部分终端尚未到达安全检查点，项目保持暂停。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
     } finally {
+      setSafeExitInFlight(false);
       setBusy(false);
     }
   };
@@ -1431,7 +1454,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div className="project-manager-dialog__section-head">
                   <div>
                     <div className="supervisor-dialog__group-title">项目身份与当前主目标</div>
-                    <div className="supervisor-dialog__hint">项目名称、目录和稳定范围属于长期身份；这里调整的是 G{currentGoal?.sequence || 1}，或在同一项目内切换新的主目标。变更后由项目 AI 自主评估复用、停止和重绑。</div>
+                    <div className="supervisor-dialog__hint">用户提供或修改 G{currentGoal?.sequence || 1} 的主目标；项目 AI 主要负责补全必要条件、可验证完成标准和阶段计划，并自主评估复用、停止和重绑。</div>
                   </div>
                   <span
                     className="project-manager-dialog__definition-state"
@@ -1462,22 +1485,24 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     <span>{file.path}</span><em>{Math.max(1, Math.ceil(file.sizeBytes / 1024))} KB · 已保存内容快照</em>
                   </article>)}
                 </div>}
-                <div className="supervisor-dialog__label supervisor-dialog__label--required">项目前置条件（每行一项）</div>
+                <div className="supervisor-dialog__label">项目前置条件（可选，每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={4} value={preconditionsDraft} onChange={(event) => {
                   setPreconditionsDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder="每行填写一项已确认条件或授权；例如：硬件已上电，允许直接运行本项目测试" />
+                <div className="supervisor-dialog__hint">保留的内容继续视为用户已确认事实；修改主目标时可以留空，由项目 AI 判断并起草，只有实质业务、环境、权限或安全歧义才询问用户。</div>
                 <div className="supervisor-dialog__label">监督 AI 注意事项（可选，每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={3} value={supervisorNotesDraft} onChange={(event) => {
                   setSupervisorNotesDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder={'完成一个有意义的阶段后，让任务 AI 同步相关文档\n形成可回滚成果后提交本地 Git commit'} />
                 <div className="supervisor-dialog__hint">适用于后续阶段监督；项目 AI 可在工作项合同中补充更具体的注意事项。</div>
-                <div className="supervisor-dialog__label supervisor-dialog__label--required">当前主目标完成条件（每行一项）</div>
+                <div className="supervisor-dialog__label">当前主目标完成条件（可选，每行一项）</div>
                 <textarea className="supervisor-dialog__textarea" rows={4} value={definitionDoneWhenDraft} onChange={(event) => {
                   setDefinitionDoneWhenDraft(event.target.value);
                   setConstraintNotice('');
                 }} placeholder={'相关功能实现并验证\n关键测试通过\n未验证条件已经明确报告'} />
+                <div className="supervisor-dialog__hint">修改或切换主目标时，未调整的旧完成条件不会自动套用到新目标；可留空让项目 AI 起草具体、可验证的条件。</div>
                 <div className="supervisor-dialog__label supervisor-dialog__label--required">本次变更类型</div>
                 <div className="project-manager-dialog__clarification-options">
                   <label data-selected={goalChangeMode === 'refine' ? '1' : '0'}>

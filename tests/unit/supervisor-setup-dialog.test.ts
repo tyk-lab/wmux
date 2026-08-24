@@ -40,6 +40,14 @@ const consoleSurfaceSource = fs.readFileSync(
 );
 
 describe('supervisor setup dialog feedback', () => {
+  it('keeps the app open until a safe-exit checkpoint is durably completed', () => {
+    expect(projectManagerDialogSource).toContain('setSafeExitInFlight(true)');
+    expect(projectManagerDialogSource).toContain('if (!safeExitInFlight && !safeExitSaving)');
+    expect(projectManagerDialogSource).toContain("candidate.safeExit?.status === 'saving'");
+    expect(projectManagerDialogSource).toContain("window.addEventListener('beforeunload', preventPrematureClose)");
+    expect(projectManagerDialogSource).toContain('现在可以安全关闭软件');
+  });
+
   it('does not offer Claude Code as a supervisor launcher', () => {
     expect(dialogSource).not.toContain("value: 'claude'");
     expect(dialogSource).not.toContain('Claude Code');
@@ -131,6 +139,10 @@ describe('supervisor setup dialog feedback', () => {
       /const updateProjectDefinition = async[\s\S]*?^  };/m,
     )?.[0] || '';
     expect(definitionUpdateHandler).not.toContain('window.confirm');
+    expect(definitionUpdateHandler).toContain('const submittedDoneWhen = goalChanged && unchangedGoalCriteria ? [] : projectDoneWhen');
+    expect(definitionUpdateHandler).not.toContain('!definitionGoalDraft.trim() || projectPreconditions.length === 0');
+    expect(projectManagerDialogSource).toContain('用户提供或修改 G');
+    expect(projectManagerDialogSource).toContain('未调整的旧完成条件不会自动套用到新目标');
     const discardDefinitionHandler = projectManagerDialogSource.match(
       /const discardProjectDefinitionChanges = \(\) => \{[\s\S]*?^  };/m,
     )?.[0] || '';

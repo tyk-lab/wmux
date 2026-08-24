@@ -66,6 +66,9 @@ export function projectBaselineProgressDirective(baseline?: ProjectTaskBaseline)
     return '基线已批准：直接推进合同内下一项高价值动作，不再重新调查身份或重复论证已有事实。';
   }
   if (baseline?.status === 'investigating') {
+    if (baseline.reviewKind === 'contract-delta') {
+      return `合同增量基线正在复核：继承原批准证据，只核对“${baseline.deltaSummary || '合同变化'}”对当前工作树、权限和下一动作的影响；不得重复完整调查、重跑已有测试或重做设备操作。证据充分后立即批准并继续主目标。`;
+    }
     const rounds = Math.max(1, Math.trunc(baseline.investigationRounds || 1));
     return rounds >= 2
       ? '基线已完成初次调查和一次定向补查：必须根据现有报告批准基线，或一次性上报明确阻塞并建议暂缓；禁止第三轮调查。'
@@ -441,6 +444,15 @@ export function projectProgressObligation(
     return { kind: 'resume-paused', workItemId: paused.id, summary: `工作项 ${paused.id} 已暂缓；需要恢复、改派独立工作或向用户升级真实阻塞` };
   }
   if (currentItems.every((item) => item.status === 'completed')) {
+    const uncoveredSubgoal = activeProjectSubgoals(session).find((subgoal) => (
+      !['achieved', 'obsolete'].includes(subgoal.status)
+    ));
+    if (uncoveredSubgoal) {
+      return {
+        kind: 'plan-work',
+        summary: `阶段 ${uncoveredSubgoal.title}（${uncoveredSubgoal.id}）尚未完成且没有开放工作项，需要按当前协议创建后继工作项并派发监督`,
+      };
+    }
     return { kind: 'complete-goal', summary: '当前主目标的工作项均已完成，需要执行目标级验收或关闭主目标' };
   }
   return {
@@ -663,7 +675,9 @@ export function buildProjectSupervisorBriefing(options: {
     baseline?.status === 'approved'
       ? `项目基线：已审核；工作区版本 ${baseline.workspaceVersion || '已记录'}。需求或工作区状态发生变化时必须重新调查。`
       : baseline?.status === 'investigating'
-        ? `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；只有一个会改变执行路径的关键事实缺失时才可下达一次以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的定向补查，禁止重新做整套调查或第三轮调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。该原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；未来写入路径与验证命令只放入阶段计划。`
+        ? baseline.reviewKind === 'contract-delta'
+          ? `项目基线：合同增量复核中。原批准证据与工作区版本已由控制层继承；只核对“${baseline.deltaSummary || '合同变化'}”是否改变当前范围、权限、安全边界或下一动作。不得重新做整套调查、重跑已有测试或重做设备操作。核对充分后，下一条指令直接包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并提供当前 --workspace-version 与增量 --evidence；该原子裁决不得携带执行结果字段。`
+          : `项目基线：只读调查已投递。先读取任务终端的“${PROJECT_TASK_BASELINE_REPORT_MARKER}”并核对工作区快照、范围、证据和下一安全动作；只有一个会改变执行路径的关键事实缺失时才可下达一次以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头的定向补查，禁止重新做整套调查或第三轮调查。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence。该原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；未来写入路径与验证命令只放入阶段计划。`
         : `项目基线：待审核。首次指令只能以“${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER}”开头，要求任务 AI 做有界只读调查并以“${PROJECT_TASK_BASELINE_REPORT_MARKER}”报告；在你审查报告前不得写入、安装依赖、构建/测试、操作设备或确认权限。审查通过后，下一条指令必须包含“${PROJECT_TASK_BASELINE_APPROVAL_MARKER}”，并在裁决中提供 --workspace-version 与 --evidence；该原子裁决不得携带执行结果字段，控制层会阻止绕过。`,
     supervisorPlan
       ? `[监督自主管理阶段计划 r${supervisorPlan.revision}]
@@ -686,8 +700,9 @@ export function buildProjectSupervisorBriefing(options: {
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,
-    `执行预算：最多 ${contract.budget.maxDecisions} 次连续决策、${contract.budget.maxContinuousMinutes} 分钟、累计任务 AI 时间 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次。`,
+    `自治健康窗口：每 ${contract.budget.maxDecisions} 次连续决策或 ${contract.budget.maxContinuousMinutes} 分钟检查一次；能提供新工作区、测试或带证据的里程碑进展时控制层会在原工作项自动续期。累计任务 AI 时间上限 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、任务重试 ${contract.budget.maxTaskRetries} 次仍是硬护栏。`,
     '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。rework 带错误会自动计为重试，不能靠漏写 --retry 绕过预算。',
+    'complete 是对已形成证据的只读收口，不要求制造新的代码、测试或错误变化；没有文件变更时省略 --changed-files，禁止填写 none/无变更充当路径。完成文件的读取与哈希核验属于当前专属监督 capability，项目 AI 不能代批；若控制层报告 capability 路由故障，应保留证据并等待内部恢复，不得把它升级为用户决策。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
     '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一且作为依赖图最终汇聚点的 integrator、无循环依赖和规范化后仍互斥的 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物，除非它本身是合同明确授权的交付物。',
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',

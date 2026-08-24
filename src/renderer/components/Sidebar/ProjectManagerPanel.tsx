@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   activeProjectGoal,
   activeProjectManagerAttentionEvent,
@@ -18,6 +18,8 @@ export default function ProjectManagerPanel() {
   const selectWorkspace = useStore((state) => state.selectWorkspace);
   const selectSurface = useStore((state) => state.selectSurface);
   const openProjectManagerDialog = useStore((state) => state.openProjectManagerDialog);
+  const [controlBusy, setControlBusy] = useState(false);
+  const [controlMessage, setControlMessage] = useState('');
   if (!session) return null;
 
   const currentGoal = activeProjectGoal(session);
@@ -46,12 +48,25 @@ export default function ProjectManagerPanel() {
   ))[0];
   const activeAlert = activeProjectManagerAttentionEvent(session.events) || null;
 
-  const control = (action: 'pause' | 'resume') => {
-    void (window as any).__wmux_projectManagerRemoteControl?.({
-      action,
-      projectId: session.id,
-      reason: action === 'pause' ? '用户在桌面端暂停项目' : '用户在桌面端恢复项目',
-    });
+  const control = async (action: 'pause' | 'resume') => {
+    if (controlBusy) return;
+    setControlBusy(true);
+    setControlMessage('');
+    try {
+      const remoteControl = (window as any).__wmux_projectManagerRemoteControl;
+      if (typeof remoteControl !== 'function') throw new Error('项目调度控制层尚未就绪');
+      const result = await remoteControl({
+        action,
+        projectId: session.id,
+        reason: action === 'pause' ? '用户在桌面端暂停项目' : '用户在桌面端恢复项目',
+      });
+      if (!result?.ok) throw new Error(result?.error || '项目控制操作失败');
+      setControlMessage(result.message || (action === 'resume' ? '项目已恢复，正在唤醒项目 AI。' : '项目已暂停。'));
+    } catch (error) {
+      setControlMessage(String((error as Error)?.message || error));
+    } finally {
+      setControlBusy(false);
+    }
   };
 
   const openProjectSupervisor = () => {
@@ -79,13 +94,14 @@ export default function ProjectManagerPanel() {
           <strong>{activeAlert.summary}</strong>
         </button>
       )}
+      {controlMessage && <div className="sup-panel__freedom" role="status">{controlMessage}</div>}
       <div className="sup-panel__compact-actions">
         <button type="button" onClick={() => openProjectManagerConsole(session.id)}>打开控制台</button>
         {projectSupervisorView && (
           <button type="button" onClick={openProjectSupervisor}>打开项目监督</button>
         )}
-        {active && <button type="button" onClick={() => control('pause')}>暂停项目</button>}
-        {paused && <button type="button" onClick={() => control('resume')}>恢复项目</button>}
+        {active && <button type="button" disabled={controlBusy} onClick={() => void control('pause')}>{controlBusy ? '处理中…' : '暂停项目'}</button>}
+        {paused && <button type="button" disabled={controlBusy} onClick={() => void control('resume')}>{controlBusy ? '恢复中…' : '恢复项目'}</button>}
       </div>
     </section>
   );

@@ -158,6 +158,21 @@ describe('project-manager engine', () => {
     mixed.orientation = { ...mixed.orientation!, authorizationVersion: 2 };
     mixed.workItems[0].authorizationVersion = 2;
     expect(projectProgressObligation(mixed)).toMatchObject({ kind: 'reconcile-stale-work' });
+
+    const uncovered = session([item('legacy-completed', 'completed')]);
+    uncovered.workItems[0] = {
+      ...uncovered.workItems[0], goalId: uncovered.activeGoalId, subgoalId: 'qualification',
+    };
+    uncovered.subgoals = [{
+      id: 'qualification', goalId: uncovered.activeGoalId!, title: '最终资格验收', outcome: '形成可复核结论',
+      acceptance: ['实际验证证据齐全'], dependencies: [], status: 'planned', order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    expect(projectProgressObligation(uncovered)).toMatchObject({
+      kind: 'plan-work', summary: expect.stringContaining('最终资格验收'),
+    });
+
+    uncovered.subgoals[0] = { ...uncovered.subgoals[0], status: 'achieved' };
+    expect(projectProgressObligation(uncovered)).toMatchObject({ kind: 'complete-goal' });
   });
 
   it('keeps refine and pivot waiting states on deterministic internal gates', () => {
@@ -222,7 +237,8 @@ describe('project-manager engine', () => {
     expect(text).toContain('允许范围：src/auth');
     expect(text).toContain('禁止动作：git push');
     expect(text).toContain('不得原样重复命令或测试');
-    expect(text).toContain('最多 12 次连续决策');
+    expect(text).toContain('自治健康窗口：每 12 次连续决策');
+    expect(text).toContain('控制层会在原工作项自动续期');
     expect(text).toContain('[项目主目标背景] 交付完整认证能力');
     expect(text).toContain('阶段成果：认证实现、回归与边界证据形成闭环');
     expect(text).toContain('委派粒度是可验收的完整阶段成果');
@@ -305,6 +321,24 @@ describe('project-manager engine', () => {
       outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
       evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',
     })).toBeNull();
+    task.baseline = {
+      status: 'investigating', requirementsVersion: 1, requestedAt: 3, investigationRounds: 1,
+      reviewKind: 'contract-delta', deltaSummary: '新增允许证据路径 status',
+      priorWorkspaceVersion: 'head:approved', priorEvidence: '原工作区基线已批准', priorApprovedAt: 2,
+    };
+    const deltaBriefing = buildProjectSupervisorBriefing({
+      workItemId: task.id, contract: task.contract, baseline: task.baseline,
+    });
+    expect(deltaBriefing).toContain('合同增量复核中');
+    expect(deltaBriefing).toContain('新增允许证据路径 status');
+    expect(deltaBriefing).toContain('不得重新做整套调查、重跑已有测试或重做设备操作');
+    expect(projectTaskBaselineViolation(task, {
+      outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 增量核对完成后继续`,
+      evidence: '仅核对新增 status 路径', workspaceVersion: 'head:def,status:known',
+    })).toBeNull();
+    task.baseline = {
+      status: 'investigating', requirementsVersion: 1, requestedAt: 2, investigationRounds: 1,
+    };
     expect(projectTaskBaselineViolation(task, {
       outcome: 'continue', instruction: `${PROJECT_TASK_BASELINE_APPROVAL_MARKER} 开始实现`,
       evidence: '已核对工作树、入口、测试约定和改动边界', workspaceVersion: 'head:abc,status:clean',

@@ -91,11 +91,12 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
   return '.wmux\\project-manager\\manage-project\\SKILL.md';
 }
 
-export const PROJECT_MANAGER_PROTOCOL_REVISION = '7';
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '13';
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。同一运行时收到相同协议版本的普通事件时，复用已加载协议，不得重复读取 manage-project 技能；仅新建/恢复运行时、显式调用技能或协议版本变化时重读。',
   '首次启动项目时只执行一次需求充分性检查；恢复时沿用持久化结论或待确认问题，不得重复对齐。',
+  '新建项目、调整当前主目标或切换新主目标时，用户提供的主目标是权威输入。项目 AI 不得自行替换成另一个目标；主要负责结合目录事实补全必要前置条件、可验证完成条件、阶段计划和工作项合同。只有新的用户消息或结构化答复明确改变目标时，才能把该变化写回主目标。',
   '存在会改变方案的实质歧义时，禁止只在项目管理终端输出问题后等待；必须执行 wmux project ask --project <项目ID>，使用 category=clarification，一次只问一个问题，提供 2-4 个互斥方案并设置 recommendedOptionId。',
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
@@ -154,7 +155,11 @@ export function projectManagerStartupInput(
   const projectAnchor = [
     projectManagerRoleAnchor(projectId),
     `启动后先运行 wmux project status --project ${projectId}；不得读取、比较、暂停、恢复或决定其他项目。`,
-    '项目列表、批量暂停/恢复和运行时路由属于无决策权的项目中心，不属于你的职责。',
+  '项目列表、批量暂停/恢复和运行时路由属于无决策权的项目中心，不属于你的职责。',
+  '你的首要活性义务是推进当前主目标：每次交接、答复、暂停或合同更新后，必须留下一个真实且立即可执行的下一责任者。内部合同、基线同步、证据路径和普通技术失败由你与专属监督在权责内消解，不得转交用户。',
+  '工作项为 paused/waiting-decision 时，旧 lane 即使仍显示 active 也不代表有人执行。暂停工作项后必须在同一回合恢复同一项、派发独立项、重规划，或在一次有界内部续作确实失败后提交结构化用户问题；不得用 paused 回执清空最后交接后结束。对同一项再次执行 supervise 会由控制层同步并原地恢复健康监督链。',
+  '安全退出断点与恢复目录指纹一致时，只重建 AI 进程，保留工作项状态、approved/investigating baseline、阶段计划、证据、预算、失败计数和下一动作；不得把“新对话”扩大为重新做项目基线。只有异常关闭、目录变化、需求/授权变化或协议迁移才重新核对基线。',
+  '监督交回 contract-change 后，若推荐路线已被用户主目标、阶段计划、完成条件、监督注意事项和现有授权覆盖，你必须自主更新阶段/工作项并继续；不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice。只有真实改变用户目标/偏好、放宽验收或扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权时才能 ask 用户。',
   ].join('\n');
   if (agent === 'codex') return `$manage-project\n\n${projectAnchor}\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;
   if (agent === 'grok') return `/manage-project\n\n${projectAnchor}\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;

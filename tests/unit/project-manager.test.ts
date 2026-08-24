@@ -164,13 +164,49 @@ describe('project execution anti-loop guard', () => {
     })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('全量测试') });
   });
 
-  it('pauses when the autonomous decision budget is exhausted', () => {
+  it('pauses at an autonomy health-window boundary without verified progress', () => {
     expect(evaluateProjectExecutionGuard({
       history: [],
       proposal: proposal(),
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-    })).toMatchObject({ decision: 'pause', reason: expect.stringContaining('决策上限') });
+    })).toMatchObject({ decision: 'pause', reason: expect.stringContaining('健康窗口') });
+  });
+
+  it('renews an exhausted decision window when workspace evidence proves fresh progress', () => {
+    const previous = createProjectExecutionRecord(proposal({
+      error: undefined, testCommand: undefined, testResult: undefined,
+      workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'], now: 1_000,
+    }));
+    expect(evaluateProjectExecutionGuard({
+      history: [previous],
+      proposal: proposal({
+        error: undefined, testCommand: undefined, testResult: undefined,
+        workspaceVersion: 'diff-b', changedFiles: ['src/auth.ts'],
+        allowWindowRenewal: true, now: 2_000,
+      }),
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
+      startedAt: 500,
+    })).toMatchObject({ decision: 'allow', renewWindow: 'decision-limit' });
+  });
+
+  it('renews an expired time window when a milestone gains evidence', () => {
+    const previous = createProjectExecutionRecord(proposal({
+      error: undefined, testCommand: undefined, testResult: undefined,
+      workspaceVersion: undefined, planProgressSignature: undefined, now: 1_000,
+    }));
+    expect(evaluateProjectExecutionGuard({
+      history: [previous],
+      proposal: proposal({
+        error: undefined, testCommand: undefined, testResult: undefined,
+        workspaceVersion: undefined, planProgressSignature: 'milestone-a:静态核验通过',
+        allowWindowRenewal: true, now: 120 * 60_000,
+      }),
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 2,
+      startedAt: 1_000,
+    })).toMatchObject({ decision: 'allow', renewWindow: 'time-limit' });
   });
 
   it('requires replanning after repeated no-progress evidence', () => {
@@ -187,6 +223,20 @@ describe('project execution anti-loop guard', () => {
       proposal: { ...unchanged, now: 3_000 },
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: 2,
+    })).toMatchObject({ decision: 'replan', reason: expect.stringContaining('没有产生新的') });
+  });
+
+  it('keeps the no-progress guard hard even when a window is eligible for renewal', () => {
+    const unchanged = proposal({
+      action: '检查状态', command: 'read-screen', error: undefined,
+      testCommand: undefined, testResult: undefined, workspaceVersion: undefined,
+    });
+    const record = createProjectExecutionRecord(unchanged);
+    expect(evaluateProjectExecutionGuard({
+      history: [record, { ...record, ts: 2_000 }],
+      proposal: { ...unchanged, allowWindowRenewal: true, now: 3_000 },
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
     })).toMatchObject({ decision: 'replan', reason: expect.stringContaining('没有产生新的') });
   });
 

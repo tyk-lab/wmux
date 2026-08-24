@@ -250,6 +250,8 @@ export function authorizeManagedRoleV2(
 
   if ((binding.role === 'supervisor' || binding.role === 'project-supervisor')
     && (method === 'supervisor.context'
+      || method === 'supervisor.evidence'
+      || method === 'supervisor.completion.verify'
       || method === 'supervisor.decide'
       || (binding.role === 'supervisor' && method === 'supervisor.goal.draft')
       || (binding.role === 'supervisor' && method === 'supervisor.reply'))) {

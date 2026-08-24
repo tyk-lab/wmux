@@ -319,6 +319,12 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-b', task: 'work-a',
     }).allowed).toBe(false);
+    expect(authorizeManagedRoleV2(supervisor, 'supervisor.evidence', {
+      reviewId: 'review-current',
+    }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(supervisor, 'supervisor.completion.verify', {
+      surfaceId: 'task-a', supervisorSurfaceId: 'supervisor-a', refs: ['evidence/result.json'],
+    }).allowed).toBe(true);
     expect(authorizeManagedRoleV2(supervisor, 'supervisor.goal.draft', { surfaceId: 'task-a' }).allowed)
       .toBe(false);
 
@@ -331,6 +337,12 @@ describe('unified managed AI role context', () => {
       .toBe(true);
     expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.reply', { surfaceId: 'ordinary-task' }).allowed)
       .toBe(true);
+    expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.evidence', {
+      reviewId: 'review-current',
+    }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.completion.verify', {
+      surfaceId: 'ordinary-task', supervisorSurfaceId: 'ordinary-supervisor', refs: ['result.json'],
+    }).allowed).toBe(true);
 
     const manager = { role: 'project-ai' as const, callerSurfaceId: 'manager-a', projectId: 'project-a' };
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-a' }).allowed)
@@ -341,6 +353,23 @@ describe('unified managed AI role context', () => {
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.task-terminal.control', { projectId: 'project-a' }).allowed)
       .toBe(false);
+    expect(authorizeManagedRoleV2(manager, 'supervisor.evidence', { reviewId: 'review-current' }).allowed)
+      .toBe(false);
+    expect(authorizeManagedRoleV2(manager, 'supervisor.completion.verify', {
+      surfaceId: 'task-a', refs: ['evidence/result.json'],
+    }).allowed).toBe(false);
+
+    const task = {
+      role: 'project-task' as const,
+      callerSurfaceId: 'task-a',
+      projectId: 'project-a',
+      workItemId: 'work-a',
+    };
+    expect(authorizeManagedRoleV2(task, 'supervisor.evidence', { reviewId: 'review-current' }).allowed)
+      .toBe(false);
+    expect(authorizeManagedRoleV2(task, 'supervisor.completion.verify', {
+      surfaceId: 'task-a', refs: ['evidence/result.json'],
+    }).allowed).toBe(false);
   });
 
   it('keeps ordinary supervised tasks explicit about wmux versus native Agent authority', () => {

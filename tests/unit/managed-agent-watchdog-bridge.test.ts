@@ -105,6 +105,23 @@ describe('managed agent watchdog bridge', () => {
     expect(writeReliable).toHaveBeenLastCalledWith('manager-watchdog', '\x03');
   });
 
+  it('does not count a TUI redraw caused by its own Escape as semantic progress', async () => {
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'manager-watchdog',
+      event: 'UserPromptSubmit',
+    });
+
+    await vi.advanceTimersByTimeAsync(35 * 60_000);
+    expect(writeReliable).toHaveBeenLastCalledWith('manager-watchdog', '\x1b');
+    (globalThis.window as any).__wmux_noteManagedAgentOutput(
+      'manager-watchdog',
+      '/ T R A N S C R I P T /\nq to quit\nenter to edit message',
+    );
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(writeReliable).toHaveBeenLastCalledWith('manager-watchdog', '\x03');
+  });
+
   it('protects live long thinking until the absolute hard deadline', async () => {
     (globalThis.window as any).__wmux_noteManagedAgentHook({
       surfaceId: 'manager-watchdog',

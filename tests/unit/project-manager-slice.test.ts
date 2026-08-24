@@ -265,7 +265,7 @@ describe('project-manager slice', () => {
     });
   });
 
-  it('keeps project baseline approval under control-plane ownership and resets it on contract changes', () => {
+  it('keeps project baseline approval under control-plane ownership and opens an inherited delta review on contract changes', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
     const forged = {
@@ -330,8 +330,26 @@ describe('project-manager slice', () => {
         },
       },
     });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toEqual({
-      status: 'required', requirementsVersion: 1,
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
+      status: 'investigating',
+      requirementsVersion: 1,
+      investigationRounds: 2,
+      reviewKind: 'contract-delta',
+      priorWorkspaceVersion: 'head:a,status:clean',
+      priorEvidence: '已审核入口、工作树与测试约定',
+      deltaSummary: expect.stringContaining('任务说明'),
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
+      workspaceVersion: 'head:b,status:clean', evidence: '仅核对合同新增说明，不需要重复完整调查',
+    })).toMatchObject({
+      ok: true,
+      event: { kind: 'work-item-baseline-approved', payload: expect.objectContaining({ incremental: true }) },
+    });
+    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
+      status: 'approved',
+      workspaceVersion: 'head:b,status:clean',
+      evidence: expect.stringContaining('继承的已批准基线证据'),
     });
   });
 
@@ -594,6 +612,58 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'unfinished', patch: { status: 'running' },
     })).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
+  });
+
+  it('keeps the user-owned goal authoritative while allowing project AI to complete a goal draft', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '用户提供的旧主目标',
+      preconditions: ['测试环境可用'], doneWhen: ['旧目标验收通过'],
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '项目 AI 自行替换的目标',
+      preconditions: ['测试环境可用'], planFiles: [], doneWhen: ['替换目标验收通过'],
+      source: 'manager', mode: 'refine',
+    }, session.id)).toMatchObject({ ok: false, error: expect.stringContaining('用户提供') });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification',
+      question: {
+        id: 'goal-choice', category: 'clarification', question: '是否采用用户提出的新目标？',
+        context: '目标选择会改变最终结果。',
+        options: [{ id: 'adopt', label: '采用新目标' }, { id: 'keep', label: '保留旧目标' }],
+        recommendedOptionId: 'adopt', previousStatus: 'active', createdAt: 2,
+      },
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: 'goal-choice', answer: '采用新目标',
+      optionId: 'adopt', answeredBy: 'desktop',
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '用户答复明确的新主目标',
+      preconditions: ['测试环境可用'], planFiles: [], doneWhen: ['新目标验收通过'],
+      source: 'manager', mode: 'refine', reason: '写回用户结构化答复',
+    }, session.id)).toMatchObject({ ok: true });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '用户切换的新主目标',
+      preconditions: [], planFiles: [], doneWhen: [], source: 'user', mode: 'pivot',
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager).toMatchObject({
+      goal: '用户切换的新主目标', preconditions: [], doneWhen: [], status: 'waiting',
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition', goal: '用户切换的新主目标',
+      preconditions: ['无额外物理前置条件'], planFiles: [], doneWhen: ['新目标结果经过实际验证'],
+      source: 'manager', mode: 'refine', reason: '项目 AI 补全用户目标所需条件',
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager).toMatchObject({
+      goal: '用户切换的新主目标',
+      preconditions: ['无额外物理前置条件'],
+      doneWhen: ['新目标结果经过实际验证'],
+    });
   });
 
   it('stores a coarse subgoal plan under the active main goal', () => {
@@ -942,6 +1012,34 @@ describe('project-manager slice', () => {
     }, session.id)).toMatchObject({ ok: true });
     expect(useStore.getState().projectManagers[0].workItems[0]).toMatchObject({
       decisionsUsed: 0,
+      executionHistory: [record],
+    });
+  });
+
+  it('renews an autonomy window in place while preserving total decision audit', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '认证', doneWhen: ['通过'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') }, session.id);
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: 'auth', patch: { decisionsUsed: 12, totalDecisionsUsed: 12 },
+    }, session.id);
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'renew-execution-window', workItemId: 'auth', reason: 'decision-limit', startedAt: 2_000,
+    }, session.id)).toMatchObject({ ok: true, event: { kind: 'guard-triggered' } });
+    const record = {
+      ts: 2_001, actionSignature: 'action', commandSignature: 'command', errorSignature: '',
+      progressSignature: 'progress-b', workspaceVersion: 'diff-b', changedFiles: ['src/auth.ts'],
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'record-execution', workItemId: 'auth', record,
+    }, session.id);
+
+    expect(useStore.getState().projectManagers[0].workItems[0]).toMatchObject({
+      decisionsUsed: 1,
+      totalDecisionsUsed: 13,
+      budgetWindowRenewals: 1,
+      startedAt: 2_000,
       executionHistory: [record],
     });
   });

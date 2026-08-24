@@ -31,6 +31,7 @@ export interface SupervisorProjectContext {
   projectStatus?: string;
   workItemStatus?: string;
   bindingCurrent?: boolean;
+  budgetHandoffRequired?: boolean;
   baselineApproved?: boolean;
   dependencyError?: string;
   supervisorPlan?: ProjectSupervisorStagePlan;
@@ -197,24 +198,19 @@ export function buildSupervisorRuntimeContext(
   const proactiveProjectReady = preflight.proactiveProjectReady;
   const sameRouteAvailable = (reviewReady || proactiveProjectReady)
     && options.taskState !== 'working'
-    && (project?.maxDecisions === undefined
-      || project.decisionsUsed === undefined
-      || project.decisionsUsed < project.maxDecisions)
+    && project?.budgetHandoffRequired !== true
     && permissions.includes('same-route-next');
   const permissionConfirmationAvailable = reviewReady
     && options.permissionBlocked === true
     && lane.remoteSshControl !== true
     && permissions.includes('permission-confirm')
     && (!project?.authority || project.authority.permissionConfirm === true);
-  const projectBudgetExhausted = project?.maxDecisions !== undefined
-    && project.decisionsUsed !== undefined
-    && project.decisionsUsed >= project.maxDecisions;
   const terminalOutcomeAvailable = reviewReady && options.taskState !== 'working';
   const reviewFlag = lane.activeReviewId ? ` --review-id ${lane.activeReviewId}` : '';
   const decisionOutcomes: SupervisorRuntimeContext['commands']['decisionOutcomes'] = laneActive
     ? [
         ...(sameRouteAvailable ? ['continue', 'rework'] as const : []),
-        ...(terminalOutcomeAvailable && !projectBudgetExhausted ? ['complete'] as const : []),
+        ...(terminalOutcomeAvailable && project?.budgetHandoffRequired !== true ? ['complete'] as const : []),
         ...(terminalOutcomeAvailable ? ['needs-human'] as const : []),
       ]
     : [];

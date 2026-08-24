@@ -398,6 +398,8 @@ export interface ProjectExecutionRecord {
   testResult?: string;
   diffSummary?: string;
   evidenceSummary?: string;
+  /** Verified supervisor-plan progress used to renew a healthy autonomy window. */
+  planProgressSignature?: string;
   escalationBoundary?: ProjectEscalationBoundary;
 }
 
@@ -466,6 +468,12 @@ export interface ProjectTaskBaseline {
   requestedAt?: number;
   /** Initial read-only investigation plus at most one targeted supplement. */
   investigationRounds?: number;
+  /** A contract-only change reuses the last approval and reviews only the delta. */
+  reviewKind?: 'contract-delta';
+  deltaSummary?: string;
+  priorWorkspaceVersion?: string;
+  priorEvidence?: string;
+  priorApprovedAt?: number;
   workspaceVersion?: string;
   evidence?: string;
   approvedAt?: number;
@@ -603,7 +611,12 @@ export interface ProjectWorkItem {
   /** Monotonic control-plane revision used to fence stale merge/finalize requests. */
   mutationRevision?: number;
   attempts: number;
+  /** Decisions consumed in the current renewable autonomy window. */
   decisionsUsed: number;
+  /** Monotonic audit total across all renewed autonomy windows. */
+  totalDecisionsUsed?: number;
+  /** Number of healthy in-place autonomy-window renewals. */
+  budgetWindowRenewals?: number;
   startedAt?: number;
   updatedAt: number;
   completedAt?: number;
@@ -1325,6 +1338,23 @@ export function activeProjectSubgoals(session: ProjectManagerSession): ProjectSu
     .sort((left, right) => left.order - right.order || left.createdAt - right.createdAt);
 }
 
+/** Project AI may rewrite a user-owned main goal only to apply newer user input. */
+export function projectManagerGoalChangeHasUserBasis(
+  session: ProjectManagerSession,
+  nextGoal: string,
+): boolean {
+  if (nextGoal.trim() === session.goal.trim()) return true;
+  const latestDefinitionIndex = session.events.reduce((latest, event, index) => (
+    event.kind === 'project-definition-updated' ? index : latest
+  ), -1);
+  return session.events.slice(latestDefinitionIndex + 1).some((event) => (
+    (event.kind === 'user-clarification-answered'
+      && event.payload?.category !== 'manual-intervention'
+      && !event.workItemId)
+    || (event.kind === 'user-message' && event.payload?.changeSignal === 'requirements-change')
+  ));
+}
+
 export function projectDisplayName(session: Pick<ProjectManagerSession, 'projectName' | 'projectDir' | 'goal'>): string {
   return session.projectName?.trim() || fallbackProjectName(session);
 }
@@ -1870,6 +1900,12 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         mergeCandidates: Array.isArray(item.mergeCandidates) ? item.mergeCandidates.slice(-100) : [],
         finalApplyBlocked: item.finalApplyBlocked === true,
         mutationRevision: Math.max(0, Math.trunc(item.mutationRevision || 0)),
+        decisionsUsed: Math.max(0, Math.trunc(item.decisionsUsed || 0)),
+        totalDecisionsUsed: Math.max(
+          Math.max(0, Math.trunc(item.decisionsUsed || 0)),
+          Math.max(0, Math.trunc(item.totalDecisionsUsed ?? item.decisionsUsed ?? 0)),
+        ),
+        budgetWindowRenewals: Math.max(0, Math.trunc(item.budgetWindowRenewals || 0)),
         completion: normalizeProjectCompletionResult(item.completion),
         supervisorPlanRequired: item.supervisorPlanRequired
           ?? !['completed', 'stopped'].includes(item.status),
@@ -1919,12 +1955,18 @@ export type ProjectManagerAction =
     reason?: string;
   }
   | {
-    type: 'record-execution';
+      type: 'record-execution';
     workItemId: string;
     record: ProjectExecutionRecord;
     /** Rejected or failed delivery attempts remain auditable without spending autonomy budget. */
-    consumeDecision?: boolean;
-  }
+      consumeDecision?: boolean;
+    }
+  | {
+      type: 'renew-execution-window';
+      workItemId: string;
+      reason: 'decision-limit' | 'time-limit' | 'decision-and-time';
+      startedAt: number;
+    }
   | {
     type: 'pause-project';
     reason: string;
