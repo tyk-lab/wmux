@@ -28,6 +28,61 @@ export function supervisorDeliveryTimeoutRecoveryAction(options: {
   return options.projectManaged ? 'rebuild-project-runtime' : 'fail-closed';
 }
 
+/** Recover only a missing terminal lifecycle, never a live or user-edited turn. */
+export function shouldRecoverWorkerStopHookFailure(options: {
+  failureDetected: boolean;
+  runtimeReady: boolean;
+  pendingInput: boolean;
+  awaitingReview: boolean;
+  agentState: unknown;
+  workerTurnId?: number;
+  lastRecoveredTurnId?: number;
+}): boolean {
+  const turnId = Math.max(0, Math.trunc(Number(options.workerTurnId) || 0));
+  if (!options.failureDetected
+    || !options.runtimeReady
+    || options.pendingInput
+    || options.awaitingReview
+    || turnId <= 0
+    || options.lastRecoveredTurnId === turnId) return false;
+  const state = typeof options.agentState === 'string'
+    ? options.agentState
+    : options.agentState && typeof options.agentState === 'object'
+      ? String((options.agentState as { state?: unknown }).state || 'unknown')
+      : 'unknown';
+  return state === 'working' || state === 'unknown';
+}
+
+/** Wake a project supervisor that returned to an empty prompt without deciding its open review. */
+export function shouldRecoverProjectSupervisorIdleReview(options: {
+  projectManaged: boolean;
+  awaitingReview: boolean;
+  pendingDeliveries: number;
+  hasPendingDecision: boolean;
+  providerLimited: boolean;
+  runtimeReady: boolean;
+  promptReady: boolean;
+  pendingInput: boolean;
+  stopHookFailureDetected: boolean;
+  agentState: unknown;
+}): boolean {
+  if (!options.projectManaged
+    || !options.awaitingReview
+    || options.pendingDeliveries > 0
+    || options.hasPendingDecision
+    || options.providerLimited
+    || !options.runtimeReady
+    || !options.promptReady
+    || options.pendingInput) return false;
+  const state = typeof options.agentState === 'string'
+    ? options.agentState
+    : options.agentState && typeof options.agentState === 'object'
+      ? String((options.agentState as { state?: unknown }).state || 'unknown')
+      : 'unknown';
+  if (state === 'idle' || state === 'unknown') return true;
+  return state === 'working' && options.stopHookFailureDetected;
+}
+
 export function signalSupervisorDeliveryReady(): void {
   (globalThis as any).window?.dispatchEvent?.(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
 }

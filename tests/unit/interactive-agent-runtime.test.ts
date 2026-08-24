@@ -4,6 +4,7 @@ import {
   interactiveAgentInputReady,
   interactiveAgentPromptReady,
   interactiveAgentShellPromptFailureDetail,
+  interactiveAgentStopHookFailure,
   interactiveAgentStartupDiagnostic,
   interactiveAgentStartupFailureDetail,
   interactiveAgentTranscriptMode,
@@ -108,6 +109,21 @@ describe('interactive Agent runtime detection', () => {
     expect(interactiveAgentPromptReady([
       '› Ask Codex to do anything',
       '⠋ Working (2m)',
+    ].join('\n'))).toBe(false);
+  });
+
+  it('recognizes only an explicit failed Stop hook footer', () => {
+    expect(interactiveAgentStopHookFailure([
+      '[本轮结果] 测试完成',
+      'Stop hook (failed)',
+      'error: hook exited with code 1',
+    ].join('\n'))).toBe(true);
+    expect(interactiveAgentStopHookFailure('Stop hook completed with code 0')).toBe(false);
+    expect(interactiveAgentStopHookFailure('error: hook exited with code 1')).toBe(false);
+    expect(interactiveAgentStopHookFailure([
+      'Stop hook (failed)',
+      'error: hook exited with code 1',
+      '新回合仍在 Working (2m)',
     ].join('\n'))).toBe(false);
   });
 

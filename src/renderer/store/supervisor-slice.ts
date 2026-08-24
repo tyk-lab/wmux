@@ -193,6 +193,8 @@ export interface SupervisorLane {
   currentTask?: string;
   /** Monotonic worker turn generation advanced by UserPromptSubmit hooks. */
   workerTurnId?: number;
+  /** Worker generation whose terminal lifecycle was already accepted or safely reconstructed. */
+  lastWorkerTerminalLifecycleTurnId?: number;
   /** Independent task configuration for this terminal and its dedicated supervisor. */
   config?: SupervisorLaneConfig;
   /** Optional per-terminal override; undefined inherits the session defaults. */

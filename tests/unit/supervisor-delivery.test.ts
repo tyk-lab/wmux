@@ -6,6 +6,8 @@ import {
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
   removeFailedSupervisorDelivery,
+  shouldRecoverProjectSupervisorIdleReview,
+  shouldRecoverWorkerStopHookFailure,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
   supervisorDeliveryTimeoutRecoveryAction,
@@ -273,6 +275,59 @@ describe('supervisor delivery queue', () => {
       projectManaged: true,
       submitAttempts: 1,
     })).toBe('fail-closed');
+  });
+
+  it('reconstructs a failed worker Stop hook only for one idle-composer turn', () => {
+    const base = {
+      failureDetected: true,
+      runtimeReady: true,
+      pendingInput: false,
+      awaitingReview: false,
+      agentState: { state: 'working', runDepth: 1 },
+      workerTurnId: 6,
+    };
+    expect(shouldRecoverWorkerStopHookFailure(base)).toBe(true);
+    expect(shouldRecoverWorkerStopHookFailure({ ...base, pendingInput: true })).toBe(false);
+    expect(shouldRecoverWorkerStopHookFailure({ ...base, awaitingReview: true })).toBe(false);
+    expect(shouldRecoverWorkerStopHookFailure({ ...base, runtimeReady: false })).toBe(false);
+    expect(shouldRecoverWorkerStopHookFailure({ ...base, agentState: { state: 'idle' } })).toBe(false);
+    expect(shouldRecoverWorkerStopHookFailure({
+      ...base,
+      lastRecoveredTurnId: 6,
+    })).toBe(false);
+  });
+
+  it('wakes an idle project supervisor only for one unobstructed open review', () => {
+    const base = {
+      projectManaged: true,
+      awaitingReview: true,
+      pendingDeliveries: 0,
+      hasPendingDecision: false,
+      providerLimited: false,
+      runtimeReady: true,
+      promptReady: true,
+      pendingInput: false,
+      stopHookFailureDetected: false,
+      agentState: { state: 'idle' },
+    };
+    expect(shouldRecoverProjectSupervisorIdleReview(base)).toBe(true);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, projectManaged: false })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, awaitingReview: false })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, pendingDeliveries: 1 })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, hasPendingDecision: true })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, providerLimited: true })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, runtimeReady: false })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, promptReady: false })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({ ...base, pendingInput: true })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({
+      ...base,
+      agentState: { state: 'working' },
+    })).toBe(false);
+    expect(shouldRecoverProjectSupervisorIdleReview({
+      ...base,
+      stopHookFailureDetected: true,
+      agentState: { state: 'working' },
+    })).toBe(true);
   });
 
   it('removes a timed-out submission so recovery cannot count the same delivery twice', () => {

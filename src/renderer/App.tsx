@@ -84,6 +84,8 @@ import {
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
   removeFailedSupervisorDelivery,
+  shouldRecoverProjectSupervisorIdleReview,
+  shouldRecoverWorkerStopHookFailure,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
@@ -117,6 +119,7 @@ import {
   interactiveAgentInputReady,
   interactiveAgentPromptReady,
   interactiveAgentShellPromptFailureDetail,
+  interactiveAgentStopHookFailure,
   interactiveAgentTranscriptMode,
 } from './utils/interactive-agent-runtime';
 import {
@@ -144,6 +147,19 @@ const DEFAULT_SIDEBAR_WIDTH = 240;
 /** Per-key last lifecycle notify time — drops twin Stop floods without merging panes. */
 const lastLifecycleNotifyAt = new Map<string, number>();
 const supervisorDeliveryTimeoutRecoveryInFlight = new Set<string>();
+const WORKER_STOP_HOOK_FAILURE_STABLE_MS = 1_500;
+const PROJECT_SUPERVISOR_IDLE_REVIEW_STABLE_MS = 1_500;
+const workerStopHookFailureObservations = new Map<string, {
+  workerTurnId: number;
+  signature: string;
+  firstSeenAt: number;
+}>();
+const projectSupervisorIdleReviewObservations = new Map<string, {
+  workerTurnId: number;
+  recoveryAttempt: number;
+  signature: string;
+  firstSeenAt: number;
+}>();
 
 /** Get all surface IDs from a split tree */
 function getAllSurfaces(tree: SplitNode): string[] {
@@ -933,7 +949,7 @@ function supervisorEvidenceContinuityInstruction(evidence: ReturnType<typeof fre
 const ORDINARY_REVIEW_IDLE_GRACE_MS = 15_000;
 const supervisorReviewScreenActivity = new Map<string, { signature: string; stableAt: number }>();
 
-function supervisorScreenSignature(surfaceId: string): string {
+function terminalScreenSignature(surfaceId: string): string {
   const text = readTerminalScreen(surfaceId, 30).text || '';
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -945,7 +961,7 @@ function supervisorScreenSignature(surfaceId: string): string {
 
 function noteSupervisorReviewScreen(reviewId: string, supervisorSurfaceId: string, now = Date.now()): void {
   supervisorReviewScreenActivity.set(reviewId, {
-    signature: supervisorScreenSignature(supervisorSurfaceId),
+    signature: terminalScreenSignature(supervisorSurfaceId),
     stableAt: now,
   });
   if (supervisorReviewScreenActivity.size > 128) {
@@ -1135,6 +1151,7 @@ function handleSupervisorHookEvent(event: any): void {
   const projectDir = resolveSupervisorProjectDir(lane, event.cwd);
   const auditLane = projectDir ? { ...lane, projectDir } : lane;
   if (lifecycle === 'UserPromptSubmit') {
+    workerStopHookFailureObservations.delete(lane.id);
     const task = String(event.task || '').trim().slice(0, 800);
     const nextWorkerTurnId = (lane.workerTurnId || 0) + 1;
     const confirmedUserSubmit = confirmSupervisorUserSubmitFromHook(surfaceId, task);
@@ -1190,6 +1207,13 @@ function handleSupervisorHookEvent(event: any): void {
   }
 
   if (lifecycle !== 'Stop' && lifecycle !== 'StopFailure' && lifecycle !== 'Interrupt' && lifecycle !== 'Notification') return;
+  const terminalLifecycle = lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Interrupt';
+  const workerTurnId = lane.workerTurnId || 0;
+  if (terminalLifecycle && lane.lastWorkerTerminalLifecycleTurnId === workerTurnId) return;
+  if (terminalLifecycle) {
+    store.updateLane(lane.id, { lastWorkerTerminalLifecycleTurnId: workerTurnId });
+    workerStopHookFailureObservations.delete(lane.id);
+  }
   if (projectDir && projectDir !== lane.projectDir) store.updateLane(lane.id, { projectDir });
   appendSupervisorRecord(session, auditLane, 'worker.lifecycle', {
     event: lifecycle,
@@ -1240,6 +1264,111 @@ function handleSupervisorHookEvent(event: any): void {
       reviewId,
     );
   }
+}
+
+function recoverWorkerStopHookFailure(
+  lane: SupervisorLane,
+  agentState: unknown,
+  now: number,
+): boolean {
+  const runtimeReady = terminalRuntimeStatus(lane.surfaceId)?.state === 'ready';
+  const screen = readTerminalScreen(lane.surfaceId, 80).text || '';
+  const buffer = surfaceTerminalRegistry.get(lane.surfaceId)?.buffer.active;
+  const pendingInput = !buffer || hasPendingTerminalInput(buffer);
+  const failureDetected = interactiveAgentStopHookFailure(screen);
+  if (!shouldRecoverWorkerStopHookFailure({
+    failureDetected,
+    runtimeReady,
+    pendingInput,
+    awaitingReview: lane.awaitingReview === true,
+    agentState,
+    workerTurnId: lane.workerTurnId,
+    lastRecoveredTurnId: lane.lastWorkerTerminalLifecycleTurnId,
+  })) {
+    workerStopHookFailureObservations.delete(lane.id);
+    return false;
+  }
+
+  const workerTurnId = lane.workerTurnId || 0;
+  const signature = terminalScreenSignature(lane.surfaceId);
+  const previous = workerStopHookFailureObservations.get(lane.id);
+  if (!previous
+    || previous.workerTurnId !== workerTurnId
+    || previous.signature !== signature) {
+    workerStopHookFailureObservations.set(lane.id, { workerTurnId, signature, firstSeenAt: now });
+    return false;
+  }
+  if (now - previous.firstSeenAt < WORKER_STOP_HOOK_FAILURE_STABLE_MS) return false;
+
+  workerStopHookFailureObservations.delete(lane.id);
+  handleSupervisorHookEvent({
+    surfaceId: lane.surfaceId,
+    event: 'StopFailure',
+    message: '控制层检测到任务 AI 已输出本轮结果，但原生 Stop Hook 进程退出失败；已依据稳定终端证据补记一次 StopFailure。',
+    cwd: lane.projectDir,
+    synthetic: true,
+  });
+  return true;
+}
+
+function recoverProjectSupervisorIdleReview(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  supervisorSurfaceId: string,
+  supervisorAgentState: unknown,
+  supervisorScreen: string,
+  now: number,
+): boolean {
+  const current = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
+  const buffer = surfaceTerminalRegistry.get(supervisorSurfaceId)?.buffer.active;
+  const pendingInput = !buffer || hasPendingTerminalInput(buffer);
+  const stopHookFailureDetected = interactiveAgentStopHookFailure(supervisorScreen);
+  if (!shouldRecoverProjectSupervisorIdleReview({
+    projectManaged: isProjectManagedSupervisorLane(current),
+    awaitingReview: current.awaitingReview === true,
+    pendingDeliveries: (current.pendingSupervisorDeliveries || []).length,
+    hasPendingDecision: session.pendingApprovals.some((approval) => approval.laneId === current.id),
+    providerLimited: current.supervisorProblem?.kind === 'provider-limit',
+    runtimeReady: terminalRuntimeStatus(supervisorSurfaceId)?.state === 'ready',
+    promptReady: interactiveAgentPromptReady(supervisorScreen) || stopHookFailureDetected,
+    pendingInput,
+    stopHookFailureDetected,
+    agentState: supervisorAgentState,
+  })) {
+    projectSupervisorIdleReviewObservations.delete(current.id);
+    return false;
+  }
+
+  const workerTurnId = current.workerTurnId || 0;
+  const recoveryAttempt = current.unreportedIdleRecoveryAttempts || 0;
+  const signature = terminalScreenSignature(supervisorSurfaceId);
+  const previous = projectSupervisorIdleReviewObservations.get(current.id);
+  if (!previous
+    || previous.workerTurnId !== workerTurnId
+    || previous.recoveryAttempt !== recoveryAttempt
+    || previous.signature !== signature) {
+    projectSupervisorIdleReviewObservations.set(current.id, {
+      workerTurnId,
+      recoveryAttempt,
+      signature,
+      firstSeenAt: now,
+    });
+    return false;
+  }
+  if (now - previous.firstSeenAt < PROJECT_SUPERVISOR_IDLE_REVIEW_STABLE_MS) return false;
+
+  projectSupervisorIdleReviewObservations.delete(current.id);
+  if (stopHookFailureDetected) {
+    handleSupervisorHookEvent({
+      surfaceId: supervisorSurfaceId,
+      event: 'StopFailure',
+      message: '控制层检测到项目监督 AI 的原生 Stop Hook 失败，且当前审核没有结构化裁决；已依据稳定空闲终端补记一次 StopFailure。',
+      synthetic: true,
+    });
+  } else {
+    handleUnacknowledgedSupervisorReview(current.id, 'idle-timeout');
+  }
+  return true;
 }
 
 /**
@@ -2082,6 +2211,8 @@ export default function App() {
           void handleSupervisorDeliveryAcknowledgementTimeout(session, lane, unacknowledgedDelivery);
           continue;
         }
+        const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
+        if (recoverWorkerStopHookFailure(lane, surfaceState, now)) continue;
         if (!supervisorRuntimeRef.current[lane.id]) {
           supervisorRuntimeRef.current[lane.id] = blankRuntime();
         }
@@ -2091,21 +2222,28 @@ export default function App() {
           ? states[supervisorSurfaceId] || { state: 'unknown' }
           : { state: 'unknown' };
         const supervisorState = supervisorAgentState.state || 'unknown';
-        if (supervisorSurfaceId && supervisorState !== 'working') {
-          const screen = readTerminalScreen(supervisorSurfaceId, 30);
-          if (screen.text) {
-            const providerLimited = reportSupervisorProviderLimit(session, lane, screen.text);
-            if (providerLimited) {
-              (window as any).__wmux_reportProjectAgentLimit?.(supervisorSurfaceId, screen.text);
-            }
+        const supervisorScreen = supervisorSurfaceId
+          ? readTerminalScreen(supervisorSurfaceId, 80).text || ''
+          : '';
+        if (supervisorSurfaceId && supervisorState !== 'working' && supervisorScreen) {
+          const providerLimited = reportSupervisorProviderLimit(session, lane, supervisorScreen);
+          if (providerLimited) {
+            (window as any).__wmux_reportProjectAgentLimit?.(supervisorSurfaceId, supervisorScreen);
           }
         }
-        const surfaceState = states[lane.surfaceId] || { state: 'unknown' };
+        if (supervisorSurfaceId && recoverProjectSupervisorIdleReview(
+          session,
+          lane,
+          supervisorSurfaceId,
+          supervisorAgentState,
+          supervisorScreen,
+          now,
+        )) continue;
         const reviewScreenActivity = lane.activeReviewId
           ? supervisorReviewScreenActivity.get(lane.activeReviewId)
           : undefined;
         const currentReviewScreenSignature = supervisorSurfaceId && reviewScreenActivity
-          ? supervisorScreenSignature(supervisorSurfaceId)
+          ? terminalScreenSignature(supervisorSurfaceId)
           : '';
         if (lane.activeReviewId && reviewScreenActivity && supervisorSurfaceId) {
           if (currentReviewScreenSignature !== reviewScreenActivity.signature) {

@@ -39,6 +39,17 @@ export function interactiveAgentPromptReady(output: string): boolean {
     && !/\b(?:Working|Thinking)\s*(?:\([^\n]*\)|for\s+[^\n]*)?\s*$/imu.test(tail);
 }
 
+/** Positive terminal evidence that the Agent finished but its Stop hook process failed. */
+export function interactiveAgentStopHookFailure(output: string): boolean {
+  const lines = plainTerminalOutput(output)
+    .slice(-4_000)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!/\bhook exited with code\s+\d+\b/iu.test(lines.at(-1) || '')) return false;
+  return lines.slice(-4, -1).some((line) => /\bStop hook\s*\(failed\)/iu.test(line));
+}
+
 function lastNonEmptyTerminalLine(output: string): string {
   return plainTerminalOutput(output)
     .split('\n')
