@@ -51,6 +51,8 @@ export interface SupervisorDelivery {
   /** Transport progress; submitted remains queued until the Agent hook confirms consumption. */
   stage: 'pending' | 'pasted' | 'submitted';
   submittedAt?: number;
+  /** Number of Enter writes for the same owned draft; bounded before runtime replacement. */
+  submitAttempts?: number;
 }
 
 /** Explicitly chosen historical terminal whose audit context may be restored. */

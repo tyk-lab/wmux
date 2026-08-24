@@ -8,6 +8,7 @@ import {
   removeFailedSupervisorDelivery,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorDeliveryLabel,
+  supervisorDeliveryTimeoutRecoveryAction,
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
   unacknowledgedSubmittedSupervisorDelivery,
@@ -236,6 +237,42 @@ describe('supervisor delivery queue', () => {
     expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_009)).toBeUndefined();
     expect(unacknowledgedSubmittedSupervisorDelivery([submitted], 20_010)?.id).toBe('submitted-control');
     expect(submitted.stage).toBe('submitted');
+  });
+
+  it('retries one owned draft, then rebuilds only a project supervisor runtime', () => {
+    expect(supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned: true,
+      pendingInput: true,
+      projectManaged: true,
+      submitAttempts: 1,
+    })).toBe('retry-submit');
+    expect(supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned: true,
+      pendingInput: true,
+      projectManaged: true,
+      submitAttempts: 2,
+    })).toBe('rebuild-project-runtime');
+    expect(supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned: true,
+      pendingInput: true,
+      projectManaged: false,
+      submitAttempts: 2,
+    })).toBe('fail-closed');
+  });
+
+  it('never retries or clears a draft without both ownership and visible pending input', () => {
+    expect(supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned: false,
+      pendingInput: true,
+      projectManaged: true,
+      submitAttempts: 1,
+    })).toBe('fail-closed');
+    expect(supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned: true,
+      pendingInput: false,
+      projectManaged: true,
+      submitAttempts: 1,
+    })).toBe('fail-closed');
   });
 
   it('removes a timed-out submission so recovery cannot count the same delivery twice', () => {

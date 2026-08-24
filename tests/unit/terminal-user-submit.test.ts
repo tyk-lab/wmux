@@ -3,6 +3,7 @@ import {
   attachAutomatedTerminalSubmitTimer,
   beginAutomatedTerminalSubmit,
   consumeAutomatedTerminalSubmit,
+  hasPendingAutomatedTerminalSubmit,
   isTerminalUserSubmit,
   prepareForUserTerminalInput,
   resetTerminalUserInputTracking,
@@ -66,6 +67,7 @@ describe('terminal user submit detection', () => {
     const clearDraft = () => cleared += 1;
     let cleared = 0;
     const token = beginAutomatedTerminalSubmit('worker-a', clearDraft);
+    expect(hasPendingAutomatedTerminalSubmit('worker-a')).toBe(true);
     attachAutomatedTerminalSubmitTimer(token, 123);
 
     expect(prepareForUserTerminalInput('worker-a', '用户意见')).toMatchObject({
@@ -73,6 +75,7 @@ describe('terminal user submit detection', () => {
       clearAutomatedDraft: false,
     });
     expect(cleared).toBe(1);
+    expect(hasPendingAutomatedTerminalSubmit('worker-a')).toBe(false);
     expect(consumeAutomatedTerminalSubmit(token)).toBe(false);
     expect(prepareForUserTerminalInput('worker-a', '\r').shouldSubmit).toBe(true);
   });

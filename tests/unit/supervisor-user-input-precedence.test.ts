@@ -409,4 +409,26 @@ describe('supervisor user input precedence', () => {
     expect(handleSupervisorUserSubmit('supervisor-user')).toBe(false);
     expect(useStore.getState().supervisor.lanes[0]).toEqual(before);
   });
+
+  it('lets supervisor-terminal user input cancel an unconfirmed automated draft', () => {
+    const store = useStore.getState();
+    store.updateLane('lane-user', {
+      pendingSupervisorDeliveries: [{
+        id: 'delivery-submitted',
+        kind: 'control-message',
+        text: '自动恢复说明',
+        task: '恢复监督',
+        createdAt: 1,
+        stage: 'submitted',
+        submittedAt: 2,
+      }],
+    });
+
+    expect(handleSupervisorUserSubmit('supervisor-user')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries).toEqual([]);
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '监督通知已让位',
+      detail: expect.stringContaining('取消未确认的自动投递'),
+    });
+  });
 });

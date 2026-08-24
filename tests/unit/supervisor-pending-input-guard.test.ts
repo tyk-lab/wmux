@@ -52,6 +52,11 @@ describe('supervisor pending terminal input guard', () => {
     ], 1, 7, 1))).toBe(true);
   });
 
+  it('detects a Codex collapsed pasted-content token that is still in the composer', () => {
+    const draft = '› [Pasted Content 3271 chars] 只有任务合同明确授予 permission-confirm';
+    expect(hasPendingTerminalInput(buffer([{ text: draft }], 0, draft.length))).toBe(true);
+  });
+
   it('ignores completed output away from an empty active composer', () => {
     expect(hasPendingTerminalInput(buffer([
       { text: '任务已经完成，输出内容很多' },

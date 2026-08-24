@@ -135,12 +135,33 @@ export function handleSupervisorUserSubmit(
     const supervisorSurfaceId = dedicatedSupervisorSurfaceId(item);
     return !!supervisorSurfaceId
       && ((item.surfaceId === surfaceId && (state === 'active' || state === 'waiting'))
-        || (supervisorSurfaceId === surfaceId && state === 'waiting'));
+        || (supervisorSurfaceId === surfaceId && (state === 'active' || state === 'waiting')));
   });
   if (!lane) return false;
 
   if (dedicatedSupervisorSurfaceId(lane) === surfaceId) {
-    return resumeWaitingLaneFromSupervisorInput(session, lane, 'supervisor-terminal');
+    if (supervisorLaneControlState(lane) === 'waiting') {
+      return resumeWaitingLaneFromSupervisorInput(session, lane, 'supervisor-terminal');
+    }
+    const inFlightDeliveryIds = (lane.pendingSupervisorDeliveries || [])
+      .filter((delivery) => delivery.stage === 'pasted' || delivery.stage === 'submitted')
+      .map((delivery) => delivery.id);
+    if (inFlightDeliveryIds.length === 0) return false;
+    store.updateLane(lane.id, {
+      pendingSupervisorDeliveries: (lane.pendingSupervisorDeliveries || [])
+        .filter((delivery) => !inFlightDeliveryIds.includes(delivery.id)),
+    });
+    appendSupervisorRecord(session, lane, 'supervisor.delivery.cancelled', {
+      deliveryIds: inFlightDeliveryIds,
+      reason: 'user-input-precedence',
+    });
+    store.appendSupervisorLog(
+      lane.id,
+      '监督通知已让位',
+      '用户已在监督终端输入新内容；控制层取消未确认的自动投递，禁止随后补发 Enter',
+    );
+    signalSupervisorDeliveryReady();
+    return true;
   }
 
   const directTask = task.trim().slice(0, 12_000);

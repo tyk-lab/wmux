@@ -4,6 +4,29 @@ import { isAgentPromptReadyState } from '../agent-state-semantics';
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
 export const SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS = 20_000;
 export const SUPERVISOR_STALE_PROMPT_RECOVERY_MS = 20_000;
+export const MAX_SUPERVISOR_SUBMIT_ATTEMPTS = 2;
+
+export type SupervisorDeliveryTimeoutRecoveryAction =
+  | 'retry-submit'
+  | 'rebuild-project-runtime'
+  | 'fail-closed';
+
+/**
+ * Retry only an unchanged automated draft. Once the retry is exhausted,
+ * project lanes replace the contaminated supervisor runtime instead of asking
+ * the project AI to reuse it.
+ */
+export function supervisorDeliveryTimeoutRecoveryAction(options: {
+  automatedDraftOwned: boolean;
+  pendingInput: boolean;
+  projectManaged: boolean;
+  submitAttempts?: number;
+}): SupervisorDeliveryTimeoutRecoveryAction {
+  if (!options.automatedDraftOwned || !options.pendingInput) return 'fail-closed';
+  const attempts = Math.max(1, Math.trunc(Number(options.submitAttempts) || 1));
+  if (attempts < MAX_SUPERVISOR_SUBMIT_ATTEMPTS) return 'retry-submit';
+  return options.projectManaged ? 'rebuild-project-runtime' : 'fail-closed';
+}
 
 export function signalSupervisorDeliveryReady(): void {
   (globalThis as any).window?.dispatchEvent?.(new Event(SUPERVISOR_DELIVERY_READY_EVENT));

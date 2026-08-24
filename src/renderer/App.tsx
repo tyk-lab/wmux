@@ -88,6 +88,7 @@ import {
   SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
   SUPERVISOR_DELIVERY_READY_EVENT,
   supervisorDeliveryLabel,
+  supervisorDeliveryTimeoutRecoveryAction,
   supervisorWakeDeliveryKind,
   unacknowledgedSupervisorIdleAction,
   unacknowledgedSubmittedSupervisorDelivery,
@@ -104,7 +105,12 @@ import {
   confirmSupervisorUserSubmitFromHook,
   handleSupervisorUserSubmit,
 } from './supervisor/user-input-precedence';
-import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
+import {
+  beginAutomatedTerminalSubmit,
+  cancelPendingAutomatedTerminalSubmit,
+  hasPendingAutomatedTerminalSubmit,
+  TERMINAL_USER_SUBMIT_EVENT,
+} from './utils/terminal-user-submit';
 import { markTerminalRuntimeFailed, terminalRuntimeStatus } from './terminal-runtime-lifecycle';
 import {
   interactiveAgentInputReady,
@@ -125,6 +131,8 @@ import {
   isProjectManagedSupervisorLane,
   supervisorLaneControlState,
 } from './store/supervisor-slice';
+import { surfaceTerminalRegistry } from './hooks/useTerminal';
+import { hasPendingTerminalInput } from './supervisor/pending-input-guard';
 import {
   normalizeTaskChildThreadResponsibilities,
   normalizeTaskThreadResponsibility,
@@ -134,6 +142,7 @@ import {
 const DEFAULT_SIDEBAR_WIDTH = 240;
 /** Per-key last lifecycle notify time — drops twin Stop floods without merging panes. */
 const lastLifecycleNotifyAt = new Map<string, number>();
+const supervisorDeliveryTimeoutRecoveryInFlight = new Set<string>();
 
 /** Get all surface IDs from a split tree */
 function getAllSurfaces(tree: SplitNode): string[] {
@@ -570,6 +579,7 @@ function confirmSubmittedSupervisorDelivery(
 ): boolean {
   const delivery = lane.pendingSupervisorDeliveries?.find((candidate) => candidate.stage === 'submitted');
   if (!delivery) return false;
+  cancelPendingAutomatedTerminalSubmit(supervisorSurfaceId, false);
   acknowledgeSupervisorDelivery(lane.id, delivery);
   const store = useStore.getState();
   const current = store.supervisor.lanes.find((candidate) => candidate.id === lane.id);
@@ -594,48 +604,173 @@ function confirmSubmittedSupervisorDelivery(
   return true;
 }
 
-function handleSupervisorDeliveryAcknowledgementTimeout(
+async function handleSupervisorDeliveryAcknowledgementTimeout(
   session: SupervisorSession,
   lane: SupervisorLane,
   delivery: SupervisorDelivery,
-): void {
-  const detail = `${supervisorDeliveryLabel(delivery.kind)}已写入监督 AI 终端，但 ${Math.round(SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS / 1000)} 秒内没有收到任何 Agent 生命周期确认。控制层无法判断消息是否已执行，已停止后续自动投递，禁止盲目重发。`;
-  const store = useStore.getState();
-  store.updateLane(lane.id, {
-    pendingSupervisorDeliveries: removeFailedSupervisorDelivery(
-      lane.pendingSupervisorDeliveries,
-      delivery.id,
-    ),
-    supervisorProblem: {
-      kind: 'unreported-decision',
-      detail,
-      detectedAt: Date.now(),
-    },
-  });
-  store.pauseSupervisorLane(lane.id, detail);
-  appendSupervisorRecord(session, lane, 'supervisor.delivery.failed', {
-    deliveryId: delivery.id,
-    kind: delivery.kind,
-    reviewId: delivery.reviewId,
-    submittedAt: delivery.submittedAt,
-    acknowledgementTimeout: true,
-    reason: detail,
-  });
-  const workspaceId = lane.workspaceId || store.activeWorkspaceId;
-  const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
-  if (workspaceId) {
-    store.addNotification({
+): Promise<void> {
+  if (supervisorDeliveryTimeoutRecoveryInFlight.has(delivery.id)) return;
+  supervisorDeliveryTimeoutRecoveryInFlight.add(delivery.id);
+  try {
+    const currentStore = useStore.getState();
+    const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+    const currentDelivery = currentLane?.pendingSupervisorDeliveries?.find((candidate) => (
+      candidate.id === delivery.id && candidate.stage === 'submitted'
+    ));
+    if (!currentLane || !currentDelivery) return;
+
+    const supervisorSurfaceId = dedicatedSupervisorSurfaceId(currentLane);
+    const buffer = supervisorSurfaceId
+      ? surfaceTerminalRegistry.get(supervisorSurfaceId)?.buffer.active
+      : undefined;
+    const pendingInput = !!buffer && hasPendingTerminalInput(buffer);
+    const automatedDraftOwned = !!supervisorSurfaceId
+      && hasPendingAutomatedTerminalSubmit(supervisorSurfaceId);
+    const projectManaged = isProjectManagedSupervisorLane(currentLane);
+    const action = supervisorDeliveryTimeoutRecoveryAction({
+      automatedDraftOwned,
+      pendingInput,
+      projectManaged,
+      submitAttempts: currentDelivery.submitAttempts,
+    });
+
+    if (action === 'retry-submit' && supervisorSurfaceId && window.wmux?.pty?.writeChecked) {
+      const retried = await window.wmux.pty.writeChecked(supervisorSurfaceId, '\r');
+      const retryStore = useStore.getState();
+      const retryLane = retryStore.supervisor.lanes.find((candidate) => candidate.id === currentLane.id);
+      const stillSubmitted = retryLane?.pendingSupervisorDeliveries?.some((candidate) => (
+        candidate.id === currentDelivery.id && candidate.stage === 'submitted'
+      ));
+      if (!stillSubmitted) return;
+      if (retried && retryLane && stillSubmitted) {
+        const submittedAt = Date.now();
+        const submitAttempts = Math.max(1, currentDelivery.submitAttempts || 1) + 1;
+        retryStore.updateLane(retryLane.id, {
+          pendingSupervisorDeliveries: (retryLane.pendingSupervisorDeliveries || []).map((candidate) => (
+            candidate.id === currentDelivery.id
+              ? { ...candidate, submittedAt, submitAttempts }
+              : candidate
+          )),
+        });
+        appendSupervisorRecord(retryStore.supervisor, retryLane, 'supervisor.delivery.submit-retried', {
+          deliveryId: currentDelivery.id,
+          kind: currentDelivery.kind,
+          submitAttempts,
+          pendingInput: true,
+        });
+        retryStore.appendSupervisorLog(
+          retryLane.id,
+          '监督通知提交键补发',
+          '自动正文仍完整停留在输入框；已在草稿所有权保护下补发一次 Enter',
+        );
+        return;
+      }
+    }
+
+    if (supervisorSurfaceId) {
+      cancelPendingAutomatedTerminalSubmit(
+        supervisorSurfaceId,
+        automatedDraftOwned && pendingInput,
+      );
+    }
+    const submitAttempts = Math.max(1, currentDelivery.submitAttempts || 1);
+    const rebuildRuntime = action === 'rebuild-project-runtime';
+    const inputState = pendingInput ? 'pending' : buffer ? 'empty' : 'unknown';
+    const detail = rebuildRuntime
+      ? `${supervisorDeliveryLabel(currentDelivery.kind)}连续 ${submitAttempts} 次提交后，自动正文仍停留在监督 AI 输入框。控制层已清理确认属于本次投递的草稿，并重建专属监督运行时；不会复用受污染终端或重复执行任务动作。`
+      : `${supervisorDeliveryLabel(currentDelivery.kind)}已写入监督 AI 终端，但 ${Math.round(SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS / 1000)} 秒内没有收到 Agent 生命周期确认（input=${inputState}, ownedDraft=${automatedDraftOwned}, submitAttempts=${submitAttempts}）。控制层无法安全确认消息是否执行，已停止后续自动投递。`;
+    const store = useStore.getState();
+    const freshLane = store.supervisor.lanes.find((candidate) => candidate.id === currentLane.id);
+    if (!freshLane) return;
+    store.updateLane(freshLane.id, {
+      pendingSupervisorDeliveries: removeFailedSupervisorDelivery(
+        freshLane.pendingSupervisorDeliveries,
+        currentDelivery.id,
+      ),
+      supervisorProblem: {
+        kind: rebuildRuntime ? 'runtime-failed' : 'unreported-decision',
+        detail,
+        detectedAt: Date.now(),
+      },
+    });
+    appendSupervisorRecord(store.supervisor, freshLane, 'supervisor.delivery.failed', {
+      deliveryId: currentDelivery.id,
+      kind: currentDelivery.kind,
+      reviewId: currentDelivery.reviewId,
+      submittedAt: currentDelivery.submittedAt,
+      acknowledgementTimeout: true,
+      automatedDraftOwned,
+      inputState,
+      submitAttempts,
+      recoveryAction: rebuildRuntime ? 'runtime-rebuild' : 'fail-closed',
+      reason: detail,
+    });
+
+    if (rebuildRuntime && supervisorSurfaceId && freshLane.projectManagerProjectId) {
+      markTerminalRuntimeFailed(supervisorSurfaceId, detail);
+      const recoveryQueued = (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
+        projectId: freshLane.projectManagerProjectId,
+        workItemId: freshLane.projectWorkItemId,
+        laneId: freshLane.id,
+        surfaceId: supervisorSurfaceId,
+        role: 'supervisor',
+        detail,
+      });
+      if (recoveryQueued) {
+        store.appendSupervisorLog(
+          freshLane.id,
+          '监督运行时自动重建',
+          '同一自动草稿两次 Enter 均未提交；已清稿并交由项目运行时恢复器重建唯一监督链',
+        );
+        return;
+      }
+    }
+
+    store.pauseSupervisorLane(freshLane.id, detail);
+    const workspaceId = freshLane.workspaceId || store.activeWorkspaceId;
+    const notificationSurfaceId = supervisorSurfaceId || freshLane.surfaceId;
+    if (freshLane.projectManagerProjectId) {
+      void Promise.resolve((window as any).__wmux_projectManagerRemoteControl?.({
+        action: 'event',
+        projectId: freshLane.projectManagerProjectId,
+        laneId: freshLane.id,
+        workItemId: freshLane.projectWorkItemId,
+        eventType: 'supervisor.delivery.failed',
+        summary: detail,
+        payload: {
+          deliveryId: currentDelivery.id,
+          inputState,
+          automatedDraftOwned,
+          submitAttempts,
+          attentionRequired: false,
+        },
+      })).catch(() => undefined);
+      return;
+    }
+    if (workspaceId) {
+      store.addNotification({
+        surfaceId: notificationSurfaceId,
+        workspaceId,
+        title: 'AI 监督投递确认异常',
+        text: detail,
+        ...notificationMetadata({
+          owner: 'supervisor',
+          entityId: freshLane.id,
+          kind: 'delivery-failed',
+          severity: 'error',
+          laneId: freshLane.id,
+          sourceLabel: freshLane.label,
+        }),
+      });
+    }
+    window.wmux?.notification?.fire({
       surfaceId: notificationSurfaceId,
-      workspaceId,
       title: 'AI 监督投递确认异常',
       text: detail,
     });
+  } finally {
+    supervisorDeliveryTimeoutRecoveryInFlight.delete(delivery.id);
   }
-  window.wmux?.notification?.fire({
-    surfaceId: notificationSurfaceId,
-    title: 'AI 监督投递确认异常',
-    text: detail,
-  });
 }
 
 function rejectUnavailableSupervisorShell(
@@ -1774,8 +1909,12 @@ export default function App() {
               delivery.text.replace(/[\r\n]+$/u, ''),
               false,
             );
+            beginAutomatedTerminalSubmit(supervisorSurfaceId, () => {
+              window.wmux?.pty?.write?.(supervisorSurfaceId, '\x15');
+            });
             const pasted = await pty.writeChecked(supervisorSurfaceId, input);
             if (!pasted) {
+              cancelPendingAutomatedTerminalSubmit(supervisorSurfaceId, false);
               scheduleRetry();
               continue;
             }
@@ -1786,7 +1925,7 @@ export default function App() {
               // User input cancelled this review while the paste IPC was in flight.
               // The dedicated supervisor has not received Enter, so clear only
               // the automated draft that was just inserted.
-              await pty.writeChecked(supervisorSurfaceId, '\x15');
+              cancelPendingAutomatedTerminalSubmit(supervisorSurfaceId, true);
               continue;
             }
             store.updateLane(lane.id, {
@@ -1802,16 +1941,42 @@ export default function App() {
             .find((item) => item.id === lane.id)
             ?.pendingSupervisorDeliveries?.find((item) => item.id === delivery!.id);
           if (!beforeSubmit) {
-            await pty.writeChecked(supervisorSurfaceId, '\x15');
+            cancelPendingAutomatedTerminalSubmit(supervisorSurfaceId, true);
+            continue;
+          }
+          if (!hasPendingAutomatedTerminalSubmit(supervisorSurfaceId)) {
+            const store = useStore.getState();
+            const current = store.supervisor.lanes.find((item) => item.id === lane.id);
+            if (current) {
+              store.updateLane(current.id, {
+                pendingSupervisorDeliveries: removeFailedSupervisorDelivery(
+                  current.pendingSupervisorDeliveries,
+                  delivery.id,
+                ),
+              });
+              appendSupervisorRecord(store.supervisor, current, 'supervisor.delivery.cancelled', {
+                deliveryId: delivery.id,
+                kind: delivery.kind,
+                reason: 'user-input-precedence',
+              });
+              store.appendSupervisorLog(
+                current.id,
+                '监督通知已让位',
+                '自动正文提交前检测到用户输入；已取消旧投递且不会发送 Enter',
+              );
+            }
             continue;
           }
           const submittedAt = Date.now();
+          const submitAttempts = Math.max(0, beforeSubmit.submitAttempts || 0) + 1;
           const beforeEnterStore = useStore.getState();
           const beforeEnterLane = beforeEnterStore.supervisor.lanes.find((item) => item.id === lane.id);
           if (!beforeEnterLane) continue;
           beforeEnterStore.updateLane(lane.id, {
             pendingSupervisorDeliveries: (beforeEnterLane.pendingSupervisorDeliveries || []).map((item) => (
-              item.id === delivery!.id ? { ...item, stage: 'submitted' as const, submittedAt } : item
+              item.id === delivery!.id
+                ? { ...item, stage: 'submitted' as const, submittedAt, submitAttempts }
+                : item
             )),
           });
           const submitted = await pty.writeChecked(supervisorSurfaceId, '\r');
@@ -1823,7 +1988,12 @@ export default function App() {
               store.updateLane(lane.id, {
                 pendingSupervisorDeliveries: (current.pendingSupervisorDeliveries || []).map((item) => (
                   item.id === delivery!.id
-                    ? { ...item, stage: stillExists ? 'pasted' as const : 'pending' as const, submittedAt: undefined }
+                    ? {
+                        ...item,
+                        stage: stillExists ? 'pasted' as const : 'pending' as const,
+                        submittedAt: undefined,
+                        submitAttempts: beforeSubmit.submitAttempts,
+                      }
                     : item
                 )),
               });
@@ -1849,6 +2019,7 @@ export default function App() {
             task: delivery.task,
             reviewId: delivery.reviewId,
             deliveryId: delivery.id,
+            submitAttempts,
           });
           supervisorDeliveryRetryAttemptRef.current = 0;
           store.appendSupervisorLog(lane.id, '监督通知已提交', `${supervisorDeliveryLabel(delivery.kind)}；等待 Agent 接收确认`);
@@ -1892,7 +2063,7 @@ export default function App() {
           now,
         );
         if (unacknowledgedDelivery) {
-          handleSupervisorDeliveryAcknowledgementTimeout(session, lane, unacknowledgedDelivery);
+          void handleSupervisorDeliveryAcknowledgementTimeout(session, lane, unacknowledgedDelivery);
           continue;
         }
         if (!supervisorRuntimeRef.current[lane.id]) {

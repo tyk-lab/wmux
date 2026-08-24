@@ -103,6 +103,11 @@ export function consumeAutomatedTerminalSubmit(token: AutomatedSubmitToken): boo
   return true;
 }
 
+/** True only while the visible draft is still owned by an automated delivery. */
+export function hasPendingAutomatedTerminalSubmit(surfaceId: string): boolean {
+  return pendingAutomatedSubmits.has(surfaceId);
+}
+
 export function cancelPendingAutomatedTerminalSubmit(
   surfaceId: string,
   clearDraft: boolean,
