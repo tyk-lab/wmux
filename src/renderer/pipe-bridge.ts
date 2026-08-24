@@ -13700,7 +13700,8 @@ export function initPipeBridge(): void {
       };
     }
     if (action === 'recovery-candidates') {
-      if (store.projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending') {
+      const runtimeRecovery = params?.mode === 'runtime';
+      if (!runtimeRecovery && (store.projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending')) {
         return {
           ok: true,
           candidates: [],
@@ -13712,10 +13713,18 @@ export function initPipeBridge(): void {
         return { ok: false, error: '项目恢复接口尚未就绪，请重启 wmux 后再试' };
       }
       const persisted = await listActiveSessions();
-      const candidates = Array.isArray(persisted) ? persisted : [];
+      const activeProjectIds = new Set(store.projectManagers.map((session) => session.id));
+      const activeProjectDirectories = new Set(store.projectManagers
+        .filter((session) => ['active', 'paused', 'waiting'].includes(session.status))
+        .map((session) => projectDirectoryIdentity(session.projectDir)));
+      const candidates = (Array.isArray(persisted) ? persisted : []).filter((session: ProjectManagerSession) => (
+        !runtimeRecovery
+        || (!activeProjectIds.has(session.id)
+          && !activeProjectDirectories.has(projectDirectoryIdentity(session.projectDir)))
+      ));
       return {
         ok: true,
-        recoveryChoice: 'pending',
+        recoveryChoice: runtimeRecovery ? 'runtime' : 'pending',
         candidates: candidates.map((session: ProjectManagerSession) => ({
           id: session.id,
           projectDir: session.projectDir,
@@ -13740,7 +13749,8 @@ export function initPipeBridge(): void {
       }
       projectManagerRecoveryMutationInFlight = true;
       try {
-        if (store.projectManagers.length > 0) {
+        const runtimeRecovery = params?.mode === 'runtime';
+        if (!runtimeRecovery && store.projectManagers.length > 0) {
           projectManagerRecoveryChoice = 'restore';
           return {
             ok: true,
@@ -13755,6 +13765,11 @@ export function initPipeBridge(): void {
         }
         const persisted = await listActiveSessions();
         const available = Array.isArray(persisted) ? persisted : [];
+        const existingSessions = useStore.getState().projectManagers;
+        const existingProjectIds = new Set(existingSessions.map((session) => session.id));
+        const existingLiveDirectories = new Set(existingSessions
+          .filter((session) => ['active', 'paused', 'waiting'].includes(session.status))
+          .map((session) => projectDirectoryIdentity(session.projectDir)));
         const requestedIds = Array.isArray(params?.projectIds)
           ? [...new Set(params.projectIds.map((value: unknown) => String(value).trim()).filter(Boolean))]
           : [];
@@ -13764,9 +13779,26 @@ export function initPipeBridge(): void {
         if (requestedIds.length > 0 && candidates.length !== requestedIds.length) {
           return { ok: false, error: '部分所选历史项目已失效，请刷新恢复列表后重试。' };
         }
+        if (runtimeRecovery) {
+          const conflict = candidates.find((session: ProjectManagerSession) => (
+            existingProjectIds.has(session.id)
+            || existingLiveDirectories.has(projectDirectoryIdentity(session.projectDir))
+          ));
+          if (conflict) {
+            return {
+              ok: false,
+              error: `历史项目“${projectDisplayName(conflict)}”已在当前项目列表中，或其目录已有活动项目。请刷新恢复列表后重试。`,
+            };
+          }
+        }
         if (candidates.length === 0) {
-          projectManagerRecoveryChoice = 'skip';
-          return { ok: true, restored: false, projects: [], message: '没有可恢复的项目。' };
+          if (!runtimeRecovery) projectManagerRecoveryChoice = 'skip';
+          return {
+            ok: true,
+            restored: false,
+            projects: existingSessions.map(projectManagerSessionView),
+            message: '没有可恢复的项目。',
+          };
         }
         const hasExplicitRecoveryAgentConfig = !!params?.agentConfig
           && typeof params.agentConfig === 'object'
@@ -13784,9 +13816,10 @@ export function initPipeBridge(): void {
           const situation = String(rawCurrentSituations[session.id] || '').trim().slice(0, 12_000);
           if (situation) currentSituations.set(session.id, situation);
         }
-        useStore.getState().setWorkspacePrefs({ projectManagementAgents: recoveryAgentConfig });
-        projectManagerRecoveryChoice = 'restore';
-        discardRestoredProjectRuntime();
+        if (!runtimeRecovery) {
+          projectManagerRecoveryChoice = 'restore';
+          discardRestoredProjectRuntime();
+        }
         const persistedEventIds = new Map(candidates.map((session: ProjectManagerSession) => (
           [session.id, new Set(session.events.map((event) => event.id))] as const
         )));
@@ -13798,7 +13831,29 @@ export function initPipeBridge(): void {
             ? recoveryAgentConfig
             : normalizeProjectManagementAgentConfig(session.agentConfig ?? recoveryAgentConfig),
         }));
-        useStore.getState().restoreProjectManagers(recoveredSessions, recoveredSessions[0]?.id);
+        const sessionsAtRestore = runtimeRecovery
+          ? useStore.getState().projectManagers
+          : [];
+        const lateConflict = runtimeRecovery
+          ? recoveredSessions.find((session) => (
+              sessionsAtRestore.some((current) => current.id === session.id)
+              || sessionsAtRestore.some((current) => (
+                ['active', 'paused', 'waiting'].includes(current.status)
+                && projectDirectoryIdentity(current.projectDir) === projectDirectoryIdentity(session.projectDir)
+              ))
+            ))
+          : undefined;
+        if (lateConflict) {
+          return {
+            ok: false,
+            error: `恢复期间项目列表发生变化，“${projectDisplayName(lateConflict)}”已加载或目录已被活动项目占用。请刷新恢复列表后重试。`,
+          };
+        }
+        useStore.getState().setWorkspacePrefs({ projectManagementAgents: recoveryAgentConfig });
+        useStore.getState().restoreProjectManagers(
+          runtimeRecovery ? [...sessionsAtRestore, ...recoveredSessions] : recoveredSessions,
+          recoveredSessions[0]?.id,
+        );
         for (const session of recoveredSessions) {
           for (const event of session.events.filter((candidate) => (
             !persistedEventIds.get(session.id)?.has(candidate.id)
@@ -13861,12 +13916,12 @@ export function initPipeBridge(): void {
         store = useStore.getState();
         return {
           ok: true,
-          restored: store.projectManagers.length > 0,
+          restored: recoveredSessions.length > 0,
           projects: store.projectManagers.map(projectManagerSessionView),
           agentConfig: recoveryAgentConfig,
           message: failures.length > 0
-            ? `已恢复 ${store.projectManagers.length} 个项目；${failures.length} 个项目的专属项目 AI 启动失败并已暂停。`
-            : `已恢复 ${store.projectManagers.length} 个项目，并分别启动专属项目 AI。`,
+            ? `已恢复 ${recoveredSessions.length} 个项目；${failures.length} 个项目的专属项目 AI 启动失败并已暂停。`
+            : `已恢复 ${recoveredSessions.length} 个项目，并分别启动专属项目 AI。`,
           ...(failures.length > 0 ? { warnings: failures } : {}),
         };
       } finally {
@@ -13875,8 +13930,9 @@ export function initPipeBridge(): void {
     }
     if (action === 'delete-recovery-project') {
       const projectId = String(params?.projectId || '').trim();
+      const runtimeRecovery = params?.mode === 'runtime';
       if (!projectId) return { ok: false, error: '必须指定要删除的历史项目记录' };
-      if (store.projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending') {
+      if (!runtimeRecovery && (store.projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending')) {
         return { ok: false, error: '历史项目恢复阶段已经结束，不能从候选列表删除记录' };
       }
       if (projectManagerRecoveryMutationInFlight || deletingProjectManagerSessions.has(projectId)) {
@@ -13895,7 +13951,16 @@ export function initPipeBridge(): void {
           ? persisted.find((session: ProjectManagerSession) => session.id === projectId)
           : undefined;
         if (!candidate) return { ok: false, error: '该历史项目记录已经不存在，请刷新恢复列表' };
-        if (useStore.getState().projectManagers.length > 0 || projectManagerRecoveryChoice !== 'pending') {
+        const currentProjects = useStore.getState().projectManagers;
+        const candidateLoaded = currentProjects.some((session) => session.id === candidate.id);
+        const candidateDirectoryActive = currentProjects.some((session) => (
+          ['active', 'paused', 'waiting'].includes(session.status)
+          && projectDirectoryIdentity(session.projectDir) === projectDirectoryIdentity(candidate.projectDir)
+        ));
+        if (runtimeRecovery && (candidateLoaded || candidateDirectoryActive)) {
+          return { ok: false, error: '该历史项目已加载，或其目录已有活动项目，不能从恢复列表删除' };
+        }
+        if (!runtimeRecovery && (currentProjects.length > 0 || projectManagerRecoveryChoice !== 'pending')) {
           return { ok: false, error: '历史项目恢复状态已经变化，已取消删除' };
         }
         await deleteSession(projectId);

@@ -4847,6 +4847,56 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).wmux.projectManager.deleteSession).not.toHaveBeenCalled();
   });
 
+  it('lists and restores historical projects without replacing projects already loaded at runtime', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await remote({
+      action: 'start',
+      projectDir: 'E:\\runtime-current',
+      goal: '继续当前项目',
+      preconditions: ['环境可用'],
+      doneWhen: ['当前项目完成'],
+    });
+    const current = useStore.getState().projectManager!;
+    const historical = {
+      id: 'pm-runtime-history', projectDir: 'E:\\runtime-history', goal: '恢复历史项目',
+      preconditions: ['环境安全'], doneWhen: ['历史项目完成'], status: 'paused' as const,
+      workItems: [],
+      events: [
+        {
+          id: 'runtime-history-required', sessionId: 'pm-runtime-history', ts: 10,
+          kind: 'requirements-alignment-required' as const, summary: '首次需求对齐',
+        },
+        {
+          id: 'runtime-history-confirmed', sessionId: 'pm-runtime-history', ts: 11,
+          kind: 'requirements-alignment-confirmed' as const, summary: '需求已确认',
+        },
+      ],
+      createdAt: 1, updatedAt: 20,
+    };
+    (globalThis.window as any).wmux.projectManager.listActiveSessions.mockResolvedValue([current, historical]);
+
+    await expect(remote({ action: 'recovery-candidates', mode: 'runtime' })).resolves.toMatchObject({
+      ok: true,
+      recoveryChoice: 'runtime',
+      candidates: [{ id: historical.id }],
+    });
+    await expect(remote({
+      action: 'restore-projects', mode: 'runtime', projectIds: [historical.id],
+    })).resolves.toMatchObject({
+      ok: true,
+      restored: true,
+      projects: expect.arrayContaining([
+        expect.objectContaining({ id: current.id }),
+        expect.objectContaining({ id: historical.id }),
+      ]),
+    });
+    expect(useStore.getState().projectManagers.map((project) => project.id)).toEqual(expect.arrayContaining([
+      current.id,
+      historical.id,
+    ]));
+    expect(useStore.getState().projectManager?.id).toBe(historical.id);
+  });
+
   it('revokes persisted alignment when a project recovery note changes requirements', async () => {
     const persisted = {
       id: 'pm-history-changed', projectDir: 'E:\\history-changed', goal: '交付桌面端和服务端',

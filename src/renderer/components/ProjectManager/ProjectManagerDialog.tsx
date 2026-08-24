@@ -342,6 +342,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     return () => window.removeEventListener('beforeunload', preventPrematureClose);
   }, [safeExitInFlight, safeExitSaving]);
   const [recoveryStatus, setRecoveryStatus] = useState<'unchecked' | 'checking' | 'prompt' | 'done'>('unchecked');
+  const [recoveryMode, setRecoveryMode] = useState<'startup' | 'runtime'>('startup');
   const [recoveryCandidates, setRecoveryCandidates] = useState<ProjectRecoveryCandidate[]>([]);
   const [selectedRecoveryIds, setSelectedRecoveryIds] = useState<string[]>([]);
   const [recoverySituationDrafts, setRecoverySituationDrafts] = useState<Record<string, string>>({});
@@ -542,6 +543,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setRecoveryStatus('done');
       return;
     }
+    setRecoveryMode('startup');
     setRecoveryStatus('checking');
     void Promise.resolve(control({ action: 'recovery-candidates' })).then((result) => {
       if (!result?.ok) throw new Error(result?.error || '无法检查上次项目');
@@ -576,6 +578,37 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setProjectName('');
     setProjectScope('');
     setNotice('');
+  };
+
+  const showRuntimeRecovery = async () => {
+    if (busy) return;
+    setBusy(true);
+    setRecoveryMode('runtime');
+    setRecoveryStatus('checking');
+    setRecoveryCandidates([]);
+    setSelectedRecoveryIds([]);
+    setRecoverySituationDrafts({});
+    setNotice('');
+    setConfigNotice('');
+    try {
+      const result = await invoke({ action: 'recovery-candidates', mode: 'runtime' });
+      const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+      if (candidates.length === 0) {
+        setRecoveryStatus('done');
+        setCreating(true);
+        setConfigNotice('没有其他可恢复的历史项目；当前已加载的项目不会重复显示。');
+        return;
+      }
+      setCreating(false);
+      setRecoveryCandidates(candidates);
+      setRecoveryStatus('prompt');
+    } catch (error) {
+      setRecoveryStatus('done');
+      setCreating(true);
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (!open) return null;
@@ -636,9 +669,19 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setBusy(true);
     setNotice('');
     try {
+      if (!restore && recoveryMode === 'runtime') {
+        setRecoveryCandidates([]);
+        setSelectedRecoveryIds([]);
+        setRecoverySituationDrafts({});
+        setRecoveryStatus('done');
+        setCreating(true);
+        window.requestAnimationFrame(() => creationFormRef.current?.scrollIntoView({ block: 'start' }));
+        return;
+      }
       const result = await invoke({
         action: restore ? 'restore-projects' : 'skip-project-recovery',
         ...(restore ? {
+          ...(recoveryMode === 'runtime' ? { mode: 'runtime' } : {}),
           projectIds: selectedRecoveryIds,
           currentSituations: Object.fromEntries(selectedRecoveryIds
             .map((projectId) => [projectId, recoverySituationDrafts[projectId]?.trim() || ''])
@@ -650,7 +693,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setSelectedRecoveryIds([]);
       setRecoverySituationDrafts({});
       setRecoveryStatus('done');
-      setCreating(addNewProject);
+      setCreating(restore ? false : addNewProject);
       if (addNewProject) setProjectDir('');
       setConfigNotice(result.message || (restore ? '所选历史项目已恢复。' : '本次不恢复历史项目。'));
     } catch (error) {
@@ -675,7 +718,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setNotice('');
     setConfigNotice('');
     try {
-      const result = await invoke({ action: 'delete-recovery-project', projectId: candidate.id });
+      const result = await invoke({
+        action: 'delete-recovery-project',
+        projectId: candidate.id,
+        ...(recoveryMode === 'runtime' ? { mode: 'runtime' } : {}),
+      });
       const remaining = recoveryCandidates.filter((item) => item.id !== candidate.id);
       setRecoveryCandidates(remaining);
       setSelectedRecoveryIds((current) => current.filter((id) => id !== candidate.id));
@@ -686,6 +733,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       });
       if (remaining.length === 0) {
         setRecoveryStatus('done');
+        if (recoveryMode === 'runtime') setCreating(true);
         window.requestAnimationFrame(() => goalRef.current?.focus({ preventScroll: true }));
       }
       setConfigNotice(result.message || '历史项目管理记录已删除。');
@@ -1031,7 +1079,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const activeSessionCount = sessions.filter((candidate) => !['completed', 'stopped'].includes(candidate.status)).length;
   const canPausePortfolio = sessions.some((candidate) => candidate.status === 'active' || candidate.status === 'waiting');
   const canResumePortfolio = sessions.some((candidate) => candidate.status === 'paused' && candidate.pausedByPortfolio === true);
-  const awaitingRecovery = sessions.length === 0 && recoveryStatus !== 'done';
+  const awaitingRecovery = !embedded
+    && recoveryStatus !== 'done'
+    && (recoveryMode === 'runtime' || sessions.length === 0);
   const projectDefinitionChanged = !!session && (
     goalChangeMode === 'pivot'
     || definitionGoalDraft.trim() !== session.goal
@@ -1103,7 +1153,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
           {!embedded && awaitingRecovery && (
             <section className="supervisor-dialog__group project-manager-dialog__recovery">
-              <div className="supervisor-dialog__group-title">{recoveryStatus === 'checking' ? '正在检查历史项目…' : '选择历史项目继续管理'}</div>
+              <div className="supervisor-dialog__group-title">{recoveryStatus === 'checking' ? '正在检查历史项目…' : recoveryMode === 'runtime' ? '恢复历史项目' : '选择历史项目继续管理'}</div>
               {recoveryStatus === 'prompt' && (
                 <>
                   <div className="supervisor-dialog__hint">项目中心只恢复你勾选的项目，并为每个项目创建独立的新 AI 会话继续推进。未选择的历史记录会保留。</div>
@@ -1167,8 +1217,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   </div>
                   <div className="project-manager-dialog__recovery-actions">
                     <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || selectedRecoveryIds.length === 0} onClick={() => void chooseRecovery(true)}>{busy ? '正在恢复…' : `恢复所选项目（${selectedRecoveryIds.length}）`}</button>
-                    <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false, true)}>添加新项目</button>
-                    <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false)}>暂不恢复</button>
+                    {recoveryMode === 'runtime'
+                      ? <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false, true)}>返回添加项目</button>
+                      : <>
+                          <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false, true)}>添加新项目</button>
+                          <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void chooseRecovery(false)}>暂不恢复</button>
+                        </>}
                   </div>
                   <div className="supervisor-dialog__hint">恢复后仍可继续添加项目，不限制活动项目数量。旧项目 AI、监督 AI 和任务 AI 对话不会直接复活，将通过恢复包建立新链路。</div>
                 </>
@@ -1333,7 +1387,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               ref={creationFormRef}
               className="supervisor-dialog__group"
             >
-              <div className="supervisor-dialog__group-title">添加项目</div>
+              <div className="project-manager-dialog__section-head">
+                <div className="supervisor-dialog__group-title">添加项目</div>
+                <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void showRuntimeRecovery()}>恢复历史项目</button>
+              </div>
               <div className="supervisor-dialog__hint">可以直接填写项目定义，也可以让项目 AI 从已有终端的 Agent 对话和当前目录进度开始梳理。</div>
               <div className="supervisor-dialog__label">创建方式</div>
               <div className="supervisor-dialog__freedom">
