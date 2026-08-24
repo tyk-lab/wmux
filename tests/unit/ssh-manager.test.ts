@@ -10,6 +10,7 @@ import {
   buildSshChildPath,
   buildSshArchiveCommand,
   buildSshRenameTarget,
+  describeSshDeleteFailure,
   findOpenSshIdentityFiles,
   formatSshPermissions,
   hashKnownHostKey,
@@ -36,6 +37,28 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe('SSH delete failure messages', () => {
+  it('explains common SFTP failures with actionable reasons', () => {
+    expect(describeSshDeleteFailure(Object.assign(new Error('No such file'), { code: 2 }), 'file'))
+      .toBe('远程文件不存在或已被删除');
+    expect(describeSshDeleteFailure(Object.assign(new Error('Permission denied'), { code: 3 }), 'file'))
+      .toContain('所在目录的写权限和文件所有者');
+    expect(describeSshDeleteFailure(Object.assign(new Error('Failure'), { code: 4 }), 'directory'))
+      .toContain('目录可能非空');
+    expect(describeSshDeleteFailure(Object.assign(new Error('Failure'), { code: 4 }), 'file'))
+      .toContain('只读文件系统');
+    expect(describeSshDeleteFailure(Object.assign(new Error('Connection lost'), { code: 7 }), 'file'))
+      .toContain('重新连接');
+    expect(describeSshDeleteFailure(Object.assign(new Error('Unsupported'), { code: 8 }), 'file'))
+      .toContain('不支持删除');
+  });
+
+  it('keeps a useful server detail for unknown failures', () => {
+    expect(describeSshDeleteFailure(new Error('Device or resource busy'), 'file'))
+      .toBe('删除远程文件失败：Device or resource busy');
+  });
 });
 
 describe('parseOpenSshConfig', () => {
@@ -269,6 +292,80 @@ describe('SFTP file details', () => {
     expect(writes).toEqual(['saved']);
   });
 
+  it('atomically replaces existing text and exclusively creates new text', async () => {
+    const manager = new SshManager();
+    const files = new Map<string, { content: string; mode: number; mtime: number }>([
+      ['/srv/app/existing.txt', { content: 'old', mode: 0o100640, mtime: 100 }],
+    ]);
+    const sftp = {
+      lstat: (remotePath: string, callback: (error: (Error & { code?: number }) | undefined, attrs?: unknown) => void) => {
+        const file = files.get(remotePath);
+        if (!file) {
+          const error = Object.assign(new Error('missing'), { code: 2 });
+          callback(error);
+          return;
+        }
+        callback(undefined, { mode: file.mode, size: Buffer.byteLength(file.content), mtime: file.mtime, uid: 1000, gid: 100 });
+      },
+      writeFile: (remotePath: string, content: string, options: string | { flag?: string; mode?: number }, callback: (error?: Error) => void) => {
+        if (typeof options !== 'string' && options.flag === 'wx' && files.has(remotePath)) {
+          callback(new Error('exists'));
+          return;
+        }
+        files.set(remotePath, {
+          content,
+          mode: typeof options === 'string' ? 0o100600 : 0o100000 | (options.mode || 0o644),
+          mtime: 101,
+        });
+        callback();
+      },
+      chmod: (remotePath: string, mode: number, callback: (error?: Error) => void) => {
+        const file = files.get(remotePath)!;
+        file.mode = 0o100000 | mode;
+        callback();
+      },
+      chown: (_remotePath: string, uid: number, gid: number, callback: (error?: Error) => void) => {
+        expect({ uid, gid }).toEqual({ uid: 1000, gid: 100 });
+        callback();
+      },
+      ext_openssh_rename: (source: string, target: string, callback: (error?: Error) => void) => {
+        const file = files.get(source)!;
+        files.delete(source);
+        files.set(target, file);
+        callback();
+      },
+      ext_openssh_hardlink: (source: string, target: string, callback: (error?: Error) => void) => {
+        if (files.has(target)) {
+          callback(new Error('exists'));
+          return;
+        }
+        files.set(target, files.get(source)!);
+        callback();
+      },
+      unlink: (remotePath: string, callback: (error?: Error) => void) => {
+        files.delete(remotePath);
+        callback();
+      },
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.writeTextFileAtomically(
+      'workspace-a', '/srv/app/existing.txt', 'updated', { mtimeMs: 100_000 },
+    )).resolves.toEqual({ ok: true, mtimeMs: 101_000 });
+    expect(files.get('/srv/app/existing.txt')).toMatchObject({ content: 'updated', mode: 0o100640 });
+
+    await expect(manager.writeTextFileAtomically(
+      'workspace-a', '/srv/app/new.txt', 'created', { mustBeMissing: true },
+    )).resolves.toEqual({ ok: true, mtimeMs: 101_000 });
+    expect(files.get('/srv/app/new.txt')).toMatchObject({ content: 'created', mode: 0o100644 });
+    await expect(manager.writeTextFileAtomically(
+      'workspace-a', '/srv/app/new.txt', 'race', { mustBeMissing: true },
+    )).resolves.toMatchObject({ conflict: true, reason: 'created' });
+  });
+
   it('rejects binary files instead of corrupting them as UTF-8 text', async () => {
     const manager = new SshManager();
     const sftp = {
@@ -380,6 +477,24 @@ describe('SFTP mutations', () => {
     await manager.deleteEntry('workspace-a', '/home/pi/empty');
 
     expect(removed).toEqual(['file:/home/pi/file.txt', 'directory:/home/pi/empty']);
+  });
+
+  it('returns a clear reason when a remote file cannot be deleted', async () => {
+    const manager = new SshManager();
+    const permissionError = Object.assign(new Error('Permission denied'), { code: 3 });
+    const sftp = {
+      lstat: (_remotePath: string, callback: (error: Error | undefined, attrs: { mode: number }) => void) => {
+        callback(undefined, { mode: 0o100644 });
+      },
+      unlink: (_remotePath: string, callback: (error?: Error) => void) => callback(permissionError),
+    } as unknown as SFTPWrapper;
+    const sessions = (manager as unknown as {
+      sessions: Map<string, { client: Client; sftp: SFTPWrapper }>;
+    }).sessions;
+    sessions.set('workspace-a', { client: { end: () => undefined } as unknown as Client, sftp });
+
+    await expect(manager.deleteEntry('workspace-a', '/home/pi/protected.txt'))
+      .rejects.toThrow('没有删除远程文件的权限；请检查所在目录的写权限和文件所有者');
   });
 
   it('uploads local directories recursively and merges existing remote directories', async () => {

@@ -387,6 +387,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain('不得通过终端转发');
     expect(text).toContain('未授权权限确认');
     expect(text).toContain('SSH 远程控制终端不允许自动权限确认');
+    expect(text).toContain('目标项目只存在于 SSH 远端');
+    expect(text).toContain('禁止使用本地 apply_patch');
+    expect(text).toContain('所有项目探测、文件读写、格式化、构建和测试都必须作为命令发送到目标 SSH 终端');
+    expect(text).toContain('只有远端输出可作为完成证据');
     expect(text).not.toContain('已授权低风险权限确认');
   });
 

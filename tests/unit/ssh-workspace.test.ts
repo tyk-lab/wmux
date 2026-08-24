@@ -5,6 +5,7 @@ import {
   findSshFileSurface,
   isMissingSftpPathError,
   parentSshPath,
+  sshDeleteErrorText,
   updateSshFileSelection,
   upgradeSshSplitTree,
 } from '../../src/renderer/ssh-workspace';
@@ -20,6 +21,15 @@ function profile(authMethod: SshConnectionProfile['authMethod']): SshConnectionP
     authMethod,
   };
 }
+
+describe('SSH delete UI errors', () => {
+  it('identifies the failed file and keeps the main-process reason', () => {
+    expect(sshDeleteErrorText(
+      { name: 'config.yaml', type: 'file' },
+      new Error('没有删除远程文件的权限；请检查所在目录的写权限和文件所有者'),
+    )).toBe('删除文件“config.yaml”失败：没有删除远程文件的权限；请检查所在目录的写权限和文件所有者');
+  });
+});
 
 describe('buildSshSplitTree', () => {
   it('forces one password prompt and attaches only a secret-free credential id', () => {
@@ -45,13 +55,20 @@ describe('buildSshSplitTree', () => {
     expect(remote.customTitle).toBe('SSH · Production');
     expect(companion.customTitle).toBe('Codex · 控制 SSH');
     expect(companion.shell).toBe('pwsh.exe');
+    expect(companion.sshControllerTargetSurfaceId).toBe(remote.id);
     expect(launchCommand).toMatch(/^codex '/);
+    expect(launchCommand).not.toMatch(/[\r\n]/);
     expect(launchCommand).toContain(remote.id);
     expect(launchCommand).toContain('wmux read-screen --surface');
     expect(launchCommand).toContain('wmux send --surface');
     expect(launchCommand).toContain('wmux send-key enter --surface');
     expect(launchCommand).toContain(`wmux send-key c --ctrl --surface ${remote.id}`);
     expect(launchCommand).toContain('不要把 ctrl+c 当作键名');
+    expect(launchCommand).toContain('目标项目只存在于 SSH 远端');
+    expect(launchCommand).toContain('禁止使用本地 apply_patch');
+    expect(launchCommand).toContain('wmux ssh-file checkout');
+    expect(launchCommand).toContain('wmux ssh-file commit');
+    expect(launchCommand).toContain('只有远端输出可作为完成证据');
   });
 
   it('supports Kimi, Grok, or no companion agent', () => {
@@ -66,7 +83,12 @@ describe('buildSshSplitTree', () => {
     expect(kimi.customTitle).toBe('Kimi · 控制 SSH');
     expect(kimi.startupCommands).toEqual(['kimi']);
     expect(kimi.startupInput).toContain('wmux send-key c --ctrl --surface');
+    expect(kimi.startupInput).toContain('禁止使用本地 apply_patch');
+    expect(kimi.sshControllerTargetSurfaceId).toBe(kimiTree.children[0].type === 'leaf'
+      ? kimiTree.children[0].surfaces[0].id
+      : undefined);
     expect(grok.customTitle).toBe('Grok · 控制 SSH');
+    expect(grok.startupCommands?.[0]).toContain('目标项目只存在于 SSH 远端');
     expect(grok.startupCommands?.[0]).toMatch(/^grok '/);
     expect(sshOnlyTree.type).toBe('leaf');
     if (sshOnlyTree.type === 'leaf') expect(sshOnlyTree.surfaces).toHaveLength(1);

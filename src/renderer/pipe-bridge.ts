@@ -15081,12 +15081,52 @@ export function initPipeBridge(): void {
     return undefined;
   };
 
+  w.__wmux_resolveSshEditTarget = (params: any) => {
+    const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
+    const targetSurfaceId = String(params?.targetSurfaceId || params?.surfaceId || '').trim();
+    const caller = surfaceInCurrentWindow(callerSurfaceId);
+    if (!caller?.sshControllerTargetSurfaceId) {
+      return { ok: false, error: '当前 surface 不是 SSH companion Agent' };
+    }
+    if (caller.sshControllerTargetSurfaceId !== targetSurfaceId) {
+      return { ok: false, error: 'SSH companion 只能编辑其绑定的远端终端' };
+    }
+    const state = useStore.getState();
+    for (const workspace of state.workspaces) {
+      for (const paneId of getAllPaneIds(workspace.splitTree)) {
+        const target = findLeaf(workspace.splitTree, paneId)?.surfaces
+          .find((candidate) => candidate.id === targetSurfaceId);
+        if (!target) continue;
+        if (!target.sshRemote || !target.sshProfileId || workspace.sshConnectionState !== 'connected') {
+          return { ok: false, error: '绑定的 SSH 终端当前没有可用的 SFTP 连接' };
+        }
+        return { ok: true, workspaceId: workspace.id, targetSurfaceId };
+      }
+    }
+    return { ok: false, error: '绑定的 SSH 终端不存在' };
+  };
+
   w.__wmux_hasSurface = (surfaceId: string) => !!surfaceInCurrentWindow(String(surfaceId || ''));
 
   w.__wmux_authorizeSurfaceCapability = (request: any) => {
     const callerSurfaceId = String(request?.callerSurfaceId || '').trim();
     const surface = surfaceInCurrentWindow(callerSurfaceId);
     if (!surface) return { knownSurface: false };
+    if (String(request?.method || '').startsWith('ssh-file.')) {
+      const targetSurfaceId = String(request?.params?.targetSurfaceId || request?.params?.surfaceId || '').trim();
+      const checkoutTargetAllowed = request.method !== 'ssh-file.checkout'
+        || (!!targetSurfaceId && surface.sshControllerTargetSurfaceId === targetSurfaceId);
+      return {
+        knownSurface: true,
+        managed: true,
+        allowed: !!surface.sshControllerTargetSurfaceId && checkoutTargetAllowed,
+        ...(!surface.sshControllerTargetSurfaceId
+          ? { reason: '只有 SSH companion Agent 可以使用 ssh-file' }
+          : !checkoutTargetAllowed
+            ? { reason: 'SSH companion 只能编辑其绑定的远端终端' }
+            : {}),
+      };
+    }
     const state = useStore.getState();
     const supervisorLanes = state.supervisor.lanes.filter(
       (lane) => lane.supervisorSurfaceId === callerSurfaceId,

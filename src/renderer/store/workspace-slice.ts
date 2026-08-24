@@ -221,7 +221,7 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       // restoration never depends on effect cleanup order.
       snapshotSurvivingTerminalBuffers(tree);
     }
-    const sshTerminalRemoved = !!current?.sshProfileId
+    const sshTerminalRemoved = !!current
       && treeHasSshTerminal(current.splitTree)
       && !treeHasSshTerminal(tree);
     if (sshTerminalRemoved) disconnectWorkspaceSsh(id);

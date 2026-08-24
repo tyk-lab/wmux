@@ -14,6 +14,7 @@ import {
   type SupervisorForbiddenAction,
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
+import { SSH_REMOTE_EDITING_RULES } from '../../shared/ssh-agent-policy';
 import {
   normalizeTaskChildThreadResponsibilities,
   normalizeTaskMaxChildThreads,
@@ -490,8 +491,9 @@ function structuredPolicyBlock(session: SupervisorSession, lane: SupervisorLane)
     ? [
         '## SSH 远程控制安全边界',
         '此任务终端会直接或间接控制 SSH 远端，所有动作按目标服务器上的实际影响评估。',
+        ...SSH_REMOTE_EDITING_RULES,
         '可自主执行只读检查，以及当前目标内低风险、可逆的普通写入。',
-        '删除/覆盖、任何权限批准、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程操作、账户/权限/网络/系统配置及破坏性数据库操作，必须使用 needs-human。',
+        '删除/破坏性覆盖、任何权限批准、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程操作、账户/权限/网络/系统配置及破坏性数据库操作，必须使用 needs-human。',
         '不得通过终端转发、脚本或其他间接方式绕过这些边界。',
         '',
       ]

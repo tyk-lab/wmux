@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { createWorkspaceSlice, WorkspaceSlice } from '../../src/renderer/store/workspace-slice';
 import { createSurfaceSlice, SurfaceSlice } from '../../src/renderer/store/surface-slice';
@@ -30,6 +30,10 @@ describe('surface-slice', () => {
     paneId = (tree as Extract<SplitNode, { type: 'leaf' }>).paneId;
   });
 
+  afterEach(() => {
+    delete (globalThis as any).window;
+  });
+
   function currentLeaf() {
     const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId)!;
     return leafOf(ws.splitTree, paneId)!;
@@ -47,6 +51,71 @@ describe('surface-slice', () => {
       useStore.getState().renameSurface(workspaceId, paneId, id, 'X');
       useStore.getState().renameSurface(workspaceId, paneId, id, '');
       expect(currentLeaf().surfaces[0].customTitle).toBeUndefined();
+    });
+  });
+
+  describe('SSH surface teardown', () => {
+    it('disconnects SFTP when the SSH terminal tab is closed', () => {
+      const disconnect = vi.fn().mockResolvedValue({ ok: true });
+      (globalThis as any).window = { wmux: { pty: { kill: vi.fn() }, ssh: { disconnect } } };
+      const remoteSurfaceId = currentLeaf().surfaces[0].id;
+      useStore.getState().updateSurface(workspaceId, paneId, remoteSurfaceId, {
+        sshRemote: true,
+        sshProfileId: 'profile-a',
+      });
+      useStore.getState().updateWorkspaceMetadata(workspaceId, {
+        sshProfileId: 'profile-a',
+        sshConnectionState: 'connected',
+      });
+      const companionId = useStore.getState().addSurface(workspaceId, paneId, 'terminal', {
+        customTitle: 'Codex · 控制 SSH',
+      });
+
+      useStore.getState().closeSurface(workspaceId, paneId, remoteSurfaceId);
+
+      expect(disconnect).toHaveBeenCalledOnce();
+      expect(disconnect).toHaveBeenCalledWith(workspaceId);
+      expect(currentLeaf().surfaces.map((surface) => surface.id)).toEqual([companionId]);
+      expect(useStore.getState().workspaces[0].sshProfileId).toBeUndefined();
+      expect(useStore.getState().workspaces[0].sshConnectionState).toBeUndefined();
+    });
+
+    it('also disconnects when only the SSH surface retains legacy connection metadata', () => {
+      const disconnect = vi.fn().mockResolvedValue({ ok: true });
+      (globalThis as any).window = { wmux: { pty: { kill: vi.fn() }, ssh: { disconnect } } };
+      const remoteSurfaceId = currentLeaf().surfaces[0].id;
+      useStore.getState().updateSurface(workspaceId, paneId, remoteSurfaceId, {
+        sshRemote: true,
+        sshProfileId: 'profile-legacy',
+      });
+      useStore.getState().addSurface(workspaceId, paneId, 'terminal');
+
+      useStore.getState().closeSurface(workspaceId, paneId, remoteSurfaceId);
+
+      expect(disconnect).toHaveBeenCalledWith(workspaceId);
+    });
+
+    it('does not disconnect SFTP when only the companion terminal is closed', () => {
+      const disconnect = vi.fn().mockResolvedValue({ ok: true });
+      (globalThis as any).window = { wmux: { pty: { kill: vi.fn() }, ssh: { disconnect } } };
+      const remoteSurfaceId = currentLeaf().surfaces[0].id;
+      useStore.getState().updateSurface(workspaceId, paneId, remoteSurfaceId, {
+        sshRemote: true,
+        sshProfileId: 'profile-a',
+      });
+      useStore.getState().updateWorkspaceMetadata(workspaceId, {
+        sshProfileId: 'profile-a',
+        sshConnectionState: 'connected',
+      });
+      const companionId = useStore.getState().addSurface(workspaceId, paneId, 'terminal', {
+        customTitle: 'Codex · 控制 SSH',
+      });
+
+      useStore.getState().closeSurface(workspaceId, paneId, companionId!);
+
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(currentLeaf().surfaces[0].id).toBe(remoteSurfaceId);
+      expect(useStore.getState().workspaces[0].sshConnectionState).toBe('connected');
     });
   });
 

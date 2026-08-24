@@ -111,7 +111,11 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
       client.write(request + '\n');
     });
     let data = '';
-    const timeoutMs = method === 'supervisor.decide' ? 10_000 : 5_000;
+    const timeoutMs = method.startsWith('ssh-file.')
+      ? 30_000
+      : method === 'supervisor.decide'
+        ? 10_000
+        : 5_000;
     const timer = setTimeout(() => { client.end(); reject(new Error('timeout')); }, timeoutMs);
     client.on('data', (chunk) => {
       data += chunk.toString();
@@ -922,6 +926,30 @@ async function cmdSendKey(args: string[]): Promise<void> {
   print(await sendV2('surface.send_key', payload));
 }
 
+async function cmdSshFile(args: string[]): Promise<void> {
+  const action = String(args[1] || '').toLowerCase();
+  if (action === 'checkout') {
+    const targetSurfaceId = getFlag(args, '--surface');
+    const remotePath = getFlag(args, '--path');
+    if (!targetSurfaceId || !remotePath) {
+      throw new Error('Usage: wmux ssh-file checkout --surface <SSH终端ID> --path <远端绝对路径> [--create]');
+    }
+    print(await sendV2('ssh-file.checkout', {
+      targetSurfaceId,
+      path: remotePath,
+      create: args.includes('--create'),
+    }));
+    return;
+  }
+  if (action === 'commit' || action === 'abort') {
+    const token = getFlag(args, '--token') || args[2];
+    if (!token) throw new Error(`Usage: wmux ssh-file ${action} --token <ssh-edit-token>`);
+    print(await sendV2(`ssh-file.${action}`, { token }));
+    return;
+  }
+  throw new Error('Usage: wmux ssh-file <checkout|commit|abort>');
+}
+
 async function cmdNotify(args: string[]): Promise<void> {
   const titleIdx = args.indexOf('--title');
   const bodyIdx = args.indexOf('--body');
@@ -1213,6 +1241,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   // Terminal interaction
   send: cmdSend,
   'send-key': cmdSendKey,
+  'ssh-file': cmdSshFile,
   'read-screen': async (args) => {
     const lines = args.find((a, i) => args[i - 1] === '--lines');
     // Same targeting rule as send/send-key: inside a pane the caller's own
@@ -1346,6 +1375,8 @@ Pane:       split [--down] [--type T] [--color-scheme NAME], close-pane, focus-p
             pane new|close|focus|list   (verb form, mirrors issue #4 example)
 Layout:     layout grid --count <N> [--type terminal] [--anchor-surface <id>]
 Terminal:   send <text>, send-key <key>, read-screen [--lines N] [--surface <id>], trigger-flash
+SSH file:   ssh-file checkout --surface <SSH终端ID> --path <远端绝对路径> [--create]
+            ssh-file commit|abort --token <ssh-edit-token>
 Browser:    browser open|snapshot|click|type|fill|screenshot|get-text|eval|wait|back|forward|reload
 Agent:      agent spawn [--cmd C] [--label L] [--cwd D] [--pane P] [--replace-tab] | spawn-batch|status|list|kill
 Markdown:   markdown <file>   (open a file in a new markdown view)

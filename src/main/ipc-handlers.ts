@@ -535,7 +535,7 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
     const win = BrowserWindow.fromWebContents(event.sender);
     const options = {
       type: 'warning' as const,
-      title: '删除远程项目',
+      title: '删除远程项',
       message: `确定删除“${path.posix.basename(remotePath)}”吗？`,
       detail: '此操作无法撤销；目录仅在为空时才能删除。',
       buttons: ['删除', '取消'],
@@ -547,8 +547,12 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
       ? await dialog.showMessageBox(win, options)
       : await dialog.showMessageBox(options);
     if (confirmation.response !== 0) return { canceled: true };
-    await sshManager.deleteEntry(workspaceId, remotePath);
-    return { ok: true };
+    try {
+      await sshManager.deleteEntry(workspaceId, remotePath);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
   ipcMain.handle(IPC_CHANNELS.SSH_CREATE, async (
     _event,

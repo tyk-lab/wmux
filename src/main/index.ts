@@ -79,6 +79,7 @@ import {
   submitProjectMergeCandidate,
 } from './project-worker-worktrees';
 import { projectWorkerGroupCompletionViolation } from '../shared/project-manager';
+import { SshEditTransactionManager } from './ssh-edit-transactions';
 
 let feishuSupervisor: FeishuSupervisorService | null = null;
 
@@ -356,6 +357,7 @@ const pipeServer = new PipeServer(
   (token) => ptyManager.surfaceIdForAuthToken(token),
   authorizeSurfaceCapabilityRequest,
 );
+const sshEditTransactions = new SshEditTransactionManager(sshManager);
 const portScanner = new PortScanner();
 const cdpProxy = new CDPProxy();
 
@@ -430,6 +432,23 @@ async function resolvePtySurface(
     };
   }
   return { ok: true, id: branded };
+}
+
+async function resolveSshEditTarget(
+  callerSurfaceId: string,
+  targetSurfaceId: string,
+): Promise<{ ok: true; workspaceId: string; targetSurfaceId: string } | { ok: false; error: string }> {
+  if (!callerSurfaceId || !targetSurfaceId) return { ok: false, error: 'caller surface 和 SSH target surface 均不能为空' };
+  let firstError = '无法在活动窗口中解析 SSH 编辑目标';
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    const result = await win.webContents.executeJavaScript(
+      `window.__wmux_resolveSshEditTarget?.(${JSON.stringify({ callerSurfaceId, targetSurfaceId })})`,
+    );
+    if (result?.ok && result.workspaceId) return result;
+    if (result?.error) firstError = result.error;
+  }
+  return { ok: false, error: firstError };
 }
 
 // Named-key → raw PTY input translation. Fallback rules:
@@ -1147,6 +1166,42 @@ app.whenReady().then(() => {
         break;
       }
 
+      // ─── Managed SSH file editing ────────────────────────────────────────
+      case 'ssh-file.checkout': {
+        (async () => {
+          try {
+            const callerSurfaceId = String(request.params?.callerSurfaceId || '').trim();
+            const targetSurfaceId = String(request.params?.targetSurfaceId || request.params?.surfaceId || '').trim();
+            const target = await resolveSshEditTarget(callerSurfaceId, targetSurfaceId);
+            if (!target.ok) { respondError(-32003, target.error); return; }
+            respond(await sshEditTransactions.checkout({
+              callerSurfaceId,
+              targetSurfaceId: target.targetSurfaceId,
+              workspaceId: target.workspaceId,
+              remotePath: String(request.params?.path || ''),
+              create: request.params?.create === true,
+            }));
+          } catch (err: any) { respondError(-32000, err.message); }
+        })();
+        break;
+      }
+      case 'ssh-file.commit': {
+        (async () => {
+          try {
+            const callerSurfaceId = String(request.params?.callerSurfaceId || '').trim();
+            respond(await sshEditTransactions.commit(callerSurfaceId, String(request.params?.token || '')));
+          } catch (err: any) { respondError(-32000, err.message); }
+        })();
+        break;
+      }
+      case 'ssh-file.abort': {
+        try {
+          const callerSurfaceId = String(request.params?.callerSurfaceId || '').trim();
+          respond(sshEditTransactions.abort(callerSurfaceId, String(request.params?.token || '')));
+        } catch (err: any) { respondError(-32000, err.message); }
+        break;
+      }
+
       // ─── Terminal I/O V2 handlers ─────────────────────────────────────────
       case 'surface.send_text': {
         (async () => {
@@ -1504,6 +1559,7 @@ function releaseRuntimeResources(): void {
   if (runtimeResourcesReleased) return;
   runtimeResourcesReleased = true;
   ptyManager.killAll();
+  sshEditTransactions.cleanupAll();
   sshManager.disconnectAll();
   sshTransferCache.cleanup();
   pipeServer.stop();

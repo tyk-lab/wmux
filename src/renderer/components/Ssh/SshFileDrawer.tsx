@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SshFileEntry } from '../../../shared/types';
-import { isMissingSftpPathError, parentSshPath, updateSshFileSelection } from '../../ssh-workspace';
+import { isMissingSftpPathError, parentSshPath, sshDeleteErrorText, updateSshFileSelection } from '../../ssh-workspace';
 import '../../styles/ssh.css';
 
 interface Props {
@@ -481,6 +481,8 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     try {
       const result = await window.wmux?.ssh?.delete?.(workspaceId, entry.path);
       if (result?.canceled) return;
+      if (!result) throw new Error('SSH 文件接口不可用，请重启应用后重试');
+      if (result.ok === false) throw new Error(result.error || 'SSH 服务器未提供具体原因');
       setTransferStatus('正在更新目录…');
       setSelectedPaths((current) => {
         const next = new Set(current);
@@ -492,7 +494,7 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       setTransferStatus('删除完成');
       await refresh(true);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(sshDeleteErrorText(entry, reason));
       setTransferStatus('');
     }
   };

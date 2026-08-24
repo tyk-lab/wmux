@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { PaneId, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef } from '../shared/types';
+import { SSH_REMOTE_EDITING_RULES } from '../shared/ssh-agent-policy';
 
 function quoteSshArgument(value: string): string {
   return /\s/.test(value) ? `"${value.replace(/"/g, '')}"` : value;
@@ -12,16 +13,25 @@ function quotePowerShellArgument(value: string): string {
 /** Gives the companion Agent terminal an explicit, scoped control contract. */
 export function buildSshAgentInstruction(remoteSurfaceId: SurfaceId): string {
   return [
+    '[SSH 远端 Agent 控制契约]',
     `你负责协助操作同一 wmux 工作区内的 SSH 终端，目标 surfaceId 是 ${remoteSurfaceId}。`,
+    ...SSH_REMOTE_EDITING_RULES,
+    '终端控制方式：',
     `读取最近输出：wmux read-screen --surface ${remoteSurfaceId} --lines 100。`,
     `发送文本：wmux send --surface ${remoteSurfaceId} "<命令或输入>"。`,
     `提交输入：wmux send-key enter --surface ${remoteSurfaceId}。`,
     `中断当前远程命令：wmux send-key c --ctrl --surface ${remoteSurfaceId}；键名是 c，Ctrl 用 --ctrl 修饰，不要把 ctrl+c 当作键名。`,
-    '发送后必须再读取屏幕确认结果。中断命令、删除数据、安装软件、修改服务/进程/账号/权限/网络/系统配置前，必须获得用户明确批准。',
+    '发送命令后必须再次读取屏幕，等待远端提示符或明确完成结果后再决定下一步。中断命令、删除数据、破坏性覆盖、安装软件、修改服务/进程/账号/权限/网络/系统配置前，必须获得用户明确批准。',
+  // Keep Codex/Grok launch commands on one physical PowerShell line; Kimi receives
+  // the same text as startup input, where the sentence boundaries remain explicit.
   ].join(' ');
 }
 
-function buildCompanionSurface(agent: Exclude<SshCompanionAgent, 'none'>, instruction: string): SurfaceRef {
+function buildCompanionSurface(
+  agent: Exclude<SshCompanionAgent, 'none'>,
+  instruction: string,
+  remoteSurfaceId: SurfaceId,
+): SurfaceRef {
   const displayName = agent === 'codex' ? 'Codex' : agent === 'kimi' ? 'Kimi' : 'Grok';
   if (agent === 'kimi') {
     return {
@@ -31,6 +41,7 @@ function buildCompanionSurface(agent: Exclude<SshCompanionAgent, 'none'>, instru
       shell: 'pwsh.exe',
       startupCommands: ['kimi'],
       startupInput: instruction,
+      sshControllerTargetSurfaceId: remoteSurfaceId,
     };
   }
   return {
@@ -39,6 +50,7 @@ function buildCompanionSurface(agent: Exclude<SshCompanionAgent, 'none'>, instru
     customTitle: `${displayName} · 控制 SSH`,
     shell: 'pwsh.exe',
     startupCommands: [`${agent} ${quotePowerShellArgument(instruction)}`],
+    sshControllerTargetSurfaceId: remoteSurfaceId,
   };
 }
 
@@ -54,6 +66,12 @@ export function parentSshPath(current: string): string {
 export function isMissingSftpPathError(reason: unknown): boolean {
   const message = reason instanceof Error ? reason.message : String(reason);
   return /no such file|not found|不存在/i.test(message);
+}
+
+export function sshDeleteErrorText(entry: Pick<SshFileEntry, 'name' | 'type'>, reason: unknown): string {
+  const detail = reason instanceof Error ? reason.message : String(reason || 'SSH 服务器未提供具体原因');
+  const label = entry.type === 'directory' ? '目录' : '文件';
+  return `删除${label}“${entry.name}”失败：${detail}`;
 }
 
 export function updateSshFileSelection(
@@ -170,7 +188,7 @@ export function buildSshSplitTree(profile: SshConnectionProfile, companionAgent:
       {
         type: 'leaf',
         paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [buildCompanionSurface(companionAgent, agentInstruction)],
+        surfaces: [buildCompanionSurface(companionAgent, agentInstruction, remoteSurface.id)],
         activeSurfaceIndex: 0,
       },
     ],

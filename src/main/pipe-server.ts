@@ -32,7 +32,8 @@ const PUBLIC_V2_METHODS = new Set<string>([
 function requiresSurfaceCapability(method: string): boolean {
   return method === 'role.context'
     || method.startsWith('project.')
-    || method.startsWith('supervisor.');
+    || method.startsWith('supervisor.')
+    || method.startsWith('ssh-file.');
 }
 
 export type SurfaceCapabilityAuthorizer = (

@@ -130,6 +130,8 @@ export interface SurfaceRef {
   sshRemote?: boolean;
   /** Secret-free lookup key for main-process SSH password injection. */
   sshProfileId?: string;
+  /** Local companion capability: the only SSH terminal this surface may edit through ssh-file. */
+  sshControllerTargetSurfaceId?: SurfaceId;
   /** Initial URL for a browser surface created from a quick-launch profile (issue #32). */
   url?: string;
   /** Rendered markdown content for a `markdown` surface (issue #54). Persisted so

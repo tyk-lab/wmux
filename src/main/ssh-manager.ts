@@ -33,6 +33,10 @@ type SshSession = { client: Client; sftp: SFTPWrapper };
 
 export const MAX_SSH_TEXT_BYTES = 5 * 1024 * 1024;
 
+export type SshAtomicTextWriteResult =
+  | { ok: true; mtimeMs: number }
+  | { conflict: true; currentMtimeMs?: number; reason: 'changed' | 'created' };
+
 function expandHome(filePath: string, homeDirectory = os.homedir()): string {
   if (filePath === '~') return homeDirectory;
   if (filePath.startsWith('~/') || filePath.startsWith('~\\')) return path.join(homeDirectory, filePath.slice(2));
@@ -491,6 +495,29 @@ function remoteMtimeMs(mtime: number | undefined): number {
   return (mtime || 0) * 1000;
 }
 
+export function describeSshDeleteFailure(
+  error: unknown,
+  entryType: 'file' | 'directory' | 'entry' = 'entry',
+): string {
+  const value = error as { code?: number | string; message?: string } | null | undefined;
+  const code = value?.code;
+  const label = entryType === 'directory' ? '目录' : entryType === 'file' ? '文件' : '项目';
+  if (code === 2 || code === 'ENOENT' || code === 'NO_SUCH_FILE') return `远程${label}不存在或已被删除`;
+  if (code === 3 || code === 'EACCES' || code === 'EPERM' || code === 'PERMISSION_DENIED') {
+    return `没有删除远程${label}的权限；请检查所在目录的写权限和文件所有者`;
+  }
+  if (code === 6 || code === 7 || code === 'ENOTCONN' || code === 'ECONNRESET'
+    || code === 'NO_CONNECTION' || code === 'CONNECTION_LOST') {
+    return 'SSH 文件连接已中断；请重新连接后重试';
+  }
+  if (code === 8 || code === 'ENOSYS' || code === 'OP_UNSUPPORTED') return `SSH 服务器不支持删除该远程${label}`;
+  if ((code === 4 || code === 'FAILURE') && entryType === 'directory') return '删除远程目录失败；目录可能非空，或服务器拒绝了删除操作';
+  if (code === 4 || code === 'FAILURE') return `删除远程${label}失败；服务器拒绝了操作，可能是只读文件系统、文件被占用或所在目录不可写`;
+  const detail = String(value?.message || error || '').trim();
+  if (detail && !/^failure$/i.test(detail)) return `删除远程${label}失败：${detail}`;
+  return `删除远程${label}失败；SSH 服务器未提供具体原因`;
+}
+
 async function statSshTextFile(sftp: SFTPWrapper, remotePath: string): Promise<Attributes> {
   const attributes = await new Promise<Attributes>((resolve, reject) => {
     sftp.lstat(remotePath, (error, value) => {
@@ -676,6 +703,85 @@ export class SshManager {
     return { ok: true, mtimeMs: remoteMtimeMs(updated.mtime) };
   }
 
+  /** Atomically replace existing text; create new text with an exclusive hard link. */
+  async writeTextFileAtomically(
+    workspaceId: string,
+    remotePath: string,
+    content: string,
+    expected: { mtimeMs?: number; mustBeMissing?: boolean },
+  ): Promise<SshAtomicTextWriteResult> {
+    const cleanPath = path.posix.normalize(validateSshFilePath(remotePath));
+    if (!cleanPath.startsWith('/')) throw new Error('远程编辑事务只接受绝对路径');
+    if (typeof content !== 'string') throw new Error('没有可写入的文本内容');
+    if (Buffer.byteLength(content, 'utf8') > MAX_SSH_TEXT_BYTES) throw new Error('文本内容超过 5MB，无法保存');
+    const sftp = this.getSftp(workspaceId);
+    let targetMode = 0o100644;
+    let targetOwner: { uid: number; gid: number } | undefined;
+    const exists = await sftpPathExists(sftp, cleanPath);
+    if (expected.mustBeMissing) {
+      if (exists) {
+        const current = await statSshTextFile(sftp, cleanPath);
+        return { conflict: true, currentMtimeMs: remoteMtimeMs(current.mtime), reason: 'created' };
+      }
+    } else {
+      if (!exists) return { conflict: true, reason: 'changed' };
+      const current = await statSshTextFile(sftp, cleanPath);
+      const currentMtimeMs = remoteMtimeMs(current.mtime);
+      if (expected.mtimeMs !== undefined && currentMtimeMs !== expected.mtimeMs) {
+        return { conflict: true, currentMtimeMs, reason: 'changed' };
+      }
+      targetMode = current.mode;
+      targetOwner = { uid: current.uid, gid: current.gid };
+    }
+
+    const tempPath = path.posix.join(
+      path.posix.dirname(cleanPath),
+      `.${path.posix.basename(cleanPath)}.wmux-edit-${randomUUID()}`,
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        sftp.writeFile(tempPath, content, 'utf8', (error) => error
+          ? reject(new Error(error.message || '写入远程临时文件失败'))
+          : resolve());
+      });
+      await new Promise<void>((resolve, reject) => {
+        sftp.chmod(tempPath, targetMode & 0o777, (error) => error
+          ? reject(new Error(error.message || '设置远程临时文件权限失败'))
+          : resolve());
+      });
+      if (targetOwner) {
+        await new Promise<void>((resolve, reject) => {
+          sftp.chown(tempPath, targetOwner.uid, targetOwner.gid, (error) => error
+            ? reject(new Error(error.message || '保留远程文件所有者失败'))
+            : resolve());
+        });
+      }
+      if (expected.mustBeMissing) {
+        await new Promise<void>((resolve, reject) => {
+          sftp.ext_openssh_hardlink(tempPath, cleanPath, (error) => error
+            ? reject(new Error(error.message || '远端不支持原子新建'))
+            : resolve());
+        });
+        await new Promise<void>((resolve) => sftp.unlink(tempPath, () => resolve()));
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          sftp.ext_openssh_rename(tempPath, cleanPath, (error) => error
+            ? reject(new Error(error.message || '远端不支持原子替换'))
+            : resolve());
+        });
+      }
+    } catch (error) {
+      await new Promise<void>((resolve) => sftp.unlink(tempPath, () => resolve()));
+      if (expected.mustBeMissing && await sftpPathExists(sftp, cleanPath)) {
+        const current = await statSshTextFile(sftp, cleanPath);
+        return { conflict: true, currentMtimeMs: remoteMtimeMs(current.mtime), reason: 'created' };
+      }
+      throw error;
+    }
+    const updated = await statSshTextFile(sftp, cleanPath);
+    return { ok: true, mtimeMs: remoteMtimeMs(updated.mtime) };
+  }
+
   async rename(workspaceId: string, remotePath: string, newName: string): Promise<string> {
     const targetPath = buildSshRenameTarget(remotePath, newName);
     const sftp = this.getSftp(workspaceId);
@@ -720,13 +826,14 @@ export class SshManager {
     await new Promise<void>((resolve, reject) => {
       sftp.lstat(remotePath, (statError, attributes) => {
         if (statError || !attributes) {
-          reject(new Error(statError?.message || '无法读取远程文件信息'));
+          reject(new Error(describeSshDeleteFailure(statError, 'entry')));
           return;
         }
+        const entryType = (attributes.mode & 0o170000) === 0o040000 ? 'directory' : 'file';
         const callback = (error?: Error | null) => error
-          ? reject(new Error(error.message || '删除失败；目录必须为空'))
+          ? reject(new Error(describeSshDeleteFailure(error, entryType)))
           : resolve();
-        if ((attributes.mode & 0o170000) === 0o040000) sftp.rmdir(remotePath, callback);
+        if (entryType === 'directory') sftp.rmdir(remotePath, callback);
         else sftp.unlink(remotePath, callback);
       });
     });

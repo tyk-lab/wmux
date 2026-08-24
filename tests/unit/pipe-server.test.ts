@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'net';
 import { PipeServer } from '../../src/main/pipe-server';
 
@@ -352,6 +352,45 @@ describe('PipeServer', () => {
     }));
     expect(JSON.parse(accepted).result).toEqual({ ok: true });
     expect(received.params.callerSurfaceId).toBe('surf-role-owner');
+  });
+
+  it('requires and binds a live surface capability for managed SSH file editing', async () => {
+    const pipe = uniquePipe();
+    const authorize = vi.fn(async (surfaceId: string, method: string) => ({
+      allowed: surfaceId === 'surf-ssh-companion' && method === 'ssh-file.checkout',
+    }));
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'companion-secret' ? 'surf-ssh-companion' : undefined,
+      authorize,
+    );
+    let received: any;
+    server.on('v2', (req, respond) => { received = req; respond({ ok: true }); });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const rejected = await connectAndSend(pipe, JSON.stringify({
+      method: 'ssh-file.checkout',
+      params: { targetSurfaceId: 'surf-ssh', path: '/srv/app/file.ts' },
+      id: 15,
+      token: 'instance-secret',
+    }));
+    expect(JSON.parse(rejected).error?.code).toBe(-32001);
+
+    const accepted = await connectAndSend(pipe, JSON.stringify({
+      method: 'ssh-file.checkout',
+      params: { callerSurfaceId: 'forged', targetSurfaceId: 'surf-ssh', path: '/srv/app/file.ts' },
+      id: 16,
+      token: 'companion-secret',
+    }));
+    expect(JSON.parse(accepted).result).toEqual({ ok: true });
+    expect(received.params.callerSurfaceId).toBe('surf-ssh-companion');
+    expect(authorize).toHaveBeenCalledWith(
+      'surf-ssh-companion',
+      'ssh-file.checkout',
+      expect.objectContaining({ targetSurfaceId: 'surf-ssh' }),
+    );
   });
 
   it('rejects a surface-capability request denied by the live role authorizer', async () => {
