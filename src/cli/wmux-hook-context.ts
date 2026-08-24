@@ -16,3 +16,13 @@ export function resolveWmuxHookRuntimeContext(
     ? { state: 'invalid', missing }
     : { state: 'ready', missing: [] };
 }
+
+const OBSERVATIONAL_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
+
+/**
+ * Tool activity is best-effort telemetry. Turn boundaries and permission
+ * requests drive supervision state, so losing those must remain visible.
+ */
+export function wmuxHookTransportFailureExitCode(event: string): 0 | 1 {
+  return OBSERVATIONAL_HOOK_EVENTS.has(event) ? 0 : 1;
+}

@@ -19,17 +19,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * WMUX_SURFACE_ID ties the event to its pane.
  * --agent (or WMUX_AGENT env) labels the notification (Kimi / Codex / …).
  */
+const node_fs_1 = __importDefault(require("node:fs"));
 const net_1 = __importDefault(require("net"));
 const node_crypto_1 = require("node:crypto");
+const node_path_1 = __importDefault(require("node:path"));
 const wmux_hook_context_1 = require("./wmux-hook-context");
 const wmux_hook_payload_1 = require("./wmux-hook-payload");
-const runtimeContext = (0, wmux_hook_context_1.resolveWmuxHookRuntimeContext)(process.env);
-if (runtimeContext.state === 'inactive')
-    process.exit(0);
-if (runtimeContext.state === 'invalid') {
-    console.error(`[wmux-hook] wmux integration is missing: ${runtimeContext.missing.join(', ')}`);
-    process.exit(1);
-}
 const argv = process.argv.slice(2);
 function takeFlag(args, name) {
     const i = args.indexOf(name);
@@ -54,18 +49,60 @@ const pipePath = process.env.WMUX_PIPE || '\\\\.\\pipe\\wmux';
 const token = process.env.WMUX_PIPE_TOKEN || '';
 const surfaceId = process.env.WMUX_SURFACE_ID || '';
 const agent = agentFlag || process.env.WMUX_AGENT || '';
+const failureEvent = event || (tool ? 'PostToolUse' : 'unknown');
 let stdinData = '';
 let sent = false;
 let fallbackTimer;
 const MAX_STDIN = 64 * 1024; // 64KB cap
 const MAX_PIPE_ATTEMPTS = 3;
+const PIPE_RESPONSE_TIMEOUT_MS = 1000;
+function recordHookTransportFailure(kind, detail, attempts) {
+    try {
+        const appData = process.env.APPDATA?.trim();
+        if (!appData)
+            return;
+        const instance = process.env.WMUX_INSTANCE?.trim();
+        const logDir = node_path_1.default.join(appData, instance ? `wmux-${instance}` : 'wmux', 'logs');
+        node_fs_1.default.mkdirSync(logDir, { recursive: true });
+        const safeDetail = detail.replace(/[\r\n]+/gu, ' ').slice(0, 240);
+        node_fs_1.default.writeFileSync(node_path_1.default.join(logDir, 'hook-transport-last.json'), JSON.stringify({
+            version: 1,
+            ts: Date.now(),
+            event: failureEvent,
+            agent,
+            surfaceId,
+            attempts,
+            kind,
+            detail: safeDetail,
+        }, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    }
+    catch {
+        // Diagnostics must never turn a recoverable telemetry loss into a Hook failure.
+    }
+}
+function finishHookTransportFailure(kind, detail, attempts) {
+    recordHookTransportFailure(kind, detail, attempts);
+    const exitCode = (0, wmux_hook_context_1.wmuxHookTransportFailureExitCode)(failureEvent);
+    if (exitCode !== 0) {
+        const suffix = detail ? `: ${detail.replace(/[\r\n]+/gu, ' ').slice(0, 240)}` : '';
+        console.error(`[wmux-hook] ${failureEvent} delivery failed (${kind}, attempts=${attempts})${suffix}`);
+    }
+    process.exitCode = exitCode;
+}
+const runtimeContext = (0, wmux_hook_context_1.resolveWmuxHookRuntimeContext)(process.env);
+if (runtimeContext.state === 'inactive')
+    process.exit(0);
+if (runtimeContext.state === 'invalid') {
+    finishHookTransportFailure('missing-context', runtimeContext.missing.join(', '), 0);
+    process.exit();
+}
 function sendHook() {
     if (sent)
         return;
     sent = true;
     if (fallbackTimer)
         clearTimeout(fallbackTimer);
-    const payload = (0, wmux_hook_payload_1.parseWmuxHookPayload)(stdinData);
+    const payload = (0, wmux_hook_payload_1.parseWmuxHookPayload)(stdinData, event || failureEvent);
     const params = {};
     params.hookId = (0, wmux_hook_payload_1.stableWmuxHookId)({
         event,
@@ -107,37 +144,47 @@ function sendHook() {
         const client = net_1.default.connect({ path: pipePath }, () => {
             client.write(wireMessage);
         });
-        client.setTimeout(1000);
-        const retry = () => {
+        client.setTimeout(PIPE_RESPONSE_TIMEOUT_MS);
+        const retry = (kind, detail) => {
             if (completed || retryScheduled)
                 return;
             if (attempt >= MAX_PIPE_ATTEMPTS) {
-                process.exitCode = 1;
+                completed = true;
+                client.destroy();
+                finishHookTransportFailure(kind, detail, attempt);
                 return;
             }
             retryScheduled = true;
+            client.destroy();
             setTimeout(write, attempt * 200);
         };
         client.on('data', (chunk) => {
             response += chunk.toString();
             if (!response.includes('\n'))
                 return;
-            completed = true;
-            client.end();
             try {
                 const reply = JSON.parse(response.trim());
-                if (reply.error)
-                    process.exitCode = 1;
+                if (reply.error) {
+                    completed = true;
+                    client.end();
+                    const code = String(reply.error.code ?? 'unknown');
+                    const message = String(reply.error.message ?? 'wmux rejected the Hook event');
+                    finishHookTransportFailure('server-error', `${code} ${message}`, attempt);
+                    return;
+                }
+                completed = true;
+                client.end();
             }
             catch {
-                process.exitCode = 1;
+                retry('invalid-response', 'wmux returned non-JSON data');
             }
         });
-        client.once('end', retry);
-        client.once('error', retry);
+        client.once('end', () => retry('invalid-response', 'wmux closed before a complete response'));
+        client.once('error', (error) => {
+            retry('socket-error', error.code || error.message || 'unknown socket error');
+        });
         client.once('timeout', () => {
-            client.destroy();
-            retry();
+            retry('response-timeout', `no response within ${PIPE_RESPONSE_TIMEOUT_MS}ms`);
         });
     };
     write();

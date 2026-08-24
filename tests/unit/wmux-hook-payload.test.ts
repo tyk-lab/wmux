@@ -31,6 +31,24 @@ describe('wmux Hook payload normalization', () => {
     }))).toMatchObject({ sessionId: 'pi-session', turnId: 'pi-turn', task: '运行测试' });
   });
 
+  it('preserves the Codex Stop final answer as the lifecycle message', () => {
+    expect(parseWmuxHookPayload(JSON.stringify({
+      hook_event_name: 'Stop',
+      last_assistant_message: 'P170 正向正式运行失败；已 safe-stop，禁止复用本次身份。',
+      message: 'Stop hook completed',
+    }))).toMatchObject({
+      message: 'P170 正向正式运行失败；已 safe-stop，禁止复用本次身份。',
+    });
+  });
+
+  it('does not replace non-terminal Hook messages with an earlier assistant answer', () => {
+    expect(parseWmuxHookPayload(JSON.stringify({
+      hook_event_name: 'PermissionRequest',
+      last_assistant_message: '上一轮已经完成。',
+      message: 'Allow exec_command?',
+    }))).toMatchObject({ message: 'Allow exec_command?' });
+  });
+
   it('deduplicates all terminal variants for one native turn but not its start', () => {
     const base = { agent: 'Pi', surfaceId: 'surface-1', sessionId: 'session-1', turnId: 'turn-1' };
     const stopped = stableWmuxHookId({ ...base, event: 'Stop' });

@@ -16,7 +16,7 @@ function record(value) {
         : {};
 }
 /** Parse snake_case, camelCase and Pi's wmux-prefixed lifecycle payloads. */
-function parseWmuxHookPayload(stdinData) {
+function parseWmuxHookPayload(stdinData, fallbackEvent = '') {
     let data = {};
     try {
         data = record(stdinData.trim() ? JSON.parse(stdinData) : {});
@@ -26,9 +26,15 @@ function parseWmuxHookPayload(stdinData) {
     }
     const toolInput = record(data.tool_input || data.toolInput || data.input);
     const nestedInput = record(data.input);
+    const hookEvent = compact(data.hook_event_name || data.hookEventName || fallbackEvent);
+    const lastAssistantMessage = ['Stop', 'StopFailure', 'Interrupt'].includes(hookEvent)
+        ? data.last_assistant_message || data.lastAssistantMessage
+        : '';
     return {
         file: compact(toolInput.file_path || toolInput.filePath || toolInput.path),
-        message: compact(data.message || toolInput.description),
+        message: compact(lastAssistantMessage
+            || data.message
+            || toolInput.description),
         task: compact(data.prompt || data.user_prompt || data.userPrompt || nestedInput.prompt),
         command: compact(toolInput.command || nestedInput.command),
         cwd: compact(data.cwd || data.working_directory || data.workingDirectory),

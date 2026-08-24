@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveWmuxHookRuntimeContext } from '../../src/cli/wmux-hook-context';
+import {
+  resolveWmuxHookRuntimeContext,
+  wmuxHookTransportFailureExitCode,
+} from '../../src/cli/wmux-hook-context';
 
 describe('wmux hook runtime context', () => {
   it('silently skips globally installed hooks outside wmux', () => {
@@ -32,5 +35,15 @@ describe('wmux hook runtime context', () => {
       WMUX_PIPE: '\\\\.\\pipe\\wmux',
       WMUX_PIPE_TOKEN: 'test-token',
     })).toEqual({ state: 'ready', missing: [] });
+  });
+
+  it('fails open only for observational tool telemetry', () => {
+    expect(wmuxHookTransportFailureExitCode('PreToolUse')).toBe(0);
+    expect(wmuxHookTransportFailureExitCode('PostToolUse')).toBe(0);
+    expect(wmuxHookTransportFailureExitCode('UserPromptSubmit')).toBe(1);
+    expect(wmuxHookTransportFailureExitCode('PermissionRequest')).toBe(1);
+    expect(wmuxHookTransportFailureExitCode('SubagentStop')).toBe(1);
+    expect(wmuxHookTransportFailureExitCode('Stop')).toBe(1);
+    expect(wmuxHookTransportFailureExitCode('unknown')).toBe(1);
   });
 });

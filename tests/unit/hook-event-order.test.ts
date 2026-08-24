@@ -31,7 +31,9 @@ describe('hook event ordering', () => {
     expect(hookSource).toContain("const reply = JSON.parse(response.trim())");
     expect(hookSource).not.toContain('client.write(wireMessage, () =>');
     expect(hookSource).toContain('if (attempt >= MAX_PIPE_ATTEMPTS)');
-    expect(hookSource).toContain('process.exitCode = 1;');
+    expect(hookSource).toContain('finishHookTransportFailure(kind, detail, attempt);');
+    expect(hookSource).toContain('wmuxHookTransportFailureExitCode(failureEvent)');
+    expect(hookSource).toContain("'hook-transport-last.json'");
   });
 
   it('records every task start but wakes supervision only for confirmed user-direct work', () => {
