@@ -492,6 +492,27 @@ describe('project-manager engine', () => {
     expect(projectContractViolation(contract, {
       command: 'python -m unittest *> runs/run_templates/candidate.pytest.log',
     })).toContain('模板目录只能保存');
+    expect(projectContractViolation(contract, {
+      command: 'python -m unittest *>runs/run_templates/candidate.pytest.log',
+    })).toContain('模板目录只能保存');
+    expect(projectContractViolation(contract, {
+      command: 'validator --output=runs/run_templates/candidate.validate.output.json',
+    })).toContain('模板目录只能保存');
+    expect(projectContractViolation(contract, {
+      changedFiles: ['tests/test_config_and_plan.r12-a9.log'],
+    })).toContain('测试/源码目录只能保存源码');
+    expect(projectContractViolation(contract, {
+      command: 'python -m unittest *>tests/test_config_and_plan.r12-a9.log',
+    })).toContain('测试/源码目录只能保存源码');
+    expect(projectContractViolation(contract, {
+      command: 'runner --output "tests/test logs/focused run.log"',
+    })).toContain('测试/源码目录只能保存源码');
+    expect(projectContractViolation({
+      ...contract,
+      scope: { ...contract.scope, allowPaths: ['runs', 'tests'] },
+    }, {
+      changedFiles: ['tests/fixtures/expected-output.log'],
+    })).toBeNull();
   });
 
   it('distinguishes a negated safety reference from an affirmative forbidden action', () => {

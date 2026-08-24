@@ -27,7 +27,7 @@ export const PROJECT_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
   '先运行 wmux context 获取当前 capability 绑定的项目、目标、工作项、需求/授权版本、基线、合同范围和可用动作；不得沿用旧会话身份或自行指定其他项目/工作项。',
   'wmux context 描述的是 wmux 合同权限；Agent 原生工具仍受当前 Agent 和沙箱配置约束，且不能扩大合同边界。',
-  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出写入项目内日志或证据文件并报告路径，不得只依赖终端滚屏。',
+  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出只能写入项目约定的实际运行/证据目录并报告路径，不得只依赖终端滚屏；tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源，禁止写入日志、validate/dry-run 输出和运行结果。',
 ].join('\n');
 
 export interface ProjectExecutionIdentity {
@@ -506,10 +506,7 @@ function instructionAffirmativelyMentions(instruction: string, term: string): bo
   return false;
 }
 
-function runtimeArtifactInTemplateDirectory(value: string): boolean {
-  const normalized = value.trim().replace(/\\/gu, '/').toLowerCase();
-  if (!/(?:^|\/)run[-_]templates(?:\/|$)/u.test(normalized)) return false;
-  const name = normalized.split('/').pop() || '';
+function runtimeArtifactName(name: string): boolean {
   return /\.(?:log|csv|tsv|xml|trx|jsonl|ndjson)$/u.test(name)
     || /\.(?:stdout|stderr|output)\.(?:json|txt)$/u.test(name)
     || /\.(?:dry-run|validate)(?:\.(?:stdout|stderr|output))?\.json$/u.test(name)
@@ -517,18 +514,32 @@ function runtimeArtifactInTemplateDirectory(value: string): boolean {
     || /^(?:manifest|safe-stop|failure|telemetry|report)(?:[-_.]|$)/u.test(name);
 }
 
-function projectTemplateArtifactViolation(value: string): string | null {
-  return runtimeArtifactInTemplateDirectory(value)
-    ? `模板目录只能保存可复用的预执行输入；运行、验证、日志或结果产物必须写入项目约定的实际运行/证据目录：${value}`
+export function projectArtifactLocationViolation(value: string): string | null {
+  const normalized = value.trim().replace(/\\/gu, '/').toLowerCase();
+  const name = normalized.split('/').pop() || '';
+  if (!runtimeArtifactName(name)) return null;
+  if (/(?:^|\/)run[-_]templates(?:\/|$)/u.test(normalized)) {
+    return `模板目录只能保存可复用的预执行输入；运行、验证、日志或结果产物必须写入项目约定的实际运行/证据目录：${value}`;
+  }
+  const sourceDirectory = /(?:^|\/)(?:tests?|src)(?:\/|$)/u.test(normalized);
+  const staticTestResource = /(?:^|\/)(?:fixtures?|testdata|test-data|snapshots?|__snapshots__)(?:\/|$)/u.test(normalized);
+  return sourceDirectory && !staticTestResource
+    ? `测试/源码目录只能保存源码、正式 fixture 或静态测试资源；运行日志、验证输出和结果必须写入项目约定的实际运行/证据目录：${value}`
     : null;
 }
 
-function commandArtifactViolation(value: string): string | null {
-  const candidates = value.split(/\s+/u)
+export function projectArtifactCommandViolation(value: string): string | null {
+  const quotedCandidates = [...value.matchAll(/["']([^"']*(?:run[-_]templates|tests?|src)[\\/][^"']+)["']/giu)]
+    .map((match) => match[1]);
+  const candidates = [...quotedCandidates, ...value.split(/\s+/u)]
     .map((entry) => entry.replace(/^["'`([{<]+|["'`\])}>;,]+$/gu, ''))
-    .filter((entry) => /run[-_]templates[\\/]/iu.test(entry));
-  for (const candidate of candidates) {
-    const violation = projectTemplateArtifactViolation(candidate);
+    .filter((entry) => /(?:run[-_]templates|tests?|src)[\\/]/iu.test(entry));
+  for (const rawCandidate of candidates) {
+    const pathOffset = rawCandidate.search(/(?:runs[\\/])?run[-_]templates[\\/]|(?:tests?|src)[\\/]/iu);
+    const candidate = pathOffset >= 0
+      ? rawCandidate.slice(pathOffset)
+      : rawCandidate;
+    const violation = projectArtifactLocationViolation(candidate);
     if (violation) return violation;
   }
   return null;
@@ -574,7 +585,7 @@ export function projectContractViolation(
     .map((entry) => normalizedContractPath(entry, contract.scope.root))
     .filter(Boolean);
   for (const file of proposal.changedFiles || []) {
-    const artifactViolation = projectTemplateArtifactViolation(file);
+    const artifactViolation = projectArtifactLocationViolation(file);
     if (artifactViolation) return artifactViolation;
     const normalizedFile = normalizedContractPath(file, contract.scope.root);
     const denied = denyPaths.find((entry) => pathInside(normalizedFile, entry));
@@ -587,7 +598,7 @@ export function projectContractViolation(
     entry.length > 1 && instructionAffirmativelyMentions(instruction, entry)
   ));
   if (mentionedDeniedPath) return `下一步涉及任务禁止路径：${mentionedDeniedPath}`;
-  const artifactCommandViolation = commandArtifactViolation(
+  const artifactCommandViolation = projectArtifactCommandViolation(
     `${proposal.command || ''}\n${proposal.testCommand || ''}`,
   );
   if (artifactCommandViolation) return artifactCommandViolation;

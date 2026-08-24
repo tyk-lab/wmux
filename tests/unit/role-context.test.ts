@@ -412,6 +412,10 @@ describe('unified managed AI role context', () => {
     expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('wmux context');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
     expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
+    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('适用的 AGENTS/项目指令与匹配技能');
+    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('run_templates 等模板目录只保存预执行输入');
+    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('tests、test、src 等源码目录只保存源码');
+    expect(PROJECT_TASK_ROLE_ANCHOR).toContain('tests、test、src 等源码目录只保存源码');
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain(PROJECT_TASK_ROLE_ANCHOR);
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('长命令输出');
     const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false, {

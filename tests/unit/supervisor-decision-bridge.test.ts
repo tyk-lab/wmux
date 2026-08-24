@@ -6100,6 +6100,44 @@ describe('supervisor decision bridge', () => {
     });
   });
 
+  it('rejects runtime artifacts in run templates for ordinary supervision', () => {
+    useStore.getState().updateLane('lane-a', { ordinaryPlanRequired: true });
+    expect(decide({
+      next: '运行测试并保存验证日志',
+      stagePlanFile: '.wmux/tmp/ordinary-artifact-plan.json',
+      stagePlan: {
+        selectedRoute: '运行聚焦测试并保存证据',
+        milestones: [{ id: 'validate', title: '聚焦验证', outcome: '形成测试证据', status: 'active' }],
+        expectedPaths: ['runs/run_templates/focused-test.log'],
+        targetedValidation: ['npm test -- focused'],
+        serializedBoundaries: [],
+        remainingWork: ['完成聚焦验证'],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('模板目录只能保存可复用的预执行输入'),
+    });
+  });
+
+  it('rejects validation logs in test source directories for ordinary supervision', () => {
+    useStore.getState().updateLane('lane-a', { ordinaryPlanRequired: true });
+    expect(decide({
+      next: '运行测试并保存验证日志',
+      stagePlanFile: '.wmux/tmp/ordinary-test-log-plan.json',
+      stagePlan: {
+        selectedRoute: '运行聚焦测试并保存证据',
+        milestones: [{ id: 'validate', title: '聚焦验证', outcome: '形成测试证据', status: 'active' }],
+        expectedPaths: ['tests/focused-validation.log'],
+        targetedValidation: ['npm test -- focused'],
+        serializedBoundaries: [],
+        remainingWork: ['完成聚焦验证'],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('测试/源码目录只能保存源码'),
+    });
+  });
+
   it('normalizes pending milestones and reports the exact invalid stage-plan field', () => {
     useStore.getState().updateLane('lane-a', { ordinaryPlanRequired: true });
     expect(decide({

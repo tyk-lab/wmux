@@ -204,6 +204,9 @@ describe('supervisor runtime context', () => {
     expect(card).toContain('监督身份与能力快照');
     expect(card).toContain('唯一任务终端: task-a');
     expect(card).toContain('wmux supervisor context');
+    expect(card).toContain('普通监督产物规则');
+    expect(card).toContain('run_templates 等模板目录只保存预执行输入');
+    expect(card).toContain('tests、test、src 等源码目录禁止运行日志和验证结果');
     expect(card).toContain('不授予直接实现、测试、跨终端输入');
   });
 

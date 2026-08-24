@@ -381,6 +381,9 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       : context.role === 'project-supervisor'
         ? '监督阶段计划: 基线批准时必须用 --stage-plan-file 建立，随后由监督 AI 自主维护'
         : '监督阶段计划: 根据用户任务用 --stage-plan-file 建立；具体任务保留一个 milestone，复杂任务按真实阶段拆分',
+    context.role === 'supervisor'
+      ? '普通监督产物规则: 先让任务 AI 读取适用的 AGENTS/项目指令与匹配技能；阶段计划服从项目目录和命名约定。run_templates 等模板目录只保存预执行输入，tests、test、src 等源码目录禁止运行日志和验证结果，运行事实写入项目约定的实际运行/证据目录。'
+      : '项目监督产物规则: 基线报告必须包含项目产物策略，阶段计划不得用 allowPaths 覆盖项目目录或命名约定；tests、test、src 等源码目录禁止运行日志和验证结果。',
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
     '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',

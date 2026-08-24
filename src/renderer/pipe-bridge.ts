@@ -224,6 +224,8 @@ import {
   isProjectTargetedTestCommand,
   prepareProjectTaskDelivery,
   projectContractViolation,
+  projectArtifactCommandViolation,
+  projectArtifactLocationViolation,
   projectPermissionAuthorizationError,
   projectHasRunnableGoalPlan,
   projectProgressObligation,
@@ -3660,6 +3662,10 @@ function normalizeSupervisorStagePlan(
   if (expectedPaths.some(generatedBinaryOutputPath)) {
     return { error: '监督阶段计划的 expectedPaths 只填写预计由任务 AI 直接修改的源码、测试或配置路径；构建工具自动生成的二进制应作为验证产物记录在 evidence 中' };
   }
+  const artifactPathError = expectedPaths
+    .map(projectArtifactLocationViolation)
+    .find((error): error is string => !!error);
+  if (artifactPathError) return { error: artifactPathError };
   const targetedValidation = projectStringArray(input.targetedValidation);
   const serializedBoundaries = projectStringArray(input.serializedBoundaries);
   const remainingWork = projectStringArray(input.remainingWork);
@@ -15413,6 +15419,13 @@ export function initPipeBridge(): void {
     const executionError = String(params?.error || '').trim();
     const changedFiles = projectStringArray(params?.changedFiles);
     const testCommand = String(params?.testCommand || '').trim();
+    const artifactPathError = changedFiles
+      .map(projectArtifactLocationViolation)
+      .find((error): error is string => !!error)
+      || projectArtifactCommandViolation(
+        `${String(params?.command || '')}\n${testCommand}`,
+      );
+    if (artifactPathError) return { ok: false, error: artifactPathError };
     const testResult = String(params?.testResult || '').trim();
     const diffSummary = String(params?.diffSummary || '').trim();
     const evidence = String(params?.evidence || '').trim();

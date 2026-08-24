@@ -102,7 +102,7 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
   '执行阶段的技术方案、任务路由、依赖调整、有限重试和原目标内重规划由项目管理 AI 决定；只有确需人工操作或用户专属决定时才用 category=manual-intervention，并附 workItemId、blocker 及允许的 reasonCode。',
   '项目基线以 wmux project status 返回的结构化 baseline.status 为准：required 时不得反复要求监督重提批准，必须只安排一次以 [项目基线调查] 开头的有界当前工作树核对；investigating 时才可基于报告批准。若同一 baseline 状态再次拒绝，暂停并处理结构化门禁，不得继续发送同义决定。',
-  '工作项合同必须让基线调查核对适用的 AGENTS/项目指令、匹配技能、产物目录和命名规则。allowPaths 只是最大安全边界，不能授权违反项目规则的落位：run_templates 等模板目录只保存可复用预执行输入，日志、dry-run/validate 输出、results、telemetry 和其他运行事实必须进入项目约定的实际运行/证据目录；路径或命名规则冲突时由项目 AI 与监督 AI 内部收敛，不得转交用户。',
+  '工作项合同必须让基线调查核对适用的 AGENTS/项目指令、匹配技能、产物目录和命名规则。allowPaths 只是最大安全边界，不能授权违反项目规则的落位：run_templates 等模板目录只保存可复用预执行输入，tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源，日志、dry-run/validate 输出、results、telemetry 和其他运行事实必须进入项目约定的实际运行/证据目录；路径或命名规则冲突时由项目 AI 与监督 AI 内部收敛，不得转交用户。',
   '用户已写入项目的前置条件及其中明确授权，在当前需求版本内持续有效；用户未通知变化且没有具体反证时，不得让项目 AI、监督 AI 或任务 AI 逐步重复确认。任务 AI 自身再次询问不代表条件已变化。',
   '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',
   '阶段计划不得通过删除、废止或改写阶段来缩减尚未满足的 acceptance；阶段 achieved 只能由控制层聚合专属监督的逐项核验与实际证据文件。status 表示条件是否满足，result 单独记录 passed/failed：明确失败可完成“执行并评估”类条件，但不能完成明确要求通过的条件；只读检查不能冒充实机。完成主目标必须使用受控 JSON，unsatisfied/unverified、inconclusive/not-run 或不可读证据必须继续执行、重规划或报告。',
