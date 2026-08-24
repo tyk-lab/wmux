@@ -47,6 +47,7 @@ import {
   isProjectModeAgentSurface,
   lifecycleDedupeKey,
   shouldNotifyAgentLifecycle,
+  shouldNotifyShellIdle,
   shouldDedupeLifecycleNotify,
   type LifecycleNotifyKind,
 } from './agent-lifecycle-notify';
@@ -128,7 +129,13 @@ import {
 } from './supervisor/provider-limit';
 import { projectBaselineProgressDirective } from './project-manager/engine';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
-import { fireDesktopNotification, notificationMetadata } from './notification-policy';
+import {
+  fireDesktopNotification,
+  notificationMetadata,
+  notificationTaskbarAttention,
+  shouldFlashTaskbar,
+  type TaskbarAttentionLevel,
+} from './notification-policy';
 import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import {
   dedicatedSupervisorSurfaceId,
@@ -231,7 +238,7 @@ function fireNotification(
   workspaceId: WorkspaceId | null,
   text: string,
   addNotification: StoreAction,
-  opts?: { flash?: boolean; title?: string },
+  opts?: { title?: string },
 ): void {
   if (workspaceId) {
     addNotification({
@@ -251,7 +258,6 @@ function fireNotification(
     surfaceId: surfaceId || '',
     text,
     title: opts?.title || 'wmux',
-    ...(opts?.flash === false ? { flash: false } : {}),
   });
 }
 
@@ -334,9 +340,8 @@ function handleNotifyCommand(cmd: any, addNotification: StoreAction): void {
  * Per-terminal shell state → workspace aggregate.
  *
  * Session is busy if ANY terminal is running; fully idle only when every
- * terminal is idle. On busy→idle: sidebar attention blink + taskbar flash
- * (if unfocused). Focusing the session/window clears attention until the
- * next busy→idle edge.
+ * terminal is idle. On busy→idle, ordinary sessions may publish a completion
+ * notification; managed project/supervisor runtimes defer to their owner.
  */
 function applyShellState(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): void {
   const newState = cmd.args?.[0] as 'idle' | 'running' | 'interrupted';
@@ -357,13 +362,27 @@ function applyShellState(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): void {
   // Finished one terminal — only act when the whole session is now idle.
   if (!result.becameIdle) return;
 
-  requestSessionIdleAttention(ws.id);
+  const surface = surfaceForWorkspace(cmd.surfaceId, ws);
+  const supervisorOwnsSurface = store.supervisor.active && store.supervisor.lanes.some((lane) => (
+    supervisorLaneControlState(lane) !== 'stopped'
+    && (lane.surfaceId === cmd.surfaceId || dedicatedSupervisorSurfaceId(lane) === cmd.surfaceId)
+  ));
+  const managedSurface = !shouldNotifyAgentLifecycle(
+    supervisorOwnsSurface,
+    isProjectModeAgentSurface(surface),
+  );
 
   const startTime = deps.runningStartTimes.current[ws.id];
   const elapsed = startTime ? (Date.now() - startTime) / 1000 : 0;
   delete deps.runningStartTimes.current[ws.id];
-  // Toast only for long commands; icon flash already fired above.
-  if (elapsed < 5) return;
+  const publishIdleNotification = shouldNotifyShellIdle(managedSurface, elapsed);
+  if (managedSurface) return;
+
+  markSessionIdleAttention(ws.id);
+
+  // Short shell transitions remain visible in the sidebar but do not flash
+  // without a corresponding notification.
+  if (!publishIdleNotification) return;
 
   // Round to whole seconds BEFORE splitting into minutes — rounding the
   // remainder independently yields "3m60s" for 239.6s elapsed.
@@ -374,16 +393,15 @@ function applyShellState(cmd: any, ws: WorkspaceInfo, deps: MetaDeps): void {
   const msg = result.nextAgg === 'interrupted'
     ? `Interrupted in ${ws.title} (${duration})`
     : `Finished in ${ws.title} (${duration})`;
-  // Prefer the dedicated flash path (already requested); avoid double-flash.
-  fireNotification(cmd.surfaceId, ws.id, msg, deps.addNotification, { flash: false });
+  fireNotification(cmd.surfaceId, ws.id, msg, deps.addNotification);
 }
 
 /**
  * Mark a workspace as needing attention after all its terminals go idle.
- * Taskbar flash only when the OS window is unfocused and the pref allows it.
- * If the user is already looking at this session, skip attention entirely.
+ * Flashing is reserved for user-visible notifications and handled by
+ * `fireDesktopNotification`; this function only controls sidebar attention.
  */
-function requestSessionIdleAttention(workspaceId: WorkspaceId): void {
+function markSessionIdleAttention(workspaceId: WorkspaceId): void {
   const store = useStore.getState();
   const watching =
     store.activeWorkspaceId === workspaceId &&
@@ -391,10 +409,6 @@ function requestSessionIdleAttention(workspaceId: WorkspaceId): void {
   if (watching) return;
 
   store.markWorkspaceAttention(workspaceId);
-
-  if (typeof document !== 'undefined' && !document.hasFocus() && store.notificationPrefs.taskbarFlash) {
-    window.wmux?.window?.flash?.(true);
-  }
 }
 
 function clearSessionAttention(workspaceId?: WorkspaceId | null): void {
@@ -1433,6 +1447,7 @@ export default function App() {
     sidebarVisible,
     shortcuts,
     notifications,
+    notificationPrefs,
     markRead,
     markAllRead,
     clearAll,
@@ -1492,6 +1507,77 @@ export default function App() {
   const [isResizingBrowser, setIsResizingBrowser] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const taskbarSeenLevelsRef = useRef(new Map<string, TaskbarAttentionLevel>());
+  const taskbarPersistentIdsRef = useRef(new Set<string>());
+  const taskbarBriefTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const unread = notifications.filter((notification) => !notification.read);
+    const unreadIds = new Set(unread.map((notification) => notification.id));
+    for (const notificationId of taskbarSeenLevelsRef.current.keys()) {
+      if (!unreadIds.has(notificationId)) taskbarSeenLevelsRef.current.delete(notificationId);
+    }
+    for (const notificationId of taskbarPersistentIdsRef.current) {
+      if (!unreadIds.has(notificationId)) taskbarPersistentIdsRef.current.delete(notificationId);
+    }
+
+    if (unread.length === 0) {
+      if (taskbarBriefTimerRef.current !== null) {
+        window.clearTimeout(taskbarBriefTimerRef.current);
+        taskbarBriefTimerRef.current = null;
+      }
+      taskbarPersistentIdsRef.current.clear();
+      window.wmux?.window?.flash?.(false);
+      return;
+    }
+
+    let trigger: TaskbarAttentionLevel | null = null;
+    for (const notification of unread) {
+      const level = notificationTaskbarAttention(notification.severity);
+      const previous = taskbarSeenLevelsRef.current.get(notification.id);
+      taskbarSeenLevelsRef.current.set(notification.id, level);
+      if (!previous || (previous === 'brief' && level === 'persistent')) {
+        trigger = level === 'persistent' ? 'persistent' : trigger || 'brief';
+        if (level === 'persistent') taskbarPersistentIdsRef.current.add(notification.id);
+      }
+    }
+
+    const focused = typeof document === 'undefined' || document.hasFocus();
+    if (!shouldFlashTaskbar(notificationPrefs.taskbarFlash, focused)) {
+      if (taskbarBriefTimerRef.current !== null) {
+        window.clearTimeout(taskbarBriefTimerRef.current);
+        taskbarBriefTimerRef.current = null;
+      }
+      taskbarPersistentIdsRef.current.clear();
+      window.wmux?.window?.flash?.(false);
+      return;
+    }
+
+    if (trigger === 'persistent') {
+      if (taskbarBriefTimerRef.current !== null) {
+        window.clearTimeout(taskbarBriefTimerRef.current);
+        taskbarBriefTimerRef.current = null;
+      }
+      window.wmux?.window?.flash?.(true);
+      return;
+    }
+    if (trigger === 'brief' && taskbarPersistentIdsRef.current.size === 0) {
+      if (taskbarBriefTimerRef.current === null) {
+        window.wmux?.window?.flash?.(true);
+        taskbarBriefTimerRef.current = window.setTimeout(() => {
+          taskbarBriefTimerRef.current = null;
+          if (taskbarPersistentIdsRef.current.size === 0) window.wmux?.window?.flash?.(false);
+        }, 4_000);
+      }
+      return;
+    }
+    if (taskbarPersistentIdsRef.current.size === 0 && taskbarBriefTimerRef.current === null) {
+      window.wmux?.window?.flash?.(false);
+    }
+  }, [notificationPrefs.taskbarFlash, notifications]);
+  useEffect(() => () => {
+    if (taskbarBriefTimerRef.current !== null) window.clearTimeout(taskbarBriefTimerRef.current);
+    window.wmux?.window?.flash?.(false);
+  }, []);
   // Per-workspace hook activity: workspaceId → { lastTool, toolCount, lastSeen }
   const [hookActivity, setHookActivity] = useState<Record<string, { lastTool: string; toolCount: number; lastSeen: number }>>({});
   // Per-surface activity explicitly reported by agents or integrations.
@@ -2543,6 +2629,11 @@ export default function App() {
   // OS window focus → cancel flash and clear attention on the active session.
   useEffect(() => {
     const unsub = window.wmux?.window?.onFocus?.(() => {
+      if (taskbarBriefTimerRef.current !== null) {
+        window.clearTimeout(taskbarBriefTimerRef.current);
+        taskbarBriefTimerRef.current = null;
+      }
+      taskbarPersistentIdsRef.current.clear();
       clearSessionAttention(useStore.getState().activeWorkspaceId);
     });
     return () => { unsub?.(); };

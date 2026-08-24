@@ -4,7 +4,6 @@ import type {
   NotificationOwner,
   NotificationSeverity,
 } from '../shared/types';
-import { useStore } from './store';
 
 type NotificationMetadata = Pick<
   NotificationInfo,
@@ -56,8 +55,6 @@ interface DesktopNotificationInput {
   surfaceId: string;
   text: string;
   title?: string;
-  /** `false` disables flashing for informational notifications. */
-  flash?: boolean;
 }
 
 export function shouldFlashTaskbar(
@@ -68,12 +65,19 @@ export function shouldFlashTaskbar(
   return requested && enabled && !windowFocused;
 }
 
-/** Deliver a desktop notification without allowing call sites to bypass flash preferences. */
+export type TaskbarAttentionLevel = 'brief' | 'persistent';
+
+/** Every notification-center item alerts once; actionable/error items persist until focus. */
+export function notificationTaskbarAttention(
+  severity: NotificationSeverity | undefined,
+): TaskbarAttentionLevel {
+  return severity === 'attention' || severity === 'error' ? 'persistent' : 'brief';
+}
+
+/** Toast delivery never flashes directly; the notification-center controller owns taskbar attention. */
 export function fireDesktopNotification(input: DesktopNotificationInput): void {
-  const enabled = useStore.getState().notificationPrefs.taskbarFlash;
-  const windowFocused = typeof document === 'undefined' || document.hasFocus();
   window.wmux?.notification?.fire({
     ...input,
-    flash: shouldFlashTaskbar(enabled, windowFocused, input.flash !== false),
+    flash: false,
   });
 }

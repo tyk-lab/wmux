@@ -36,6 +36,14 @@ export function shouldNotifyAgentLifecycle(
   return !supervisorOwnsSurface && !projectModeOwnsSurface;
 }
 
+/** Shell idle is user-facing only for an ordinary session after meaningful work. */
+export function shouldNotifyShellIdle(
+  managedSurface: boolean,
+  elapsedSeconds: number,
+): boolean {
+  return !managedSurface && elapsedSeconds >= 5;
+}
+
 export interface LifecycleNotifyInput {
   kind: LifecycleNotifyKind;
   /** Product name: Kimi / Codex / Grok / Pi / OpenCode. */

@@ -6,6 +6,7 @@ import {
   joinAgentIdentity,
   lifecycleDedupeKey,
   shouldNotifyAgentLifecycle,
+  shouldNotifyShellIdle,
   shouldDedupeLifecycleNotify,
   LIFECYCLE_DEDUP_MS,
 } from '../../src/renderer/agent-lifecycle-notify';
@@ -88,5 +89,11 @@ describe('supervisor notification ownership', () => {
     expect(isProjectModeAgentSurface({})).toBe(false);
     expect(shouldNotifyAgentLifecycle(false, true)).toBe(false);
     expect(shouldNotifyAgentLifecycle(true, true)).toBe(false);
+  });
+
+  it('does not publish shell-idle notifications for managed or short-lived work', () => {
+    expect(shouldNotifyShellIdle(true, 30)).toBe(false);
+    expect(shouldNotifyShellIdle(false, 4.9)).toBe(false);
+    expect(shouldNotifyShellIdle(false, 5)).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  notificationTaskbarAttention,
   notificationMetadata,
   shouldFlashTaskbar,
   shouldNotifySupervisorUser,
@@ -49,5 +50,13 @@ describe('notification responsibility policy', () => {
     expect(shouldFlashTaskbar(false, false)).toBe(false);
     expect(shouldFlashTaskbar(true, true)).toBe(false);
     expect(shouldFlashTaskbar(true, false, false)).toBe(false);
+  });
+
+  it('briefly flashes ordinary notifications and persists actionable or error notifications', () => {
+    expect(notificationTaskbarAttention()).toBe('brief');
+    expect(notificationTaskbarAttention('info')).toBe('brief');
+    expect(notificationTaskbarAttention('success')).toBe('brief');
+    expect(notificationTaskbarAttention('attention')).toBe('persistent');
+    expect(notificationTaskbarAttention('error')).toBe('persistent');
   });
 });
