@@ -616,7 +616,7 @@ supervisor_model: k3`)).toEqual({
     expect(menu).toContain('**项目中心**');
     expect(menu).toContain('进入项目中心');
     expect(projectManager).toContain('wmux · 完成认证功能');
-    expect(projectManager).toContain('项目 AI 最新回复');
+    expect(projectManager).toContain('最近进展');
     expect(projectManager).toContain('返回项目中心');
     expect(projectManager).toContain('project_ai_view');
     expect(projectManager).toContain('先完成认证接口回归');
@@ -764,6 +764,55 @@ supervisor_model: k3`)).toEqual({
       workItems: [expect.objectContaining({ goalId: 'goal-2', subgoalId: 'integration' })],
       conversation: [expect.objectContaining({ summary: '当前计划已建立' })],
     });
+  });
+
+  it('飞书项目概览按进度、当前执行和规划分层展示', () => {
+    const card = JSON.stringify(buildProjectManagerConversationCard({
+      projectId: 'pm-a', projectName: '认证项目', projectDir: 'E:\\repo', status: 'active',
+      activeGoalId: 'goal-1', goal: '完成认证链路',
+      goals: [{ id: 'goal-1', sequence: 1, statement: '完成认证链路', status: 'active' }],
+      subgoals: [
+        { id: 'baseline', goalId: 'goal-1', title: '基线复核', outcome: '确认现状', status: 'achieved', order: 1 },
+        { id: 'implementation', goalId: 'goal-1', title: '核心实现', outcome: '完成认证回归', status: 'active', order: 2 },
+        { id: 'acceptance', goalId: 'goal-1', title: '最终验收', outcome: '确认发布条件', status: 'planned', order: 3 },
+      ],
+      workItems: [
+        { goalId: 'goal-1', subgoalId: 'baseline', title: '旧基线任务', status: 'completed' },
+        {
+          goalId: 'goal-1', subgoalId: 'implementation', title: '实现认证回归', status: 'running',
+          latestContextSummary: '接口改造完成，正在补充回归覆盖。',
+          supervisorPlan: {
+            revision: 2, selectedRoute: '先完成接口改造，再运行聚焦回归',
+            milestones: [
+              { id: 'api', title: '接口改造', status: 'completed' },
+              { id: 'tests', title: '回归验证', outcome: '覆盖异常路径', status: 'active' },
+            ],
+            remainingWork: ['补充异常路径用例', '运行认证模块测试'],
+          },
+        },
+        { goalId: 'goal-1', subgoalId: 'implementation', title: '已停止的旧路线', status: 'stopped' },
+      ],
+      conversation: [{ ts: 3, kind: 'manager-reply', summary: '旧的项目 AI 回复。' }],
+    }, undefined, 'overview'));
+
+    expect(card).toContain('当前进度');
+    expect(card).toContain('阶段 1/3 已完成（33%）');
+    expect(card).toContain('工作项 1/2 已完成');
+    expect(card).toContain('当前阶段');
+    expect(card).toContain('S2 · **核心实现** · 进行中');
+    expect(card).toContain('当前执行 · 1 项');
+    expect(card).toContain('**实现认证回归** · 执行中');
+    expect(card).not.toContain('**已停止的旧路线**');
+    expect(card).toContain('当前计划');
+    expect(card).toContain('执行路线：先完成接口改造，再运行聚焦回归');
+    expect(card).toContain('正在进行：回归验证');
+    expect(card).toContain('接下来：补充异常路径用例');
+    expect(card).toContain('项目规划 · 1/3 已完成');
+    expect(card).toContain('S1 · 基线复核 · 已完成');
+    expect(card).toContain('最近进展');
+    expect(card).toContain('接口改造完成，正在补充回归覆盖。');
+    expect(card).not.toContain('项目 AI 最新回复');
+    expect(card).not.toContain('监督链');
   });
 
   it('将用户直发任务显示为知情通知而不是泛化状态更新', () => {
@@ -1364,7 +1413,7 @@ supervisor_model: k3`)).toEqual({
       }],
     }));
 
-    expect(card).toContain('状态：已暂停');
+    expect(card).toContain('认证项目** · 已暂停');
     expect(card).toContain('⚠️ 需要处理');
     expect(card).toContain('监督运行链连续无进展');
   });
@@ -1389,9 +1438,7 @@ supervisor_model: k3`)).toEqual({
     };
 
     const collapsed = JSON.stringify(buildProjectManagerPortfolioCard(view));
-    expect(collapsed).toContain('4 个活动项目');
-    expect(collapsed).toContain('1 个需要处理');
-    expect(collapsed).toContain('2 个历史项目');
+    expect(collapsed).toContain('活动 4 · 运行 1 · 暂停 2 · 待处理 1 · 历史 2');
     expect(collapsed).toContain('**需要处理 · 1**');
     expect(collapsed).toContain('**运行中 · 1**');
     expect(collapsed).toContain('**已暂停 · 2**');
@@ -1403,11 +1450,41 @@ supervisor_model: k3`)).toEqual({
     expect(collapsed).not.toContain('归档停止乙');
     expect(collapsed).toContain('暂停可运行项目（2）');
     expect(collapsed).toContain('恢复批量暂停项目（1）');
+    expect(collapsed).toContain('刷新项目中心');
 
     const expanded = JSON.stringify(buildProjectManagerPortfolioCard(view, undefined, 'all'));
     expect(expanded).toContain('**历史项目 · 2**');
     expect(expanded).toContain('归档完成甲');
     expect(expanded).toContain('归档停止乙');
     expect(expanded).toContain('收起历史项目');
+  });
+
+  it('项目中心集中展示每个项目的阶段、工作项和当前任务', () => {
+    const card = JSON.stringify(buildProjectManagerPortfolioCard({
+      projectId: 'pm-running',
+      projects: [{
+        id: 'pm-running', projectName: '认证项目', status: 'active', activeGoalId: 'goal-2',
+        goal: '完成认证回归', goals: [{ id: 'goal-2', sequence: 2 }],
+        subgoals: [
+          { id: 'baseline', goalId: 'goal-2', title: '基线复核', status: 'achieved', order: 1 },
+          { id: 'regression', goalId: 'goal-2', title: '认证回归', status: 'active', order: 2 },
+          { id: 'acceptance', goalId: 'goal-2', title: '发布验收', status: 'planned', order: 3 },
+        ],
+        workItems: [
+          { goalId: 'goal-2', subgoalId: 'baseline', title: '核对基线', status: 'completed' },
+          { goalId: 'goal-2', subgoalId: 'regression', title: '运行双向资格回归', status: 'validating' },
+          { goalId: 'goal-2', subgoalId: 'regression', title: '已停止的旧路线', status: 'stopped' },
+        ],
+      }],
+    }));
+
+    expect(card).toContain('项目总览');
+    expect(card).toContain('活动 1 · 运行 1 · 暂停 0 · 待处理 0 · 历史 0');
+    expect(card).toContain('目标 G2：完成认证回归');
+    expect(card).toContain('进度：阶段 1/3 · 工作项 1/2');
+    expect(card).toContain('当前阶段：S2 · 认证回归 · 进行中');
+    expect(card).toContain('当前任务：运行双向资格回归 · 验证中');
+    expect(card).not.toContain('目录：');
+    expect(card).toContain('刷新项目中心');
   });
 });

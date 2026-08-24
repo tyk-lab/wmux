@@ -956,6 +956,12 @@ export interface FeishuProjectManagerView {
     latestBlocker?: string;
     decisionsUsed?: number;
     attempts?: number;
+    supervisorPlan?: {
+      revision?: number;
+      selectedRoute?: string;
+      milestones?: Array<{ id?: string; title?: string; outcome?: string; status?: string }>;
+      remainingWork?: string[];
+    };
     contract?: {
       execution?: { taskWorkMode?: string; modeReason?: string };
       budget?: { maxDecisions?: number; maxContinuousMinutes?: number; maxTaskRetries?: number };
@@ -968,6 +974,8 @@ export interface FeishuProjectManagerView {
     projectName?: string;
     activeGoalId?: string;
     goals?: Array<{ id?: string; sequence?: number }>;
+    subgoals?: Array<{ id?: string; goalId?: string; title?: string; status?: string; order?: number }>;
+    workItems?: Array<{ goalId?: string; subgoalId?: string; title?: string; status?: string }>;
     status?: string;
     goal?: string;
     pausedByPortfolio?: boolean;
@@ -1044,27 +1052,39 @@ function compactProjectCardText(value: unknown, maxLength: number): string {
 }
 
 function projectManagerStatusLabel(status?: string): string {
+  if (status === 'transitioning') return '切换中';
   if (status === 'active') return '运行中';
   if (status === 'paused') return '已暂停';
   if (status === 'waiting') return '等待决策';
   if (status === 'waiting-decision') return '等待决策';
   if (status === 'waiting-dependencies') return '等待依赖';
   if (status === 'planned') return '待开始';
+  if (status === 'blocked') return '受阻';
   if (status === 'running') return '执行中';
   if (status === 'validating') return '验证中';
   if (status === 'failed') return '失败';
+  if (status === 'achieved') return '已完成';
   if (status === 'completed') return '已完成';
+  if (status === 'superseded') return '已替换';
+  if (status === 'abandoned') return '已放弃';
+  if (status === 'obsolete') return '已失效';
   if (status === 'stopped') return '已停止';
   return '尚未建立';
 }
 
 function projectManagerStatusMarker(status?: string): string {
-  if (status === 'active') return '🟢';
-  if (status === 'waiting') return '🟠';
+  if (status === 'active' || status === 'running') return '🟢';
+  if (status === 'validating') return '🔵';
+  if (status === 'waiting' || status === 'waiting-decision' || status === 'blocked' || status === 'failed') return '🟠';
   if (status === 'paused') return '⏸️';
-  if (status === 'completed') return '✅';
-  if (status === 'stopped') return '⏹️';
+  if (status === 'achieved' || status === 'completed') return '✅';
+  if (status === 'stopped' || status === 'obsolete' || status === 'abandoned') return '⏹️';
   return '⚪';
+}
+
+function projectManagerStageStatusLabel(status?: string): string {
+  if (status === 'active') return '进行中';
+  return projectManagerStatusLabel(status);
 }
 
 export function buildProjectClarificationCard(
@@ -1230,27 +1250,54 @@ export function buildProjectManagerPortfolioCard(
     groupedProjects: typeof projects,
   ): object[] => groupedProjects.length > 0 ? [
     { tag: 'markdown', content: `**${label} · ${groupedProjects.length}**` },
-    ...groupedProjects.flatMap((project) => [
-      {
-        tag: 'markdown',
-        content: [
-          `${projectManagerStatusMarker(project.status)} **${String(project.projectName || '未命名项目').slice(0, 100)}**`,
-          `当前主目标：G${project.goals?.find((goal) => goal.id === project.activeGoalId)?.sequence || 1} · ${String(project.goal || '待设置').slice(0, 160)}`,
-          `状态：${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
-          project.attentionReason
-            ? `⚠️ 需要处理：${compactProjectCardText(project.attentionReason, 500)}`
-            : project.status === 'paused' && project.pauseReason
-              ? `${project.pauseAttentionRequired ? '⚠️ ' : ''}暂停原因：${compactProjectCardText(project.pauseReason, 500)}`
-              : '',
-          project.projectDir ? `目录：${String(project.projectDir).slice(0, 240)}` : '',
-        ].filter(Boolean).join('\n'),
-      },
-      ...responsiveButtonRows([cardButton(
-        { wmux_action: 'project_ai_workspace', projectId: project.id || '' },
-        project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台',
-        'primary',
-      )]),
-    ]),
+    ...groupedProjects.flatMap((project) => {
+      const goalSubgoals = (project.subgoals || [])
+        .filter((subgoal) => subgoal.goalId === project.activeGoalId && subgoal.status !== 'obsolete')
+        .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+      const goalWorkItems = (project.workItems || []).filter((item) => (
+        !project.activeGoalId || !item.goalId || item.goalId === project.activeGoalId
+      ));
+      const progressWorkItems = goalWorkItems.filter((item) => !['failed', 'stopped'].includes(String(item.status || '')));
+      const achievedStages = goalSubgoals.filter((subgoal) => subgoal.status === 'achieved').length;
+      const completedItems = progressWorkItems.filter((item) => item.status === 'completed').length;
+      const currentStage = goalSubgoals.find((subgoal) => subgoal.status === 'active')
+        || goalSubgoals.find((subgoal) => subgoal.status === 'blocked')
+        || goalSubgoals.find((subgoal) => subgoal.status === 'planned');
+      const currentItem = [...goalWorkItems].reverse().find((item) => (
+        ['running', 'validating', 'waiting-decision', 'paused', 'planned', 'waiting-dependencies'].includes(String(item.status || ''))
+        && (!currentStage?.id || item.subgoalId === currentStage.id)
+      )) || [...goalWorkItems].reverse().find((item) => (
+        ['running', 'validating', 'waiting-decision', 'paused', 'planned', 'waiting-dependencies'].includes(String(item.status || ''))
+      ));
+      const progress = [
+        goalSubgoals.length > 0 ? `阶段 ${achievedStages}/${goalSubgoals.length}` : '阶段待规划',
+        progressWorkItems.length > 0
+          ? `工作项 ${completedItems}/${progressWorkItems.length}`
+          : goalWorkItems.length > 0 ? '暂无有效工作项' : '工作项待拆分',
+      ].join(' · ');
+      return [
+        {
+          tag: 'markdown',
+          content: compactProjectCardText([
+            `${projectManagerStatusMarker(project.status)} **${String(project.projectName || '未命名项目').slice(0, 100)}** · ${projectManagerStatusLabel(project.status)}${project.id === session?.projectId ? ' · 当前项目' : ''}`,
+            `目标 G${project.goals?.find((goal) => goal.id === project.activeGoalId)?.sequence || 1}：${String(project.goal || '待设置').slice(0, 160)}`,
+            `进度：${progress}`,
+            currentStage ? `当前阶段：S${currentStage.order || '-'} · ${currentStage.title || currentStage.id} · ${projectManagerStageStatusLabel(currentStage.status)}` : '',
+            currentItem ? `当前任务：${currentItem.title || '未命名工作项'} · ${projectManagerStatusLabel(currentItem.status)}` : '',
+            project.attentionReason
+              ? `⚠️ 需要处理：${project.attentionReason}`
+              : project.status === 'paused' && project.pauseReason
+                ? `${project.pauseAttentionRequired ? '⚠️ ' : ''}暂停原因：${project.pauseReason}`
+                : '',
+          ].filter(Boolean).join('\n'), 950),
+        },
+        ...responsiveButtonRows([cardButton(
+          { wmux_action: 'project_ai_workspace', projectId: project.id || '' },
+          project.id === session?.projectId ? '打开当前工作台' : '进入项目工作台',
+          'primary',
+        )]),
+      ];
+    }),
   ] : [];
   return {
     schema: '2.0',
@@ -1261,7 +1308,7 @@ export function buildProjectManagerPortfolioCard(
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
         {
           tag: 'markdown',
-          content: `**${activeProjects.length} 个活动项目** · ${attentionProjects.length} 个需要处理 · ${historicalProjects.length} 个历史项目\n项目中心只负责入口和状态路由；选择项目进入其独立会话，与专属项目 AI 对话。`,
+          content: `**项目总览**\n活动 ${activeProjects.length} · 运行 ${runningProjects.length} · 暂停 ${pausedProjects.length} · 待处理 ${attentionProjects.length} · 历史 ${historicalProjects.length}\n选择项目进入其独立会话。`,
         },
         ...(activeProjects.length > 0 ? [
           ...projectElements('需要处理', attentionProjects),
@@ -1271,7 +1318,7 @@ export function buildProjectManagerPortfolioCard(
         ...(historicalProjects.length > 0 ? [
           ...(historyExpanded
             ? projectElements('历史项目', historicalProjects)
-            : [{ tag: 'markdown', content: `**历史项目已折叠 · ${historicalProjects.length}**\n已完成和已停止项目默认隐藏。` }]),
+            : [{ tag: 'markdown', content: `**历史项目已折叠 · ${historicalProjects.length}**` }]),
           ...responsiveButtonRows([cardButton(
             { wmux_action: 'project_ai_portfolio', view: historyExpanded ? 'active' : 'all' },
             historyExpanded ? '收起历史项目' : `展开历史项目（${historicalProjects.length}）`,
@@ -1279,6 +1326,7 @@ export function buildProjectManagerPortfolioCard(
         ] : []),
         { tag: 'hr' },
         ...responsiveButtonRows([
+          cardButton({ wmux_action: 'project_ai_portfolio', view }, '刷新项目中心'),
           ...(pausableProjects.length > 0 ? [cardButton(
             { wmux_action: 'project_ai_pause_all', view },
             `暂停可运行项目（${pausableProjects.length}）`,
@@ -1304,7 +1352,6 @@ export function buildProjectManagerConversationCard(
   const workItems = allWorkItems.filter((item) => (
     !session?.activeGoalId || !item.goalId || item.goalId === session.activeGoalId
   ));
-  const supervisors = Array.isArray(session?.managedSupervisors) ? session.managedSupervisors : [];
   const allConversation = Array.isArray(session?.conversation) ? session.conversation : [];
   const conversation = allConversation.slice(-FEISHU_PROJECT_RECENT_ITEM_LIMIT);
   const pendingQuestion = session?.pendingUserQuestion;
@@ -1323,6 +1370,55 @@ export function buildProjectManagerConversationCard(
   const currentSubgoals = (session?.subgoals || [])
     .filter((subgoal) => subgoal.goalId === session?.activeGoalId && subgoal.status !== 'obsolete')
     .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+  const achievedSubgoals = currentSubgoals.filter((subgoal) => subgoal.status === 'achieved').length;
+  const progressWorkItems = workItems.filter((item) => !['failed', 'stopped'].includes(String(item.status || '')));
+  const completedWorkItems = progressWorkItems.filter((item) => item.status === 'completed').length;
+  const stageProgress = currentSubgoals.length > 0
+    ? `阶段 ${achievedSubgoals}/${currentSubgoals.length} 已完成（${Math.round((achievedSubgoals / currentSubgoals.length) * 100)}%）`
+    : '阶段计划待建立';
+  const workItemProgress = progressWorkItems.length > 0
+    ? `工作项 ${completedWorkItems}/${progressWorkItems.length} 已完成`
+    : workItems.length > 0 ? '暂无有效工作项' : '工作项待拆分';
+  const currentSubgoal = currentSubgoals.find((subgoal) => subgoal.status === 'active')
+    || currentSubgoals.find((subgoal) => subgoal.status === 'blocked')
+    || currentSubgoals.find((subgoal) => subgoal.status === 'planned');
+  const nextSubgoal = currentSubgoal
+    ? currentSubgoals.find((subgoal) => (
+        Number(subgoal.order || 0) > Number(currentSubgoal.order || 0)
+        && subgoal.status === 'planned'
+      ))
+    : undefined;
+  const unfinishedWorkItemStatuses = new Set([
+    'running', 'validating', 'waiting-decision', 'paused', 'planned', 'waiting-dependencies',
+  ]);
+  const workItemStatusPriority: Record<string, number> = {
+    running: 0,
+    validating: 1,
+    'waiting-decision': 2,
+    paused: 3,
+    planned: 4,
+    'waiting-dependencies': 5,
+  };
+  const currentWorkItems = [...workItems]
+    .reverse()
+    .filter((item) => unfinishedWorkItemStatuses.has(String(item.status || '')))
+    .sort((left, right) => {
+      const leftStagePriority = currentSubgoal?.id && left.subgoalId === currentSubgoal.id ? 0 : 1;
+      const rightStagePriority = currentSubgoal?.id && right.subgoalId === currentSubgoal.id ? 0 : 1;
+      return leftStagePriority - rightStagePriority
+        || (workItemStatusPriority[String(left.status || '')] ?? 99)
+          - (workItemStatusPriority[String(right.status || '')] ?? 99);
+    })
+    .slice(0, 2);
+  const planWorkItem = currentWorkItems.find((item) => item.supervisorPlan);
+  const currentPlan = planWorkItem?.supervisorPlan;
+  const planMilestones = Array.isArray(currentPlan?.milestones) ? currentPlan.milestones : [];
+  const completedMilestones = planMilestones.filter((milestone) => milestone.status === 'completed').length;
+  const currentMilestone = planMilestones.find((milestone) => milestone.status === 'active')
+    || planMilestones.find((milestone) => milestone.status === 'planned');
+  const currentProgressSummary = currentWorkItems.find((item) => item.latestContextSummary)?.latestContextSummary
+    || currentWorkItems.find((item) => item.latestEvidence)?.latestEvidence
+    || latestReply?.summary;
   let collapsedConversationStart = Math.max(0, conversation.length - 1);
   for (let index = conversation.length - 1; index >= 0; index -= 1) {
     if (conversation[index]?.kind !== 'user-message') continue;
@@ -1342,12 +1438,15 @@ export function buildProjectManagerConversationCard(
     : recentLogs.slice(0, FEISHU_PROJECT_COLLAPSED_ITEM_LIMIT);
   const nav = responsiveButtonRows([
     cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'overview' }, '概览', view === 'overview' ? 'primary' : 'default'),
-    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'chat' }, '与 AI 对话', chatView ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'chat' }, '项目对话', chatView ? 'primary' : 'default'),
     cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'decisions' }, `决策${pendingQuestion || waiting > 0 ? ' · 待处理' : ''}`, decisionView ? 'primary' : 'default'),
-    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'activity' }, '处理日志', activityView ? 'primary' : 'default'),
+    cardButton({ wmux_action: 'project_ai_view', projectId: session?.projectId || '', view: 'activity' }, '日志', activityView ? 'primary' : 'default'),
   ]);
   const overviewElements: object[] = [
-    { tag: 'markdown', content: `**${projectManagerStatusMarker(session?.status)} ${status}** · 工作项 ${workItems.length} · 监督 AI ${supervisors.length} · 待决 ${waiting}` },
+    {
+      tag: 'markdown',
+      content: `**当前进度**\n${projectManagerStatusMarker(session?.status)} 项目${status} · ${stageProgress} · ${workItemProgress}${waiting > 0 ? ` · 待决 ${waiting}` : ''}`,
+    },
     ...(session?.attentionReason ? [{
       tag: 'markdown',
       content: `⚠️ **项目需要处理**\n${compactProjectCardText(session.attentionReason, 1000)}`,
@@ -1356,11 +1455,48 @@ export function buildProjectManagerConversationCard(
       content: `${session.pauseAttentionRequired ? '⚠️ **项目需要处理**' : '**暂停原因**'}\n${compactProjectCardText(session.pauseReason, 1000)}`,
     }] : []),
     ...(currentGoal?.status === 'achieved' ? [{ tag: 'markdown', content: '✅ 当前主目标已经完成。请向项目 AI 提出同一项目的下一主目标；新目标建立阶段计划后再恢复执行。' }] : []),
-    ...(currentSubgoals.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**阶段计划**\n${currentSubgoals.map((subgoal) => `${projectManagerStatusMarker(subgoal.status)} S${subgoal.order || '-'} · ${subgoal.title || subgoal.id}\n${subgoal.outcome || ''}`).join('\n')}`, 1300) }] : [{ tag: 'markdown', content: '阶段计划尚未由项目 AI 建立；当前不会启动新的监督任务。' }]),
-    ...(latestReply ? [{ tag: 'markdown', content: `**项目 AI 最新回复**\n${compactProjectCardText(latestReply.summary, 900)}` }] : [{ tag: 'markdown', content: '项目 AI 暂无回复。可进入“与 AI 对话”确认进度或补充要求。' }]),
     ...(pendingQuestion ? [{ tag: 'markdown', content: `⚠️ **等待你的决策**\n${compactProjectCardText(pendingQuestion.question, 800)}${pendingQuestion.recommendedOptionId ? '\n请在飞书决策卡或桌面项目对话中选择方案。' : ''}` }] : []),
-    ...(workItems.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**当前执行**\n${workItems.slice(-3).map((item) => `${projectManagerStatusMarker(item.status)} ${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}${item.latestBlocker ? `\n阻塞：${item.latestBlocker}` : ''}`).join('\n')}`, 1400) }] : []),
-    ...(supervisors.length > 0 ? [{ tag: 'markdown', content: compactProjectCardText(`**监督链**\n${supervisors.map((lane) => `${lane.label || '监督 AI'} · ${projectManagerStatusLabel(lane.status)} · 任务端 ${lane.workerSurfaceId || '恢复中'}`).join('\n')}`, 1000) }] : []),
+    ...(currentSubgoal && currentGoal?.status !== 'achieved' ? [{
+      tag: 'markdown',
+      content: compactProjectCardText([
+        '**当前阶段**',
+        `${projectManagerStatusMarker(currentSubgoal.status)} S${currentSubgoal.order || '-'} · **${currentSubgoal.title || currentSubgoal.id}** · ${projectManagerStageStatusLabel(currentSubgoal.status)}`,
+        currentPlan && currentSubgoal.outcome ? `阶段目标：${currentSubgoal.outcome}` : '',
+      ].filter(Boolean).join('\n'), 700),
+    }] : []),
+    {
+      tag: 'markdown',
+      content: currentWorkItems.length > 0
+        ? compactProjectCardText(`**当前执行 · ${currentWorkItems.length} 项**\n${currentWorkItems.map((item) => [
+            `${projectManagerStatusMarker(item.status)} **${item.title || '未命名工作项'}** · ${projectManagerStatusLabel(item.status)}`,
+            item.latestBlocker ? `阻塞：${item.latestBlocker}` : '',
+          ].filter(Boolean).join('\n')).join('\n')}`, 1200)
+        : `**当前执行**\n${currentGoal?.status === 'achieved' ? '✅ 当前主目标已完成，无进行中的工作项。' : workItems.length > 0 ? '暂无进行中的工作项，项目 AI 正在衔接下一阶段。' : '尚未创建工作项。'}`,
+    },
+    {
+      tag: 'markdown',
+      content: currentPlan
+        ? compactProjectCardText([
+            '**当前计划**',
+            currentPlan.selectedRoute ? `执行路线：${currentPlan.selectedRoute}` : '',
+            planMilestones.length > 0 ? `里程碑：${completedMilestones}/${planMilestones.length} 已完成` : '',
+            currentMilestone ? `正在进行：${currentMilestone.title || currentMilestone.id || '未命名里程碑'}${currentMilestone.outcome ? `\n目标：${currentMilestone.outcome}` : ''}` : '',
+            ...(currentPlan.remainingWork || []).slice(0, 2).map((item, index) => `${index === 0 ? '接下来' : '随后'}：${item}`),
+          ].filter(Boolean).join('\n'), 1000)
+        : compactProjectCardText([
+            '**当前计划**',
+            currentSubgoal?.outcome ? `阶段目标：${currentSubgoal.outcome}` : currentSubgoal ? `推进 S${currentSubgoal.order || '-'} · ${currentSubgoal.title || currentSubgoal.id}` : '等待项目 AI 建立阶段计划。',
+            nextSubgoal ? `下一阶段：S${nextSubgoal.order || '-'} · ${nextSubgoal.title || nextSubgoal.id}` : currentSubgoal ? '下一步：完成当前阶段后进行目标验收或衔接后续计划。' : '',
+          ].filter(Boolean).join('\n'), 700),
+    },
+    ...(currentSubgoals.length > 0 ? [{
+      tag: 'markdown',
+      content: compactProjectCardText(`**项目规划 · ${achievedSubgoals}/${currentSubgoals.length} 已完成**\n${currentSubgoals.map((subgoal) => `${projectManagerStatusMarker(subgoal.status)} S${subgoal.order || '-'} · ${subgoal.title || subgoal.id} · ${projectManagerStageStatusLabel(subgoal.status)}`).join('\n')}`, 1100),
+    }] : [{ tag: 'markdown', content: '**项目规划**\n阶段计划尚未由项目 AI 建立；建立前不会启动新的监督任务。' }]),
+    ...(currentProgressSummary ? [{
+      tag: 'markdown',
+      content: `**最近进展**\n${compactProjectCardText(currentProgressSummary, 700)}`,
+    }] : []),
   ];
   const chatElements: object[] = [
     { tag: 'markdown', content: '**与项目 AI 对话**\n对话只进入当前项目；已确认的目标、范围和验收细节会写回项目配置。' },
@@ -1428,7 +1564,7 @@ export function buildProjectManagerConversationCard(
     body: {
       elements: [
         ...(notice ? [{ tag: 'markdown', content: `${notice.success ? '✅' : '⚠️'} ${notice.text}` }] : []),
-        { tag: 'markdown', content: `**${session?.projectName || '未选择项目'}**\n当前主目标：G${currentGoal?.sequence || 1} · ${session?.goal || '待设置'}${session?.projectDir ? `\n${session.projectDir}` : ''}`.slice(0, 1200) },
+        { tag: 'markdown', content: `**当前主目标 G${currentGoal?.sequence || 1}**\n${session?.goal || '待设置'}`.slice(0, 1200) },
         ...nav,
         { tag: 'hr' },
         ...(chatView ? chatElements : decisionView ? decisionElements : activityView ? activityElements : overviewElements),
