@@ -9829,6 +9829,7 @@ describe('supervisor decision bridge', () => {
       surfaceId: 'supervisor-a',
       title: 'AI 监督待续',
       text: 'AI 监督通道“worker”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。',
+      flash: false,
     });
   });
 

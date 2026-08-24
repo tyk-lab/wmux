@@ -606,9 +606,8 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         window.webContents.send('notification:focus-surface', data.surfaceId);
       }
     });
-    // Flash taskbar unless the caller opted out (idle-attention uses WINDOW_FLASH
-    // instead so it can respect notificationPrefs.taskbarFlash in the renderer).
-    if (data.flash !== false && window && !window.isDestroyed()) {
+    // Renderer owns the user preference and focus policy; only explicit requests flash.
+    if (data.flash === true && window && !window.isDestroyed()) {
       notificationManager.flashTaskbar(window);
     }
     // Ask the renderer to play the notification sound. The main process can't

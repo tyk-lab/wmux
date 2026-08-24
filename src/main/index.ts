@@ -1301,6 +1301,8 @@ app.whenReady().then(() => {
             w.webContents.send(IPC_CHANNELS.NOTIFICATION_FIRE, {
               surfaceId: request.params?.surfaceId,
               text: 'Flash triggered via CLI',
+              // This command is an explicit diagnostic flash request, not an automatic notification.
+              flash: true,
             });
           }
         });

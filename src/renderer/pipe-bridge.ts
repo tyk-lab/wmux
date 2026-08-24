@@ -128,7 +128,7 @@ import {
   managedProjectRuntimeRecoveryKey,
 } from './project-manager/runtime-recovery';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
-import { notificationDedupeKey, notificationMetadata } from './notification-policy';
+import { fireDesktopNotification, notificationDedupeKey, notificationMetadata } from './notification-policy';
 import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 import {
   activeProjectManagerAttentionEvent,
@@ -3333,7 +3333,7 @@ function scheduleTaskInputRecoveryWatch(lane: SupervisorLane): void {
           }),
     });
   }
-  window.wmux?.notification?.fire({
+  fireDesktopNotification({
     surfaceId: lane.surfaceId,
     title: notificationTitle,
     text: notificationText,
@@ -5975,7 +5975,7 @@ function notifyProjectManagerAttention(
     });
   }
   openProjectManagerAttentionSurface(current.id);
-  window.wmux?.notification?.fire({ surfaceId, title, text });
+  fireDesktopNotification({ surfaceId, title, text });
 }
 
 function notifyProjectManagerUserQuestion(
@@ -6006,7 +6006,7 @@ function notifyProjectManagerUserQuestion(
     });
   }
   openProjectManagerAttentionSurface(session.id);
-  window.wmux?.notification?.fire({ surfaceId, title, text });
+  fireDesktopNotification({ surfaceId, title, text });
 }
 
 function isProjectTaskInputDraftBlocker(...values: Array<unknown>): boolean {
@@ -7839,7 +7839,7 @@ function notifyProjectManagerDeliveryUnavailable(
           severity: 'error',
         })),
   });
-  window.wmux?.notification?.fire({ surfaceId, title: '项目管理 AI 暂不可用', text });
+  fireDesktopNotification({ surfaceId, title: '项目管理 AI 暂不可用', text });
   if (session) {
     const event = store.appendProjectManagerEvent({
       kind: 'manager-delivery-failed',
@@ -16599,7 +16599,7 @@ export function initPipeBridge(): void {
             sourceLabel: lane.label,
           }),
         });
-        window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
+        fireDesktopNotification({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
       }
       return { ok: true, outcome, requiresHuman: true };
     }
@@ -17010,7 +17010,7 @@ export function initPipeBridge(): void {
             }),
           });
         }
-        window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
+        fireDesktopNotification({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
       }
       return { ok: true, outcome };
     }

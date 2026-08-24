@@ -9,9 +9,31 @@
 
 export type LifecycleNotifyKind = 'needs_input' | 'turn_finished';
 
-/** Supervision owns lifecycle status only for surfaces bound to one of its live lanes. */
-export function shouldNotifyAgentLifecycle(supervisorOwnsSurface: boolean): boolean {
-  return !supervisorOwnsSurface;
+interface ProjectModeSurfaceIdentity {
+  projectManagerTerminal?: boolean;
+  projectSupervisorProjectId?: string;
+  projectManagerProjectId?: string;
+  projectManagerWorkItemId?: string;
+}
+
+/** Project AI, its dedicated supervisor, and task AI share project-level notifications. */
+export function isProjectModeAgentSurface(
+  surface: ProjectModeSurfaceIdentity | null | undefined,
+): boolean {
+  return !!(
+    surface?.projectManagerTerminal
+    || surface?.projectSupervisorProjectId
+    || surface?.projectManagerProjectId
+    || surface?.projectManagerWorkItemId
+  );
+}
+
+/** Managed supervision and project mode publish their own higher-level notifications. */
+export function shouldNotifyAgentLifecycle(
+  supervisorOwnsSurface: boolean,
+  projectModeOwnsSurface = false,
+): boolean {
+  return !supervisorOwnsSurface && !projectModeOwnsSurface;
 }
 
 export interface LifecycleNotifyInput {

@@ -6,6 +6,7 @@ import {
 } from '../store/supervisor-slice';
 import { appendSupervisorRecord } from './recording';
 import {
+  fireDesktopNotification,
   notificationDedupeKey,
   notificationMetadata,
   shouldNotifySupervisorUser,
@@ -96,7 +97,7 @@ export function reportSupervisorProviderLimit(
       sourceLabel: lane.label,
     }),
   });
-  window.wmux?.notification?.fire({
+  fireDesktopNotification({
     surfaceId: notificationSurfaceId,
     title: 'AI 监督模型受限',
     text: notificationText,

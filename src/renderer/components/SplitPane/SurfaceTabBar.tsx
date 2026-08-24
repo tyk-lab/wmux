@@ -8,6 +8,7 @@ import type { SurfaceDragPayload, SurfaceDragPreviewTarget } from './drag-previe
 import { parseSurfaceDragData } from './surface-drag-preview';
 import { getSurfaceLabel } from './surface-label';
 import { isSurfaceSupervised } from '../../store/supervisor-slice';
+import { fireDesktopNotification } from '../../notification-policy';
 
 interface SurfaceTabBarProps {
   paneId: PaneId;
@@ -284,7 +285,7 @@ export default function SurfaceTabBar({
     try {
       await window.wmux?.clipboard?.writeText?.(value);
     } catch {
-      window.wmux?.notification?.fire?.({ surfaceId, title: 'wmux', text: `${label}复制失败。` });
+      fireDesktopNotification({ surfaceId, title: 'wmux', text: `${label}复制失败。` });
     }
   }, []);
 
@@ -292,7 +293,7 @@ export default function SurfaceTabBar({
     setCtxMenu(null);
     const result = await window.wmux?.system?.openDirectoryInExplorer?.(currentPath);
     if (result?.ok === false) {
-      window.wmux?.notification?.fire?.({
+      fireDesktopNotification({
         surfaceId,
         title: 'wmux',
         text: result.error || '无法在资源管理器中打开当前路径。',

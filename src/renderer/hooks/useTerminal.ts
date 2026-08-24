@@ -53,7 +53,7 @@ import {
   terminalRuntimeValidationAction,
   terminalRuntimeStatus,
 } from '../terminal-runtime-lifecycle';
-import { notificationMetadata } from '../notification-policy';
+import { fireDesktopNotification, notificationMetadata } from '../notification-policy';
 import { projectDisplayName, projectManagerEventNeedsUserAttention } from '../../shared/project-manager';
 import '@xterm/xterm/css/xterm.css';
 
@@ -186,7 +186,7 @@ function notifyProjectManagerRuntimeFailure(
         sourceLabel: lane?.label,
       }),
     });
-    window.wmux?.notification?.fire({
+    fireDesktopNotification({
       surfaceId: surface.id,
       title,
       text,
@@ -284,7 +284,7 @@ function notifyProjectManagerRuntimeFailure(
             sourceLabel: projectTitle,
           }),
         });
-        window.wmux?.notification?.fire({
+        fireDesktopNotification({
           surfaceId: surface.id,
           title: '项目运行异常',
           text: notificationText,
@@ -864,7 +864,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       // progress bar never fired at all (dead since it shipped in 0.23.0).
       // Declining passes the sequence down the chain to the addon.
       if (isConEmuSubcommand(data)) return false;
-      window.wmux.notification.fire({
+      fireDesktopNotification({
         surfaceId: ptyIdRef.current || '',
         text: data,
       });
@@ -879,7 +879,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         const [k, ...v] = part.split('=');
         if (k && v.length) params[k.trim()] = v.join('=').trim();
       });
-      window.wmux.notification.fire({
+      fireDesktopNotification({
         surfaceId: ptyIdRef.current || '',
         text: params.body || params.d || data,
         title: params.title || params.t,
@@ -891,7 +891,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     terminal.parser.registerOscHandler(777, (data) => {
       const parts = data.split(';');
       if (parts[0] === 'notify' && parts.length >= 3) {
-        window.wmux.notification.fire({
+        fireDesktopNotification({
           surfaceId: ptyIdRef.current || '',
           text: parts.slice(2).join(';'),
           title: parts[1],
@@ -910,7 +910,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       const now = Date.now();
       if (now - lastBellAt < 3000) return;
       lastBellAt = now;
-      window.wmux.notification.fire({
+      fireDesktopNotification({
         surfaceId: ptyIdRef.current || '',
         text: 'Terminal bell',
       });

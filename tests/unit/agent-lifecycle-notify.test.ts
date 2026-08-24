@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatAgentLifecycleText,
   inferAgentName,
+  isProjectModeAgentSurface,
   joinAgentIdentity,
   lifecycleDedupeKey,
   shouldNotifyAgentLifecycle,
@@ -77,5 +78,15 @@ describe('supervisor notification ownership', () => {
   it('suppresses lifecycle notifications only when supervision owns the event surface', () => {
     expect(shouldNotifyAgentLifecycle(true)).toBe(false);
     expect(shouldNotifyAgentLifecycle(false)).toBe(true);
+  });
+
+  it('suppresses lifecycle notifications for every project-mode agent role', () => {
+    expect(isProjectModeAgentSurface({ projectManagerTerminal: true })).toBe(true);
+    expect(isProjectModeAgentSurface({ projectSupervisorProjectId: 'pm-1' })).toBe(true);
+    expect(isProjectModeAgentSurface({ projectManagerProjectId: 'pm-1' })).toBe(true);
+    expect(isProjectModeAgentSurface({ projectManagerWorkItemId: 'work-1' })).toBe(true);
+    expect(isProjectModeAgentSurface({})).toBe(false);
+    expect(shouldNotifyAgentLifecycle(false, true)).toBe(false);
+    expect(shouldNotifyAgentLifecycle(true, true)).toBe(false);
   });
 });

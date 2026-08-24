@@ -4,6 +4,7 @@ import type {
   NotificationOwner,
   NotificationSeverity,
 } from '../shared/types';
+import { useStore } from './store';
 
 type NotificationMetadata = Pick<
   NotificationInfo,
@@ -49,4 +50,30 @@ export function notificationMetadata(input: NotificationPolicyInput): Notificati
 /** Project-owned supervisor events stay internal until the project control layer escalates them. */
 export function shouldNotifySupervisorUser(projectId?: string): boolean {
   return !projectId;
+}
+
+interface DesktopNotificationInput {
+  surfaceId: string;
+  text: string;
+  title?: string;
+  /** `false` disables flashing for informational notifications. */
+  flash?: boolean;
+}
+
+export function shouldFlashTaskbar(
+  enabled: boolean,
+  windowFocused: boolean,
+  requested = true,
+): boolean {
+  return requested && enabled && !windowFocused;
+}
+
+/** Deliver a desktop notification without allowing call sites to bypass flash preferences. */
+export function fireDesktopNotification(input: DesktopNotificationInput): void {
+  const enabled = useStore.getState().notificationPrefs.taskbarFlash;
+  const windowFocused = typeof document === 'undefined' || document.hasFocus();
+  window.wmux?.notification?.fire({
+    ...input,
+    flash: shouldFlashTaskbar(enabled, windowFocused, input.flash !== false),
+  });
 }

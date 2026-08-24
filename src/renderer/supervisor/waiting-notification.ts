@@ -6,7 +6,7 @@ import {
 } from '../store/supervisor-slice';
 import { effectiveSupervisorLaneConfig, effectiveSupervisorTaskGoal } from './protocol';
 import { appendSupervisorRecord } from './recording';
-import { notificationMetadata, shouldNotifySupervisorUser } from '../notification-policy';
+import { fireDesktopNotification, notificationMetadata, shouldNotifySupervisorUser } from '../notification-policy';
 
 /** Announce the one-way transition from active review into waiting for a new direction. */
 export function announceSupervisorWaitingForDirection(
@@ -53,6 +53,6 @@ export function announceSupervisorWaitingForDirection(
       sourceLabel: lane.label,
     }),
   });
-  window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督待续', text });
+  fireDesktopNotification({ surfaceId: notificationSurfaceId, title: 'AI 监督待续', text });
   return true;
 }

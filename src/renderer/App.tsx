@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
-import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectOptions, SshConnectionProfile, SshFileEntry, SshHostKeyPrompt, type NotificationInfo } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectOptions, SshConnectionProfile, SshFileEntry, SshHostKeyPrompt, type NotificationInfo, type SurfaceRef } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf, replaceSoleTerminalSurface } from './store/split-utils';
 import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from './dev-ports';
@@ -44,6 +44,7 @@ import { buildSurfaceDragPreview } from './components/SplitPane/surface-drag-pre
 import {
   formatAgentLifecycleText,
   inferAgentName,
+  isProjectModeAgentSurface,
   lifecycleDedupeKey,
   shouldNotifyAgentLifecycle,
   shouldDedupeLifecycleNotify,
@@ -124,7 +125,7 @@ import {
 } from './supervisor/provider-limit';
 import { projectBaselineProgressDirective } from './project-manager/engine';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
-import { notificationMetadata } from './notification-policy';
+import { fireDesktopNotification, notificationMetadata } from './notification-policy';
 import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import {
   dedicatedSupervisorSurfaceId,
@@ -230,7 +231,7 @@ function fireNotification(
       }),
     });
   }
-  window.wmux?.notification?.fire({
+  fireDesktopNotification({
     surfaceId: surfaceId || '',
     text,
     title: opts?.title || 'wmux',
@@ -242,6 +243,19 @@ function fireNotification(
 function workspaceForSurface(surfaceId: string): WorkspaceInfo | undefined {
   if (!surfaceId) return undefined;
   return useStore.getState().workspaces.find(ws => getAllSurfaces(ws.splitTree).includes(surfaceId));
+}
+
+function surfaceForWorkspace(
+  surfaceId: string,
+  workspace: WorkspaceInfo | undefined,
+): SurfaceRef | undefined {
+  if (!surfaceId || !workspace) return undefined;
+  for (const paneId of getAllPaneIds(workspace.splitTree)) {
+    const surface = findLeaf(workspace.splitTree, paneId)?.surfaces
+      .find((candidate) => candidate.id === surfaceId);
+    if (surface) return surface;
+  }
+  return undefined;
 }
 
 type HookActivityMap = Record<string, { lastTool: string; toolCount: number; lastSeen: number }>;
@@ -466,7 +480,10 @@ function handleAgentLifecycleEvent(
     supervisorLaneControlState(lane) !== 'stopped'
     && (lane.surfaceId === sid || dedicatedSupervisorSurfaceId(lane) === sid)
   ));
-  if (!shouldNotifyAgentLifecycle(supervisorOwnsSurface)) return;
+  const ws = workspaceForSurface(sid);
+  const surface = surfaceForWorkspace(sid, ws);
+  const projectModeOwnsSurface = isProjectModeAgentSurface(surface);
+  if (!shouldNotifyAgentLifecycle(supervisorOwnsSurface, projectModeOwnsSurface)) return;
 
   const prefs = state.notificationPrefs;
   const ev = event?.event as string;
@@ -482,7 +499,6 @@ function handleAgentLifecycleEvent(
   if (isNeedsInput && prefs.agentInputNotify === false) return;
   if (isTurnFinished && prefs.agentStopNotify === false) return;
 
-  const ws = workspaceForSurface(sid);
   const wsId = ws?.id || state.activeWorkspaceId;
   if (!wsId) return;
 
@@ -763,7 +779,7 @@ async function handleSupervisorDeliveryAcknowledgementTimeout(
         }),
       });
     }
-    window.wmux?.notification?.fire({
+    fireDesktopNotification({
       surfaceId: notificationSurfaceId,
       title: 'AI 监督投递确认异常',
       text: detail,
@@ -1077,7 +1093,7 @@ function handleUnacknowledgedSupervisorReview(
       sourceLabel: lane.label,
     }),
   });
-  window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督已暂停', text: detail });
+  fireDesktopNotification({ surfaceId: notificationSurfaceId, title: 'AI 监督已暂停', text: detail });
 }
 
 function handleSupervisorHookEvent(event: any): void {
@@ -1824,7 +1840,7 @@ export default function App() {
                     });
                   } else {
                     useStore.getState().pauseSupervisorLane(lane.id, 'Codex Transcript 模态自动退出失败');
-                    window.wmux?.notification?.fire({
+                    fireDesktopNotification({
                       surfaceId: supervisorSurfaceId,
                       title: 'AI 监督已暂停',
                       text: '监督终端无法自动退出 Codex Transcript，请打开终端确认后恢复监督。',
@@ -2202,11 +2218,13 @@ export default function App() {
                 payload: { reason: action.reason, detail: action.detail || '' },
               })).catch(() => undefined);
             } else {
+              const notificationSurfaceId = lane?.surfaceId || '';
+              const notificationText = text.replace(/\n/g, ' · ');
               store.addNotification({
-                surfaceId: (lane?.surfaceId || '') as SurfaceId,
+                surfaceId: notificationSurfaceId as SurfaceId,
                 workspaceId: (store.activeWorkspaceId || '') as WorkspaceId,
                 title: 'AI 监督需要你的处理',
-                text: text.replace(/\n/g, ' · '),
+                text: notificationText,
                 ...notificationMetadata({
                   owner: 'supervisor',
                   entityId: lane?.id || action.laneId,
@@ -2214,6 +2232,11 @@ export default function App() {
                   laneId: lane?.id,
                   sourceLabel: lane?.label,
                 }),
+              });
+              fireDesktopNotification({
+                surfaceId: notificationSurfaceId,
+                title: 'AI 监督需要你的处理',
+                text: notificationText,
               });
             }
             store.stopSupervisorLane(action.laneId, action.reason);
@@ -2512,7 +2535,7 @@ export default function App() {
       terminalPrefs: { ...state.terminalPrefs },
     };
     await window.wmux?.session?.save(session);
-    window.wmux?.notification?.fire({ surfaceId: '', text: `Session "${name}" saved`, title: 'wmux' });
+    fireDesktopNotification({ surfaceId: '', text: `Session "${name}" saved`, title: 'wmux' });
   }, [sidebarWidth]);
 
   const handleLoadSession = useCallback(async (name: string) => {

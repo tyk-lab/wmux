@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   notificationMetadata,
+  shouldFlashTaskbar,
   shouldNotifySupervisorUser,
 } from '../../src/renderer/notification-policy';
+import { DEFAULT_NOTIFICATION_PREFS } from '../../src/renderer/store/settings-slice';
 
 describe('notification responsibility policy', () => {
   it('routes project attention to the project manager with a stable replacement key', () => {
@@ -39,5 +41,13 @@ describe('notification responsibility policy', () => {
       action: 'open-supervisor',
       laneId: 'lane-1',
     });
+  });
+
+  it('enables taskbar flashing by default and only requests it for an unfocused window', () => {
+    expect(DEFAULT_NOTIFICATION_PREFS.taskbarFlash).toBe(true);
+    expect(shouldFlashTaskbar(true, false)).toBe(true);
+    expect(shouldFlashTaskbar(false, false)).toBe(false);
+    expect(shouldFlashTaskbar(true, true)).toBe(false);
+    expect(shouldFlashTaskbar(true, false, false)).toBe(false);
   });
 });
