@@ -21,6 +21,8 @@ export interface ProjectExecutionProposal {
   planProgressSignature?: string;
   retryKind?: ProjectRetryKind;
   allowWindowRenewal?: boolean;
+  /** A verified full-work-item closeout may be recorded without another execution delta. */
+  completion?: boolean;
   escalationBoundary?: ProjectEscalationBoundary;
   now: number;
 }
@@ -29,7 +31,8 @@ export interface ProjectExecutionGuardResult {
   decision: ProjectExecutionGuardDecision;
   reason?: string;
   record: ProjectExecutionRecord;
-  renewWindow?: 'decision-limit' | 'time-limit' | 'decision-and-time';
+  renewWindow?: 'verified-progress' | 'decision-limit' | 'time-limit' | 'decision-and-time';
+  replanTrigger?: 'decision-limit' | 'time-limit' | 'no-progress';
 }
 
 function normalizeText(value: string | undefined): string {
@@ -65,6 +68,7 @@ export function createProjectExecutionRecord(
     progressSignature: signature([
       materialWorkspaceVersion,
       changedFiles.join('|'),
+      proposal.testCommand || '',
       testResult,
       proposal.error || '',
       proposal.planProgressSignature || '',
@@ -152,7 +156,7 @@ export function projectBudgetExhaustionSummary(options: {
   }
   if (exhausted.length > 0) return `执行预算已耗尽：${exhausted.join('；')}`;
   return [
-    '执行预算触发后继，但没有单项达到硬上限',
+    '执行预算请求无有效边界，当前没有单项达到上限',
     `监督自治健康窗口 ${options.decisionsUsed}/${options.budget.maxDecisions}`,
     `真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`,
   ].join('；');
@@ -181,14 +185,17 @@ function sameMaterialWorkVersion(
 function hasFreshVerifiedProgress(
   history: readonly ProjectExecutionRecord[],
   record: ProjectExecutionRecord,
+  lastCheckpointSignature?: string,
 ): boolean {
   const previous = history[history.length - 1];
-  if (!previous || record.errorSignature || record.progressSignature === previous.progressSignature) return false;
+  if (record.errorSignature
+    || record.progressSignature === lastCheckpointSignature
+    || record.progressSignature === previous?.progressSignature) return false;
   const workspaceProgress = record.workspaceVersion !== 'unknown'
     && (record.changedFiles?.length || 0) > 0;
   const testProgress = !!record.testCommand && !!record.testResult;
   const planProgress = !!record.planProgressSignature
-    && record.planProgressSignature !== previous.planProgressSignature;
+    && record.planProgressSignature !== previous?.planProgressSignature;
   return workspaceProgress || testProgress || planProgress;
 }
 
@@ -198,12 +205,22 @@ export function evaluateProjectExecutionGuard(options: {
   budget: ProjectExecutionBudget;
   decisionsUsed: number;
   startedAt?: number;
+  lastCheckpointSignature?: string;
 }): ProjectExecutionGuardResult {
   const { history, proposal, budget } = options;
+  const effectiveHistory = history.filter((entry) => entry.consumedDecision !== false);
   const record = createProjectExecutionRecord(proposal);
 
+  if (proposal.completion === true) {
+    const renewWindow = proposal.allowWindowRenewal === true
+      && hasFreshVerifiedProgress(effectiveHistory, record, options.lastCheckpointSignature)
+      ? 'verified-progress' as const
+      : undefined;
+    return { decision: 'allow', record, ...(renewWindow ? { renewWindow } : {}) };
+  }
+
   if (record.errorSignature) {
-    const identicalFailures = consecutiveCount(history, (entry) => (
+    const identicalFailures = consecutiveCount(effectiveHistory, (entry) => (
       entry.actionSignature === record.actionSignature
       && entry.errorSignature === record.errorSignature
       && sameMaterialWorkVersion(entry, record)
@@ -218,7 +235,7 @@ export function evaluateProjectExecutionGuard(options: {
   }
 
   if (record.testCommand) {
-    const sameTestRuns = history.filter((entry) => (
+    const sameTestRuns = effectiveHistory.filter((entry) => (
       entry.testCommand === record.testCommand
       && sameMaterialWorkVersion(entry, record)
     )).length;
@@ -230,7 +247,7 @@ export function evaluateProjectExecutionGuard(options: {
       };
     }
     if (record.fullSuite) {
-      const fullSuiteRuns = history.filter((entry) => (
+      const fullSuiteRuns = effectiveHistory.filter((entry) => (
         entry.fullSuite === true && sameMaterialWorkVersion(entry, record)
       )).length;
       if (fullSuiteRuns >= budget.maxFullSuiteRunsPerVersion) {
@@ -243,36 +260,42 @@ export function evaluateProjectExecutionGuard(options: {
     }
   }
 
-  const noProgressRounds = consecutiveCount(history, (entry) => (
+  const noProgressRounds = consecutiveCount(effectiveHistory, (entry) => (
     entry.progressSignature === record.progressSignature
   ));
   if (noProgressRounds >= budget.maxNoProgressRounds) {
     return {
       decision: 'replan',
       reason: `连续 ${noProgressRounds} 轮没有产生新的代码、测试或错误证据`,
+      replanTrigger: 'no-progress',
       record,
     };
   }
   const decisionLimitReached = options.decisionsUsed >= budget.maxDecisions;
   const timeLimitReached = options.startedAt !== undefined
     && proposal.now - options.startedAt >= budget.maxContinuousMinutes * 60_000;
-  if (decisionLimitReached || timeLimitReached) {
-    if (proposal.allowWindowRenewal === true && hasFreshVerifiedProgress(history, record)) {
-      return {
-        decision: 'allow',
-        renewWindow: decisionLimitReached && timeLimitReached
-          ? 'decision-and-time'
-          : decisionLimitReached
-            ? 'decision-limit'
-            : 'time-limit',
-        record,
-      };
-    }
+  const verifiedProgress = proposal.allowWindowRenewal === true
+    && hasFreshVerifiedProgress(effectiveHistory, record, options.lastCheckpointSignature);
+  if (verifiedProgress) {
     return {
-      decision: 'pause',
+      decision: 'allow',
+      renewWindow: decisionLimitReached && timeLimitReached
+        ? 'decision-and-time'
+        : decisionLimitReached
+          ? 'decision-limit'
+          : timeLimitReached
+            ? 'time-limit'
+            : 'verified-progress',
+      record,
+    };
+  }
+  if (decisionLimitReached || timeLimitReached) {
+    return {
+      decision: 'replan',
       reason: decisionLimitReached
-        ? `已达到连续自主决策健康窗口 ${budget.maxDecisions} 次，且本轮没有可核验的新进展`
-        : `已达到连续运行健康窗口 ${budget.maxContinuousMinutes} 分钟，且本轮没有可核验的新进展`,
+        ? `已达到连续自主决策健康窗口 ${budget.maxDecisions} 次，且本轮没有可核验的新进展；需要项目 AI 在同一工作项内调整执行路线`
+        : `已达到连续运行健康窗口 ${budget.maxContinuousMinutes} 分钟，且本轮没有可核验的新进展；需要项目 AI 在同一工作项内调整执行路线`,
+      replanTrigger: decisionLimitReached ? 'decision-limit' : 'time-limit',
       record,
     };
   }

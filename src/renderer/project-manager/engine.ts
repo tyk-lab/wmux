@@ -747,7 +747,7 @@ export function buildProjectSupervisorBriefing(options: {
     ...executionLines,
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,
-    `自治健康窗口：每 ${contract.budget.maxDecisions} 次连续决策或 ${contract.budget.maxContinuousMinutes} 分钟检查一次；能提供新工作区、测试或带证据的里程碑进展时控制层会在原工作项自动续期。累计任务 AI 时间上限 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、真实任务失败重试 ${contract.budget.maxTaskRetries} 次仍是硬护栏。`,
+    `自治健康窗口：完成一个可核验任务批次并提供新工作区、测试或带证据的里程碑进展后，控制层立即在原工作项、原监督和原任务终端续期；连续 ${contract.budget.maxDecisions} 次决策或 ${contract.budget.maxContinuousMinutes} 分钟都没有形成新检查点时，控制层要求项目 AI 在同一工作项内提供实质不同的新路线并原地开启窗口，不创建预算后继或新终端。累计任务 AI 时间上限 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、真实任务失败重试 ${contract.budget.maxTaskRetries} 次仍是硬护栏。`,
     '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。需要重试时必须加 --retry-kind：只有真实实现/验证失败使用 task-failure 并消耗任务重试预算；命令、测试入口、路径或转义修正使用 command-correction；PTY、Agent、投递或运行时恢复使用 runtime-recovery；任务 AI 执行窗口不足且本轮零写入时使用 execution-window。四类重试仍受相同失败、连续无进展和监督健康窗口约束，不能靠改分类规避护栏。',
     'complete 是对已形成证据的只读收口，不要求制造新的代码、测试或错误变化；没有文件变更时省略 --changed-files，禁止填写 none/无变更充当路径。完成文件的读取与哈希核验属于当前专属监督 capability，项目 AI 不能代批；若控制层报告 capability 路由故障，应保留证据并等待内部恢复，不得把它升级为用户决策。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
@@ -755,6 +755,6 @@ export function buildProjectSupervisorBriefing(options: {
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,
-    '任务边界优先于追逐目标。只有合同变化、跨工作项协调、外部阻塞、用户独有信息、高风险动作或预算实际耗尽时，才使用 needs-human 交回项目管理 AI，并分别标注 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted，同时提供 --reason 与 --impact。普通技术判断不得升级；不得原样重复命令或测试，也不得只改写升级理由。',
+    '任务边界优先于追逐目标。只有合同变化、跨工作项协调、外部阻塞、用户独有信息、高风险动作或硬执行预算实际耗尽时，才使用 needs-human 交回项目管理 AI，并分别标注 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted，同时提供 --reason 与 --impact。普通监督决策/时间健康窗口由控制层直接转为同工作项内部重规划，不得借此创建后继、轮换终端或询问用户；不得原样重复命令或测试，也不得只改写升级理由。',
   ].filter(Boolean).join('\n');
 }

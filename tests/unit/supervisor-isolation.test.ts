@@ -181,7 +181,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('已授权原路线继续');
     expect(text).toContain('已授权技术方案选择');
     expect(text).toContain('已授权小范围路线调整');
-    expect(text).toContain('控制层会先交给项目管理 AI');
+    expect(text).toContain('控制层会直接要求项目 AI 在同一工作项和终端内重规划');
     expect(text).toContain('不要直接向用户提问');
     expect(text).toContain('复杂或高影响决定交给项目管理 AI');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');

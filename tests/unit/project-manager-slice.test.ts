@@ -1026,6 +1026,7 @@ describe('project-manager slice', () => {
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'renew-execution-window', workItemId: 'auth', reason: 'decision-limit', startedAt: 2_000,
+      checkpointSignature: 'progress-b',
     }, session.id)).toMatchObject({ ok: true, event: { kind: 'guard-triggered' } });
     const record = {
       ts: 2_001, actionSignature: 'action', commandSignature: 'command', errorSignature: '',
@@ -1039,6 +1040,7 @@ describe('project-manager slice', () => {
       decisionsUsed: 1,
       totalDecisionsUsed: 13,
       budgetWindowRenewals: 1,
+      lastBudgetCheckpointSignature: 'progress-b',
       startedAt: 2_000,
       executionHistory: [record],
     });

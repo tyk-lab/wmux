@@ -237,8 +237,11 @@ describe('project-manager engine', () => {
     expect(text).toContain('允许范围：src/auth');
     expect(text).toContain('禁止动作：git push');
     expect(text).toContain('不得原样重复命令或测试');
-    expect(text).toContain('自治健康窗口：每 12 次连续决策');
-    expect(text).toContain('控制层会在原工作项自动续期');
+    expect(text).toContain('完成一个可核验任务批次');
+    expect(text).toContain('原工作项、原监督和原任务终端续期');
+    expect(text).toContain('连续 12 次决策或 90 分钟都没有形成新检查点时');
+    expect(text).toContain('同一工作项内提供实质不同的新路线');
+    expect(text).toContain('不创建预算后继或新终端');
     expect(text).toContain('[项目主目标背景] 交付完整认证能力');
     expect(text).toContain('阶段成果：认证实现、回归与边界证据形成闭环');
     expect(text).toContain('委派粒度是可验收的完整阶段成果');

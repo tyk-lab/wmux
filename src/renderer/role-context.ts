@@ -205,6 +205,7 @@ const PROJECT_AI_METHODS = new Set([
   'project.task.update',
   'project.directive.resolve',
   'project.task.supervise',
+  'project.execution.replan',
   'project.progress.sync',
   'project.supervisor.transition.ack',
   'project.goal.plan',

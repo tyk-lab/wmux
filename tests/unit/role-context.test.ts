@@ -349,6 +349,8 @@ describe('unified managed AI role context', () => {
       .toBe(true);
     expect(authorizeManagedRoleV2(manager, 'project.directive.resolve', { projectId: 'project-a' }).allowed)
       .toBe(true);
+    expect(authorizeManagedRoleV2(manager, 'project.execution.replan', { projectId: 'project-a' }).allowed)
+      .toBe(true);
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-b' }).allowed)
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.task-terminal.control', { projectId: 'project-a' }).allowed)

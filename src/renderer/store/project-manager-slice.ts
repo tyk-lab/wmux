@@ -1086,7 +1086,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed)
           + (action.consumeDecision === false ? 0 : 1),
         updatedAt: now,
-        executionHistory: [...item.executionHistory, action.record].slice(-MAX_EXECUTION_HISTORY),
+        executionHistory: [
+          ...item.executionHistory,
+          { ...action.record, consumedDecision: action.consumeDecision !== false },
+        ].slice(-MAX_EXECUTION_HISTORY),
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       next = updated;
@@ -1110,6 +1113,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         decisionsUsed: 0,
         totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed),
         budgetWindowRenewals: renewalCount,
+        lastBudgetCheckpointSignature: action.checkpointSignature
+          || item.lastBudgetCheckpointSignature,
         startedAt: action.startedAt,
         updatedAt: now,
       }));
@@ -1118,7 +1123,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = {
         kind: 'guard-triggered',
         workItemId: action.workItemId,
-        summary: `监督 AI 提供了可核验的新进展，已原地续期自治健康窗口（第 ${renewalCount} 次）`,
+        summary: action.reason === 'internal-replan'
+          ? `项目 AI 已提供新的内部执行路线，原工作项原地开启自治健康窗口（第 ${renewalCount} 次）`
+          : `监督 AI 提供了可核验的新进展，已原地续期自治健康窗口（第 ${renewalCount} 次）`,
         payload: {
           decision: 'continue',
           action: 'autonomy-window-renewed',
@@ -1127,6 +1134,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           previousDecisions,
           totalDecisionsUsed: existing.totalDecisionsUsed ?? existing.decisionsUsed,
           renewalCount,
+          checkpointSignature: action.checkpointSignature,
         },
       };
     } else if (action.type === 'pause-project') {

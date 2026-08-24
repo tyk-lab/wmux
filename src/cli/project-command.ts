@@ -8,7 +8,7 @@ export interface ProjectJsonInput {
 
 const PROJECT_COMMANDS = [
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'status', 'logs', 'terminals',
-  'terminal-rotate', 'task-create', 'task-update', 'record', 'supervise', 'progress-sync',
+  'terminal-rotate', 'task-create', 'task-update', 'record', 'supervise', 'execution-window-replan', 'progress-sync',
   'transition-ack', 'task-terminal-start', 'task-terminal-rotate', 'task-terminal-control',
   'worker-status', 'worker-recover', 'worker-resource-acquire', 'worker-resource-release',
   'worker-resource-reconcile', 'worker-directive-reconcile', 'directive-resolve',
@@ -69,6 +69,7 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
 const JSON_PROJECT_COMMANDS = new Set<string>([
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'terminal-rotate',
   'task-create', 'task-update', 'record', 'ask', 'complete',
+  'execution-window-replan',
 ]);
 
 export function resolveProjectCommandHelp(args: readonly string[]): string | undefined {

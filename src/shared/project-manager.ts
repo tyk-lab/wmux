@@ -396,6 +396,8 @@ export interface ProjectSupervisorContract {
 
 export interface ProjectExecutionRecord {
   ts: number;
+  /** False records a rejected/failed delivery attempt without affecting execution-loop accounting. */
+  consumedDecision?: boolean;
   actionSignature: string;
   commandSignature: string;
   errorSignature: string;
@@ -412,6 +414,13 @@ export interface ProjectExecutionRecord {
   /** Only task-failure consumes the work item's task retry budget. */
   retryKind?: ProjectRetryKind;
   escalationBoundary?: ProjectEscalationBoundary;
+}
+
+export interface ProjectExecutionWindowReplan {
+  reason: string;
+  requestedAt: number;
+  trigger: 'decision-limit' | 'time-limit' | 'no-progress';
+  previousDirectionSignature?: string;
 }
 
 export type ProjectCriterionVerificationStatus = 'satisfied' | 'unsatisfied' | 'unverified';
@@ -628,6 +637,12 @@ export interface ProjectWorkItem {
   totalDecisionsUsed?: number;
   /** Number of healthy in-place autonomy-window renewals. */
   budgetWindowRenewals?: number;
+  /** Last verified progress already credited with opening a new autonomy window. */
+  lastBudgetCheckpointSignature?: string;
+  /** Control-owned gate requiring the project AI to provide a materially different internal route. */
+  executionWindowReplan?: ProjectExecutionWindowReplan;
+  /** Recent accepted internal-route signatures prevent A/B cycling across renewed windows. */
+  executionWindowReplanHistory?: string[];
   startedAt?: number;
   updatedAt: number;
   completedAt?: number;
@@ -1920,6 +1935,24 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
           Math.max(0, Math.trunc(item.totalDecisionsUsed ?? item.decisionsUsed ?? 0)),
         ),
         budgetWindowRenewals: Math.max(0, Math.trunc(item.budgetWindowRenewals || 0)),
+        lastBudgetCheckpointSignature: item.lastBudgetCheckpointSignature?.trim().slice(0, 200) || undefined,
+        executionWindowReplan: item.executionWindowReplan
+          && Number.isFinite(item.executionWindowReplan.requestedAt)
+          && !!String(item.executionWindowReplan.reason || '').trim()
+          && ['decision-limit', 'time-limit', 'no-progress'].includes(item.executionWindowReplan.trigger)
+          ? {
+              reason: String(item.executionWindowReplan.reason || '').trim().slice(0, 4000),
+              requestedAt: item.executionWindowReplan.requestedAt,
+              trigger: item.executionWindowReplan.trigger,
+              previousDirectionSignature: item.executionWindowReplan.previousDirectionSignature?.trim().slice(0, 200)
+                || undefined,
+            }
+          : undefined,
+        executionWindowReplanHistory: Array.isArray(item.executionWindowReplanHistory)
+          ? [...new Set(item.executionWindowReplanHistory
+            .map((entry) => String(entry || '').trim().slice(0, 200))
+            .filter(Boolean))].slice(-20)
+          : [],
         completion: normalizeProjectCompletionResult(item.completion),
         supervisorPlanRequired: item.supervisorPlanRequired
           ?? !['completed', 'stopped'].includes(item.status),
@@ -1978,8 +2011,9 @@ export type ProjectManagerAction =
   | {
       type: 'renew-execution-window';
       workItemId: string;
-      reason: 'decision-limit' | 'time-limit' | 'decision-and-time';
+      reason: 'verified-progress' | 'internal-replan' | 'decision-limit' | 'time-limit' | 'decision-and-time';
       startedAt: number;
+      checkpointSignature?: string;
     }
   | {
     type: 'pause-project';

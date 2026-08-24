@@ -207,13 +207,17 @@ describe('project execution anti-loop guard', () => {
     })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('全量测试') });
   });
 
-  it('pauses at an autonomy health-window boundary without verified progress', () => {
+  it('requires an in-place project replan at a health-window boundary without verified progress', () => {
     expect(evaluateProjectExecutionGuard({
       history: [],
       proposal: proposal(),
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-    })).toMatchObject({ decision: 'pause', reason: expect.stringContaining('健康窗口') });
+    })).toMatchObject({
+      decision: 'replan',
+      replanTrigger: 'decision-limit',
+      reason: expect.stringContaining('同一工作项内调整执行路线'),
+    });
   });
 
   it('renews an exhausted decision window when workspace evidence proves fresh progress', () => {
@@ -232,6 +236,55 @@ describe('project execution anti-loop guard', () => {
       decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
       startedAt: 500,
     })).toMatchObject({ decision: 'allow', renewWindow: 'decision-limit' });
+  });
+
+  it('renews a healthy decision window as soon as verified progress closes a task batch', () => {
+    expect(evaluateProjectExecutionGuard({
+      history: [],
+      proposal: proposal({
+        error: undefined, testCommand: undefined, testResult: undefined,
+        workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'],
+        allowWindowRenewal: true, now: 2_000,
+      }),
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 4,
+      startedAt: 500,
+    })).toMatchObject({ decision: 'allow', renewWindow: 'verified-progress' });
+  });
+
+  it('does not credit the same verified checkpoint twice across renewed windows', () => {
+    const current = proposal({
+      error: undefined, testCommand: undefined, testResult: undefined,
+      workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'],
+      allowWindowRenewal: true, now: 2_000,
+    });
+    const checkpoint = createProjectExecutionRecord(current).progressSignature;
+    const result = evaluateProjectExecutionGuard({
+      history: [],
+      proposal: current,
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 1,
+      startedAt: 500,
+      lastCheckpointSignature: checkpoint,
+    });
+    expect(result).toMatchObject({ decision: 'allow' });
+    expect(result.renewWindow).toBeUndefined();
+  });
+
+  it('can credit verified progress after an earlier delivery failure was only audited', () => {
+    const current = proposal({
+      error: undefined, testCommand: undefined, testResult: undefined,
+      workspaceVersion: 'diff-delivery', changedFiles: ['src/auth.ts'],
+      allowWindowRenewal: true, now: 2_000,
+    });
+    const rejected = { ...createProjectExecutionRecord(current), consumedDecision: false };
+    expect(evaluateProjectExecutionGuard({
+      history: [rejected],
+      proposal: { ...current, now: 3_000 },
+      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      decisionsUsed: 4,
+      startedAt: 500,
+    })).toMatchObject({ decision: 'allow', renewWindow: 'verified-progress' });
   });
 
   it('renews an expired time window when a milestone gains evidence', () => {

@@ -194,6 +194,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-supervise' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
+  'project.execution.replan': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'execution-window-replan' })})`,
+    requireResult: 'Project manager bridge is unavailable',
+  },
   'project.progress.sync': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'progress-sync' })})`,
     requireResult: 'Project manager bridge is unavailable',

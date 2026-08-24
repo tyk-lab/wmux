@@ -472,6 +472,18 @@ async function cmdProject(args: string[]): Promise<void> {
     }));
     return;
   }
+  if (sub === 'execution-window-replan') {
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.execution.replan', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
   if (sub === 'worker-status') {
     const workItemId = getFlag(args, '--task') || '';
     const workerId = getFlag(args, '--worker') || '';
@@ -1407,8 +1419,8 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry --retry-kind <task-failure|command-correction|runtime-recovery|execution-window>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|execution-window-replan|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/execution-window-replan/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
