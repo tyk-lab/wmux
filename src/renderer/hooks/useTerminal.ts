@@ -53,6 +53,8 @@ import {
   terminalRuntimeValidationAction,
   terminalRuntimeStatus,
 } from '../terminal-runtime-lifecycle';
+import { notificationMetadata } from '../notification-policy';
+import { projectDisplayName, projectManagerEventNeedsUserAttention } from '../../shared/project-manager';
 import '@xterm/xterm/css/xterm.css';
 
 const INTERACTIVE_AGENT_RUNTIME_STABILITY_MS = 1_000;
@@ -158,6 +160,7 @@ function notifyProjectManagerRuntimeFailure(
     role === 'manager' || !!lane?.projectManagerProjectId,
     options.startupFailure === true,
   ) === 'caller-owned';
+  const projectOwned = role === 'manager' || !!lane?.projectManagerProjectId;
   const roleLabel = role === 'manager'
     ? '项目管理 AI'
     : role === 'supervisor'
@@ -167,8 +170,22 @@ function notifyProjectManagerRuntimeFailure(
         : '用户记录终端';
   const text = `${roleLabel}运行时不可用：${detail}`;
   const title = `${roleLabel}已停止`;
-  if (!projectManagedStartupFailure) {
-    state.addNotification({ surfaceId: surface.id, workspaceId: workspace.id, text, title });
+  if (!projectOwned) {
+    const owner = role === 'supervisor' || role === 'task' ? 'supervisor' : 'agent';
+    state.addNotification({
+      surfaceId: surface.id,
+      workspaceId: workspace.id,
+      text,
+      title,
+      ...notificationMetadata({
+        owner,
+        entityId: lane?.id || surface.id,
+        kind: `${role}-runtime-failed`,
+        severity: 'error',
+        laneId: lane?.id,
+        sourceLabel: lane?.label,
+      }),
+    });
     window.wmux?.notification?.fire({
       surfaceId: surface.id,
       title,
@@ -234,7 +251,12 @@ function notifyProjectManagerRuntimeFailure(
       kind,
       workItemId: lane?.projectWorkItemId,
       summary: text,
-      payload: { surfaceId, detail, laneId: lane?.id },
+      payload: {
+        surfaceId,
+        detail,
+        laneId: lane?.id,
+        ...(autoRecoverProjectLane ? { attentionRequired: false } : {}),
+      },
     }, session.id);
     const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
     void window.wmux?.projectManager?.saveSession?.(updated);
@@ -245,6 +267,29 @@ function notifyProjectManagerRuntimeFailure(
         type: event.kind,
         payload: { message: event.summary, surfaceId, detail, laneId: lane?.id },
       });
+      if (projectManagerEventNeedsUserAttention(event)) {
+        const projectTitle = projectDisplayName(session);
+        const notificationText = `项目“${projectTitle}”需要处理：${text}`;
+        state.addNotification({
+          surfaceId: surface.id,
+          workspaceId: workspace.id,
+          title: '项目运行异常',
+          text: notificationText,
+          ...notificationMetadata({
+            owner: 'project',
+            entityId: session.id,
+            kind,
+            severity: 'error',
+            projectId: session.id,
+            sourceLabel: projectTitle,
+          }),
+        });
+        window.wmux?.notification?.fire({
+          surfaceId: surface.id,
+          title: '项目运行异常',
+          text: notificationText,
+        });
+      }
     }
     if ((role === 'manager' && recoverManagerRuntime) || role === 'supervisor' || role === 'task') {
       (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({

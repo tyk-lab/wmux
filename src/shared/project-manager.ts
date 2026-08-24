@@ -859,6 +859,9 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
       resolvedKinds.add('manager-delivery-failed');
     } else if (event.kind === 'manager-delivery-restored') {
       resolvedKinds.add('manager-delivery-failed');
+      // A lifecycle acknowledgement from the manager terminal also proves
+      // that an earlier startup/runtime failure is no longer current.
+      resolvedKinds.add('manager-runtime-failed');
     } else if (event.kind === 'project-agent-runtime-switched') {
       resolvedKinds.add('project-agent-limit-detected');
     } else if (event.kind === 'recovery-restored') {

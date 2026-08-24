@@ -128,6 +128,7 @@ import {
   managedProjectRuntimeRecoveryKey,
 } from './project-manager/runtime-recovery';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
+import { notificationDedupeKey, notificationMetadata } from './notification-policy';
 import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 import {
   activeProjectManagerAttentionEvent,
@@ -3301,17 +3302,38 @@ function scheduleTaskInputRecoveryWatch(lane: SupervisorLane): void {
   const store = useStore.getState();
   const notificationText = '任务终端存在未提交输入；监督指令没有发送。提交或清空输入后，控制层会自动通知监督 AI 重新裁决。';
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
+  const project = lane.projectManagerProjectId
+    ? store.projectManagers.find((candidate) => candidate.id === lane.projectManagerProjectId)
+    : undefined;
+  const notificationTitle = project ? '项目需要你的处理' : 'AI 监督等待任务终端输入区';
   if (workspaceId) {
     store.addNotification({
       surfaceId: lane.surfaceId,
       workspaceId,
-      title: 'AI 监督等待任务终端输入区',
+      title: notificationTitle,
       text: notificationText,
+      ...notificationMetadata(project
+        ? {
+            owner: 'project',
+            entityId: project.id,
+            kind: `task-input:${lane.id}`,
+            action: 'open-surface',
+            projectId: project.id,
+            laneId: lane.id,
+            sourceLabel: projectDisplayName(project),
+          }
+        : {
+            owner: 'supervisor',
+            entityId: lane.id,
+            kind: 'task-input',
+            laneId: lane.id,
+            sourceLabel: lane.label,
+          }),
     });
   }
   window.wmux?.notification?.fire({
     surfaceId: lane.surfaceId,
-    title: 'AI 监督等待任务终端输入区',
+    title: notificationTitle,
     text: notificationText,
   });
 
@@ -5931,7 +5953,20 @@ function notifyProjectManagerAttention(
           : '项目运行异常';
   const text = `项目“${projectDisplayName(current)}”需要处理：${event.summary}`;
   if (workspaceId) {
-    store.addNotification({ surfaceId: surfaceId as SurfaceId, workspaceId, title, text });
+    store.addNotification({
+      surfaceId: surfaceId as SurfaceId,
+      workspaceId,
+      title,
+      text,
+      ...notificationMetadata({
+        owner: 'project',
+        entityId: current.id,
+        kind: event.kind,
+        severity: event.kind === 'project-goal-completed' ? 'success' : 'error',
+        projectId: current.id,
+        sourceLabel: projectDisplayName(current),
+      }),
+    });
   }
   openProjectManagerAttentionSurface(current.id);
   window.wmux?.notification?.fire({ surfaceId, title, text });
@@ -5950,7 +5985,19 @@ function notifyProjectManagerUserQuestion(
     : '项目需要需求确认';
   const text = `${session.goal}：${question.question}`;
   if (workspaceId) {
-    store.addNotification({ surfaceId: surfaceId as SurfaceId, workspaceId, title, text });
+    store.addNotification({
+      surfaceId: surfaceId as SurfaceId,
+      workspaceId,
+      title,
+      text,
+      ...notificationMetadata({
+        owner: 'project',
+        entityId: session.id,
+        kind: `question:${question.category}`,
+        projectId: session.id,
+        sourceLabel: projectDisplayName(session),
+      }),
+    });
   }
   openProjectManagerAttentionSurface(session.id);
   window.wmux?.notification?.fire({ surfaceId, title, text });
@@ -7737,6 +7784,9 @@ function acknowledgeProjectManagerDelivery(surfaceId: string, acknowledgement = 
   const [delivery] = pendingProjectManagerDeliveries.splice(index, 1);
   removePersistedProjectManagerDelivery(session.id, delivery.id);
   if (delivery.alerted) {
+    useStore.getState().resolveNotification(
+      notificationDedupeKey('project', session.id, 'manager-delivery-failed'),
+    );
     useStore.getState().appendProjectManagerEvent({
       kind: 'manager-delivery-restored',
       summary: '项目管理 AI 已确认接收积压消息',
@@ -7762,7 +7812,27 @@ function notifyProjectManagerDeliveryUnavailable(
   const text = detail || (session
     ? `项目“${session.goal}”有消息等待交给项目管理 AI，但运行时当前不可用；消息已保留，将在下一次明确的 Agent 生命周期或恢复事件后重试。`
     : '有消息等待交给项目管理 AI，但运行时当前不可用；消息已保留，将在下一次明确的 Agent 生命周期或恢复事件后重试。');
-  if (workspaceId) store.addNotification({ surfaceId: surfaceId as SurfaceId, workspaceId, text, title: '项目管理 AI 暂不可用' });
+  if (workspaceId) store.addNotification({
+    surfaceId: surfaceId as SurfaceId,
+    workspaceId,
+    text,
+    title: '项目管理 AI 暂不可用',
+    ...(session
+      ? notificationMetadata({
+          owner: 'project',
+          entityId: session.id,
+          kind: 'manager-delivery-failed',
+          severity: 'error',
+          projectId: session.id,
+          sourceLabel: projectDisplayName(session),
+        })
+      : notificationMetadata({
+          owner: 'agent',
+          entityId: surfaceId || 'project-manager',
+          kind: 'manager-delivery-failed',
+          severity: 'error',
+        })),
+  });
   window.wmux?.notification?.fire({ surfaceId, title: '项目管理 AI 暂不可用', text });
   if (session) {
     const event = store.appendProjectManagerEvent({
@@ -16398,7 +16468,19 @@ export function initPipeBridge(): void {
         const text = `已达到 ${normalizedMaxAutoDecisions(session.maxAutoDecisions)} 次自动判断上限；请人工审阅 ${lane.label} 后再继续。`;
         const workspaceId = lane.workspaceId || store.activeWorkspaceId;
         const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
-        if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text });
+        if (workspaceId) store.addNotification({
+          surfaceId: notificationSurfaceId,
+          workspaceId,
+          title: 'AI 监督需要你的处理',
+          text,
+          ...notificationMetadata({
+            owner: 'supervisor',
+            entityId: lane.id,
+            kind: 'auto-decision-limit',
+            laneId: lane.id,
+            sourceLabel: lane.label,
+          }),
+        });
         window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
       }
       return { ok: true, outcome, requiresHuman: true };
@@ -16796,7 +16878,19 @@ export function initPipeBridge(): void {
         const workspaceId = lane.workspaceId || store.activeWorkspaceId;
         const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
         if (workspaceId) {
-          store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text });
+          store.addNotification({
+            surfaceId: notificationSurfaceId,
+            workspaceId,
+            title: 'AI 监督需要你的决定',
+            text,
+            ...notificationMetadata({
+              owner: 'supervisor',
+              entityId: lane.id,
+              kind: `proposal:${proposalKind || 'important'}`,
+              laneId: lane.id,
+              sourceLabel: lane.label,
+            }),
+          });
         }
         window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督', text });
       }

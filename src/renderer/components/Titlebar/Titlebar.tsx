@@ -1,7 +1,7 @@
 import React from 'react';
 import logoSrc from '../../assets/logo.png';
 import NotificationBell from './NotificationBell';
-import { NotificationInfo, WorkspaceId, PaneId, SurfaceId } from '../../../shared/types';
+import { NotificationInfo } from '../../../shared/types';
 import { useT } from '../../i18n';
 import '../../styles/titlebar.css';
 
@@ -14,7 +14,7 @@ interface TitlebarProps {
   workspaceNames: Map<string, string>;
   notificationPanelOpen: boolean;
   onToggleNotificationPanel: () => void;
-  onNotificationJump: (workspaceId: WorkspaceId, surfaceId: SurfaceId, paneId?: PaneId) => void;
+  onNotificationJump: (notification: NotificationInfo) => void;
   onMarkAllNotificationsRead: () => void;
   onClearAllNotifications: () => void;
 }

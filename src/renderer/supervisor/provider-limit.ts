@@ -5,6 +5,11 @@ import {
   type SupervisorSession,
 } from '../store/supervisor-slice';
 import { appendSupervisorRecord } from './recording';
+import {
+  notificationDedupeKey,
+  notificationMetadata,
+  shouldNotifySupervisorUser,
+} from '../notification-policy';
 
 export interface SupervisorProviderLimitError {
   category: 'rate-limit' | 'quota-limit';
@@ -73,10 +78,24 @@ export function reportSupervisorProviderLimit(
     },
   });
   store.appendSupervisorLog(lane.id, '监督模型受限', error.summary);
+  if (!shouldNotifySupervisorUser(lane.projectManagerProjectId)) return true;
   const notificationText = `AI 监督通道“${lane.label}”的模型请求受限：${error.summary}`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
   const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
-  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text: notificationText });
+  if (workspaceId) store.addNotification({
+    surfaceId: notificationSurfaceId,
+    workspaceId,
+    title: 'AI 监督模型受限',
+    text: notificationText,
+    ...notificationMetadata({
+      owner: 'supervisor',
+      entityId: lane.id,
+      kind: 'provider-limit',
+      severity: 'error',
+      laneId: lane.id,
+      sourceLabel: lane.label,
+    }),
+  });
   window.wmux?.notification?.fire({
     surfaceId: notificationSurfaceId,
     title: 'AI 监督模型受限',
@@ -95,6 +114,7 @@ export function clearSupervisorProviderLimitAlert(session: SupervisorSession, la
   if (current?.supervisorProblem?.kind === 'provider-limit') {
     useStore.getState().updateLane(lane.id, { supervisorProblem: undefined });
   }
+  useStore.getState().resolveNotification(notificationDedupeKey('supervisor', lane.id, 'provider-limit'));
 }
 
 export function resetSupervisorProviderLimitAlerts(): void {

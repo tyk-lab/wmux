@@ -38,6 +38,11 @@ describe('project manager attention events', () => {
       deliveryAlert,
       { kind: 'manager-delivery-restored' as const, ts: 4 },
     ])).toBeUndefined();
+    const managerRuntimeAlert = { kind: 'manager-runtime-failed' as const, ts: 4 };
+    expect(activeProjectManagerAttentionEvent([
+      managerRuntimeAlert,
+      { kind: 'manager-delivery-restored' as const, ts: 5 },
+    ])).toBeUndefined();
     const watchdogAlert = {
       kind: 'guard-triggered' as const, ts: 5, payload: { attentionRequired: true },
     };

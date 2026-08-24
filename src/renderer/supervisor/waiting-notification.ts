@@ -1,12 +1,12 @@
 import { useStore } from '../store';
 import {
   dedicatedSupervisorSurfaceId,
-  isProjectManagedSupervisorLane,
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../store/supervisor-slice';
 import { effectiveSupervisorLaneConfig, effectiveSupervisorTaskGoal } from './protocol';
 import { appendSupervisorRecord } from './recording';
+import { notificationMetadata, shouldNotifySupervisorUser } from '../notification-policy';
 
 /** Announce the one-way transition from active review into waiting for a new direction. */
 export function announceSupervisorWaitingForDirection(
@@ -35,12 +35,24 @@ export function announceSupervisorWaitingForDirection(
   });
 
   // 项目管理模式下，待续由项目管理 AI 消化，不再打扰用户。
-  if (isProjectManagedSupervisorLane(lane)) return true;
+  if (!shouldNotifySupervisorUser(lane.projectManagerProjectId)) return true;
 
   const text = `AI 监督通道“${lane.label}”已进入待续；直接在对应 AI 监督终端说明新方案即可继续。`;
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
   const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
-  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text });
+  if (workspaceId) store.addNotification({
+    surfaceId: notificationSurfaceId,
+    workspaceId,
+    title: 'AI 监督待续',
+    text,
+    ...notificationMetadata({
+      owner: 'supervisor',
+      entityId: lane.id,
+      kind: 'waiting-for-direction',
+      laneId: lane.id,
+      sourceLabel: lane.label,
+    }),
+  });
   window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督待续', text });
   return true;
 }

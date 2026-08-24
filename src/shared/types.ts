@@ -257,6 +257,10 @@ export interface ThemeConfig {
 }
 
 // Notification
+export type NotificationOwner = 'agent' | 'supervisor' | 'project';
+export type NotificationSeverity = 'info' | 'attention' | 'error' | 'success';
+export type NotificationAction = 'open-surface' | 'open-supervisor' | 'open-project-manager';
+
 export interface NotificationInfo {
   id: string;
   surfaceId: SurfaceId;
@@ -264,6 +268,15 @@ export interface NotificationInfo {
   paneId?: PaneId;
   text: string;
   title?: string;
+  /** Responsibility boundary used by the notification center. Legacy notifications default to agent. */
+  owner?: NotificationOwner;
+  severity?: NotificationSeverity;
+  /** Stable identity for replacing repeated alerts instead of appending duplicates. */
+  dedupeKey?: string;
+  action?: NotificationAction;
+  projectId?: string;
+  laneId?: string;
+  sourceLabel?: string;
   timestamp: number;
   read: boolean;
 }

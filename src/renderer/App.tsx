@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from './store';
-import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectOptions, SshConnectionProfile, SshFileEntry, SshHostKeyPrompt } from '../shared/types';
+import { PaneId, SurfaceId, WorkspaceId, WorkspaceInfo, SplitNode, SshCompanionAgent, SshConnectOptions, SshConnectionProfile, SshFileEntry, SshHostKeyPrompt, type NotificationInfo } from '../shared/types';
 import SplitContainer from './components/SplitPane/SplitContainer';
 import { updateRatio, getAllPaneIds, findLeaf, replaceSoleTerminalSurface } from './store/split-utils';
 import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from './dev-ports';
@@ -117,6 +117,8 @@ import {
   reportSupervisorProviderLimit,
 } from './supervisor/provider-limit';
 import { projectBaselineProgressDirective } from './project-manager/engine';
+import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
+import { notificationMetadata } from './notification-policy';
 import type { SupervisorDelivery, SupervisorLane, SupervisorSession } from './store/supervisor-slice';
 import {
   dedicatedSupervisorSurfaceId,
@@ -206,7 +208,18 @@ function fireNotification(
   opts?: { flash?: boolean; title?: string },
 ): void {
   if (workspaceId) {
-    addNotification({ surfaceId: (surfaceId || '') as SurfaceId, workspaceId, text });
+    addNotification({
+      surfaceId: (surfaceId || '') as SurfaceId,
+      workspaceId,
+      text,
+      title: opts?.title,
+      ...notificationMetadata({
+        owner: 'agent',
+        entityId: surfaceId || workspaceId,
+        kind: text,
+        severity: 'info',
+      }),
+    });
   }
   window.wmux?.notification?.fire({
     surfaceId: surfaceId || '',
@@ -915,7 +928,20 @@ function handleUnacknowledgedSupervisorReview(
   });
   const workspaceId = lane.workspaceId || store.activeWorkspaceId;
   const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
-  if (workspaceId) store.addNotification({ surfaceId: notificationSurfaceId, workspaceId, text: detail });
+  if (workspaceId) store.addNotification({
+    surfaceId: notificationSurfaceId,
+    workspaceId,
+    title: 'AI 监督已暂停',
+    text: detail,
+    ...notificationMetadata({
+      owner: 'supervisor',
+      entityId: lane.id,
+      kind: 'watchdog-failed',
+      severity: 'error',
+      laneId: lane.id,
+      sourceLabel: lane.label,
+    }),
+  });
   window.wmux?.notification?.fire({ surfaceId: notificationSurfaceId, title: 'AI 监督已暂停', text: detail });
 }
 
@@ -2008,7 +2034,15 @@ export default function App() {
               store.addNotification({
                 surfaceId: (lane?.surfaceId || '') as SurfaceId,
                 workspaceId: (store.activeWorkspaceId || '') as WorkspaceId,
+                title: 'AI 监督需要你的处理',
                 text: text.replace(/\n/g, ' · '),
+                ...notificationMetadata({
+                  owner: 'supervisor',
+                  entityId: lane?.id || action.laneId,
+                  kind: 'scheduler-attention',
+                  laneId: lane?.id,
+                  sourceLabel: lane?.label,
+                }),
               });
             }
             store.stopSupervisorLane(action.laneId, action.reason);
@@ -2342,7 +2376,13 @@ export default function App() {
   }, [workspaces]);
 
   const handleNotificationJump = useCallback(
-    (workspaceId: WorkspaceId, surfaceId: SurfaceId, _paneId?: PaneId) => {
+    (notification: NotificationInfo) => {
+      const { workspaceId, surfaceId } = notification;
+      if (notification.action === 'open-project-manager' && notification.projectId) {
+        openProjectManagerAttentionSurface(notification.projectId);
+        markRead(surfaceId);
+        return;
+      }
       handleSelectWorkspace(workspaceId);
       const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
       if (!ws) return;

@@ -43,6 +43,51 @@ describe('notification-slice', () => {
     expect(ws?.unreadCount).toBe(1);
   });
 
+  it('replaces a repeated alert by dedupeKey without inflating unreadCount', () => {
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '第一次失败',
+      dedupeKey: 'project:one:runtime-failed',
+    });
+    const originalId = useStore.getState().notifications[0].id;
+
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '恢复重试仍失败',
+      dedupeKey: 'project:one:runtime-failed',
+    });
+
+    expect(useStore.getState().notifications).toHaveLength(1);
+    expect(useStore.getState().notifications[0]).toMatchObject({
+      id: originalId,
+      text: '恢复重试仍失败',
+      read: false,
+    });
+    expect(useStore.getState().workspaces.find((w) => w.id === workspaceId)?.unreadCount).toBe(1);
+  });
+
+  it('reopens a read alert when the same dedupeKey fails again', () => {
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '第一次失败',
+      dedupeKey: 'supervisor:one:runtime-failed',
+    });
+    useStore.getState().markRead(surfaceId);
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '再次失败',
+      dedupeKey: 'supervisor:one:runtime-failed',
+    });
+
+    expect(useStore.getState().notifications).toHaveLength(1);
+    expect(useStore.getState().notifications[0]).toMatchObject({ text: '再次失败', read: false });
+    expect(useStore.getState().workspaces.find((w) => w.id === workspaceId)?.unreadCount).toBe(1);
+  });
+
   it('markRead marks notifications for a surface as read and decrements unreadCount', () => {
     useStore.getState().addNotification({ surfaceId, workspaceId, text: 'msg1' });
     useStore.getState().addNotification({ surfaceId, workspaceId, text: 'msg2' });
@@ -66,6 +111,29 @@ describe('notification-slice', () => {
 
     useStore.getState().markAllRead();
     expect(useStore.getState().notifications.every((n) => n.read)).toBe(true);
+  });
+
+  it('resolves only the matching alert and decrements its unread badge', () => {
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '模型受限',
+      dedupeKey: 'supervisor:one:provider-limit',
+    });
+    useStore.getState().addNotification({
+      surfaceId,
+      workspaceId,
+      text: '等待决定',
+      dedupeKey: 'supervisor:one:decision',
+    });
+
+    useStore.getState().resolveNotification('supervisor:one:provider-limit');
+
+    expect(useStore.getState().notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: 'supervisor:one:provider-limit', read: true }),
+      expect.objectContaining({ dedupeKey: 'supervisor:one:decision', read: false }),
+    ]));
+    expect(useStore.getState().workspaces.find((w) => w.id === workspaceId)?.unreadCount).toBe(1);
   });
 
   it('clearNotification removes a notification by id', () => {

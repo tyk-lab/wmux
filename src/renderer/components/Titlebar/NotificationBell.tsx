@@ -1,11 +1,11 @@
 import React, { useRef, useEffect } from 'react';
 import NotificationPanel from './NotificationPanel';
-import { NotificationInfo, WorkspaceId, PaneId, SurfaceId } from '../../../shared/types';
+import { NotificationInfo } from '../../../shared/types';
 
 interface NotificationBellProps {
   notifications: NotificationInfo[];
   workspaceNames: Map<string, string>;
-  onJump: (workspaceId: WorkspaceId, surfaceId: SurfaceId, paneId?: PaneId) => void;
+  onJump: (notification: NotificationInfo) => void;
   onMarkAllRead: () => void;
   onClearAll: () => void;
   isOpen: boolean;
@@ -49,7 +49,7 @@ export default function NotificationBell({
       <button
         className="titlebar__btn notif-bell__btn"
         onClick={onToggle}
-        title="Notifications"
+        title="通知"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M8 1.5A3.5 3.5 0 0 0 4.5 5v2.947c0 .346-.102.683-.294.97l-1.703 2.556a.25.25 0 0 0 .208.389L13.29 11.86a.25.25 0 0 0 .208-.389l-1.703-2.556a1.75 1.75 0 0 1-.294-.97V5A3.5 3.5 0 0 0 8 1.5ZM6.5 13a1.5 1.5 0 0 0 3 0h-3Z" />

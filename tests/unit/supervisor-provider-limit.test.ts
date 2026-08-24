@@ -37,6 +37,7 @@ describe('AI supervisor provider limit detection', () => {
     const store = useStore.getState();
     store.setProjectSupervisorLanes([]);
     store.resetOrdinarySupervisorSession();
+    store.clearAll();
     store.setOrdinarySupervisorLanes([lane()]);
     store.patchSupervisor({ supervisorModel: 'gpt-limited' });
     store.startOrdinarySupervisor();
@@ -99,6 +100,25 @@ describe('AI supervisor provider limit detection', () => {
     });
   });
 
+  it('records a project-owned provider limit without notifying the user directly', () => {
+    const session = useStore.getState().supervisor;
+    const projectLane = {
+      ...session.lanes[0],
+      projectManagerProjectId: 'project-1',
+      projectWorkItemId: 'work-1',
+    };
+
+    expect(reportSupervisorProviderLimit(
+      session,
+      projectLane,
+      'Error: request failed with status code 429',
+    )).toBe(true);
+
+    expect((globalThis.window as any).wmux.supervisor.appendRecord).toHaveBeenCalledTimes(1);
+    expect((globalThis.window as any).wmux.notification.fire).not.toHaveBeenCalled();
+    expect(useStore.getState().notifications).toHaveLength(0);
+  });
+
   it('redacts common credentials before publishing the error summary', () => {
     const detected = detectSupervisorProviderLimit('Error 429: api_key=sk-secret_value_123456 rate limit exceeded');
 
@@ -108,10 +128,13 @@ describe('AI supervisor provider limit detection', () => {
 
   it('allows the same provider limit to alert again after a new supervisor turn starts', () => {
     const session = useStore.getState().supervisor;
-    const currentLane = session.lanes[0];
+    const workspaceId = useStore.getState().createWorkspace({ title: '通知测试' });
+    const currentLane = { ...session.lanes[0], workspaceId };
 
     expect(reportSupervisorProviderLimit(session, currentLane, 'Error: status code 429')).toBe(true);
+    expect(useStore.getState().notifications[0]?.read).toBe(false);
     clearSupervisorProviderLimitAlert(session, currentLane);
+    expect(useStore.getState().notifications[0]?.read).toBe(true);
     expect(reportSupervisorProviderLimit(session, currentLane, 'Error: status code 429')).toBe(true);
     expect((globalThis.window as any).wmux.supervisor.appendRecord).toHaveBeenCalledTimes(2);
   });
