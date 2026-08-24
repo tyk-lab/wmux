@@ -80,6 +80,38 @@ export function createSupervisorEvidenceSnapshot(
   };
 }
 
+export function mergeSupervisorLifecycleEvidence(options: {
+  lifecycleMessage: string;
+  terminalSummary: string;
+  terminalText: string;
+}): { summary: string; text: string } {
+  const lifecycleMessage = options.lifecycleMessage.trim();
+  const terminalSummary = options.terminalSummary.trim();
+  const terminalText = options.terminalText.trim();
+  if (!lifecycleMessage) {
+    return {
+      summary: terminalSummary,
+      text: terminalText,
+    };
+  }
+  if (terminalSummary.includes(lifecycleMessage) || terminalText.includes(lifecycleMessage)) {
+    return {
+      summary: terminalSummary || lifecycleMessage,
+      text: terminalText || lifecycleMessage,
+    };
+  }
+  return {
+    summary: [
+      `[Agent 结束 Hook 最终消息]\n${lifecycleMessage}`,
+      terminalSummary ? `[终端屏幕摘要]\n${terminalSummary}` : '',
+    ].filter(Boolean).join('\n\n'),
+    text: [
+      `[Agent 结束 Hook 最终消息]\n${lifecycleMessage}`,
+      terminalText ? `[终端屏幕快照]\n${terminalText}` : '',
+    ].filter(Boolean).join('\n\n'),
+  };
+}
+
 export function registerSupervisorEvidence(snapshot: SupervisorEvidenceSnapshot): void {
   const key = cacheKey(snapshot.sessionId, snapshot.reviewId);
   evidenceCache.delete(key);

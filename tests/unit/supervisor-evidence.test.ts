@@ -4,6 +4,7 @@ import {
   clearSupervisorEvidenceCache,
   createSupervisorEvidenceSnapshot,
   latestCachedSupervisorEvidence,
+  mergeSupervisorLifecycleEvidence,
   registerSupervisorEvidence,
   supervisorEvidenceBufferRewound,
   supervisorEvidenceContextDiscontinuity,
@@ -14,6 +15,19 @@ import { supervisorEvidenceSuggestedRanges } from '../../src/shared/supervisor-e
 afterEach(() => clearSupervisorEvidenceCache());
 
 describe('supervisor evidence snapshots', () => {
+  it('keeps the authoritative Stop Hook answer ahead of a stale terminal screen', () => {
+    const merged = mergeSupervisorLifecycleEvidence({
+      lifecycleMessage: 'P170 正向正式运行失败；已 safe-stop，身份已消费。',
+      terminalSummary: '旧 recover 批次仍在准备中。',
+      terminalText: '历史终端回卷：recover candidate',
+    });
+
+    expect(merged.summary).toContain('[Agent 结束 Hook 最终消息]\nP170 正向正式运行失败');
+    expect(merged.summary).toContain('[终端屏幕摘要]\n旧 recover 批次');
+    expect(merged.text).toContain('P170 正向正式运行失败');
+    expect(merged.text).toContain('历史终端回卷：recover candidate');
+  });
+
   it('binds immutable evidence to one session, review and task terminal', () => {
     const snapshot = createSupervisorEvidenceSnapshot({
       sessionId: 'sup-1',

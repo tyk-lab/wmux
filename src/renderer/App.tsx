@@ -73,6 +73,7 @@ import { appendSupervisorRecord } from './supervisor/recording';
 import {
   createSupervisorEvidenceSnapshot,
   latestCachedSupervisorEvidence,
+  mergeSupervisorLifecycleEvidence,
   persistSupervisorEvidence,
   registerSupervisorEvidence,
   supervisorEvidenceContextDiscontinuity,
@@ -898,7 +899,12 @@ function freezeSupervisorEvidence(
     lane.label,
     activityState,
   );
-  const coreSummary = conversation.answer || conversation.text || fallbackSummary || '（未提取到任务 AI 最终回答）';
+  const mergedEvidence = mergeSupervisorLifecycleEvidence({
+    lifecycleMessage: fallbackSummary,
+    terminalSummary: conversation.answer || conversation.text,
+    terminalText: screen.text || '',
+  });
+  const coreSummary = mergedEvidence.summary || '（未提取到任务 AI 最终回答）';
   const continuityWarning = contextContinuity === 'rewound'
     ? [
         '[终端证据世代中断｜当前屏幕不能替代先前不可变证据]',
@@ -925,7 +931,7 @@ function freezeSupervisorEvidence(
     capturedLines: screen.lines,
     truncated: screen.truncated || contextContinuity === 'rewound',
     summary,
-    text: screen.text || fallbackSummary,
+    text: mergedEvidence.text || fallbackSummary,
   });
   registerSupervisorEvidence(snapshot);
   void persistSupervisorEvidence(lane.projectDir, snapshot).catch((error: unknown) => {
