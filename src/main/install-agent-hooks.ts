@@ -11,7 +11,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import { ensureKimiHooks, resolveKimiConfigPath } from './kimi-context';
-import { ensureCodexHooks, resolveCodexHooksPath } from './codex-context';
+import {
+  enableTrustedWmuxCodexHooks,
+  ensureCodexHooks,
+  resolveCodexHooksPath,
+} from './codex-context';
 import { ensureGrokHooks, resolveGrokWmuxHooksPath } from './grok-context';
 import { ensureOpencodePlugin } from './opencode-context';
 import { ensurePiHooks, resolvePiSettingsPath, resolvePiWmuxExtensionPath } from './pi-context';
@@ -28,6 +32,8 @@ export interface AgentHookInstallResult {
 export interface InstallAgentHooksOptions {
   /** Install OpenCode plugin as well (default true). */
   opencode?: boolean;
+  /** Explicit user authorization to re-enable already-trusted wmux Codex hooks. */
+  trustCodexHooks?: boolean;
 }
 
 function isLegacyWslBashPath(shellPath: string): boolean {
@@ -136,7 +142,18 @@ export function installAllAgentHooks(opts: InstallAgentHooksOptions = {}): Agent
   });
 
   results.push(safeRun('kimi', 'Kimi Code', resolveKimiConfigPath(), () => ensureKimiHooks()));
-  results.push(safeRun('codex', 'Codex CLI', resolveCodexHooksPath(), () => ensureCodexHooks()));
+  results.push(safeRun('codex', 'Codex CLI', resolveCodexHooksPath(), () => {
+    ensureCodexHooks();
+    if (!opts.trustCodexHooks) return 'installed; run /hooks to review and enable the current definitions';
+    const state = enableTrustedWmuxCodexHooks();
+    const enabled = [...state.enabledEvents, ...state.alreadyEnabledEvents];
+    return [
+      `installed; enabled already-trusted wmux hooks: ${enabled.join(', ') || 'none'}`,
+      state.pendingTrustEvents.length > 0
+        ? `pending /hooks review: ${state.pendingTrustEvents.join(', ')}`
+        : '',
+    ].filter(Boolean).join('; ');
+  }));
   results.push(safeRun('grok', 'Grok Build', resolveGrokWmuxHooksPath(), () => ensureGrokHooks()));
   results.push(safeRun('pi', 'Pi Agent', resolvePiWmuxExtensionPath(), () => ensurePiHooks()));
   results.push(safeRun('pi-shell', 'Pi Agent Bash', resolvePiSettingsPath(), () => {

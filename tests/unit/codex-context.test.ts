@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import {
   applyCodexProjectTrust,
+  applyTrustedWmuxCodexHookState,
   applyWmuxCodexHooks,
   ensureCodexProjectTrusted,
   ensureCodexSupervisorRuntimeTrusted,
@@ -45,6 +46,41 @@ describe('applyWmuxCodexHooks', () => {
     expect(next.hooks.Stop[0].hooks[0].command).toBe('python stop.py');
   });
 
+});
+
+describe('applyTrustedWmuxCodexHookState', () => {
+  it('enables only already-trusted wmux handlers from the exact hooks file', () => {
+    const hooksPath = 'C:\\Users\\tyk\\.codex\\hooks.json';
+    const hooksRoot = applyWmuxCodexHooks({}, SCRIPT);
+    const current = [
+      `[hooks.state.'${hooksPath}:user_prompt_submit:0:0']`,
+      'trusted_hash = "sha256:aaaaaaaa"',
+      'enabled = false',
+      '',
+      `[hooks.state.'${hooksPath}:stop:0:0']`,
+      'trusted_hash = "sha256:bbbbbbbb"',
+      'enabled = true',
+      '',
+      `[hooks.state.'${hooksPath}:pre_tool_use:0:0']`,
+      'enabled = false',
+      '',
+      "[hooks.state.'C:\\other\\hooks.json:stop:0:0']",
+      'trusted_hash = "sha256:cccccccc"',
+      'enabled = false',
+      '',
+    ].join('\n');
+
+    const result = applyTrustedWmuxCodexHookState(current, hooksRoot, hooksPath);
+
+    expect(result.enabledEvents).toEqual(['UserPromptSubmit']);
+    expect(result.alreadyEnabledEvents).toEqual(['Stop']);
+    expect(result.pendingTrustEvents).toEqual(expect.arrayContaining([
+      'PreToolUse', 'PostToolUse', 'PermissionRequest', 'SubagentStop',
+    ]));
+    expect(result.pendingTrustEvents).toHaveLength(4);
+    expect(result.content).toContain(`[hooks.state.'${hooksPath}:user_prompt_submit:0:0']\ntrusted_hash = "sha256:aaaaaaaa"\nenabled = true`);
+    expect(result.content).toContain("[hooks.state.'C:\\other\\hooks.json:stop:0:0']\ntrusted_hash = \"sha256:cccccccc\"\nenabled = false");
+  });
 });
 
 describe('applyCodexProjectTrust', () => {

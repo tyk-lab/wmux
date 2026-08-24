@@ -1306,6 +1306,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   // Install/refresh Kimi · Codex · Grok · Pi · OpenCode lifecycle hooks.
   'install-hooks': async (args) => {
     const noOpencode = args.includes('--no-opencode');
+    const trustCodexHooks = args.includes('--trust-codex-hooks');
     // Most CLI commands run from resources/cli in packaged wmux. Keep the
     // installer-only main-process modules lazy so read-screen and supervisor
     // decisions do not depend on them being available to bare Node.
@@ -1313,7 +1314,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
       formatInstallAgentHooksReport,
       installAllAgentHooks,
     } = require('../main/install-agent-hooks') as typeof import('../main/install-agent-hooks');
-    const results = installAllAgentHooks({ opencode: !noOpencode });
+    const results = installAllAgentHooks({ opencode: !noOpencode, trustCodexHooks });
     console.log(formatInstallAgentHooksReport(results));
     if (results.some((r) => !r.ok)) process.exit(1);
   },
@@ -1385,7 +1386,7 @@ Diff:       diff [--file <path>]
 Notify:     notify <text>, list-notifications, clear-notifications
 Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
-            install-hooks [--no-opencode]
+            install-hooks [--no-opencode] [--trust-codex-hooks]
             (write Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
 Supervisor:  supervisor context
              supervisor evidence --review-id <id> [--file] [--page N] [--page-lines N]

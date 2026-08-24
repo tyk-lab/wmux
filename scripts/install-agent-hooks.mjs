@@ -7,6 +7,7 @@
  *   node scripts/install-agent-hooks.mjs
  *   node scripts/install-agent-hooks.mjs --no-opencode
  *   node scripts/install-agent-hooks.mjs --skip-build
+ *   node scripts/install-agent-hooks.mjs --trust-codex-hooks
  *   node scripts/install-agent-hooks.mjs --wmux-exe <path-to-wmux.exe>
  *
  * Builds dist/ when needed, then runs: node dist/cli/wmux.js install-hooks
@@ -24,6 +25,7 @@ const hookRuntimeFiles = ['wmux-hook.js', 'wmux-hook-context.js', 'wmux-hook-pay
 const args = process.argv.slice(2);
 const skipBuild = args.includes('--skip-build');
 const noOpencode = args.includes('--no-opencode');
+const trustCodexHooks = args.includes('--trust-codex-hooks');
 const wmuxExeArg = args.indexOf('--wmux-exe');
 
 function die(msg, code = 1) {
@@ -109,6 +111,7 @@ syncHookRuntime(path.join(root, 'resources', 'cli'));
 
 const argv = [cli, 'install-hooks'];
 if (noOpencode) argv.push('--no-opencode');
+if (trustCodexHooks) argv.push('--trust-codex-hooks');
 const installedHook = resolveInstalledWmuxHook();
 if (installedHook) syncHookRuntime(path.dirname(installedHook));
 const env = installedHook ? { ...process.env, WMUX_HOOK_SCRIPT: installedHook } : process.env;

@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { applyWmuxLifecycleHooks } from './lifecycle-hooks';
+import { applyWmuxLifecycleHooks, isWmuxHookCommand } from './lifecycle-hooks';
 import { resolveWmuxHookScriptPosix } from './wmux-hook-path';
 import { normalizeSupervisorRuntimeIsolationKey } from '../shared/supervisor-runtime';
 
@@ -25,6 +25,13 @@ export const CODEX_WMUX_HOOK_EVENTS = [
   'SubagentStop',
 ] as const;
 
+export interface CodexWmuxHookStateUpdate {
+  content: string;
+  enabledEvents: string[];
+  alreadyEnabledEvents: string[];
+  pendingTrustEvents: string[];
+}
+
 export function resolveCodexHome(homeDir = os.homedir()): string {
   const fromEnv = process.env.CODEX_HOME?.trim();
   if (fromEnv) return fromEnv;
@@ -37,6 +44,120 @@ export function resolveCodexHooksPath(homeDir = os.homedir()): string {
 
 export function resolveCodexConfigPath(homeDir = os.homedir()): string {
   return path.join(resolveCodexHome(homeDir), 'config.toml');
+}
+
+function codexHookStateEventName(event: string): string {
+  return event.replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
+}
+
+function normalizedCodexHookSource(value: string): string {
+  const normalized = path.normalize(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * Re-enable only exact wmux handlers that Codex has already hashed and trusted.
+ * Missing hashes remain pending for manual `/hooks` review; this never fabricates trust.
+ */
+export function applyTrustedWmuxCodexHookState(
+  current: string,
+  hooksRoot: any,
+  hooksPath: string,
+): CodexWmuxHookStateUpdate {
+  const newline = current.includes('\r\n') ? '\r\n' : '\n';
+  const lines = current.replace(/\r\n/gu, '\n').split('\n');
+  const enabledEvents: string[] = [];
+  const alreadyEnabledEvents: string[] = [];
+  const pendingTrustEvents: string[] = [];
+  const discoveredEvents = new Set<string>();
+  const expectedSource = normalizedCodexHookSource(hooksPath);
+  const eventByStateName = new Map(CODEX_WMUX_HOOK_EVENTS.map((event) => (
+    [codexHookStateEventName(event), event] as const
+  )));
+
+  for (let headerIndex = 0; headerIndex < lines.length; headerIndex += 1) {
+    const header = /^\s*\[hooks\.state\.'(.+)'\]\s*$/u.exec(lines[headerIndex]);
+    if (!header) continue;
+    const stateKey = header[1];
+    const stateMatch = /:([a-z0-9_]+):(\d+):(\d+)$/u.exec(stateKey);
+    if (!stateMatch) continue;
+    const event = eventByStateName.get(stateMatch[1]);
+    if (!event) continue;
+    const source = stateKey.slice(0, stateMatch.index);
+    if (normalizedCodexHookSource(source) !== expectedSource) continue;
+    const groupIndex = Number(stateMatch[2]);
+    const hookIndex = Number(stateMatch[3]);
+    const handler = hooksRoot?.hooks?.[event]?.[groupIndex]?.hooks?.[hookIndex];
+    if (!isWmuxHookCommand(handler?.command)) continue;
+    discoveredEvents.add(event);
+
+    let tableEnd = lines.findIndex((line, index) => index > headerIndex && /^\s*\[/u.test(line));
+    if (tableEnd < 0) tableEnd = lines.length;
+    const trustedHashIndex = lines.findIndex((line, index) => (
+      index > headerIndex && index < tableEnd && /^\s*trusted_hash\s*=\s*['"]sha256:[0-9a-f]+['"]\s*$/iu.test(line)
+    ));
+    if (trustedHashIndex < 0) {
+      pendingTrustEvents.push(event);
+      continue;
+    }
+    const enabledIndex = lines.findIndex((line, index) => (
+      index > headerIndex && index < tableEnd && /^\s*enabled\s*=/u.test(line)
+    ));
+    if (enabledIndex >= 0) {
+      const enabled = /^(\s*enabled\s*=\s*)(true|false)(\s*(?:#.*)?)$/iu.exec(lines[enabledIndex]);
+      if (!enabled) {
+        pendingTrustEvents.push(event);
+        continue;
+      }
+      if (enabled[2].toLowerCase() === 'true') {
+        alreadyEnabledEvents.push(event);
+        continue;
+      }
+      lines[enabledIndex] = `${enabled[1]}true${enabled[3]}`;
+    } else {
+      lines.splice(trustedHashIndex + 1, 0, 'enabled = true');
+    }
+    enabledEvents.push(event);
+  }
+
+  for (const event of CODEX_WMUX_HOOK_EVENTS) {
+    if (!discoveredEvents.has(event) && !pendingTrustEvents.includes(event)) {
+      pendingTrustEvents.push(event);
+    }
+  }
+
+  return {
+    content: lines.join(newline),
+    enabledEvents,
+    alreadyEnabledEvents,
+    pendingTrustEvents,
+  };
+}
+
+export function enableTrustedWmuxCodexHooks(
+  configPath = resolveCodexConfigPath(),
+  hooksPath = resolveCodexHooksPath(),
+): Omit<CodexWmuxHookStateUpdate, 'content'> {
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+  const hooksRoot = fs.existsSync(hooksPath)
+    ? JSON.parse(fs.readFileSync(hooksPath, 'utf-8'))
+    : {};
+  const update = applyTrustedWmuxCodexHookState(current, hooksRoot, hooksPath);
+  if (update.content !== current) {
+    const temporaryPath = `${configPath}.wmux-${process.pid}-${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporaryPath, update.content, { encoding: 'utf-8', mode: 0o600 });
+      fs.renameSync(temporaryPath, configPath);
+    } catch (error) {
+      try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+      throw error;
+    }
+  }
+  return {
+    enabledEvents: update.enabledEvents,
+    alreadyEnabledEvents: update.alreadyEnabledEvents,
+    pendingTrustEvents: update.pendingTrustEvents,
+  };
 }
 
 function normalizeCodexProjectPath(projectPath: string): string {

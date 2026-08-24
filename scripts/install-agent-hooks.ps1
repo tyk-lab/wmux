@@ -15,6 +15,9 @@
 
   Safe to re-run (idempotent). Does not remove your non-wmux hooks.
 
+  Use -TrustCodexHooks only after reviewing the wmux commands. It re-enables
+  exact wmux hooks that Codex has already hashed and trusted; it does not create trust.
+
 .PARAMETER NoOpencode
   Skip OpenCode plugin install.
 
@@ -29,6 +32,7 @@
 param(
   [switch]$NoOpencode,
   [switch]$SkipBuild,
+  [switch]$TrustCodexHooks,
   [string]$WmuxExe
 )
 
@@ -109,6 +113,7 @@ if ($installedHook) {
 
 $argv = @($cli, 'install-hooks')
 if ($NoOpencode) { $argv += '--no-opencode' }
+if ($TrustCodexHooks) { $argv += '--trust-codex-hooks' }
 
 Write-Host "→ node $($argv -join ' ')"
 & node @argv

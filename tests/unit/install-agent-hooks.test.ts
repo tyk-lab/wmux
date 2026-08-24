@@ -56,6 +56,8 @@ describe('supported hook installers', () => {
       expect(powershellInstaller).toContain(runtimeFile);
       expect(nodeInstaller).toContain(runtimeFile);
     }
+    expect(powershellInstaller).toContain('TrustCodexHooks');
+    expect(nodeInstaller).toContain('--trust-codex-hooks');
   });
 });
 
