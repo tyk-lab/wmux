@@ -79,6 +79,7 @@ import {
 import {
   compactSupervisorDeliveries,
   enqueueSupervisorDelivery,
+  isRecoverableStaleSupervisorState,
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
   removeFailedSupervisorDelivery,
@@ -107,7 +108,9 @@ import { TERMINAL_USER_SUBMIT_EVENT } from './utils/terminal-user-submit';
 import { markTerminalRuntimeFailed, terminalRuntimeStatus } from './terminal-runtime-lifecycle';
 import {
   interactiveAgentInputReady,
+  interactiveAgentPromptReady,
   interactiveAgentShellPromptFailureDetail,
+  interactiveAgentTranscriptMode,
 } from './utils/interactive-agent-runtime';
 import {
   clearSupervisorProviderLimitAlert,
@@ -1576,6 +1579,13 @@ export default function App() {
     supervisorDeliveryRetryAttemptRef.current = 0;
     let cancelled = false;
     let retryTimer: number | null = null;
+    let recoveryRetryTimer: number | null = null;
+    let flushDeliveries: () => Promise<void>;
+    const transcriptRecoveryAttempts = new Map<string, {
+      attempts: number;
+      lastAttemptAt: number;
+      recoveryQueued?: boolean;
+    }>();
 
     const scheduleRetry = () => {
       if (cancelled || retryTimer != null) return;
@@ -1588,7 +1598,15 @@ export default function App() {
       }, 1200);
     };
 
-    const flushDeliveries = async () => {
+    const scheduleRecoveryRetry = (delayMs: number) => {
+      if (cancelled || recoveryRetryTimer != null) return;
+      recoveryRetryTimer = window.setTimeout(() => {
+        recoveryRetryTimer = null;
+        void flushDeliveries();
+      }, Math.max(200, delayMs));
+    };
+
+    flushDeliveries = async () => {
       if (cancelled) return;
       if (supervisorDeliveryInFlightRef.current) {
         scheduleRetry();
@@ -1615,13 +1633,97 @@ export default function App() {
           if (compactedDeliveries !== lane.pendingSupervisorDeliveries) {
             useStore.getState().updateLane(lane.id, { pendingSupervisorDeliveries: compactedDeliveries });
           }
+          if (compactedDeliveries.length > 0 && interactiveAgentTranscriptMode(supervisorScreen)) {
+            const now = Date.now();
+            const recovery = transcriptRecoveryAttempts.get(supervisorSurfaceId);
+            if (!recovery || now - recovery.lastAttemptAt >= 500) {
+              if ((recovery?.attempts || 0) >= 2) {
+                if (!recovery?.recoveryQueued) {
+                  transcriptRecoveryAttempts.set(supervisorSurfaceId, {
+                    ...recovery,
+                    attempts: recovery?.attempts || 2,
+                    lastAttemptAt: now,
+                    recoveryQueued: true,
+                  });
+                  useStore.getState().appendSupervisorLog(
+                    lane.id,
+                    '监督终端模态恢复失败',
+                    lane.projectManagerProjectId
+                      ? 'Codex Transcript 在两次安全退出后仍未关闭；控制层将重建专属监督运行时并保留待审核队列'
+                      : 'Codex Transcript 在两次安全退出后仍未关闭；该普通监督已暂停，等待用户恢复',
+                  );
+                  if (lane.projectManagerProjectId) {
+                    (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
+                      projectId: lane.projectManagerProjectId,
+                      workItemId: lane.projectWorkItemId,
+                      laneId: lane.id,
+                      surfaceId: supervisorSurfaceId,
+                      role: 'supervisor',
+                      detail: '专属监督 Codex 长时间停留在 Transcript 模态，安全退出失败',
+                    });
+                  } else {
+                    useStore.getState().pauseSupervisorLane(lane.id, 'Codex Transcript 模态自动退出失败');
+                    window.wmux?.notification?.fire({
+                      surfaceId: supervisorSurfaceId,
+                      title: 'AI 监督已暂停',
+                      text: '监督终端无法自动退出 Codex Transcript，请打开终端确认后恢复监督。',
+                    });
+                  }
+                }
+                continue;
+              }
+              const accepted = await pty.writeChecked(supervisorSurfaceId, 'q');
+              transcriptRecoveryAttempts.set(supervisorSurfaceId, {
+                attempts: (recovery?.attempts || 0) + 1,
+                lastAttemptAt: now,
+              });
+              if (accepted) {
+                useStore.getState().appendSupervisorLog(
+                  lane.id,
+                  '退出监督终端历史模态',
+                  '检测到 Codex Transcript；已发送专用退出键 q，等待真实输入框恢复',
+                );
+              } else {
+                useStore.getState().appendSupervisorLog(
+                  lane.id,
+                  '监督终端历史模态退出未写入',
+                  'Codex Transcript 退出键未被 PTY 接受；将在有界次数内重试',
+                );
+              }
+              scheduleRecoveryRetry(500);
+            }
+            continue;
+          }
+          transcriptRecoveryAttempts.delete(supervisorSurfaceId);
+          const runtimeReady = supervisorRuntime?.state === 'ready';
+          const recoveredPromptReady = isRecoverableStaleSupervisorState({
+            agentState: supervisorAgentState,
+            runtimeReady,
+            promptReady: interactiveAgentPromptReady(supervisorScreen),
+          });
           let delivery = nextDeliverableSupervisorDelivery(
             compactedDeliveries,
             supervisorAgentState,
-            supervisorRuntime?.state === 'ready',
-            supervisorRuntime?.state === 'ready' && interactiveAgentInputReady(supervisorScreen),
+            runtimeReady,
+            runtimeReady && interactiveAgentInputReady(supervisorScreen),
+            recoveredPromptReady,
           );
-          if (!delivery) continue;
+          if (!delivery) {
+            const state = supervisorAgentState && typeof supervisorAgentState === 'object'
+              ? supervisorAgentState as { state?: unknown; runDepth?: unknown; updatedAt?: unknown }
+              : undefined;
+            if (compactedDeliveries.length > 0 && (
+              state?.state === 'working'
+              || (state?.state === 'unknown' && Number(state.runDepth) > 0)
+            )) {
+              const updatedAt = Number(state.updatedAt);
+              const dueIn = Number.isFinite(updatedAt)
+                ? Math.max(200, updatedAt + SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS - Date.now())
+                : 2_000;
+              scheduleRecoveryRetry(Math.min(2_000, dueIn));
+            }
+            continue;
+          }
           if (supervisorRuntime?.state === 'failed' || supervisorRuntime?.state === 'exited') {
             continue;
           }
@@ -1743,6 +1845,7 @@ export default function App() {
       cancelled = true;
       window.removeEventListener(SUPERVISOR_DELIVERY_READY_EVENT, onDeliveryReady);
       if (retryTimer != null) window.clearTimeout(retryTimer);
+      if (recoveryRetryTimer != null) window.clearTimeout(recoveryRetryTimer);
     };
   }, [supervisorActive]);
 

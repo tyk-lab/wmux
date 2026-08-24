@@ -29,6 +29,7 @@
 import { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { IPC_CHANNELS, SurfaceId } from '../shared/types';
+import { AGENT_WORKING_TRUST_MS } from '../shared/agent-state-policy';
 
 export type AgentRunState = 'blocked' | 'working' | 'idle' | 'unknown';
 
@@ -66,7 +67,7 @@ export interface AgentStateRecord {
 export const DEFAULT_METADATA_TTL_MS = 60_000;
 
 /** Longest a `working` claim is trusted without any further report. */
-export const WORKING_TRUST_MS = 15 * 60_000;
+export const WORKING_TRUST_MS = AGENT_WORKING_TRUST_MS;
 
 const records = new Map<SurfaceId, AgentStateRecord>();
 

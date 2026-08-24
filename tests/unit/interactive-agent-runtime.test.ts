@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   interactiveAgentExitDetail,
   interactiveAgentInputReady,
+  interactiveAgentPromptReady,
   interactiveAgentShellPromptFailureDetail,
   interactiveAgentStartupDiagnostic,
   interactiveAgentStartupFailureDetail,
+  interactiveAgentTranscriptMode,
 } from '../../src/renderer/utils/interactive-agent-runtime';
 
 describe('interactive Agent runtime detection', () => {
@@ -87,6 +89,26 @@ describe('interactive Agent runtime detection', () => {
     expect(interactiveAgentInputReady('Grok Build 1.0.5\nNew worktree\nCtrl+O')).toBe(true);
     expect(interactiveAgentInputReady('Pi Agent\nAsk anything')).toBe(true);
     expect(interactiveAgentInputReady('pi v0.48.2\nctrl+c/ctrl+d clear/exit · / commands\nPi can explain its own features')).toBe(true);
+  });
+
+  it('distinguishes the Codex Transcript modal from the real composer', () => {
+    const transcript = [
+      '/ T R A N S C R I P T / / / / / / /',
+      '95%',
+      '↑/↓ to scroll   pgup/pgdn to page',
+      'q to quit   esc/← to edit prev   enter to edit message',
+    ].join('\n');
+    expect(interactiveAgentTranscriptMode(transcript)).toBe(true);
+    expect(interactiveAgentPromptReady(transcript)).toBe(false);
+    expect(interactiveAgentPromptReady([
+      '─ Worked for 42s ─',
+      '› Ask Codex to do anything',
+      'gpt-5.6-terra medium · C:\\runtime',
+    ].join('\n'))).toBe(true);
+    expect(interactiveAgentPromptReady([
+      '› Ask Codex to do anything',
+      '⠋ Working (2m)',
+    ].join('\n'))).toBe(false);
   });
 
   it('keeps raw Codex readiness evidence when the current xterm screen contains only blank rows', () => {

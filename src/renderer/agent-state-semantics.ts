@@ -1,6 +1,9 @@
+import { AGENT_WORKING_TRUST_MS } from '../shared/agent-state-policy';
+
 export interface AgentStateSemanticsView {
   state?: unknown;
   blockedReason?: unknown;
+  updatedAt?: unknown;
 }
 
 const AWAITING_NEXT_PROMPT_REASON = /^\s*(?:(?:wait(?:ing)?|await(?:ing)?)\s+(?:for\s+)?(?:(?:your|the)\s+)?(?:next|another|new)\s+(?:prompt|instruction|message|task|input)|等待(?:(?:你的?|您的?|用户的?)\s*)?(?:下一(?:条|个)?|新的?)\s*(?:提示|指令|消息|任务|输入))\s*[.!。！…]*\s*$/iu;
@@ -20,4 +23,18 @@ export function isAgentPromptReadyState(agentState: unknown): boolean {
   if (!agentState || typeof agentState !== 'object') return false;
   return (agentState as AgentStateSemanticsView).state === 'idle'
     || isAwaitingNextPromptState(agentState);
+}
+
+/** Renderer snapshots are push-based, so expire a missed Stop locally as well. */
+export function effectiveAgentState(
+  agentState: unknown,
+  now = Date.now(),
+): unknown {
+  if (!agentState || typeof agentState !== 'object') return agentState;
+  const state = agentState as AgentStateSemanticsView;
+  const updatedAt = Number(state.updatedAt);
+  if (state.state !== 'working'
+    || !Number.isFinite(updatedAt)
+    || now - updatedAt <= AGENT_WORKING_TRUST_MS) return agentState;
+  return { ...state, state: 'unknown' };
 }

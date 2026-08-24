@@ -160,6 +160,16 @@ describe('declared agent state precedence', () => {
     expect(out.working).toBe(1);
   });
 
+  it('expires a pushed working snapshot when its Stop hook was lost', () => {
+    const tree = leaf('pane-1', [{ id: 'surf-a' }]);
+    const out = agentSessionsForWorkspace(tree, {}, {}, NOW, {
+      'surf-a': { state: 'working', updatedAt: NOW - 15 * 60_000 - 1 },
+    });
+    expect(out.sessions).toHaveLength(1);
+    expect(out.sessions[0]).toMatchObject({ working: false, blocked: false });
+    expect(out.working).toBe(0);
+  });
+
   it('a declared idle overrides a fresh hook event', () => {
     const tree = leaf('pane-1', [{ id: 'surf-a' }]);
     const out = agentSessionsForWorkspace(

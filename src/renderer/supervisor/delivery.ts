@@ -3,6 +3,7 @@ import { isAgentPromptReadyState } from '../agent-state-semantics';
 
 export const SUPERVISOR_DELIVERY_READY_EVENT = 'wmux:supervisor-delivery-ready';
 export const SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS = 20_000;
+export const SUPERVISOR_STALE_PROMPT_RECOVERY_MS = 20_000;
 
 export function signalSupervisorDeliveryReady(): void {
   (globalThis as any).window?.dispatchEvent?.(new Event(SUPERVISOR_DELIVERY_READY_EVENT));
@@ -144,6 +145,7 @@ export function nextDeliverableSupervisorDelivery(
   supervisorAgentState: unknown,
   runtimeReady = false,
   runtimeInputReady = false,
+  recoveredPromptReady = false,
 ): SupervisorDelivery | undefined {
   const queue = compactSupervisorDeliveries(pending);
   if (queue.some((delivery) => delivery.stage === 'submitted')) return undefined;
@@ -162,14 +164,33 @@ export function nextDeliverableSupervisorDelivery(
   );
   const pasted = queue.find((delivery) => delivery.stage === 'pasted');
   if (pasted) {
-    return promptReady || bootstrapReady(pasted) ? pasted : undefined;
+    return promptReady || recoveredPromptReady || bootstrapReady(pasted) ? pasted : undefined;
   }
-  if (!promptReady && !runtimeInputReady) return undefined;
+  if (!promptReady && !recoveredPromptReady && !runtimeInputReady) return undefined;
   return [...queue]
     .sort((left, right) => deliveryPriority(left) - deliveryPriority(right) || left.createdAt - right.createdAt)
     .find((delivery) => (
-      promptReady || bootstrapReady(delivery)
+      promptReady || recoveredPromptReady || bootstrapReady(delivery)
     ));
+}
+
+/** A positive idle composer can repair a missed Stop after the hook grace period. */
+export function isRecoverableStaleSupervisorState(options: {
+  agentState: unknown;
+  runtimeReady: boolean;
+  promptReady: boolean;
+  now?: number;
+  graceMs?: number;
+}): boolean {
+  if (!options.runtimeReady || !options.promptReady
+    || !options.agentState || typeof options.agentState !== 'object') return false;
+  const state = options.agentState as { state?: unknown; updatedAt?: unknown; runDepth?: unknown };
+  const updatedAt = Number(state.updatedAt);
+  if (!Number.isFinite(updatedAt)) return false;
+  const age = (options.now ?? Date.now()) - updatedAt;
+  if (age < (options.graceMs ?? SUPERVISOR_STALE_PROMPT_RECOVERY_MS)) return false;
+  if (state.state === 'working') return true;
+  return state.state === 'unknown' && Number(state.runDepth) > 0;
 }
 
 export function unacknowledgedSubmittedSupervisorDelivery(

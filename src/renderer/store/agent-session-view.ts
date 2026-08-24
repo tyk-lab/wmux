@@ -1,5 +1,5 @@
 import { SplitNode, SurfaceId, PaneId } from '../../shared/types';
-import { isAwaitingNextPromptState } from '../agent-state-semantics';
+import { effectiveAgentState, isAwaitingNextPromptState } from '../agent-state-semantics';
 
 /** One sidebar hook-activity entry written by App.tsx from lifecycle hook events. */
 export interface HookActivityEntry {
@@ -24,6 +24,7 @@ export const SESSION_ACTIVITY_TTL_MS = 5000;
 export interface DeclaredAgentState {
   state: 'blocked' | 'working' | 'idle' | 'unknown';
   blockedReason?: string | null;
+  updatedAt?: number;
 }
 
 /** One tracked agent session inside a workspace. */
@@ -107,15 +108,16 @@ function resolveActivity(
   const reportFresh = !!reported && !reported.isDone && !!reported.lastTool
     && now - reported.lastUpdate < SESSION_ACTIVITY_TTL_MS;
 
-  const declaredKnown = !!declared && declared.state !== 'unknown';
-  const blocked = declared?.state === 'blocked' && !isAwaitingNextPromptState(declared);
-  const working = declaredKnown ? declared.state === 'working' : (hookFresh || reportFresh);
+  const effectiveDeclared = effectiveAgentState(declared, now) as DeclaredAgentState | undefined;
+  const declaredKnown = !!effectiveDeclared && effectiveDeclared.state !== 'unknown';
+  const blocked = effectiveDeclared?.state === 'blocked' && !isAwaitingNextPromptState(effectiveDeclared);
+  const working = declaredKnown ? effectiveDeclared.state === 'working' : (hookFresh || reportFresh);
 
   let tool: string | null = null;
   if (reportFresh) tool = reported.lastTool;
   else if (hookFresh && hook.lastTool) tool = hook.lastTool;
 
-  return { working, blocked, blockedReason: blocked ? (declared?.blockedReason ?? null) : null, tool };
+  return { working, blocked, blockedReason: blocked ? (effectiveDeclared?.blockedReason ?? null) : null, tool };
 }
 
 /**

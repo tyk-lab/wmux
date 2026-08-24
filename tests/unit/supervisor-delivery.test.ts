@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
+  isRecoverableStaleSupervisorState,
   nextDeliverableSupervisorDelivery,
   nextSupervisorDeliveryRetryAttempt,
   removeFailedSupervisorDelivery,
@@ -91,6 +92,23 @@ describe('supervisor delivery queue', () => {
     expect(canDeliverToSupervisor({ state: 'blocked', blockedReason: 'question: choose A or B' })).toBe(false);
     expect(canDeliverToSupervisor('idle')).toBe(true);
     expect(canDeliverToSupervisor('unknown')).toBe(false);
+  });
+
+  it('recovers a missed Stop only with an old lifecycle claim and a positive prompt', () => {
+    const completed = event('end', 'task-end', '运行测试', 2);
+    const stale = { state: 'working', runDepth: 1, updatedAt: 1_000 };
+    const fresh = { ...stale, updatedAt: 20_000 };
+    expect(isRecoverableStaleSupervisorState({
+      agentState: stale, runtimeReady: true, promptReady: true, now: 21_000,
+    })).toBe(true);
+    expect(isRecoverableStaleSupervisorState({
+      agentState: fresh, runtimeReady: true, promptReady: true, now: 21_000,
+    })).toBe(false);
+    expect(isRecoverableStaleSupervisorState({
+      agentState: stale, runtimeReady: true, promptReady: false, now: 21_000,
+    })).toBe(false);
+    expect(nextDeliverableSupervisorDelivery([completed], stale, true, true)).toBeUndefined();
+    expect(nextDeliverableSupervisorDelivery([completed], stale, true, true, true)?.id).toBe('end');
   });
 
   it('delivers a queued lifecycle fact when the supervisor is only waiting for its next prompt', () => {

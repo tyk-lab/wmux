@@ -23,6 +23,22 @@ function plainTerminalOutput(output: string): string {
   return output.replace(ANSI_ESCAPE, '').replace(/\r/gu, '');
 }
 
+/** Codex owns this alternate-buffer history view; text input here is not a prompt. */
+export function interactiveAgentTranscriptMode(output: string): boolean {
+  const plain = plainTerminalOutput(output);
+  return /(?:^|\n)\s*\/\s*T\s*R\s*A\s*N\s*S\s*C\s*R\s*I\s*P\s*T\s*\//iu.test(plain)
+    && /\bq\s+to\s+quit\b/iu.test(plain)
+    && /\benter\s+to\s+edit\s+message\b/iu.test(plain);
+}
+
+/** Require the real Codex composer before recovering a stale lifecycle claim. */
+export function interactiveAgentPromptReady(output: string): boolean {
+  if (interactiveAgentTranscriptMode(output) || interactiveAgentShellPromptFailureDetail(output)) return false;
+  const tail = plainTerminalOutput(output).slice(-5000);
+  return /\bAsk Codex to do anything\b/iu.test(tail)
+    && !/\b(?:Working|Thinking)\s*(?:\([^\n]*\)|for\s+[^\n]*)?\s*$/imu.test(tail);
+}
+
 function lastNonEmptyTerminalLine(output: string): string {
   return plainTerminalOutput(output)
     .split('\n')
