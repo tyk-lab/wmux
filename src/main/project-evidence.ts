@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { projectArtifactLocationViolation } from '../shared/project-artifact-policy';
 
 const MAX_EVIDENCE_REFS = 50;
 const MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024;
@@ -49,6 +50,8 @@ export function verifyProjectEvidenceRefs(
   const entries: VerifiedProjectEvidenceRef[] = [];
   let totalBytes = 0;
   for (const ref of refs) {
+    const placementViolation = projectArtifactLocationViolation(ref);
+    if (placementViolation) return { ok: false, error: `证据产物落位不合规：${placementViolation}` };
     if (path.isAbsolute(ref) || ref.split('/').some((part) => part === '..' || part === '')) {
       return { ok: false, error: `证据引用必须是项目内规范相对文件路径：${ref}` };
     }

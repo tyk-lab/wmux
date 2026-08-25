@@ -3,6 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import type { ProjectProgressEntry, ProjectProgressSnapshot } from '../shared/project-manager';
+import {
+  projectArtifactLocationViolation,
+  projectProgressDocumentViolation,
+} from '../shared/project-artifact-policy';
 
 const MAX_ENTRIES = 500;
 const MAX_HASH_BYTES = 2 * 1024 * 1024;
@@ -165,6 +169,57 @@ function captureFilesystemEntries(projectDir: string, budget: HashBudget): {
   };
 }
 
+function captureManagedPolicyEntries(projectDir: string, budget: HashBudget): {
+  entries: ProjectProgressEntry[];
+  truncated: boolean;
+} {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    if (files.length > MAX_ENTRIES) return;
+    let children: fs.Dirent[];
+    try {
+      children = fs.readdirSync(directory, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+    } catch {
+      return;
+    }
+    for (const child of children) {
+      if (files.length > MAX_ENTRIES) return;
+      const absolute = path.join(directory, child.name);
+      if (child.isDirectory()) visit(absolute);
+      else if (child.isFile()) files.push(absolute);
+    }
+  };
+  for (const managedRoot of ['.project-plans', 'runs']) visit(path.join(projectDir, managedRoot));
+  const entries: ProjectProgressEntry[] = [];
+  for (const filePath of files.slice(0, MAX_ENTRIES)) {
+    const relative = path.relative(projectDir, filePath).replace(/\\/gu, '/');
+    entries.push({
+      path: relative,
+      source: 'workspace',
+      status: 'F',
+      signature: fileSignature(filePath, budget),
+    });
+    let violation = projectArtifactLocationViolation(relative);
+    if (!violation && relative.toLowerCase() === '.project-plans/progress.md') {
+      try {
+        violation = projectProgressDocumentViolation(fs.readFileSync(filePath, 'utf8'));
+      } catch {
+        violation = 'PROGRESS.md 不可读取或不是 UTF-8 文本';
+      }
+    }
+    if (violation) {
+      entries.push({
+        path: relative,
+        source: 'workspace',
+        status: 'POLICY-VIOLATION',
+        signature: sha256(violation),
+      });
+    }
+  }
+  return { entries, truncated: files.length > MAX_ENTRIES };
+}
+
 function capturePlanEntries(filePaths: unknown, budget: HashBudget): ProjectProgressEntry[] {
   if (!Array.isArray(filePaths)) return [];
   return [...new Set(filePaths.map((value) => String(value || '').trim()).filter(path.isAbsolute))]
@@ -196,11 +251,20 @@ export function captureProjectProgress(
   const budget = { remaining: MAX_TOTAL_HASH_BYTES };
   const git = captureGitEntries(projectDir, budget);
   const workspace = git || captureFilesystemEntries(projectDir, budget);
+  const managed = captureManagedPolicyEntries(projectDir, budget);
   const planEntries = capturePlanEntries(planFilePaths, budget);
-  const allEntries = [...workspace.entries, ...planEntries]
-    .sort((left, right) => `${left.source}:${left.path}`.localeCompare(`${right.source}:${right.path}`));
+  const byIdentity = new Map<string, ProjectProgressEntry>();
+  for (const entry of [...workspace.entries, ...managed.entries, ...planEntries]) {
+    byIdentity.set(`${entry.source}:${entry.path}:${entry.status}`, entry);
+  }
+  const allEntries = [...byIdentity.values()]
+    .sort((left, right) => {
+      const policyOrder = Number(right.status === 'POLICY-VIOLATION')
+        - Number(left.status === 'POLICY-VIOLATION');
+      return policyOrder || `${left.source}:${left.path}`.localeCompare(`${right.source}:${right.path}`);
+    });
   const entries = allEntries.slice(0, MAX_ENTRIES);
-  const truncated = workspace.truncated || allEntries.length > MAX_ENTRIES;
+  const truncated = workspace.truncated || managed.truncated || allEntries.length > MAX_ENTRIES;
   const capturedAt = Date.now();
   const fingerprint = sha256(JSON.stringify({
     mode: git ? 'git' : 'filesystem',

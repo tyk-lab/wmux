@@ -2,14 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import { getAppDataDir } from '../shared/instance';
 import {
-  MAX_PROJECT_ACTIVE_WORKERS,
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   normalizeProjectManagerSession,
   projectDirectoryIdentity,
   normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
-  normalizeProjectWorkerAssignments,
-  projectWorkerAssignmentsViolation,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 import {
@@ -52,104 +50,6 @@ function validateIdentity(sessionId: string, projectDir: string): void {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
-function isWorkerRuntime(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const worker = value as Record<string, unknown>;
-  return typeof worker.workerId === 'string' && worker.workerId.length > 0
-    && ['integrator', 'worker', 'hardware-executor'].includes(String(worker.role))
-    && typeof worker.outcome === 'string' && worker.outcome.length > 0
-    && isStringArray(worker.dependencies) && isStringArray(worker.writeClaims)
-    && isStringArray(worker.resourceClaims) && isStringArray(worker.validation)
-    && ['planned', 'starting', 'running', 'waiting-resource', 'awaiting-review', 'completed', 'failed',
-      'exited', 'recovering', 'frozen', 'superseded'].includes(String(worker.status))
-    && Number.isInteger(worker.assignmentVersion) && Number(worker.assignmentVersion) >= 1
-    && Number.isInteger(worker.directiveEpoch) && Number(worker.directiveEpoch) >= 0
-    && (worker.surfaceId === undefined || typeof worker.surfaceId === 'string')
-    && (worker.laneId === undefined || typeof worker.laneId === 'string')
-    && (worker.worktreeId === undefined || typeof worker.worktreeId === 'string')
-    && (worker.worktreePath === undefined || typeof worker.worktreePath === 'string')
-    && (worker.checkpoint === undefined || typeof worker.checkpoint === 'string')
-    && (worker.resourceWait === undefined || (
-      !!worker.resourceWait && typeof worker.resourceWait === 'object'
-      && typeof (worker.resourceWait as Record<string, unknown>).resourceId === 'string'
-      && typeof (worker.resourceWait as Record<string, unknown>).operationId === 'string'
-      && ['shared-read', 'exclusive-write', 'snapshot-read', 'brokered-read']
-        .includes(String((worker.resourceWait as Record<string, unknown>).mode))
-      && typeof (worker.resourceWait as Record<string, unknown>).idempotent === 'boolean'
-      && Number.isFinite((worker.resourceWait as Record<string, unknown>).requestedAt)
-    ))
-    && (worker.startedAt === undefined || Number.isFinite(worker.startedAt))
-    && (worker.accumulatedActiveMs === undefined || (Number.isFinite(worker.accumulatedActiveMs) && Number(worker.accumulatedActiveMs) >= 0))
-    && Number.isFinite(worker.updatedAt);
-}
-
-function isWorkerGroup(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const group = value as Record<string, any>;
-  if (!Number.isInteger(group.executionEpoch)
-    || typeof group.integratorWorkerId !== 'string'
-    || !Array.isArray(group.workers)
-    || group.workers.length < 2
-    || group.workers.length > MAX_PROJECT_ACTIVE_WORKERS
-    || !group.workers.every(isWorkerRuntime)
-    || !isStringArray(group.mergeOrder)
-    || group.mergeOrder.length !== group.workers.length
-    || new Set(group.mergeOrder).size !== group.mergeOrder.length
-    || group.mergeOrder.some((workerId: string) => !group.workers.some((worker: any) => worker.workerId === workerId))
-    || !Number.isFinite(group.createdAt)
-    || !Number.isFinite(group.updatedAt)) return false;
-  const assignments = normalizeProjectWorkerAssignments(group.workers);
-  return assignments.length === group.workers.length
-    && projectWorkerAssignmentsViolation(assignments) === null
-    && assignments.find((assignment) => assignment.role === 'integrator')?.workerId === group.integratorWorkerId;
-}
-
-function isUserDirective(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const directive = value as Record<string, unknown>;
-  return typeof directive.directiveId === 'string' && typeof directive.workerId === 'string'
-    && Number.isInteger(directive.directiveEpoch) && Number.isInteger(directive.assignmentVersion)
-    && (directive.executionEpoch === undefined
-      || (Number.isInteger(directive.executionEpoch) && Number(directive.executionEpoch) >= 1))
-    && (directive.requirementsVersion === undefined
-      || (Number.isInteger(directive.requirementsVersion) && Number(directive.requirementsVersion) >= 1))
-    && (directive.authorizationVersion === undefined
-      || (Number.isInteger(directive.authorizationVersion) && Number(directive.authorizationVersion) >= 1))
-    && typeof directive.exactTextAvailable === 'boolean'
-    && (directive.exactText === undefined || typeof directive.exactText === 'string')
-    && ['pending', 'within-assignment', 'reassignment-required', 'contract-change', 'high-risk']
-      .includes(String(directive.classification))
-    && ['pending', 'reconciled', 'superseded'].includes(String(directive.reconciliationStatus))
-    && (directive.resolution === undefined || ['replanned', 'rebound'].includes(String(directive.resolution)))
-    && (directive.resolutionReason === undefined || typeof directive.resolutionReason === 'string')
-    && (directive.resolvedAt === undefined || Number.isFinite(directive.resolvedAt))
-    && Number.isFinite(directive.receivedAt);
-}
-
-function isResourceLease(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const lease = value as Record<string, unknown>;
-  return ['leaseId', 'resourceId', 'ownerWorkerId', 'operationId'].every((key) => typeof lease[key] === 'string')
-    && ['shared-read', 'exclusive-write', 'snapshot-read', 'brokered-read'].includes(String(lease.mode))
-    && ['reserved', 'in-use', 'releasing', 'cooldown', 'released', 'quarantined'].includes(String(lease.status))
-    && typeof lease.idempotent === 'boolean'
-    && Number.isFinite(lease.grantedAt) && Number.isFinite(lease.updatedAt)
-    && (lease.evidence === undefined || typeof lease.evidence === 'string');
-}
-
-function isMergeCandidate(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Record<string, unknown>;
-  return ['candidateId', 'workerId', 'baselineCommit', 'patchHash'].every((key) => typeof candidate[key] === 'string')
-    && Number.isInteger(candidate.assignmentVersion) && Number(candidate.assignmentVersion) >= 1
-    && (candidate.directiveEpoch === undefined
-      || (Number.isInteger(candidate.directiveEpoch) && Number(candidate.directiveEpoch) >= 0))
-    && isStringArray(candidate.changedFiles) && isStringArray(candidate.evidence)
-    && ['submitted', 'checking', 'accepted', 'applied', 'rejected', 'superseded', 'frozen']
-      .includes(String(candidate.status))
-    && Number.isFinite(candidate.createdAt) && Number.isFinite(candidate.updatedAt);
 }
 
 function isProjectTaskExecutionPlan(value: unknown, internalThreads: boolean): boolean {
@@ -237,28 +137,6 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.recommendedOptionId === undefined || typeof question.recommendedOptionId === 'string');
 }
 
-function isProjectTaskBaseline(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const baseline = value as Record<string, unknown>;
-  if (!['required', 'investigating', 'approved'].includes(String(baseline.status))
-    || !Number.isInteger(baseline.requirementsVersion)
-    || Number(baseline.requirementsVersion) < 1) return false;
-  if (baseline.workspaceVersion !== undefined && (
-    typeof baseline.workspaceVersion !== 'string' || baseline.workspaceVersion.length > 2000
-  )) return false;
-  if (baseline.evidence !== undefined && (
-    typeof baseline.evidence !== 'string' || baseline.evidence.length > 12000
-  )) return false;
-  if (baseline.requestedAt !== undefined && !Number.isFinite(baseline.requestedAt)) return false;
-  if (baseline.approvedAt !== undefined && !Number.isFinite(baseline.approvedAt)) return false;
-  if (baseline.status === 'investigating' && !Number.isFinite(baseline.requestedAt)) return false;
-  return baseline.status !== 'approved' || (
-    typeof baseline.workspaceVersion === 'string' && baseline.workspaceVersion.trim().length > 0
-    && typeof baseline.evidence === 'string' && baseline.evidence.trim().length > 0
-    && Number.isFinite(baseline.approvedAt)
-  );
-}
-
 function isProjectGoal(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const goal = value as Record<string, unknown>;
@@ -297,43 +175,6 @@ function isProjectCompletionResult(value: unknown): boolean {
     && isStringArray(completion.validation)
     && (completion.evidence === undefined || typeof completion.evidence === 'string')
     && Number.isFinite(completion.completedAt);
-}
-
-function isProjectSupervisorStagePlan(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Record<string, unknown>;
-  if (!Number.isInteger(plan.revision) || Number(plan.revision) < 1
-    || typeof plan.selectedRoute !== 'string' || !plan.selectedRoute.trim()
-    || !Array.isArray(plan.milestones) || plan.milestones.length < 1 || plan.milestones.length > 12
-    || !isStringArray(plan.expectedPaths) || !isStringArray(plan.targetedValidation)
-    || !isStringArray(plan.serializedBoundaries) || !isStringArray(plan.remainingWork)
-    || !Number.isFinite(plan.updatedAt)) return false;
-  if (plan.workerAssignments !== undefined) {
-    const assignments = normalizeProjectWorkerAssignments(plan.workerAssignments);
-    if (assignments.length !== (plan.workerAssignments as unknown[]).length
-      || projectWorkerAssignmentsViolation(assignments)) return false;
-    if (plan.mergeOrder !== undefined && (
-      !isStringArray(plan.mergeOrder)
-      || plan.mergeOrder.length > MAX_PROJECT_ACTIVE_WORKERS
-      || plan.mergeOrder.some((workerId) => !assignments.some((item) => item.workerId === workerId))
-    )) return false;
-  } else if (plan.mergeOrder !== undefined) return false;
-  const milestoneIds = new Set<string>();
-  let activeMilestones = 0;
-  const milestonesValid = plan.milestones.every((value) => {
-    if (!value || typeof value !== 'object') return false;
-    const milestone = value as Record<string, unknown>;
-    if (milestone.status === 'active') activeMilestones += 1;
-    if (typeof milestone.id === 'string') milestoneIds.add(milestone.id.trim());
-    return typeof milestone.id === 'string' && !!milestone.id.trim()
-      && typeof milestone.title === 'string' && !!milestone.title.trim()
-      && typeof milestone.outcome === 'string' && !!milestone.outcome.trim()
-      && ['planned', 'active', 'completed'].includes(String(milestone.status))
-      && (milestone.evidence === undefined || typeof milestone.evidence === 'string');
-  });
-  return milestonesValid
-    && milestoneIds.size === plan.milestones.length
-    && activeMilestones <= 1;
 }
 
 function isProjectSafeExitState(value: unknown): boolean {
@@ -404,6 +245,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
   const session = value as Record<string, unknown>;
   if (
     typeof session.id !== 'string' || !SESSION_ID.test(session.id)
+    || session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
     || typeof session.projectDir !== 'string' || !path.isAbsolute(session.projectDir)
     || (session.projectName !== undefined && typeof session.projectName !== 'string')
     || (session.projectScope !== undefined && typeof session.projectScope !== 'string')
@@ -477,10 +319,9 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     const budget = contract?.budget;
     const execution = contract?.execution;
     return typeof item.id === 'string'
-      && (item.predecessorWorkItemId === undefined || typeof item.predecessorWorkItemId === 'string')
-      && (item.supersededByWorkItemId === undefined || typeof item.supersededByWorkItemId === 'string')
-      && (item.successionReason === undefined
-        || ['protocol-migration', 'budget-exhausted'].includes(String(item.successionReason)))
+      && item.predecessorWorkItemId === undefined
+      && item.supersededByWorkItemId === undefined
+      && item.successionReason === undefined
       && (item.goalId === undefined || typeof item.goalId === 'string')
       && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
       && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
@@ -488,24 +329,16 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.executionProtocolVersion === undefined || (
         Number.isInteger(item.executionProtocolVersion) && item.executionProtocolVersion >= 0
       ))
-      && (item.baseline === undefined || isProjectTaskBaseline(item.baseline))
-      && (item.supervisorPlan === undefined || isProjectSupervisorStagePlan(item.supervisorPlan))
-      && (item.supervisorPlanRequired === undefined || typeof item.supervisorPlanRequired === 'boolean')
-      && (item.parallelismDecision === undefined || (
-        item.parallelismDecision && typeof item.parallelismDecision === 'object'
-        && ['auto', 'single-worker', 'internal-threads', 'worker-group'].includes(String(item.parallelismDecision.requestedMode))
-        && ['single-worker', 'internal-threads', 'worker-group'].includes(String(item.parallelismDecision.resolvedMode))
-        && Number.isInteger(item.parallelismDecision.requirementsVersion)
-        && Number.isInteger(item.parallelismDecision.executionEpoch)
-        && typeof item.parallelismDecision.reason === 'string'
-        && isStringArray(item.parallelismDecision.evidence)
-        && Number.isFinite(item.parallelismDecision.resolvedAt)
-      ))
-      && (item.workerGroup === undefined || isWorkerGroup(item.workerGroup))
-      && (item.userDirectives === undefined || (Array.isArray(item.userDirectives) && item.userDirectives.every(isUserDirective)))
-      && (item.resourceLeases === undefined || (Array.isArray(item.resourceLeases) && item.resourceLeases.every(isResourceLease)))
-      && (item.mergeCandidates === undefined || (Array.isArray(item.mergeCandidates) && item.mergeCandidates.every(isMergeCandidate)))
-      && (item.finalApplyBlocked === undefined || typeof item.finalApplyBlocked === 'boolean')
+      && item.baseline === undefined
+      && item.supervisorPlan === undefined
+      && item.supervisorPlanRequired === false
+      && item.parallelismDecision === undefined
+      && item.workerGroup === undefined
+      && Array.isArray(item.userDirectives) && item.userDirectives.length === 0
+      && Array.isArray(item.resourceLeases) && item.resourceLeases.length === 0
+      && Array.isArray(item.mergeCandidates) && item.mergeCandidates.length === 0
+      && item.finalApplyBlocked === false
+      && item.decisionsUsed === 0
       && (item.mutationRevision === undefined || (
         Number.isInteger(item.mutationRevision) && item.mutationRevision >= 0
       ))
@@ -657,7 +490,10 @@ export function saveProjectManagerSession(
   session: ProjectManagerSession,
   appDataDir = getAppDataDir(),
 ): { path: string } {
-  const normalized = normalizeProjectManagerSession(session);
+  const normalized = normalizeProjectManagerSession({
+    ...session,
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+  });
   validateIdentity(normalized.id, normalized.projectDir);
   if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
   const current = readProjectManagerSessions(appDataDir).find((candidate) => candidate.id === normalized.id);

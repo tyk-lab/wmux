@@ -36,10 +36,10 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权');
       expect(input).toContain('项目内部的实现路线、优先级、候选方案、资源分配');
       expect(input).toContain('任务 AI 权限提示由监督 AI 处理');
-      expect(input).toContain('最小 allowedCommandPrefixes 并启用 permissionConfirm');
-      expect(input).toContain('只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权');
-      expect(input).toContain('allowPaths 只是最大安全边界');
-      expect(input).toContain('run_templates 等模板目录只保存可复用预执行输入');
+      expect(input).toContain('创建任务时只定义成果、验收、依赖和用户安全边界');
+      expect(input).toContain('外部访问、凭据、提权、发布、生产和真实硬件高风险授权才可询问用户');
+      expect(input).toContain('不再用 allowPaths/denyPaths 充当任务 AI 文件权限');
+      expect(input).toContain('任务 AI 必须优先核对适用的 AGENTS、项目技能、产物目录和命名规则');
     },
   );
 });

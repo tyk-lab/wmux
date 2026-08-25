@@ -19,14 +19,14 @@ function projectRoot(): string {
 describe('project evidence refs', () => {
   it('reads and hashes an actual bounded project evidence file', () => {
     const root = projectRoot();
-    const evidenceDir = path.join(root, 'runs', 'run-1');
+    const evidenceDir = path.join(root, 'runs', '2026-08-25', 'run-1');
     fs.mkdirSync(evidenceDir, { recursive: true });
     fs.writeFileSync(path.join(evidenceDir, 'result.json'), '{"outcome":"fail"}\n', 'utf8');
 
-    expect(verifyProjectEvidenceRefs(root, ['runs/run-1/result.json'])).toMatchObject({
+    expect(verifyProjectEvidenceRefs(root, ['runs/2026-08-25/run-1/result.json'])).toMatchObject({
       ok: true,
       entries: [{
-        ref: 'runs/run-1/result.json',
+        ref: 'runs/2026-08-25/run-1/result.json',
         sizeBytes: expect.any(Number),
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       }],

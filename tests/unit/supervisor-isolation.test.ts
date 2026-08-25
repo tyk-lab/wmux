@@ -22,6 +22,7 @@ import {
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   isSurfaceSupervised,
+  ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorDefaultsForAgent,
   supervisorLaneControlState,
   type SupervisorLane,
@@ -52,6 +53,7 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
     label: 'Auth worker',
     surfaceId: 'worker-a' as any,
     supervisorSurfaceId: 'supervisor-a' as any,
+    ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
     controlState: 'active',
     awaitingStopCheck: false,
     stopConfirmed: false,
@@ -155,10 +157,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain('worker-a');
     expect(text).toContain('只监督此终端');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('[监督协议｜控制层｜protocol=5]');
+    expect(text).toContain('[监督协议｜控制层｜protocol=7]');
     expect(text).toContain('# 普通 AI 监督');
     expect(text).toContain('## 监督 AI 自己的执行规划');
-    expect(text).toContain('上级任务由用户提供');
+    expect(text).toContain('上级规划由用户明确提供');
     expect(text).toContain('具体且可一次完成时，不要机械拆分');
     expect(text).toContain('--stage-plan-file');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
@@ -182,7 +184,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('已授权技术方案选择');
     expect(text).toContain('已授权小范围路线调整');
     expect(text).toContain('控制层会直接要求项目 AI 在同一工作项和终端内重规划');
-    expect(text).toContain('不要直接向用户提问');
+    expect(text).toContain('控制层不会创建普通 pendingApproval');
     expect(text).toContain('复杂或高影响决定交给项目管理 AI');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
     expect(text).toContain('# 项目专属 AI 监督');
@@ -301,6 +303,10 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('已有授权覆盖的后续实测');
     expect(boundary).toContain('不得逐次要求用户重复批准');
     expect(boundary).toContain('参数上限、设备、接线、固件、控制环或风险层级发生扩大');
+    expect(boundary).toContain('--evidence-progress-file');
+    expect(boundary).toContain('同一集合只计一次进展');
+    expect(boundary).toContain('实测成本最低');
+    expect(boundary).toContain('禁止复跑已消费身份');
   });
 
   it('allows supervision to inject bounded next work only from valid outcomes', () => {
@@ -475,6 +481,36 @@ describe('supervisor isolation', () => {
       sessionId: '',
       lanes: [],
       log: [],
+    });
+  });
+
+  it('stops a legacy ordinary lane instead of pretending its task-role context was withdrawn', () => {
+    const store = makeStore();
+    const { ordinaryProtocolVersion: _version, ...legacyLane } = lane();
+
+    store.getState().setOrdinarySupervisorLanes([legacyLane as SupervisorLane]);
+    store.getState().startOrdinarySupervisor();
+
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'stopped',
+      supervisorProblem: {
+        kind: 'runtime-failed',
+        detail: expect.stringContaining('旧普通监督协议已停用'),
+      },
+    });
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
+  });
+
+  it('waits for a running task turn before opening the initial ordinary review', () => {
+    const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane({ pendingInitialReview: true })]);
+
+    store.getState().startOrdinarySupervisor();
+
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      controlState: 'active',
+      pendingInitialReview: true,
+      awaitingReview: false,
     });
   });
 
@@ -1047,7 +1083,7 @@ describe('supervisor isolation', () => {
     const authBriefing = buildSupervisorBriefing(session, { lane: authLane, state: 'idle' });
     const docsBriefing = buildSupervisorBriefing(session, { lane: docsLane, state: 'idle' });
 
-    expect(effectiveSupervisorLaneConfig(authLane)).toEqual(authLane.config);
+    expect(effectiveSupervisorLaneConfig(authLane)).toMatchObject(authLane.config!);
     expect(authBriefing).toContain('只处理认证模块');
     expect(authBriefing).toContain('认证测试环境已登录');
     expect(authBriefing).toContain('D:\\plans\\auth.md');
@@ -1059,7 +1095,7 @@ describe('supervisor isolation', () => {
     expect(docsBriefing).not.toContain('认证测试全部通过');
   });
 
-  it('briefs the supervisor about the task terminal AI multi-thread assignment', () => {
+  it('does not inject a user-selected thread assignment into an ordinary task AI', () => {
     const session = createDefaultSupervisorSession();
     const multiThreadLane = lane({
       config: {
@@ -1077,27 +1113,23 @@ describe('supervisor isolation', () => {
 
     const briefing = buildSupervisorBriefing(session, { lane: multiThreadLane, state: 'idle' });
 
-    expect(briefing).toContain('## 任务终端 AI 工作模式');
-    expect(briefing).toContain('模式: 多线程工程');
-    expect(briefing).toContain('主线程职责: 统筹方案、整合结果并完成最终验证');
-    expect(briefing).toContain('子线程 1 职责: 实现认证逻辑');
-    expect(briefing).toContain('子线程 2 职责: 补充回归测试');
-    expect(briefing).toContain('不是监督 AI 的工作模式');
-    expect(briefing).toContain('不要创建额外 wmux 终端');
-    expect(briefing).toContain('wmux 不检查或强制它是否实际创建子线程');
+    expect(briefing).toContain('## 任务 AI 执行自治');
+    expect(briefing).toContain('自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范');
+    expect(briefing).not.toContain('主线程职责: 统筹方案、整合结果并完成最终验证');
+    expect(briefing).not.toContain('子线程 1 职责');
   });
 
-  it('defaults task terminals without an explicit work mode to single-thread work', () => {
+  it('leaves task organization to the target project when no work mode is configured', () => {
     const briefing = buildSupervisorBriefing(createDefaultSupervisorSession(), {
       lane: lane(),
       state: 'idle',
     });
 
-    expect(briefing).toContain('模式: 单线程工作');
-    expect(briefing).toContain('不要求任务终端 AI 拆分主线程和子线程');
+    expect(briefing).toContain('## 任务 AI 执行自治');
+    expect(briefing).not.toContain('模式: 单线程工作');
   });
 
-  it('keeps adaptive threading inside the task AI and within supervisor-approved bounds', () => {
+  it('does not expose adaptive-thread controls to an ordinary task AI', () => {
     const adaptiveLane = lane({
       config: {
         taskGoal: '完成硬件控制模块改造',
@@ -1121,12 +1153,10 @@ describe('supervisor isolation', () => {
       state: 'idle',
     });
 
-    expect(briefing).toContain('模式: 自适应线程');
-    expect(briefing).toContain('内部子线程上限: 2');
-    expect(briefing).toContain('[内部线程提案]');
-    expect(briefing).toContain('[批准内部线程方案 childThreads=N]');
-    expect(briefing).toContain('不得创建额外 wmux 任务终端');
-    expect(briefing).toContain('设备上电/重上电');
+    expect(briefing).toContain('## 任务 AI 执行自治');
+    expect(briefing).not.toContain('模式: 自适应线程');
+    expect(briefing).not.toContain('内部子线程上限: 2');
+    expect(briefing).not.toContain('[批准内部线程方案 childThreads=N]');
   });
 
   it('preserves an existing lane management session when supervision starts', () => {
@@ -1419,7 +1449,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('不能扩大目标、范围、命令权限或风险授权');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
     expect(briefing).toContain('本终端启用有限自主监督');
-    expect(briefing).toContain('continue / rework 携带 --next');
+    expect(briefing).toContain('continue / rework 携带 --task-file');
     expect(briefing).toContain('--proposal-kind route-adjustment');
     expect(briefing).toContain('--permission-command');
   });
@@ -1473,7 +1503,7 @@ describe('supervisor isolation', () => {
     expect(briefingB).not.toContain('修复登录');
   });
 
-  it('requires the supervisor to draft a user-confirmed task-terminal recovery instruction', () => {
+  it('uses recovered audit only as supervisor evidence under the current ordinary protocol', () => {
     const session = { ...createDefaultSupervisorSession(), active: true };
     const briefing = buildSupervisorBriefing(session, {
       lane: lane({
@@ -1490,15 +1520,11 @@ describe('supervisor isolation', () => {
       state: 'idle',
     });
 
-    expect(briefing).toContain('首次任务终端上下文恢复（必须先处理）');
-    expect(briefing).toContain('恢复需求异常门禁');
-    expect(briefing).toContain('--proposal-kind clarification');
-    expect(briefing).toContain('没有实质歧义时不要机械提问');
-    expect(briefing).toContain('--proposal-kind context-recovery');
-    expect(briefing).toContain('--next-file .wmux/tmp/context-recovery-<唯一名>.txt');
-    expect(briefing).not.toContain('--next "<完整恢复指令>"');
-    expect(briefing).toContain('主线程和各子线程职责');
-    expect(briefing).toContain('用户确认后 wmux 才会把这段原文发送到任务终端');
+    expect(briefing).toContain('已恢复的本终端审计摘要');
+    expect(briefing).toContain('这只是历史背景');
+    expect(briefing).not.toContain('首次任务终端上下文恢复');
+    expect(briefing).not.toContain('--proposal-kind context-recovery');
+    expect(briefing).not.toContain('恢复指令');
   });
 
   it('restores the latest task and decisions into the matching lane timeline', () => {

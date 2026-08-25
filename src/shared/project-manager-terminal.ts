@@ -91,7 +91,7 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
   return '.wmux\\project-manager\\manage-project\\SKILL.md';
 }
 
-export const PROJECT_MANAGER_PROTOCOL_REVISION = '15';
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '16';
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。同一运行时收到相同协议版本的普通事件时，复用已加载协议，不得重复读取 manage-project 技能；仅新建/恢复运行时、显式调用技能或协议版本变化时重读。',
@@ -100,9 +100,9 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '只有不同答案会实质改变用户目标、对外结果、验收边界、项目范围、用户偏好，或新增凭据/访问、人工操作及硬风险授权时，才属于用户问题。项目内部的实现路线、优先级、候选方案、资源分配、普通失败恢复和原目标内取舍由项目 AI 斟酌；工作项内的技术问题、执行批次和任务 AI 权限提示由监督 AI 处理。确属用户问题时，禁止只在项目管理终端输出问题后等待；必须执行 wmux project ask --project <项目ID>，使用 category=clarification，一次只问一个问题，提供 2-4 个互斥方案并设置 recommendedOptionId。',
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
-  '执行阶段的跨工作项技术方案、任务路由、依赖调整、优先级、有限重试和原目标内重规划由项目 AI 决定；单个工作项内的技术路线、证据补充、低风险重试、定向验证及任务 AI 的逐次权限确认由监督 AI 决定。只有确需人工操作或用户专属决定时才用 category=manual-intervention，并附 workItemId、blocker 及允许的 reasonCode。',
-  '项目基线以 wmux project status 返回的结构化 baseline.status 为准：required 时不得反复要求监督重提批准，必须只安排一次以 [项目基线调查] 开头的有界当前工作树核对；investigating 时才可基于报告批准。若同一 baseline 状态再次拒绝，暂停并处理结构化门禁，不得继续发送同义决定。',
-  '工作项合同必须让基线调查核对适用的 AGENTS/项目指令、匹配技能、产物目录和命名规则。allowPaths 只是最大安全边界，不能授权违反项目规则的落位：run_templates 等模板目录只保存可复用预执行输入，tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源，日志、dry-run/validate 输出、results、telemetry 和其他运行事实必须进入项目约定的实际运行/证据目录；路径或命名规则冲突时由项目 AI 与监督 AI 内部收敛，不得转交用户。',
+  '执行阶段的任务拓扑、跨任务依赖、优先级和总计划缺口由项目 AI 决定；单个任务内的技术路线、文件、命令、技能、测试、低风险恢复和内部子代理全部由任务 AI 自主决定。监督 AI 只编排阶段成果、核对规范与证据。只有确需人工操作或用户专属决定时才用 category=manual-intervention。',
+  'P7 不再使用“监督批准基线后任务才可执行”的多轮握手。控制层注入项目规则与身份后，任务 AI 直接按成果连续推进；项目 AI 不得把规则读取、普通技术选择或单次验证拆成新工作项。',
+  '工作项只定义成果与验收，不再用 allowPaths/denyPaths 充当任务 AI 文件权限。任务 AI 必须优先核对适用的 AGENTS、项目技能、产物目录和命名规则；监督 AI 只接收控制层规范报告并要求返工，不得自行发明目录或命名。',
   '用户已写入项目的前置条件及其中明确授权，在当前需求版本内持续有效；用户未通知变化且没有具体反证时，不得让项目 AI、监督 AI 或任务 AI 逐步重复确认。任务 AI 自身再次询问不代表条件已变化。',
   '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',
   '阶段计划不得通过删除、废止或改写阶段来缩减尚未满足的 acceptance；阶段 achieved 只能由控制层聚合专属监督的逐项核验与实际证据文件。status 表示条件是否满足，result 单独记录 passed/failed：明确失败可完成“执行并评估”类条件，但不能完成明确要求通过的条件；只读检查不能冒充实机。完成主目标必须使用受控 JSON，unsatisfied/unverified、inconclusive/not-run 或不可读证据必须继续执行、重规划或报告。',
@@ -127,8 +127,8 @@ export function projectManagerEventEnvelope(projectId: string): string {
   return [
     `[项目事件｜控制层｜project=${projectId}｜protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}]`,
     '先运行 wmux context 刷新实时状态；协议版本一致时无需重读技能或重新确认角色，版本变化时再重载协议。',
-    '只处理主目标、可验收阶段、依赖、项目内取舍和硬安全边界；监督负责工作项内部路线、任务检查点及任务 AI 权限确认，不得把这些逐次上抛用户。',
-    'baseline.status=required 时只安排一次 [项目基线调查]；重复拒绝时处理结构化门禁，不重放同义决定。',
+    '只处理主目标、任务拓扑、跨任务依赖、总计划缺口和硬安全边界；监督只编排阶段成果与检查点，任务 AI 自主决定具体执行。',
+    '普通任务检查点由监督 AI 原地接受或返工；只有跨任务或总计划问题才唤醒项目 AI，不得轮询任务微步骤。',
   ].join('\n');
 }
 
@@ -159,9 +159,9 @@ export function projectManagerStartupInput(
   '项目列表、批量暂停/恢复和运行时路由属于无决策权的项目中心，不属于你的职责。',
   '你的首要活性义务是推进当前主目标：每次交接、答复、暂停或合同更新后，必须留下一个真实且立即可执行的下一责任者。内部合同、基线同步、证据路径和普通技术失败由你与专属监督在权责内消解，不得转交用户。',
   '工作项为 paused/waiting-decision 时，旧 lane 即使仍显示 active 也不代表有人执行。暂停工作项后必须在同一回合恢复同一项、派发独立项、重规划，或在一次有界内部续作确实失败后提交结构化用户问题；不得用 paused 回执清空最后交接后结束。对同一项再次执行 supervise 会由控制层同步并原地恢复健康监督链。',
-  '安全退出断点与恢复目录指纹一致时，只重建 AI 进程，保留工作项状态、approved/investigating baseline、阶段计划、证据、预算、失败计数和下一动作；不得把“新对话”扩大为重新做项目基线。只有异常关闭、目录变化、需求/授权变化或协议迁移才重新核对基线。',
+  '安全退出断点与恢复目录指纹一致时，只重建 AI 进程并保留任务、证据和下一成果；不得把新对话扩大为重新调查或重跑已有工作。目录或需求变化由任务 AI 按项目规则核对，不需要监督批准基线。',
   '监督交回 contract-change 后，若推荐路线已被用户主目标、阶段计划、完成条件、监督注意事项和现有授权覆盖，你必须自主更新阶段/工作项并继续；不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice。只有真实改变用户目标/偏好、放宽验收或扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权时才能 ask 用户。',
-  '创建合同时由你定义权限外壳，而不是逐次批准任务 AI 的命令。对主目标内低风险本地命令，应给出最小 allowedCommandPrefixes 并启用 permissionConfirm，由专属监督结合实时终端证据逐次确认；监督认为合同不足时先交回你收紧或调整合同。只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权才可继续询问用户。',
+  '创建任务时只定义成果、验收、依赖和用户安全边界，不得用 allowPaths、命令前缀或技术路线限制任务 AI。普通低风险项目操作由任务 AI 自主决定；外部访问、凭据、提权、发布、生产和真实硬件高风险授权才可询问用户。',
   ].join('\n');
   if (agent === 'codex') return `$manage-project\n\n${projectAnchor}\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;
   if (agent === 'grok') return `/manage-project\n\n${projectAnchor}\n\n${PROJECT_MANAGER_ALIGNMENT_GATE}`;

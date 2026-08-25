@@ -263,97 +263,7 @@ describe('project-manager slice', () => {
       status: 'required', requirementsVersion: 2, authorizationVersion: 2,
       snapshotFingerprint: 'snapshot-1',
     });
-  });
-
-  it('keeps project baseline approval under control-plane ownership and opens an inherited delta review on contract changes', () => {
-    const useStore = store();
-    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
-    const forged = {
-      ...item('baseline-task'),
-      baseline: {
-        status: 'approved' as const,
-        requirementsVersion: 1,
-        workspaceVersion: 'forged',
-        evidence: 'forged',
-        approvedAt: 1,
-      },
-    };
-    expect(useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: forged })).toMatchObject({ ok: true });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toEqual({
-      status: 'required', requirementsVersion: 1,
-    });
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
-      workspaceVersion: 'head:a', evidence: '已审核',
-    })).toMatchObject({ ok: false, error: expect.stringContaining('不能预先批准') });
-
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'start-work-item-baseline', workItemId: 'baseline-task',
-    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
-      status: 'investigating', investigationRounds: 1,
-    });
-    useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'baseline-task',
-      patch: {
-        contract: {
-          ...forged.contract,
-          description: '调查期间补充合同边界',
-        },
-      },
-    });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
-      status: 'investigating', investigationRounds: 1,
-    });
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'start-work-item-baseline', workItemId: 'baseline-task',
-    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-started' } });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
-      status: 'investigating', investigationRounds: 2,
-    });
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'start-work-item-baseline', workItemId: 'baseline-task',
-    })).toMatchObject({ ok: false, error: expect.stringContaining('不能继续重复调查') });
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
-      workspaceVersion: 'head:a,status:clean', evidence: '已审核入口、工作树与测试约定',
-    })).toMatchObject({ ok: true, event: { kind: 'work-item-baseline-approved' } });
-    expect(useStore.getState().projectManager?.workItems[0].baseline?.status).toBe('approved');
-
-    useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'baseline-task',
-      patch: {
-        baseline: forged.baseline,
-        contract: {
-          ...forged.contract,
-          description: '合同边界发生变化',
-        },
-      },
-    });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
-      status: 'investigating',
-      requirementsVersion: 1,
-      investigationRounds: 2,
-      reviewKind: 'contract-delta',
-      priorWorkspaceVersion: 'head:a,status:clean',
-      priorEvidence: '已审核入口、工作树与测试约定',
-      deltaSummary: expect.stringContaining('任务说明'),
-    });
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'approve-work-item-baseline', workItemId: 'baseline-task',
-      workspaceVersion: 'head:b,status:clean', evidence: '仅核对合同新增说明，不需要重复完整调查',
-    })).toMatchObject({
-      ok: true,
-      event: { kind: 'work-item-baseline-approved', payload: expect.objectContaining({ incremental: true }) },
-    });
-    expect(useStore.getState().projectManager?.workItems[0].baseline).toMatchObject({
-      status: 'approved',
-      workspaceVersion: 'head:b,status:clean',
-      evidence: expect.stringContaining('继承的已批准基线证据'),
-    });
-  });
-
-  it('records a user work-item intervention and prevents AI from reviving the stopped item', () => {
+  });  it('records a user work-item intervention and prevents AI from reviving the stopped item', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('first') });
@@ -1014,39 +924,7 @@ describe('project-manager slice', () => {
       decisionsUsed: 0,
       executionHistory: [record],
     });
-  });
-
-  it('renews an autonomy window in place while preserving total decision audit', () => {
-    const useStore = store();
-    const session = useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '认证', doneWhen: ['通过'] });
-    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') }, session.id);
-    useStore.getState().applyProjectManagerAction({
-      type: 'update-work-item', workItemId: 'auth', patch: { decisionsUsed: 12, totalDecisionsUsed: 12 },
-    }, session.id);
-
-    expect(useStore.getState().applyProjectManagerAction({
-      type: 'renew-execution-window', workItemId: 'auth', reason: 'decision-limit', startedAt: 2_000,
-      checkpointSignature: 'progress-b',
-    }, session.id)).toMatchObject({ ok: true, event: { kind: 'guard-triggered' } });
-    const record = {
-      ts: 2_001, actionSignature: 'action', commandSignature: 'command', errorSignature: '',
-      progressSignature: 'progress-b', workspaceVersion: 'diff-b', changedFiles: ['src/auth.ts'],
-    };
-    useStore.getState().applyProjectManagerAction({
-      type: 'record-execution', workItemId: 'auth', record,
-    }, session.id);
-
-    expect(useStore.getState().projectManagers[0].workItems[0]).toMatchObject({
-      decisionsUsed: 1,
-      totalDecisionsUsed: 13,
-      budgetWindowRenewals: 1,
-      lastBudgetCheckpointSignature: 'progress-b',
-      startedAt: 2_000,
-      executionHistory: [record],
-    });
-  });
-
-  it('requires completed work and project-level evidence before completion', () => {
+  });  it('requires completed work and project-level evidence before completion', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') });

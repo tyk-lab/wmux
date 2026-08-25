@@ -4,7 +4,7 @@ import type { ProjectManagementAgentConfig } from './project-manager-terminal';
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 /** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
-export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 6;
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 7;
 
 export const PROJECT_PARALLELISM_SELECTIONS = [
   'auto',
@@ -176,11 +176,14 @@ export interface ProjectExecutionBudget {
 export const PROJECT_RETRY_KINDS = [
   'task-failure',
   'command-correction',
+  'evidence-closure',
   'runtime-recovery',
-  'execution-window',
 ] as const;
 
 export type ProjectRetryKind = typeof PROJECT_RETRY_KINDS[number];
+
+/** One route correction is enough to prove whether a new direction can produce material progress. */
+export const MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS = 1;
 
 export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
   maxDecisions: 12,
@@ -411,6 +414,8 @@ export interface ProjectExecutionRecord {
   evidenceSummary?: string;
   /** Verified supervisor-plan progress used to renew a healthy autonomy window. */
   planProgressSignature?: string;
+  /** Content-addressed project artifacts verified by the control plane for a read-only evidence review. */
+  evidenceProgressSignature?: string;
   /** Only task-failure consumes the work item's task retry budget. */
   retryKind?: ProjectRetryKind;
   escalationBoundary?: ProjectEscalationBoundary;
@@ -635,8 +640,12 @@ export interface ProjectWorkItem {
   decisionsUsed: number;
   /** Monotonic audit total across all renewed autonomy windows. */
   totalDecisionsUsed?: number;
-  /** Number of healthy in-place autonomy-window renewals. */
+  /** Number of verified-progress autonomy-window renewals; internal replans are counted separately. */
   budgetWindowRenewals?: number;
+  /** Monotonic audit count of accepted in-place route corrections. */
+  internalReplanCount?: number;
+  /** Route corrections since the latest verified checkpoint or baseline approval. */
+  consecutiveInternalReplans?: number;
   /** Last verified progress already credited with opening a new autonomy window. */
   lastBudgetCheckpointSignature?: string;
   /** Control-owned gate requiring the project AI to provide a materially different internal route. */
@@ -1745,6 +1754,65 @@ export function compactProjectSupervisorTransitions(
 }
 
 /** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
+function normalizeProjectGovernanceSessionState(session: ProjectManagerSession): ProjectManagerSession {
+  if ((session.executionProtocolVersion || 0) < 7) return session;
+  return {
+    ...session,
+    workItems: session.workItems.map((item) => ({
+      ...item,
+      predecessorWorkItemId: undefined,
+      supersededByWorkItemId: undefined,
+      successionReason: undefined,
+      baseline: undefined,
+      supervisorPlan: undefined,
+      supervisorPlanRequired: false,
+      parallelismDecision: undefined,
+      workerGroup: undefined,
+      userDirectives: [],
+      resourceLeases: [],
+      mergeCandidates: [],
+      finalApplyBlocked: false,
+      decisionsUsed: 0,
+      budgetWindowRenewals: undefined,
+      internalReplanCount: undefined,
+      consecutiveInternalReplans: undefined,
+      lastBudgetCheckpointSignature: undefined,
+      executionWindowReplan: undefined,
+      executionWindowReplanHistory: undefined,
+      contract: {
+        ...item.contract,
+        scope: {
+          root: item.contract.scope.root,
+          allowPaths: [],
+          denyPaths: [],
+          forbiddenActions: [],
+        },
+        authority: {
+          technicalChoices: false,
+          lowRiskRetries: false,
+          routeAdjustments: false,
+          targetedTests: false,
+          internalThreads: false,
+          continuousExecution: true,
+          permissionConfirm: false,
+          allowedCommandPrefixes: [],
+          authorizedDevices: [],
+          authorizedEnvironments: [],
+          authorizedOperations: [],
+        },
+        ...(item.contract.execution ? {
+          execution: {
+            ...item.contract.execution,
+            parallelismSelection: 'single-worker',
+            supervisorMayApproveThreads: false,
+          },
+        } : {}),
+      },
+    })),
+  };
+}
+
+/** Normalize only the current P7 governance model; older sessions are rejected during recovery. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
     goalConstruction?: unknown;
@@ -1785,7 +1853,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         updatedAt: session.updatedAt,
       }]
     : rawSubgoals;
-  return {
+  return normalizeProjectGovernanceSessionState({
     ...sessionWithoutLegacyGoalConstruction,
     projectName: projectDisplayName(session),
     projectScope: session.projectScope?.trim() || `仅限项目目录 ${session.projectDir} 内与本项目直接相关的工作`,
@@ -1801,7 +1869,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     requirementsVersion,
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
-    executionProtocolVersion: Math.max(0, Math.trunc(session.executionProtocolVersion || 0)),
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
@@ -1839,6 +1907,20 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
       }))),
     workItems: session.workItems.map((item) => {
       const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
+      const legacyInternalReplanCount = item.internalReplanCount === undefined
+        ? session.events.filter((event) => (
+            event.workItemId === item.id
+            && event.kind === 'guard-triggered'
+            && event.payload?.action === 'autonomy-window-renewed'
+            && event.payload?.reason === 'internal-replan'
+          )).length
+        : 0;
+      const internalReplanCount = item.internalReplanCount === undefined
+        ? legacyInternalReplanCount
+        : Math.max(0, Math.trunc(item.internalReplanCount || 0));
+      const verifiedProgressRenewals = item.internalReplanCount === undefined
+        ? Math.max(0, Math.trunc(item.budgetWindowRenewals || 0) - legacyInternalReplanCount)
+        : Math.max(0, Math.trunc(item.budgetWindowRenewals || 0));
       const activeBaseline = item.baseline?.requirementsVersion === itemRequirementsVersion && (
         (item.baseline.status === 'investigating' && Number.isFinite(item.baseline.requestedAt))
         || (item.baseline.status === 'approved'
@@ -1874,7 +1956,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
         requirementsVersion: itemRequirementsVersion,
         authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
-        executionProtocolVersion: Math.max(0, Math.trunc(item.executionProtocolVersion || 0)),
+        executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
         baseline: activeBaseline
           ? item.baseline
           : requiredProjectTaskBaseline(itemRequirementsVersion),
@@ -1934,7 +2016,12 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
           Math.max(0, Math.trunc(item.decisionsUsed || 0)),
           Math.max(0, Math.trunc(item.totalDecisionsUsed ?? item.decisionsUsed ?? 0)),
         ),
-        budgetWindowRenewals: Math.max(0, Math.trunc(item.budgetWindowRenewals || 0)),
+        budgetWindowRenewals: verifiedProgressRenewals,
+        internalReplanCount,
+        consecutiveInternalReplans: Math.max(0, Math.min(
+          MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS,
+          Math.trunc(item.consecutiveInternalReplans || 0),
+        )),
         lastBudgetCheckpointSignature: item.lastBudgetCheckpointSignature?.trim().slice(0, 200) || undefined,
         executionWindowReplan: item.executionWindowReplan
           && Number.isFinite(item.executionWindowReplan.requestedAt)
@@ -1958,7 +2045,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
           ?? !['completed', 'stopped'].includes(item.status),
       };
     }),
-  };
+  });
 }
 
 export type ProjectManagerAction =
@@ -2050,8 +2137,9 @@ export function requiredProjectTaskBaseline(requirementsVersion: number): Projec
 }
 
 export function projectTaskBaselineApproved(
-  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'baseline'>,
+  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'executionProtocolVersion' | 'baseline'>,
 ): boolean {
+  if ((item.executionProtocolVersion || 0) >= 7) return true;
   const requirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || 1));
   return item.baseline?.status === 'approved'
     && item.baseline.requirementsVersion === requirementsVersion

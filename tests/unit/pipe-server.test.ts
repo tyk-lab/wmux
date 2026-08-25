@@ -244,6 +244,49 @@ describe('PipeServer', () => {
     }
   });
 
+  it('keeps self-scoped surface telemetry when live renderer role state is already gone', async () => {
+    const pipe = uniquePipe();
+    const authorize = vi.fn(async () => ({ allowed: false, reason: 'surface no longer visible' }));
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'closing-surface-secret' ? 'surf-closing' : undefined,
+      authorize,
+    );
+    const received: any[] = [];
+    server.on('v2', (req, respond) => {
+      received.push(req);
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    for (const method of ['hook.event', 'agent.activity']) {
+      const response = await connectAndSend(pipe, JSON.stringify({
+        method,
+        params: { surfaceId: 'surf-forged', event: 'Stop' },
+        id: 9,
+        token: 'closing-surface-secret',
+      }));
+      expect(JSON.parse(response).result).toEqual({ ok: true });
+    }
+    expect(received).toEqual([
+      expect.objectContaining({
+        method: 'hook.event',
+        params: expect.objectContaining({
+          surfaceId: 'surf-closing', callerSurfaceId: 'surf-closing',
+        }),
+      }),
+      expect.objectContaining({
+        method: 'agent.activity',
+        params: expect.objectContaining({
+          surfaceId: 'surf-closing', callerSurfaceId: 'surf-closing',
+        }),
+      }),
+    ]);
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
   it('binds a surface capability to its real caller identity', async () => {
     const pipe = uniquePipe();
     server = new PipeServer(

@@ -21,64 +21,7 @@ function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   };
 }
 
-describe('supervisor runtime context', () => {
-  it('reports the capability-bound project identity, contract authority, and budget', () => {
-    const session = createDefaultSupervisorSession();
-    session.active = true;
-    const projectLane = lane({
-      projectManagerProjectId: 'project-a',
-      projectWorkItemId: 'work-a',
-      projectTaskStartupPending: true,
-      autonomyPermissionsOverride: ['same-route-next', 'permission-confirm'],
-    });
-
-    const context = buildSupervisorRuntimeContext(session, projectLane, {
-      taskState: 'unknown',
-      project: {
-        projectId: 'project-a',
-        goalId: 'goal-a',
-        workItemId: 'work-a',
-        requirementsVersion: 3,
-        authorizationVersion: 4,
-        authority: {
-          technicalChoices: true,
-          lowRiskRetries: true,
-          targetedTests: true,
-          internalThreads: false,
-          permissionConfirm: true,
-          allowedCommandPrefixes: ['npm test'],
-        },
-        decisionsUsed: 2,
-        maxDecisions: 12,
-        attempts: 1,
-        maxTaskRetries: 3,
-        bindingCurrent: true,
-      },
-    });
-
-    expect(context.role).toBe('project-supervisor');
-    expect(context.identity).toMatchObject({
-      supervisorSurfaceId: 'supervisor-a',
-      targetSurfaceId: 'task-a',
-      projectId: 'project-a',
-      goalId: 'goal-a',
-      workItemId: 'work-a',
-      requirementsVersion: 3,
-      authorizationVersion: 4,
-    });
-    expect(context.permissions.projectAuthority?.allowedCommandPrefixes).toEqual(['npm test']);
-    expect(context.budget).toMatchObject({
-      projectDecisionsUsed: 2,
-      projectDecisionsRemaining: 10,
-      projectAttempts: 1,
-      projectRetriesRemaining: 2,
-    });
-    expect(context.commands.conditional.find((item) => (
-      item.command.includes('task-terminal-start')
-    ))?.available).toBe(true);
-  });
-
-  it('keeps project decisions available at a renewable health-window boundary', () => {
+describe('supervisor runtime context', () => {  it('keeps project decisions available at a renewable health-window boundary', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({
@@ -91,33 +34,13 @@ describe('supervisor runtime context', () => {
       project: {
         projectId: 'project-a', goalId: 'goal-a', workItemId: 'work-a',
         requirementsVersion: 1, authorizationVersion: 1,
-        decisionsUsed: 12, maxDecisions: 12, attempts: 0, maxTaskRetries: 3,
+        attempts: 0, maxTaskRetries: 3,
         bindingCurrent: true,
       },
     });
 
     expect(context.commands.decisionOutcomes).toEqual(['continue', 'rework', 'complete', 'needs-human']);
-    expect(context.budget.projectDecisionsRemaining).toBe(0);
-  });
-
-  it('does not advertise continue, rework, or permission confirmation without grants', () => {
-    const session = createDefaultSupervisorSession();
-    session.active = true;
-    session.autonomyPermissions = [];
-    session.maxAutoDecisions = 5;
-    const context = buildSupervisorRuntimeContext(session, lane({ autoDecisionsUsed: 2, awaitingReview: true }), {
-      taskState: 'idle',
-    });
-
-    expect(context.role).toBe('supervisor');
-    expect(context.commands.decisionOutcomes).toEqual(['complete', 'needs-human']);
-    expect(context.commands.conditional.find((item) => (
-      item.command.includes('--permission-command')
-    ))?.available).toBe(false);
-    expect(context.budget.autoDecisionsRemaining).toBe(3);
-  });
-
-  it('includes the active review id in every advertised decision command', () => {
+  });  it('includes the active review id in every advertised decision command', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({
@@ -150,52 +73,7 @@ describe('supervisor runtime context', () => {
     expect(context.commands.available).toContain(
       'wmux supervisor evidence --review-id <本轮ID> --file（优先）',
     );
-  });
-
-  it('does not advertise project permission confirmation when the contract denies it', () => {
-    const session = createDefaultSupervisorSession();
-    session.active = true;
-    const context = buildSupervisorRuntimeContext(session, lane({
-      projectManagerProjectId: 'project-a',
-      projectWorkItemId: 'work-a',
-      autonomyPermissionsOverride: ['permission-confirm'],
-    }), {
-      taskState: 'blocked',
-      project: {
-        projectId: 'project-a',
-        workItemId: 'work-a',
-        authority: {
-          technicalChoices: true,
-          lowRiskRetries: true,
-          targetedTests: false,
-          internalThreads: false,
-          permissionConfirm: false,
-        },
-        bindingCurrent: true,
-      },
-    });
-
-    expect(context.commands.conditional.find((item) => (
-      item.command.includes('--permission-command')
-    ))?.available).toBe(false);
-  });
-
-  it('advertises permission confirmation only for a real permission-blocked state', () => {
-    const session = createDefaultSupervisorSession();
-    session.active = true;
-    session.autonomyPermissions = ['permission-confirm'];
-    const context = buildSupervisorRuntimeContext(
-      session,
-      lane({ awaitingReview: true }),
-      { taskState: 'blocked', permissionBlocked: true },
-    );
-
-    expect(context.commands.conditional.find((item) => (
-      item.command.includes('--permission-command')
-    ))?.available).toBe(true);
-  });
-
-  it('renders a compact capability card with the live context command', () => {
+  });it('renders a compact capability card with the live context command', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({ awaitingReview: true }), { taskState: 'idle' });
@@ -204,42 +82,11 @@ describe('supervisor runtime context', () => {
     expect(card).toContain('监督身份与能力快照');
     expect(card).toContain('唯一任务终端: task-a');
     expect(card).toContain('wmux supervisor context');
-    expect(card).toContain('普通监督产物规则');
-    expect(card).toContain('run_templates 等模板目录只保存预执行输入');
-    expect(card).toContain('tests、test、src 等源码目录禁止运行日志和验证结果');
+    expect(card).toContain('普通监督职责');
+    expect(card).toContain('--task-file');
+    expect(card).toContain('不向任务 AI 注入 wmux 角色协议');
     expect(card).toContain('不授予直接实现、测试、跨终端输入');
-  });
-
-  it('exposes an ordinary supervisor plan from its latest structured decision', () => {
-    const session = createDefaultSupervisorSession();
-    session.active = true;
-    const ordinaryLane = lane({
-      decisions: [{
-        ts: 1,
-        task: '修复配置缺失崩溃',
-        outcome: 'continue',
-        reason: '任务具体，可直接监督执行',
-        next: '完成修复并运行定向测试',
-        plan: {
-          revision: 1,
-          selectedRoute: '聚焦修复后定向验证',
-          milestones: [{ id: 'fix', title: '修复并验证', outcome: '形成测试证据', status: 'active' }],
-          expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
-          remainingWork: ['完成修复'], updatedAt: 1,
-        },
-      }],
-    });
-    const context = buildSupervisorRuntimeContext(session, ordinaryLane, { taskState: 'idle' });
-
-    expect(context.plan).toMatchObject({
-      revision: 1,
-      selectedRoute: '聚焦修复后定向验证',
-      milestones: [{ id: 'fix', status: 'active' }],
-    });
-    expect(buildSupervisorCapabilityCard(context).join('\n')).toContain('路线=聚焦修复后定向验证');
-  });
-
-  it('does not advertise decisions when the session, review, approval, or project binding blocks them', () => {
+  });  it('does not advertise decisions when the session, review, approval, or project binding blocks them', () => {
     const inactive = createDefaultSupervisorSession();
     const inactiveContext = buildSupervisorRuntimeContext(inactive, lane({ awaitingReview: true }), {
       taskState: 'idle',

@@ -1,5 +1,6 @@
 import type {
   SupervisorDecision,
+  OrdinarySupervisorPlan,
   SupervisorLaneControlState,
 } from '../store/supervisor-slice';
 import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
@@ -39,11 +40,37 @@ export function buildSupervisorPlanView(options: {
   source: 'project-ai' | 'user';
   task: string;
   plan?: ProjectSupervisorStagePlan;
+  ordinaryPlan?: OrdinarySupervisorPlan;
   latestDecision?: SupervisorDecision;
   baselineStatus?: 'required' | 'investigating' | 'approved';
 }): SupervisorPlanView {
+  const ordinaryPlan = options.ordinaryPlan || options.latestDecision?.ordinaryPlan;
   const plan = options.plan || options.latestDecision?.plan;
   const task = options.task.trim() || '当前任务';
+  if (ordinaryPlan) {
+    const steps = ordinaryPlan.milestones.map((milestone) => ({
+      id: milestone.id,
+      title: milestone.title,
+      outcome: milestone.outcome,
+      status: milestone.status,
+      ...(milestone.evidence ? { evidence: milestone.evidence } : {}),
+    }));
+    const mode = steps.length > 1 ? 'staged' as const : 'direct' as const;
+    const activeStep = steps.find((step) => step.status === 'active')
+      || steps.find((step) => step.status === 'planned');
+    return {
+      sourceLabel: '用户任务',
+      mode,
+      modeLabel: mode === 'staged' ? '分阶段监督执行' : '直接监督执行',
+      route: ordinaryPlan.objective,
+      nextInstruction: options.latestDecision?.taskDispatch?.outcome
+        || activeStep?.outcome
+        || ordinaryPlan.remainingWork[0]
+        || '等待任务 AI 返回结果后复核',
+      steps,
+      completedSteps: steps.filter((step) => step.status === 'completed').length,
+    };
+  }
   if (plan) {
     const steps = plan.milestones.map((milestone) => ({ ...milestone }));
     const mode = steps.length > 1 ? 'staged' as const : 'direct' as const;
@@ -113,7 +140,10 @@ export function summarizeSupervisorPlan(options: {
       complete: '本轮规划已完成',
       'needs-human': '等待人工决策',
     };
-    const detail = decision.next.trim() || decision.reason.trim() || '监督 AI 未附具体下一步';
+    const detail = decision.taskDispatch?.outcome.trim()
+      || decision.next.trim()
+      || decision.reason.trim()
+      || '监督 AI 未附具体下一步';
     return {
       label: labels[decision.outcome],
       detail,

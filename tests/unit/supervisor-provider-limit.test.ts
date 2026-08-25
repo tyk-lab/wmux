@@ -6,13 +6,17 @@ import {
   resetSupervisorProviderLimitAlerts,
 } from '../../src/renderer/supervisor/provider-limit';
 import { useStore } from '../../src/renderer/store';
-import type { SupervisorLane } from '../../src/renderer/store/supervisor-slice';
+import {
+  ORDINARY_SUPERVISION_PROTOCOL_VERSION,
+  type SupervisorLane,
+} from '../../src/renderer/store/supervisor-slice';
 
 const lane = (): SupervisorLane => ({
   id: 'lane-limit',
   label: '代码审查',
   surfaceId: 'worker-limit' as any,
   supervisorSurfaceId: 'supervisor-limit' as any,
+  ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   projectDir: 'E:\\repo',
   controlState: 'active',
   awaitingStopCheck: false,

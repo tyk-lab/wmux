@@ -19,6 +19,8 @@ export interface ProjectExecutionProposal {
   testResult?: string;
   fullSuite?: boolean;
   planProgressSignature?: string;
+  /** Stable signature of project files whose contents were read and hashed by the control plane. */
+  evidenceProgressSignature?: string;
   retryKind?: ProjectRetryKind;
   allowWindowRenewal?: boolean;
   /** A verified full-work-item closeout may be recorded without another execution delta. */
@@ -72,6 +74,7 @@ export function createProjectExecutionRecord(
       testResult,
       proposal.error || '',
       proposal.planProgressSignature || '',
+      proposal.evidenceProgressSignature || '',
     ]),
     workspaceVersion,
     testCommand: proposal.testCommand ? normalizeText(proposal.testCommand) : undefined,
@@ -82,6 +85,9 @@ export function createProjectExecutionRecord(
     ...(evidenceSummary ? { evidenceSummary } : {}),
     ...(proposal.planProgressSignature
       ? { planProgressSignature: normalizeText(proposal.planProgressSignature).slice(0, 2_000) }
+      : {}),
+    ...(proposal.evidenceProgressSignature
+      ? { evidenceProgressSignature: normalizeText(proposal.evidenceProgressSignature).slice(0, 4_000) }
       : {}),
     ...(proposal.retryKind ? { retryKind: proposal.retryKind } : {}),
     ...(proposal.escalationBoundary ? { escalationBoundary: proposal.escalationBoundary } : {}),
@@ -103,18 +109,23 @@ export function projectRetryKindEvidenceError(options: {
   if (options.retryKind === 'task-failure') {
     if (options.outcome !== 'rework') return 'task-failure 必须使用 rework，并提供真实失败证据';
     const failureEvidence = `${options.executionError}\n${options.testResult}`;
+    if (/(?:return\s*code|returncode|exit\s*code|退出码)\s*[=:]?\s*0|(?:执行|动作|实机|安全门槛).{0,24}(?:成功|通过)/iu.test(failureEvidence)
+      && /(?:账本|证据|记录|落盘|绑定|closure|ledger|manifest|sidecar).{0,40}(?:失败|缺失|未闭合|不一致|missing|fail|error)/iu.test(failureEvidence)) {
+      return '底层动作已经成功、仅证据/账本闭合失败时必须使用 evidence-closure；不得消耗真实任务失败预算';
+    }
     if (!/(?:\bfail(?:ed|ure)?\b|\berror\b|\bexception\b|\btimeout\b|\btimed out\b|\bnon-zero\b|\bexit code\s*[1-9]\d*\b|失败|未通过|错误|异常|超时|退出码\s*[1-9]\d*)/iu.test(failureEvidence)) {
       return 'task-failure 必须通过 --error 或 --test-result 提供明确的真实实现/验证失败证据';
     }
     return null;
   }
-  if (options.retryKind === 'execution-window' && (
-    options.changedFiles.length > 0
-    || options.testCommand
-    || options.testResult
-    || options.executionError
-  )) {
-    return 'execution-window 仅用于任务 AI 执行窗口不足且本轮零写入、零测试、无执行错误的续接';
+  if (options.retryKind === 'evidence-closure') {
+    if (options.outcome !== 'rework') return 'evidence-closure 必须使用 rework，并保留已经成功的底层动作事实';
+    const closureEvidence = `${options.executionError}\n${options.testResult}`;
+    if (!/(?:账本|证据|记录|落盘|绑定|closure|ledger|manifest|sidecar)/iu.test(closureEvidence)
+      || !/(?:失败|缺失|未闭合|不一致|missing|fail|error)/iu.test(closureEvidence)) {
+      return 'evidence-closure 仅用于底层动作完成后的证据、账本、manifest、sidecar 或运行绑定闭合失败';
+    }
+    return null;
   }
   if (options.retryKind === 'runtime-recovery' && (
     options.changedFiles.length > 0
@@ -134,19 +145,9 @@ export function projectBudgetExhaustionSummary(options: {
   aggregateWorkerMinutes?: number;
   now?: number;
 }): string {
-  const now = options.now ?? Date.now();
   const exhausted: string[] = [];
   if (options.attempts >= options.budget.maxTaskRetries) {
     exhausted.push(`真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`);
-  }
-  if (options.decisionsUsed >= options.budget.maxDecisions) {
-    exhausted.push(`监督自治健康窗口 ${options.decisionsUsed}/${options.budget.maxDecisions}`);
-  }
-  if (options.startedAt !== undefined) {
-    const elapsedMinutes = Math.max(0, Math.floor((now - options.startedAt) / 60_000));
-    if (elapsedMinutes >= options.budget.maxContinuousMinutes) {
-      exhausted.push(`连续运行窗口 ${elapsedMinutes}/${options.budget.maxContinuousMinutes} 分钟`);
-    }
   }
   const aggregateWorkerMinutes = Math.max(0, options.aggregateWorkerMinutes || 0);
   if (aggregateWorkerMinutes >= options.budget.maxAggregateWorkerMinutes) {
@@ -157,7 +158,7 @@ export function projectBudgetExhaustionSummary(options: {
   if (exhausted.length > 0) return `执行预算已耗尽：${exhausted.join('；')}`;
   return [
     '执行预算请求无有效边界，当前没有单项达到上限',
-    `监督自治健康窗口 ${options.decisionsUsed}/${options.budget.maxDecisions}`,
+    'P7 不以裁决次数或连续运行时间中断有进展的任务',
     `真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`,
   ].join('；');
 }
@@ -196,7 +197,9 @@ function hasFreshVerifiedProgress(
   const testProgress = !!record.testCommand && !!record.testResult;
   const planProgress = !!record.planProgressSignature
     && record.planProgressSignature !== previous?.planProgressSignature;
-  return workspaceProgress || testProgress || planProgress;
+  const evidenceProgress = !!record.evidenceProgressSignature
+    && !history.some((entry) => entry.evidenceProgressSignature === record.evidenceProgressSignature);
+  return workspaceProgress || testProgress || planProgress || evidenceProgress;
 }
 
 export function evaluateProjectExecutionGuard(options: {
@@ -266,14 +269,13 @@ export function evaluateProjectExecutionGuard(options: {
   if (noProgressRounds >= budget.maxNoProgressRounds) {
     return {
       decision: 'replan',
-      reason: `连续 ${noProgressRounds} 轮没有产生新的代码、测试或错误证据`,
+      reason: `连续 ${noProgressRounds} 轮没有产生新的代码、测试、错误或已核验工件证据`,
       replanTrigger: 'no-progress',
       record,
     };
   }
-  const decisionLimitReached = options.decisionsUsed >= budget.maxDecisions;
-  const timeLimitReached = options.startedAt !== undefined
-    && proposal.now - options.startedAt >= budget.maxContinuousMinutes * 60_000;
+  const decisionLimitReached = false;
+  const timeLimitReached = false;
   const verifiedProgress = proposal.allowWindowRenewal === true
     && hasFreshVerifiedProgress(effectiveHistory, record, options.lastCheckpointSignature);
   if (verifiedProgress) {

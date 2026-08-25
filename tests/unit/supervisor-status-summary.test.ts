@@ -99,6 +99,30 @@ describe('supervisor status summary', () => {
     expect(view.steps).toHaveLength(1);
   });
 
+  it('renders an ordinary outcome plan without an implementation route', () => {
+    const view = buildSupervisorPlanView({
+      source: 'user',
+      task: '完成认证修复',
+      ordinaryPlan: {
+        sourceRevision: 2,
+        revision: 3,
+        objective: '认证行为满足用户规划',
+        milestones: [{
+          id: 'acceptance', title: '完成验收', outcome: '认证行为可验证',
+          acceptance: ['认证测试通过'], status: 'active',
+        }],
+        remainingWork: ['完成认证验收'],
+        updatedAt: 1,
+      },
+    });
+
+    expect(view).toMatchObject({
+      sourceLabel: '用户任务',
+      route: '认证行为满足用户规划',
+      nextInstruction: '认证行为可验证',
+    });
+  });
+
   it('uses multiple milestones as staged execution for a project AI work item', () => {
     const view = buildSupervisorPlanView({
       source: 'project-ai',

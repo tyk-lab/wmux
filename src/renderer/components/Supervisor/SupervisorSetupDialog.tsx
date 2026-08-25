@@ -10,6 +10,7 @@ import {
   dedicatedSupervisorSurfaceId,
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
+  ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorDefaultsForAgent,
   supervisorLaneControlState,
 } from '../../store/supervisor-slice';
@@ -36,7 +37,6 @@ import {
 } from '../../../shared/supervisor-work-mode';
 import {
   buildSupervisorBriefing,
-  buildSupervisorGoalConstructionBriefing,
   effectiveSupervisorLaneConfig,
   stopWhenKindHint,
   stopWhenKindLabel,
@@ -70,7 +70,7 @@ import {
   type SupervisorModelCatalog,
 } from '../../supervisor/model-catalog';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
-import { readTerminalScreen } from '../../pipe-bridge';
+import { readTerminalScreen, workScopeBlockReason } from '../../pipe-bridge';
 import {
   markTerminalRuntimeFailed,
   waitForTerminalRuntimeReady,
@@ -329,6 +329,12 @@ export default function SupervisorSetupDialog() {
         if (s.projectManagerProjectId || s.projectManagerWorkItemId) continue;
         if (supervisorSurfaceIds.has(s.surfaceId)) continue;
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
+        const legacyLane = supervisor.lanes.find((lane) => (
+          !isProjectManagedSupervisorLane(lane)
+          && lane.surfaceId === s.surfaceId
+          && lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION
+        ));
+        if (legacyLane) continue;
         const meta = agentMeta.get(s.surfaceId);
         const st = agentStates[s.surfaceId]?.state || 'unknown';
         const existingLane = supervisor.lanes.find((lane) => (
@@ -1054,11 +1060,6 @@ export default function SupervisorSetupDialog() {
             sessionId: selectedSource.sessionId,
           }
         : undefined;
-      const contextRecoveryStatus = restoreSource
-        ? keepsRestoredContext && prev?.contextRecoveryStatus
-          ? prev.contextRecoveryStatus
-          : 'draft-pending' as const
-        : undefined;
       const config = laneConfigs[c.surfaceId]
         || (prev ? effectiveSupervisorLaneConfig(prev) : emptyLaneConfig());
       const finalizesWaiting = supervisorWaitingConfigAction(
@@ -1101,22 +1102,11 @@ export default function SupervisorSetupDialog() {
         pendingSupervisorDeliveries: keepsCurrentContext ? prev?.pendingSupervisorDeliveries || [] : [],
         currentTask: keepsCurrentContext ? prev?.currentTask || '' : '',
         decisions: keepsCurrentContext ? prev?.decisions || [] : [],
+        ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
+        pendingInitialReview: !keepsCurrentContext && agentStates[c.surfaceId]?.state === 'working',
+        ordinaryBlocker: keepsCurrentContext ? prev?.ordinaryBlocker : undefined,
         ordinaryPlanRequired: keepsCurrentContext ? prev?.ordinaryPlanRequired : true,
-        ...(!keepsCurrentContext && creationMode === 'terminal' ? {
-          goalConstruction: {
-            status: 'drafting' as const,
-            initialIdea: config.taskGoal.trim() || `基于“${c.label}”终端已有对话和项目进度继续监督`,
-            draft: {
-              taskGoal: config.taskGoal.trim(),
-              taskDescription: config.taskDescription.trim(),
-              preconditions: config.preconditions.trim(),
-              stopWhen: config.stopWhen.trim(),
-              stopWhenKind: config.stopWhenKind === 'direction' ? 'direction' as const : 'concrete' as const,
-            },
-            messages: [],
-            startedAt: Date.now(),
-          },
-        } : {}),
+        goalConstruction: undefined,
         config: {
           taskGoal: config.taskGoal.trim(),
           taskDescription: config.taskDescription.trim(),
@@ -1133,6 +1123,17 @@ export default function SupervisorSetupDialog() {
           childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
             config.childThreadResponsibilities,
           ).map((responsibility) => responsibility.trim()),
+          planRevision: keepsCurrentContext
+            ? (prev?.config?.planRevision || 1) + (
+                prev?.config?.taskGoal !== config.taskGoal.trim()
+                || prev?.config?.taskDescription !== config.taskDescription.trim()
+                || prev?.config?.preconditions !== config.preconditions.trim()
+                || prev?.config?.stopWhen !== config.stopWhen.trim()
+                || prev?.config?.planFilePath !== config.planFilePath.trim()
+                  ? 1
+                  : 0
+              )
+            : 1,
         },
         ...(Array.isArray(lanePermissionOverrides[c.surfaceId])
           ? { autonomyPermissionsOverride: [...lanePermissionOverrides[c.surfaceId]] }
@@ -1144,7 +1145,6 @@ export default function SupervisorSetupDialog() {
           ? { forbiddenActionsOverride: [...laneForbiddenActionOverrides[c.surfaceId]] }
           : {}),
         ...(restoreSource ? { restoreSource } : {}),
-        ...(contextRecoveryStatus ? { contextRecoveryStatus } : {}),
         ...(keepsRestoredContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
         ...(keepsRestoredContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
       });
@@ -1302,10 +1302,7 @@ export default function SupervisorSetupDialog() {
             lane: currentLane,
             state: String(states[currentLane.surfaceId]?.state || 'unknown'),
           });
-          const briefing = currentLane.goalConstruction?.status === 'drafting'
-            ? buildSupervisorGoalConstructionBriefing(currentLane)
-            : text;
-          sendToSurface(supervisorSurfaceId, briefing, true, 'ordinary');
+          sendToSurface(supervisorSurfaceId, text, true, 'ordinary');
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);
@@ -1338,9 +1335,19 @@ export default function SupervisorSetupDialog() {
       setDialogNotice({ kind: 'error', message: '请至少选择一个要监控的终端。' });
       return;
     }
-    const missingStopWhen = creationMode === 'terminal' && !sessionRetained
-      ? []
-      : lanes.filter((lane) => !lane.config?.stopWhen.trim());
+    const missingPlan = lanes.filter((lane) => (
+      !lane.config?.taskGoal.trim() && !lane.config?.planFilePath.trim()
+    ));
+    if (missingPlan.length > 0) {
+      const firstLane = missingPlan[0];
+      showTerminalConfigSection(firstLane.surfaceId, 'basic', `${firstLane.label} 的用户规划`);
+      setDialogNotice({
+        kind: 'error',
+        message: `请为以下终端明确填写任务目标或选择计划文件：${missingPlan.map((lane) => lane.label).join('、')}`,
+      });
+      return;
+    }
+    const missingStopWhen = lanes.filter((lane) => !lane.config?.stopWhen.trim());
     if (missingStopWhen.length > 0) {
       const firstLane = missingStopWhen[0];
       showTerminalConfigSection(firstLane.surfaceId, 'basic', `${firstLane.label} 的停止条件`);
@@ -1348,6 +1355,17 @@ export default function SupervisorSetupDialog() {
         kind: 'error',
         message: `请为以下终端填写停止条件：${missingStopWhen.map((lane) => lane.label).join('、')}`,
       });
+      return;
+    }
+    const outsidePlan = lanes.find((lane) => lane.config?.planFilePath.trim()
+      && workScopeBlockReason(
+        `读取 "${lane.config.planFilePath.trim()}"`,
+        'project',
+        lane.scopeRoot || lane.projectDir,
+      ));
+    if (outsidePlan) {
+      showTerminalConfigSection(outsidePlan.surfaceId, 'context', `${outsidePlan.label} 的计划文件`);
+      setDialogNotice({ kind: 'error', message: '计划文件必须位于对应任务终端的目标项目目录内。' });
       return;
     }
     const incompleteThreadAssignments = lanes.filter((lane) => (
@@ -1551,31 +1569,11 @@ export default function SupervisorSetupDialog() {
         <header className="supervisor-dialog__header">
           <div className="supervisor-dialog__title">普通 AI 监督</div>
           <div className="supervisor-dialog__sub">
-            {creationMode === 'terminal' && !sessionRetained
-              ? '从已有任务终端的 Agent 对话和项目进度提取上下文；信息充分时直接开始监督，不足时再向用户询问。'
-              : '配置直接监督已打开任务终端的独立监督会话。'}
+            绑定已有任务终端，由监督 AI 按用户明确提供的规划拆解、派发和验收；终端旧对话只作为当前进度证据。
           </div>
         </header>
 
         <div className="supervisor-dialog__body">
-          {!sessionRetained && (
-            <section className="supervisor-dialog__group" aria-label="普通监督创建方式">
-              <div className="supervisor-dialog__group-title">创建方式</div>
-              <div className="supervisor-dialog__freedom">
-                <label className="supervisor-dialog__radio" data-active={creationMode === 'direct'}>
-                  <input type="radio" name="ordinary-supervisor-creation-mode" checked={creationMode === 'direct'} onChange={() => setCreationMode('direct')} />
-                  <span>直接配置并启动 — 已明确目标和停止条件</span>
-                </label>
-                <label className="supervisor-dialog__radio" data-active={creationMode === 'terminal'}>
-                  <input type="radio" name="ordinary-supervisor-creation-mode" checked={creationMode === 'terminal'} onChange={() => setCreationMode('terminal')} />
-                  <span>从已有终端创建 — 自动汇总 Agent 对话与项目进度（推荐）</span>
-                </label>
-              </div>
-              {creationMode === 'terminal' && (
-                <div className="supervisor-dialog__hint">可选择一个或多个已有任务终端。每个监督 AI 只读汇总对应终端的可见对话和目录进度；能可靠还原目标与停止条件时直接开始，存在关键歧义时才显示补全问题。</div>
-              )}
-            </section>
-          )}
           <div className="supervisor-dialog__setup-layout">
             <nav className="supervisor-dialog__setup-nav" aria-label="AI 监督配置步骤">
               <button
@@ -1764,18 +1762,14 @@ export default function SupervisorSetupDialog() {
                               {activeConfigSection === 'basic' && (
                                 <div id={`terminal-config-${candidate.surfaceId}-basic`} role="tabpanel" className="supervisor-dialog__config-panel">
                                   <div className="supervisor-dialog__section">
-                                    <div className="supervisor-dialog__label">
-                                      {creationMode === 'terminal' && !sessionRetained ? '任务目标（可选补充）' : '任务目标（可选）'}
-                                    </div>
+                                    <div className="supervisor-dialog__label">任务目标（与计划文件至少填写一项）</div>
                                     <textarea
                                       className="supervisor-dialog__textarea"
                                       aria-label={`${candidate.label} 的任务目标`}
                                       rows={2}
                                       value={laneConfig.taskGoal}
                                       onChange={(event) => updateLaneConfig(candidate.surfaceId, { taskGoal: event.target.value })}
-                                      placeholder={creationMode === 'terminal' && !sessionRetained
-                                        ? '留空则由监督 AI 根据该终端已有对话和目录进度归纳'
-                                        : '例如：修复此终端负责的认证模块并保持现有行为'}
+                                      placeholder="例如：修复此终端负责的认证模块并保持现有行为"
                                     />
                                   </div>
                                   <div className="supervisor-dialog__section">
@@ -1796,10 +1790,8 @@ export default function SupervisorSetupDialog() {
                                     <div className="supervisor-dialog__hint">{stopWhenKindHint(laneConfig.stopWhenKind)}</div>
                                   </div>
                                   <div className="supervisor-dialog__section">
-                                    <div className={creationMode === 'terminal' && !sessionRetained
-                                      ? 'supervisor-dialog__label'
-                                      : 'supervisor-dialog__label supervisor-dialog__label--required'}>
-                                      停止条件{creationMode === 'terminal' && !sessionRetained ? '（可由终端上下文归纳）' : <><span> </span><span className="supervisor-dialog__required" aria-hidden="true">*</span></>}
+                                    <div className="supervisor-dialog__label supervisor-dialog__label--required">
+                                      停止条件 <span className="supervisor-dialog__required" aria-hidden="true">*</span>
                                     </div>
                                     <textarea
                                       className="supervisor-dialog__textarea"
@@ -1941,17 +1933,17 @@ export default function SupervisorSetupDialog() {
                                         onChange={(event) => toggleRestoreContext(candidate.surfaceId, event.target.checked)}
                                       />
                                       <span className="supervisor-dialog__row-main">
-                                        <span className="supervisor-dialog__row-label">恢复任务终端上下文</span>
+                                        <span className="supervisor-dialog__row-label">恢复历史监督证据</span>
                                         <span className="supervisor-dialog__row-meta">
                                           {isExistingLane
                                             ? '运行中的监督会话不能切换恢复来源；停止后重新配置即可更改。'
-                                            : '勾选后自动恢复最新审计历史；监督 AI 拟定恢复指令，需你确认后才发送。'}
+                                            : '勾选后把最新审计摘要仅提供给监督 AI 复核；不会把旧上下文或角色协议发送给任务 AI。'}
                                         </span>
                                       </span>
                                     </label>
                                     {restoreContextEnabled && (
                                       <div className="supervisor-dialog__restore-row">
-                                        <div className="supervisor-dialog__row-label">恢复上下文（默认最新）</div>
+                                        <div className="supervisor-dialog__row-label">历史监督证据（默认最新）</div>
                                         {!restoreCandidatesReady ? (
                                           <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
                                         ) : selectedRestoreSource ? (

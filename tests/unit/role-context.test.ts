@@ -19,9 +19,7 @@ import {
   prepareProjectTaskDelivery,
 } from '../../src/renderer/project-manager/engine';
 import {
-  ORDINARY_TASK_ROLE_ANCHOR,
   authorizeManagedRoleV2,
-  buildOrdinaryTaskEventEnvelope,
   buildProjectAiRuntimeContext,
   buildTaskAiRuntimeContext,
 } from '../../src/renderer/role-context';
@@ -192,47 +190,7 @@ describe('unified managed AI role context', () => {
       .toBe(true);
     expect(context.commands.conditional.find((item) => item.command.includes('task-create'))?.available)
       .toBe(false);
-  });
-
-  it('reports project task identity, contract bounds, native-tool distinction, and budget', () => {
-    const item = workItem();
-    const context = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a',
-      taskState: 'idle',
-      lane: lane(),
-      project: project(item),
-      workItem: item,
-    });
-
-    expect(context.role).toBe('project-task');
-    expect(context.identity).toMatchObject({
-      taskSurfaceId: 'task-a', supervisorSurfaceId: 'supervisor-a',
-      projectId: 'project-a', goalId: 'goal-a', workItemId: 'work-a',
-      requirementsVersion: 2, authorizationVersion: 3,
-    });
-    expect(context.contract).toMatchObject({
-      projectRoot: 'E:\\repo', allowPaths: ['src/auth'], denyPaths: ['src/payments'],
-      supervisorConfirmableCommandPrefixes: ['npm test -- auth'],
-    });
-    expect(context.actions.available).toContain('运行合同要求的最小相关测试');
-    expect(context.actions.nativeToolNotice).toContain('Agent 原生工具');
-    expect(context.budget).toEqual({
-      decisionsUsed: 2, decisionsRemaining: 10, attempts: 1, retriesRemaining: 2,
-    });
-  });
-
-  it('limits an unapproved project task to the baseline investigation', () => {
-    const item = workItem({ baseline: { status: 'required', requirementsVersion: 2 } });
-    const context = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
-    });
-
-    expect(context.actions.available).toEqual([
-      '仅执行监督 AI 下达的有界只读项目基线调查，并提交基线报告后停止',
-    ]);
-  });
-
-  it('stops advertising execution when the task contract is stale', () => {
+  });  it('stops advertising execution when the task contract is stale', () => {
     const item = workItem({ requirementsVersion: 1 });
     const context = buildTaskAiRuntimeContext({
       callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
@@ -240,7 +198,7 @@ describe('unified managed AI role context', () => {
 
     expect(context.state.contract).toBe('stale');
     expect(context.actions.available).toEqual([
-      '当前项目状态或任务合同版本已经失效；停止执行并等待监督 AI/项目 AI 重新绑定合同',
+      '当前项目状态或任务成果版本已经失效；停止执行并等待控制层重新绑定',
     ]);
   });
 
@@ -252,7 +210,7 @@ describe('unified managed AI role context', () => {
 
     expect(context.state.contract).toBe('stale');
     expect(context.actions.available).toEqual([
-      '当前项目状态或任务合同版本已经失效；停止执行并等待监督 AI/项目 AI 重新绑定合同',
+      '当前项目状态或任务成果版本已经失效；停止执行并等待控制层重新绑定',
     ]);
   });
 
@@ -268,11 +226,11 @@ describe('unified managed AI role context', () => {
     });
 
     expect(paused.actions.available).toEqual([
-      '当前监督通道未处于活动状态；停止执行并等待控制层恢复监督',
+      '监督链未处于活动状态；保留现场并等待控制层恢复',
     ]);
     expect(paused.actions.conditional).toEqual([]);
     expect(waiting.actions.available).toEqual([
-      '当前阶段已经进入待续；不得自行开始下一阶段，等待监督 AI/项目 AI 明确续接',
+      '当前监督正在审查检查点；保留现场并等待结果导向的下一批次',
     ]);
     expect(waiting.actions.conditional).toEqual([]);
   });
@@ -312,10 +270,10 @@ describe('unified managed AI role context', () => {
     }).allowed).toBe(true);
     expect(authorizeManagedRoleV2(supervisor, 'project.worker.resource.reconcile', {
       projectId: 'project-a', workItemId: 'work-a', workerId: 'worker-a',
-    }).allowed).toBe(true);
+    }).allowed).toBe(false);
     expect(authorizeManagedRoleV2(supervisor, 'project.worker.merge.reject', {
       projectId: 'project-a', workItemId: 'work-a', workerId: 'worker-a',
-    }).allowed).toBe(true);
+    }).allowed).toBe(false);
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-b', task: 'work-a',
     }).allowed).toBe(false);
@@ -348,9 +306,9 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-a' }).allowed)
       .toBe(true);
     expect(authorizeManagedRoleV2(manager, 'project.directive.resolve', { projectId: 'project-a' }).allowed)
-      .toBe(true);
+      .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.execution.replan', { projectId: 'project-a' }).allowed)
-      .toBe(true);
+      .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-b' }).allowed)
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.task-terminal.control', { projectId: 'project-a' }).allowed)
@@ -395,7 +353,7 @@ describe('unified managed AI role context', () => {
     const event = withProjectManagerEventEnvelope('进度通知', 'project-a');
     expect(event).toContain(projectManagerEventEnvelope('project-a'));
     expect(event).toContain('无需重读技能或重新确认角色');
-    expect(event).toContain('baseline.status=required 时只安排一次 [项目基线调查]');
+    expect(event).toContain('普通任务检查点由监督 AI 原地接受或返工');
     expect(event).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(withProjectManagerEventEnvelope(event, 'project-a')).toBe(event);
 
@@ -411,15 +369,10 @@ describe('unified managed AI role context', () => {
     expect(hydrated).toContain('旧队列事件');
     expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('wmux context');
-    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('wmux context');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
-    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
-    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('适用的 AGENTS/项目指令与匹配技能');
-    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('run_templates 等模板目录只保存预执行输入');
-    expect(ORDINARY_TASK_ROLE_ANCHOR).toContain('tests、test、src 等源码目录只保存源码');
     expect(PROJECT_TASK_ROLE_ANCHOR).toContain('tests、test、src 等源码目录只保存源码');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain(PROJECT_TASK_ROLE_ANCHOR);
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('长命令输出');
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('你是项目的唯一执行者');
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('形成有意义的可验证检查点');
     const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false, {
       projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
       requirementsVersion: 2, authorizationVersion: 1,
@@ -430,6 +383,5 @@ describe('unified managed AI role context', () => {
     }));
     expect(followUp).toContain('[本轮执行指令]\n继续实现');
     expect(followUp).not.toContain(PROJECT_TASK_ROLE_ANCHOR);
-    expect(buildOrdinaryTaskEventEnvelope('worker-a')).toContain('无需重新运行 wmux context');
   });
 });

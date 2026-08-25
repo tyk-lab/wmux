@@ -1772,7 +1772,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <strong>{item.title}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
-                          {item.predecessorWorkItemId && <><dt>接续来源</dt><dd>{item.predecessorWorkItemId}（{item.successionReason === 'budget-exhausted' ? '前驱预算耗尽' : '执行协议迁移'}）</dd></>}
                           {item.supersededByWorkItemId && <><dt>审计冻结</dt><dd>预算与执行历史保持不变；仅由后继 {item.supersededByWorkItemId} 继续。</dd></>}
                           <dt>执行模式</dt><dd>{taskWorkModeLabel(item.parallelismDecision?.resolvedMode || execution?.parallelismSelection, execution?.taskWorkMode)}{item.parallelismDecision ? `：${item.parallelismDecision.reason}` : execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
                           {(execution?.parallelismSelection === 'auto' || execution?.taskWorkMode === 'adaptive') && !item.parallelismDecision && <><dt>自动选择边界</dt><dd>基线批准时只会选择一种模式；可并行：{execution.parallelizableOperations?.join('；') || '无'}；必须串行：{execution.serializedOperations?.join('；') || '共享写入、硬件与最终集成'}</dd></>}
@@ -1782,7 +1781,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
                           <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
                           <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : '等待形成正式路线'}</dd>
-                          <dt>阶段预算</dt><dd>裁决健康窗口 {item.decisionsUsed}/{item.contract.budget.maxDecisions}；连续窗口 {item.contract.budget.maxContinuousMinutes} 分钟；多任务 AI 聚合 {item.contract.budget.maxAggregateWorkerMinutes} 分钟；真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}</dd>
+                          <dt>执行护栏</dt><dd>真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}；同类失败上限 {item.contract.budget.maxIdenticalFailures}；连续无进展上限 {item.contract.budget.maxNoProgressRounds}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
                           {itemCompletion && <>
                             <dt>完成结果</dt><dd>{itemCompletion.summary}</dd>

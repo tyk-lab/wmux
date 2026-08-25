@@ -764,58 +764,7 @@ supervisor_model: k3`)).toEqual({
       workItems: [expect.objectContaining({ goalId: 'goal-2', subgoalId: 'integration' })],
       conversation: [expect.objectContaining({ summary: '当前计划已建立' })],
     });
-  });
-
-  it('飞书项目概览按进度、当前执行和规划分层展示', () => {
-    const card = JSON.stringify(buildProjectManagerConversationCard({
-      projectId: 'pm-a', projectName: '认证项目', projectDir: 'E:\\repo', status: 'active',
-      activeGoalId: 'goal-1', goal: '完成认证链路',
-      goals: [{ id: 'goal-1', sequence: 1, statement: '完成认证链路', status: 'active' }],
-      subgoals: [
-        { id: 'baseline', goalId: 'goal-1', title: '基线复核', outcome: '确认现状', status: 'achieved', order: 1 },
-        { id: 'implementation', goalId: 'goal-1', title: '核心实现', outcome: '完成认证回归', status: 'active', order: 2 },
-        { id: 'acceptance', goalId: 'goal-1', title: '最终验收', outcome: '确认发布条件', status: 'planned', order: 3 },
-      ],
-      workItems: [
-        { goalId: 'goal-1', subgoalId: 'baseline', title: '旧基线任务', status: 'completed' },
-        {
-          goalId: 'goal-1', subgoalId: 'implementation', title: '实现认证回归', status: 'running',
-          latestContextSummary: '接口改造完成，正在补充回归覆盖。',
-          supervisorPlan: {
-            revision: 2, selectedRoute: '先完成接口改造，再运行聚焦回归',
-            milestones: [
-              { id: 'api', title: '接口改造', status: 'completed' },
-              { id: 'tests', title: '回归验证', outcome: '覆盖异常路径', status: 'active' },
-            ],
-            remainingWork: ['补充异常路径用例', '运行认证模块测试'],
-          },
-        },
-        { goalId: 'goal-1', subgoalId: 'implementation', title: '已停止的旧路线', status: 'stopped' },
-      ],
-      conversation: [{ ts: 3, kind: 'manager-reply', summary: '旧的项目 AI 回复。' }],
-    }, undefined, 'overview'));
-
-    expect(card).toContain('当前进度');
-    expect(card).toContain('阶段 1/3 已完成（33%）');
-    expect(card).toContain('工作项 1/2 已完成');
-    expect(card).toContain('当前阶段');
-    expect(card).toContain('S2 · **核心实现** · 进行中');
-    expect(card).toContain('当前执行 · 1 项');
-    expect(card).toContain('**实现认证回归** · 执行中');
-    expect(card).not.toContain('**已停止的旧路线**');
-    expect(card).toContain('当前计划');
-    expect(card).toContain('执行路线：先完成接口改造，再运行聚焦回归');
-    expect(card).toContain('正在进行：回归验证');
-    expect(card).toContain('接下来：补充异常路径用例');
-    expect(card).toContain('项目规划 · 1/3 已完成');
-    expect(card).toContain('S1 · 基线复核 · 已完成');
-    expect(card).toContain('最近进展');
-    expect(card).toContain('接口改造完成，正在补充回归覆盖。');
-    expect(card).not.toContain('项目 AI 最新回复');
-    expect(card).not.toContain('监督链');
-  });
-
-  it('将用户直发任务显示为知情通知而不是泛化状态更新', () => {
+  });  it('将用户直发任务显示为知情通知而不是泛化状态更新', () => {
     const status = reduceFeishuAuditTerminalStatus(undefined, {
       sessionId: 'sup-project', projectDir: 'E:\\repo', type: 'supervisor.delivery.queued',
       terminal: { surfaceId: 'project-task', label: '任务 AI' },
@@ -861,7 +810,7 @@ supervisor_model: k3`)).toEqual({
       status: 'running',
       decisionsUsed: index,
       attempts: index === 7 ? 2 : 0,
-      contract: { budget: { maxDecisions: 12, maxContinuousMinutes: 90, maxTaskRetries: 3 } },
+      contract: { budget: { maxTaskRetries: 3 } },
       latestEvidence: index === 7 ? `最新证据 ${'证'.repeat(500)} 证据末尾` : `证据 ${index + 1}`,
     }));
     const events = Array.from({ length: 8 }, (_, index) => ({
@@ -875,7 +824,7 @@ supervisor_model: k3`)).toEqual({
     expect(collapsedDecisions).toContain('当前显示最近 3/6 项');
     expect(collapsedDecisions).toContain('展开近期工作项（6）');
     expect(collapsedDecisions).toContain('工作项 8');
-    expect(collapsedDecisions).toContain('阶段预算：裁决健康窗口 7/12 · 连续窗口 90 分钟 · 真实任务失败重试 2/3');
+    expect(collapsedDecisions).toContain('任务失败重试：2/3');
     expect(collapsedDecisions).not.toContain('工作项 5');
 
     const expandedDecisions = JSON.stringify(buildProjectManagerConversationCard(session, undefined, 'decisions-expanded'));

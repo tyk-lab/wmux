@@ -1253,7 +1253,11 @@ function handleSupervisorHookEvent(event: any): void {
     const evidenceReadMode = lifecycle === 'Stop' && evidence && !evidence.truncated
       ? 'on-demand' as const
       : 'required' as const;
-    store.updateLane(lane.id, { awaitingReview: true, userDirectTaskTurnId: undefined });
+    store.updateLane(lane.id, {
+      awaitingReview: true,
+      pendingInitialReview: false,
+      userDirectTaskTurnId: undefined,
+    });
     if (lane.autoDecisionLimitReached) return;
     queueSupervisorDelivery(
       session,

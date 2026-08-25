@@ -59,23 +59,7 @@ describe('project-manager domain', () => {
     const target = workItem('ui', 'waiting-dependencies', ['base']);
     expect(projectWorkItemReady(target, [dependency, target])).toBe(false);
     expect(projectWorkItemReady(target, [{ ...dependency, status: 'completed' }, target])).toBe(true);
-  });
-
-  it('normalizes invalid budgets to conservative defaults', () => {
-    expect(normalizeProjectExecutionBudget({
-      maxDecisions: 0,
-      maxSameTestRuns: 3.8,
-      maxContinuousMinutes: Number.MAX_SAFE_INTEGER,
-      maxFullSuiteRunsPerVersion: 99,
-    })).toMatchObject({
-      maxDecisions: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-      maxSameTestRuns: 3,
-      maxContinuousMinutes: MAX_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes,
-      maxFullSuiteRunsPerVersion: MAX_PROJECT_EXECUTION_BUDGET.maxFullSuiteRunsPerVersion,
-    });
-  });
-
-  it('derives completion results for pre-upgrade work items and achieved stages', () => {
+  });  it('derives completion results for pre-upgrade work items and achieved stages', () => {
     const completed = {
       ...workItem('legacy-result', 'completed'),
       subgoalId: 'legacy-stage',
@@ -100,48 +84,7 @@ describe('project-manager domain', () => {
   });
 });
 
-describe('project execution anti-loop guard', () => {
-  it('charges only verified task failures to the task retry budget', () => {
-    expect(projectRetryConsumesTaskBudget('task-failure')).toBe(true);
-    expect(projectRetryConsumesTaskBudget('command-correction')).toBe(false);
-    expect(projectRetryConsumesTaskBudget('runtime-recovery')).toBe(false);
-    expect(projectRetryConsumesTaskBudget('execution-window')).toBe(false);
-    expect(createProjectExecutionRecord(proposal({ retryKind: 'command-correction' })))
-      .toMatchObject({ retryKind: 'command-correction' });
-    expect(projectRetryKindEvidenceError({
-      retryKind: 'task-failure', outcome: 'rework', changedFiles: [], testCommand: 'npm test',
-      testResult: 'passed', executionError: '',
-    })).toContain('真实实现/验证失败证据');
-    expect(projectRetryKindEvidenceError({
-      retryKind: 'task-failure', outcome: 'rework', changedFiles: ['src/auth.ts'], testCommand: 'npm test',
-      testResult: '1 test failed', executionError: '',
-    })).toBeNull();
-    expect(projectRetryKindEvidenceError({
-      retryKind: 'execution-window', outcome: 'rework', changedFiles: ['src/auth.ts'], testCommand: '',
-      testResult: '', executionError: '',
-    })).toContain('零写入');
-    expect(projectRetryKindEvidenceError({
-      retryKind: 'runtime-recovery', outcome: 'rework', changedFiles: [], testCommand: 'npm test',
-      testResult: '', executionError: 'PTY exited',
-    })).toContain('不得携带');
-  });
-
-  it('reports the budget dimension that actually exhausted', () => {
-    expect(projectBudgetExhaustionSummary({
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      attempts: DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries,
-      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions - 1,
-      now: 1_000,
-    })).toBe(`执行预算已耗尽：真实任务失败重试 ${DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries}/${DEFAULT_PROJECT_EXECUTION_BUDGET.maxTaskRetries}`);
-    expect(projectBudgetExhaustionSummary({
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      attempts: 0,
-      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-      now: 1_000,
-    })).toContain('监督自治健康窗口');
-  });
-
-  it('rejects a third identical failure without a changed work version', () => {
+describe('project execution anti-loop guard', () => {  it('rejects a third identical failure without a changed work version', () => {
     const current = proposal({ now: 3_000 });
     const history = [
       createProjectExecutionRecord(proposal({ now: 1_000 })),
@@ -207,104 +150,6 @@ describe('project execution anti-loop guard', () => {
     })).toMatchObject({ decision: 'reject', reason: expect.stringContaining('全量测试') });
   });
 
-  it('requires an in-place project replan at a health-window boundary without verified progress', () => {
-    expect(evaluateProjectExecutionGuard({
-      history: [],
-      proposal: proposal(),
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-    })).toMatchObject({
-      decision: 'replan',
-      replanTrigger: 'decision-limit',
-      reason: expect.stringContaining('同一工作项内调整执行路线'),
-    });
-  });
-
-  it('renews an exhausted decision window when workspace evidence proves fresh progress', () => {
-    const previous = createProjectExecutionRecord(proposal({
-      error: undefined, testCommand: undefined, testResult: undefined,
-      workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'], now: 1_000,
-    }));
-    expect(evaluateProjectExecutionGuard({
-      history: [previous],
-      proposal: proposal({
-        error: undefined, testCommand: undefined, testResult: undefined,
-        workspaceVersion: 'diff-b', changedFiles: ['src/auth.ts'],
-        allowWindowRenewal: true, now: 2_000,
-      }),
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-      startedAt: 500,
-    })).toMatchObject({ decision: 'allow', renewWindow: 'decision-limit' });
-  });
-
-  it('renews a healthy decision window as soon as verified progress closes a task batch', () => {
-    expect(evaluateProjectExecutionGuard({
-      history: [],
-      proposal: proposal({
-        error: undefined, testCommand: undefined, testResult: undefined,
-        workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'],
-        allowWindowRenewal: true, now: 2_000,
-      }),
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: 4,
-      startedAt: 500,
-    })).toMatchObject({ decision: 'allow', renewWindow: 'verified-progress' });
-  });
-
-  it('does not credit the same verified checkpoint twice across renewed windows', () => {
-    const current = proposal({
-      error: undefined, testCommand: undefined, testResult: undefined,
-      workspaceVersion: 'diff-a', changedFiles: ['src/auth.ts'],
-      allowWindowRenewal: true, now: 2_000,
-    });
-    const checkpoint = createProjectExecutionRecord(current).progressSignature;
-    const result = evaluateProjectExecutionGuard({
-      history: [],
-      proposal: current,
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: 1,
-      startedAt: 500,
-      lastCheckpointSignature: checkpoint,
-    });
-    expect(result).toMatchObject({ decision: 'allow' });
-    expect(result.renewWindow).toBeUndefined();
-  });
-
-  it('can credit verified progress after an earlier delivery failure was only audited', () => {
-    const current = proposal({
-      error: undefined, testCommand: undefined, testResult: undefined,
-      workspaceVersion: 'diff-delivery', changedFiles: ['src/auth.ts'],
-      allowWindowRenewal: true, now: 2_000,
-    });
-    const rejected = { ...createProjectExecutionRecord(current), consumedDecision: false };
-    expect(evaluateProjectExecutionGuard({
-      history: [rejected],
-      proposal: { ...current, now: 3_000 },
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: 4,
-      startedAt: 500,
-    })).toMatchObject({ decision: 'allow', renewWindow: 'verified-progress' });
-  });
-
-  it('renews an expired time window when a milestone gains evidence', () => {
-    const previous = createProjectExecutionRecord(proposal({
-      error: undefined, testCommand: undefined, testResult: undefined,
-      workspaceVersion: undefined, planProgressSignature: undefined, now: 1_000,
-    }));
-    expect(evaluateProjectExecutionGuard({
-      history: [previous],
-      proposal: proposal({
-        error: undefined, testCommand: undefined, testResult: undefined,
-        workspaceVersion: undefined, planProgressSignature: 'milestone-a:静态核验通过',
-        allowWindowRenewal: true, now: 120 * 60_000,
-      }),
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: 2,
-      startedAt: 1_000,
-    })).toMatchObject({ decision: 'allow', renewWindow: 'time-limit' });
-  });
-
   it('requires replanning after repeated no-progress evidence', () => {
     const unchanged = proposal({
       action: '检查状态',
@@ -320,23 +165,7 @@ describe('project execution anti-loop guard', () => {
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: 2,
     })).toMatchObject({ decision: 'replan', reason: expect.stringContaining('没有产生新的') });
-  });
-
-  it('keeps the no-progress guard hard even when a window is eligible for renewal', () => {
-    const unchanged = proposal({
-      action: '检查状态', command: 'read-screen', error: undefined,
-      testCommand: undefined, testResult: undefined, workspaceVersion: undefined,
-    });
-    const record = createProjectExecutionRecord(unchanged);
-    expect(evaluateProjectExecutionGuard({
-      history: [record, { ...record, ts: 2_000 }],
-      proposal: { ...unchanged, allowWindowRenewal: true, now: 3_000 },
-      budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
-      decisionsUsed: DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions,
-    })).toMatchObject({ decision: 'replan', reason: expect.stringContaining('没有产生新的') });
-  });
-
-  it('does not treat rewritten narrative evidence as real progress', () => {
+  });  it('does not treat rewritten narrative evidence as real progress', () => {
     const base = proposal({
       action: '继续检查', command: 'read-screen', error: undefined,
       testCommand: undefined, testResult: undefined, evidence: '第一次说明',
@@ -348,9 +177,7 @@ describe('project execution anti-loop guard', () => {
       budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       decisionsUsed: 2,
     }).decision).toBe('replan');
-  });
-
-  it('does not treat a rewritten diff summary as independently verified progress', () => {
+  });  it('does not treat a rewritten diff summary as independently verified progress', () => {
     const base = proposal({
       action: '继续检查', command: 'read-screen', error: undefined,
       testCommand: undefined, testResult: undefined, diffSummary: '第一次描述',

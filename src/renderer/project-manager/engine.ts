@@ -25,9 +25,9 @@ export const PROJECT_TASK_BASELINE_APPROVAL_MARKER = '[批准项目基线]';
 export const PROJECT_TASK_PROTOCOL_REVISION = String(CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION);
 export const PROJECT_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
-  '先运行 wmux context 获取当前 capability 绑定的项目、目标、工作项、需求/授权版本、基线、合同范围和可用动作；不得沿用旧会话身份或自行指定其他项目/工作项。',
-  'wmux context 描述的是 wmux 合同权限；Agent 原生工具仍受当前 Agent 和沙箱配置约束，且不能扩大合同边界。',
-  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出只能写入项目约定的实际运行/证据目录并报告路径，不得只依赖终端滚屏；tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源，禁止写入日志、validate/dry-run 输出和运行结果。',
+  '先运行 wmux context 获取当前 capability 绑定的项目、目标、任务成果、需求版本和安全边界；不得沿用旧会话身份或自行指定其他项目/任务。',
+  '你是唯一项目执行者，拥有项目工作区内完整执行能力；目标项目 AGENTS、匹配技能和仓库规范优先于项目 AI 与监督 AI 的实现建议。',
+  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出只能写入项目约定的实际运行/证据目录并报告路径，不得只依赖终端滚屏；run_templates 等样例/模板目录只保存预执行输入，实际实验、测试、DRY_RUN、validate、telemetry 和结果统一写入 runs/YYYY-MM-DD/<运行批次>/；tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源。',
 ].join('\n');
 
 export interface ProjectExecutionIdentity {
@@ -116,7 +116,7 @@ export function projectPermissionAuthorizationError(
 
 /** Require a reviewed, current workspace baseline before any project task can write or finish. */
 export function projectTaskBaselineViolation(
-  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'baseline'>,
+  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'executionProtocolVersion' | 'baseline'>,
   proposal: {
     outcome: SupervisorDecisionOutcome;
     instruction?: string;
@@ -131,7 +131,20 @@ export function projectTaskBaselineViolation(
     escalationBoundary?: ProjectEscalationBoundary;
   },
 ): string | null {
-  if (projectTaskBaselineApproved(item)) return null;
+  const instruction = proposal.instruction?.trim() || '';
+  if ((item.executionProtocolVersion || 0) >= 7) {
+    return instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER)
+      || instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER)
+      ? 'P7 已删除监督批准项目基线的多轮握手；请直接下达结果导向的任务批次'
+      : null;
+  }
+  if (projectTaskBaselineApproved(item)) {
+    if (instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER)
+      || instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER)) {
+      return '当前需求版本的项目基线已经批准；不得重复调查或再次发送 [批准项目基线]。若任务 AI 重复返回 [项目基线报告]，直接使用不含基线标记的 continue/rework 重申已批准执行批次';
+    }
+    return null;
+  }
   if (proposal.outcome === 'needs-human') {
     return proposal.escalationBoundary
       ? null
@@ -140,7 +153,6 @@ export function projectTaskBaselineViolation(
   if (proposal.permissionResponse) return '项目基线尚未审核，不能自动确认权限或执行写操作';
   if (proposal.outcome === 'complete') return '项目基线尚未审核，不能把工作项判定为完成';
 
-  const instruction = proposal.instruction?.trim() || '';
   const investigationRequested = instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
   const approvalRequested = instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER);
   if (investigationRequested && approvalRequested) {
@@ -184,6 +196,21 @@ export function buildProjectTaskExecutionEnvelope(
   executionIdentity?: ProjectExecutionIdentity,
   resolvedParallelismMode?: ProjectParallelismMode,
 ): string {
+  if (projectGovernanceProtocolEnabled()) return [
+    '[项目任务执行契约｜P7]',
+    executionIdentity ? buildProjectExecutionIdentityBlock(executionIdentity) : '',
+    `任务成果：${contract.objective}`,
+    contract.description ? `成果说明：${contract.description}` : '',
+    `项目根目录：${contract.scope.root}`,
+    `验收条件：${[...contract.stopWhen, ...contract.validation].join('；')}`,
+    '你是项目的唯一执行者。先读取并遵守当前目录层级适用的 AGENTS、项目技能和仓库规范；它们优先于项目 AI 或监督 AI 的实现建议。',
+    '你拥有项目工作区内完成成果所需的完整读写、命令、测试和内部子代理决策权。具体技术路线、文件、命令、技能、测试与内部拆分由你自行决定，监督 AI 只给出阶段成果和验收缺口。',
+    '普通技术选择、低风险本地命令和任务内部失败由你自主处理，不得逐步请求监督 AI 或项目 AI 许可。',
+    '删除或破坏性覆盖、外部访问、凭据、提权、发布、生产环境和真实硬件高风险操作仍必须停在用户授权边界。跨任务资源或集成冲突报告监督 AI，由项目 AI 处理总计划。',
+    '运行事实必须服从项目产物规范；默认写入 runs/YYYY-MM-DD/<运行批次>/。.project-plans 根目录只允许 PROGRESS.md，其他资料进入 plans/、debug/、experiments/ 或 archive/。',
+    '形成有意义的可验证检查点后，用 [本轮结果] 报告成果、实际修改、验证、证据、剩余责任和是否存在真实决策边界；不要因微步骤完成主动停顿。',
+  ].filter(Boolean).join('\n');
+
   const authority = contract.authority;
   const execution = contract.execution;
   const parallelismSelection = resolvedParallelismMode || normalizeProjectParallelismSelection(
@@ -252,7 +279,7 @@ export function buildProjectTaskExecutionEnvelope(
     '执行身份分流：上面的项目执行身份已经由控制层建立，不得等待旧身份或自行恢复旧会话。若任务所说的“身份/角色/profile/登记项”是当前项目范围内可创建、推导或注册的产物，把它作为合同内准备步骤，只核对一次依据后直接建立；若它不阻塞其他独立工作，向监督报告“建议暂缓当前工作项”及事实后停止，不要反复重建；只有外部凭据、人工资质、生产签名身份或用户掌握的访问权才是人工阻塞。',
     ...executionModeLines,
     '你不直接向用户或项目 AI 索要逐次执行许可。普通工具/命令确认、工作项内技术问题和同一前置条件的重复询问只报告给监督 AI，由监督 AI 按合同与实时证据裁决；只有发现已确认条件变化的具体证据、目标越出合同、出现不可逆/生产/凭据/外部访问或权限变更风险，或预算护栏触发时才停止并报告监督 AI。',
-    '每轮结束以“[本轮结果]”结构化报告完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出必须按项目指令和基线中的“[项目产物策略]”保存并报告路径。run_templates 等模板目录只保存可复用预执行输入，禁止写入日志、dry-run/validate 输出、results、telemetry 或其他运行事实；路径或命名与上级计划冲突时停止并报告监督 AI。',
+    '每轮结束以“[本轮结果]”结构化报告完成事项、修改文件、验证命令与结果、关键错误、剩余工作和建议下一步；长命令输出必须按项目指令和基线中的“[项目产物策略]”保存并报告路径。run_templates 等样例/模板目录只保存 candidate、plan、identity、batch、index、profile、config 等可复用预执行输入；实际实验、测试、dry-run/validate、results、telemetry、结论和其他运行事实统一写入 runs/YYYY-MM-DD/<运行批次>/。不得先写入模板目录再搬运；路径或命名与上级计划冲突时停止并报告监督 AI。',
   ].filter(Boolean).join('\n');
 }
 
@@ -507,19 +534,38 @@ function instructionAffirmativelyMentions(instruction: string, term: string): bo
 }
 
 function runtimeArtifactName(name: string): boolean {
+  const runtimeDataFile = /\.(?:json|txt|log|csv|tsv|xml|trx|jsonl|ndjson)$/u.test(name);
   return /\.(?:log|csv|tsv|xml|trx|jsonl|ndjson)$/u.test(name)
     || /\.(?:stdout|stderr|output)\.(?:json|txt)$/u.test(name)
     || /\.(?:dry-run|validate)(?:\.(?:stdout|stderr|output))?\.json$/u.test(name)
-    || /(?:^|[-_.])(?:results?|offline-validation)(?:[-_.]|$)/u.test(name)
-    || /^(?:manifest|safe-stop|failure|telemetry|report)(?:[-_.]|$)/u.test(name);
+    || (runtimeDataFile && (
+      /(?:^|[-_.])(?:results?|outcomes?|outputs?|metrics?|measurements?|observations?|validations?|offline-validation|dry[-_]?run|closures?|evidence|summaries?|reports?|telemetry|failures?|manifests?|safe[-_]?stop|pytest|unittest|junit|experiments?|data|logs?)(?:[-_.]|$)/u.test(name)
+    ));
+}
+
+function reusableTemplateInputName(name: string): boolean {
+  if (!/\.(?:json|ya?ml|toml|ini|txt|md)$/u.test(name)) return false;
+  const explicitRuntimeOutput = /(?:^|[-_.])(?:results?|outcomes?|outputs?|metrics?|measurements?|observations?|validations?|offline-validation|dry[-_]?run|closures?|evidence|summaries?|reports?|telemetry|failures?|manifests?|safe[-_]?stop|pytest|unittest|junit|logs?)(?:[-_.]|$)/u.test(name);
+  return /(?:^|[-_.])(?:candidate|identity|plan|batch|template|index|profile|config|contract|schema|instructions?|inputs?|fixture|parent)(?:[-_.]|$)/u.test(name)
+    && !explicitRuntimeOutput;
 }
 
 export function projectArtifactLocationViolation(value: string): string | null {
+  if (projectGovernanceProtocolEnabled()) return sharedProjectArtifactLocationViolation(value);
+
   const normalized = value.trim().replace(/\\/gu, '/').toLowerCase();
   const name = normalized.split('/').pop() || '';
+  const inTemplateDirectory = /(?:^|\/)run[-_]templates(?:\/|$)/u.test(normalized);
+  if (inTemplateDirectory && !reusableTemplateInputName(name)) {
+    return `模板目录只能保存可复用的预执行输入（candidate、plan、identity、batch、index、profile、config 等）；运行、验证、日志、结论或结果产物必须写入 runs/YYYY-MM-DD/<运行批次>/：${value}`;
+  }
   if (!runtimeArtifactName(name)) return null;
-  if (/(?:^|\/)run[-_]templates(?:\/|$)/u.test(normalized)) {
-    return `模板目录只能保存可复用的预执行输入；运行、验证、日志或结果产物必须写入项目约定的实际运行/证据目录：${value}`;
+  const runsSuffix = normalized.match(/(?:^|\/)runs\/(.+)$/u)?.[1];
+  if (runsSuffix && !runsSuffix.startsWith('run_templates/')) {
+    const parts = runsSuffix.split('/').filter(Boolean);
+    if (parts.length < 3 || !/^\d{4}-\d{2}-\d{2}$/u.test(parts[0])) {
+      return `实际运行、验证、日志或结果产物必须写入 runs/YYYY-MM-DD/<运行批次>/，不能写在 runs 根目录或无日期样例目录：${value}`;
+    }
   }
   const sourceDirectory = /(?:^|\/)(?:tests?|src)(?:\/|$)/u.test(normalized);
   const staticTestResource = /(?:^|\/)(?:fixtures?|testdata|test-data|snapshots?|__snapshots__)(?:\/|$)/u.test(normalized);
@@ -529,13 +575,17 @@ export function projectArtifactLocationViolation(value: string): string | null {
 }
 
 export function projectArtifactCommandViolation(value: string): string | null {
-  const quotedCandidates = [...value.matchAll(/["']([^"']*(?:run[-_]templates|tests?|src)[\\/][^"']+)["']/giu)]
+  const trimmed = value.trim();
+  if (/^(?:get-content|get-filehash|test-path|select-string|rg|fd|type|cat)\b/iu.test(trimmed)) {
+    return null;
+  }
+  const quotedCandidates = [...value.matchAll(/["']([^"']*(?:\.project-plans|runs|run[-_]templates|tests?|src)[\\/][^"']+)["']/giu)]
     .map((match) => match[1]);
   const candidates = [...quotedCandidates, ...value.split(/\s+/u)]
     .map((entry) => entry.replace(/^["'`([{<]+|["'`\])}>;,]+$/gu, ''))
-    .filter((entry) => /(?:run[-_]templates|tests?|src)[\\/]/iu.test(entry));
+    .filter((entry) => /(?:\.project-plans|runs|run[-_]templates|tests?|src)[\\/]/iu.test(entry));
   for (const rawCandidate of candidates) {
-    const pathOffset = rawCandidate.search(/(?:runs[\\/])?run[-_]templates[\\/]|(?:tests?|src)[\\/]/iu);
+    const pathOffset = rawCandidate.search(/\.project-plans[\\/]|runs[\\/]|run[-_]templates[\\/]|(?:tests?|src)[\\/]/iu);
     const candidate = pathOffset >= 0
       ? rawCandidate.slice(pathOffset)
       : rawCandidate;
@@ -554,8 +604,22 @@ export function projectContractViolation(
     changedFiles?: string[];
     testCommand?: string;
     retry?: boolean;
+    artifactAccess?: 'write' | 'read';
   },
 ): string | null {
+  if (projectGovernanceProtocolEnabled()) {
+  for (const file of proposal.changedFiles || []) {
+    if (proposal.artifactAccess === 'read') continue;
+    const violation = sharedProjectArtifactLocationViolation(file);
+    if (violation) return violation;
+  }
+  const artifactCommandViolation = projectArtifactCommandViolation(proposal.command || proposal.instruction || '');
+  if (artifactCommandViolation) return artifactCommandViolation;
+  // P7 scope describes the assignment; it is not a filesystem permission list.
+  // User-only safety boundaries remain enforced by the dedicated approval path.
+  return null;
+  }
+
   const instruction = `${proposal.instruction || ''}\n${proposal.command || ''}`.toLowerCase().replace(/\\/g, '/');
   const threadApprovalRequested = instruction.includes('[批准内部线程方案');
   if (threadApprovalRequested) {
@@ -585,8 +649,10 @@ export function projectContractViolation(
     .map((entry) => normalizedContractPath(entry, contract.scope.root))
     .filter(Boolean);
   for (const file of proposal.changedFiles || []) {
-    const artifactViolation = projectArtifactLocationViolation(file);
-    if (artifactViolation) return artifactViolation;
+    if (proposal.artifactAccess !== 'read') {
+      const artifactViolation = projectArtifactLocationViolation(file);
+      if (artifactViolation) return artifactViolation;
+    }
     const normalizedFile = normalizedContractPath(file, contract.scope.root);
     const denied = denyPaths.find((entry) => pathInside(normalizedFile, entry));
     if (denied) return `变更文件进入任务禁止路径：${file}`;
@@ -639,6 +705,21 @@ export function buildProjectSupervisorBriefing(options: {
     acceptance: string[];
   };
 }): string {
+  if (projectGovernanceProtocolEnabled()) return [
+    `[项目监督任务｜P7] ${options.workItemId}`,
+    options.executionIdentity ? buildProjectExecutionIdentityBlock(options.executionIdentity) : '',
+    options.projectGoal ? `项目总目标：${options.projectGoal}` : '',
+    options.stage ? `当前任务成果：${options.stage.outcome}\n验收：${options.stage.acceptance.join('；')}` : '',
+    `任务成果：${options.contract.objective}`,
+    options.contract.description ? `说明：${options.contract.description}` : '',
+    `停止与验收：${[...options.contract.stopWhen, ...options.contract.validation].join('；')}`,
+    '你是该任务 AI 的专属监督和编排者，不是项目执行者。不得修改项目文件、运行实现或测试命令、选择任务技能、规定具体实现路线，或代替任务 AI 做普通技术决策。',
+    '你的内部计划只维护阶段成果、验收缺口、先后关系和检查点。给任务 AI 的 --next 应描述下一批次需要形成的结果，不得指定必须修改的文件、必须运行的命令或必须采用的技能。',
+    '任务 AI 自主遵循目标项目的 AGENTS、技能和规范；这些规则高于项目 AI 与监督 AI 的实现建议。发现不合规时阻断检查点，只反馈违规事实、证据和验收缺口，由原任务 AI 自行修正。',
+    '普通技术选择、低风险恢复和任务内部拆分由任务 AI 决定。跨任务协调、总计划缺口或连续两次相同违规才请求项目 AI；用户目标、验收偏好、外部凭据、人工操作和高风险授权才可继续升级用户。',
+    '完整成果满足后提交 complete；仍有任务内工作时直接 continue/rework，不得把微步骤交给项目 AI 或用户。',
+  ].filter(Boolean).join('\n');
+
   const { workItemId, contract, baseline, supervisorPlan, resolvedParallelismMode, executionIdentity, projectGoal, stage } = options;
   const allowedCommandPrefixes = contract.authority.allowedCommandPrefixes || [];
   const permissions = [
@@ -738,7 +819,7 @@ export function buildProjectSupervisorBriefing(options: {
         ? '监督阶段计划：尚未建立。下一次 continue/rework 必须通过 --stage-plan-file 提交受控 JSON；完成后每次路线或里程碑变化都同步更新。'
         : '监督阶段计划：基线调查完成前不得预设。批准基线的同一次裁决必须通过 --stage-plan-file 建立。',
     projectBaselineProgressDirective(baseline),
-    '身份与暂缓边界：控制层给出的项目执行身份已经有效，恢复时不得寻找旧 lane、旧终端或旧会话。项目范围内可生成的执行身份、候选配置、profile、映射或登记项属于准备工作，只做一次必要核对后交给任务 AI 建立。若缺失项暂时无法取得但不阻塞主目标下其他独立工作，使用 needs-human 向项目 AI 提交一次事实、影响和“暂缓当前工作项并推进不依赖项”的建议；不要重建同一身份或换说法重复调查。只有外部凭据、人工资质、生产身份、用户控制的访问权，或它是所有剩余路径的硬依赖时才升级为阻塞。',
+    '身份与暂缓边界：控制层给出的项目执行身份已经有效，恢复时不得寻找旧 lane、旧终端或旧会话。项目范围内可生成的执行身份、候选配置、profile、映射或登记项属于准备工作，只做一次必要核对后交给任务 AI 建立。若缺失项暂时无法取得但不阻塞主目标下其他独立工作，使用项目状态通知向项目 AI 提交一次事实、影响和“暂缓当前工作项并推进不依赖项”的建议；控制层不会为项目模式创建普通 pendingApproval。不要重建同一身份或换说法重复调查。只有外部凭据、人工资质、生产身份、用户控制的访问权，或它是所有剩余路径的硬依赖时才升级为阻塞。',
     '项目级已确认前置条件与其中的明确授权，在当前需求版本内由监督 AI 和任务 AI 持续继承；用户未通知变更且没有具体反证时，不得把同一条件拆成逐步确认。普通本地执行提示可由监督 AI 按低风险权限规则自行处理。',
     '职责过滤顺序：任务 AI 只执行并报告；你处理工作项内技术取舍、执行批次、证据和逐次权限确认；项目 AI 处理合同、跨工作项协调和不改变用户可见结果的项目内取舍；只有改变目标/范围/验收/真实用户偏好，或新增外部访问、凭据、人工操作和硬风险授权时才可能由项目 AI 询问用户。不得因为存在多个可行方案就把选择上抛。',
     contract.authority.continuousExecution
@@ -748,13 +829,20 @@ export function buildProjectSupervisorBriefing(options: {
     `停止条件：${contract.stopWhen.join('；')}`,
     `验证要求：${contract.validation.join('；')}`,
     `自治健康窗口：完成一个可核验任务批次并提供新工作区、测试或带证据的里程碑进展后，控制层立即在原工作项、原监督和原任务终端续期；连续 ${contract.budget.maxDecisions} 次决策或 ${contract.budget.maxContinuousMinutes} 分钟都没有形成新检查点时，控制层要求项目 AI 在同一工作项内提供实质不同的新路线并原地开启窗口，不创建预算后继或新终端。累计任务 AI 时间上限 ${contract.budget.maxAggregateWorkerMinutes} 分钟、同类失败 ${contract.budget.maxIdenticalFailures} 次、真实任务失败重试 ${contract.budget.maxTaskRetries} 次仍是硬护栏。`,
-    '除批准项目基线的原子裁决外，每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。需要重试时必须加 --retry-kind：只有真实实现/验证失败使用 task-failure 并消耗任务重试预算；命令、测试入口、路径或转义修正使用 command-correction；PTY、Agent、投递或运行时恢复使用 runtime-recovery；任务 AI 执行窗口不足且本轮零写入时使用 execution-window。四类重试仍受相同失败、连续无进展和监督健康窗口约束，不能靠改分类规避护栏。',
+    '每次 continue/rework 必须附带 --execution-action，并按真实结果提供 --workspace-version、--changed-files、--diff-summary、--evidence 与 --context-summary；执行测试时必须附带 --test-command 和 --test-result，全量测试另加 --full-suite。需要重试时必须使用真实 --retry-kind：底层实现、验证或实机动作失败使用 task-failure；证据或账本闭合失败使用 evidence-closure；命令、路径或转义修正使用 command-correction；PTY、Agent、投递或运行时恢复使用 runtime-recovery。所有重试仍受同类失败和连续无进展护栏约束。',
     'complete 是对已形成证据的只读收口，不要求制造新的代码、测试或错误变化；没有文件变更时省略 --changed-files，禁止填写 none/无变更充当路径。完成文件的读取与哈希核验属于当前专属监督 capability，项目 AI 不能代批；若控制层报告 capability 路由故障，应保留证据并等待内部恢复，不得把它升级为用户决策。',
     '委派粒度是可验收的完整阶段成果，不是单条命令、单个文件、单次测试或一次任务 AI 回合。你对合同目标的实现路径和内部里程碑负责：在权限与范围内自行调查、拆解、选择技术方案并连续使用 continue/rework 推进；只有整个合同的 stopWhen 与 validation 都满足后才提交 complete。小里程碑结束不得进入待续，也不得退化成只转发任务 AI 信息。',
     '阶段计划 JSON 结构：{"selectedRoute":"...","milestones":[...],"expectedPaths":["项目内相对路径"],"targetedValidation":["命令"],"serializedBoundaries":["..."],"remainingWork":["..."],"workerAssignments":[{"workerId":"worker-main","role":"integrator|worker|hardware-executor","outcome":"...","dependencies":[],"writeClaims":[],"resourceClaims":[],"validation":[]}],"mergeOrder":["workerId"]}。只有多任务 AI 使用 workerAssignments，必须包含 2-3 个 worker、唯一且作为依赖图最终汇聚点的 integrator、无循环依赖和规范化后仍互斥的 writeClaims；其他模式不得填写。expectedPaths 是全部主动写入路径的并集；不要列编译器或构建工具自动生成的二进制、缓存和临时产物。命名优先服从项目规则；未定义时使用稳定工作项 slug，并用 rv/av/rep 等不重载限定词区分需求版本、授权版本和重复序号。run_templates 等模板目录只允许预执行输入，运行、验证、日志和结果产物必须进入项目约定的实际运行/证据目录。',
     '裁决被拒绝后只根据错误提示修正一次；同一工作项、需求版本和审核轮次内，相同错误连续出现两次会进入协议纠错暂停并交接项目 AI。不得换说法重复提交，必须实质修改输入或等待项目 AI 更新方向。',
     `complete 必须通过 --evidence 提供可复核证据，并逐项附 --completion-stop-when ${contract.stopWhen.map((_item, index) => index + 1).join(',')} --completion-validation ${contract.validation.map((_item, index) => index + 1).join(',')} --remaining-work none。任何一项未满足或仍有下一步时都必须使用 continue/rework，不得先交接项目 AI。没有新证据时不得仅改写理由后继续。`,
     `收到项目执行链活性检查时先只读核对任务终端。正常长任务不要中断；若任务 AI 持续 working 且只有计时变化、没有语义输出，可执行 wmux project task-terminal-control --project <项目ID> --task ${workItemId} --key escape --reason "<当前证据>" 一次。重新只读检查仍为 working 后才可改用 --key interrupt；禁止控制 idle/blocked/unknown 或 SSH 任务。`,
-    '任务边界优先于追逐目标。只有合同变化、跨工作项协调、外部阻塞、用户独有信息、高风险动作或硬执行预算实际耗尽时，才使用 needs-human 交回项目管理 AI，并分别标注 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted，同时提供 --reason 与 --impact。普通监督决策/时间健康窗口由控制层直接转为同工作项内部重规划，不得借此创建后继、轮换终端或询问用户；不得原样重复命令或测试，也不得只改写升级理由。',
+    '任务边界优先于追逐目标。只有合同变化、跨工作项协调、外部阻塞、用户独有信息、高风险动作或硬执行预算实际耗尽时，才通过 needs-human 兼容入口提交项目模式专用状态通知，并分别标注 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted，同时提供 --reason 与 --impact。该通知没有 approval ID，不等待 project decide，也不直接询问用户。普通监督决策/时间健康窗口由控制层直接转为同工作项内部重规划，不得借此创建后继、轮换终端或询问用户；不得原样重复命令或测试，也不得只改写升级理由。',
   ].filter(Boolean).join('\n');
+}
+import {
+  projectArtifactLocationViolation as sharedProjectArtifactLocationViolation,
+} from '../../shared/project-artifact-policy';
+
+function projectGovernanceProtocolEnabled(): boolean {
+  return true;
 }

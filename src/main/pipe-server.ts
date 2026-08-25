@@ -29,6 +29,16 @@ const PUBLIC_V2_METHODS = new Set<string>([
   'system.capabilities',
 ]);
 
+// These writes are authenticated by a per-surface capability and are forced
+// back to that same surface below. They must survive the short interval where
+// a closing/recovering terminal has already disappeared from renderer role
+// state, otherwise its final lifecycle event is lost and project recovery can
+// remain stuck behind a stale working declaration.
+const SELF_SCOPED_SURFACE_TELEMETRY_METHODS = new Set<string>([
+  'hook.event',
+  'agent.activity',
+]);
+
 function requiresSurfaceCapability(method: string): boolean {
   return method === 'role.context'
     || method.startsWith('project.')
@@ -236,25 +246,30 @@ export class PipeServer extends EventEmitter {
       request.params = {
         ...(request.params || {}),
         callerSurfaceId: authenticatedSurfaceId,
+        ...(SELF_SCOPED_SURFACE_TELEMETRY_METHODS.has(request.method)
+          ? { surfaceId: authenticatedSurfaceId }
+          : {}),
         ...(request.method.startsWith('browser.') ? { caller: authenticatedSurfaceId } : {}),
         ...(request.method === 'supervisor.decide'
           ? { supervisorSurfaceId: authenticatedSurfaceId }
           : {}),
       };
-      let authorization: { allowed: boolean; reason?: string };
-      try {
-        authorization = await this.authorizeSurfaceCapability(
-          authenticatedSurfaceId,
-          request.method,
-          request.params,
-        );
-      } catch (error) {
-        respondError(-32003, `Surface capability authorization failed: ${error instanceof Error ? error.message : String(error)}`);
-        return;
-      }
-      if (!authorization.allowed) {
-        respondError(-32003, authorization.reason || 'Forbidden for current surface capability');
-        return;
+      if (!SELF_SCOPED_SURFACE_TELEMETRY_METHODS.has(request.method)) {
+        let authorization: { allowed: boolean; reason?: string };
+        try {
+          authorization = await this.authorizeSurfaceCapability(
+            authenticatedSurfaceId,
+            request.method,
+            request.params,
+          );
+        } catch (error) {
+          respondError(-32003, `Surface capability authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+        if (!authorization.allowed) {
+          respondError(-32003, authorization.reason || 'Forbidden for current surface capability');
+          return;
+        }
       }
     }
 

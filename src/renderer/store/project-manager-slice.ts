@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+  MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS,
   activeProjectGoal,
   normalizeProjectManagerSession,
   projectDirectoryIdentity,
@@ -498,7 +499,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return {
           ...item,
           status: 'waiting-decision' as const,
-          baseline: requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
+          baseline: (item.executionProtocolVersion || 0) >= 7
+            ? undefined
+            : requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
           latestBlocker: '当前主目标要求已调整，等待项目 AI 评估后显式重新绑定需求和授权版本',
           updatedAt: now,
         };
@@ -702,7 +705,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           : {
               ...item,
               status: 'waiting-decision' as const,
-              baseline: requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
+              baseline: (item.executionProtocolVersion || 0) >= 7
+                ? undefined
+                : requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
               latestBlocker: '项目前置条件已更新，等待项目管理 AI 按新条件重新核对任务安全性和可执行性',
               updatedAt: now,
             }
@@ -800,9 +805,12 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goalId: action.workItem.goalId || activeGoal.id,
         requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
         authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),
-        baseline: requiredProjectTaskBaseline(
-          action.workItem.requirementsVersion || projectRequirementsVersion(session),
-        ),
+        baseline: (action.workItem.executionProtocolVersion || 0) >= 7
+          ? undefined
+          : requiredProjectTaskBaseline(
+              action.workItem.requirementsVersion || projectRequirementsVersion(session),
+            ),
+        supervisorPlanRequired: false,
       };
       if (workItem.goalId !== activeGoal.id) return { ok: false, error: '只能为当前主目标创建任务' };
       if (workItem.subgoalId) {
@@ -884,9 +892,11 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           ...safePatch,
           id: item.id,
           goalId: item.goalId,
-          baseline: resetBaseline
-            ? requiredProjectTaskBaseline(nextRequirementsVersion)
-            : contractChanged && item.baseline && (
+          baseline: (item.executionProtocolVersion || 0) >= 7
+            ? undefined
+            : resetBaseline
+              ? requiredProjectTaskBaseline(nextRequirementsVersion)
+              : contractChanged && item.baseline && (
                 item.baseline.status === 'approved'
                 || item.baseline.reviewKind === 'contract-delta'
               )
@@ -896,7 +906,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
                   projectContractDeltaSummary(item.contract, safePatch.contract!),
                   now,
                 )
-              : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
+                : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
           completion,
           updatedAt: now,
         };
@@ -918,9 +928,11 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (!reason) return { ok: false, error: '重置项目基线必须说明原因' };
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        baseline: requiredProjectTaskBaseline(
-          item.requirementsVersion || projectRequirementsVersion(session),
-        ),
+        baseline: (item.executionProtocolVersion || 0) >= 7
+          ? undefined
+          : requiredProjectTaskBaseline(
+              item.requirementsVersion || projectRequirementsVersion(session),
+            ),
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
@@ -934,6 +946,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     } else if (action.type === 'start-work-item-baseline') {
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if ((existing.executionProtocolVersion || 0) >= 7) {
+        return { ok: false, error: 'P7 已删除项目基线调查与批准状态' };
+      }
       if (['completed', 'stopped'].includes(existing.status)) {
         return { ok: false, error: '已经结束的任务不能再发起项目基线调查' };
       }
@@ -1000,6 +1015,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           evidence: inheritedEvidence,
           approvedAt: now,
         },
+        executionWindowReplan: undefined,
+        executionWindowReplanHistory: [],
+        consecutiveInternalReplans: 0,
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
@@ -1082,7 +1100,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        decisionsUsed: item.decisionsUsed + (action.consumeDecision === false ? 0 : 1),
+        decisionsUsed: (item.executionProtocolVersion || 0) >= 7
+          ? 0
+          : item.decisionsUsed + (action.consumeDecision === false ? 0 : 1),
         totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed)
           + (action.consumeDecision === false ? 0 : 1),
         updatedAt: now,
@@ -1103,18 +1123,36 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     } else if (action.type === 'renew-execution-window') {
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
+      if ((existing.executionProtocolVersion || 0) >= 7) {
+        return { ok: false, error: 'P7 已删除项目基线调查与批准状态' };
+      }
       if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
         return { ok: false, error: '旧主目标任务已经失效，不能续期监督健康窗口' };
       }
       const previousDecisions = existing.decisionsUsed;
-      const renewalCount = (existing.budgetWindowRenewals || 0) + 1;
+      const internalReplan = action.reason === 'internal-replan';
+      const previousConsecutiveReplans = existing.consecutiveInternalReplans || 0;
+      if (internalReplan
+        && previousConsecutiveReplans >= MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS) {
+        return {
+          ok: false,
+          error: '当前真实进展检查点已经使用过一次内部重规划；必须先产生新的代码、测试、错误或已核验工件证据，或者由项目 AI 拆分/暂缓该分支并推进独立工作，不能继续改写路线重置窗口',
+        };
+      }
+      const renewalCount = (existing.budgetWindowRenewals || 0) + (internalReplan ? 0 : 1);
+      const internalReplanCount = (existing.internalReplanCount || 0) + (internalReplan ? 1 : 0);
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
         decisionsUsed: 0,
         totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed),
         budgetWindowRenewals: renewalCount,
-        lastBudgetCheckpointSignature: action.checkpointSignature
-          || item.lastBudgetCheckpointSignature,
+        internalReplanCount,
+        consecutiveInternalReplans: internalReplan ? previousConsecutiveReplans + 1 : 0,
+        lastBudgetCheckpointSignature: internalReplan
+          ? item.lastBudgetCheckpointSignature
+          : action.checkpointSignature || item.lastBudgetCheckpointSignature,
+        executionWindowReplan: internalReplan ? item.executionWindowReplan : undefined,
+        executionWindowReplanHistory: internalReplan ? item.executionWindowReplanHistory : [],
         startedAt: action.startedAt,
         updatedAt: now,
       }));
@@ -1124,7 +1162,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         kind: 'guard-triggered',
         workItemId: action.workItemId,
         summary: action.reason === 'internal-replan'
-          ? `项目 AI 已提供新的内部执行路线，原工作项原地开启自治健康窗口（第 ${renewalCount} 次）`
+          ? `项目 AI 已提供一次内部执行路线修正，原工作项原地开启窗口（累计第 ${internalReplanCount} 次；本进展检查点仅允许一次）`
           : `监督 AI 提供了可核验的新进展，已原地续期自治健康窗口（第 ${renewalCount} 次）`,
         payload: {
           decision: 'continue',
@@ -1134,6 +1172,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           previousDecisions,
           totalDecisionsUsed: existing.totalDecisionsUsed ?? existing.decisionsUsed,
           renewalCount,
+          internalReplanCount,
+          consecutiveInternalReplans: internalReplan ? previousConsecutiveReplans + 1 : 0,
           checkpointSignature: action.checkpointSignature,
         },
       };

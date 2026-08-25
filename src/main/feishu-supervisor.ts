@@ -954,7 +954,6 @@ export interface FeishuProjectManagerView {
     latestEvidence?: string;
     latestContextSummary?: string;
     latestBlocker?: string;
-    decisionsUsed?: number;
     attempts?: number;
     supervisorPlan?: {
       revision?: number;
@@ -964,7 +963,7 @@ export interface FeishuProjectManagerView {
     };
     contract?: {
       execution?: { taskWorkMode?: string; modeReason?: string };
-      budget?: { maxDecisions?: number; maxContinuousMinutes?: number; maxTaskRetries?: number };
+      budget?: { maxTaskRetries?: number };
     };
   }>;
   managedSupervisors?: Array<{ label?: string; status?: string; workerSurfaceId?: string; taskWorkMode?: string }>;
@@ -1540,7 +1539,7 @@ export function buildProjectManagerConversationCard(
     ] : []),
     ...(visibleWorkItems.length > 0 ? visibleWorkItems.map((item) => ({ tag: 'markdown', content: compactProjectCardText([
       `**${item.title || '未命名工作项'} · ${projectManagerStatusLabel(item.status)}**`,
-      `阶段预算：裁决健康窗口 ${item.decisionsUsed || 0}/${item.contract?.budget?.maxDecisions || '-'} · 连续窗口 ${item.contract?.budget?.maxContinuousMinutes || '-'} 分钟 · 真实任务失败重试 ${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
+      `任务失败重试：${item.attempts || 0}/${item.contract?.budget?.maxTaskRetries || '-'}`,
       item.latestEvidence ? `证据：${compactProjectCardText(item.latestEvidence, 350)}` : '', item.latestBlocker ? `阻塞：${compactProjectCardText(item.latestBlocker, 350)}` : '',
     ].filter(Boolean).join('\n'), 900) })) : []),
   ];
@@ -1647,12 +1646,12 @@ export function buildSupervisorStartCard(terminals: FeishuListTerminal[], adding
     'blue',
     adding
       ? '选择尚未监督的工作终端，为当前会话增加一条独立监督通道。现有监督与会话上下文不受影响。'
-      : '选择一个已有工作终端，填写可核对的停止条件。不会创建终端，也不会向工作终端发送新任务。',
+      : '选择一个已有工作终端，明确填写任务目标或计划文件，并提供可核对的停止条件。当前任务回合结束后，监督 AI 才会按规划派发成果任务。',
     'wmux_start_form',
     [
       { tag: 'markdown', content: '**工作终端**' },
       { tag: 'select_static', element_id: 'start_terminal', name: 'terminal', required: true, placeholder: { tag: 'plain_text', content: '选择要监督的终端' }, options: terminalOptions(candidates) },
-      { tag: 'input', element_id: 'start_goal', name: 'task_goal', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '任务目标（可选）' }, placeholder: { tag: 'plain_text', content: '监督 AI 需要围绕什么目标观察和推进' } },
+      { tag: 'input', element_id: 'start_goal', name: 'task_goal', input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '任务目标（与计划文件至少一项）' }, placeholder: { tag: 'plain_text', content: '监督 AI 需要完成的用户规划目标' } },
       { tag: 'input', element_id: 'start_stop', name: 'stop_when', required: true, input_type: 'multiline_text', rows: 2, max_length: 1000, label: { tag: 'plain_text', content: '停止条件' }, placeholder: { tag: 'plain_text', content: '例如：测试通过且计划验收项完成' } },
       { tag: 'markdown', content: '**停止条件类型**' },
       { tag: 'select_static', element_id: 'start_kind', name: 'stop_when_kind', placeholder: { tag: 'plain_text', content: '未选择时按具体可验证条件处理' }, options: [

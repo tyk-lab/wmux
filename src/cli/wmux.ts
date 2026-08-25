@@ -10,11 +10,15 @@ import { withSurfaceCaller } from './surface-caller';
 import {
   cleanupSupervisorNextInput,
   cleanupSupervisorCompletionInput,
+  cleanupSupervisorEvidenceProgressInput,
   cleanupSupervisorStagePlanInput,
+  cleanupSupervisorTaskInput,
   isSupervisorDecideHelp,
   resolveSupervisorNextInput,
   resolveSupervisorCompletionInput,
+  resolveSupervisorEvidenceProgressInput,
   resolveSupervisorStagePlanInput,
+  resolveSupervisorTaskInput,
   SUPERVISOR_DECIDE_USAGE,
 } from './supervisor-command';
 import {
@@ -239,10 +243,21 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     args,
     process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
   );
+  const taskInput = resolveSupervisorTaskInput(
+    args,
+    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+  );
   const completionInput = resolveSupervisorCompletionInput(
     args,
     process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
   );
+  const evidenceProgressInput = resolveSupervisorEvidenceProgressInput(
+    args,
+    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+  );
+  if (completionInput.value && evidenceProgressInput.value) {
+    throw new Error('--completion-file and --evidence-progress-file cannot be used together');
+  }
   const completionEvidenceRefs = completionInput.value
     ? [...new Set(['stopWhen', 'validation'].flatMap((group) => (
         Array.isArray(completionInput.value?.[group])
@@ -252,7 +267,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
           : []
       )))]
     : [];
-  const completionVerification = completionInput.value
+  const completionVerification = completionInput.value && completionEvidenceRefs.length > 0
     ? await sendV2('supervisor.completion.verify', {
         surfaceId,
         supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
@@ -262,6 +277,20 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   if (completionVerification?.ok === false) {
     cleanupSupervisorCompletionInput(completionInput, false);
     throw new Error(String(completionVerification.error || 'completion evidence verification failed'));
+  }
+  const evidenceProgressRefs = Array.isArray(evidenceProgressInput.value?.evidenceRefs)
+    ? evidenceProgressInput.value.evidenceRefs.map(String)
+    : [];
+  const evidenceProgressVerification = evidenceProgressInput.value
+    ? await sendV2('supervisor.completion.verify', {
+        surfaceId,
+        supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
+        refs: evidenceProgressRefs,
+      })
+    : undefined;
+  if (evidenceProgressVerification?.ok === false) {
+    cleanupSupervisorEvidenceProgressInput(evidenceProgressInput, false);
+    throw new Error(String(evidenceProgressVerification.error || 'evidence progress verification failed'));
   }
 
   const result = await sendV2('supervisor.decide', {
@@ -274,9 +303,14 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     nextFile: nextInput.fileReference || '',
     stagePlan: stagePlanInput.value,
     stagePlanFile: stagePlanInput.fileReference || '',
+    taskDispatch: taskInput.value,
+    taskFile: taskInput.fileReference || '',
     completionChecklist: completionInput.value,
     completionFile: completionInput.fileReference || '',
     completionEvidenceToken: completionVerification?.token || '',
+    evidenceProgressFile: evidenceProgressInput.fileReference || '',
+    evidenceProgressToken: evidenceProgressVerification?.token || '',
+    evidenceProgressConclusion: String(evidenceProgressInput.value?.conclusion || ''),
     proposalKind: getFlag(args, '--proposal-kind') || '',
     escalationBoundary: getFlag(args, '--escalation-boundary') || '',
     impact: getFlag(args, '--impact') || '',
@@ -308,9 +342,17 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     stagePlanInput,
     result?.ok !== false && result?.retainStagePlanFile !== true,
   );
+  cleanupSupervisorTaskInput(
+    taskInput,
+    result?.ok !== false && result?.retainTaskFile !== true,
+  );
   cleanupSupervisorCompletionInput(
     completionInput,
     result?.ok !== false && result?.retainCompletionFile !== true,
+  );
+  cleanupSupervisorEvidenceProgressInput(
+    evidenceProgressInput,
+    result?.ok !== false && result?.retainEvidenceProgressFile !== true,
   );
   // The supervision protocol runs in AI terminals. Remain silent on success so
   // a checkpoint does not pollute the terminal transcript. Delivery failures
@@ -451,16 +493,7 @@ async function cmdProject(args: string[]): Promise<void> {
     }
     print(await sendV2('project.task-terminal.start', { workItemId, projectId }));
     return;
-  }
-  if (sub === 'task-terminal-rotate') {
-    const workItemId = getFlag(args, '--task') || '';
-    if (!projectId || !workItemId) {
-      throw new Error('project task-terminal-rotate requires --project and --task');
-    }
-    print(await sendV2('project.task-terminal.rotate', { workItemId, projectId }));
-    return;
-  }
-  if (sub === 'task-terminal-control') {
+  }  if (sub === 'task-terminal-control') {
     const workItemId = getFlag(args, '--task') || '';
     const control = getFlag(args, '--key') || '';
     const reason = getFlag(args, '--reason') || '';
@@ -470,149 +503,6 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.task-terminal.control', {
       workItemId, projectId, control, reason, workerId: getFlag(args, '--worker') || '',
     }));
-    return;
-  }
-  if (sub === 'execution-window-replan') {
-    const input = await resolveProjectScopedJsonInput(args, projectId);
-    let success = false;
-    try {
-      const result = await sendV2('project.execution.replan', { ...input.value, projectId });
-      success = result?.ok !== false;
-      print(result);
-    } finally {
-      cleanupProjectJsonInput(input, success);
-    }
-    return;
-  }
-  if (sub === 'worker-status') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const status = getFlag(args, '--status') || '';
-    if (!projectId || !workItemId || !workerId || !status) {
-      throw new Error('project worker-status requires --project, --task, --worker, and --status');
-    }
-    print(await sendV2('project.worker.status', {
-      projectId, workItemId, workerId, status, checkpoint: getFlag(args, '--checkpoint') || '',
-    }));
-    return;
-  }
-  if (sub === 'worker-recover') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    if (!projectId || !workItemId || !workerId) {
-      throw new Error('project worker-recover requires --project, --task, and --worker');
-    }
-    print(await sendV2('project.worker.recover', { projectId, workItemId, workerId }));
-    return;
-  }
-  if (sub === 'worker-resource-acquire') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const resourceId = getFlag(args, '--resource') || '';
-    const operationId = getFlag(args, '--operation') || '';
-    const mode = getFlag(args, '--mode') || '';
-    if (!projectId || !workItemId || !workerId || !resourceId || !operationId || !mode) {
-      throw new Error('project worker-resource-acquire requires --project, --task, --worker, --resource, --operation, and --mode');
-    }
-    print(await sendV2('project.worker.resource.acquire', {
-      projectId, workItemId, workerId, resourceId, operationId, mode, idempotent: args.includes('--idempotent'),
-    }));
-    return;
-  }
-  if (sub === 'worker-resource-release') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const leaseId = getFlag(args, '--lease') || '';
-    const evidence = getFlag(args, '--evidence') || '';
-    if (!projectId || !workItemId || !workerId || !leaseId || !evidence) {
-      throw new Error('project worker-resource-release requires --project, --task, --worker, --lease, and --evidence');
-    }
-    print(await sendV2('project.worker.resource.release', {
-      projectId, workItemId, workerId, leaseId, evidence,
-    }));
-    return;
-  }
-  if (sub === 'worker-resource-reconcile') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const leaseId = getFlag(args, '--lease') || '';
-    const evidence = getFlag(args, '--evidence') || '';
-    if (!projectId || !workItemId || !workerId || !leaseId || !evidence) {
-      throw new Error('project worker-resource-reconcile requires --project, --task, --worker, --lease, and --evidence');
-    }
-    print(await sendV2('project.worker.resource.reconcile', {
-      projectId, workItemId, workerId, leaseId, evidence,
-    }));
-    return;
-  }
-  if (sub === 'worker-directive-reconcile') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const directiveId = getFlag(args, '--directive') || '';
-    const classification = getFlag(args, '--classification') || '';
-    if (!projectId || !workItemId || !workerId || !directiveId || !classification) {
-      throw new Error('project worker-directive-reconcile requires --project, --task, --worker, --directive, and --classification');
-    }
-    print(await sendV2('project.worker.directive.reconcile', {
-      projectId, workItemId, workerId, directiveId, classification,
-      reason: getFlag(args, '--reason') || '',
-    }));
-    return;
-  }
-  if (sub === 'directive-resolve') {
-    const workItemId = getFlag(args, '--task') || '';
-    const directiveId = getFlag(args, '--directive') || '';
-    const resolution = getFlag(args, '--resolution') || '';
-    const reason = getFlag(args, '--reason') || '';
-    if (!projectId || !workItemId || !directiveId || !resolution || !reason) {
-      throw new Error('project directive-resolve requires --project, --task, --directive, --resolution, and --reason');
-    }
-    print(await sendV2('project.directive.resolve', {
-      projectId, workItemId, directiveId, resolution, reason,
-    }));
-    return;
-  }
-  if (sub === 'worker-merge-submit') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    if (!projectId || !workItemId || !workerId) {
-      throw new Error('project worker-merge-submit requires --project, --task, and --worker');
-    }
-    print(await sendV2('project.worker.merge.submit', {
-      projectId, workItemId, workerId, evidence: getFlag(args, '--evidence') || '',
-    }));
-    return;
-  }
-  if (sub === 'worker-merge-apply') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const candidateId = getFlag(args, '--candidate') || '';
-    if (!projectId || !workItemId || !workerId || !candidateId) {
-      throw new Error('project worker-merge-apply requires --project, --task, --worker, and --candidate');
-    }
-    print(await sendV2('project.worker.merge.apply', { projectId, workItemId, workerId, candidateId }));
-    return;
-  }
-  if (sub === 'worker-merge-reject') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    const candidateId = getFlag(args, '--candidate') || '';
-    const reason = getFlag(args, '--reason') || '';
-    if (!projectId || !workItemId || !workerId || !candidateId || !reason) {
-      throw new Error('project worker-merge-reject requires --project, --task, --worker, --candidate, and --reason');
-    }
-    print(await sendV2('project.worker.merge.reject', {
-      projectId, workItemId, workerId, candidateId, reason,
-    }));
-    return;
-  }
-  if (sub === 'worker-finalize') {
-    const workItemId = getFlag(args, '--task') || '';
-    const workerId = getFlag(args, '--worker') || '';
-    if (!projectId || !workItemId || !workerId) {
-      throw new Error('project worker-finalize requires --project, --task, and --worker');
-    }
-    print(await sendV2('project.worker.finalize', { projectId, workItemId, workerId }));
     return;
   }
   if (sub === 'inspect') {
@@ -1417,14 +1307,14 @@ Supervisor:  supervisor context
                           [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]
                           [--evidence <text> --context-summary <text>]
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
-                          [--full-suite --retry --retry-kind <task-failure|command-correction|runtime-recovery|execution-window>]
+                          [--full-suite --retry --retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|execution-window-replan|progress-sync|transition-ack|task-terminal-start|task-terminal-rotate|task-terminal-control|worker-status|worker-recover|worker-resource-acquire|worker-resource-release|worker-resource-reconcile|worker-directive-reconcile|directive-resolve|worker-merge-submit|worker-merge-apply|worker-merge-reject|worker-finalize|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
-            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/execution-window-replan/ask/complete use --json or --json-file <.wmux/tmp/file>
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+            update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
-            task-terminal-start, task-terminal-rotate, and task-terminal-control are reserved for the dedicated project supervisor
+            task-terminal-start and task-terminal-control are reserved for the dedicated project supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

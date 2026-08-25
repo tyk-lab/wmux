@@ -194,10 +194,6 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-supervise' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
-  'project.execution.replan': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'execution-window-replan' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
   'project.progress.sync': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'progress-sync' })})`,
     requireResult: 'Project manager bridge is unavailable',
@@ -214,56 +210,8 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-start' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
-  'project.task-terminal.rotate': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-rotate' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
   'project.task-terminal.control': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-terminal-control' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.status': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-status' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.recover': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-recover' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.resource.acquire': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-acquire' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.resource.release': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-release' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.resource.reconcile': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-resource-reconcile' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.directive.reconcile': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-directive-reconcile' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.directive.resolve': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'directive-resolve' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.merge.submit': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-submit' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.merge.apply': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-apply' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.merge.reject': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-merge-reject' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.worker.finalize': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'worker-finalize' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.supervisor.inspect': {

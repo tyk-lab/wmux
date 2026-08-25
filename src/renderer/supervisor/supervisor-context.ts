@@ -1,5 +1,4 @@
 import type {
-  ProjectSupervisorAuthority,
   ProjectSupervisorStagePlan,
 } from '../../shared/project-manager';
 import {
@@ -23,16 +22,11 @@ export interface SupervisorProjectContext {
   workItemId: string;
   requirementsVersion?: number;
   authorizationVersion?: number;
-  authority?: ProjectSupervisorAuthority;
-  decisionsUsed?: number;
-  maxDecisions?: number;
   attempts?: number;
   maxTaskRetries?: number;
   projectStatus?: string;
   workItemStatus?: string;
   bindingCurrent?: boolean;
-  budgetHandoffRequired?: boolean;
-  baselineApproved?: boolean;
   dependencyError?: string;
   supervisorPlan?: ProjectSupervisorStagePlan;
 }
@@ -71,7 +65,6 @@ export interface SupervisorRuntimeContext {
     autonomy: SupervisorAutonomyPermission[];
     workScope: SupervisorWorkScope;
     forbiddenActions: SupervisorForbiddenAction[];
-    projectAuthority?: ProjectSupervisorAuthority;
   };
   commands: {
     available: string[];
@@ -83,14 +76,13 @@ export interface SupervisorRuntimeContext {
     autoDecisionsUsed: number;
     maxAutoDecisions: number | null;
     autoDecisionsRemaining: number | null;
-    projectDecisionsUsed?: number;
-    projectDecisionsRemaining?: number;
     projectAttempts?: number;
     projectRetriesRemaining?: number;
   };
   plan?: {
     revision: number;
-    selectedRoute: string;
+    selectedRoute?: string;
+    objective?: string;
     milestones: Array<{ id: string; status: string; outcome: string }>;
     remainingWork: string[];
   };
@@ -198,27 +190,30 @@ export function buildSupervisorRuntimeContext(
   const proactiveProjectReady = preflight.proactiveProjectReady;
   const sameRouteAvailable = (reviewReady || proactiveProjectReady)
     && options.taskState !== 'working'
-    && project?.budgetHandoffRequired !== true
     && permissions.includes('same-route-next');
   const permissionConfirmationAvailable = reviewReady
+    && !projectManaged
     && options.permissionBlocked === true
     && lane.remoteSshControl !== true
-    && permissions.includes('permission-confirm')
-    && (!project?.authority || project.authority.permissionConfirm === true);
+    && permissions.includes('permission-confirm');
   const terminalOutcomeAvailable = reviewReady && options.taskState !== 'working';
   const reviewFlag = lane.activeReviewId ? ` --review-id ${lane.activeReviewId}` : '';
   const decisionOutcomes: SupervisorRuntimeContext['commands']['decisionOutcomes'] = laneActive
     ? [
         ...(sameRouteAvailable ? ['continue', 'rework'] as const : []),
-        ...(terminalOutcomeAvailable && project?.budgetHandoffRequired !== true ? ['complete'] as const : []),
+        ...(terminalOutcomeAvailable ? ['complete'] as const : []),
         ...(terminalOutcomeAvailable ? ['needs-human'] as const : []),
       ]
     : [];
   const conditional: SupervisorConditionalCommand[] = [
     {
-      command: `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --next <指令>`,
+      command: projectManaged
+        ? `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --next <成果与验收缺口>`
+        : `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --task-file <.wmux/tmp/成果任务.json>`,
       available: sameRouteAvailable,
-      condition: '仅限原目标内明确、低风险、可逆且可验证的下一步',
+      condition: projectManaged
+        ? '仅限原目标内明确、低风险、可逆且可验证的下一步'
+        : '结构化任务只包含当前成果、约束、验收缺口和必要现状',
     },
     {
       command: `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --permission-command <命令> --permission-response y`,
@@ -233,11 +228,6 @@ export function buildSupervisorRuntimeContext(
       condition: '仅在项目监督启动阶段、真实任务终端尚未创建时执行一次',
     },
     {
-      command: `wmux project task-terminal-rotate --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}`,
-      available: baseDecisionReady && projectManaged && lane.projectTaskRotationPending === true,
-      condition: '仅在项目 AI 已登记当前工作项的上下文轮换请求后执行',
-    },
-    {
       command: `wmux project task-terminal-control --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'} --key <escape|interrupt> --reason <证据>`,
       available: baseDecisionReady
         && projectManaged
@@ -247,8 +237,12 @@ export function buildSupervisorRuntimeContext(
     },
   ];
   const supervisorLauncher = detectSupervisorLauncher(session.supervisorLaunchCmd);
-  const currentPlan = project?.supervisorPlan
-    || lane.decisions?.find((decision) => decision.plan)?.plan;
+  const currentPlan = projectManaged
+    ? undefined
+    : project?.supervisorPlan || lane.decisions?.find((decision) => decision.plan)?.plan;
+  const currentOrdinaryPlan = !projectManaged
+    ? lane.decisions?.find((decision) => decision.ordinaryPlan)?.ordinaryPlan
+    : undefined;
 
   return {
     ok: true,
@@ -292,15 +286,6 @@ export function buildSupervisorRuntimeContext(
       autonomy: permissions,
       workScope: lane.workScopeOverride || session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
       forbiddenActions: effectiveForbiddenActions(session, lane),
-      ...(project?.authority ? {
-        projectAuthority: {
-          ...project.authority,
-          allowedCommandPrefixes: [...(project.authority.allowedCommandPrefixes || [])],
-          authorizedDevices: [...(project.authority.authorizedDevices || [])],
-          authorizedEnvironments: [...(project.authority.authorizedEnvironments || [])],
-          authorizedOperations: [...(project.authority.authorizedOperations || [])],
-        },
-      } : {}),
     },
     commands: {
       available: [
@@ -330,12 +315,6 @@ export function buildSupervisorRuntimeContext(
       autoDecisionsRemaining: maxAutoDecisions === null
         ? null
         : Math.max(0, maxAutoDecisions - autoDecisionsUsed),
-      ...(project?.decisionsUsed !== undefined ? {
-        projectDecisionsUsed: project.decisionsUsed,
-        projectDecisionsRemaining: project.maxDecisions === undefined
-          ? undefined
-          : Math.max(0, project.maxDecisions - project.decisionsUsed),
-      } : {}),
       ...(project?.attempts !== undefined ? {
         projectAttempts: project.attempts,
         projectRetriesRemaining: project.maxTaskRetries === undefined
@@ -343,7 +322,18 @@ export function buildSupervisorRuntimeContext(
           : Math.max(0, project.maxTaskRetries - project.attempts),
       } : {}),
     },
-    ...(currentPlan ? {
+    ...(currentOrdinaryPlan ? {
+      plan: {
+        revision: currentOrdinaryPlan.revision,
+        objective: currentOrdinaryPlan.objective,
+        milestones: currentOrdinaryPlan.milestones.map((milestone) => ({
+          id: milestone.id,
+          status: milestone.status,
+          outcome: milestone.outcome,
+        })),
+        remainingWork: [...currentOrdinaryPlan.remainingWork],
+      },
+    } : currentPlan ? {
       plan: {
         revision: currentPlan.revision,
         selectedRoute: currentPlan.selectedRoute,
@@ -377,13 +367,13 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       : ''}`,
     `可用裁决: ${context.commands.decisionOutcomes.join('、')}`,
     context.plan
-      ? `监督阶段计划: r${context.plan.revision}；路线=${context.plan.selectedRoute}；剩余=${context.plan.remainingWork.join('、') || '无'}`
+      ? `监督成果计划: r${context.plan.revision}；目标=${context.plan.objective || context.plan.selectedRoute || '（未设置）'}；剩余=${context.plan.remainingWork.join('、') || '无'}`
       : context.role === 'project-supervisor'
-        ? '监督阶段计划: 基线批准时必须用 --stage-plan-file 建立，随后由监督 AI 自主维护'
-        : '监督阶段计划: 根据用户任务用 --stage-plan-file 建立；具体任务保留一个 milestone，复杂任务按真实阶段拆分',
+        ? '监督成果计划: 只维护阶段成果、验收缺口、检查点和剩余成果，不维护实现路线、写入路径或命令'
+        : '监督成果计划: 根据用户规划用 --stage-plan-file 建立；只记录 objective、成果、验收和剩余工作',
     context.role === 'supervisor'
-      ? '普通监督产物规则: 先让任务 AI 读取适用的 AGENTS/项目指令与匹配技能；阶段计划服从项目目录和命名约定。run_templates 等模板目录只保存预执行输入，tests、test、src 等源码目录禁止运行日志和验证结果，运行事实写入项目约定的实际运行/证据目录。'
-      : '项目监督产物规则: 基线报告必须包含项目产物策略，阶段计划不得用 allowPaths 覆盖项目目录或命名约定；tests、test、src 等源码目录禁止运行日志和验证结果。',
+      ? '普通监督职责: 只通过 --task-file 下发当前成果、约束和验收缺口；不向任务 AI 注入 wmux 角色协议、完整规划、实现路线、文件、命令或技能。'
+      : '项目监督职责: 只编排阶段成果、检查规范和证据，不规定任务 AI 的实现路线、文件、命令或技能。任务 AI 完整遵循目标项目 AGENTS、技能和产物规范；发现违规时阻断检查点并由原任务 AI 返工。',
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
     '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',

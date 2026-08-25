@@ -57,7 +57,7 @@ describe('supervisor setup dialog feedback', () => {
 
   it('keeps ordinary supervision and project management in separate dialogs', () => {
     expect(dialogSource).toContain('普通 AI 监督');
-    expect(dialogSource).toContain('配置直接监督已打开任务终端的独立监督会话');
+    expect(dialogSource).toContain('绑定已有任务终端，由监督 AI 按用户明确提供的规划拆解、派发和验收');
     expect(dialogSource).not.toContain('openProjectManagerDialog');
     expect(dialogSource).not.toContain('AI 工作模式切换');
     expect(dialogSource).not.toContain('supervisor-dialog__mode-tabs');
@@ -217,15 +217,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('wmux project reply --project ${selectedProject.id} --correlation');
   });
 
-  it('creates project and ordinary supervisors from existing terminal context', () => {
-    expect(dialogSource).toContain('从已有终端创建 — 自动汇总 Agent 对话与项目进度');
-    expect(dialogSource).toContain('基于终端创建监督 AI');
-    expect(dialogSource).toContain('buildSupervisorGoalConstructionBriefing');
-    expect(dialogSource).toContain("creationMode === 'terminal'");
-    expect(dialogSource).not.toContain("origin: 'conversation'");
-    expect(panelSource).toContain('监督 AI 正在汇总终端上下文');
-    expect(panelSource).toContain('确认补全并开始');
-    expect(panelSource).toContain("action: 'confirm-goal-construction'");
+  it('requires an explicit plan for ordinary supervision while project creation may use terminal context', () => {
+    expect(dialogSource).toContain('用户明确提供的规划');
+    expect(dialogSource).toContain('请为以下终端明确填写任务目标或选择计划文件');
+    expect(dialogSource).toContain('ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION');
+    expect(dialogSource).not.toContain('从已有终端创建 — 自动汇总 Agent 对话与项目进度');
+    expect(dialogSource).not.toContain('buildSupervisorGoalConstructionBriefing');
     expect(projectManagerDialogSource).toContain('上下文来源终端');
     expect(projectManagerDialogSource).toContain('基于终端创建项目 AI');
     expect(projectManagerDialogSource).toContain('sourceTerminalId: creationMode === \'terminal\'');
@@ -433,20 +430,17 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('不是监督 AI');
   });
 
-  it('configures context recovery per terminal, defaults to latest, and allows another source', () => {
-    expect(dialogSource).toContain('恢复任务终端上下文');
-    expect(dialogSource).toContain('恢复上下文（默认最新）');
+  it('restores historical evidence only for the supervisor and allows selecting its source', () => {
+    expect(dialogSource).toContain('恢复历史监督证据');
+    expect(dialogSource).toContain('历史监督证据（默认最新）');
     expect(dialogSource).toContain('restoreOptions[0]');
     expect(dialogSource).toContain('value={restoreSourceIdFor(candidate.surfaceId)}');
     expect(dialogSource).toContain('selectRestoreSource(candidate.surfaceId, event.target.value)');
     expect(dialogSource).toContain("{index === 0 ? '（最新）' : ''}");
     expect(dialogSource).toContain('restoreTaskContext: restoreEnabled.has(surfaceId)');
     expect(dialogSource).toContain('if (terminalConfig.restoreTaskContext) next.add(surfaceId)');
-    expect(dialogSource).toContain('监督 AI 拟定恢复指令，需你确认后才发送');
+    expect(dialogSource).toContain('不会把旧上下文或角色协议发送给任务 AI');
     expect(dialogSource).not.toContain('恢复审计上下文（手动选择来源）');
-    expect(panelSource).toContain('AI 监督拟定的任务恢复指令');
-    expect(panelSource).toContain('确认并发送到任务终端');
-    expect(panelSource).toContain('确认前不会改动任务终端');
   });
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {

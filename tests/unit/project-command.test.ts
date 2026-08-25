@@ -101,16 +101,7 @@ describe('project command help', () => {
   it('returns lightweight command-specific help for non-JSON commands', () => {
     expect(resolveProjectCommandHelp(['project', 'status', '--help']))
       .toBe('Usage: wmux project status [--project <id>] [options]');
-  });
-
-  it('documents execution-window replanning as a structured project command', () => {
-    const help = resolveProjectCommandHelp(['project', 'execution-window-replan', '--help']);
-    expect(help).toContain('Usage: wmux project execution-window-replan');
-    expect(help).toContain('--json-file');
-    expect(PROJECT_USAGE).toContain('execution-window-replan');
-  });
-
-  it('does not intercept a real project command', () => {
+  });  it('does not intercept a real project command', () => {
     expect(resolveProjectCommandHelp(['project', 'update', '--json', '{}'])).toBeUndefined();
   });
 });

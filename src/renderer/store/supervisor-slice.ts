@@ -20,6 +20,39 @@ export type StopWhenKind = 'direction' | 'concrete';
 
 export type SupervisorLaneControlState = 'active' | 'paused' | 'waiting' | 'stopped';
 
+/** First protocol where ordinary supervision is plan-led and does not inject a task-role anchor. */
+export const ORDINARY_SUPERVISION_PROTOCOL_VERSION = 1;
+
+export interface OrdinarySupervisorMilestone {
+  id: string;
+  title: string;
+  outcome: string;
+  acceptance: string[];
+  status: 'planned' | 'active' | 'completed';
+  evidence?: string;
+}
+
+/** Supervisor-private outcome plan. It deliberately contains no implementation route, path or command. */
+export interface OrdinarySupervisorPlan {
+  sourceRevision: number;
+  revision: number;
+  objective: string;
+  milestones: OrdinarySupervisorMilestone[];
+  remainingWork: string[];
+  updatedAt: number;
+}
+
+/** One bounded result-oriented assignment rendered by the control plane for the task AI. */
+export interface OrdinaryTaskDispatch {
+  kind: 'task' | 'diagnostic' | 'rework';
+  sourceRevision: number;
+  milestoneId: string;
+  outcome: string;
+  constraints: string[];
+  acceptanceGap: string[];
+  evidenceContext: string[];
+}
+
 export interface SupervisorDecision {
   ts: number;
   task: string;
@@ -29,6 +62,10 @@ export interface SupervisorDecision {
   next: string;
   /** Supervisor-owned execution plan snapshot; one milestone means direct execution. */
   plan?: ProjectSupervisorStagePlan;
+  /** Outcome-only plan used by the current ordinary-supervision protocol. */
+  ordinaryPlan?: OrdinarySupervisorPlan;
+  /** Structured assignment that was rendered and delivered to the ordinary task AI. */
+  taskDispatch?: OrdinaryTaskDispatch;
   /** Final result attached only to a complete decision. */
   completion?: ProjectCompletionResult;
 }
@@ -82,6 +119,8 @@ export interface SupervisorLaneConfig {
   supervisorMayApproveThreads?: boolean;
   parallelizableOperations?: string[];
   serializedOperations?: string[];
+  /** Monotonic user-plan revision; changes invalidate stale ordinary-supervisor decisions. */
+  planRevision?: number;
 }
 
 export interface SupervisorGoalConstructionMessage {
@@ -134,6 +173,19 @@ export interface SupervisorLane {
   projectDir?: string;
   /** Immutable work-scope root captured when this supervision session starts. */
   scopeRoot?: string;
+  /** Undefined values are legacy ordinary lanes and cannot be resumed under the current protocol. */
+  ordinaryProtocolVersion?: number;
+  /** Initial takeover waits for a running task turn instead of interrupting it. */
+  pendingInitialReview?: boolean;
+  /** Same semantic blocker without new evidence is escalated after two consecutive reviews. */
+  ordinaryBlocker?: {
+    fingerprint: string;
+    evidenceFingerprint: string;
+    occurrences: number;
+    reviewId?: string;
+    workerTurnId?: number;
+    updatedAt: number;
+  };
   /** Authoritative lifecycle state for this independently owned lane. */
   controlState: SupervisorLaneControlState;
   /** A completed decision is awaiting stop-condition confirmation. */
@@ -428,6 +480,11 @@ export function clearSupervisorLaneContext(
     reviewOpenedAt: undefined,
     reviewDeliveryConfirmedAt: undefined,
     reviewWatchdogState: undefined,
+    ...(!isProjectManagedSupervisorLane(lane) ? {
+      ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
+      pendingInitialReview: false,
+      ordinaryBlocker: undefined,
+    } : {}),
     supervisorProblem: undefined,
     unreportedIdleRecoveryAttempts: 0,
     resumeAfterCancelledDecision: false,
@@ -439,7 +496,7 @@ export function clearSupervisorLaneContext(
     pendingSupervisorDeliveries: (lane.pendingSupervisorDeliveries || [])
       .filter((delivery) => delivery.kind === 'owner-decision' || delivery.kind === 'control-message')
       .map((delivery) => ({ ...delivery, stage: 'pending' as const, submittedAt: undefined })),
-    taskRoleAnchorPending: true,
+    taskRoleAnchorPending: false,
     permissionConfirmations: [],
     decisions: [],
     restoredHistory: undefined,
@@ -479,7 +536,31 @@ export function normalizeSupervisorLaneBinding(lane: SupervisorLane): Supervisor
   const normalized = dedicatedSupervisorSurfaceId(lane) || !lane.supervisorSurfaceId
     ? lane
     : { ...lane, supervisorSurfaceId: null };
-  if (!isProjectManagedSupervisorLane(normalized)) return normalized;
+  if (!isProjectManagedSupervisorLane(normalized)) {
+    if (normalized.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION) {
+      return {
+        ...normalized,
+        taskRoleAnchorPending: false,
+        goalConstruction: undefined,
+        contextRecoveryStatus: undefined,
+      };
+    }
+    return {
+      ...normalized,
+      controlState: 'stopped',
+      awaitingReview: false,
+      awaitingStopCheck: false,
+      pendingInitialReview: false,
+      pendingSupervisorDeliveries: [],
+      taskRoleAnchorPending: false,
+      goalConstruction: undefined,
+      supervisorProblem: {
+        kind: 'runtime-failed',
+        detail: '旧普通监督协议已停用；请使用新的任务 AI 会话重新创建监督通道',
+        detectedAt: Date.now(),
+      },
+    };
+  }
   return {
     ...normalized,
     autonomousOverride: normalized.autonomousOverride ?? true,
@@ -555,6 +636,10 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   },
   setOrdinarySupervisorLanes(lanes) {
     set((s) => {
+      const legacyOrdinaryLaneIds = new Set(lanes
+        .filter((lane) => !isProjectManagedSupervisorLane(lane)
+          && lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION)
+        .map((lane) => lane.id));
       const projectLanes = s.supervisor.lanes.filter(isProjectManagedSupervisorLane);
       const ordinaryLanes = lanes
         .filter((lane) => !isProjectManagedSupervisorLane(lane))
@@ -565,6 +650,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           ...s.supervisor,
           ...(s.supervisor.sessionId ? supervisorRuntimeFlags(nextLanes) : {}),
           lanes: nextLanes,
+          pendingApprovals: s.supervisor.pendingApprovals
+            .filter((approval) => !legacyOrdinaryLaneIds.has(approval.laneId)),
         },
       };
     });
@@ -601,23 +688,23 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
       const lanes = s.supervisor.lanes.map((rawLane) => {
         if (!ordinaryLaneIds.has(rawLane.id)) return rawLane;
         const lane = normalizeSupervisorLaneBinding(rawLane);
+        if (lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION) return lane;
         return {
           ...lane,
           controlState: 'active' as const,
           managementSessionId: lane.managementSessionId
             || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          awaitingReview: true,
+          awaitingReview: lane.pendingInitialReview === true ? false : true,
           resumeAfterCancelledDecision: false,
         };
       });
       return {
         supervisor: {
           ...s.supervisor,
+          ...supervisorRuntimeFlags(lanes),
           lanes,
           sessionId: s.supervisor.sessionId
             || `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          active: true,
-          paused: false,
           setupOpen: false,
           pendingApprovals: s.supervisor.pendingApprovals.filter((item) => projectLaneIds.has(item.laneId)),
           log: [{

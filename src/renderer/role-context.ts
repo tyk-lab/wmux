@@ -6,7 +6,6 @@ import {
   projectOrientationReady,
   projectRequirementsAlignmentPhase,
   projectRequirementsVersion,
-  projectTaskBaselineApproved,
   projectWorkItemReady,
   type ProjectManagerSession,
   type ProjectWorkItem,
@@ -17,23 +16,6 @@ import {
   supervisorLaneControlState,
   type SupervisorLane,
 } from './store/supervisor-slice';
-
-export const ORDINARY_TASK_ROLE_ANCHOR = [
-  '[任务 AI 角色锚点｜控制层]',
-  '先运行 wmux context 获取当前 capability 绑定的任务终端、监督通道、状态和可用 wmux 命令；不得自行指定或操作其他终端。',
-  'wmux context 描述的是 wmux 编排权限；Agent 原生工具仍受当前 Agent 和沙箱配置约束。',
-  '执行前读取适用的 AGENTS/项目指令与匹配技能，遵守项目的产物目录和命名规则；规则缺失或与监督计划冲突时先报告监督 AI，不得自行混用目录。',
-  '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出写入项目约定的实际运行/证据目录并报告路径；run_templates 等模板目录只保存预执行输入，tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源，禁止写入日志、dry-run/validate 输出、results、telemetry 或其他运行事实。',
-].join('\n');
-export const ORDINARY_TASK_PROTOCOL_REVISION = '4';
-
-export function buildOrdinaryTaskEventEnvelope(surfaceId: string): string {
-  const target = surfaceId.trim() || '（未指定）';
-  return [
-    `[任务事件｜控制层｜surface=${target}｜protocol=${ORDINARY_TASK_PROTOCOL_REVISION}]`,
-    '当前任务终端与监督绑定继续有效；无需重新运行 wmux context、重新确认角色或复述协议。若控制层返回绑定或权限错误，停止沿用旧状态并报告监督 AI。',
-  ].join('\n');
-}
 
 export interface RoleContextConditionalAction {
   command: string;
@@ -117,13 +99,11 @@ export interface TaskAiRuntimeContext {
   contract: {
     objective: string;
     projectRoot?: string;
-    allowPaths: string[];
-    denyPaths: string[];
+    executionAuthority: 'full-project' | 'task-scoped';
     preconditions: string[];
     stopWhen: string[];
     validation: string[];
-    forbiddenActions: string[];
-    supervisorConfirmableCommandPrefixes: string[];
+    safetyBoundaries: string[];
     supervisorPlan?: {
       revision: number;
       selectedRoute: string;
@@ -180,18 +160,7 @@ const SELF_SCOPED_V2_METHODS = new Set([
 
 const PROJECT_SUPERVISOR_METHODS = new Set([
   'project.task-terminal.start',
-  'project.task-terminal.rotate',
   'project.task-terminal.control',
-  'project.worker.status',
-  'project.worker.recover',
-  'project.worker.resource.acquire',
-  'project.worker.resource.release',
-  'project.worker.resource.reconcile',
-  'project.worker.directive.reconcile',
-  'project.worker.merge.submit',
-  'project.worker.merge.apply',
-  'project.worker.merge.reject',
-  'project.worker.finalize',
 ]);
 
 const PROJECT_AI_METHODS = new Set([
@@ -203,9 +172,7 @@ const PROJECT_AI_METHODS = new Set([
   'project.terminals',
   'project.task.create',
   'project.task.update',
-  'project.directive.resolve',
   'project.task.supervise',
-  'project.execution.replan',
   'project.progress.sync',
   'project.supervisor.transition.ack',
   'project.goal.plan',
@@ -505,48 +472,40 @@ export function buildTaskAiRuntimeContext(options: {
     && (!projectWorkItemReady(workItem, project.workItems)
       || !!projectWorkItemSubgoalDependencyError(project, workItem));
   const contractCurrent = contractVersionCurrent && !inactiveWorkItem;
-  const baselineApproved = workItem ? contractCurrent && projectTaskBaselineApproved(workItem) : undefined;
   const projectExecutionAvailable = contractCurrent
     && !dependencyBlocked
-    && supervisionState === 'active'
-    && baselineApproved === true;
+    && supervisionState === 'active';
   const allowedActions = projectManaged
     ? !contractVersionCurrent
-      ? ['当前项目状态或任务合同版本已经失效；停止执行并等待监督 AI/项目 AI 重新绑定合同']
+      ? ['当前项目状态或任务成果版本已经失效；停止执行并等待控制层重新绑定']
       : inactiveWorkItem
-        ? [`当前工作项状态为 ${workItem?.status || 'unknown'}；合同不再允许继续执行，等待控制层重新派发`]
-      : dependencyBlocked
-        ? ['当前工作项依赖或阶段目标尚未就绪；停止执行并等待项目 AI 重新调度']
-      : supervisionState !== 'active'
-        ? [supervisionState === 'waiting'
-            ? '当前阶段已经进入待续；不得自行开始下一阶段，等待监督 AI/项目 AI 明确续接'
-            : '当前监督通道未处于活动状态；停止执行并等待控制层恢复监督']
-      : baselineApproved
-      ? [
-          '在合同 scope.allowPaths 与当前目标范围内完成实现',
-          authority?.technicalChoices ? '在合同边界内自主选择技术实现' : '',
-          authority?.lowRiskRetries ? '基于新证据进行合同预算内的低风险重试' : '',
-          authority?.targetedTests ? '运行合同要求的最小相关测试' : '',
-          authority?.internalThreads && internalThreadsActive ? '按 execution 约定组织本任务 AI 自己的内部线程' : '',
-          workerRuntime ? `只在当前 worktree 的 writeClaims 内写入：${workerRuntime.writeClaims.join('、') || '无（只读）'}` : '',
-          authority?.continuousExecution ? '连续推进完整工作流直到停止条件或真实边界' : '',
-        ].filter(Boolean)
-      : ['仅执行监督 AI 下达的有界只读项目基线调查，并提交基线报告后停止']
+        ? [`当前任务状态为 ${workItem?.status || 'unknown'}；等待控制层重新派发`]
+        : dependencyBlocked
+          ? ['当前任务依赖尚未就绪；等待项目 AI 调整总计划或调度依赖任务']
+          : supervisionState !== 'active'
+            ? [supervisionState === 'waiting'
+                ? '当前监督正在审查检查点；保留现场并等待结果导向的下一批次'
+                : '监督链未处于活动状态；保留现场并等待控制层恢复']
+            : [
+                '在项目工作区内完整执行当前任务成果',
+                '自主选择项目技能、技术路线、文件、命令、测试和低风险恢复方式',
+                '按目标项目规则自行决定是否使用内部子代理并负责最终集成',
+                '持续推进到有意义的可验证检查点，不因微步骤结束主动停顿',
+              ]
     : supervisionState === 'active'
       ? ['按当前任务目标工作；具体本地工具权限由底层 Agent 及其沙箱决定']
       : [supervisionState === 'waiting'
           ? '当前监督阶段已经进入待续；等待监督 AI 或用户明确续接'
           : '当前监督通道未处于活动状态；停止执行并等待控制层恢复监督'];
   const conditionalActions = projectManaged && projectExecutionAvailable ? [
-    authority?.permissionConfirm
-      ? '遇到权限提示时等待监督 AI 按合同白名单确认；任务 AI 不自行扩大权限'
-      : '任何权限提示都交回监督 AI；当前合同未授权监督自动确认',
-    authority?.internalThreads && internalThreadsActive
-      ? '只有 execution 模式允许时才能建立内部线程；共享资源和最终集成保持串行'
-      : '不得创建内部线程',
+    '普通低风险项目操作由任务 AI 自主决定；只有用户专属高风险边界才停止请求授权',
+    internalThreadsActive
+      ? '可按项目技能与执行模式自主组织内部线程；共享资源和最终集成保持串行'
+      : '按目标项目规则自行决定是否使用内部子代理',
     workerRuntime?.resourceClaims.length
-      ? `共享资源必须先由监督 AI 获取租约：${workerRuntime.resourceClaims.join('、')}`
+      ? `共享资源按控制层租约串行协调：${workerRuntime.resourceClaims.join('、')}`
       : '',
+    authority ? '旧合同 authority 字段只作审计，不限制 P7 任务 AI 的普通项目执行权' : '',
   ].filter(Boolean) : [];
   const contract = workItem?.contract;
 
@@ -582,7 +541,7 @@ export function buildTaskAiRuntimeContext(options: {
     state: {
       task: options.taskState || 'unknown',
       supervision: supervisionState,
-      ...(workItem?.baseline ? { baseline: workItem.baseline.status } : {}),
+      ...(workItem?.baseline && (workItem.executionProtocolVersion || 0) < 7 ? { baseline: workItem.baseline.status } : {}),
       ...(projectManaged ? {
         contract: !contractVersionCurrent
           ? 'stale' as const
@@ -594,17 +553,15 @@ export function buildTaskAiRuntimeContext(options: {
     contract: {
       objective: contract?.objective || config?.taskGoal || lane?.currentTask || '',
       ...(contract?.scope.root ? { projectRoot: contract.scope.root } : {}),
-      allowPaths: workerRuntime ? [...workerRuntime.writeClaims] : [...(contract?.scope.allowPaths || [])],
-      denyPaths: [...(contract?.scope.denyPaths || [])],
+      executionAuthority: projectManaged ? 'full-project' : 'task-scoped',
       preconditions: [...new Set([
         ...(project?.preconditions || []),
         ...(contract?.preconditions || (config?.preconditions ? [config.preconditions] : [])),
       ])],
       stopWhen: [...(contract?.stopWhen || (config?.stopWhen ? [config.stopWhen] : []))],
       validation: [...(contract?.validation || [])],
-      forbiddenActions: [...(contract?.scope.forbiddenActions || [])],
-      supervisorConfirmableCommandPrefixes: [...(authority?.allowedCommandPrefixes || [])],
-      ...(workItem?.supervisorPlan ? {
+      safetyBoundaries: ['破坏性覆盖', '外部访问', '凭据', '提权', '发布', '生产环境', '真实硬件高风险操作'],
+      ...(workItem?.supervisorPlan && (workItem.executionProtocolVersion || 0) < 7 ? {
         supervisorPlan: {
           revision: workItem.supervisorPlan.revision,
           selectedRoute: workItem.supervisorPlan.selectedRoute,
@@ -621,12 +578,14 @@ export function buildTaskAiRuntimeContext(options: {
       available: allowedActions,
       conditional: conditionalActions,
       forbidden: [
-        '越出任务目标、项目根目录、允许路径或当前需求/授权版本',
-        '自行确认权限、修改凭据或扩大 allowedCommandPrefixes',
+        '越出任务目标、项目根目录或当前需求版本',
+        '绕过用户专属的高风险、安全、凭据、发布或真实硬件授权边界',
         '使用 wmux 操作其他终端、其他工作项或其他项目',
         '绕过监督裁决桥直接请求项目 AI 或用户推进普通技术步骤',
       ],
-      nativeToolNotice: '这里列出的是 wmux 任务合同权限；Codex、Kimi、Grok 等 Agent 原生工具仍由当前 Agent 及其沙箱配置决定。',
+      nativeToolNotice: projectManaged
+        ? '任务 AI 是唯一项目执行者，拥有项目工作区内完整执行能力；目标项目 AGENTS、技能和规范始终优先。'
+        : '普通监督任务的 wmux 能力不扩大原生 Agent 权限；具体本地工具仍由当前 Agent 及其沙箱配置决定。',
     },
     commands: {
       available: [
@@ -639,7 +598,7 @@ export function buildTaskAiRuntimeContext(options: {
         'wmux send/send-key 操作其他终端',
       ],
     },
-    ...(workItem ? {
+    ...(workItem && (workItem.executionProtocolVersion || 0) < 7 ? {
       budget: {
         decisionsUsed: workItem.decisionsUsed,
         decisionsRemaining: Math.max(0, workItem.contract.budget.maxDecisions - workItem.decisionsUsed),

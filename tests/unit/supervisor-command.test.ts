@@ -5,11 +5,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   cleanupSupervisorNextInput,
   cleanupSupervisorCompletionInput,
+  cleanupSupervisorEvidenceProgressInput,
   cleanupSupervisorStagePlanInput,
+  cleanupSupervisorTaskInput,
   isSupervisorDecideHelp,
   resolveSupervisorNextInput,
   resolveSupervisorCompletionInput,
+  resolveSupervisorEvidenceProgressInput,
   resolveSupervisorStagePlanInput,
+  resolveSupervisorTaskInput,
   SUPERVISOR_DECIDE_USAGE,
 } from '../../src/cli/supervisor-command';
 
@@ -39,11 +43,34 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-file <.wmux/tmp/file>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--evidence-progress-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--remaining-work <none|text>');
-    expect(SUPERVISOR_DECIDE_USAGE).toContain('--retry-kind <task-failure|command-correction|runtime-recovery|execution-window>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>');
+  });
+
+  it('reads and cleans a content-addressed evidence progress declaration', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'evidence-progress.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      conclusion: 'confirmed-success',
+      evidenceRefs: ['runs/recover/recovery-result.json', 'runs/recover/recovery-closure.json'],
+    }), 'utf8');
+
+    const input = resolveSupervisorEvidenceProgressInput([
+      'supervisor', 'decide', '--evidence-progress-file', '.wmux/tmp/evidence-progress.json',
+    ], project);
+
+    expect(input.value).toEqual({
+      conclusion: 'confirmed-success',
+      evidenceRefs: ['runs/recover/recovery-result.json', 'runs/recover/recovery-closure.json'],
+    });
+    cleanupSupervisorEvidenceProgressInput(input, true);
+    expect(fs.existsSync(draftPath)).toBe(false);
   });
 
   it('reads and cleans structured completion evidence from .wmux/tmp', () => {
@@ -91,6 +118,32 @@ describe('supervisor decide command', () => {
     expect(input.fileReference).toBe('.wmux/tmp/stage-plan.json');
     cleanupSupervisorStagePlanInput(input, true);
     expect(fs.existsSync(draftPath)).toBe(false);
+  });
+
+  it('reads and cleans a structured ordinary task dispatch from .wmux/tmp', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'task.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      kind: 'task', sourceRevision: 1, milestoneId: 'verify',
+      outcome: '形成验证结果', constraints: ['遵循项目规范'],
+      acceptanceGap: ['测试任务完成'], evidenceContext: [],
+    }), 'utf8');
+
+    const input = resolveSupervisorTaskInput([
+      'supervisor', 'decide', '--task-file', '.wmux/tmp/task.json',
+    ], project);
+
+    expect(input.value).toMatchObject({ kind: 'task', milestoneId: 'verify' });
+    cleanupSupervisorTaskInput(input, true);
+    expect(fs.existsSync(draftPath)).toBe(false);
+  });
+
+  it('does not combine a structured ordinary task with arbitrary next text', () => {
+    expect(() => resolveSupervisorTaskInput([
+      'supervisor', 'decide', '--task-file', '.wmux/tmp/task.json', '--next', '绕过结构化任务',
+    ], projectDir())).toThrow('--task-file cannot be combined');
   });
 
   it('reads long next text only from .wmux/tmp and removes it through the cleanup callback', () => {
