@@ -172,7 +172,8 @@ describe('project-manager engine', () => {
     expect(prepared.delivery).toContain('[项目执行身份｜控制层已绑定]');
     expect(prepared.delivery).toContain('需求版本：R3');
     expect(prepared.delivery).toContain('授权版本：A2');
-    expect(prepared.delivery).toContain('旧终端、旧 lane 和旧对话身份只作审计历史');
+    expect(prepared.delivery).toContain('旧终端、旧运行通道和旧对话身份只作审计历史');
+    expect(prepared.delivery).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
   });  it('injects the trusted contract while exposing only the executable action to guards', () => {
     const contract = item('auth', 'planned').contract;
     const envelope = buildProjectTaskExecutionEnvelope(contract);

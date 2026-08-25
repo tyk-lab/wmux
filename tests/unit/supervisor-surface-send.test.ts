@@ -62,6 +62,8 @@ describe('supervisor surface input delivery', () => {
     await sendToSurface('supervisor-a', longText, true, 'ordinary');
 
     const prompt = stagedTerminalInputPrompt(reference, filePath, 'ordinary');
+    expect(prompt).toContain('[wmux 临时任务文件]');
+    expect(prompt).not.toMatch(/监督|AI 链|裁决|lane/iu);
     expect(stageInputFile).toHaveBeenCalledWith('supervisor-a', longText, 'ordinary');
     expect(write.mock.calls).toEqual([
       ['supervisor-a', prompt.replace(/\n/gu, ' ')],

@@ -568,12 +568,10 @@ export class PtyManager {
       throw new Error('临时投递文件缺少有效的普通/项目隔离域');
     }
 
-    const isolationLabel = isolationScope === 'project' ? '项目 AI 链' : '普通监督链';
     const stagedContent = [
-      `[wmux 隔离投递｜${isolationLabel}]`,
-      `投递域: ${isolationScope}`,
+      '[wmux 目标终端任务]',
       `目标终端: ${id}`,
-      `边界: 仅供上述目标终端执行；其他${isolationScope === 'project' ? '普通监督' : '项目 AI/项目监督'}终端即使位于同一工程目录，也必须停止读取且不得执行下文。`,
+      '边界: 仅供上述目标终端执行；其他终端即使位于同一工程目录，也必须停止读取且不得执行下文。',
       '',
       content,
     ].join('\n');

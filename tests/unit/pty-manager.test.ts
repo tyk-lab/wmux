@@ -164,8 +164,8 @@ describe('PtyManager', () => {
     const manager = makeManager();
     const { id } = manager.create({ shell: TEST_SHELL, cwd, env: TEST_ENV });
     try {
-      const ordinary = manager.stageInputFile(id, '普通监督完整指令', 'ordinary');
-      const project = manager.stageInputFile(id, '项目监督完整指令', 'project');
+      const ordinary = manager.stageInputFile(id, '普通任务完整指令', 'ordinary');
+      const project = manager.stageInputFile(id, '项目任务完整指令', 'project');
 
       expect(ordinary.reference).toMatch(/^\.wmux\/tmp\/terminal-input\/ordinary\/terminal-input-.+\.txt$/u);
       expect(project.reference).toMatch(/^\.wmux\/tmp\/terminal-input\/project\/terminal-input-.+\.txt$/u);
@@ -175,17 +175,17 @@ describe('PtyManager', () => {
         expect(staged.filePath).toBe(path.join(fs.realpathSync(cwd), ...staged.reference.split('/')));
       }
       const ordinaryContent = fs.readFileSync(ordinary.filePath, 'utf8');
-      expect(ordinaryContent).toContain('[wmux 隔离投递｜普通监督链]');
-      expect(ordinaryContent).toContain('投递域: ordinary');
+      expect(ordinaryContent).toContain('[wmux 目标终端任务]');
       expect(ordinaryContent).toContain(`目标终端: ${id}`);
-      expect(ordinaryContent).toContain('其他项目 AI/项目监督终端');
-      expect(ordinaryContent).toContain('普通监督完整指令');
+      expect(ordinaryContent).toContain('其他终端即使位于同一工程目录');
+      expect(ordinaryContent).not.toMatch(/监督|AI 链|裁决|lane/iu);
+      expect(ordinaryContent).toContain('普通任务完整指令');
       const projectContent = fs.readFileSync(project.filePath, 'utf8');
-      expect(projectContent).toContain('[wmux 隔离投递｜项目 AI 链]');
-      expect(projectContent).toContain('投递域: project');
+      expect(projectContent).toContain('[wmux 目标终端任务]');
       expect(projectContent).toContain(`目标终端: ${id}`);
-      expect(projectContent).toContain('其他普通监督终端');
-      expect(projectContent).toContain('项目监督完整指令');
+      expect(projectContent).toContain('其他终端即使位于同一工程目录');
+      expect(projectContent).not.toMatch(/监督|AI 链|裁决|lane/iu);
+      expect(projectContent).toContain('项目任务完整指令');
       expect(() => manager.stageInputFile(id, '无域指令', 'shared' as any))
         .toThrow('缺少有效的普通/项目隔离域');
     } finally {
