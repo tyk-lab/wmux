@@ -120,6 +120,8 @@ export interface SurfaceRef {
   userRecordsTerminal?: boolean;
   /** Project-mode task terminal. Its native Agent conversation is restart-unsafe and must not auto-restore. */
   projectManagerProjectId?: string;
+  /** Optional project auxiliary task AI; never exposed to the main task AI context. */
+  projectAuxiliaryTask?: boolean;
   /** Work item currently owning a project-mode task terminal, used to build a fresh recovery chain. */
   projectManagerWorkItemId?: string;
   /** Runtime identity used to decide whether a project-manager restart is required after configuration changes. */

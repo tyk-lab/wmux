@@ -1447,6 +1447,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             env: {},
             surfaceId,
             startupCommands: startupCommandsRef.current,
+            supervisorRuntimeIsolationKey,
             codexSupervisorRuntimeIsolationKey: automatedStartupAgent === 'codex'
               ? supervisorRuntimeIsolationKey
               : undefined,
@@ -1483,6 +1484,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         cwd: spawnCwd,
         env: {},
         startupCommands: startupCommandsRef.current,
+        supervisorRuntimeIsolationKey,
         codexSupervisorRuntimeIsolationKey: automatedStartupAgent === 'codex'
           ? supervisorRuntimeIsolationKey
           : undefined,

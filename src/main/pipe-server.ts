@@ -58,6 +58,11 @@ export interface V2Response {
   id?: string | number;
 }
 
+export interface V2DispatchOptions {
+  /** File bridges must never accept the instance-wide token; they are bound to one live terminal. */
+  requireSurfaceToken?: boolean;
+}
+
 export class PipeServer extends EventEmitter {
   private server: net.Server | null = null;
   private pipePath: string;
@@ -97,7 +102,7 @@ export class PipeServer extends EventEmitter {
           if (line.startsWith('{')) {
             try {
               const request = JSON.parse(line) as V2Request;
-              void this.handleV2(request, socket);
+              void this.handleV2Socket(request, socket);
             } catch {
               socket.write(JSON.stringify({ error: { code: -32700, message: 'Parse error' } }) + '\n');
             }
@@ -205,7 +210,7 @@ export class PipeServer extends EventEmitter {
     socket.write('ok\n');
   }
 
-  private async handleV2(request: V2Request, socket: net.Socket): Promise<void> {
+  private async handleV2Socket(request: V2Request, socket: net.Socket): Promise<void> {
     const respond = (result: any) => {
       const response: V2Response = { result, id: request.id };
       socket.write(JSON.stringify(response) + '\n');
@@ -216,6 +221,16 @@ export class PipeServer extends EventEmitter {
       socket.write(JSON.stringify(response) + '\n');
     };
 
+    await this.dispatchV2(request, respond, respondError);
+  }
+
+  /** Authenticate and route a V2 request from either the named pipe or the supervisor file bridge. */
+  async dispatchV2(
+    request: V2Request,
+    respond: (result: any) => void,
+    respondError: (code: number, message: string) => void,
+    options: V2DispatchOptions = {},
+  ): Promise<void> {
     // Authenticate privileged methods. Only read-only discovery methods
     // (identify/capabilities) are exempt so instance detection keeps working
     // without a token. -32001 signals "unauthorized" to clients.
@@ -227,6 +242,10 @@ export class PipeServer extends EventEmitter {
       }
       const requestToken = request.token || '';
       const instanceAuthenticated = tokensMatch(requestToken, this.authToken);
+      if (options.requireSurfaceToken && instanceAuthenticated) {
+        respondError(-32001, 'Unauthorized: file bridge requires a live surface capability');
+        return;
+      }
       authenticatedSurfaceId = instanceAuthenticated
         ? undefined
         : this.surfaceForAuthToken(requestToken);

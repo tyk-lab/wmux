@@ -30,6 +30,7 @@ import {
 } from './project-command';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 import { requireSuccessfulContext } from './context-result';
+import { sendFileBridgeRequest } from './file-bridge';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -109,17 +110,25 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
     params = { ...params, caller: process.env.WMUX_SURFACE_ID };
   }
   params = withSurfaceCaller(method, params, process.env.WMUX_SURFACE_ID);
+  const timeoutMs = method.startsWith('ssh-file.')
+    ? 30_000
+    : method === 'supervisor.decide'
+      ? 10_000
+      : 5_000;
+  const fileBridgeRoot = process.env.WMUX_FILE_BRIDGE_DIR?.trim();
+  if (fileBridgeRoot && !remoteTarget) {
+    return sendFileBridgeRequest(fileBridgeRoot, {
+      method,
+      params,
+      token: PIPE_TOKEN,
+    }, timeoutMs);
+  }
   return new Promise((resolve, reject) => {
     const client = connectTransport(() => {
       const request = JSON.stringify({ method, params, id: 1, token: PIPE_TOKEN });
       client.write(request + '\n');
     });
     let data = '';
-    const timeoutMs = method.startsWith('ssh-file.')
-      ? 30_000
-      : method === 'supervisor.decide'
-        ? 10_000
-        : 5_000;
     const timer = setTimeout(() => { client.end(); reject(new Error('timeout')); }, timeoutMs);
     client.on('data', (chunk) => {
       data += chunk.toString();
@@ -202,7 +211,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     if (!surfaceId) throw new Error(`supervisor ${action} requires --surface`);
     const input = resolveProjectJsonInput(
       args,
-      process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+      process.cwd(),
     );
     let success = false;
     try {
@@ -237,23 +246,23 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   if (!surfaceId || !outcome) throw new Error('--surface and --outcome are required');
   const nextInput = resolveSupervisorNextInput(
     args,
-    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    process.cwd(),
   );
   const stagePlanInput = resolveSupervisorStagePlanInput(
     args,
-    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    process.cwd(),
   );
   const taskInput = resolveSupervisorTaskInput(
     args,
-    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    process.cwd(),
   );
   const completionInput = resolveSupervisorCompletionInput(
     args,
-    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    process.cwd(),
   );
   const evidenceProgressInput = resolveSupervisorEvidenceProgressInput(
     args,
-    process.env.WMUX_SUPERVISOR_PROJECT_DIR || process.cwd(),
+    process.cwd(),
   );
   if (completionInput.value && evidenceProgressInput.value) {
     throw new Error('--completion-file and --evidence-progress-file cannot be used together');
@@ -445,10 +454,26 @@ async function cmdProject(args: string[]): Promise<void> {
     }
     return;
   }
-  if (sub === 'dispatch') {
+  if (sub === 'auxiliary-dispatch') {
+    const input = await resolveProjectScopedJsonInput(args, projectId);
+    let success = false;
+    try {
+      const result = await sendV2('project.auxiliary.dispatch', { ...input.value, projectId });
+      success = result?.ok !== false;
+      print(result);
+    } finally {
+      cleanupProjectJsonInput(input, success);
+    }
+    return;
+  }
+  if (sub === 'auxiliary-status') {
+    print(await sendV2('project.auxiliary.status', { projectId }));
+    return;
+  }
+  if (sub === 'supervise') {
     const workItemId = getFlag(args, '--task') || '';
-    if (!projectId || !workItemId) throw new Error('project dispatch requires --project and --task');
-    print(await sendV2('project.task.dispatch', { workItemId, projectId }));
+    if (!projectId || !workItemId) throw new Error('project supervise requires --project and --task');
+    print(await sendV2('project.supervisor.assign', { workItemId, projectId }));
     return;
   }
   if (sub === 'orientation-confirm') {
@@ -1295,7 +1320,7 @@ Project:    project update|alignment-confirm|orientation-confirm|goal-plan|statu
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
-            dispatch --project <id> --task <id> binds the persistent task AI and supervisor lane to one ready work item
+            supervise --project <id> --task <id> assigns one ready work item to its dedicated supervisor without writing the task AI
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

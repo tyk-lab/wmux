@@ -30,6 +30,7 @@ export interface SurfaceSlice {
       projectManagerTerminal?: boolean;
       userRecordsTerminal?: boolean;
       projectManagerProjectId?: string;
+      projectAuxiliaryTask?: boolean;
       projectManagerWorkItemId?: string;
       projectManagerAgent?: 'codex' | 'kimi' | 'grok';
       projectManagerModel?: string;
@@ -190,6 +191,7 @@ interface ClosedSurface {
   transientSupervisor?: boolean;
   projectManagerTerminal?: boolean;
   projectManagerProjectId?: string;
+  projectAuxiliaryTask?: boolean;
   projectManagerWorkItemId?: string;
   projectManagerAgent?: 'codex' | 'kimi' | 'grok';
   projectManagerModel?: string;
@@ -245,6 +247,7 @@ function pushClosedSurface(surface: SurfaceRef): void {
     transientSupervisor: surface.transientSupervisor,
     projectManagerTerminal: surface.projectManagerTerminal,
     projectManagerProjectId: surface.projectManagerProjectId,
+    projectAuxiliaryTask: surface.projectAuxiliaryTask,
     projectManagerWorkItemId: surface.projectManagerWorkItemId,
     projectManagerAgent: surface.projectManagerAgent,
     projectManagerModel: surface.projectManagerModel,
@@ -282,6 +285,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(options?.userRecordsTerminal ? { userRecordsTerminal: true } : {}),
       ...(options?.projectManagerProjectId ? { projectManagerProjectId: options.projectManagerProjectId } : {}),
+      ...(options?.projectAuxiliaryTask ? { projectAuxiliaryTask: true } : {}),
       ...(options?.projectManagerWorkItemId ? { projectManagerWorkItemId: options.projectManagerWorkItemId } : {}),
       ...(options?.projectManagerAgent ? { projectManagerAgent: options.projectManagerAgent } : {}),
       ...(options?.projectManagerModel !== undefined ? { projectManagerModel: options.projectManagerModel } : {}),
@@ -572,6 +576,7 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(restored.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(restored.projectManagerProjectId ? { projectManagerProjectId: restored.projectManagerProjectId } : {}),
+      ...(restored.projectAuxiliaryTask ? { projectAuxiliaryTask: true } : {}),
       ...(restored.projectManagerWorkItemId ? { projectManagerWorkItemId: restored.projectManagerWorkItemId } : {}),
       ...(restored.projectManagerAgent ? { projectManagerAgent: restored.projectManagerAgent } : {}),
       ...(restored.projectManagerModel !== undefined ? { projectManagerModel: restored.projectManagerModel } : {}),

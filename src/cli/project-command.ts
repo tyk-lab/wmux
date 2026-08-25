@@ -8,7 +8,7 @@ export interface ProjectJsonInput {
 
 const PROJECT_COMMANDS = [
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'status', 'logs', 'terminals',
-  'task-create', 'task-update', 'record', 'dispatch', 'progress-sync',
+  'task-create', 'task-update', 'record', 'supervise', 'auxiliary-dispatch', 'auxiliary-status', 'progress-sync',
   'transition-ack',
   'inspect', 'decide', 'ask', 'pause', 'resume', 'pause-all', 'resume-all', 'complete', 'stop', 'reply',
 ] as const;
@@ -70,10 +70,24 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     '',
     '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead. `taskWorkMode` controls the unique task AI internal execution mode.',
   ].join('\n'),
+  supervise: [
+    'Usage: wmux project supervise --project <id> --task <work-item-id>',
+    '',
+    'Assigns one ready work item to the dedicated supervisor. The project AI cannot write the main task terminal; only the bound supervisor may dispatch the neutral task package.',
+  ].join('\n'),
+  'auxiliary-dispatch': [
+    'Usage: wmux project auxiliary-dispatch --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
+    '',
+    'JSON: {"kind":"research|documentation|progress|git-commit","task":"...","allowedPaths":["docs/file.md"]}',
+    '`research` must remain read-only. Other kinds require explicit allowedPaths. `git-commit` also requires user authorization in project Agent settings.',
+  ].join('\n'),
+  'auxiliary-status': [
+    'Usage: wmux project auxiliary-status --project <id>',
+  ].join('\n'),
 };
 
 const JSON_PROJECT_COMMANDS = new Set<string>([
-  'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan',
+  'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'auxiliary-dispatch',
   'task-create', 'task-update', 'record', 'ask', 'complete',
 ]);
 

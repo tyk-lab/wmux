@@ -223,12 +223,11 @@ export function ensureCodexProjectTrusted(projectPath: string, configPath = reso
   }
 }
 
-/** Trust only a wmux-owned isolated supervisor directory, never a renderer-supplied absolute path. */
-export function ensureCodexSupervisorRuntimeTrusted(
+/** Resolve and create only a wmux-owned isolated supervisor directory. */
+export function ensureSupervisorRuntimeDirectory(
   appDataRoot: string,
   isolationKey: string,
   instance = process.env.WMUX_INSTANCE?.trim() || '',
-  configPath = resolveCodexConfigPath(),
 ): string {
   const instanceDirectory = instance ? `wmux-${instance}` : 'wmux';
   const resolvedAppDataRoot = path.resolve(appDataRoot);
@@ -242,6 +241,17 @@ export function ensureCodexSupervisorRuntimeTrusted(
     throw new Error('监督运行目录超出 wmux 隔离根目录');
   }
   fs.mkdirSync(runtimeDirectory, { recursive: true });
+  return runtimeDirectory;
+}
+
+/** Trust only a wmux-owned isolated supervisor directory, never a renderer-supplied absolute path. */
+export function ensureCodexSupervisorRuntimeTrusted(
+  appDataRoot: string,
+  isolationKey: string,
+  instance = process.env.WMUX_INSTANCE?.trim() || '',
+  configPath = resolveCodexConfigPath(),
+): string {
+  const runtimeDirectory = ensureSupervisorRuntimeDirectory(appDataRoot, isolationKey, instance);
   ensureCodexProjectTrusted(runtimeDirectory, configPath);
   return runtimeDirectory;
 }

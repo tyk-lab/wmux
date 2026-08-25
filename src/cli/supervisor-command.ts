@@ -28,7 +28,7 @@ function flagValue(args: string[], name: string): string | undefined {
   return value && !value.startsWith('--') ? value : undefined;
 }
 
-/** Read a long decision body only from the current project's ignored wmux temp directory. */
+/** Read a long decision body only from the current supervisor runtime's ignored temp directory. */
 export function resolveSupervisorNextInput(args: string[], cwd = process.cwd()): SupervisorNextInput {
   const inline = flagValue(args, '--next') || '';
   const fileArgument = flagValue(args, '--next-file');
@@ -56,11 +56,11 @@ export function resolveSupervisorNextInput(args: string[], cwd = process.cwd()):
     throw new Error('--next-file must reference an existing file under .wmux/tmp/');
   }
   if (path.relative(realCwd, realTempRoot).toLowerCase() !== path.join('.wmux', 'tmp').toLowerCase()) {
-    throw new Error('--next-file temp directory cannot redirect outside the current project');
+    throw new Error('--next-file temp directory cannot redirect outside the current supervisor runtime');
   }
   const relative = path.relative(realTempRoot, realFilePath);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error('--next-file is restricted to the current project .wmux/tmp/ directory');
+    throw new Error('--next-file is restricted to the current supervisor runtime .wmux/tmp/ directory');
   }
   if (!fs.statSync(realFilePath).isFile()) throw new Error('--next-file must reference a regular file');
 
@@ -87,7 +87,7 @@ export function cleanupSupervisorNextInput(input: SupervisorNextInput, decisionS
   if (decisionSucceeded) input.cleanup?.();
 }
 
-/** Read the supervisor-owned execution plan from the same ignored project temp boundary. */
+/** Read the supervisor-owned execution plan from the same isolated runtime boundary. */
 export function resolveSupervisorStagePlanInput(
   args: string[],
   cwd = process.cwd(),
@@ -173,7 +173,7 @@ export function cleanupSupervisorTaskInput(
   if (decisionSucceeded) input.cleanup?.();
 }
 
-/** Read per-condition completion judgments from the ignored project temp boundary. */
+/** Read per-condition completion judgments from the ignored supervisor-runtime temp boundary. */
 export function resolveSupervisorCompletionInput(
   args: string[],
   cwd = process.cwd(),
@@ -213,7 +213,7 @@ export function cleanupSupervisorCompletionInput(
   if (decisionSucceeded) input.cleanup?.();
 }
 
-/** Read a content-addressed evidence-review declaration from the ignored project temp boundary. */
+/** Read a content-addressed evidence-review declaration from the isolated supervisor-runtime boundary. */
 export function resolveSupervisorEvidenceProgressInput(
   args: string[],
   cwd = process.cwd(),

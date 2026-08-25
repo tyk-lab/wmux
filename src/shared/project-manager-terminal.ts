@@ -15,12 +15,23 @@ export interface ProjectManagementAgentConfig {
   manager: ProjectAgentSelection<ProjectManagerRuntimeAgent>;
   supervisor: ProjectAgentSelection<ProjectSupervisorRuntimeAgent>;
   task: ProjectAgentSelection<ProjectTaskRuntimeAgent>;
+  auxiliary: ProjectAgentSelection<ProjectTaskRuntimeAgent> & {
+    enabled: boolean;
+    allowProjectMaintenance: boolean;
+  };
 }
 
 export const DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG: ProjectManagementAgentConfig = {
   manager: { agent: 'codex', model: '', reasoningEffort: '' },
   supervisor: { agent: 'pi', model: '', reasoningEffort: 'medium' },
   task: { agent: 'codex', model: '', reasoningEffort: '' },
+  auxiliary: {
+    enabled: false,
+    allowProjectMaintenance: false,
+    agent: 'codex',
+    model: '',
+    reasoningEffort: '',
+  },
 };
 
 export const PROJECT_MANAGER_TERMINAL_AGENT = DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG.manager.agent;
@@ -61,11 +72,19 @@ export function normalizeProjectManagementAgentConfig(
   const managerAgent = value?.manager?.agent;
   const supervisorAgent = value?.supervisor?.agent;
   const taskAgent = value?.task?.agent;
+  const auxiliaryAgent = value?.auxiliary?.agent;
   const normalizedManagerAgent = managerAgent === 'kimi' || managerAgent === 'grok' ? managerAgent : 'codex';
   const normalizedSupervisorAgent = supervisorAgent === 'codex' || supervisorAgent === 'kimi' || supervisorAgent === 'grok'
     ? supervisorAgent
     : 'pi';
   const normalizedTaskAgent = taskAgent === 'kimi' || taskAgent === 'grok' ? taskAgent : 'codex';
+  const normalizedAuxiliaryAgent = auxiliaryAgent === 'kimi' || auxiliaryAgent === 'grok'
+    ? auxiliaryAgent
+    : 'codex';
+  // Compatibility-only persisted fields remain readable, but project execution
+  // has exactly one task AI. A second task runtime must never be re-enabled by
+  // an older saved configuration.
+  const auxiliaryEnabled = false;
   return {
     manager: {
       agent: normalizedManagerAgent,
@@ -82,6 +101,17 @@ export function normalizeProjectManagementAgentConfig(
       model: normalizeProjectAgentModel(normalizedTaskAgent, value?.task?.model),
       reasoningEffort: normalizeProjectAgentReasoningEffort(normalizedTaskAgent, value?.task?.reasoningEffort, ''),
     },
+    auxiliary: {
+      enabled: auxiliaryEnabled,
+      allowProjectMaintenance: false,
+      agent: normalizedAuxiliaryAgent,
+      model: normalizeProjectAgentModel(normalizedAuxiliaryAgent, value?.auxiliary?.model),
+      reasoningEffort: normalizeProjectAgentReasoningEffort(
+        normalizedAuxiliaryAgent,
+        value?.auxiliary?.reasoningEffort,
+        '',
+      ),
+    },
   };
 }
 
@@ -91,7 +121,7 @@ export function projectManagerSkillRelativePath(agent: ProjectManagerRuntimeAgen
   return '.wmux\\project-manager\\manage-project\\SKILL.md';
 }
 
-export const PROJECT_MANAGER_PROTOCOL_REVISION = '17';
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '18';
 
 export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '每次启动、恢复或收到控制层事件时，先运行 wmux context 获取当前 capability 绑定的项目身份、需求/授权版本、门禁状态和可用命令；不得沿用旧会话记忆中的身份或授权。同一运行时收到相同协议版本的普通事件时，复用已加载协议，不得重复读取 manage-project 技能；仅新建/恢复运行时、显式调用技能或协议版本变化时重读。',
@@ -101,10 +131,11 @@ export const PROJECT_MANAGER_ALIGNMENT_GATE = [
   '需求充分时执行 wmux project alignment-confirm --project <项目ID>，JSON 包含 goalUnderstanding、scopeSummary、acceptanceSummary、reason；随后先用 wmux project goal-plan --project <项目ID> 保存当前主目标的 3-7 个阶段目标，再显式恢复。',
   '控制层已发送兜底问题时不得重复提问或恢复；答复到达后先用 wmux project update --project <项目ID> 写回约束。若仍有实质歧义，再进入下一轮结构化提问。',
   '执行阶段的任务拓扑、跨任务依赖、优先级和总计划缺口由项目 AI 决定；task-create 前必须按成果数量、模块耦合、执行阶段、上下文规模和独立验收能力提交 complexityAssessment，并用 taskWorkMode=single-thread|multi-thread 选择初始执行模式。判断应拆分时先创建多个独立成果工作项，不得把 compound 任务强塞给一个任务 AI。单个任务内的技术路线、文件、命令、技能、测试、低风险恢复及线程内具体分工由任务 AI 自主决定。只有确需人工操作或用户专属决定时才用 category=manual-intervention。',
-  'P9 不再使用“监督批准基线后任务才可执行”的多轮握手。控制层注入项目规则与身份后，任务 AI 直接按成果连续推进；项目 AI 不得把规则读取、普通技术选择或单次验证拆成新工作项。',
+  'P9 使用单向角色链：项目 AI 只把工作项交给专属监督，不得直接写入或控制主任务 AI；专属监督通过 supervisor decide 首次发送控制层生成的中性成果包，此后再按证据 continue、rework、complete 或 needs-human。任务 AI 收到成果后连续推进；项目 AI 不得把规则读取、普通技术选择或单次验证拆成新工作项。',
   '用户拥有项目目标、范围、前置条件、验收标准和正式计划。你或监督 AI 若要补充假设、阶段、约束、验收项或改变计划方向，必须先通过 wmux project ask 展示补充细节、影响、可选方案和推荐项；用户答复后再携带该 userConfirmationEventId 执行 project update、goal-plan 或相关 task-create/task-update。goal-plan 的 AI 补充写入 supplements 数组，工作项补充写入 planningSupplements 数组；忠实拆解传空数组或省略。确认前不得写入计划或派发相关任务。',
   '任务 AI 严重上下文污染由专属监督通过 rework + proposal-kind=context-recovery 提交证据和干净摘要；控制层在原终端统一执行 Agent 原生 /new 并重新发布同一工作项。项目 AI 不得轮换或重建任务终端；同一工作项第二次污染由项目 AI 调整任务拆分或拓扑。',
-  '监督 AI 可根据当前批次与运行证据通过 --task-work-mode single-thread|multi-thread 调整后续任务回合；模式切换不创建新任务 AI。任务 AI 使用内部线程时，只能在主线程与全部内部子线程结束、runDepth=0 后执行 /new；旧子线程上下文不恢复。项目始终复用同一个任务 AI 终端，不创建其他项目任务 AI。',
+  '监督 AI 可根据当前批次与运行证据通过 --task-work-mode single-thread|multi-thread 调整后续主任务 AI 回合；模式切换不创建新主任务 AI。主任务 AI 使用内部线程时，只能在主线程与全部内部子线程结束、runDepth=0 后执行 /new；旧子线程上下文不恢复。项目始终复用同一个主任务 AI 终端。',
+  '项目配置启用辅助任务 AI 时，项目总共最多两个任务 AI：主任务 AI 与一个隔离辅助 AI。主任务 AI 永远不知道辅助 AI；项目 AI 可用 wmux project auxiliary-dispatch/status，监督 AI 也可调用同一命令。辅助 AI 可做只读资料调查；只有用户开启项目维护授权后，才可根据项目情况维护受控文档/进度并提交只涉及其任务路径的 Git 变更。不得修改业务源码、测试、配置或依赖，不得执行实现/测试，不得 push。',
   '工作项只定义成果与验收，不再用 allowPaths/denyPaths 充当任务 AI 文件权限。任务 AI 必须优先核对适用的 AGENTS、项目技能、产物目录和命名规则；监督 AI 只接收控制层规范报告并要求返工，不得自行发明目录或命名。',
   '用户已写入项目的前置条件及其中明确授权，在当前需求版本内持续有效；用户未通知变化且没有具体反证时，不得让项目 AI、监督 AI 或任务 AI 逐步重复确认。任务 AI 自身再次询问不代表条件已变化。',
   '项目是稳定容器，当前主目标是可切换的版本：调整同一结果使用 mode=refine；同一项目切换新的最终结果使用 mode=pivot。项目范围变化应建议另建项目。旧 goalId 任务不得在新目标下复活。',

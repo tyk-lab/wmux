@@ -15,6 +15,7 @@ import {
 import {
   buildProjectTaskExecutionEnvelope,
   prepareProjectTaskDelivery,
+  projectTaskInstructionDisclosureError,
 } from '../../src/renderer/project-manager/engine';
 import {
   authorizeManagedRoleV2,
@@ -152,7 +153,7 @@ describe('unified managed AI role context', () => {
       executionProtocol: 'current',
     });
     expect(context.commands.available).toContain('wmux context');
-    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
+    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
       .toMatchObject({ available: true });
     expect(context.commands.conditional.find((item) => item.command.includes('project decide')))
       .toMatchObject({ available: true });
@@ -163,7 +164,7 @@ describe('unified managed AI role context', () => {
 
     expect(context.state.executionProtocol).toBe('migration-required');
     expect(context.pending.readyWorkItems).toBe(0);
-    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
+    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
       .toMatchObject({ available: false });
     expect(context.commands.conditional.find((item) => item.command.includes('task-update'))?.condition)
       .toContain('控制层会冻结');
@@ -270,10 +271,13 @@ describe('unified managed AI role context', () => {
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-b' }).allowed)
       .toBe(false);
-    expect(authorizeManagedRoleV2(manager, 'project.task.dispatch', {
+    expect(authorizeManagedRoleV2(manager, 'project.supervisor.assign', {
       projectId: 'project-a', workItemId: 'work-a',
     }).allowed).toBe(true);
-    expect(authorizeManagedRoleV2(supervisor, 'project.task.dispatch', {
+    expect(authorizeManagedRoleV2(manager, 'project.task.dispatch', {
+      projectId: 'project-a', workItemId: 'work-a',
+    }).allowed).toBe(false);
+    expect(authorizeManagedRoleV2(supervisor, 'project.supervisor.assign', {
       projectId: 'project-a', workItemId: 'work-a',
     }).allowed).toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.task-terminal.control', { projectId: 'project-a' }).allowed)
@@ -336,7 +340,10 @@ describe('unified managed AI role context', () => {
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('[成果任务]');
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('读取并严格遵循当前目录层级适用的 AGENTS');
     expect(buildProjectTaskExecutionEnvelope(workItem().contract)).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).not.toMatch(/项目 AI|辅助任务 AI|内部规划|控制层/iu);
     const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false).delivery;
     expect(followUp).toBe('继续实现');
+    expect(projectTaskInstructionDisclosureError('继续完成当前成果并返回验证证据')).toBeNull();
+    expect(projectTaskInstructionDisclosureError('根据项目 AI 和监督 AI 的安排继续')).toContain('不能暴露');
   });
 });

@@ -192,6 +192,10 @@ describe('project manager records', () => {
         manager: { agent: 'kimi' as const, model: 'kimi-code/k3', reasoningEffort: '' },
         supervisor: { agent: 'codex' as const, model: 'gpt-5.6-terra', reasoningEffort: 'high' },
         task: { agent: 'grok' as const, model: 'grok-4.6', reasoningEffort: 'medium' },
+        auxiliary: {
+          enabled: true, allowProjectMaintenance: true,
+          agent: 'codex' as const, model: 'gpt-5.6-terra', reasoningEffort: 'medium',
+        },
       },
       agentIssue: {
         role: 'manager' as const, category: 'quota-limit' as const,
@@ -246,6 +250,7 @@ describe('project manager records', () => {
         manager: { agent: 'kimi', model: 'kimi-code/k3' },
         supervisor: { agent: 'codex', model: 'gpt-5.6-terra' },
         task: { agent: 'grok', model: 'grok-4.6' },
+        auxiliary: { enabled: true, allowProjectMaintenance: true, agent: 'codex', model: 'gpt-5.6-terra' },
       },
       agentIssue: { role: 'manager', category: 'quota-limit', summary: 'Weekly limit left: 0%' },
       agentReconfiguration: {

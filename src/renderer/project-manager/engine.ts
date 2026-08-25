@@ -196,6 +196,15 @@ export interface PreparedProjectTaskDelivery {
   delivery: string;
 }
 
+const PROJECT_ORCHESTRATION_DISCLOSURE = /项目\s*AI|监督\s*AI|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu;
+
+export function projectTaskInstructionDisclosureError(instruction: string): string | null {
+  const disclosure = instruction.trim().match(PROJECT_ORCHESTRATION_DISCLOSURE)?.[0];
+  return disclosure
+    ? `任务 AI 指令不能暴露内部编排身份或路由信息：${disclosure}`
+    : null;
+}
+
 /** Keep the persisted contract authoritative while exposing only the executable action to guards. */
 export function prepareProjectTaskDelivery(
   contract: ProjectSupervisorContract,

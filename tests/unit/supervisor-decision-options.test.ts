@@ -149,7 +149,7 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
     expect(briefing).toContain('.wmux/tmp/<唯一文件名>.txt');
     expect(briefing).toContain('--next-file');
-    expect(briefing).toContain('禁止在项目根目录创建监督草稿');
+    expect(briefing).toContain('禁止在目标项目创建监督草稿');
     expect(briefing).toContain('不要把本消息原样转发');
   });
 

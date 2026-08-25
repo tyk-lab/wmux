@@ -146,7 +146,7 @@ function isProjectSafeExitState(value: unknown): boolean {
     if (!checkpoint || typeof checkpoint !== 'object') return false;
     const item = checkpoint as Record<string, unknown>;
     return typeof item.surfaceId === 'string'
-      && ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(item.role))
+      && ['project-ai', 'supervisor-ai', 'task-ai', 'auxiliary-task-ai'].includes(String(item.role))
       && typeof item.label === 'string'
       && (item.workItemId === undefined || typeof item.workItemId === 'string')
       && ['idle', 'working', 'blocked', 'unknown'].includes(String(item.activityState))
@@ -159,19 +159,23 @@ function isProjectSafeExitState(value: unknown): boolean {
 function isProjectAgentConfig(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const config = value as Record<string, unknown>;
-  return ['manager', 'supervisor', 'task'].every((role) => {
+  const selectionsValid = ['manager', 'supervisor', 'task', 'auxiliary'].every((role) => {
     const selection = config[role];
     return !!selection && typeof selection === 'object'
       && typeof (selection as Record<string, unknown>).agent === 'string'
       && typeof (selection as Record<string, unknown>).model === 'string'
       && typeof (selection as Record<string, unknown>).reasoningEffort === 'string';
   });
+  const auxiliary = config.auxiliary as Record<string, unknown> | undefined;
+  return selectionsValid
+    && typeof auxiliary?.enabled === 'boolean'
+    && typeof auxiliary?.allowProjectMaintenance === 'boolean';
 }
 
 function isProjectAgentIssue(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const issue = value as Record<string, unknown>;
-  return ['manager', 'supervisor', 'task'].includes(String(issue.role))
+  return ['manager', 'supervisor', 'task', 'auxiliary'].includes(String(issue.role))
     && ['rate-limit', 'quota-limit'].includes(String(issue.category))
     && typeof issue.summary === 'string'
     && Number.isFinite(issue.detectedAt);
@@ -181,7 +185,7 @@ function isProjectAgentReconfiguration(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const state = value as Record<string, unknown>;
   const rolesValid = (roles: unknown) => Array.isArray(roles)
-    && roles.every((role) => ['manager', 'supervisor', 'task'].includes(String(role)));
+    && roles.every((role) => ['manager', 'supervisor', 'task', 'auxiliary'].includes(String(role)));
   return ['applying', 'pending-safe-point', 'failed'].includes(String(state.status))
     && Number.isFinite(state.requestedAt)
     && rolesValid(state.roles)

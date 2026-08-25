@@ -26,6 +26,10 @@ export function projectTaskTerminalDefaults(config: ProjectManagementAgentConfig
   return normalizeProjectManagementAgentConfig(config).task;
 }
 
+export function projectAuxiliaryTaskTerminalDefaults(config: ProjectManagementAgentConfig) {
+  return normalizeProjectManagementAgentConfig(config).auxiliary;
+}
+
 export function projectManagerRuntimeDefaults(config: ProjectManagementAgentConfig) {
   return normalizeProjectManagementAgentConfig(config).manager;
 }

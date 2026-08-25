@@ -202,6 +202,35 @@ describe('PtyManager', () => {
     }
   });
 
+  it('stages supervisor input in its app-owned runtime instead of the target project', async () => {
+    const projectCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-supervisor-project-'));
+    const runtimeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-supervisor-runtime-'));
+    const manager = makeManager();
+    const { id } = manager.create({
+      shell: TEST_SHELL,
+      cwd: projectCwd,
+      env: TEST_ENV,
+      inputStagingCwd: runtimeCwd,
+    });
+    try {
+      const staged = manager.stageInputFile(id, '监督 briefing', 'ordinary');
+      expect(staged.filePath).toBe(path.join(fs.realpathSync(runtimeCwd), ...staged.reference.split('/')));
+      expect(staged.filePath.startsWith(fs.realpathSync(projectCwd))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 2_000);
+        const unsubscribe = manager.onExit(id, () => {
+          clearTimeout(timeout);
+          unsubscribe();
+          resolve();
+        });
+        manager.kill(id);
+      });
+      fs.rmSync(projectCwd, { recursive: true, force: true });
+      fs.rmSync(runtimeCwd, { recursive: true, force: true });
+    }
+  });
+
   it('resize does not throw', async () => {
     const manager = makeManager();
     const { id } = manager.create({

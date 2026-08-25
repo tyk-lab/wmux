@@ -44,6 +44,8 @@ describe('hook event ordering', () => {
     const handler = appSource.match(/function handleSupervisorHookEvent\(event: any\): void \{[\s\S]*?^\}/m)?.[0] || '';
     expect(handler).toContain("lifecycle === 'UserPromptSubmit'");
     expect(handler).toContain('confirmSubmittedSupervisorDelivery');
+    expect(appSource).toContain("supervisorBriefingStatus: 'confirmed'");
+    expect(appSource).toContain('delivery.bootstrapOnRuntimeReady');
     expect(handler).toContain("supervisorLaneControlState(item) !== 'stopped'");
     expect(handler).toContain('confirmSupervisorUserSubmitFromHook');
     expect(handler).toContain('userDirectTaskTurnId: confirmedUserSubmit ? nextWorkerTurnId : undefined');

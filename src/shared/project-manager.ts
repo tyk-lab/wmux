@@ -469,6 +469,8 @@ export interface ProjectWorkItem {
   dependencies: string[];
   supervisorLaneId?: string;
   workerSurfaceId?: string;
+  /** Monotonic assignment generation shared with the dedicated supervisor lane. */
+  assignmentVersion?: number;
   attempts: number;
   /** Decisions consumed in the current renewable autonomy window. */
   decisionsUsed: number;
@@ -867,7 +869,7 @@ export interface ProjectManagerPendingDelivery {
   submittedAt?: number;
 }
 
-export type ProjectAgentRole = 'manager' | 'supervisor' | 'task';
+export type ProjectAgentRole = 'manager' | 'supervisor' | 'task' | 'auxiliary';
 
 export interface ProjectAgentRuntimeIssue {
   role: ProjectAgentRole;
@@ -890,7 +892,7 @@ export interface ProjectAgentReconfiguration {
 
 export interface ProjectSafeExitTerminalCheckpoint {
   surfaceId: string;
-  role: 'project-ai' | 'supervisor-ai' | 'task-ai';
+  role: 'project-ai' | 'supervisor-ai' | 'task-ai' | 'auxiliary-task-ai';
   label: string;
   workItemId?: string;
   activityState: 'idle' | 'working' | 'blocked' | 'unknown';
@@ -966,6 +968,21 @@ export interface ProjectManagerSession {
   pausedByPortfolio?: boolean;
   /** The one task terminal reserved for this project, including before supervision starts. */
   taskTerminalSurfaceId?: string;
+  /** Optional second task Agent, invisible to the main task AI and limited to auxiliary work. */
+  auxiliaryTaskTerminalSurfaceId?: string;
+  auxiliaryTask?: {
+    id: string;
+    requesterRole: 'project-ai' | 'supervisor-ai';
+    requesterSurfaceId: string;
+    requesterLaneId?: string;
+    kind: 'research' | 'documentation' | 'progress' | 'git-commit';
+    task: string;
+    allowedPaths: string[];
+    status: 'running' | 'completed' | 'failed';
+    startedAt: number;
+    completedAt?: number;
+    summary?: string;
+  };
   /** The only work item currently bound to the persistent task/supervisor runtime. */
   activeWorkItemId?: string;
   managerSurfaceId?: string;

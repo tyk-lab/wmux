@@ -190,9 +190,17 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-update' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
-  'project.task.dispatch': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'task-dispatch' })})`,
+  'project.supervisor.assign': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-assign' })})`,
     requireResult: 'Project manager bridge is unavailable',
+  },
+  'project.auxiliary.dispatch': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'auxiliary-dispatch' })})`,
+    requireResult: 'Project auxiliary bridge is unavailable',
+  },
+  'project.auxiliary.status': {
+    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'auxiliary-status' })})`,
+    requireResult: 'Project auxiliary bridge is unavailable',
   },
   'project.progress.sync': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'progress-sync' })})`,

@@ -43,6 +43,10 @@ const paneWrapperSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/SplitPane/PaneWrapper.tsx'),
   'utf8',
 );
+const surfaceTabBarSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/components/SplitPane/SurfaceTabBar.tsx'),
+  'utf8',
+);
 const consoleSurfaceSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/project-manager/console-surface.ts'),
   'utf8',
@@ -100,6 +104,16 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
     expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核');
+    expect(projectManagerDialogSource).not.toContain('启用辅助任务 AI（项目最多两个任务 AI）');
+    expect(projectManagerDialogSource).not.toContain('授权辅助 AI 根据项目情况更新项目进度和相关文档，并提交受控变更');
+    expect(pipeBridgeSource).toContain('ensureProjectAuxiliaryRuntime');
+    expect(pipeBridgeSource).toContain('projectRuntimeWorkspace: true');
+    expect(pipeBridgeSource).toContain('transientSupervisorWorkspace: true');
+    expect(pipeBridgeSource).toContain('waitForProjectSupervisorBriefing');
+    expect(pipeBridgeSource).toContain('项目监督 AI 未确认完整角色 briefing；已阻止任务派发');
+    expect(pipeBridgeSource).toContain('[角色链硬边界] 主任务 AI 尚未收到当前成果合同');
+    expect(pipeBridgeSource).toContain("action === 'auxiliary-dispatch'");
+    expect(pipeBridgeSource).toContain('用户尚未授权辅助 AI 更新项目进度、相关文档或提交受控变更');
     expect(projectManagerDialogSource).toContain('立即切换到对应终端');
     expect(projectManagerDialogSource).toContain('不会自动选择或确认 Hook');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
@@ -107,6 +121,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
     expect(dialogSource).toContain('GROK_THINKING_OPTIONS');
     expect(dialogSource).toContain('Grok Thinking');
+    expect(dialogSource).toContain('supervisorLaunchIsolationError(launchCmd)');
     expect(projectManagerDialogSource).toContain('项目前置条件（可选，每行一项）');
     expect(projectManagerDialogSource).toContain('当前主目标完成条件（可选，每行一项）');
     expect(projectManagerDialogSource).toContain("setPreconditions('无额外物理前置条件')");
@@ -449,6 +464,9 @@ describe('supervisor setup dialog feedback', () => {
 
   it('restores a user-saved terminal snapshot and allows selecting its source', () => {
     expect(dialogSource).toContain('恢复终端快照');
+    expect(dialogSource).toContain('前往恢复入口');
+    expect(dialogSource).toContain('此处就是恢复入口');
+    expect(dialogSource).toContain('首次创建档案请先在侧栏对应监督卡片点击“保存恢复档案”');
     expect(dialogSource).toContain('终端恢复档案（默认最新）');
     expect(dialogSource).toContain('restoreOptions[0]');
     expect(dialogSource).toContain('value={restoreSourceIdFor(candidate.surfaceId)}');
@@ -467,6 +485,14 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('const targetLocation = terminalLocations.get(lane.surfaceId)');
     expect(dialogSource).toContain("addSurface(targetLocation.workspaceId, targetLocation.paneId, 'terminal'");
     expect(panelSource).toContain('保存恢复档案');
+    expect(panelSource).toContain('保存监督进度');
+    expect(panelSource).toContain('刷新监督进度');
+    expect(panelSource).toContain("addSurface(taskLocation.workspace.id, taskLocation.paneId, 'supervisor'");
+    expect(panelSource).toContain('监督状态');
+    expect(panelSource).toContain('任务终端');
+    expect(surfaceTabBarSource).toContain("? '监督中'");
+    expect(surfaceTabBarSource).toContain("? '监督暂停'");
+    expect(surfaceTabBarSource).toContain("'监督待续'");
     expect(panelSource).toContain('刷新恢复档案');
     expect(panelSource).toContain('删除恢复档案');
     expect(panelSource).toContain('恢复终端快照');
@@ -477,6 +503,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('pendingInitialReview: true, awaitingReview: false');
     expect(panelSource).toContain("String(taskState?.state || 'unknown') === 'idle'");
     expect(panelSource).toContain('recoverySnapshotId: snapshot.snapshotId');
+    expect(panelSource).not.toContain('不要恢复旧命令、旧监督协议');
+    expect(panelSource).toContain("cancelPending(item.id, '当前普通监督协议禁止向任务 AI 注入旧监督上下文')");
     expect(dialogSource).toContain('.filter((snapshot) => snapshot.surfaceId === candidate.surfaceId)');
     expect(dialogSource).toContain('option.snapshotId === restoreSources[candidate.surfaceId]');
     expect(dialogSource).toContain('maxChildThreads: normalizeTaskMaxChildThreads(config.maxChildThreads)');

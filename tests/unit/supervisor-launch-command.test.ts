@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
+  supervisorLaunchIsolationError,
   supervisorLauncherDisplayName,
 } from '../../src/renderer/supervisor/launch-command';
 
@@ -108,10 +109,13 @@ describe('supervisor launch command', () => {
       { isolateSupervisor: true, projectDir: "E:\\Work\\O'Brien", isolationKey: 'lane-auth' },
     );
 
-    expect(command).toContain("$env:WMUX_SUPERVISOR_PROJECT_DIR = 'E:\\Work\\O''Brien'");
+    expect(command).not.toContain('WMUX_SUPERVISOR_PROJECT_DIR');
     expect(command).toContain('\\supervisor\\runtime\\lane-auth');
     expect(command).toContain('Set-Location -LiteralPath $wmuxSupervisorRuntimeDir');
-    expect(command).toContain('--approve');
+    expect(command).toContain('--no-approve');
+    expect(command).toContain('--tools read,grep,find,ls,powershell');
+    expect(command).not.toMatch(/(?:^|\s)(?:edit|write)(?:,|\s|$)/i);
+    expect(command).not.toMatch(/(?:^|\s)--approve(?:\s|$)/i);
     expect(command).toContain('--no-skills');
     expect(command).toContain('--no-prompt-templates');
     expect(command).toContain('--no-context-files');
@@ -127,6 +131,8 @@ describe('supervisor launch command', () => {
     );
 
     expect(command).toContain("try { codex --model 'gpt-5.6-terra'");
+    expect(command).toContain('--sandbox workspace-write');
+    expect(command).toContain('--ask-for-approval never');
     expect(command).toContain('finally { exit $(if ($null -eq $LASTEXITCODE)');
   });
 
@@ -152,6 +158,7 @@ describe('supervisor launch command', () => {
 
     expect(command).toContain("$wmuxSupervisorSkillsDir = Join-Path $wmuxSupervisorRuntimeDir 'skills'");
     expect(command).toContain('--skills-dir $wmuxSupervisorSkillsDir');
+    expect(command).toContain('--plan');
   });
 
   it('disables memory, subagents and web search for a dedicated Grok supervisor', () => {
@@ -165,14 +172,34 @@ describe('supervisor launch command', () => {
     expect(command.match(/--no-memory/g)).toHaveLength(1);
     expect(command).toContain('--no-subagents');
     expect(command).toContain('--disable-web-search');
+    expect(command).toContain('--permission-mode plan');
+    expect(command).toContain('--sandbox workspace-write');
   });
 
-  it('preserves an unknown custom launcher when supervisor isolation is requested', () => {
+  it('removes unsafe custom approval modes from isolated supervisors', () => {
+    expect(buildSupervisorLaunchCommand(
+      'codex --dangerously-bypass-approvals-and-sandbox --sandbox danger-full-access',
+      '', '', { isolateSupervisor: true },
+    )).not.toContain('dangerously-bypass');
+    expect(buildSupervisorLaunchCommand(
+      'kimi --auto --yolo', '', '', { isolateSupervisor: true },
+    )).toContain('kimi --plan');
+    expect(buildSupervisorLaunchCommand(
+      'grok --always-approve --permission-mode bypassPermissions', '', '', { isolateSupervisor: true },
+    )).toContain('grok --permission-mode plan --sandbox workspace-write');
+    expect(buildSupervisorLaunchCommand(
+      'opencode --auto --agent build', '', '', { isolateSupervisor: true },
+    )).toContain('opencode --agent plan');
+  });
+
+  it('fails closed for an unknown custom launcher when supervisor isolation is requested', () => {
     expect(buildSupervisorLaunchCommand(
       'my-supervisor --profile safe',
       '',
       '',
       { isolateSupervisor: true, projectDir: 'E:\\project' },
-    )).toBe('my-supervisor --profile safe');
+    )).toContain('不支持的监督 AI 启动器');
+    expect(supervisorLaunchIsolationError('my-supervisor --profile safe')).toContain('未知启动器');
+    expect(supervisorLaunchIsolationError('codex --model custom')).toBeNull();
   });
 });

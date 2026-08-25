@@ -106,6 +106,7 @@ const PROJECT_AGENT_ROLE_LABELS = {
   manager: '项目 AI',
   supervisor: '专属监督 AI',
   task: '任务 AI',
+  auxiliary: '辅助任务 AI',
 } as const;
 
 const PROJECT_ALERT_LABELS: Record<string, string> = {
@@ -205,7 +206,8 @@ function ProjectAgentConfigFields({
   onChange: (next: ProjectManagementAgentConfig) => void;
 }) {
   return (
-    <div className="project-manager-dialog__agent-grid">
+    <>
+      <div className="project-manager-dialog__agent-grid">
       {PROJECT_AGENT_ROWS.map((row) => {
         const selection = value[row.key];
         const models = modelOptionsFor(selection.agent);
@@ -255,7 +257,8 @@ function ProjectAgentConfigFields({
           </article>
         );
       })}
-    </div>
+      </div>
+    </>
   );
 }
 

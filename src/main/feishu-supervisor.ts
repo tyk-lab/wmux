@@ -333,7 +333,7 @@ function failedResult(value: unknown): boolean {
 
 type FeishuTerminalActivityState = 'idle' | 'working' | 'blocked' | 'unknown';
 type FeishuTerminalControlMode = 'ordinary' | 'project';
-type FeishuTerminalAgentRole = 'project-ai' | 'supervisor-ai' | 'task-ai';
+type FeishuTerminalAgentRole = 'project-ai' | 'supervisor-ai' | 'task-ai' | 'auxiliary-task-ai';
 
 interface FeishuListTerminal {
   surfaceId: string;
@@ -765,6 +765,7 @@ const TERMINAL_AGENT_ROLE_LABELS: Record<FeishuTerminalAgentRole, string> = {
   'project-ai': '项目 AI',
   'supervisor-ai': '专属监督 AI',
   'task-ai': '任务 AI',
+  'auxiliary-task-ai': '辅助任务 AI',
 };
 
 function projectTerminalRuntimeText(terminal: FeishuListTerminal): string {
@@ -2204,7 +2205,7 @@ function parseListResult(value: unknown): FeishuListResult | null {
         terminalMode: ['ordinary', 'project'].includes(String(terminal.terminalMode))
           ? terminal.terminalMode as FeishuTerminalControlMode
           : 'ordinary',
-        agentRole: ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(terminal.agentRole))
+        agentRole: ['project-ai', 'supervisor-ai', 'task-ai', 'auxiliary-task-ai'].includes(String(terminal.agentRole))
           ? terminal.agentRole as FeishuTerminalAgentRole
           : undefined,
         projectId: typeof terminal.projectId === 'string' ? terminal.projectId : undefined,
@@ -2257,7 +2258,7 @@ function parseTerminalScreenResult(value: unknown): FeishuTerminalScreenResult |
       terminalMode: ['ordinary', 'project'].includes(String(terminal.terminalMode))
         ? terminal.terminalMode as FeishuTerminalControlMode
         : 'ordinary',
-      agentRole: ['project-ai', 'supervisor-ai', 'task-ai'].includes(String(terminal.agentRole))
+      agentRole: ['project-ai', 'supervisor-ai', 'task-ai', 'auxiliary-task-ai'].includes(String(terminal.agentRole))
         ? terminal.agentRole as FeishuTerminalAgentRole
         : undefined,
       projectId: typeof terminal.projectId === 'string' ? terminal.projectId : undefined,

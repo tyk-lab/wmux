@@ -42,6 +42,6 @@ export function buildAdoptedPlanBriefing(options: {
     options.alternatives?.trim() ? `[AI 备选方案] ${options.alternatives.trim()}` : '',
     '',
     '用户补充信息是决策依据，不是可原样发送到任务终端的命令。请先 read-screen 获取任务终端最新状态，再基于用户选择、用户补充信息、当前任务、计划约束和终端证据，判断并整理成完整、明确、可执行的下一步。',
-    `整理完成后，使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
+    `整理完成后，使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在目标项目创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
   ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
 }

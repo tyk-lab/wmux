@@ -19,7 +19,7 @@ import { detectSupervisorLauncher } from './launch-command';
 export interface SupervisorProjectContext {
   projectId: string;
   goalId?: string;
-  workItemId: string;
+  workItemId?: string;
   requirementsVersion?: number;
   authorizationVersion?: number;
   attempts?: number;
@@ -118,7 +118,7 @@ export function evaluateSupervisorDecisionPreflight(
     !session.active ? '监督会话未启动' : '',
     session.paused ? '监督会话已暂停' : '',
     laneState !== 'active' ? `监督通道为 ${laneState}` : '',
-    projectManaged && options.project?.bindingCurrent !== true
+    projectManaged && options.project?.workItemId && options.project.bindingCurrent !== true
       ? options.project?.dependencyError || '项目、目标、工作项或合同版本绑定已失效'
       : '',
     pendingApproval && (!options.outcome || options.outcome !== 'needs-human')
@@ -130,6 +130,7 @@ export function evaluateSupervisorDecisionPreflight(
   const reviewReady = baseReady && lane.awaitingReview === true;
   const proactiveProjectReady = baseReady
     && projectManaged
+    && !!options.project?.workItemId
     && autonomous;
   const decisionReady = !options.outcome
     ? reviewReady || proactiveProjectReady

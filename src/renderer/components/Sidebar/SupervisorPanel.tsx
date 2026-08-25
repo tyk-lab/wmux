@@ -76,6 +76,7 @@ import {
   dedicatedSupervisorSurfaceId,
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
+  ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../../store/supervisor-slice';
@@ -165,7 +166,7 @@ function buildSnapshotTaskRecovery(snapshot: SupervisedTerminalSnapshot): string
       ? `剩余验收缺口：${snapshot.projectContext.acceptanceGaps.join('；')}`
       : '',
     `停止条件：${snapshot.supervisor.config.stopWhen}`,
-    '先读取并遵循当前项目适用的 AGENTS、技能和仓库规范。不要恢复旧命令、旧监督协议或旧对话推理；依据项目文件和上述已核对事实继续形成可验证成果。',
+    '先读取并遵循当前项目适用的 AGENTS、技能和仓库规范。不要恢复旧命令、旧会话管理信息或旧对话推理；依据项目文件和上述已核对事实继续形成可验证成果。',
   ].filter(Boolean).join('\n');
 }
 
@@ -180,6 +181,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const resumeOrdinarySupervisor = useStore((s) => s.resumeOrdinarySupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
+  const cancelPending = useStore((s) => s.cancelPending);
   const updateLane = useStore((s) => s.updateLane);
   const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
@@ -273,6 +275,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const ordinaryEnabled = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'active');
   const ordinaryWaiting = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
   const ordinaryPaused = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'paused');
+  const savableOrdinaryLanes = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) !== 'stopped');
   const ordinaryRetained = ordinaryLanes.some(isSupervisorLaneBound);
   if (!expanded && ordinaryLanes.length === 0) return null;
   const visiblePendingApprovals = supervisor.pendingApprovals.filter((approval) => (
@@ -344,20 +347,47 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     || (!!scopedProjectId && entry.laneId === '-' && entry.action.includes('项目监督'))
   ));
 
+  const locateSurface = (surfaceId: SurfaceId) => {
+    for (const workspace of useStore.getState().workspaces) {
+      for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+        const pane = findLeaf(workspace.splitTree, candidatePaneId);
+        const index = pane?.surfaces.findIndex((surface) => surface.id === surfaceId) ?? -1;
+        if (index >= 0) return { workspace, paneId: candidatePaneId, index };
+      }
+    }
+    return null;
+  };
+
+  const focusSurface = (surfaceId: SurfaceId): boolean => {
+    const location = locateSurface(surfaceId);
+    if (!location) return false;
+    selectWorkspace(location.workspace.id);
+    selectSurface(location.workspace.id, location.paneId, location.index);
+    return true;
+  };
+
+  const openSupervisedTerminal = () => {
+    const pairedLane = ordinaryLanes.find((lane) => locateSurface(lane.surfaceId));
+    if (!pairedLane || !focusSurface(pairedLane.surfaceId)) openSupervisorSetup();
+  };
+
   const openSupervisorSession = () => {
-    const pairedLane = ordinaryLanes.find((lane) => dedicatedSupervisorSurfaceId(lane));
-    const target = pairedLane?.workspaceId
-      ? workspaces.find((workspace) => workspace.id === pairedLane.workspaceId)
-      : undefined;
-    if (target && pairedLane?.paneId) {
-      const pane = findLeaf(target.splitTree, pairedLane.paneId);
-      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(pairedLane);
-      const index = pane?.surfaces.findIndex((surface) => surface.id === supervisorSurfaceId) ?? -1;
-      selectWorkspace(target.id);
-      if (index >= 0) selectSurface(target.id, pairedLane.paneId, index);
+    const pairedLane = ordinaryLanes.find((lane) => locateSurface(lane.surfaceId));
+    if (!pairedLane) {
+      openSupervisorSetup();
       return;
     }
-    openSupervisorSetup();
+    const taskLocation = locateSurface(pairedLane.surfaceId)!;
+    let pane = findLeaf(taskLocation.workspace.splitTree, taskLocation.paneId);
+    let panelSurfaceId = pane?.surfaces.find((surface) => (
+      surface.type === 'supervisor' && !surface.projectSupervisorProjectId
+    ))?.id;
+    if (!panelSurfaceId) {
+      panelSurfaceId = addSurface(taskLocation.workspace.id, taskLocation.paneId, 'supervisor', {
+        customTitle: '普通监督状态',
+      }) || undefined;
+    }
+    if (!panelSurfaceId || !focusSurface(panelSurfaceId)) openSupervisorSetup();
   };
 
   const sendGoalConstructionMessage = (lane: SupervisorLane) => {
@@ -449,6 +479,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
       const isContextRecovery = item.source === 'supervisor-context-recovery';
+      if (isContextRecovery && lane?.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION) {
+        cancelPending(item.id, '当前普通监督协议禁止向任务 AI 注入旧监督上下文');
+        appendSupervisorLog(item.laneId, '旧恢复指令已取消', '任务 AI 只接收当前成果任务和项目事实');
+        return;
+      }
       let adoptedPlan = '';
       if (isContextRecovery) {
         if (!lane || supervisorLaneControlState(lane) !== 'active' || !item.text.trim()) return;
@@ -1111,6 +1146,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     }
   };
 
+  const saveCompactSessionProgress = async () => {
+    for (const lane of savableOrdinaryLanes) await saveTerminalSnapshot(lane);
+  };
+
   const restoreTerminalSnapshot = async (lane: SupervisorLane) => {
     if (!lane.projectDir || !lane.recoverySnapshotId || isProjectManagedSupervisorLane(lane)) return;
     setSnapshotActionLaneId(lane.id);
@@ -1288,10 +1327,24 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           <span className="sup-panel__dot" />
           <span className="sup-panel__title">AI 监督</span>
           <span className="sup-panel__status">{statusLabel}</span>
-          <span className="sup-panel__meta-right">{visibleChannelCount} 通道 · 展开会话</span>
+          <span className="sup-panel__meta-right">{visibleChannelCount} 通道 · 打开状态面板</span>
         </button>
         <div className="sup-panel__compact-actions">
-          <button type="button" onClick={openSupervisorSession}>打开</button>
+          <button type="button" onClick={openSupervisorSession}>监督状态</button>
+          <button type="button" onClick={openSupervisedTerminal}>任务终端</button>
+          {savableOrdinaryLanes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void saveCompactSessionProgress()}
+              disabled={snapshotActionLaneId !== null}
+            >
+              {snapshotActionLaneId
+                ? '保存中…'
+                : savableOrdinaryLanes.every((lane) => !!lane.recoverySnapshotId)
+                  ? '刷新监督进度'
+                  : '保存监督进度'}
+            </button>
+          )}
           {ordinaryEnabled.length > 0 && (
             <button type="button" onClick={pauseActiveSession}>暂停普通监督</button>
           )}

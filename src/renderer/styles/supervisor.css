@@ -552,6 +552,34 @@
   margin-top: 10px;
 }
 
+.project-manager-dialog__auxiliary-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.project-manager-dialog__auxiliary-options .supervisor-dialog__checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.13);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.project-manager-dialog__auxiliary-options .supervisor-dialog__checkbox input {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+}
+
 .project-manager-dialog__recovery-list {
   display: grid;
   gap: 7px;
@@ -2205,6 +2233,10 @@
     grid-template-columns: 1fr;
   }
 
+  .project-manager-dialog__auxiliary-options {
+    grid-template-columns: 1fr;
+  }
+
   .project-manager-dialog__directory-row {
     align-items: stretch;
     flex-direction: column;
@@ -2332,6 +2364,7 @@
 .sup-panel__compact-actions,
 .sup-panel__lane-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 8px 8px;
 }

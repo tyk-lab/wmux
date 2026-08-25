@@ -167,7 +167,9 @@ const PROJECT_AI_METHODS = new Set([
   'project.terminals',
   'project.task.create',
   'project.task.update',
-  'project.task.dispatch',
+  'project.supervisor.assign',
+  'project.auxiliary.dispatch',
+  'project.auxiliary.status',
   'project.progress.sync',
   'project.supervisor.transition.ack',
   'project.goal.plan',
@@ -219,6 +221,14 @@ export function authorizeManagedRoleV2(
       || (binding.role === 'supervisor' && method === 'supervisor.goal.draft')
       || (binding.role === 'supervisor' && method === 'supervisor.reply'))) {
     return { allowed: true };
+  }
+
+  if (binding.role === 'project-supervisor'
+    && (method === 'project.auxiliary.dispatch' || method === 'project.auxiliary.status')) {
+    const requestedProjectId = String(params.projectId || params.project || '').trim();
+    return !requestedProjectId || requestedProjectId === binding.projectId
+      ? { allowed: true }
+      : { allowed: false, reason: '项目监督 AI 只能调度当前项目的辅助任务 AI' };
   }
 
   if (binding.role === 'project-ai' && PROJECT_AI_METHODS.has(method)) {
@@ -350,9 +360,9 @@ export function buildProjectAiRuntimeContext(
           condition: '项目运行中、阶段计划存在且所有门禁就绪',
         },
         {
-          command: `wmux project dispatch --project ${projectId} --task <工作项ID>`,
+          command: `wmux project supervise --project ${projectId} --task <工作项ID>`,
           available: projectActive && executionReady && runnableWorkItem,
-          condition: '存在当前目标下依赖已满足的工作项，且没有冲突监督链',
+          condition: '把依赖已满足的工作项交给专属监督；项目 AI 不会写入主任务终端',
         },
         {
           command: `wmux project task-update --project ${projectId} --json-file <.wmux/tmp/文件>`,
@@ -408,10 +418,21 @@ export function buildProjectAiRuntimeContext(
           available: mutableProject && !session.pendingUserQuestion,
           condition: '存在真实业务歧义、用户专属信息或必须人工处理的边界',
         },
+        {
+          command: `wmux project auxiliary-dispatch --project ${projectId} --json-file <.wmux/tmp/文件>`,
+          available: mutableProject && session.agentConfig?.auxiliary?.enabled === true,
+          condition: '需要资料调查、受控文档/进度维护或用户已授权的辅助 Git commit',
+        },
+        {
+          command: `wmux project auxiliary-status --project ${projectId}`,
+          available: session.agentConfig?.auxiliary?.enabled === true,
+          condition: '查看辅助任务 AI 当前任务、终端状态和结果',
+        },
       ],
       forbidden: [
         '读取、比较或操作其他项目',
         '使用通用 wmux send/send-key 直接控制监督 AI 或任务 AI',
+        '向主任务 AI 暴露辅助任务 AI，或让辅助 AI 修改业务源码、测试、构建配置与依赖',
         '代替任务 AI 修改项目交付文件、执行实现或运行测试',
         '绕过需求、认知基线、进度同步和阶段计划门禁派发任务',
       ],

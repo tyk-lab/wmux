@@ -6,6 +6,7 @@ import { handleBridgeV2 } from './v2-bridge';
 import { authorizeSurfaceCapabilityRequest } from './surface-capability-guard';
 import { distributeAgents } from './agent-manager';
 import { PipeServer } from './pipe-server';
+import { SupervisorFileBridge } from './supervisor-file-bridge';
 import { PortScanner } from './port-scanner';
 import { CDPProxy } from './cdp-proxy';
 import { IPC_CHANNELS, SurfaceId } from '../shared/types';
@@ -353,6 +354,15 @@ const pipeServer = new PipeServer(
   pipeToken,
   (token) => ptyManager.surfaceIdForAuthToken(token),
   authorizeSurfaceCapabilityRequest,
+);
+const supervisorFileBridge = new SupervisorFileBridge(
+  path.join(getAppDataDir(), 'supervisor', 'runtime'),
+  (request, respond, respondError) => pipeServer.dispatchV2(
+    request,
+    respond,
+    respondError,
+    { requireSurfaceToken: true },
+  ),
 );
 const sshEditTransactions = new SshEditTransactionManager(sshManager);
 const portScanner = new PortScanner();
@@ -1431,6 +1441,7 @@ app.whenReady().then(() => {
         respondError(-32601, `Method not found: ${request.method}`);
     }
   });
+  supervisorFileBridge.start();
 });
 
 let runtimeResourcesReleased = false;
@@ -1443,6 +1454,7 @@ function releaseRuntimeResources(): void {
   sshManager.disconnectAll();
   sshTransferCache.cleanup();
   pipeServer.stop();
+  supervisorFileBridge.stop();
   cdpProxy.stop();
   portScanner.stop();
 }

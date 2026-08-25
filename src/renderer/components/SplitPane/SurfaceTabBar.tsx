@@ -7,7 +7,7 @@ import { IconAdd, IconSplit, IconSplitDown, IconClose, IconCaret } from './icons
 import type { SurfaceDragPayload, SurfaceDragPreviewTarget } from './drag-preview-types';
 import { parseSurfaceDragData } from './surface-drag-preview';
 import { getSurfaceLabel } from './surface-label';
-import { isSurfaceSupervised } from '../../store/supervisor-slice';
+import { surfaceSupervisionControlState } from '../../store/supervisor-slice';
 import { fireDesktopNotification } from '../../notification-policy';
 
 interface SurfaceTabBarProps {
@@ -366,7 +366,13 @@ export default function SurfaceTabBar({
           const isActive = index === activeSurfaceIndex;
           const agentMeta = getAgentMeta(surface.id);
           const isAgent = !!agentMeta;
-          const isSupervised = isSurfaceSupervised(supervisor, surface.id);
+          const supervisionState = surfaceSupervisionControlState(supervisor, surface.id);
+          const isSupervised = supervisionState !== null;
+          const supervisionLabel = supervisionState === 'active'
+            ? '监督中'
+            : supervisionState === 'paused'
+              ? '监督暂停'
+              : '监督待续';
           const isRenaming = renamingId === surface.id;
           const progress = surfaceProgress[surface.id];
           return (
@@ -440,8 +446,12 @@ export default function SurfaceTabBar({
                 <span className="surface-tab__label">{getSurfaceLabel(surface, agentMeta?.label, workspaceShell)}</span>
               )}
               {isSupervised && (
-                <span className="surface-tab__supervised-badge" title="该任务终端正在由 AI 监督">
-                  已被检测
+                <span
+                  className="surface-tab__supervised-badge"
+                  data-state={supervisionState}
+                  title={`该任务终端当前状态：${supervisionLabel}`}
+                >
+                  {supervisionLabel}
                 </span>
               )}
               {surfaces.length > 1 && !isRenaming && (

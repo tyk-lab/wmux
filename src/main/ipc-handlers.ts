@@ -48,7 +48,7 @@ import {
   formatOpenSshFingerprint,
 } from './ssh-known-hosts';
 import { SshCredentialStore } from './ssh-credential-store';
-import { ensureCodexSupervisorRuntimeTrusted } from './codex-context';
+import { ensureCodexSupervisorRuntimeTrusted, ensureSupervisorRuntimeDirectory } from './codex-context';
 import {
   SshTransferCache,
   validateLocalUploadFiles,
@@ -135,7 +135,18 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
         ...options,
         cwd: options.cwd || process.env.USERPROFILE || 'C:\\',
       };
-      const { codexSupervisorRuntimeIsolationKey, ...ptyOptions } = resolvedOptions;
+      const { supervisorRuntimeIsolationKey, codexSupervisorRuntimeIsolationKey, ...ptyOptions } = resolvedOptions;
+      if (typeof supervisorRuntimeIsolationKey === 'string' && supervisorRuntimeIsolationKey.trim()) {
+        const runtimeDirectory = ensureSupervisorRuntimeDirectory(
+          app.getPath('appData'),
+          supervisorRuntimeIsolationKey,
+        );
+        ptyOptions.env = {
+          ...ptyOptions.env,
+          WMUX_FILE_BRIDGE_DIR: path.join(runtimeDirectory, 'bridge'),
+        };
+        ptyOptions.inputStagingCwd = runtimeDirectory;
+      }
       if (typeof codexSupervisorRuntimeIsolationKey === 'string' && codexSupervisorRuntimeIsolationKey.trim()) {
         ensureCodexSupervisorRuntimeTrusted(app.getPath('appData'), codexSupervisorRuntimeIsolationKey);
       }

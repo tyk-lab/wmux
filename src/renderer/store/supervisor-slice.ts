@@ -209,6 +209,8 @@ export interface SupervisorLane {
   projectWorkItemId?: string;
   /** Project-management project that owns this lane; work-item IDs are only unique within it. */
   projectManagerProjectId?: string;
+  /** Must match the bound work item before this lane may dispatch or judge it. */
+  projectAssignmentVersion?: number;
   /** Project manager requested context rotation; only this lane's supervisor may execute it. */
   projectTaskRotationPending?: boolean;
   projectTaskRotationSummary?: string;
@@ -218,6 +220,9 @@ export interface SupervisorLane {
   surfaceId: SurfaceId;
   /** Dedicated visible AI terminal; it receives facts for this lane only. */
   supervisorSurfaceId?: SurfaceId | null;
+  /** Project work cannot dispatch until the dedicated supervisor acknowledges its full role briefing. */
+  supervisorBriefingStatus?: 'pending' | 'queued' | 'confirmed' | 'failed';
+  supervisorBriefingConfirmedAt?: number;
   paneId?: PaneId;
   workspaceId?: WorkspaceId;
   workspaceTitle?: string;
@@ -587,14 +592,25 @@ export function clearSupervisorLaneContext(
   };
 }
 
-/** A task terminal is marked only while its lane is actively supervised. */
+/** Return the retained supervision state for a task terminal, including paused/waiting lanes. */
+export function surfaceSupervisionControlState(
+  session: Pick<SupervisorSession, 'active' | 'lanes'>,
+  surfaceId: SurfaceId,
+): SupervisorLaneControlState | null {
+  const lane = session.lanes.find((candidate) => (
+    candidate.surfaceId === surfaceId && supervisorLaneControlState(candidate) !== 'stopped'
+  ));
+  if (!lane) return null;
+  const state = supervisorLaneControlState(lane);
+  return state === 'active' && !session.active ? 'paused' : state;
+}
+
+/** A task terminal is actively supervised only while both the session and its lane are active. */
 export function isSurfaceSupervised(
   session: Pick<SupervisorSession, 'active' | 'lanes'>,
   surfaceId: SurfaceId,
 ): boolean {
-  return session.active && session.lanes.some((lane) => (
-    supervisorLaneControlState(lane) === 'active' && lane.surfaceId === surfaceId
-  ));
+  return session.active && surfaceSupervisionControlState(session, surfaceId) === 'active';
 }
 
 export function supervisorLaneControlState(

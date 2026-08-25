@@ -22,6 +22,7 @@ import {
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   isSurfaceSupervised,
+  surfaceSupervisionControlState,
   ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorDefaultsForAgent,
   supervisorLaneControlState,
@@ -262,7 +263,7 @@ describe('supervisor isolation', () => {
     expect(boundary).toContain('输入框已有未提交文字时，禁止携带 --next');
     expect(boundary).toContain('.wmux/tmp/<唯一文件名>.txt');
     expect(boundary).toContain('--next-file');
-    expect(boundary).toContain('禁止在项目根目录');
+    expect(boundary).toContain('禁止在目标项目创建监督草稿');
     expect(boundary).toContain('立即结束当前回合并返回输入提示符');
     expect(boundary).toContain('禁止调用 sleep/wait');
   });
@@ -917,9 +918,14 @@ describe('supervisor isolation', () => {
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(true);
     session.active = false;
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
+    expect(surfaceSupervisionControlState(session, 'worker-a' as any)).toBe('paused');
     session.active = true;
+    session.lanes[0].controlState = 'paused';
+    expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
+    expect(surfaceSupervisionControlState(session, 'worker-a' as any)).toBe('paused');
     session.lanes[0].controlState = 'stopped';
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
+    expect(surfaceSupervisionControlState(session, 'worker-a' as any)).toBeNull();
   });
 
   it('names each visible supervisor tab after its worker lane', () => {
@@ -1097,6 +1103,10 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范');
     expect(briefing).not.toContain('主线程职责: 统筹方案、整合结果并完成最终验证');
     expect(briefing).not.toContain('子线程 1 职责');
+    expect(buildSupervisorBriefing(session, {
+      lane: lane({ projectManagerProjectId: 'pm-project' }),
+      state: 'idle',
+    })).toContain('你的运行目录只是监督隔离目录，不是实现工作区');
   });
 
   it('leaves task organization to the target project when no work mode is configured', () => {

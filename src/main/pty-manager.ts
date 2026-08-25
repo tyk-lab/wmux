@@ -267,6 +267,8 @@ interface PtyEntry {
   authOutputTail: string;
   /** Per-surface pipe capability. Child processes never receive the instance-wide token. */
   authToken: string;
+  /** App-owned directory used for staged supervisor instructions instead of the target project. */
+  inputStagingCwd?: string;
 }
 
 export interface CreateOptions {
@@ -282,6 +284,8 @@ export interface CreateOptions {
    *  they are baked into the shell's own startup (see `startupCommandsConsumed`
    *  in the return value) rather than injected later as keystrokes. */
   startupCommands?: string[];
+  /** App-owned supervisor runtime directory for temporary instruction staging. */
+  inputStagingCwd?: string;
   /** Secret-free credential lookup key for a password-authenticated SSH surface. */
   sshProfileId?: string;
 }
@@ -459,6 +463,7 @@ export class PtyManager {
       passwordInjected: false,
       authOutputTail: '',
       authToken: env.WMUX_PIPE_TOKEN,
+      inputStagingCwd: options.inputStagingCwd,
     };
 
     ptyProcess.onData((data) => {
@@ -579,7 +584,7 @@ export class PtyManager {
       throw new Error('临时投递文件必须为 1-256000 字符');
     }
 
-    const cwd = fs.realpathSync(entry.cwd);
+    const cwd = fs.realpathSync(entry.inputStagingCwd || entry.cwd);
     const tempRoot = path.join(cwd, '.wmux', 'tmp', 'terminal-input', isolationScope);
     fs.mkdirSync(tempRoot, { recursive: true });
     const realTempRoot = fs.realpathSync(tempRoot);

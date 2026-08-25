@@ -380,7 +380,7 @@ function bindAuthorizedPiOptimizationProject(projectId: string): ProjectManagerS
   const request = (globalThis.window as any).__wmux_projectManagerRequest;
   const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
   const created = await request({
-    action: 'task-dispatch',
+    action: 'supervisor-assign',
     callerSurfaceId: session?.managerSurfaceId,
     projectId,
     workItemId,
@@ -3626,7 +3626,9 @@ describe('supervisor decision bridge', () => {
     expect(recoveryBriefings).toContain('[恢复需求异常门禁｜先核对再继续]');
     expect(recoveryBriefings).toContain('wmux project ask');
     expect(recoveryBriefings).toContain('用户答复并写回项目定义前');
-  });('creates multiple project-AI sessions while rejecting a duplicate project directory', async () => {
+  });
+
+  it('creates multiple project-AI sessions while rejecting a duplicate project directory', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-projects' as any,
       title: '项目组合',
@@ -3667,6 +3669,20 @@ describe('supervisor decision bridge', () => {
         && candidate.splitTree.surfaces.some((surface) => surface.id === session.managerSurfaceId)
       ));
       expect(workspace).toMatchObject({ transientSupervisorWorkspace: true });
+      const projectWorkspaces = useStore.getState().workspaces.filter((candidate) => (
+        candidate.splitTree.type === 'leaf'
+        && candidate.splitTree.surfaces.some((surface) => (
+          surface.projectManagerProjectId === session.id
+          || surface.projectSupervisorProjectId === session.id
+        ))
+      ));
+      expect(projectWorkspaces).toHaveLength(1);
+      expect(projectWorkspaces[0].splitTree.type === 'leaf'
+        ? projectWorkspaces[0].splitTree.surfaces.some((surface) => surface.id === session.taskTerminalSurfaceId)
+        : false).toBe(true);
+      expect(projectWorkspaces[0].splitTree.type === 'leaf'
+        ? projectWorkspaces[0].splitTree.surfaces.some((surface) => surface.id === session.managerSurfaceId)
+        : false).toBe(true);
       expect(workspace?.title).toContain(`${PROJECT_MANAGER_WORKSPACE_TITLE} ·`);
       expect(workspace?.splitTree.type === 'leaf'
         ? workspace.splitTree.surfaces.some((surface) => (
@@ -3675,6 +3691,176 @@ describe('supervisor decision bridge', () => {
         ))
         : false).toBe(true);
     }
+  });
+
+  it('lets project AI assign work without writing the task and lets only the supervisor dispatch it', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start',
+      projectDir: 'E:\\supervisor-first-dispatch',
+      goal: '由专属监督派发唯一主任务',
+      preconditions: ['测试环境可用'],
+      doneWhen: ['主任务形成可验证成果'],
+    });
+    const projectId = started.session.id;
+    await confirmAndResumeProject(projectId);
+
+    const store = useStore.getState();
+    const current = store.projectManagers.find((project) => project.id === projectId)!;
+    const assignment = {
+      id: 'task-supervisor-first',
+      title: '监督首次派发测试',
+      goalId: current.activeGoalId,
+      subgoalId: current.subgoals?.[0]?.id,
+      requirementsVersion: current.requirementsVersion,
+      authorizationVersion: current.authorizationVersion,
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+      complexityAssessment: {
+        complexity: 'low' as const,
+        decision: 'single-task' as const,
+        signals: ['只有一个独立可验收成果'],
+        rationale: '由唯一主任务 AI 连续完成',
+        assessedAt: Date.now(),
+      },
+      status: 'planned' as const,
+      dependencies: [],
+      baseline: {
+        status: 'approved' as const,
+        requirementsVersion: current.requirementsVersion || 1,
+        workspaceVersion: 'test-progress',
+        evidence: '测试工作区已经核对',
+      },
+      supervisorPlanRequired: false,
+      attempts: 0,
+      decisionsUsed: 0,
+      updatedAt: Date.now(),
+      executionHistory: [],
+      contract: {
+        objective: '完成监督首次派发测试成果',
+        description: '',
+        preconditions: ['测试环境可用'],
+        scope: {
+          root: current.projectDir,
+          allowPaths: [],
+          denyPaths: [],
+          forbiddenActions: [],
+        },
+        authority: {
+          technicalChoices: true,
+          lowRiskRetries: true,
+          targetedTests: true,
+          internalThreads: false,
+          continuousExecution: true,
+          permissionConfirm: false,
+          allowedCommandPrefixes: [],
+        },
+        stopWhen: ['形成测试成果'],
+        validation: ['提供可验证证据'],
+        budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+      },
+    };
+    store.restoreProjectManager({ ...current, workItems: [assignment] });
+    const taskSurfaceId = current.taskTerminalSurfaceId!;
+    surfaceTerminalRegistry.set(taskSurfaceId, {
+      buffer: {
+        active: {
+          baseY: 0,
+          cursorX: 0,
+          cursorY: 0,
+          length: 1,
+          getLine: () => ({ translateToString: () => '' }),
+        },
+      },
+    } as any);
+    acknowledgeTaskPrompt(taskSurfaceId);
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: taskSurfaceId,
+      event: 'Stop',
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [taskSurfaceId]: agentState,
+    });
+    writes.mockClear();
+
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'supervisor-assign',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId,
+      workItemId: assignment.id,
+    })).resolves.toMatchObject({
+      ok: true,
+      awaitingSupervisor: true,
+      contractPending: true,
+    });
+    expect(writes.mock.calls.filter(([surfaceId]) => surfaceId === taskSurfaceId)).toHaveLength(0);
+
+    const assignedProject = useStore.getState().projectManagers.find((project) => project.id === projectId)!;
+    const assignedItem = assignedProject.workItems[0];
+    const assignedLane = useStore.getState().supervisor.lanes.find((candidate) => (
+      candidate.projectManagerProjectId === projectId && candidate.projectWorkItemId === assignment.id
+    ))!;
+    expect(assignedItem).toMatchObject({
+      status: 'waiting-decision',
+      supervisorLaneId: assignedLane.id,
+      workerSurfaceId: taskSurfaceId,
+      assignmentVersion: expect.any(Number),
+    });
+    expect(assignedLane).toMatchObject({
+      projectTaskContractPending: true,
+      awaitingReview: true,
+      projectAssignmentVersion: assignedItem.assignmentVersion,
+    });
+
+    consumeQueuedControlMessage(assignedLane.id);
+    (globalThis.window as any).wmux.pty.writeReliable = vi.fn(async (surfaceId: string, data: string) => {
+      writes(surfaceId, data);
+      if (surfaceId === taskSurfaceId && data === '\r') acknowledgeTaskPrompt(taskSurfaceId);
+      return true;
+    });
+    useStore.getState().patchSupervisor({ submitEnter: true });
+    const decision = await (globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: taskSurfaceId,
+      supervisorSurfaceId: assignedLane.supervisorSurfaceId,
+      outcome: 'continue',
+      next: '完成当前合同成果并返回可验证证据',
+      taskWorkMode: 'single-thread',
+    });
+    expect(decision, JSON.stringify(decision)).toMatchObject({ ok: true, outcome: 'continue' });
+    const taskPayload = writes.mock.calls
+      .filter(([surfaceId]) => surfaceId === taskSurfaceId)
+      .map(([, data]) => String(data))
+      .join('');
+    expect(taskPayload).toContain('[成果任务]');
+    expect(taskPayload).not.toMatch(/项目 AI|监督 AI|辅助 AI|项目 ID|工作项 ID|\blane\b|控制层/iu);
+    expect(useStore.getState().projectManagers.find((project) => project.id === projectId)?.workItems[0])
+      .toMatchObject({ status: 'running', startedAt: expect.any(Number) });
+    expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === assignedLane.id)
+      ?.projectTaskContractPending).toBe(false);
+
+    useStore.getState().stopSupervisorLane(assignedLane.id, '模拟历史监督链丢失');
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: assignment.id,
+      patch: { status: 'waiting-decision', latestBlocker: '历史监督链已经丢失' },
+    }, projectId);
+    writes.mockClear();
+    const recovered = await request({
+      action: 'supervisor-assign',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId,
+      workItemId: assignment.id,
+    });
+    expect(recovered, JSON.stringify(recovered)).toMatchObject({
+      ok: true,
+      awaitingSupervisor: true,
+      contractPending: false,
+      laneId: expect.any(String),
+    });
+    expect(recovered.laneId).not.toBe(assignedLane.id);
+    expect(writes.mock.calls.filter(([surfaceId]) => surfaceId === taskSurfaceId)).toHaveLength(0);
+    expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === recovered.laneId))
+      .toMatchObject({ projectTaskContractPending: false, awaitingReview: true });
   });
 
   it('does not globally resume a portfolio-paused project whose requirements changed', async () => {
@@ -3919,14 +4105,15 @@ describe('supervisor decision bridge', () => {
     '[任务]',
     `成果：${next}`,
     '约束：\n- 遵循目标项目规范',
-    '本次任务验收（由监督 AI 复核）：\n- 当前成果形成可复核结果',
-    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。是否满足用户总体验收条件由监督 AI 在本任务返回后判断。',
+    '本次任务验收：\n- 当前成果形成可复核结果',
+    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。完成后简要报告成果、验证证据、剩余工作和真实阻塞。',
   ].join('\n\n'), false);
 
   it('injects one safe next step from ordinary supervision', () => {
     expect(decide({ next: '运行相关单元测试' })).toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledTimes(1);
     expect(writes).toHaveBeenCalledWith('worker-a', ordinaryTaskDelivery('运行相关单元测试'));
+    expect(String(writes.mock.calls[0][1])).not.toContain('监督 AI');
     expect(String(writes.mock.calls[0][1])).not.toContain('wmux context');
     expect(decide({ next: '重复发送下一步' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(1);
@@ -4078,7 +4265,7 @@ describe('supervisor decision bridge', () => {
     expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: 'worker-a' }))
       .toMatchObject({
         ok: false,
-        error: expect.stringContaining('普通任务终端不承载 wmux 管理角色'),
+        error: expect.stringContaining('当前终端不承载 wmux 管理角色'),
       });
     expect((globalThis.window as any).__wmux_authorizeSurfaceCapability({
       callerSurfaceId: 'worker-a', method: 'surface.read_text', params: { surfaceId: 'worker-a' },
@@ -4272,12 +4459,13 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true, outcome: 'continue' });
     expect(writes).toHaveBeenCalledWith(
       'worker-a',
-      expect.stringContaining('本次任务验收（由监督 AI 复核）'),
+      expect.stringContaining('本次任务验收'),
     );
     expect(writes).toHaveBeenCalledWith(
       'worker-a',
       expect.stringContaining('无论成功还是失败，都必须如实执行'),
     );
+    expect(String(writes.mock.calls.at(-1)?.[1] || '')).not.toContain('监督 AI');
   });
 
   it('rejects a PASS-only acceptance for an empirical task', () => {

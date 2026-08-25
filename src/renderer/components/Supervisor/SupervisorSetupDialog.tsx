@@ -58,6 +58,7 @@ import {
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
+  supervisorLaunchIsolationError,
   supervisorLauncherDisplayName,
   type SupervisorLauncherKind,
 } from '../../supervisor/launch-command';
@@ -1449,6 +1450,13 @@ export default function SupervisorSetupDialog() {
       setDialogNotice({ kind: 'error', message: '请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。' });
       return;
     }
+    if (andStart) {
+      const isolationError = supervisorLaunchIsolationError(launchCmd);
+      if (isolationError) {
+        setDialogNotice({ kind: 'error', message: isolationError });
+        return;
+      }
+    }
 
     if (andStart || sessionRetained) {
       const result = ensureDedicatedSupervisors(lanes, !sessionRetained);
@@ -1569,6 +1577,11 @@ export default function SupervisorSetupDialog() {
     }
     if (!launchCmd.trim()) {
       setDialogNotice({ kind: 'error', message: '请选择可启动的监督 AI；“不自动启动”不能接收监督 briefing。' });
+      return;
+    }
+    const isolationError = supervisorLaunchIsolationError(launchCmd);
+    if (isolationError) {
+      setDialogNotice({ kind: 'error', message: isolationError });
       return;
     }
     const result = ensureDedicatedSupervisors(lanes, true);
@@ -1815,6 +1828,22 @@ export default function SupervisorSetupDialog() {
                               {activeConfigSection === 'basic' && (
                                 <div id={`terminal-config-${candidate.surfaceId}-basic`} role="tabpanel" className="supervisor-dialog__config-panel">
                                   <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">需要恢复监督现场？</div>
+                                    <div className="supervisor-dialog__hint">
+                                      恢复入口位于上方“上下文资料”。只有先在侧栏监督卡片中主动保存过恢复档案，这里才会显示可恢复快照。
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="confirm-dialog__btn"
+                                      onClick={() => setTerminalConfigSections((current) => ({
+                                        ...current,
+                                        [candidate.surfaceId]: 'context',
+                                      }))}
+                                    >
+                                      前往恢复入口
+                                    </button>
+                                  </div>
+                                  <div className="supervisor-dialog__section">
                                     <div className="supervisor-dialog__label">任务目标（与计划文件至少填写一项）</div>
                                     <textarea
                                       className="supervisor-dialog__textarea"
@@ -1977,6 +2006,9 @@ export default function SupervisorSetupDialog() {
 
                               {activeConfigSection === 'context' && (
                                 <div id={`terminal-config-${candidate.surfaceId}-context`} role="tabpanel" className="supervisor-dialog__config-panel">
+                                  <div className="supervisor-dialog__hint">
+                                    此处就是恢复入口。首次创建档案请先在侧栏对应监督卡片点击“保存恢复档案”；返回这里后即可勾选并恢复该终端快照。
+                                  </div>
                                   <div className="supervisor-dialog__section">
                                     <label className="supervisor-dialog__row">
                                       <input

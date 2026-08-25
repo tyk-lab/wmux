@@ -86,6 +86,25 @@ describe('supervisor runtime context', () => {  it('keeps project decisions avai
     expect(card).toContain('--task-file');
     expect(card).toContain('不向任务 AI 注入 wmux 角色协议');
     expect(card).toContain('不授予直接实现、测试、跨终端输入');
+  });
+
+  it('keeps an unassigned project supervisor in a valid idle context', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const context = buildSupervisorRuntimeContext(session, lane({
+      projectManagerProjectId: 'project-a',
+      autonomousOverride: true,
+      autonomyPermissionsOverride: ['same-route-next'],
+    }), {
+      taskState: 'idle',
+      project: { projectId: 'project-a', projectStatus: 'active' },
+    });
+
+    expect(context.role).toBe('project-supervisor');
+    expect(context.identity.projectId).toBe('project-a');
+    expect(context.identity).not.toHaveProperty('workItemId');
+    expect(context.state.decisionBlockers).not.toContain('项目、目标、工作项或合同版本绑定已失效');
+    expect(context.commands.decisionOutcomes).toEqual([]);
   });  it('does not advertise decisions when the session, review, approval, or project binding blocks them', () => {
     const inactive = createDefaultSupervisorSession();
     const inactiveContext = buildSupervisorRuntimeContext(inactive, lane({ awaitingReview: true }), {
