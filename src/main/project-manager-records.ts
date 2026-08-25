@@ -4,6 +4,8 @@ import { getAppDataDir } from '../shared/instance';
 import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   normalizeProjectManagerSession,
+  normalizeProjectTaskComplexityAssessment,
+  normalizeProjectTaskContextResetState,
   projectDirectoryIdentity,
   normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
@@ -326,9 +328,9 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
       && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
       && (item.authorizationVersion === undefined || (Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1))
-      && (item.executionProtocolVersion === undefined || (
-        Number.isInteger(item.executionProtocolVersion) && item.executionProtocolVersion >= 0
-      ))
+      && item.executionProtocolVersion === CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
+      && !!normalizeProjectTaskComplexityAssessment(item.complexityAssessment)
+      && (item.contextReset === undefined || !!normalizeProjectTaskContextResetState(item.contextReset))
       && item.baseline === undefined
       && item.supervisorPlan === undefined
       && item.supervisorPlanRequired === false
