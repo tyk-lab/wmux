@@ -81,6 +81,7 @@ import {
   ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorLaneControlState,
   type StopWhenKind,
+  type OrdinaryContextHealthState,
   type OrdinarySupervisorPlan,
   type OrdinaryTaskDispatch,
   type SupervisorDecision,
@@ -88,6 +89,12 @@ import {
   type SupervisorLane,
   type SupervisorSession,
 } from './store/supervisor-slice';
+import {
+  buildOrdinaryContextRecoveryTask,
+  nextOrdinaryContextHealthState,
+  normalizeOrdinaryContextSymptoms,
+  ordinaryContextClearCommand,
+} from './supervisor/ordinary-context-health';
 import {
   buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
@@ -148,6 +155,7 @@ import {
   normalizeProjectCompletionResult,
   normalizeProjectExecutionBudget,
   normalizeProjectParallelismSelection,
+  normalizeProjectTaskComplexityAssessment,
   normalizeProjectWorkerAssignments,
   projectCompletionCriteriaError,
   projectCriterionIdentity,
@@ -164,6 +172,7 @@ import {
   projectSubgoalCompletionResult,
   projectDirectoryIdentity,
   projectTaskBaselineApproved,
+  projectTaskContextResetFingerprint,
   projectWorkerGroupCompletionViolation,
   projectWorkerGroupAggregateMinutes,
   projectWorkerAssignmentsViolation,
@@ -3133,6 +3142,10 @@ function decideRemoteSupervisor(
       awaitingReview: true,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
+      ...(!projectManagedDecision && lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION ? {
+        ordinaryContextHealth: undefined,
+        ordinaryContextReset: undefined,
+      } : {}),
       ...(approval.source === 'supervisor-context-recovery' ? { contextRecoveryStatus: 'sent' as const } : {}),
     });
     remoteAudit(session, lane, 'supervisor.proposal.resolved', {
@@ -4066,6 +4079,20 @@ function normalizeProjectWorkItemInput(
   }
   const status = String(raw?.status || previous?.status || 'planned');
   if (!PROJECT_WORK_ITEM_STATUSES.has(status)) return { error: `无效任务状态：${status}` };
+  const complexityAssessment = normalizeProjectTaskComplexityAssessment(
+    previous?.complexityAssessment || raw?.complexityAssessment,
+    Date.now(),
+  );
+  if (!previous && !complexityAssessment) {
+    return {
+      error: 'task-create 必须包含 complexityAssessment，说明任务复杂度、拆分判断、判断信号和理由',
+    };
+  }
+  if (!previous && complexityAssessment?.decision === 'split-before-dispatch') {
+    return {
+      error: '复杂度评估结论要求先拆分；请为每个独立可验收成果分别创建 single-task 工作项，不能直接派发复合任务',
+    };
+  }
   const executionRaw = contractRaw.execution || previous?.contract.execution || {};
   if (executionRaw.taskWorkMode !== undefined
     && !TASK_WORK_MODE_VALUES.includes(String(executionRaw.taskWorkMode) as TaskWorkMode)) {
@@ -4231,6 +4258,8 @@ function normalizeProjectWorkItemInput(
       executionProtocolVersion: previous
         ? previousExecutionProtocolVersion
         : CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+      complexityAssessment,
+      contextReset: previous?.contextReset,
       baseline: previousExecutionProtocolVersion >= 7
         ? undefined
         : previous && !rebindCurrentRequirements
@@ -6153,7 +6182,6 @@ const PROJECT_SUPERVISOR_TRANSITION_REDELIVERY_DELAYS_MS = [
 ] as const;
 const MAX_PROJECT_SUPERVISOR_TRANSITION_NOTIFICATIONS = 2;
 const PROJECT_ALIGNMENT_FALLBACK_DELAY_MS = 45_000;
-const PROJECT_TASK_ROTATION_REQUEST_TTL_MS = 5 * 60_000;
 const PROJECT_TASK_CONTROL_ESC_GRACE_MS = 60_000;
 const PROJECT_LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
 const PROJECT_LIVENESS_WATCHDOG_TRIGGER = '控制层活性看门狗发现项目执行链持续空闲';
@@ -10575,6 +10603,9 @@ async function startProjectTaskTerminalFromSupervisor(
   const workItemId = lane.projectWorkItemId || '';
   const item = session.workItems.find((candidate) => candidate.id === workItemId);
   if (!item) return { ok: false, error: `任务不存在：${workItemId}` };
+  if (!item.complexityAssessment || item.complexityAssessment.decision !== 'single-task') {
+    return { ok: false, error: '任务尚未完成可执行的复杂度评估；项目 AI 必须先拆分复合成果或创建 single-task 工作项' };
+  }
   if (item.supervisorLaneId !== lane.id) {
     return { ok: false, error: '工作项与当前 AI 监督绑定不一致，不能启动任务终端' };
   }
@@ -10853,6 +10884,244 @@ async function ensurePendingProjectTaskTerminal(
   })().finally(() => projectTaskBootstrapInFlight.delete(laneId));
   projectTaskBootstrapInFlight.set(laneId, pending);
   return pending;
+}
+
+async function resetProjectTaskContextInPlace(
+  session: ProjectManagerSession,
+  lane: SupervisorLane,
+  item: ProjectWorkItem,
+  input: { reason: string; evidence: string; cleanContext: string },
+): Promise<Record<string, unknown>> {
+  const store = useStore.getState();
+  const fingerprint = projectTaskContextResetFingerprint(item.id, input.reason, input.evidence);
+  const previousReset = item.contextReset;
+  if ((previousReset?.count || 0) >= 1) {
+    store.applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: item.id,
+      patch: {
+        status: 'waiting-decision',
+        latestBlocker: '同一工作项已经执行过一次上下文清空；必须由项目 AI 缩小成果、拆分工作项或调整任务拓扑',
+      },
+    }, session.id);
+    queueProjectSupervisorAnomaly(
+      session,
+      lane,
+      item,
+      'supervisor.context-reset-limit',
+      '同一工作项再次出现严重上下文污染，禁止重复清空上下文',
+      { evidence: input.evidence, contextSummary: input.cleanContext },
+    );
+    saveProjectManagerSnapshot(session.id);
+    return {
+      ok: true,
+      outcome: 'rework',
+      projectDecisionRequired: true,
+      contextResetBlocked: true,
+      message: '已交回项目 AI 做宏观拆分或重规划；控制层未再次清空任务上下文',
+    };
+  }
+  const taskTerminal = locateRemoteTaskTerminal(lane.surfaceId).terminal;
+  if (!taskTerminal || taskTerminal.surfaceId !== item.workerSurfaceId) {
+    return { ok: false, error: '当前任务终端与工作项绑定不一致，不能清空上下文' };
+  }
+  const taskAgentState = ((window as any).__wmux_getAgentStates?.() || {})[taskTerminal.surfaceId];
+  if (Number(taskAgentState?.runDepth || 0) > 0) {
+    return {
+      ok: false,
+      error: '任务 AI 主线程或内部子线程仍在运行；多线程模式必须等全部线程结束后才能发送 /new',
+    };
+  }
+  const activity = remoteTerminalActivity(taskTerminal.surfaceId, true);
+  const buffer = surfaceTerminalRegistry.get(taskTerminal.surfaceId)?.buffer.active;
+  if (activity.activityState !== 'idle' || (buffer && hasPendingTerminalInput(buffer))) {
+    return { ok: false, error: '任务 AI 仍在工作或输入框存在待提交内容；只能在监督检查点清空上下文' };
+  }
+  const requestedAt = Date.now();
+  const requestedReset = {
+    generation: (previousReset?.generation || 1) + 1,
+    count: (previousReset?.count || 0) + 1,
+    status: 'requested' as const,
+    fingerprint,
+    reason: input.reason,
+    evidence: input.evidence,
+    cleanContext: input.cleanContext,
+    requestedAt,
+  };
+  const requested = store.applyProjectManagerAction({
+    type: 'update-work-item',
+    workItemId: item.id,
+    patch: {
+      contextReset: requestedReset,
+      latestBlocker: '监督 AI 已确认严重上下文污染，控制层正在原终端清空上下文',
+    },
+  }, session.id);
+  if (!requested.ok) return { ok: false, error: requested.error || '上下文清空状态写入失败' };
+  try {
+    await (window as any).wmux?.projectManager?.saveSession?.(
+      useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+    );
+  } catch (error) {
+    return { ok: false, error: `上下文清空请求持久化失败，未向任务 AI 发送 /new：${String((error as Error)?.message || error)}` };
+  }
+
+  const failReset = async (error: string): Promise<Record<string, unknown>> => {
+    store.applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: item.id,
+      patch: {
+        status: 'waiting-decision',
+        contextReset: { ...requestedReset, status: 'failed', completedAt: Date.now(), error },
+        latestBlocker: error,
+      },
+    }, session.id);
+    queueProjectSupervisorAnomaly(
+      session,
+      lane,
+      item,
+      'supervisor.context-reset-failed',
+      error,
+      { evidence: input.evidence, contextSummary: input.cleanContext },
+    );
+    saveProjectManagerSnapshot(session.id);
+    return { ok: false, error, projectDecisionRequired: true };
+  };
+
+  const clearCommand = ordinaryContextClearCommand(
+    taskTerminal.surface.projectManagerAgent
+      || terminalConversationAgent(
+        taskTerminal.label,
+        readTerminalScreen(taskTerminal.surfaceId, 80).text || '',
+      ),
+  );
+  if (!clearCommand) {
+    return failReset('无法确认任务终端是支持自动清空上下文的 Codex、Kimi 或 Grok；已交回项目 AI');
+  }
+
+  try {
+    await Promise.resolve(sendTaskToSurfaceReliably(
+      taskTerminal.surfaceId,
+      clearCommand,
+      true,
+      'project',
+    ));
+  } catch (error) {
+    return failReset(`任务 AI 未接受 ${clearCommand}：${String((error as Error)?.message || error)}`);
+  }
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+  const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id);
+  const currentTerminal = currentLane ? locateRemoteTaskTerminal(currentLane.surfaceId).terminal : undefined;
+  if (!currentLane
+    || currentLane.surfaceId !== taskTerminal.surfaceId
+    || !currentTerminal
+    || !interactiveAgentPromptReady(readTerminalScreen(taskTerminal.surfaceId, 80).text || '')) {
+    return failReset(`任务 AI 执行 ${clearCommand} 后没有回到可接收任务的空白输入态；已停止自动重发并交回项目 AI`);
+  }
+  store.applyProjectManagerAction({
+    type: 'update-work-item',
+    workItemId: item.id,
+    patch: { contextReset: { ...requestedReset, status: 'cleared' } },
+  }, session.id);
+  const siblingTaskAiCount = useStore.getState().supervisor.lanes.filter((candidate) => (
+    candidate.id !== lane.id
+    && candidate.projectManagerProjectId === session.id
+    && supervisorLaneControlState(candidate) === 'active'
+  )).length;
+  const taskWorkMode = item.contract.execution?.taskWorkMode || 'single-thread';
+  const cleanPacket = [
+    '[任务上下文已清空｜当前工作项重新发布]',
+    buildProjectExecutionIdentityBlock(projectExecutionIdentity(session, item)),
+    `项目：${session.id}`,
+    `工作项：${item.id}`,
+    `成果：${item.contract.objective}`,
+    `完成条件：${item.contract.stopWhen.join('；')}`,
+    `验证要求：${item.contract.validation.join('；')}`,
+    '先运行 wmux context，重新读取当前目录适用的 AGENTS.md、匹配项目技能、产物目录和命名规则；项目规范高于本任务包中的规划描述。',
+    '不要恢复、猜测或引用清空前的完整对话；只复用项目文件、持久化事件和下列已核对事实。',
+    `已核对事实与剩余成果：${input.cleanContext}`,
+    taskWorkMode !== 'single-thread'
+      ? '原主线程及其内部子线程的对话上下文均已失效；不要等待或恢复旧子线程。新主会话根据剩余成果自行决定是否重新建立内部线程。'
+      : '',
+    siblingTaskAiCount > 0
+      ? `同项目另有 ${siblingTaskAiCount} 个独立任务 AI；它们的终端和上下文保持不变，不得接管、重发或等待它们的工作。`
+      : '',
+    '你仍是该工作项的唯一执行者，自主决定文件、命令、技术路线、测试和低风险恢复，连续推进到形成可验收成果或遇到真实外部边界。',
+  ].join('\n');
+  try {
+    let recoveryAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
+    await Promise.resolve(sendTaskToSurfaceReliably(
+      taskTerminal.surfaceId,
+      cleanPacket,
+      true,
+      'project',
+      () => terminalScreenTail(taskTerminal.surfaceId),
+      () => {
+        recoveryAcknowledgement = beginTaskPromptAcknowledgement(
+          taskTerminal.surfaceId,
+          terminalScreenTail(taskTerminal.surfaceId),
+        );
+      },
+    ));
+    const delivery = await recoveryAcknowledgement!.promise;
+    if (!delivery.confirmed) {
+      return failReset(
+        `上下文已清空，但 15 秒内未收到干净任务包的 UserPromptSubmit 确认（当前 ${delivery.agentState}）`,
+      );
+    }
+  } catch (error) {
+    return failReset(`上下文已清空，但干净任务包重新发布失败：${String((error as Error)?.message || error)}`);
+  }
+  const completedAt = Date.now();
+  store.applyProjectManagerAction({
+    type: 'update-work-item',
+    workItemId: item.id,
+    patch: {
+      status: 'running',
+      contextReset: { ...requestedReset, status: 'republished', completedAt },
+      latestContextSummary: input.cleanContext,
+      latestBlocker: undefined,
+    },
+  }, session.id);
+  store.updateLane(lane.id, {
+    awaitingReview: false,
+    currentTask: item.contract.objective,
+    projectTaskContractPending: false,
+    permissionConfirmations: [],
+  });
+  const event = store.appendProjectManagerEvent({
+    kind: 'task-context-reset',
+    workItemId: item.id,
+    summary: `监督 AI 已在原任务终端执行 ${clearCommand} 并重新发布同一工作项`,
+    payload: {
+      laneId: lane.id,
+      surfaceId: taskTerminal.surfaceId,
+      generation: requestedReset.generation,
+      fingerprint,
+    },
+  }, session.id);
+  const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  await (window as any).wmux?.projectManager?.saveSession?.(updated);
+  if (event) {
+    await (window as any).wmux?.projectManager?.appendRecord?.({
+      sessionId: session.id,
+      projectDir: session.projectDir,
+      type: event.kind,
+      payload: { message: event.summary, ...(event.payload || {}) },
+    });
+  }
+  queueSupervisorControlMessage(lane, [
+    '[任务 AI 上下文已原地清空并重发布]',
+    `任务终端保持不变：${taskTerminal.surfaceId}`,
+    '继续监督同一工作项；若再次出现严重污染，禁止重复清空，必须请求项目 AI 拆分或重规划。',
+  ].join('\n'));
+  return {
+    ok: true,
+    outcome: 'rework',
+    contextReset: true,
+    surfaceId: taskTerminal.surfaceId,
+    generation: requestedReset.generation,
+    message: '任务 AI 已在原终端清空上下文并收到干净任务包',
+  };
 }
 
 async function rotateProjectTaskTerminalFromSupervisor(
@@ -11562,62 +11831,6 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     saveProjectManagerSnapshot(session.id);
     return result;
   }
-  if (action === 'terminal-rotate') {
-    const summary = String(params?.summary || '').trim().slice(0, 12000);
-    if (!summary) return { ok: false, error: '轮换任务终端必须提供可恢复的上下文总结' };
-    const lane = useStore.getState().supervisor.lanes.find((candidate) => (
-      candidate.projectManagerProjectId === session.id && supervisorLaneControlState(candidate) !== 'stopped'
-    ));
-    if (!lane) return { ok: false, error: '该项目当前没有可轮换的任务终端' };
-    if (!lane.supervisorSurfaceId || !lane.projectWorkItemId) {
-      return { ok: false, error: '当前监督链缺少专属 AI 监督或工作项绑定，不能轮换任务终端' };
-    }
-    if (lane.projectTaskStartupPending) {
-      return { ok: false, error: 'AI 监督尚未完成首次任务终端创建，不能发起上下文轮换' };
-    }
-    if (lane.projectTaskRotationPending) {
-      const requestedAt = Number(lane.projectTaskRotationRequestedAt || 0);
-      if (requestedAt > 0 && Date.now() - requestedAt < PROJECT_TASK_ROTATION_REQUEST_TTL_MS) {
-        return { ok: false, error: '该 AI 监督已有待执行的任务终端轮换请求' };
-      }
-      store.updateLane(lane.id, {
-        projectTaskRotationPending: false,
-        projectTaskRotationSummary: undefined,
-        projectTaskRotationRequestedAt: undefined,
-      });
-    }
-    store.updateLane(lane.id, {
-      projectTaskRotationPending: true,
-      projectTaskRotationSummary: summary,
-      projectTaskRotationRequestedAt: Date.now(),
-    });
-    queueSupervisorControlMessage(lane, [
-      '[项目管理 AI 请求安全轮换任务终端]',
-      `项目：${session.id}`,
-      `工作项：${lane.projectWorkItemId}`,
-      '轮换上下文已由控制层暂存。请核对当前任务已处于可交接点，然后执行：',
-      '任务上下文轮换由控制层自动处理；项目 AI 无需执行终端轮换命令。',
-      '只能由你这个已绑定的 AI 监督执行；新终端确认就绪前，控制层不会关闭原任务终端。',
-    ].join('\n'));
-    const event = store.appendProjectManagerEvent({
-      kind: 'supervisor-direction',
-      workItemId: lane.projectWorkItemId,
-      summary: '项目管理 AI 已请求对应 AI 监督执行安全任务终端轮换',
-      payload: { laneId: lane.id, supervisorSurfaceId: lane.supervisorSurfaceId },
-    }, session.id);
-    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-    await (window as any).wmux?.projectManager?.saveSession?.(updated);
-    if (event) {
-      await (window as any).wmux?.projectManager?.appendRecord?.({
-        sessionId: session.id,
-        projectDir: session.projectDir,
-        type: event.kind,
-        payload: { message: event.summary, ...(event.payload || {}) },
-      });
-    }
-    return { ok: true, pending: true, laneId: lane.id, message: '轮换请求已交给对应 AI 监督；原任务终端将在新终端就绪后关闭。' };
-  }
-
   if (action === 'task-create' || action === 'task-supervise' || action === 'complete') {
     const projectId = session.id;
     const activeExecution = useStore.getState().supervisor.lanes.some((lane) => (
@@ -13871,6 +14084,9 @@ export function initPipeBridge(): void {
     const diffSummary = String(params?.diffSummary || '').trim();
     const evidence = String(params?.evidence || '').trim();
     const contextSummary = String(params?.contextSummary || '').trim();
+    const rawContextHealth = String(params?.contextHealth || '').trim();
+    const contextSymptoms = normalizeOrdinaryContextSymptoms(params?.contextSymptoms);
+    const contextSignal = String(params?.contextSignal || '').trim().slice(0, 4_000);
     const completionStopWhen = String(params?.completionStopWhen || '').trim().slice(0, 500);
     const completionValidation = String(params?.completionValidation || '').trim().slice(0, 500);
     const remainingWork = String(params?.remainingWork || '').trim().slice(0, 2000);
@@ -13977,9 +14193,31 @@ export function initPipeBridge(): void {
     const projectWorkItem = lane.projectWorkItemId
       ? projectSession?.workItems.find((item) => item.id === lane.projectWorkItemId)
       : undefined;
+    if (projectManagedLane && proposalKind === 'context-recovery') {
+      if (!projectSession || !projectWorkItem) {
+        return { ok: false, error: '上下文清空请求缺少当前项目和工作项绑定' };
+      }
+      if (outcome !== 'rework') {
+        return { ok: false, error: '项目任务上下文清空必须使用 rework 裁决' };
+      }
+      if (next) {
+        return { ok: false, error: '上下文清空不得携带 --next；请通过 --context-summary 提交只含权威事实的干净任务摘要' };
+      }
+      if (!reason || !evidence || !contextSummary) {
+        return { ok: false, error: '上下文清空必须同时提供 --reason、--evidence 和 --context-summary' };
+      }
+      return resetProjectTaskContextInPlace(projectSession, lane, projectWorkItem, {
+        reason,
+        evidence,
+        cleanContext: contextSummary,
+      });
+    }
     const currentOrdinaryProtocol = !projectManagedLane
       && lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION;
     let ordinaryTaskDispatch: OrdinaryTaskDispatch | undefined;
+    let ordinaryContextHealthReported = false;
+    let proposedOrdinaryContextHealth: OrdinaryContextHealthState | undefined;
+    let ordinaryContextResetRequired = false;
     if (currentOrdinaryProtocol && params?.taskDispatch !== undefined) {
       const normalizedDispatch = normalizeOrdinaryTaskDispatch(params.taskDispatch);
       if (!normalizedDispatch.dispatch) return { ok: false, error: normalizedDispatch.error };
@@ -14000,6 +14238,49 @@ export function initPipeBridge(): void {
       }
       if (rawNextFile || String(params?.next || '').trim()) {
         return { ok: false, error: '当前普通监督协议不能把 --task-file 与 --next/--next-file 混用' };
+      }
+    }
+    if (rawContextHealth && !currentOrdinaryProtocol) {
+      return { ok: false, error: '--context-health 仅用于当前普通监督协议' };
+    }
+    if (currentOrdinaryProtocol && rawContextHealth) {
+      if (!['healthy', 'degraded'].includes(rawContextHealth)) {
+        return { ok: false, error: '--context-health 必须是 healthy 或 degraded' };
+      }
+      ordinaryContextHealthReported = true;
+      if (rawContextHealth === 'degraded') {
+        if (outcome !== 'rework' || !ordinaryTaskDispatch
+          || !['diagnostic', 'rework'].includes(ordinaryTaskDispatch.kind)) {
+          return { ok: false, error: '上下文退化必须使用 rework，并通过 --task-file 派发 diagnostic 或 rework 成果任务' };
+        }
+        if (contextSymptoms.length === 0 || !contextSignal) {
+          return { ok: false, error: '上下文退化必须提供有效 --context-symptoms 和事实化 --context-signal' };
+        }
+        const contextEvidenceFingerprint = projectExecutionDirectionSignature([
+          evidence,
+          diffSummary,
+          testResult,
+          changedFiles.join('|'),
+          contextSummary,
+        ].join('\n')) || 'no-new-evidence';
+        proposedOrdinaryContextHealth = nextOrdinaryContextHealthState({
+          previous: lane.ordinaryContextHealth,
+          symptoms: contextSymptoms,
+          signal: contextSignal,
+          evidenceFingerprint: contextEvidenceFingerprint,
+          reviewId: lane.activeReviewId,
+          workerTurnId: lane.workerTurnId,
+        });
+        ordinaryContextResetRequired = proposedOrdinaryContextHealth.occurrences >= 2;
+        const planRevision = effectiveSupervisorLaneConfig(lane).planRevision || 1;
+        if (ordinaryContextResetRequired && lane.ordinaryContextReset?.status === 'failed') {
+          return { ok: false, error: '上一轮上下文清空或恢复已经失败；禁止自动重试，请使用 needs-human 上报用户' };
+        }
+        if (ordinaryContextResetRequired
+          && lane.ordinaryContextResetPlanRevision === planRevision
+          && (lane.ordinaryContextResetCount || 0) >= 1) {
+          return { ok: false, error: '当前用户规划版本已经自动清空过一次任务上下文；再次退化必须使用 needs-human 上报用户' };
+        }
       }
     }
     if (rawRetryKind && !retryKind) {
@@ -14378,7 +14659,7 @@ export function initPipeBridge(): void {
     if (projectWorkItem && permissionResponse) {
       return {
         ok: false,
-        error: 'P7 项目监督不能替任务 AI 确认普通命令权限；低风险项目操作由任务 AI 自主决定，高风险操作必须进入用户授权边界',
+        error: 'P8 项目监督不能替任务 AI 确认普通命令权限；低风险项目操作由任务 AI 自主决定，高风险操作必须进入用户授权边界',
       };
     }
     if (projectWorkItem && projectPolicyViolation && outcome !== 'needs-human') {
@@ -14427,7 +14708,7 @@ export function initPipeBridge(): void {
       if (projectWorkItem && (projectWorkItem.executionProtocolVersion || 0) >= 7) {
         return {
           ok: false,
-          error: 'P7 项目监督不维护 selectedRoute、expectedPaths 或命令型阶段计划；只通过 --next 下达阶段成果和验收缺口。多任务拓扑由项目 AI 创建多个独立工作项决定',
+          error: 'P8 项目监督不维护 selectedRoute、expectedPaths 或命令型阶段计划；只通过 --next 下达阶段成果和验收缺口。多任务拓扑由项目 AI 创建多个独立工作项决定',
         };
       }
       if (outcome === 'needs-human' || permissionResponse) {
@@ -15229,6 +15510,11 @@ export function initPipeBridge(): void {
       ...(decisionPlan ? { stagePlan: decisionPlan } : {}),
       ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
       ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
+      ...(ordinaryContextHealthReported ? {
+        contextHealth: rawContextHealth,
+        contextSymptoms,
+        contextSignal,
+      } : {}),
       ...(completionResult ? { completion: completionResult } : {}),
       ...(outcome === 'complete' ? {
         completionStopWhen,
@@ -15254,6 +15540,11 @@ export function initPipeBridge(): void {
           ...(decisionPlan ? { plan: decisionPlan } : {}),
           ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
           ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
+          ...(ordinaryContextHealthReported ? {
+            contextHealth: rawContextHealth as 'healthy' | 'degraded',
+            contextSymptoms,
+            contextSignal,
+          } : {}),
           ...(completionResult ? { completion: completionResult } : {}),
         },
         ...(lane.decisions || []),
@@ -15819,6 +16110,17 @@ export function initPipeBridge(): void {
           lastBlockedResponseVersion: agentState.blockedVersion,
           lastBlockedResponseId: agentState.blockedRequestId || undefined,
         } : {}),
+        ...(ordinaryContextHealthReported ? {
+          ordinaryContextHealth: ordinaryContextResetRequired
+            || rawContextHealth === 'healthy'
+            ? undefined
+            : proposedOrdinaryContextHealth,
+        } : {}),
+        ...(ordinaryContextResetRequired ? {
+          ordinaryContextReset: undefined,
+          ordinaryContextResetCount: (lane.ordinaryContextResetCount || 0) + 1,
+          ordinaryContextResetPlanRevision: effectiveSupervisorLaneConfig(lane).planRevision || 1,
+        } : {}),
       });
       if (next) {
         const boundLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
@@ -15835,6 +16137,204 @@ export function initPipeBridge(): void {
         ...(delivery ? { delivery } : {}),
       };
     };
+
+    if (next && ordinaryContextResetRequired && ordinaryTaskDispatch && proposedOrdinaryContextHealth) {
+      if (!session.submitEnter) {
+        return { ok: false, error: '自动上下文清空要求任务投递启用提交键；当前会话只能上报用户处理' };
+      }
+      const currentTaskAgentState = ((window as any).__wmux_getAgentStates?.() || {})[lane.surfaceId];
+      if (Number(currentTaskAgentState?.runDepth || 0) > 0) {
+        return { ok: false, error: '任务 AI 主线程或内部子线程仍在运行；多线程模式必须等全部线程结束后才能发送 /new' };
+      }
+      const taskActivity = remoteTerminalActivity(lane.surfaceId, true);
+      const taskBuffer = surfaceTerminalRegistry.get(lane.surfaceId)?.buffer.active;
+      if (taskActivity.activityState !== 'idle' || (taskBuffer && hasPendingTerminalInput(taskBuffer))) {
+        return { ok: false, error: '任务 AI 仍在工作或输入框存在待提交内容；只能在空闲检查点清空上下文' };
+      }
+      const beforeClearScreen = terminalScreenTail(lane.surfaceId, 80);
+      const taskAgent = terminalConversationAgent([
+        lane.label,
+        store.agentMeta.get(lane.surfaceId)?.label || '',
+      ].join(' '), beforeClearScreen);
+      const clearCommand = ordinaryContextClearCommand(taskAgent);
+      if (!clearCommand) {
+        return { ok: false, error: '无法确认任务终端是支持自动 /new 的 Codex、Kimi 或 Grok；请使用 needs-human 交给用户' };
+      }
+      const resetId = `ordinary-context-reset-${uuid()}`;
+      const resetStartedAt = Date.now();
+      const recoveryTask = buildOrdinaryContextRecoveryTask({
+        config: effectiveSupervisorLaneConfig(lane),
+        plan: currentOrdinaryPlan,
+        dispatch: ordinaryTaskDispatch,
+      });
+      const failOrdinaryContextReset = (error: string, stage: 'clearing' | 'recovering') => {
+        const currentStore = useStore.getState();
+        const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
+        currentStore.updateLane(lane.id, {
+          awaitingReview: true,
+          ordinaryContextHealth: proposedOrdinaryContextHealth,
+          ordinaryContextReset: {
+            id: resetId,
+            status: 'failed',
+            fingerprint: proposedOrdinaryContextHealth.fingerprint,
+            startedAt: resetStartedAt,
+            error,
+          },
+          decisions: lane.decisions || [],
+        });
+        appendSupervisorRecord(currentStore.supervisor, currentLane, 'supervisor.context-reset.failed', {
+          stage,
+          error,
+          symptoms: proposedOrdinaryContextHealth.symptoms,
+          signal: proposedOrdinaryContextHealth.signal,
+        });
+        currentStore.appendSupervisorLog(lane.id, '任务 AI 上下文清空失败', error);
+        const workspaceId = lane.workspaceId || currentStore.activeWorkspaceId;
+        const notificationSurfaceId = dedicatedSupervisorSurfaceId(lane) || lane.surfaceId;
+        if (workspaceId) currentStore.addNotification({
+          surfaceId: notificationSurfaceId,
+          workspaceId,
+          title: 'AI 监督需要你的处理',
+          text: `任务 AI 上下文${stage === 'clearing' ? '清空' : '恢复'}失败：${error}`,
+          ...notificationMetadata({
+            owner: 'supervisor',
+            entityId: lane.id,
+            kind: 'context-reset-failed',
+            laneId: lane.id,
+            sourceLabel: lane.label,
+          }),
+        });
+        fireDesktopNotification({
+          surfaceId: notificationSurfaceId,
+          title: 'AI 监督需要你的处理',
+          text: `任务 AI 上下文${stage === 'clearing' ? '清空' : '恢复'}失败`,
+        });
+        return { ok: false, error, contextResetFailed: true, requiresHuman: true };
+      };
+
+      store.updateLane(lane.id, {
+        ordinaryContextHealth: proposedOrdinaryContextHealth,
+        ordinaryContextReset: {
+          id: resetId,
+          status: 'clearing',
+          fingerprint: proposedOrdinaryContextHealth.fingerprint,
+          startedAt: resetStartedAt,
+        },
+      });
+      const contextResetPreSubmitError = (expectedStatus: 'clearing' | 'recovering'): string | null => {
+        const currentStore = useStore.getState();
+        const currentSession = currentStore.supervisor;
+        const currentLane = currentSession.lanes.find((candidate) => candidate.id === lane.id);
+        if (!currentSession.active || !currentLane || supervisorLaneControlState(currentLane) !== 'active') {
+          return '上下文清空提交前监督通道已暂停、停止或失效';
+        }
+        if (!isSupervisorDecisionAuthorised(currentLane, supervisorSurfaceId)
+          || currentLane.surfaceId !== lane.surfaceId
+          || currentLane.activeReviewId !== lane.activeReviewId
+          || currentLane.workerTurnId !== lane.workerTurnId) {
+          return '上下文清空提交前任务绑定或复核轮次已经变化';
+        }
+        if (currentLane.ordinaryContextReset?.id !== resetId
+          || currentLane.ordinaryContextReset.status !== expectedStatus) {
+          return '上下文清空状态已经被其他处理更新';
+        }
+        if ((effectiveSupervisorLaneConfig(currentLane).planRevision || 1)
+          !== ordinaryTaskDispatch.sourceRevision) {
+          return '用户规划版本已变化，禁止提交旧上下文恢复任务';
+        }
+        if (hasPendingTaskUserSubmit(currentLane.id, currentSession.sessionId)
+          || currentLane.userDirectTaskTurnId === currentLane.workerTurnId
+          || currentLane.pendingSupervisorDeliveries?.some((delivery) => delivery.kind === 'user-task')) {
+          return '用户输入已经先行生效，禁止自动清空或恢复旧任务上下文';
+        }
+        const currentAgentState = ((window as any).__wmux_getAgentStates?.() || {})[currentLane.surfaceId];
+        if (String(currentAgentState?.state || '') === 'working') {
+          return '任务 AI 已开始新的工作回合，禁止自动清空或恢复上下文';
+        }
+        return null;
+      };
+      appendSupervisorRecord(session, lane, 'supervisor.context-reset.requested', {
+        command: clearCommand,
+        symptoms: proposedOrdinaryContextHealth.symptoms,
+        signal: proposedOrdinaryContextHealth.signal,
+      });
+      supervisorDeliveriesInFlight.add(lane.id);
+      return (async () => {
+        let recoveryAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
+        try {
+          await Promise.resolve(sendTaskToSurfaceReliably(
+            lane.surfaceId,
+            clearCommand,
+            true,
+            supervisorLaneInputIsolationScope(lane),
+            undefined,
+            undefined,
+            () => contextResetPreSubmitError('clearing'),
+          ));
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+          const currentStore = useStore.getState();
+          const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+          const currentBuffer = surfaceTerminalRegistry.get(lane.surfaceId)?.buffer.active;
+          if (!currentLane
+            || currentLane.surfaceId !== lane.surfaceId
+            || !isSupervisorDecisionAuthorised(currentLane, supervisorSurfaceId)
+            || supervisorLaneControlState(currentLane) !== 'active'
+            || (currentBuffer && hasPendingTerminalInput(currentBuffer))
+            || !interactiveAgentPromptReady(terminalScreenTail(lane.surfaceId, 80))) {
+            return failOrdinaryContextReset('任务 AI 执行 /new 后没有回到可安全接收任务的空白输入态；已停止自动重试', 'clearing');
+          }
+          currentStore.updateLane(lane.id, {
+            ordinaryContextReset: {
+              id: resetId,
+              status: 'recovering',
+              fingerprint: proposedOrdinaryContextHealth.fingerprint,
+              startedAt: resetStartedAt,
+            },
+          });
+          await Promise.resolve(sendTaskToSurfaceReliably(
+            lane.surfaceId,
+            recoveryTask,
+            true,
+            supervisorLaneInputIsolationScope(lane),
+            () => terminalScreenTail(lane.surfaceId),
+            () => {
+              recoveryAcknowledgement = beginTaskPromptAcknowledgement(
+                lane.surfaceId,
+                terminalScreenTail(lane.surfaceId),
+              );
+            },
+            () => contextResetPreSubmitError('recovering'),
+          ));
+          const delivery = await recoveryAcknowledgement!.promise;
+          if (!delivery.confirmed) {
+            return failOrdinaryContextReset(
+              `上下文已清空，但 15 秒内未收到恢复任务的 UserPromptSubmit 确认（当前 ${delivery.agentState}）`,
+              'recovering',
+            );
+          }
+          appendSupervisorRecord(useStore.getState().supervisor, currentLane, 'supervisor.context-reset.completed', {
+            command: clearCommand,
+            planRevision: ordinaryTaskDispatch.sourceRevision,
+            symptoms: proposedOrdinaryContextHealth.symptoms,
+          });
+          useStore.getState().appendSupervisorLog(
+            lane.id,
+            '任务 AI 上下文已清空',
+            '已在原终端发送最小可信恢复任务',
+          );
+          return finishDecision(delivery);
+        } catch (error) {
+          return failOrdinaryContextReset(
+            String((error as Error)?.message || error),
+            useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id)
+              ?.ordinaryContextReset?.status === 'recovering' ? 'recovering' : 'clearing',
+          );
+        } finally {
+          recoveryAcknowledgement?.cancel();
+          supervisorDeliveriesInFlight.delete(lane.id);
+        }
+      })();
+    }
 
     if (next) {
       const beforeScreen = terminalScreenTail(lane.surfaceId);

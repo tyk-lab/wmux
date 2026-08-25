@@ -249,6 +249,13 @@ function bindProjectLaneToWorkItem(options: {
       requirementsVersion: 1,
       authorizationVersion: 1,
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+      complexityAssessment: {
+        complexity: 'medium',
+        decision: 'single-task',
+        signals: ['测试工作项只有一个独立可验收成果'],
+        rationale: '测试监督链只需要一个任务 AI 连续完成当前成果',
+        assessedAt: 1,
+      },
       baseline: undefined,
       supervisorPlanRequired: false,
       title: workItemId,
@@ -577,6 +584,8 @@ describe('supervisor decision bridge', () => {
     useStore.getState().setWorkspacePrefs({ projectManagementAgents: DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG });
     surfaceTerminalRegistry.delete('worker-a');
     surfaceTerminalRegistry.delete('supervisor-a');
+    clearTerminalRuntimeStatus('worker-a');
+    clearTerminalRuntimeStatus('supervisor-a');
     surfaceTerminalRegistry.delete('project-manager-atomic');
     clearTerminalRuntimeStatus('project-manager-atomic');
     clearSupervisorEvidenceCache();
@@ -4184,6 +4193,168 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
+  it('clears the same task Agent context after two degraded reviews and republishes trusted context', async () => {
+    vi.useFakeTimers();
+    screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+    let pendingBody = '';
+    const submittedBodies: string[] = [];
+    const writeReliable = vi.fn(async (surfaceId: string, data: string) => {
+      if (data !== '\r') {
+        pendingBody = data;
+        submittedBodies.push(data);
+      } else if (pendingBody === '/new') {
+        screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+        agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+      } else {
+        agentState = { ...agentState, state: 'working', updatedAt: agentState.updatedAt + 1 };
+        acknowledgeTaskPrompt(surfaceId);
+      }
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    const first = decide({
+      outcome: 'rework', next: '先纠正遗忘规划的问题',
+      contextHealth: 'degraded',
+      contextSymptoms: 'forgotten-plan,repeated-mistake',
+      contextSignal: '任务 AI 遗忘用户规划并再次重复已经纠正的错误',
+    });
+    await vi.runAllTimersAsync();
+    await expect(first).resolves.toMatchObject({ ok: true, outcome: 'rework' });
+    expect(useStore.getState().supervisor.lanes[0].ordinaryContextHealth?.occurrences).toBe(1);
+
+    useStore.getState().updateLane('lane-a', {
+      awaitingReview: true,
+      activeReviewId: 'review-context-2',
+      reviewWorkerTurnId: 2,
+      workerTurnId: 2,
+    });
+    agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+    screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+
+    const second = decide({
+      reviewId: 'review-context-2', outcome: 'rework', next: '重新完成当前成果',
+      contextHealth: 'degraded',
+      contextSymptoms: 'forgotten-plan,repeated-mistake',
+      contextSignal: '新任务回合仍遗忘用户规划并重复相同错误',
+    });
+    await vi.runAllTimersAsync();
+    await expect(second).resolves.toMatchObject({ ok: true, outcome: 'rework' });
+
+    expect(submittedBodies).toHaveLength(3);
+    expect(submittedBodies[1]).toBe('/new');
+    expect(submittedBodies[2]).toContain('[上下文已清空｜可信任务恢复]');
+    expect(submittedBodies[2]).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
+    expect(submittedBodies[2]).toContain('用户规划版本：r1');
+    expect(submittedBodies[2]).toContain('AGENTS、技能与仓库规范');
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      ordinaryContextHealth: undefined,
+      ordinaryContextReset: undefined,
+      ordinaryContextResetCount: 1,
+      ordinaryContextResetPlanRevision: 1,
+      awaitingReview: false,
+    });
+  });
+
+  it('reports a failed context clear and never retries it automatically', async () => {
+    screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+    useStore.getState().updateLane('lane-a', {
+      awaitingReview: true,
+      activeReviewId: 'review-context-failed',
+      reviewWorkerTurnId: 2,
+      workerTurnId: 2,
+      ordinaryContextHealth: {
+        fingerprint: 'forgotten-plan|repeated-mistake',
+        symptoms: ['forgotten-plan', 'repeated-mistake'],
+        signal: '首次发现上下文退化',
+        evidenceFingerprint: 'no-new-evidence',
+        occurrences: 1,
+        reviewId: 'review-context-1',
+        workerTurnId: 1,
+        updatedAt: 1,
+      },
+    });
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '/new') throw new Error('clear rejected');
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    await expect(decide({
+      reviewId: 'review-context-failed', outcome: 'rework', next: '重新完成当前成果',
+      contextHealth: 'degraded',
+      contextSymptoms: 'forgotten-plan,repeated-mistake',
+      contextSignal: '第二个任务回合仍然遗忘规划并重复错误',
+    })).resolves.toMatchObject({
+      ok: false,
+      contextResetFailed: true,
+      requiresHuman: true,
+      error: expect.stringContaining('clear rejected'),
+    });
+    expect(useStore.getState().supervisor.lanes[0].ordinaryContextReset).toMatchObject({
+      status: 'failed', error: expect.stringContaining('clear rejected'),
+    });
+    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'AI 监督需要你的处理',
+    }));
+    const writesAfterFailure = writeReliable.mock.calls.length;
+
+    expect(decide({
+      reviewId: 'review-context-failed', outcome: 'rework', next: '不得再次清空',
+      contextHealth: 'degraded',
+      contextSymptoms: 'forgotten-plan,repeated-mistake',
+      contextSignal: '同一问题再次出现',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('禁止自动重试') });
+    expect(writeReliable).toHaveBeenCalledTimes(writesAfterFailure);
+  });
+
+  it('cancels context clearing before Enter when the user plan changes in flight', async () => {
+    vi.useFakeTimers();
+    screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+    useStore.getState().updateLane('lane-a', {
+      awaitingReview: true,
+      activeReviewId: 'review-context-race',
+      reviewWorkerTurnId: 2,
+      workerTurnId: 2,
+      ordinaryContextHealth: {
+        fingerprint: 'forgotten-plan', symptoms: ['forgotten-plan'],
+        signal: '首次遗忘规划', evidenceFingerprint: 'no-new-evidence', occurrences: 1,
+        reviewId: 'review-context-1', workerTurnId: 1, updatedAt: 1,
+      },
+    });
+    let acceptClearBody: ((accepted: boolean) => void) | undefined;
+    const writeReliable = vi.fn((_surfaceId: string, data: string) => {
+      if (data === '/new') {
+        return new Promise<boolean>((resolve) => { acceptClearBody = resolve; });
+      }
+      return Promise.resolve(true);
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+    useStore.getState().patchSupervisor({ submitEnter: true });
+
+    const decision = decide({
+      reviewId: 'review-context-race', outcome: 'rework', next: '重新完成当前成果',
+      contextHealth: 'degraded', contextSymptoms: 'forgotten-plan',
+      contextSignal: '第二轮仍遗忘用户规划',
+    });
+    const currentLane = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane('lane-a', {
+      config: { ...currentLane.config!, planRevision: 2, taskGoal: '用户刚更新的新目标' },
+    });
+    acceptClearBody?.(true);
+    await vi.runAllTimersAsync();
+
+    await expect(decision).resolves.toMatchObject({
+      ok: false,
+      contextResetFailed: true,
+      error: expect.stringContaining('用户规划版本已变化'),
+    });
+    expect(writeReliable).not.toHaveBeenCalledWith('worker-a', '\r');
+    expect(writeReliable.mock.calls.some(([, data]) => String(data).includes('[上下文已清空'))).toBe(false);
+  });
+
   it('escalates the same technical blocker only after a second review without new evidence', () => {
     const escalation = (reviewId?: string) => (globalThis.window as any).__wmux_supervisorDecide({
       surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
@@ -4267,6 +4438,176 @@ describe('supervisor decision bridge', () => {
     expect(writes).toHaveBeenCalledTimes(2);
     expect(writes).toHaveBeenNthCalledWith(2, 'worker-a', ordinaryTaskDelivery('运行相关单元测试'));
     expect(String(writes.mock.calls[1][1])).not.toContain('任务事件｜控制层');
+  });
+
+  it('requires project AI to assess task complexity before creating an executable work item', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-complexity-gate' });
+    attachProjectManagerSurface(project.id, 'manager-complexity-gate');
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const template = current.workItems[0];
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const workItem = {
+      id: 'task-b',
+      title: '第二个独立成果',
+      subgoalId: current.subgoals?.[0]?.id,
+      status: 'planned',
+      dependencies: [],
+      contract: template.contract,
+    };
+
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('complexityAssessment'),
+    });
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        complexityAssessment: {
+          complexity: 'high',
+          decision: 'split-before-dispatch',
+          signals: ['包含多个独立成果'],
+          rationale: '应先拆成多个工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('先拆分'),
+    });
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        complexityAssessment: {
+          complexity: 'low',
+          decision: 'single-task',
+          signals: ['只有一个可独立验收成果'],
+          rationale: '一个任务 AI 可以保持单一主线完成',
+        },
+      },
+    })).resolves.toMatchObject({ ok: true });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)
+      ?.workItems.find((candidate) => candidate.id === 'task-b')?.complexityAssessment)
+      .toMatchObject({ decision: 'single-task', complexity: 'low' });
+  });
+
+  it('clears polluted task context in place once and escalates a repeated reset', async () => {
+    vi.useFakeTimers();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-context-reset' });
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-context-reset' as any,
+      title: '上下文原地清空测试',
+      cwd: project.projectDir,
+      transientSupervisorWorkspace: true,
+      splitTree: {
+        type: 'leaf' as const,
+        paneId: 'pane-context-reset' as any,
+        activeSurfaceIndex: 0,
+        surfaces: [{
+          id: 'worker-a' as any,
+          type: 'terminal' as const,
+          shell: 'pwsh.exe',
+          projectManagerProjectId: project.id,
+          projectManagerWorkItemId: 'task-a',
+        }],
+      },
+    }]);
+    surfaceTerminalRegistry.set('worker-a', {
+      buffer: {
+        active: {
+          type: 'normal', baseY: 0, cursorX: 0, cursorY: 1, length: 2,
+          getLine: (index: number) => ({
+            translateToString: (_trimRight?: boolean, startColumn?: number, endColumn?: number) => {
+              const text = index === 0 ? 'OpenAI Codex' : '› Ask Codex to do anything';
+              return typeof endColumn === 'number'
+                ? text.slice(startColumn || 0, endColumn)
+                : text;
+            },
+          }),
+        },
+      },
+    } as any);
+    markTerminalRuntimeReady('worker-a');
+    agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: Date.now() };
+    const pendingBodies = new Map<string, string>();
+    const submittedBodies: string[] = [];
+    (globalThis.window as any).wmux.pty.writeReliable = vi.fn(async (surfaceId: string, data: string) => {
+      if (data !== '\r') {
+        pendingBodies.set(surfaceId, data);
+        if (surfaceId === 'worker-a') submittedBodies.push(data);
+      } else if (surfaceId === 'worker-a') {
+        const body = pendingBodies.get(surfaceId) || '';
+        if (body === '/new') {
+          agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+        } else {
+          agentState = { ...agentState, state: 'working', updatedAt: agentState.updatedAt + 1 };
+          acknowledgeTaskPrompt(surfaceId);
+        }
+      }
+      return true;
+    });
+    const originalSurfaceId = useStore.getState().supervisor.lanes[0].surfaceId;
+
+    const resetPromise = Promise.resolve(decide({
+      outcome: 'rework',
+      proposalKind: 'context-recovery',
+      reason: '任务 AI 连续两轮忘记项目产物目录规范',
+      evidence: '两次检查点都把运行结果写入 .project-plans 根目录',
+      contextSummary: '目标文件尚未完成；保留已有源码修改，下一步按项目规范修复产物落位并运行相关验证。',
+    }));
+    await vi.runAllTimersAsync();
+    const resetResult = await resetPromise;
+    expect(resetResult, JSON.stringify(resetResult)).toMatchObject({
+      ok: true,
+      contextReset: true,
+      surfaceId: originalSurfaceId,
+      generation: 2,
+    });
+    const submittedPrompts = submittedBodies.filter((text) => text !== '\x1b' && text !== '\x03');
+    expect(submittedPrompts).toEqual([
+      '/new',
+      expect.stringContaining('[任务上下文已清空｜当前工作项重新发布]'),
+    ]);
+    expect(submittedPrompts[1]).toContain('重新读取当前目录适用的 AGENTS.md');
+    expect(useStore.getState().supervisor.lanes[0].surfaceId).toBe(originalSurfaceId);
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.workItems[0].contextReset).toMatchObject({ count: 1, status: 'republished', generation: 2 });
+    useStore.getState().updateLane('lane-a', { pendingSupervisorDeliveries: [], awaitingReview: true });
+
+    expect(await decide({
+      outcome: 'rework',
+      proposalKind: 'context-recovery',
+      reason: '清空后再次持续偏离当前成果',
+      evidence: '新上下文再次处理其他工作项且没有新增证据',
+      contextSummary: '当前成果仍未完成，需要项目 AI 缩小或拆分工作项。',
+    })).toMatchObject({
+      ok: true,
+      projectDecisionRequired: true,
+      contextResetBlocked: true,
+    });
+    expect(submittedPrompts.filter((text) => text === '/new')).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it('rejects context reset without pollution evidence and a clean context packet', () => {
+    bindProjectLaneToWorkItem({ projectId: 'pm-context-reset-evidence' });
+    expect(decide({
+      outcome: 'rework',
+      proposalKind: 'context-recovery',
+      reason: '上下文可能有问题',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--reason、--evidence 和 --context-summary'),
+    });
   });
 
   it('fails closed when a project lane cannot prove its exact project and work-item binding', () => {
