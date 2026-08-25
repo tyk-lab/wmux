@@ -236,6 +236,10 @@ export function handleSupervisorUserSubmit(
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
+    ...(!projectManaged ? {
+      ordinaryContextHealth: undefined,
+      ordinaryContextReset: undefined,
+    } : {}),
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
   if (projectManaged) {

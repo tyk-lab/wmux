@@ -44,6 +44,18 @@ describe('supervisor status summary', () => {
     });
   });
 
+  it('shows an evidence-backed context correction as a distinct supervisor state', () => {
+    expect(summarizeSupervisorPlan({
+      latestDecision: {
+        ts: 2, task: '继续任务', outcome: 'rework', reason: '上下文退化', next: '重新核对规划',
+        contextHealth: 'degraded', contextSymptoms: ['forgotten-plan'],
+        contextSignal: '任务 AI 遗忘了用户规划',
+      },
+    })).toMatchObject({ label: '上下文纠偏中', detail: '重新核对规划' });
+    expect(panelSource).toContain('正在清空任务 AI 上下文');
+    expect(panelSource).toContain('已发现任务 AI 上下文退化迹象');
+  });
+
   it('prefers the live task Agent state and falls back to the lane state', () => {
     const active = { controlState: 'active' as const, currentTask: '实现功能' };
     expect(summarizeTaskExecution(active, { state: 'working' })).toMatchObject({

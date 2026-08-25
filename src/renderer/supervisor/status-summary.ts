@@ -145,7 +145,7 @@ export function summarizeSupervisorPlan(options: {
       || decision.reason.trim()
       || '监督 AI 未附具体下一步';
     return {
-      label: labels[decision.outcome],
+      label: decision.contextHealth === 'degraded' ? '上下文纠偏中' : labels[decision.outcome],
       detail,
       title: [`裁决：${decision.outcome}`, decision.reason ? `原因：${decision.reason}` : '', `下一步：${detail}`]
         .filter(Boolean).join('\n'),

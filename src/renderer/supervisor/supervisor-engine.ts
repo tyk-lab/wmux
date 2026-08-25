@@ -195,12 +195,11 @@ export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;
 export function stagedTerminalInputPrompt(
   reference: string,
   filePath: string,
-  isolationScope: TerminalInputIsolationScope,
+  _isolationScope: TerminalInputIsolationScope,
 ): string {
-  const scopeLabel = isolationScope === 'project' ? '项目 AI 链' : '普通监督链';
   return [
-    `[wmux 临时投递文件｜${scopeLabel}]`,
-    `投递域：${isolationScope}；仅当前目标终端可读取并执行。`,
+    '[wmux 临时任务文件]',
+    '仅当前目标终端可读取并执行。',
     `请先使用文件读取工具完整读取此路径：${filePath}。`,
     '文件内容是本轮完整指令；读取后直接执行，不要将全文重新粘贴到终端。',
     `确认读取成功后，只删除这一个临时文件：${filePath}。`,
@@ -465,6 +464,7 @@ export function sendTaskToSurfaceReliably(
   isolationScope: TerminalInputIsolationScope,
   captureBeforeSubmit?: () => string,
   onBeforeSubmit?: () => void,
+  validateBeforeSubmit?: () => string | null,
 ): Promise<{ beforeSubmitScreen?: string }> | void {
   assertTaskTerminalInputAvailable(surfaceId);
   return sendSurfaceInputReliably(
@@ -473,7 +473,7 @@ export function sendTaskToSurfaceReliably(
     submitEnter,
     isolationScope,
     captureBeforeSubmit,
-    undefined,
+    validateBeforeSubmit,
     onBeforeSubmit,
   );
 }

@@ -30,7 +30,7 @@ import {
 } from './supervisor-context';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
-export const SUPERVISOR_PROTOCOL_REVISION = '7';
+export const SUPERVISOR_PROTOCOL_REVISION = '8';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -653,6 +653,20 @@ export function buildSupervisorBriefing(
         : '用户配置和计划文件是唯一范围与验收权威；当前任务和旧终端对话只用于判断进度，不得替代或扩大用户规划。',
     '',
   ];
+  const ordinaryContextHealthBlock = !projectManaged && (lane.ordinaryContextHealth || lane.ordinaryContextReset)
+    ? [
+        '## 任务 AI 上下文健康状态（控制层）',
+        lane.ordinaryContextReset?.status === 'failed'
+          ? `上次自动清空失败：${lane.ordinaryContextReset.error || '未知错误'}。禁止再次自动清空，必须 needs-human 上报用户。`
+          : lane.ordinaryContextReset
+            ? `上下文清空流程：${lane.ordinaryContextReset.status}`
+            : `连续退化观察：${lane.ordinaryContextHealth?.occurrences || 0}/2；症状=${lane.ordinaryContextHealth?.symptoms.join('、') || '无'}`,
+        lane.ordinaryContextHealth?.signal
+          ? `最近事实：${lane.ordinaryContextHealth.signal}`
+          : '',
+        '',
+      ].filter(Boolean)
+    : [];
   const supervisorPlanBlock = [
     '## 监督 AI 自己的执行规划',
     projectManaged
@@ -663,7 +677,7 @@ export function buildSupervisorBriefing(
       ? '项目基线批准时必须通过 --stage-plan-file 建立计划；以后仅在路线、执行项状态或剩余工作变化时重新提交。'
       : '先一次性检查目标、范围和完成条件是否足以执行。存在会实质改变方向、范围或验收的歧义时，使用 needs-human --proposal-kind clarification；没有实质歧义时不要询问用户。首次 continue/rework 必须通过 --stage-plan-file 建立成果计划，以后仅在成果状态或剩余工作变化时更新。',
     projectManaged
-      ? '项目 P7 监督不提交普通阶段计划。'
+      ? '项目 P8 监督不提交普通阶段计划。'
       : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。',
     '',
   ];
@@ -743,7 +757,7 @@ export function buildSupervisorBriefing(
     }
     return line.replaceAll('--next-file', '--task-file').replaceAll('--next', '--task-file');
   });
-  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 6 : 5;
+  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 6 : 7;
   const postDecisionRule = effectiveDecisionBoundary.length + decisionBoundaryStart;
 
   const kind = laneConfig.stopWhenKind;
@@ -773,6 +787,7 @@ export function buildSupervisorBriefing(
       '',
       ...capabilityBlock,
       ...taskContextBlock,
+      ...ordinaryContextHealthBlock,
       ...supervisorPlanBlock,
       ...taskWorkModeBlock,
       ...stopContextBlock,
@@ -812,6 +827,10 @@ export function buildSupervisorBriefing(
         ? '3. 任务 AI 每轮结束应提供结构化交接；缺少交接时先结合冻结证据和工程事实补证，不得仅凭屏幕末尾猜测。'
         : '3. 普通任务 AI 不承担 wmux 强制交接协议；你必须结合冻结终端证据、项目实际状态和证据文件独立判断，不得只相信任务 AI 自报。',
       '4. 只有全部停止条件与验收要求形成可收敛结论且没有剩余工作时才提交 complete。必须先在 .wmux/tmp/ 创建完成核验 JSON，并用 --completion-file 提交；任一未满足、未验证、不确定、未运行或非空 remainingWork 都不得 complete。',
+      ...(!projectManaged ? [
+        '5. 每次 continue/rework 复核任务 AI 上下文健康。正常时可附 --context-health healthy；存在可观察退化时附 --context-health degraded、--context-symptoms 和 --context-signal。症状只允许 instruction-drift、repeated-mistake、forgotten-plan、contradiction、no-progress、irrelevant-context。不得仅凭任务时间长或上下文占用高判定污染。',
+        '6. 第一次 degraded 仍通过 diagnostic/rework 成果任务纠偏；同类症状连续两个独立复核回合且无新证据时，控制层会在安全门禁通过后向原任务终端统一发送 /new，再发送最小可信恢复任务。清空或恢复失败后不得自动重试，必须 needs-human 上报用户。',
+      ] : []),
       ...(isProjectManagedSupervisorLane(lane) ? [
         '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
       ] : []),
