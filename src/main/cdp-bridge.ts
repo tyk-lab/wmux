@@ -153,7 +153,7 @@ export class CDPBridge {
     try {
       const wc = webContents.fromId(target);
       if (wc?.debugger.isAttached()) wc.debugger.detach();
-    } catch {}
+    } catch { /* ignored */ }
     this.targets.delete(target);
     if (this.lastWcId === target) {
       const remaining = [...this.targets.keys()];
