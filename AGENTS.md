@@ -21,6 +21,10 @@ Use TypeScript with the existing two-space indentation, semicolons, and single q
 
 Add a focused `tests/unit/<feature>.test.ts` test for new state transitions, parsers, or notification behavior. Use descriptive Vitest cases such as `it('suppresses turn notifications while supervision is active', ...)`. Run the narrow test during development, then `npm test`, `npm run typecheck`, and `npm run lint` for changed TypeScript paths.
 
+## Project Management Control Plane
+
+`src/renderer/project-manager/` owns persisted project and work-item state. `src/renderer/pipe-bridge.ts` owns manager delivery, supervisor-transition routing, execution-window replanning, and liveness recovery. Keep control-plane state changes covered by focused `tests/unit/project-manager-*.test.ts` and `tests/unit/supervisor-decision-bridge.test.ts` cases. Dynamic local handoff state belongs in `.project-plans/PROGRESS.md`, not in this file.
+
 ## Commit & Pull Request Guidelines
 
 Follow the established Conventional Commit format: `feat(scope): summary`, `fix(scope): summary`, or `docs(readme): summary`. Keep scopes specific (for example, `supervisor`, `shell`, or `notify`) and summaries concise. Pull requests should explain the user-visible change, link relevant issues, list validation commands, and include screenshots or recordings for UI changes. Do not commit generated `dist/` output or local AI-tool configuration.
