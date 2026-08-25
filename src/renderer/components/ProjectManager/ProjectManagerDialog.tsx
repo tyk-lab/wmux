@@ -53,15 +53,6 @@ const STATUS_LABELS: Record<string, string> = {
   obsolete: '已取消',
 };
 
-function taskWorkModeLabel(selection: string | undefined, legacyMode: string | undefined): string {
-  if (selection === 'worker-group') return '多任务 AI';
-  if (selection === 'internal-threads') return '单任务 AI · 内部多线程';
-  if (selection === 'single-worker') return '单任务 AI · 单线程';
-  if (selection === 'auto' || legacyMode === 'adaptive') return '自动选择（互斥）';
-  if (legacyMode === 'multi-thread') return '单任务 AI · 内部多线程';
-  return '单任务 AI · 单线程';
-}
-
 interface ProjectContextTerminal {
   surfaceId: string;
   label: string;
@@ -1729,7 +1720,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div className="project-manager-dialog__work-items project-manager-dialog__work-item-decisions">
                   {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
                   {currentWorkItems.map((item) => {
-                    const execution = item.contract.execution;
                     const itemLane = managedLanes.find((lane) => lane.id === item.supervisorLaneId);
                     const supervisorPlanView = buildSupervisorPlanView({
                       source: 'project-ai',
@@ -1773,9 +1763,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         </summary>
                         <dl>
                           {item.supersededByWorkItemId && <><dt>审计冻结</dt><dd>预算与执行历史保持不变；仅由后继 {item.supersededByWorkItemId} 继续。</dd></>}
-                          <dt>执行模式</dt><dd>{taskWorkModeLabel(item.parallelismDecision?.resolvedMode || execution?.parallelismSelection, execution?.taskWorkMode)}{item.parallelismDecision ? `：${item.parallelismDecision.reason}` : execution?.modeReason ? `：${execution.modeReason}` : ''}</dd>
-                          {(execution?.parallelismSelection === 'auto' || execution?.taskWorkMode === 'adaptive') && !item.parallelismDecision && <><dt>自动选择边界</dt><dd>基线批准时只会选择一种模式；可并行：{execution.parallelizableOperations?.join('；') || '无'}；必须串行：{execution.serializedOperations?.join('；') || '共享写入、硬件与最终集成'}</dd></>}
-                          {item.workerGroup && <><dt>任务 AI 组</dt><dd>{item.workerGroup.workers.map((worker) => `${worker.workerId}（${worker.role}／${STATUS_LABELS[worker.status] || worker.status}）`).join('；')}</dd><dt>合并状态</dt><dd>候选 {item.mergeCandidates?.length || 0}；活动租约 {(item.resourceLeases || []).filter((lease) => !['released', 'quarantined'].includes(lease.status)).length}；待协调直发 {(item.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending').length}；最终应用{item.finalApplyBlocked ? '已锁定' : '已完成'}</dd></>}
+                          <dt>执行者</dt><dd>项目唯一任务 AI；内部线程由任务 AI 按项目规范自主决定</dd>
                           <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>

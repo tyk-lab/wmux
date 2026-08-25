@@ -56,6 +56,19 @@ function payloadText(payload: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function payloadObject(payload: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = payload[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
 function payloadStagePlan(payload: Record<string, unknown>): ProjectSupervisorStagePlan | undefined {
   const value = payload.stagePlan;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -123,6 +136,17 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
     const next = payloadText(payload, 'next');
     const impact = payloadText(payload, 'impact');
     const alternatives = payloadText(payload, 'alternatives');
+    const taskDispatch = payloadObject(payload, 'taskDispatch');
+    const taskOutcome = taskDispatch ? payloadText(taskDispatch, 'outcome') : '';
+    const constraints = stringArray(taskDispatch?.constraints);
+    const acceptanceGap = stringArray(taskDispatch?.acceptanceGap);
+    const evidenceContext = stringArray(taskDispatch?.evidenceContext);
+    const goalVortex = payloadObject(payload, 'goalVortex');
+    const decisionBasis = reason
+      || evidenceContext.join('；')
+      || (acceptanceGap.length > 0
+        ? `当前成果仍有 ${acceptanceGap.length} 项验收缺口，需要继续推进`
+        : `依据当前任务终端证据作出“${outcomeLabel}”裁决`);
     const proposal = proposalTitle(proposalKind);
     const proposalLabel = proposal ? ` · ${proposal}` : '';
     return [
@@ -130,10 +154,40 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
       '',
       `> **判断结果：${markdownText(outcomeLabel)}** · ${at}`,
       '',
-      reason ? `- 判断依据：${markdownText(reason)}` : '- 判断依据：未附说明',
+      `- 判断依据：${markdownText(decisionBasis)}`,
       impact ? `- 影响：${markdownText(impact)}` : '',
       alternatives ? `- 备选：${markdownText(alternatives)}` : '',
-      next ? `- 建议下一步：${markdownText(next)}` : '',
+      taskOutcome ? `- 下发成果：${markdownText(taskOutcome)}` : '',
+      constraints.length > 0 ? `- 执行约束：${markdownText(constraints.join('；'))}` : '',
+      acceptanceGap.length > 0 ? `- 验收缺口：${markdownText(acceptanceGap.join('；'))}` : '',
+      evidenceContext.length > 0 ? `- 必要现状：${markdownText(evidenceContext.join('；'))}` : '',
+      !taskOutcome && next ? `- 建议下一步：${markdownText(next)}` : '',
+      goalVortex ? `- 推进性纠偏：${markdownText(payloadText(goalVortex, 'decisiveNextStep') || '已记录目标旋涡并要求改变推进路径')}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  if (event.type === 'supervisor.goal-vortex.detected'
+    || event.type === 'supervisor.goal-vortex.replan-required'
+    || event.type === 'supervisor.goal-vortex.rejected-repeat') {
+    const rejected = event.type.endsWith('rejected-repeat');
+    const forced = event.type.endsWith('replan-required');
+    const conditions = stringArray(payload.experimentConditions);
+    return [
+      `#### 【目标旋涡】${rejected ? '重复纠偏被拒绝' : forced ? '连续空耗，强制重规划' : '发现空耗，立即纠偏'}`,
+      '',
+      `> **处理结果：${rejected ? '未投递重复任务，要求改变路径' : forced ? '禁止重复原路径' : '已下发纠偏任务'}** · ${at}`,
+      '',
+      `- 旋涡类型：${markdownText(payloadText(payload, 'kind') || '未分类')}`,
+      `- 触发现象：${markdownText(payloadText(payload, 'signal') || '缺少事实信号')}`,
+      `- 空耗细节：${markdownText(payloadText(payload, 'wastedEffort') || '缺少空耗说明')}`,
+      `- 缺失的决定性证据：${markdownText(payloadText(payload, 'missingEvidence') || '未说明')}`,
+      `- 应采取的推进动作：${markdownText(payloadText(payload, 'decisiveNextStep') || '未说明')}`,
+      `- 授权边界：${markdownText(payloadText(payload, 'authorizationBoundary') || '未说明')}`,
+      conditions.length > 0 ? `- 判别实验条件：${markdownText(conditions.join('；'))}` : '',
+      rejected
+        ? `- 上轮纠偏任务：${markdownText(payloadText(payload, 'previousCorrectionTask') || '未记录')}`
+        : '',
+      `- ${rejected ? '被拒绝的重复纠偏' : '已发布纠偏任务'}：${markdownText(payloadText(payload, 'correctionTask') || '等待扩大授权')}`,
+      `- 连续出现次数：${Number(payload.occurrence) || 1}`,
     ].filter(Boolean).join('\n');
   }
   if (event.type === 'supervisor.proposal.resolved') {
@@ -405,7 +459,8 @@ export function appendSupervisorRecord(
     const important = type === 'supervisor.provider-limit'
       || type === 'supervisor.delivery.failed'
       || type === 'supervisor.waiting-for-direction'
-      || type === 'supervisor.idle-unreported';
+      || type === 'supervisor.idle-unreported'
+      || type === 'supervisor.goal-vortex.replan-required';
     if (important) {
       const notification = (window as any).__wmux_projectManagerRemoteControl?.({
         action: 'event',

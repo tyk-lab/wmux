@@ -84,6 +84,8 @@ describe('ordinary context health', () => {
     expect(ordinaryContextClearCommand('codex')).toBe('/new');
     expect(ordinaryContextClearCommand('kimi')).toBe('/new');
     expect(ordinaryContextClearCommand('grok')).toBe('/new');
+    expect(ordinaryContextClearCommand('pi')).toBe('/new');
+    expect(ordinaryContextClearCommand('opencode')).toBe('/new');
     expect(ordinaryContextClearCommand('generic')).toBeNull();
   });
 });

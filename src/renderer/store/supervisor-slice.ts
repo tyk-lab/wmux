@@ -9,7 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
-import type { ProjectCompletionResult, ProjectSupervisorStagePlan, ProjectWorkerRole } from '../../shared/project-manager';
+import type { ProjectCompletionResult, ProjectSupervisorStagePlan } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -80,6 +80,32 @@ export interface OrdinaryContextResetState {
   error?: string;
 }
 
+export type GoalVortexKind =
+  | 'offline-overanalysis'
+  | 'repeated-validation'
+  | 'missing-real-test'
+  | 'single-condition-fixation'
+  | 'constraint-dead-end'
+  | 'evidence-free-deliberation';
+
+export interface GoalVortexState {
+  fingerprint: string;
+  /** Progress evidence observed when this stall state was recorded. */
+  evidenceFingerprint?: string;
+  kind: GoalVortexKind;
+  signal: string;
+  wastedEffort: string;
+  missingEvidence: string;
+  decisiveNextStep: string;
+  authorizationBoundary: 'within-current' | 'requires-expansion';
+  experimentConditions: string[];
+  correctionTask: string;
+  occurrences: number;
+  reviewId?: string;
+  workerTurnId?: number;
+  updatedAt: number;
+}
+
 export interface SupervisorDecision {
   ts: number;
   task: string;
@@ -96,6 +122,8 @@ export interface SupervisorDecision {
   contextHealth?: 'healthy' | 'degraded';
   contextSymptoms?: OrdinaryContextSymptom[];
   contextSignal?: string;
+  progressHealth?: 'healthy' | 'stalled';
+  goalVortex?: GoalVortexState;
   /** Final result attached only to a complete decision. */
   completion?: ProjectCompletionResult;
 }
@@ -177,14 +205,6 @@ export interface SupervisorLane {
   projectWorkItemId?: string;
   /** Project-management project that owns this lane; work-item IDs are only unique within it. */
   projectManagerProjectId?: string;
-  /** Address inside one logical project-supervisor worker group. */
-  projectWorkerId?: string;
-  projectWorkerRole?: ProjectWorkerRole;
-  projectWorkerExecutionEpoch?: number;
-  projectWorkerAssignmentVersion?: number;
-  projectWorkerDirectiveEpoch?: number;
-  /** The project supervisor is running, but it has not created its dedicated task terminal yet. */
-  projectTaskStartupPending?: boolean;
   /** Project manager requested context rotation; only this lane's supervisor may execute it. */
   projectTaskRotationPending?: boolean;
   projectTaskRotationSummary?: string;
@@ -218,10 +238,19 @@ export interface SupervisorLane {
   };
   /** Consecutive evidence-backed observations of task-AI context degradation. */
   ordinaryContextHealth?: OrdinaryContextHealthState;
+  /** Latest text entered directly by the user in this lane's dedicated supervisor terminal. */
+  latestSupervisorUserGuidance?: {
+    text: string;
+    updatedAt: number;
+    planRevision: number;
+    requirementsVersion?: number;
+  };
   /** In-flight or failed same-terminal context reset. Failed resets require user handling. */
   ordinaryContextReset?: OrdinaryContextResetState;
   ordinaryContextResetCount?: number;
   ordinaryContextResetPlanRevision?: number;
+  /** Evidence-backed execution stall shared by ordinary and project supervision. */
+  goalVortex?: GoalVortexState;
   /** Authoritative lifecycle state for this independently owned lane. */
   controlState: SupervisorLaneControlState;
   /** A completed decision is awaiting stop-condition confirmation. */
@@ -516,6 +545,7 @@ export function clearSupervisorLaneContext(
     reviewOpenedAt: undefined,
     reviewDeliveryConfirmedAt: undefined,
     reviewWatchdogState: undefined,
+    goalVortex: undefined,
     ...(!isProjectManagedSupervisorLane(lane) ? {
       ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
       pendingInitialReview: false,
@@ -623,9 +653,9 @@ export function isSupervisorLaneBound(
 
 /** Project-owned lanes are controlled by Project AI, never by ordinary supervision controls. */
 export function isProjectManagedSupervisorLane(
-  lane: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId' | 'projectTaskStartupPending'>,
+  lane: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId'>,
 ): boolean {
-  return !!(lane.projectManagerProjectId || lane.projectWorkItemId || lane.projectTaskStartupPending);
+  return !!(lane.projectManagerProjectId || lane.projectWorkItemId);
 }
 
 function supervisorRuntimeFlags(lanes: readonly SupervisorLane[]): Pick<SupervisorSession, 'active' | 'paused'> {

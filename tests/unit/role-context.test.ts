@@ -13,8 +13,6 @@ import {
   withProjectManagerEventEnvelope,
 } from '../../src/shared/project-manager-terminal';
 import {
-  PROJECT_TASK_ROLE_ANCHOR,
-  buildProjectTaskEventEnvelope,
   buildProjectTaskExecutionEnvelope,
   prepareProjectTaskDelivery,
 } from '../../src/renderer/project-manager/engine';
@@ -154,18 +152,18 @@ describe('unified managed AI role context', () => {
       executionProtocol: 'current',
     });
     expect(context.commands.available).toContain('wmux context');
-    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
+    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
       .toMatchObject({ available: true });
     expect(context.commands.conditional.find((item) => item.command.includes('project decide')))
       .toMatchObject({ available: true });
   });
 
-  it('requires a control-owned successor before advertising supervise for old work', () => {
+  it('requires a control-owned successor before advertising dispatch for old work', () => {
     const context = buildProjectAiRuntimeContext(project(workItem({ executionProtocolVersion: 1 })));
 
     expect(context.state.executionProtocol).toBe('migration-required');
     expect(context.pending.readyWorkItems).toBe(0);
-    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
+    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
       .toMatchObject({ available: false });
     expect(context.commands.conditional.find((item) => item.command.includes('task-update'))?.condition)
       .toContain('控制层会冻结');
@@ -190,66 +188,27 @@ describe('unified managed AI role context', () => {
       .toBe(true);
     expect(context.commands.conditional.find((item) => item.command.includes('task-create'))?.available)
       .toBe(false);
-  });  it('stops advertising execution when the task contract is stale', () => {
-    const item = workItem({ requirementsVersion: 1 });
+  });
+
+  it('keeps project orchestration identity and state invisible to the task AI', () => {
+    const item = workItem({ requirementsVersion: 1, status: 'paused' });
     const context = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
+      callerSurfaceId: 'task-a',
+      lane: lane({ controlState: 'paused' }),
+      project: project(item),
+      workItem: item,
     });
 
-    expect(context.state.contract).toBe('stale');
-    expect(context.actions.available).toEqual([
-      '当前项目状态或任务成果版本已经失效；停止执行并等待控制层重新绑定',
-    ]);
+    expect(context.role).toBe('task');
+    expect(context.identity).toEqual({ taskSurfaceId: 'task-a' });
+    expect(context.state).toEqual({ task: 'unknown', supervision: 'unbound' });
+    expect(context.actions.available).toContain('读取并遵循当前目录适用的 AGENTS、技能和项目规范');
+    expect(context.actions.nativeToolNotice).toContain('不向任务 AI 暴露内部编排身份');
+    expect(context.identity).not.toHaveProperty('projectId');
+    expect(context.identity).not.toHaveProperty('workItemId');
+    expect(context.identity).not.toHaveProperty('laneId');
   });
 
-  it('treats an old execution protocol as a stale task contract', () => {
-    const item = workItem({ executionProtocolVersion: 1 });
-    const context = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane(), project: project(item), workItem: item,
-    });
-
-    expect(context.state.contract).toBe('stale');
-    expect(context.actions.available).toEqual([
-      '当前项目状态或任务成果版本已经失效；停止执行并等待控制层重新绑定',
-    ]);
-  });
-
-  it('stops advertising execution while the project task lane is paused or waiting', () => {
-    const item = workItem();
-    const paused = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane({ controlState: 'paused' }),
-      project: project(item), workItem: item,
-    });
-    const waiting = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane({ controlState: 'waiting' }),
-      project: project(item), workItem: item,
-    });
-
-    expect(paused.actions.available).toEqual([
-      '监督链未处于活动状态；保留现场并等待控制层恢复',
-    ]);
-    expect(paused.actions.conditional).toEqual([]);
-    expect(waiting.actions.available).toEqual([
-      '当前监督正在审查检查点；保留现场并等待结果导向的下一批次',
-    ]);
-    expect(waiting.actions.conditional).toEqual([]);
-  });
-
-  it('marks ended and dependency-blocked work item contracts inactive', () => {
-    const completed = workItem({ status: 'completed' });
-    const completedContext = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane(), project: project(completed), workItem: completed,
-    });
-    expect(completedContext.state.contract).toBe('inactive');
-    expect(completedContext.actions.available[0]).toContain('completed');
-
-    const blocked = workItem({ dependencies: ['missing'] });
-    const blockedContext = buildTaskAiRuntimeContext({
-      callerSurfaceId: 'task-a', lane: lane(), project: project(blocked), workItem: blocked,
-    });
-    expect(blockedContext.state.contract).toBe('inactive');
-    expect(blockedContext.actions.available[0]).toContain('依赖');
-  });
 
   it('enforces the managed-role V2 method and target matrix', () => {
     const supervisor = {
@@ -267,7 +226,7 @@ describe('unified managed AI role context', () => {
       .toBe(false);
     expect(authorizeManagedRoleV2(supervisor, 'project.task-terminal.control', {
       projectId: 'project-a', task: 'work-a',
-    }).allowed).toBe(true);
+    }).allowed).toBe(false);
     expect(authorizeManagedRoleV2(supervisor, 'project.worker.resource.reconcile', {
       projectId: 'project-a', workItemId: 'work-a', workerId: 'worker-a',
     }).allowed).toBe(false);
@@ -311,6 +270,12 @@ describe('unified managed AI role context', () => {
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-b' }).allowed)
       .toBe(false);
+    expect(authorizeManagedRoleV2(manager, 'project.task.dispatch', {
+      projectId: 'project-a', workItemId: 'work-a',
+    }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(supervisor, 'project.task.dispatch', {
+      projectId: 'project-a', workItemId: 'work-a',
+    }).allowed).toBe(false);
     expect(authorizeManagedRoleV2(manager, 'project.task-terminal.control', { projectId: 'project-a' }).allowed)
       .toBe(false);
     expect(authorizeManagedRoleV2(manager, 'supervisor.evidence', { reviewId: 'review-current' }).allowed)
@@ -368,20 +333,10 @@ describe('unified managed AI role context', () => {
     const hydrated = withProjectManagerEventEnvelope(legacyDelivery, 'project-a');
     expect(hydrated).toContain('旧队列事件');
     expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
-    expect(PROJECT_TASK_ROLE_ANCHOR).toContain('wmux context');
-    expect(PROJECT_TASK_ROLE_ANCHOR).toContain('[本轮结果]');
-    expect(PROJECT_TASK_ROLE_ANCHOR).toContain('tests、test、src 等源码目录只保存源码');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('你是项目的唯一执行者');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('形成有意义的可验证检查点');
-    const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false, {
-      projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
-      requirementsVersion: 2, authorizationVersion: 1,
-    }).delivery;
-    expect(followUp).toContain(buildProjectTaskEventEnvelope({
-      projectId: 'project-a', goalId: 'goal-a', workItemId: 'task-a',
-      requirementsVersion: 2, authorizationVersion: 1,
-    }));
-    expect(followUp).toContain('[本轮执行指令]\n继续实现');
-    expect(followUp).not.toContain(PROJECT_TASK_ROLE_ANCHOR);
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('[成果任务]');
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('读取并严格遵循当前目录层级适用的 AGENTS');
+    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
+    const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false).delivery;
+    expect(followUp).toBe('继续实现');
   });
 });

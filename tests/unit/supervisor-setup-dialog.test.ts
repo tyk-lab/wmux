@@ -262,11 +262,17 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).not.toContain('导出任务配置时请只选择一个终端');
   });
 
-  it('keeps retained supervision lanes selected while importing only matched terminal configs', () => {
+  it('applies imported terminal config to the current selection without mutating task surfaces', () => {
     expect(dialogSource).toContain('planSupervisorTerminalConfigImport(');
-    expect(dialogSource).toContain('ordinarySupervisorLanes.filter(isSupervisorLaneBound)');
-    expect(dialogSource).toContain('setSelected(new Set(importPlan.selectedSurfaceIds))');
+    expect(dialogSource).toContain('.filter((candidate) => selected.has(candidate.surfaceId))');
+    expect(dialogSource).not.toContain('setSelected(new Set(importPlan.selectedSurfaceIds))');
     expect(dialogSource).toContain('for (const surfaceId of importedSurfaceIds)');
+    const importHandler = dialogSource.match(/const loadConfigFile = async[\s\S]*?^  };/m)?.[0] || '';
+    expect(importHandler).not.toContain('updateSurface(');
+    expect(importHandler).not.toContain('closeSurface(');
+    expect(importHandler).not.toContain('else if (isMultiTerminalConfig) delete next[surfaceId]');
+    expect(importHandler.match(/else delete next\[surfaceId\];/gu)).toHaveLength(3);
+    expect(dialogSource).toContain('被监督终端运行时未修改');
   });
 
   it('uses an in-app confirmation so deleting the last recovery record preserves renderer focus', () => {

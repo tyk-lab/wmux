@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+  projectPlanningConfirmationError,
   type ProjectSupervisorContract,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
@@ -37,19 +38,52 @@ const contract: ProjectSupervisorContract = {
   },
 };
 
-describe('project governance P8', () => {
+describe('project governance P9', () => {
+  it('requires a fresh user event before applying AI planning supplements', () => {
+    const session = {
+      events: [
+        { id: 'old-user', kind: 'user-message', ts: 5 },
+        { id: 'old-confirmed', kind: 'user-clarification-answered', ts: 6 },
+        { id: 'definition', kind: 'project-definition-updated', ts: 10 },
+        { id: 'fresh-message', kind: 'user-message', ts: 15 },
+        { id: 'confirmed', kind: 'user-clarification-answered', ts: 20 },
+      ],
+    } as any;
+    expect(projectPlanningConfirmationError(session, {
+      changesUserPlan: true,
+      supplements: ['新增验收约束'],
+    })).toContain('project ask');
+    expect(projectPlanningConfirmationError(session, {
+      changesUserPlan: true,
+      supplements: ['新增验收约束'],
+      userConfirmationEventId: 'old-confirmed',
+    })).toContain('早于最近一次');
+    expect(projectPlanningConfirmationError(session, {
+      changesUserPlan: true,
+      supplements: ['新增验收约束'],
+      userConfirmationEventId: 'fresh-message',
+    })).toContain('结构化用户答复');
+    expect(projectPlanningConfirmationError(session, {
+      changesUserPlan: true,
+      supplements: ['新增验收约束'],
+      userConfirmationEventId: 'confirmed',
+    })).toBeNull();
+    expect(projectPlanningConfirmationError(session, { changesUserPlan: false })).toBeNull();
+  });
+
   it('makes the task AI the sole project executor', () => {
     const briefing = buildProjectTaskExecutionEnvelope(contract);
-    expect(briefing).toContain('唯一执行者');
-    expect(briefing).toContain('具体技术路线、文件、命令、技能、测试与内部拆分由你自行决定');
+    expect(briefing).toContain('[成果任务]');
+    expect(briefing).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
+    expect(briefing).toContain('自行决定实现路线、文件、命令、测试、技能和内部组织方式');
     expect(briefing).not.toContain('允许范围：');
-    expect(briefing).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
+    expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {
     const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract });
-    expect(briefing).toContain('专属监督和编排者，不是项目执行者');
-    expect(briefing).toContain('不得指定必须修改的文件');
+    expect(briefing).toContain('常驻监督和结果裁决者，不是项目执行者');
+    expect(briefing).toContain('不向任务端注入项目/工作项身份');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {
@@ -63,7 +97,7 @@ describe('project governance P8', () => {
     expect(result.decision).toBe('allow');
   });
 
-  it('does not require the legacy baseline handshake for P8 work', () => {
+  it('does not require the legacy baseline handshake for P9 work', () => {
     const item = {
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       requirementsVersion: 1,

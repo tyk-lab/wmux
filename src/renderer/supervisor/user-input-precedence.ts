@@ -10,13 +10,7 @@ import { appendSupervisorRecord } from './recording';
 import { supportedAgentLauncherExecutable } from './launch-command';
 import { taskTerminalRuntimeKind } from './task-runtime-readiness';
 import { terminalRuntimeStatus } from '../terminal-runtime-lifecycle';
-import {
-  projectAuthorizationVersion,
-  projectRequirementsVersion,
-  projectWorkerDependencyViolation,
-  type ProjectResourceWait,
-  type ProjectUserDirective,
-} from '../../shared/project-manager';
+import { effectiveSupervisorLaneConfig } from './protocol';
 
 /** Resolve human-gated proposals when the user acts directly in the worker terminal. */
 export function resolvePendingApprovalsForManualTask(
@@ -42,6 +36,27 @@ export function resolvePendingApprovalsForManualTask(
     store.updateLane(lane.id, { contextRecoveryStatus: 'sent' });
   }
   return resolved.length > 0;
+}
+
+/** Direct user text in the dedicated supervisor terminal is an owner decision. */
+function resolvePendingApprovalsFromSupervisorInput(
+  session: SupervisorSession,
+  lane: SupervisorLane,
+  guidance: string,
+): string[] {
+  const store = useStore.getState();
+  const pending = session.pendingApprovals.filter((item) => item.laneId === lane.id);
+  if (pending.length === 0) return [];
+  for (const item of pending) {
+    store.approvePending(item.id);
+    appendSupervisorRecord(session, lane, 'supervisor.proposal.resolved', {
+      approvalId: item.id,
+      resolution: 'user-supervisor-input',
+      proposalKind: item.proposalKind || 'important',
+      text: guidance,
+    });
+  }
+  return pending.map((item) => item.id);
 }
 
 interface PendingTaskUserSubmit {
@@ -140,28 +155,70 @@ export function handleSupervisorUserSubmit(
   if (!lane) return false;
 
   if (dedicatedSupervisorSurfaceId(lane) === surfaceId) {
-    if (supervisorLaneControlState(lane) === 'waiting') {
-      return resumeWaitingLaneFromSupervisorInput(session, lane, 'supervisor-terminal');
+    const directGuidance = task.trim().slice(0, 12_000);
+    const resumedFromWaiting = supervisorLaneControlState(lane) === 'waiting';
+    const resolvedApprovalIds = directGuidance
+      ? resolvePendingApprovalsFromSupervisorInput(session, lane, directGuidance)
+      : [];
+    if (directGuidance) {
+      const project = lane.projectManagerProjectId
+        ? store.projectManagers.find((item) => item.id === lane.projectManagerProjectId)
+        : undefined;
+      store.updateLane(lane.id, {
+        latestSupervisorUserGuidance: {
+          text: directGuidance,
+          updatedAt: Date.now(),
+          planRevision: effectiveSupervisorLaneConfig(lane).planRevision || 1,
+          requirementsVersion: project?.requirementsVersion,
+        },
+      });
+      appendSupervisorRecord(session, lane, 'supervisor.user-guidance', {
+        text: directGuidance,
+      });
     }
+    if (resumedFromWaiting) {
+      resumeWaitingLaneFromSupervisorInput(session, lane, 'supervisor-terminal');
+    }
+    const resolvedApprovalIdSet = new Set(resolvedApprovalIds);
     const inFlightDeliveryIds = (lane.pendingSupervisorDeliveries || [])
       .filter((delivery) => delivery.stage === 'pasted' || delivery.stage === 'submitted')
       .map((delivery) => delivery.id);
-    if (inFlightDeliveryIds.length === 0) return false;
-    store.updateLane(lane.id, {
-      pendingSupervisorDeliveries: (lane.pendingSupervisorDeliveries || [])
-        .filter((delivery) => !inFlightDeliveryIds.includes(delivery.id)),
-    });
-    appendSupervisorRecord(session, lane, 'supervisor.delivery.cancelled', {
-      deliveryIds: inFlightDeliveryIds,
-      reason: 'user-input-precedence',
-    });
-    store.appendSupervisorLog(
-      lane.id,
-      '监督通知已让位',
-      '用户已在监督终端输入新内容；控制层取消未确认的自动投递，禁止随后补发 Enter',
-    );
-    signalSupervisorDeliveryReady();
-    return true;
+    if (inFlightDeliveryIds.length > 0 || resolvedApprovalIds.length > 0) {
+      const currentLane = useStore.getState().supervisor.lanes.find((item) => item.id === lane.id) || lane;
+      store.updateLane(lane.id, {
+        awaitingReview: true,
+        awaitingStopCheck: false,
+        stopConfirmed: false,
+        resumeAfterCancelledDecision: false,
+        autoDecisionLimitReached: false,
+        autoDecisionsUsed: 0,
+        ...(!isProjectManagedSupervisorLane(currentLane) ? {
+          ordinaryContextHealth: undefined,
+          ordinaryContextReset: undefined,
+        } : {}),
+        pendingSupervisorDeliveries: (currentLane.pendingSupervisorDeliveries || [])
+          .filter((delivery) => !inFlightDeliveryIds.includes(delivery.id))
+          .filter((delivery) => delivery.kind !== 'owner-decision'
+            || !delivery.correlationId
+            || !resolvedApprovalIdSet.has(delivery.correlationId)),
+      });
+      if (inFlightDeliveryIds.length > 0) {
+        appendSupervisorRecord(session, lane, 'supervisor.delivery.cancelled', {
+          deliveryIds: inFlightDeliveryIds,
+          reason: 'user-input-precedence',
+        });
+      }
+      store.appendSupervisorLog(
+        lane.id,
+        resolvedApprovalIds.length > 0 ? '用户决策已生效' : '监督通知已让位',
+        resolvedApprovalIds.length > 0
+          ? '用户已直接在监督终端提供决策；待审批状态已解除，监督 AI 可按最新输入继续裁决'
+          : '用户已在监督终端输入新内容；控制层取消未确认的自动投递，禁止随后补发 Enter',
+      );
+      signalSupervisorDeliveryReady();
+      return true;
+    }
+    return !!directGuidance || resumedFromWaiting;
   }
 
   const directTask = task.trim().slice(0, 12_000);
@@ -242,104 +299,8 @@ export function handleSupervisorUserSubmit(
     } : {}),
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
-  if (projectManaged) {
-    const project = lane.projectManagerProjectId
-      ? store.projectManagers.find((candidate) => candidate.id === lane.projectManagerProjectId)
-      : undefined;
-    const workItem = project?.workItems.find((candidate) => candidate.id === lane.projectWorkItemId);
-    const workerId = lane.projectWorkerId || workItem?.workerGroup?.integratorWorkerId;
-    const worker = workerId
-      ? workItem?.workerGroup?.workers.find((candidate) => candidate.workerId === workerId)
-      : undefined;
-    if (project && workItem?.workerGroup && workerId && worker) {
-      const now = Date.now();
-      const directiveEpoch = worker.directiveEpoch + 1;
-      const workerDependencyError = projectWorkerDependencyViolation(workItem, worker);
-      const nextWorkerStatus = workerDependencyError ? 'planned' as const : 'running' as const;
-      const cancelledResourceWait = worker.resourceWait;
-      const directive: ProjectUserDirective = {
-        directiveId: `directive-${now}-${Math.random().toString(36).slice(2, 8)}`,
-        workerId,
-        directiveEpoch,
-        assignmentVersion: worker.assignmentVersion,
-        executionEpoch: workItem.workerGroup.executionEpoch,
-        requirementsVersion: workItem.requirementsVersion ?? projectRequirementsVersion(project),
-        authorizationVersion: workItem.authorizationVersion ?? projectAuthorizationVersion(project),
-        ...(directTask ? { exactText: directTask } : {}),
-        exactTextAvailable: !!directTask,
-        classification: 'pending',
-        reconciliationStatus: 'pending',
-        receivedAt: now,
-      };
-      const targetUpdatedWorkers = workItem.workerGroup.workers.map((candidate) => candidate.workerId === workerId
-        ? {
-            ...candidate,
-            status: nextWorkerStatus,
-            resourceWait: undefined,
-            directiveEpoch,
-            startedAt: nextWorkerStatus === 'running'
-              ? candidate.status === 'running' ? candidate.startedAt || now : now
-              : undefined,
-            updatedAt: now,
-          }
-        : candidate);
-      const mergeCandidates = (workItem.mergeCandidates || []).map((candidate) => (
-        candidate.workerId === workerId && ['submitted', 'checking', 'accepted'].includes(candidate.status)
-          ? { ...candidate, status: 'frozen' as const, updatedAt: now }
-          : candidate
-      ));
-      const dependencyView = {
-        workerGroup: { ...workItem.workerGroup, workers: targetUpdatedWorkers },
-        mergeCandidates,
-      };
-      const cancelledDependentWaits: ProjectResourceWait[] = [];
-      const workers = targetUpdatedWorkers.map((candidate) => {
-        if (candidate.workerId === workerId || !candidate.resourceWait
-          || !projectWorkerDependencyViolation(dependencyView, candidate)) return candidate;
-        cancelledDependentWaits.push(candidate.resourceWait);
-        return {
-          ...candidate,
-          status: 'planned' as const,
-          resourceWait: undefined,
-          startedAt: undefined,
-          updatedAt: now,
-        };
-      });
-      store.applyProjectManagerAction({
-        type: 'update-work-item',
-        workItemId: workItem.id,
-        patch: {
-          workerGroup: { ...workItem.workerGroup, workers, updatedAt: now },
-          userDirectives: [...(workItem.userDirectives || []), directive].slice(-100),
-          mergeCandidates,
-          finalApplyBlocked: true,
-        },
-      }, project.id);
-      store.updateLane(lane.id, { projectWorkerDirectiveEpoch: directiveEpoch });
-      store.appendProjectManagerEvent({
-        kind: 'worker-user-directive',
-        workItemId: workItem.id,
-        summary: workerDependencyError
-          ? `用户已直接向任务 AI ${workerId} 发送新指令；依赖门禁仍阻止主动执行，旧合并候选已冻结`
-          : `用户已直接向任务 AI ${workerId} 发送新指令；该 worker 已恢复 running，旧合并候选已冻结，等待监督协调`,
-        payload: {
-          directiveId: directive.directiveId,
-          workerId,
-          directiveEpoch,
-          assignmentVersion: worker.assignmentVersion,
-          exactTextAvailable: directive.exactTextAvailable,
-          dependencyError: workerDependencyError || undefined,
-          cancelledResourceWait: cancelledResourceWait || undefined,
-          cancelledDependentWaits,
-        },
-      }, project.id);
-      const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
-      void (window as any).wmux?.projectManager?.saveSession?.(updated)
-        ?.catch?.((error: unknown) => console.warn('[project-manager] user directive snapshot failed', error));
-    }
-    store.updateLane(lane.id, {
-      ...(directTask ? { currentTask: directTask } : {}),
-    });
+  if (projectManaged && directTask) {
+    store.updateLane(lane.id, { currentTask: directTask });
   }
   appendSupervisorRecord(session, lane, 'worker.user-submit', {
     resolvedApproval,

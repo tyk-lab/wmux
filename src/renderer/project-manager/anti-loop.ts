@@ -158,7 +158,7 @@ export function projectBudgetExhaustionSummary(options: {
   if (exhausted.length > 0) return `执行预算已耗尽：${exhausted.join('；')}`;
   return [
     '执行预算请求无有效边界，当前没有单项达到上限',
-    'P8 不以裁决次数或连续运行时间中断有进展的任务',
+    'P9 不以裁决次数或连续运行时间中断有进展的任务',
     `真实任务失败重试 ${options.attempts}/${options.budget.maxTaskRetries}`,
   ].join('；');
 }

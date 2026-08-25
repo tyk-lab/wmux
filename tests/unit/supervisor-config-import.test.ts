@@ -18,28 +18,31 @@ describe('supervisor terminal config import', () => {
     });
   });
 
-  it('keeps retained supervision lanes selected without overwriting them from the import', () => {
+  it('applies imported configs to every selected terminal and reuses the first template when unmatched', () => {
     const result = planSupervisorTerminalConfigImport([
       { surfaceId: 'surf-new', taskGoal: '新增监督终端' },
       { surfaceId: 'surf-missing', taskGoal: '应跳过' },
-    ], ['surf-retained', 'surf-new'], ['surf-retained']);
+    ], ['surf-retained', 'surf-new']);
 
     expect(result).toEqual({
-      configs: [{ surfaceId: 'surf-new', taskGoal: '新增监督终端' }],
-      skipped: 1,
+      configs: [
+        { surfaceId: 'surf-retained', taskGoal: '新增监督终端' },
+        { surfaceId: 'surf-new', taskGoal: '新增监督终端' },
+      ],
       selectedSurfaceIds: ['surf-retained', 'surf-new'],
+      templateApplications: 1,
     });
   });
 
-  it('reports no import targets when every saved terminal is missing', () => {
+  it('rebinds a saved terminal config to a selected replacement terminal', () => {
     const result = planSupervisorTerminalConfigImport([
-      { surfaceId: 'surf-missing' },
-    ], ['surf-retained'], ['surf-retained']);
+      { surfaceId: 'surf-missing', taskGoal: '复用配置' },
+    ], ['surf-retained']);
 
     expect(result).toEqual({
-      configs: [],
-      skipped: 1,
+      configs: [{ surfaceId: 'surf-retained', taskGoal: '复用配置' }],
       selectedSurfaceIds: ['surf-retained'],
+      templateApplications: 1,
     });
   });
 });

@@ -12,10 +12,6 @@ import {
   normalizeProjectProgressSyncState,
   type ProjectManagerSession,
 } from '../shared/project-manager';
-import {
-  MAX_TASK_CHILD_THREADS,
-  MAX_TASK_OPERATION_BOUNDARIES,
-} from '../shared/supervisor-work-mode';
 
 export interface ProjectManagerRecord {
   sessionId: string;
@@ -52,54 +48,6 @@ function validateIdentity(sessionId: string, projectDir: string): void {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
-function isProjectTaskExecutionPlan(value: unknown, internalThreads: boolean): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const execution = value as Record<string, unknown>;
-  const mode = String(execution.taskWorkMode);
-  if (
-    !['single-thread', 'multi-thread', 'adaptive'].includes(mode)
-    || typeof execution.modeReason !== 'string'
-    || execution.modeReason.trim().length === 0
-    || typeof execution.mainThreadResponsibility !== 'string'
-    || execution.mainThreadResponsibility.trim().length === 0
-    || !isStringArray(execution.childThreadResponsibilities)
-    || execution.childThreadResponsibilities.length > MAX_TASK_CHILD_THREADS
-  ) return false;
-  if (execution.parallelismSelection !== undefined
-    && !['auto', 'single-worker', 'internal-threads', 'worker-group']
-      .includes(String(execution.parallelismSelection))) return false;
-  if (mode !== 'single-thread' && !internalThreads) return false;
-  if (execution.parallelismSelection === 'internal-threads' && !internalThreads) return false;
-  if ((execution.parallelismSelection === 'single-worker' || execution.parallelismSelection === 'worker-group')
-    && mode !== 'single-thread') return false;
-  if (execution.parallelismSelection === 'internal-threads' && mode !== 'multi-thread') return false;
-  const maxChildThreads = execution.maxChildThreads;
-  if (maxChildThreads !== undefined && (
-    typeof maxChildThreads !== 'number'
-    || !Number.isInteger(maxChildThreads)
-    || maxChildThreads < 1
-    || maxChildThreads > MAX_TASK_CHILD_THREADS
-  )) return false;
-  if (execution.supervisorMayApproveThreads !== undefined
-    && typeof execution.supervisorMayApproveThreads !== 'boolean') return false;
-  if (execution.parallelizableOperations !== undefined
-    && (!isStringArray(execution.parallelizableOperations)
-      || execution.parallelizableOperations.length > MAX_TASK_OPERATION_BOUNDARIES)) return false;
-  if (execution.serializedOperations !== undefined
-    && (!isStringArray(execution.serializedOperations)
-      || execution.serializedOperations.length > MAX_TASK_OPERATION_BOUNDARIES)) return false;
-  return mode !== 'adaptive' || (
-    typeof maxChildThreads === 'number'
-    && Number.isInteger(maxChildThreads)
-    && execution.supervisorMayApproveThreads === true
-    && isStringArray(execution.parallelizableOperations)
-    && execution.parallelizableOperations.length > 0
-    && isStringArray(execution.serializedOperations)
-    && execution.serializedOperations.length > 0
-    && execution.childThreadResponsibilities.length === 0
-  );
 }
 
 function isPlanFileSnapshot(value: unknown): boolean {
@@ -309,6 +257,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')
+    || (session.activeWorkItemId !== undefined && typeof session.activeWorkItemId !== 'string')
     || !Array.isArray(session.workItems) || !Array.isArray(session.events)
     || !Number.isFinite(session.createdAt) || !Number.isFinite(session.updatedAt)
   ) return false;
@@ -319,7 +268,6 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     const scope = contract?.scope;
     const authority = contract?.authority;
     const budget = contract?.budget;
-    const execution = contract?.execution;
     return typeof item.id === 'string'
       && item.predecessorWorkItemId === undefined
       && item.supersededByWorkItemId === undefined
@@ -334,16 +282,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && item.baseline === undefined
       && item.supervisorPlan === undefined
       && item.supervisorPlanRequired === false
-      && item.parallelismDecision === undefined
-      && item.workerGroup === undefined
-      && Array.isArray(item.userDirectives) && item.userDirectives.length === 0
-      && Array.isArray(item.resourceLeases) && item.resourceLeases.length === 0
-      && Array.isArray(item.mergeCandidates) && item.mergeCandidates.length === 0
-      && item.finalApplyBlocked === false
       && item.decisionsUsed === 0
-      && (item.mutationRevision === undefined || (
-        Number.isInteger(item.mutationRevision) && item.mutationRevision >= 0
-      ))
       && (item.completion === undefined || isProjectCompletionResult(item.completion))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
@@ -374,7 +313,7 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)
       && (budget?.maxAggregateWorkerMinutes === undefined
         || (Number.isFinite(budget.maxAggregateWorkerMinutes) && budget.maxAggregateWorkerMinutes >= 1))
-      && (!execution || isProjectTaskExecutionPlan(execution, authority?.internalThreads === true));
+      && contract?.execution === undefined;
   });
   if (!workItemsValid) return false;
   const workItemsById = new Map(session.workItems.map((item) => [item.id, item]));
@@ -498,16 +437,6 @@ export function saveProjectManagerSession(
   });
   validateIdentity(normalized.id, normalized.projectDir);
   if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
-  const current = readProjectManagerSessions(appDataDir).find((candidate) => candidate.id === normalized.id);
-  if (current) {
-    const staleItem = normalized.workItems.find((item) => {
-      const persisted = current.workItems.find((candidate) => candidate.id === item.id);
-      return persisted
-        && Math.max(0, Math.trunc(item.mutationRevision || 0))
-          < Math.max(0, Math.trunc(persisted.mutationRevision || 0));
-    });
-    if (staleItem) throw new Error(`拒绝保存过期工作项快照：${staleItem.id}`);
-  }
   const duplicate = ['active', 'paused', 'waiting'].includes(normalized.status)
     ? readProjectManagerSessions(appDataDir).find((candidate) => (
         candidate.id !== normalized.id

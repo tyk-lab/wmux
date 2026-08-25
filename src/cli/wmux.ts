@@ -330,6 +330,14 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     contextHealth: getFlag(args, '--context-health') || '',
     contextSymptoms: getFlag(args, '--context-symptoms') || '',
     contextSignal: getFlag(args, '--context-signal') || '',
+    progressHealth: getFlag(args, '--progress-health') || '',
+    stallKind: getFlag(args, '--stall-kind') || '',
+    stallSignal: getFlag(args, '--stall-signal') || '',
+    wastedEffort: getFlag(args, '--wasted-effort') || '',
+    missingEvidence: getFlag(args, '--missing-evidence') || '',
+    decisiveNextStep: getFlag(args, '--decisive-next-step') || '',
+    authorizationBoundary: getFlag(args, '--authorization-boundary') || '',
+    experimentConditions: getFlag(args, '--experiment-conditions') || '',
     completionStopWhen: getFlag(args, '--completion-stop-when') || '',
     completionValidation: getFlag(args, '--completion-validation') || '',
     remainingWork: getFlag(args, '--remaining-work') || '',
@@ -436,10 +444,10 @@ async function cmdProject(args: string[]): Promise<void> {
     }
     return;
   }
-  if (sub === 'supervise') {
+  if (sub === 'dispatch') {
     const workItemId = getFlag(args, '--task') || '';
-    if (!workItemId) throw new Error('project supervise requires --task');
-    print(await sendV2('project.task.supervise', { workItemId, projectId }));
+    if (!projectId || !workItemId) throw new Error('project dispatch requires --project and --task');
+    print(await sendV2('project.task.dispatch', { workItemId, projectId }));
     return;
   }
   if (sub === 'orientation-confirm') {
@@ -487,25 +495,6 @@ async function cmdProject(args: string[]): Promise<void> {
     } finally {
       cleanupProjectJsonInput(input, success);
     }
-    return;
-  }
-  if (sub === 'task-terminal-start') {
-    const workItemId = getFlag(args, '--task') || '';
-    if (!projectId || !workItemId) {
-      throw new Error('project task-terminal-start requires --project and --task');
-    }
-    print(await sendV2('project.task-terminal.start', { workItemId, projectId }));
-    return;
-  }  if (sub === 'task-terminal-control') {
-    const workItemId = getFlag(args, '--task') || '';
-    const control = getFlag(args, '--key') || '';
-    const reason = getFlag(args, '--reason') || '';
-    if (!projectId || !workItemId || !control || !reason) {
-      throw new Error('project task-terminal-control requires --project, --task, --key <escape|interrupt>, and --reason');
-    }
-    print(await sendV2('project.task-terminal.control', {
-      workItemId, projectId, control, reason, workerId: getFlag(args, '--worker') || '',
-    }));
     return;
   }
   if (sub === 'inspect') {
@@ -1300,12 +1289,12 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry --retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|dispatch|progress-sync|transition-ack|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
-            task-terminal-start and task-terminal-control are reserved for the dedicated project supervisor
+            dispatch --project <id> --task <id> binds the persistent task AI and supervisor lane to one ready work item
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

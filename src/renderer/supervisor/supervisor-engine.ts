@@ -28,7 +28,7 @@ export { pasteSubmitDelayMs } from '../utils/terminal-input-delivery';
 export type DeclaredState = 'blocked' | 'working' | 'idle' | 'unknown';
 
 export function supervisorLaneInputIsolationScope(
-  lane?: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId' | 'projectTaskStartupPending'>,
+  lane?: Pick<SupervisorLane, 'projectManagerProjectId' | 'projectWorkItemId'>,
 ): TerminalInputIsolationScope {
   return lane && isProjectManagedSupervisorLane(lane) ? 'project' : 'ordinary';
 }

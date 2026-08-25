@@ -49,7 +49,6 @@ function projectContractDeltaSummary(
     ['stopWhen', '完成条件'],
     ['validation', '验证要求'],
     ['budget', '执行预算'],
-    ['execution', '执行模式'],
   ];
   for (const [field, label] of fields) {
     if (JSON.stringify(previous[field]) !== JSON.stringify(next[field])) changed.push(label);
@@ -167,11 +166,7 @@ function updateWorkItem(
     ...session,
     workItems: session.workItems.map((item) => {
       if (item.id !== workItemId) return item;
-      const updated = update(item);
-      return {
-        ...updated,
-        mutationRevision: Math.max(0, Math.trunc(item.mutationRevision || 0)) + 1,
-      };
+      return update(item);
     }),
   };
 }
@@ -179,17 +174,11 @@ function updateWorkItem(
 function releaseProjectTaskTerminalBinding(
   session: ProjectManagerSession,
   workItemId: string,
-  workerSurfaceId: string | undefined,
+  _workerSurfaceId: string | undefined,
 ): ProjectManagerSession {
-  if (!workerSurfaceId || session.taskTerminalSurfaceId !== workerSurfaceId) return session;
-  const reusedByAnotherActiveItem = session.workItems.some((item) => (
-    item.id !== workItemId
-    && item.workerSurfaceId === workerSurfaceId
-    && !['completed', 'stopped', 'failed'].includes(item.status)
-  ));
-  return reusedByAnotherActiveItem
-    ? session
-    : { ...session, taskTerminalSurfaceId: undefined };
+  return session.activeWorkItemId === workItemId
+    ? { ...session, activeWorkItemId: undefined }
+    : session;
 }
 
 function isLiveProjectManagerSession(session: Pick<ProjectManagerSession, 'status'>): boolean {
@@ -801,7 +790,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const activeGoal = activeProjectGoal(session);
       const workItem = {
         ...action.workItem,
-        mutationRevision: Math.max(0, Math.trunc(action.workItem.mutationRevision || 0)),
         goalId: action.workItem.goalId || activeGoal.id,
         requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
         authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),
@@ -914,7 +902,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       const dependencyError = projectDependencyError(updated.workItems);
       if (dependencyError) return { ok: false, error: dependencyError };
-      next = safePatch.status === 'stopped'
+      next = safePatch.status === 'stopped' || safePatch.status === 'completed'
         ? releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId)
         : updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
@@ -947,7 +935,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
       if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P8 已删除项目基线调查与批准状态' };
+        return { ok: false, error: 'P9 已删除项目基线调查与批准状态' };
       }
       if (['completed', 'stopped'].includes(existing.status)) {
         return { ok: false, error: '已经结束的任务不能再发起项目基线调查' };
@@ -1053,31 +1041,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         status: 'stopped',
         supervisorLaneId: undefined,
         workerSurfaceId: undefined,
-        workerGroup: item.workerGroup ? {
-          ...item.workerGroup,
-          workers: item.workerGroup.workers.map((worker) => ({
-            ...worker,
-            status: 'superseded' as const,
-            surfaceId: undefined,
-            laneId: undefined,
-            startedAt: undefined,
-            updatedAt: now,
-          })),
-          updatedAt: now,
-        } : undefined,
-        resourceLeases: (item.resourceLeases || []).map((lease) => ({
-          ...lease,
-          status: ['released', 'quarantined'].includes(lease.status) ? lease.status : 'quarantined' as const,
-          updatedAt: now,
-        })),
-        mergeCandidates: (item.mergeCandidates || []).map((candidate) => ({
-          ...candidate,
-          status: ['applied', 'rejected', 'superseded'].includes(candidate.status)
-            ? candidate.status
-            : 'frozen' as const,
-          updatedAt: now,
-        })),
-        finalApplyBlocked: item.workerGroup ? true : item.finalApplyBlocked,
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
@@ -1124,7 +1087,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
       if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P8 已删除项目基线调查与批准状态' };
+        return { ok: false, error: 'P9 已删除项目基线调查与批准状态' };
       }
       if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
         return { ok: false, error: '旧主目标任务已经失效，不能续期监督健康窗口' };

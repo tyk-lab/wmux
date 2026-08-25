@@ -55,7 +55,7 @@ export function nextOrdinaryContextHealthState(options: {
 }
 
 export function ordinaryContextClearCommand(agent: string): string | null {
-  return ['codex', 'kimi', 'grok'].includes(agent) ? '/new' : null;
+  return ['codex', 'kimi', 'grok', 'pi', 'opencode'].includes(agent) ? '/new' : null;
 }
 
 export function buildOrdinaryContextRecoveryTask(options: {

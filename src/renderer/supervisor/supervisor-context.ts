@@ -222,19 +222,6 @@ export function buildSupervisorRuntimeContext(
         ? '还必须命中当前任务合同的定向测试或 allowedCommandPrefixes，且不得触及硬性禁止项'
         : '仅限已核对的低风险、可逆权限请求，且不得触及硬性禁止项',
     },
-    {
-      command: `wmux project task-terminal-start --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'}`,
-      available: baseDecisionReady && projectManaged && lane.projectTaskStartupPending === true,
-      condition: '仅在项目监督启动阶段、真实任务终端尚未创建时执行一次',
-    },
-    {
-      command: `wmux project task-terminal-control --project ${lane.projectManagerProjectId || '<项目ID>'} --task ${lane.projectWorkItemId || '<工作项ID>'} --key <escape|interrupt> --reason <证据>`,
-      available: baseDecisionReady
-        && projectManaged
-        && lane.projectTaskStartupPending !== true
-        && options.taskState === 'working',
-      condition: '仅按项目执行链活性检查规则处理持续无语义输出的 working 任务',
-    },
   ];
   const supervisorLauncher = detectSupervisorLauncher(session.supervisorLaunchCmd);
   const currentPlan = projectManaged

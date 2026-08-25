@@ -5,7 +5,7 @@ import {
   projectTaskContextResetFingerprint,
 } from '../../src/shared/project-manager';
 
-describe('project task orchestration P8', () => {
+describe('project task orchestration P9', () => {
   it('requires an explicit bounded complexity assessment', () => {
     expect(normalizeProjectTaskComplexityAssessment(undefined, 1)).toBeUndefined();
     expect(normalizeProjectTaskComplexityAssessment({

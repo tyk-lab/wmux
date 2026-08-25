@@ -254,7 +254,8 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('监督决策链');
     expect(panelSource).toContain('负责任务：');
     expect(panelSource).toContain('决策依据：');
-    expect(panelSource).toContain('→ 指示任务 AI');
+    expect(panelSource).toContain('→ 下发成果');
+    expect(panelSource).toContain('目标旋涡纠偏');
     expect(panelSource).toContain('(lane.decisions || []).slice(0, 6)');
     expect(panelSource).toContain('.slice(0, 6)');
     expect(panelSource).toContain('等待监督 AI 首次正式裁决');

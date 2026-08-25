@@ -303,7 +303,7 @@ describe('project-manager slice', () => {
       }),
       expect.objectContaining({ id: 'last', status: 'planned' }),
     ]);
-    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBeUndefined();
+    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBe('worker-middle');
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'middle', patch: { status: 'planned' },
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能由 AI 恢复') });

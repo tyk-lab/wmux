@@ -9,12 +9,6 @@ import {
   ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   type SupervisorLane,
 } from '../../src/renderer/store/supervisor-slice';
-import {
-  createProjectWorkerGroup,
-  DEFAULT_PROJECT_EXECUTION_BUDGET,
-  resolveProjectParallelismDecision,
-  type ProjectWorkerAssignment,
-} from '../../src/shared/project-manager';
 
 const workerLane = (): SupervisorLane => ({
   id: 'lane-user',
@@ -229,6 +223,29 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('supervisor-user')).toBe(false);
     expect(useStore.getState().supervisor.lanes[0]).toEqual(before);
+  });
+
+  it('treats direct supervisor-terminal text as the user decision and clears pending approval', () => {
+    expect(handleSupervisorUserSubmit(
+      'supervisor-user',
+      '前置条件没有变化，按现有授权直接恢复上电测试。',
+    )).toBe(true);
+
+    expect(useStore.getState().supervisor.pendingApprovals).toEqual([]);
+    expect(useStore.getState().supervisor.lanes[0]).toMatchObject({
+      awaitingReview: true,
+      awaitingStopCheck: false,
+      autoDecisionLimitReached: false,
+      latestSupervisorUserGuidance: {
+        text: '前置条件没有变化，按现有授权直接恢复上电测试。',
+        updatedAt: expect.any(Number),
+        planRevision: 1,
+      },
+    });
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '用户决策已生效',
+      detail: expect.stringContaining('待审批状态已解除'),
+    });
   });
 
   it('lets supervisor-terminal user input cancel an unconfirmed automated draft', () => {

@@ -119,15 +119,6 @@ const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   'needs-human': '等待人工决定',
 };
 
-function projectTaskWorkModeLabel(selection: string | undefined, mode: string | undefined): string {
-  if (selection === 'worker-group') return '多任务 AI';
-  if (selection === 'internal-threads') return '内部多线程';
-  if (selection === 'single-worker') return '单任务 AI';
-  if (selection === 'auto' || mode === 'adaptive') return '自动互斥选择';
-  if (mode === 'multi-thread') return '内部多线程';
-  return '单任务 AI';
-}
-
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId, agentStates }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
   const stopOrdinarySupervisor = useStore((s) => s.stopOrdinarySupervisor);
@@ -1084,8 +1075,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <span>上级任务：{planView.sourceLabel}</span>
                         <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
                         <span>监督：{supervisorStatusLabel}</span>
-                        <span>{projectTaskWorkModeLabel(item.parallelismDecision?.resolvedMode || item.contract.execution?.parallelismSelection, item.contract.execution?.taskWorkMode)}</span>
-                        {item.workerGroup && <span>任务 AI {item.workerGroup.workers.length} 个 · 待协调 {(item.userDirectives || []).filter((directive) => directive.reconciliationStatus === 'pending').length}</span>}
+                        <span>唯一任务 AI · 内部组织自治</span>
                       </div>
                       {completion ? <>
                         <div className="sup-panel__project-plan-route"><strong>监督 AI 完成结果</strong><span>{item.status === 'completed' ? '项目 AI 已验收' : '等待项目 AI 验收'}</span></div>
@@ -1409,8 +1399,18 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                                       <time>{new Date(decision.ts).toLocaleString('zh-CN', { hour12: false })}</time>
                                     </header>
                                     <div>负责任务：{decision.task || '任务尚未上报'}</div>
-                                    <p>决策依据：{decision.reason || '未附选择理由'}</p>
-                                    <small><b>→ 指示任务 AI</b>{decision.next || '未附下一步安排'}</small>
+                                    <p>决策依据：{decision.reason
+                                      || decision.taskDispatch?.evidenceContext.join('；')
+                                      || (decision.taskDispatch?.acceptanceGap.length
+                                        ? `当前成果仍有 ${decision.taskDispatch.acceptanceGap.length} 项验收缺口`
+                                        : `依据当前终端证据作出 ${SUPERVISOR_DECISION_OUTCOME_LABELS[decision.outcome] || decision.outcome} 裁决`)}</p>
+                                    <small><b>→ 下发成果</b>{decision.taskDispatch?.outcome || decision.next || '本次裁决不下发新任务'}</small>
+                                    {decision.taskDispatch?.acceptanceGap.length ? (
+                                      <small><b>验收缺口</b>{decision.taskDispatch.acceptanceGap.join('；')}</small>
+                                    ) : null}
+                                    {decision.goalVortex ? (
+                                      <small><b>目标旋涡纠偏</b>{decision.goalVortex.decisiveNextStep}</small>
+                                    ) : null}
                                   </article>
                                 ))}
                               </div>
@@ -1526,7 +1526,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
                     return (
                       <div className="sup-panel__lane-decision" title={decision.reason || decision.next}>
-                        最新裁决：{decision.outcome}{decisionKind} · {decision.reason || decision.next || '未附说明'}
+                        最新裁决：{decision.outcome}{decisionKind} · {decision.reason
+                          || decision.taskDispatch?.outcome
+                          || decision.next
+                          || `依据当前终端证据完成 ${decision.outcome} 判定`}
                       </div>
                     );
                   })()}
@@ -1678,9 +1681,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       </section>
 
                       <section className="sup-panel__decision-section sup-panel__recommendation">
-                        <h4>{isClarification ? 'AI 推荐默认答案' : 'AI 推荐'}</h4>
+                        <h4>{isClarification ? 'AI 推荐答案（需你确认，不会自动采用）' : 'AI 推荐'}</h4>
                         <div>{isClarification
-                          ? a.alternatives || 'AI 未提供推荐默认答案'
+                          ? a.alternatives || 'AI 未提供推荐答案'
                           : a.text || 'AI 未提供具体下一步'}</div>
                       </section>
 
@@ -1725,7 +1728,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                               [a.id]: event.target.value,
                             }))}
                             placeholder={isClarification
-                              ? '按问题编号集中答复；未特别说明的项目可写“按推荐默认答案”'
+                              ? '请按问题编号集中答复；如接受全部推荐，可明确写“全部按推荐答案”'
                               : '例如：优先保持现有 API；请结合当前终端状态判断是否调整方案'}
                             disabled={!supervisor.active || laneControlState === 'stopped'}
                             aria-label={`${a.laneLabel} 的监督 AI 补充信息`}

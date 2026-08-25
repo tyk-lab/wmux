@@ -3,8 +3,6 @@ import {
   PROJECT_TASK_BASELINE_APPROVAL_MARKER,
   PROJECT_TASK_BASELINE_INVESTIGATION_MARKER,
   PROJECT_TASK_BASELINE_REPORT_MARKER,
-  PROJECT_TASK_EXECUTION_ENVELOPE_MARKER,
-  buildProjectExecutionIdentityBlock,
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
   prepareProjectTaskDelivery,
@@ -154,26 +152,16 @@ describe('project-manager engine', () => {
 
     pivot.goals = pivot.goals.map((goal) => goal.id === pivot.activeGoalId ? { ...goal, status: 'achieved' as const } : goal);
     expect(projectProgressObligation(pivot)).toBeNull();
-  });  it('binds one revision-scoped execution identity into the task contract', () => {
+  });  it('keeps control-plane identity out of the task packet', () => {
     const contract = item('auth', 'planned').contract;
-    const executionIdentity = {
-      projectId: 'project-auth',
-      goalId: 'goal-auth',
-      workItemId: 'auth',
-      requirementsVersion: 3,
-      authorizationVersion: 2,
-    };
     const prepared = prepareProjectTaskDelivery(
       contract,
       '继续当前合同',
       true,
-      executionIdentity,
     );
-    expect(prepared.delivery).toContain('[项目执行身份｜控制层已绑定]');
-    expect(prepared.delivery).toContain('需求版本：R3');
-    expect(prepared.delivery).toContain('授权版本：A2');
-    expect(prepared.delivery).toContain('旧终端、旧运行通道和旧对话身份只作审计历史');
-    expect(prepared.delivery).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
+    expect(prepared.delivery).toContain('[成果任务]');
+    expect(prepared.delivery).toContain('继续当前合同');
+    expect(prepared.delivery).not.toMatch(/项目 ID|工作项|需求版本|授权版本|监督 AI|普通监督链|裁决|lane/iu);
   });  it('injects the trusted contract while exposing only the executable action to guards', () => {
     const contract = item('auth', 'planned').contract;
     const envelope = buildProjectTaskExecutionEnvelope(contract);

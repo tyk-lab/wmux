@@ -11,9 +11,10 @@ export interface MatchedSupervisorTerminalConfigs<T extends SurfaceBoundSupervis
   skipped: number;
 }
 
-export interface SupervisorTerminalConfigImportPlan<T extends SurfaceBoundSupervisorConfig>
-  extends MatchedSupervisorTerminalConfigs<T> {
+export interface SupervisorTerminalConfigImportPlan<T extends SurfaceBoundSupervisorConfig> {
+  configs: T[];
   selectedSurfaceIds: string[];
+  templateApplications: number;
 }
 
 export type SupervisorWaitingConfigAction = 'retain' | 'resume' | 'finalize';
@@ -42,18 +43,25 @@ export function matchExistingSupervisorTerminalConfigs<T extends SurfaceBoundSup
   };
 }
 
-/** Retained supervision lanes stay selected even when an imported file omits them. */
+/** Apply imported terminal presets to the terminals the user has currently selected. */
 export function planSupervisorTerminalConfigImport<T extends SurfaceBoundSupervisorConfig>(
   configs: readonly T[],
-  existingSurfaceIds: Iterable<string>,
-  retainedSurfaceIds: Iterable<string> = [],
+  selectedSurfaceIds: Iterable<string>,
 ): SupervisorTerminalConfigImportPlan<T> {
-  const matched = matchExistingSupervisorTerminalConfigs(configs, existingSurfaceIds);
+  const selected = [...new Set(selectedSurfaceIds)];
+  const configBySurfaceId = new Map(configs.map((config) => [config.surfaceId, config]));
+  const fallback = configs[0];
+  let templateApplications = 0;
+  const applied = selected.flatMap((surfaceId) => {
+    const exact = configBySurfaceId.get(surfaceId);
+    const template = exact || fallback;
+    if (!template) return [];
+    if (!exact) templateApplications += 1;
+    return [{ ...template, surfaceId } as T];
+  });
   return {
-    ...matched,
-    selectedSurfaceIds: [...new Set([
-      ...retainedSurfaceIds,
-      ...matched.configs.map((config) => config.surfaceId),
-    ])],
+    configs: applied,
+    selectedSurfaceIds: selected,
+    templateApplications,
   };
 }

@@ -914,24 +914,21 @@ export default function SupervisorSetupDialog() {
     }
     const config = result.config;
     const importedTerminals = Array.isArray(config.terminals) ? config.terminals : [];
-    const retainedSurfaceIds = sessionRetained
-      ? ordinarySupervisorLanes.filter(isSupervisorLaneBound).map((lane) => lane.surfaceId)
-      : [];
+    const selectedSurfaceIds = candidates
+      .filter((candidate) => selected.has(candidate.surfaceId))
+      .map((candidate) => candidate.surfaceId);
     const importPlan = planSupervisorTerminalConfigImport(
       importedTerminals,
-      candidates.map((candidate) => candidate.surfaceId),
-      retainedSurfaceIds,
+      selectedSurfaceIds,
     );
     const isMultiTerminalConfig = importedTerminals.length > 0;
     const importedSurfaceIds = isMultiTerminalConfig
       ? importPlan.configs.map((terminal) => terminal.surfaceId)
-      : Array.from(selected);
+      : selectedSurfaceIds;
     if (importedSurfaceIds.length === 0) {
       setDialogNotice({
         kind: 'error',
-        message: isMultiTerminalConfig
-          ? `配置中的 ${importPlan.skipped} 个终端均已不存在，未导入终端配置。`
-          : '请先选择要应用配置的终端。',
+        message: '请先选择要应用配置的终端。',
       });
       return;
     }
@@ -939,7 +936,6 @@ export default function SupervisorSetupDialog() {
       importPlan.configs.map((terminal) => [terminal.surfaceId, terminal]),
     );
     if (isMultiTerminalConfig) {
-      setSelected(new Set(importPlan.selectedSurfaceIds));
       setTerminalConfigExpansion((current) => ({
         ...current,
         ...Object.fromEntries(importedSurfaceIds.map((surfaceId) => [surfaceId, false])),
@@ -987,7 +983,7 @@ export default function SupervisorSetupDialog() {
           next[surfaceId] = normalizeSupervisorAutonomyPermissions(
             terminalConfig.autonomyPermissionsOverride,
           );
-        } else if (isMultiTerminalConfig) delete next[surfaceId];
+        } else delete next[surfaceId];
       }
       return next;
     });
@@ -997,7 +993,7 @@ export default function SupervisorSetupDialog() {
         const terminalConfig = configBySurfaceId.get(surfaceId);
         if (typeof terminalConfig?.autonomousOverride === 'boolean') {
           next[surfaceId] = terminalConfig.autonomousOverride;
-        } else if (isMultiTerminalConfig) delete next[surfaceId];
+        } else delete next[surfaceId];
       }
       return next;
     });
@@ -1009,7 +1005,7 @@ export default function SupervisorSetupDialog() {
           next[surfaceId] = normalizeSupervisorForbiddenActions(
             terminalConfig.forbiddenActionsOverride,
           );
-        } else if (isMultiTerminalConfig) delete next[surfaceId];
+        } else delete next[surfaceId];
       }
       return next;
     });
@@ -1031,12 +1027,12 @@ export default function SupervisorSetupDialog() {
         : loadedWorkScope);
       setForbiddenActions(normalizeSupervisorForbiddenActions(config.forbiddenActions));
     }
-    const skippedNotice = isMultiTerminalConfig && importPlan.skipped > 0
-      ? `，跳过 ${importPlan.skipped} 个已不存在的终端`
+    const templateNotice = isMultiTerminalConfig && importPlan.templateApplications > 0
+      ? `；其中 ${importPlan.templateApplications} 个终端复用了首个导入模板`
       : '';
     setDialogNotice({
       kind: 'success',
-      message: `已导入 ${importedSurfaceIds.length} 个终端配置${skippedNotice}。`,
+      message: `已将导入配置应用到 ${importedSurfaceIds.length} 个已选终端${templateNotice}。被监督终端运行时未修改。`,
     });
   };
 
@@ -1129,6 +1125,7 @@ export default function SupervisorSetupDialog() {
                 prev?.config?.taskGoal !== config.taskGoal.trim()
                 || prev?.config?.taskDescription !== config.taskDescription.trim()
                 || prev?.config?.preconditions !== config.preconditions.trim()
+                || (prev?.config?.supervisorNotes || '') !== (config.supervisorNotes?.trim() || '')
                 || prev?.config?.stopWhen !== config.stopWhen.trim()
                 || prev?.config?.planFilePath !== config.planFilePath.trim()
                   ? 1
@@ -2640,7 +2637,7 @@ export default function SupervisorSetupDialog() {
                     导出当前终端配置…
                   </button>
                 </div>
-                <div className="supervisor-dialog__hint">导出包含当前选中的全部终端配置；导入按终端恢复，原终端已不存在时自动跳过。旧版单终端配置仍会应用到当前已选终端。</div>
+                <div className="supervisor-dialog__hint">导出包含当前选中的全部终端配置；导入只覆盖当前已选通道的监督配置，不修改被监督终端本身。同 ID 配置优先匹配，未匹配终端复用文件中的首个终端配置。</div>
               </section>
 
               <section className="supervisor-dialog__section supervisor-dialog__advanced-divider">

@@ -32,7 +32,6 @@ import type { DefaultSupervisorAgent } from '../../src/shared/types';
 import { DEFAULT_WORKSPACE_PREFS, type WorkspacePrefs } from '../../src/renderer/store/settings-slice';
 import {
   autonomousDecisionBoundary,
-  buildProjectTaskStartupBriefing,
   buildSupervisorBriefing,
   buildUnacknowledgedSupervisorIdlePrompt,
   buildSupervisorWakeEventEnvelope,
@@ -95,25 +94,6 @@ describe('supervisor wake event envelope', () => {
     expect(risky).toContain('evidence=required');
     expect(risky).toContain('suggestedRanges');
     expect(risky).toContain('证据仍矛盾或不足时才读完整文件');
-  });
-
-  it('retries the controlled task-terminal startup instead of reading a reserved surface', () => {
-    const pendingLane = lane({
-      surfaceId: 'project-task-pending-1' as any,
-      projectTaskStartupPending: true,
-      projectManagerProjectId: 'pm-1',
-      projectWorkItemId: 'task-1',
-      projectDir: 'E:\\project',
-      config: { taskGoal: '完成任务', stopWhen: '测试通过' },
-    });
-
-    const startup = buildProjectTaskStartupBriefing(pendingLane);
-    const retry = buildUnacknowledgedSupervisorIdlePrompt(pendingLane, '当前推进门槛：基线待调查');
-
-    expect(startup).toContain('wmux project task-terminal-start --project pm-1 --task task-1');
-    expect(retry).toContain(startup);
-    expect(retry).toContain('真实任务终端尚未创建');
-    expect(retry).not.toContain('wmux read-screen --surface project-task-pending-1');
   });
 
   it('keeps the normal read-screen handoff after a real task terminal is bound', () => {
@@ -1443,6 +1423,8 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('设备已上电');
     expect(briefing).toContain('用户已确认、在当前监督配置内持续有效');
     expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
+    expect(briefing).toContain('推荐答案只供用户选择，不得自动采用');
+    expect(briefing).toContain('不得默认忽略、套用推荐答案或把疑问藏进成果计划后继续');
     expect(briefing).toContain('注意事项（监督检查点提醒）');
     expect(briefing).toContain('同步文档并创建本地提交');
     expect(briefing).toContain('不要仅因事项存在就打断正在工作的任务 AI');
@@ -1569,7 +1551,38 @@ describe('supervisor isolation', () => {
         createdAt: 1,
         events: [
           { ts: 2, type: 'worker.task', payload: { task: '修复登录' } },
-          { ts: 3, type: 'supervisor.decision', payload: { outcome: 'rework', proposalKind: 'route-adjustment', reason: '测试未覆盖', next: '切换到已有测试夹具' } },
+          { ts: 3, type: 'supervisor.decision', payload: {
+            outcome: 'rework', proposalKind: 'route-adjustment', reason: '测试未覆盖', next: '[任务]',
+            taskDispatch: {
+              outcome: '形成认证异常路径的可复核测试结果',
+              constraints: ['保持现有公共接口'],
+              acceptanceGap: ['异常路径仍未覆盖'],
+              evidenceContext: ['当前只验证了成功路径'],
+            },
+          } },
+          { ts: 3.5, type: 'supervisor.goal-vortex.replan-required', payload: {
+            occurrence: 2,
+            kind: 'single-condition-fixation',
+            signal: '连续围绕单一电流条件重复验证',
+            wastedEffort: '两轮没有新增条件或实际证据',
+            missingEvidence: '缺少三个授权范围内条件的对照结果',
+            decisiveNextStep: '执行三条件对照实验',
+            authorizationBoundary: 'within-current',
+            experimentConditions: ['0.08A', '0.10A', '0.12A'],
+            correctionTask: '形成三条件对照结果和结论',
+          } },
+          { ts: 3.6, type: 'supervisor.goal-vortex.rejected-repeat', payload: {
+            occurrence: 3,
+            kind: 'single-condition-fixation',
+            signal: '第三轮仍提交同一纠偏任务',
+            wastedEffort: '没有改变假设、条件或推进路径',
+            missingEvidence: '仍缺少不同条件下的对照证据',
+            decisiveNextStep: '改变条件后再执行对照实验',
+            authorizationBoundary: 'within-current',
+            experimentConditions: ['0.08A', '0.10A', '0.12A'],
+            previousCorrectionTask: '形成三条件对照结果和结论',
+            correctionTask: '形成三条件对照结果和结论',
+          } },
           { ts: 4, type: 'session.abandoned', payload: { reason: '用户选择重头再来' } },
           { ts: 5, type: 'supervisor.proposal.resolved', payload: { resolution: 'approved', proposalKind: 'route-change', text: '按替代方案继续' } },
           { ts: 6, type: 'supervisor.auto-decision-limit.resolved', payload: { resolution: 'human-reviewed' } },
@@ -1586,6 +1599,15 @@ describe('supervisor isolation', () => {
     expect(text).toContain('### 关键裁决');
     expect(text).toContain('【AI 裁决】需要返工 · 小范围路线调整');
     expect(text).toContain('判断结果：需要返工');
+    expect(text).toContain('下发成果：形成认证异常路径的可复核测试结果');
+    expect(text).toContain('验收缺口：异常路径仍未覆盖');
+    expect(text).not.toContain('建议下一步：[任务]');
+    expect(text).toContain('【目标旋涡】连续空耗，强制重规划');
+    expect(text).toContain('空耗细节：两轮没有新增条件或实际证据');
+    expect(text).toContain('判别实验条件：0.08A；0.10A；0.12A');
+    expect(text).toContain('【目标旋涡】重复纠偏被拒绝');
+    expect(text).toContain('上轮纠偏任务：形成三条件对照结果和结论');
+    expect(text).toContain('被拒绝的重复纠偏：形成三条件对照结果和结论');
     expect(text).toContain('【人工裁决】已批准 · 路线变更');
     expect(text).toContain('【人工裁决】已取消（用户已通过其他方式发送信息） · 重要建议');
     expect(text).toContain('【人工裁决】已由用户自行处理 · 重要建议');

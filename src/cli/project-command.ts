@@ -8,8 +8,8 @@ export interface ProjectJsonInput {
 
 const PROJECT_COMMANDS = [
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'status', 'logs', 'terminals',
-  'task-create', 'task-update', 'record', 'supervise', 'progress-sync',
-  'transition-ack', 'task-terminal-start', 'task-terminal-control',
+  'task-create', 'task-update', 'record', 'dispatch', 'progress-sync',
+  'transition-ack',
   'inspect', 'decide', 'ask', 'pause', 'resume', 'pause-all', 'resume-all', 'complete', 'stop', 'reply',
 ] as const;
 
@@ -24,6 +24,7 @@ export const PROJECT_USAGE = [
   '  --json <object>                Inline JSON object',
   '  --json-file <.wmux/tmp/file>   UTF-8 JSON file under the managed project .wmux/tmp directory',
   '',
+  'Planning supplements must include userConfirmationEventId plus supplements (goal-plan) or planningSupplements (task create/update).',
   'Run `wmux project <command> --help` for command-specific input examples.',
 ].join('\n');
 
