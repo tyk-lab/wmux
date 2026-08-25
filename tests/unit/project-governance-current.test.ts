@@ -37,12 +37,13 @@ const contract: ProjectSupervisorContract = {
   },
 };
 
-describe('project governance P7', () => {
+describe('project governance P8', () => {
   it('makes the task AI the sole project executor', () => {
     const briefing = buildProjectTaskExecutionEnvelope(contract);
     expect(briefing).toContain('唯一执行者');
     expect(briefing).toContain('具体技术路线、文件、命令、技能、测试与内部拆分由你自行决定');
     expect(briefing).not.toContain('允许范围：');
+    expect(briefing).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {
@@ -62,7 +63,7 @@ describe('project governance P7', () => {
     expect(result.decision).toBe('allow');
   });
 
-  it('does not require the legacy baseline handshake for P7 work', () => {
+  it('does not require the legacy baseline handshake for P8 work', () => {
     const item = {
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       requirementsVersion: 1,

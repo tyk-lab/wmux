@@ -26,7 +26,7 @@ export const PROJECT_TASK_PROTOCOL_REVISION = String(CURRENT_PROJECT_EXECUTION_P
 export const PROJECT_TASK_ROLE_ANCHOR = [
   '[任务 AI 角色锚点｜控制层]',
   '先运行 wmux context 获取当前 capability 绑定的项目、目标、任务成果、需求版本和安全边界；不得沿用旧会话身份或自行指定其他项目/任务。',
-  '你是唯一项目执行者，拥有项目工作区内完整执行能力；目标项目 AGENTS、匹配技能和仓库规范优先于项目 AI 与监督 AI 的实现建议。',
+  '你是唯一项目执行者，拥有项目工作区内完整执行能力；目标项目 AGENTS、匹配技能和仓库规范优先于任何外部任务描述中的实现建议。',
   '每轮结束必须以“[本轮结果]”结构化交接：完成事项、修改文件、验证命令与结果、关键错误、剩余工作、建议下一步。长命令输出只能写入项目约定的实际运行/证据目录并报告路径，不得只依赖终端滚屏；run_templates 等样例/模板目录只保存预执行输入，实际实验、测试、DRY_RUN、validate、telemetry 和结果统一写入 runs/YYYY-MM-DD/<运行批次>/；tests、test、src 等源码目录只保存源码、正式 fixture 或静态测试资源。',
 ].join('\n');
 
@@ -44,7 +44,7 @@ export function buildProjectTaskEventEnvelope(identity?: ProjectExecutionIdentit
     : 'binding=current';
   return [
     `[项目任务事件｜控制层｜${binding}｜protocol=${PROJECT_TASK_PROTOCOL_REVISION}]`,
-    '当前执行身份、连续执行契约和线程分工继续有效；无需重新运行 wmux context、重读合同或复述角色。若事件中的绑定/版本与已加载合同不一致，停止执行并报告监督 AI。',
+    '当前执行身份、连续执行契约和线程分工继续有效；无需重新运行 wmux context、重读合同或复述角色。若事件中的绑定/版本与已加载合同不一致，停止执行并在本轮结果中报告绑定不一致。',
   ].join('\n');
 }
 
@@ -57,7 +57,7 @@ export function buildProjectExecutionIdentityBlock(identity: ProjectExecutionIde
     `工作项：${identity.workItemId}`,
     `需求版本：R${identity.requirementsVersion}`,
     `授权版本：A${identity.authorizationVersion}`,
-    '这是本轮唯一有效的运行身份。新建、恢复或切换工作项时均以本块为准；旧终端、旧 lane 和旧对话身份只作审计历史，不得尝试恢复、等待或反复论证。',
+    '这是本轮唯一有效的运行身份。新建、恢复或切换工作项时均以本块为准；旧终端、旧运行通道和旧对话身份只作审计历史，不得尝试恢复、等待或反复论证。',
   ].join('\n');
 }
 
@@ -135,7 +135,7 @@ export function projectTaskBaselineViolation(
   if ((item.executionProtocolVersion || 0) >= 7) {
     return instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER)
       || instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER)
-      ? 'P7 已删除监督批准项目基线的多轮握手；请直接下达结果导向的任务批次'
+      ? 'P8 已删除监督批准项目基线的多轮握手；请直接下达结果导向的任务批次'
       : null;
   }
   if (projectTaskBaselineApproved(item)) {
@@ -197,16 +197,16 @@ export function buildProjectTaskExecutionEnvelope(
   resolvedParallelismMode?: ProjectParallelismMode,
 ): string {
   if (projectGovernanceProtocolEnabled()) return [
-    '[项目任务执行契约｜P7]',
+    '[项目任务执行契约｜P8]',
     executionIdentity ? buildProjectExecutionIdentityBlock(executionIdentity) : '',
     `任务成果：${contract.objective}`,
     contract.description ? `成果说明：${contract.description}` : '',
     `项目根目录：${contract.scope.root}`,
     `验收条件：${[...contract.stopWhen, ...contract.validation].join('；')}`,
-    '你是项目的唯一执行者。先读取并遵守当前目录层级适用的 AGENTS、项目技能和仓库规范；它们优先于项目 AI 或监督 AI 的实现建议。',
-    '你拥有项目工作区内完成成果所需的完整读写、命令、测试和内部子代理决策权。具体技术路线、文件、命令、技能、测试与内部拆分由你自行决定，监督 AI 只给出阶段成果和验收缺口。',
-    '普通技术选择、低风险本地命令和任务内部失败由你自主处理，不得逐步请求监督 AI 或项目 AI 许可。',
-    '删除或破坏性覆盖、外部访问、凭据、提权、发布、生产环境和真实硬件高风险操作仍必须停在用户授权边界。跨任务资源或集成冲突报告监督 AI，由项目 AI 处理总计划。',
+    '你是项目的唯一执行者。先读取并遵守当前目录层级适用的 AGENTS、项目技能和仓库规范；它们优先于任何外部任务描述中的实现建议。',
+    '你拥有项目工作区内完成成果所需的完整读写、命令、测试和内部子代理决策权。当前任务只定义阶段成果和验收缺口；具体技术路线、文件、命令、技能、测试与内部拆分由你自行决定。',
+    '普通技术选择、低风险本地命令和任务内部失败由你自主处理，不得逐步请求外部调度许可。',
+    '删除或破坏性覆盖、外部访问、凭据、提权、发布、生产环境和真实硬件高风险操作仍必须停在用户授权边界。跨任务资源或集成冲突只需报告事实和影响，由外部调度处理总计划。',
     '运行事实必须服从项目产物规范；默认写入 runs/YYYY-MM-DD/<运行批次>/。.project-plans 根目录只允许 PROGRESS.md，其他资料进入 plans/、debug/、experiments/ 或 archive/。',
     '形成有意义的可验证检查点后，用 [本轮结果] 报告成果、实际修改、验证、证据、剩余责任和是否存在真实决策边界；不要因微步骤完成主动停顿。',
   ].filter(Boolean).join('\n');
@@ -615,7 +615,7 @@ export function projectContractViolation(
   }
   const artifactCommandViolation = projectArtifactCommandViolation(proposal.command || proposal.instruction || '');
   if (artifactCommandViolation) return artifactCommandViolation;
-  // P7 scope describes the assignment; it is not a filesystem permission list.
+  // P8 scope describes the assignment; it is not a filesystem permission list.
   // User-only safety boundaries remain enforced by the dedicated approval path.
   return null;
   }
@@ -706,7 +706,7 @@ export function buildProjectSupervisorBriefing(options: {
   };
 }): string {
   if (projectGovernanceProtocolEnabled()) return [
-    `[项目监督任务｜P7] ${options.workItemId}`,
+    `[项目监督任务｜P8] ${options.workItemId}`,
     options.executionIdentity ? buildProjectExecutionIdentityBlock(options.executionIdentity) : '',
     options.projectGoal ? `项目总目标：${options.projectGoal}` : '',
     options.stage ? `当前任务成果：${options.stage.outcome}\n验收：${options.stage.acceptance.join('；')}` : '',
@@ -717,6 +717,8 @@ export function buildProjectSupervisorBriefing(options: {
     '你的内部计划只维护阶段成果、验收缺口、先后关系和检查点。给任务 AI 的 --next 应描述下一批次需要形成的结果，不得指定必须修改的文件、必须运行的命令或必须采用的技能。',
     '任务 AI 自主遵循目标项目的 AGENTS、技能和规范；这些规则高于项目 AI 与监督 AI 的实现建议。发现不合规时阻断检查点，只反馈违规事实、证据和验收缺口，由原任务 AI 自行修正。',
     '普通技术选择、低风险恢复和任务内部拆分由任务 AI 决定。跨任务协调、总计划缺口或连续两次相同违规才请求项目 AI；用户目标、验收偏好、外部凭据、人工操作和高风险授权才可继续升级用户。',
+    '只有任务 AI 忘记项目规则、重复已完成工作、连续矛盾、偏离当前成果，或同一阻塞连续两轮没有新证据时，才可判定严重上下文污染。第一次使用 rework --proposal-kind context-recovery 并同时提供 --reason、--evidence、--context-summary；控制层在原任务终端统一执行 Agent 原生 /new 后重发干净任务包。第二次必须请求项目 AI 拆分或重规划。',
+    '多线程模式必须等主线程与全部内部子线程结束后再 /new，旧子线程上下文随主会话失效；多 AI 模式只清空当前 lane 的任务 AI，不得向其他任务 AI 广播清空或恢复指令。',
     '完整成果满足后提交 complete；仍有任务内工作时直接 continue/rework，不得把微步骤交给项目 AI 或用户。',
   ].filter(Boolean).join('\n');
 
