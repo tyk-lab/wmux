@@ -137,7 +137,7 @@ describe('terminal startup input delivery', () => {
     expect(startupTrustPromptAction('codex', hooksPrompt)).toBeNull();
   });
 
-  it('显式的 wmux 项目、监督或任务授权会自动确认 Codex Hook 信任项', async () => {
+  it('即使是 wmux 管理的 Agent 也不生成 Codex Hook 信任按键', () => {
     const fromReview = [
       'Hooks need review',
       '› 1. Review hooks',
@@ -151,29 +151,12 @@ describe('terminal startup input delivery', () => {
       '  3. Continue without trusting (hooks won\'t run)',
     ].join('\n');
 
-    const action = startupTrustPromptAction('codex', fromReview, 'hooks', {
+    expect(startupTrustPromptAction('codex', fromReview, 'hooks', {
       allowCodexHookTrust: true,
-    });
-    expect(action).toBe('select-next');
+    })).toBeNull();
     expect(startupTrustPromptAction('codex', alreadySelected, 'hooks', {
       allowCodexHookTrust: true,
-    })).toBe('confirm-selected');
-
-    let confirmed = false;
-    const writeChecked = vi.fn(async () => true);
-    await expect(confirmStartupTrustPrompt({ write: vi.fn(), writeChecked }, 'surf-managed-hooks', {
-      action: action!,
-      readyDelayMs: 0,
-      selectionDelayMs: 0,
-      confirmationPollMs: 1,
-      confirmedWhen: () => confirmed,
-      retryActionWhen: () => 'confirm-selected',
-      wait: async (delayMs) => { if (delayMs === 1) confirmed = true; },
-    })).resolves.toBe(true);
-    expect(writeChecked.mock.calls).toEqual([
-      ['surf-managed-hooks', '\x1b[B'],
-      ['surf-managed-hooks', '\r'],
-    ]);
+    })).toBeNull();
   });
 
   it('只有信任页得到语义确认后才报告成功', async () => {

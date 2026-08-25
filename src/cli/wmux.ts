@@ -298,6 +298,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     supervisorSurfaceId: process.env.WMUX_SURFACE_ID || '',
     reviewId: getFlag(args, '--review-id') || '',
     outcome,
+    taskWorkMode: getFlag(args, '--task-work-mode') || '',
     reason: getFlag(args, '--reason') || '',
     next: nextInput.text,
     nextFile: nextInput.fileReference || '',

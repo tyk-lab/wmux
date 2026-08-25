@@ -172,6 +172,7 @@ type SupervisorDecisionOutcome = 'continue' | 'rework' | 'complete' | 'needs-hum
 
 export function buildProjectTaskExecutionEnvelope(
   contract: ProjectSupervisorContract,
+  taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
 ): string {
   return [
     '[成果任务]',
@@ -180,7 +181,10 @@ export function buildProjectTaskExecutionEnvelope(
     contract.preconditions.length > 0 ? `前置条件：${contract.preconditions.join('；')}` : '',
     `验收条件：${[...contract.stopWhen, ...contract.validation].join('；')}`,
     '开始前读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范；若任务描述与项目规范冲突，以项目规范为准。',
-    '你自行决定实现路线、文件、命令、测试、技能和内部组织方式。确有必要时可使用内部线程或子代理，但同时工作的内部子线程不得超过 3 个；共享写入、共享资源和最终集成必须串行。',
+    '你自行决定实现路线、文件、命令、测试和技能；线程内的具体分工也由你决定，但必须遵守本成果包指定的执行模式。',
+    taskWorkMode === 'multi-thread'
+      ? '[执行模式] 多线程：使用主线程和必要的内部子线程推进，同时工作的内部子线程不得超过 3 个；共享写入、共享资源和最终集成必须串行。'
+      : '[执行模式] 单线程：在当前主线程内完成任务，不创建内部子线程或执行子代理。',
     '持续推进到形成可验证成果、真实阻塞或用户授权边界，不要因内部微步骤完成而停顿，也不要等待外部逐步批准普通技术选择。',
     '删除或破坏性覆盖、外部访问、凭据、提权、发布、生产环境和真实硬件高风险操作仍须遵守项目规范及用户授权边界。',
     '结束本轮时简要报告成果、实际修改、验证结果、证据、剩余工作和真实阻塞。',
@@ -197,16 +201,22 @@ export function prepareProjectTaskDelivery(
   contract: ProjectSupervisorContract,
   instruction: string,
   contractPending: boolean,
+  taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
+  repeatWorkMode = false,
 ): PreparedProjectTaskDelivery {
   const requested = instruction.trim();
   if (!contractPending) {
     return {
       action: requested,
-      delivery: requested,
+      delivery: repeatWorkMode
+        ? `${taskWorkMode === 'multi-thread'
+          ? '[执行模式] 多线程：使用主线程和必要的内部子线程推进，同时工作的内部子线程不得超过 3 个；共享写入、共享资源和最终集成必须串行。'
+          : '[执行模式] 单线程：在当前主线程内完成任务，不创建内部子线程或执行子代理。'}\n${requested}`
+        : requested,
     };
   }
 
-  const envelope = buildProjectTaskExecutionEnvelope(contract);
+  const envelope = buildProjectTaskExecutionEnvelope(contract, taskWorkMode);
   const legacyPayload = requested.startsWith(envelope)
     ? requested.slice(envelope.length).trim().replace(/^\[本轮执行指令\]\s*/u, '').trim()
     : requested;
@@ -473,6 +483,7 @@ export function projectCompletionState(session: ProjectManagerSession): ProjectC
 export function buildProjectSupervisorBriefing(options: {
   workItemId: string;
   contract: ProjectSupervisorContract;
+  taskWorkMode?: 'single-thread' | 'multi-thread';
   baseline?: ProjectTaskBaseline;
   supervisorPlan?: ProjectSupervisorStagePlan;
   executionIdentity?: ProjectExecutionIdentity;
@@ -494,7 +505,8 @@ export function buildProjectSupervisorBriefing(options: {
     '你是常驻监督和结果裁决者，不是项目执行者。不得修改项目文件、运行实现或测试命令、选择任务技能、规定具体实现路线，或代替任务 AI 做普通技术决策。',
     '项目 AI 只负责总计划和顺序派发；你直接决定 continue、rework 或 complete。只有需要改变总计划、跨任务协调、外部凭据、人工操作、高风险授权或用户目标/验收时，才使用 needs-human 交给项目 AI。',
     '如果你认为用户的目标、范围、前置条件、验收或正式计划需要补充，禁止先按补充内容执行。使用 needs-human important + contract-change，一次提交待补充细节、影响、可选方案和推荐项；项目 AI 必须通过 project ask 取得用户确认并更新账本后才能重新派发。',
-    '任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现、测试和内部线程。你只描述下一批次需要形成的结果和验收缺口，不向任务端注入项目/工作项身份、监督协议、路由预算、文件命令、技能或固定线程模式。',
+    `任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现与测试细节。当前执行模式为 ${options.taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread'}；你可在掌握任务复杂度或运行证据后，通过 continue/rework 的 --task-work-mode single-thread|multi-thread 调整后续任务回合。`,
+    '你只描述下一批次需要形成的结果和验收缺口，不向任务端注入项目/工作项身份、监督协议、路由预算、指定文件、命令或技能；线程内的具体分工仍由任务 AI 决定。',
     '只有出现忘记项目规则、重复已完成工作、连续矛盾、偏离当前成果，或同一阻塞连续两轮没有新证据时，才判定严重上下文污染。确认任务 AI 的 runDepth=0 后，使用 context-recovery 让控制层在原终端执行一次 /new 并重发中性成果包；同一工作项不得重复清空。',
     '完整成果满足后提交 complete；仍有任务内工作时直接 continue/rework，不得把微步骤交给项目 AI 或用户。',
   ].filter(Boolean).join('\n');

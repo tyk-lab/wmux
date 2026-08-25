@@ -1187,6 +1187,23 @@ describe('supervisor isolation', () => {
     expect(session.pendingApprovals).toHaveLength(0);
   });
 
+  it('retains a stopped placeholder only when the terminal has a user-saved snapshot', () => {
+    const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane({
+      recoverySnapshotId: 'snapshot-terminal-a',
+      recoverySnapshotSavedAt: 10,
+    })]);
+    store.getState().startOrdinarySupervisor();
+
+    store.getState().stopSupervisorLane('lane-a', '保留恢复入口');
+
+    expect(store.getState().supervisor.lanes).toEqual([expect.objectContaining({
+      id: 'lane-a', controlState: 'stopped', supervisorSurfaceId: null,
+      recoverySnapshotId: 'snapshot-terminal-a', recoverySnapshotSavedAt: 10,
+    })]);
+    expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
+  });
+
   it('derives aggregate runtime flags from a single lane lifecycle', () => {
     const store = makeStore();
     store.getState().setOrdinarySupervisorLanes([lane()]);
@@ -1470,7 +1487,7 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('needs-human 在全自动模式下也必须等待用户决定');
   });
 
-  it('injects recovered audit context only into its dedicated supervisor briefing', () => {
+  it('injects a recovered terminal snapshot only into its dedicated supervisor briefing', () => {
     const session = createDefaultSupervisorSession();
     const laneA = lane({
       restoredFromSessionId: 'sup-old',
@@ -1480,12 +1497,12 @@ describe('supervisor isolation', () => {
 
     const briefingA = buildSupervisorBriefing(session, { lane: laneA, state: 'idle' });
     const briefingB = buildSupervisorBriefing(session, { lane: laneB, state: 'idle' });
-    expect(briefingA).toContain('已恢复的本终端审计摘要');
+    expect(briefingA).toContain('已恢复的本终端快照');
     expect(briefingA).toContain('修复登录');
     expect(briefingB).not.toContain('修复登录');
   });
 
-  it('uses recovered audit only as supervisor evidence under the current ordinary protocol', () => {
+  it('uses a recovered snapshot as the current supervisor baseline without replaying control text', () => {
     const session = { ...createDefaultSupervisorSession(), active: true };
     const briefing = buildSupervisorBriefing(session, {
       lane: lane({
@@ -1502,8 +1519,8 @@ describe('supervisor isolation', () => {
       state: 'idle',
     });
 
-    expect(briefing).toContain('已恢复的本终端审计摘要');
-    expect(briefing).toContain('这只是历史背景');
+    expect(briefing).toContain('已恢复的本终端快照');
+    expect(briefing).toContain('用户主动保存的结构化监督现场');
     expect(briefing).not.toContain('首次任务终端上下文恢复');
     expect(briefing).not.toContain('--proposal-kind context-recovery');
     expect(briefing).not.toContain('恢复指令');

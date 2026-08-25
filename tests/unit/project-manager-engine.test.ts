@@ -170,6 +170,16 @@ describe('project-manager engine', () => {
     expect(prepared.delivery).toBe(`${envelope}\n\n[本轮执行指令]\n${prepared.action}`);
     expect(projectContractViolation(contract, { instruction: prepared.action })).toBeNull();
 
+    const supervisedModeChange = prepareProjectTaskDelivery(
+      contract,
+      '继续完成当前成果',
+      false,
+      'multi-thread',
+      true,
+    );
+    expect(supervisedModeChange.action).toBe('继续完成当前成果');
+    expect(supervisedModeChange.delivery).toContain('[执行模式] 多线程');
+
     const legacy = prepareProjectTaskDelivery(
       contract,
       `${envelope}\n\n[本轮执行指令]\n检查认证实现`,

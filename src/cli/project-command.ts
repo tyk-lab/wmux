@@ -66,9 +66,9 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     'Usage: wmux project task-create --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
     'JSON must include a project-AI complexity assessment made before dispatch:',
-    '{"id":"task-a","subgoalId":"stage-1","complexityAssessment":{"complexity":"low|medium|high","decision":"single-task|split-before-dispatch","signals":["..."],"rationale":"..."},"contract":{"objective":"...","stopWhen":["..."],"validation":["..."]}}',
+    '{"id":"task-a","subgoalId":"stage-1","taskWorkMode":"single-thread|multi-thread","complexityAssessment":{"complexity":"low|medium|high","decision":"single-task|split-before-dispatch","signals":["..."],"rationale":"..."},"contract":{"objective":"...","stopWhen":["..."],"validation":["..."]}}',
     '',
-    '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead.',
+    '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead. `taskWorkMode` controls the unique task AI internal execution mode.',
   ].join('\n'),
 };
 

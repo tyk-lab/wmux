@@ -3,6 +3,23 @@ import { useStore } from '../store';
 import { createLeaf, findLeaf, getAllPaneIds } from '../store/split-utils';
 import { projectSupervisorWorkspaceTitle } from '../supervisor/protocol';
 
+/** Reveal an existing surface without creating a replacement runtime. */
+export function openSurfaceById(surfaceId: string): boolean {
+  const store = useStore.getState();
+  for (const workspace of store.workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      const pane = findLeaf(workspace.splitTree, paneId);
+      const surfaceIndex = pane?.surfaces.findIndex((surface) => surface.id === surfaceId) ?? -1;
+      if (surfaceIndex < 0) continue;
+      store.selectWorkspace(workspace.id);
+      store.selectSurface(workspace.id, paneId, surfaceIndex);
+      store.closeProjectManagerDialog();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function openProjectManagerConsole(projectId: string): boolean {
   const store = useStore.getState();
   const project = store.projectManagers.find((candidate) => candidate.id === projectId);

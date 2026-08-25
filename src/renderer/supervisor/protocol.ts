@@ -571,11 +571,11 @@ export function buildSupervisorBriefing(
     : [];
   const restoredHistoryBlock = lane.restoredHistory?.trim()
     ? [
-        '## 已恢复的本终端审计摘要',
-        `来源会话: ${lane.restoredFromSessionId || '最近会话'}`,
+        '## 已恢复的本终端快照',
+        `来源快照: ${lane.restoredFromSessionId || '最近保存'}`,
         lane.restoredHistory.trim(),
         '',
-        '这只是历史背景。先读取当前终端屏幕确认现状；不要把它当作当前状态，也不要据此读取或裁决其他终端。',
+        '这是用户主动保存的结构化监督现场。配置、计划和已验证证据可作为恢复基线；仍须读取当前任务终端和项目文件确认保存后的变化，不得读取或裁决其他终端。',
         '',
       ]
     : [];
@@ -648,14 +648,24 @@ export function buildSupervisorBriefing(
       : '先一次性检查目标、计划文件、范围、优先级、用户偏好和完成条件是否足以执行。只要存在会影响执行或验收的疑问，就必须使用 needs-human --proposal-kind clarification，一次集中提出 2-5 个关键问题并等待用户答复；不得默认忽略、套用推荐答案或把疑问藏进成果计划后继续。只有不存在此类疑问时才直接建立计划。首次 continue/rework 必须通过 --stage-plan-file 建立成果计划，以后仅在成果状态或剩余工作变化时更新。',
     projectManaged
       ? '项目 P9 监督不提交普通阶段计划。'
-      : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。',
+      : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。任务 JSON 的 acceptanceGap 不是用户总停止条件的副本，而是你为本次派遣单独给出的任务级验收：只描述本任务可直接闭合的结果和证据。实验/上机任务不得预设必须 PASS；应要求实际执行并如实返回 PASS/FAIL、原始结果和证据，再由你判断下一步。',
     '',
   ];
   const maxChildThreads = normalizeTaskMaxChildThreads(laneConfig.maxChildThreads);
+  const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
   const taskWorkModeBlock = [
-    '## 任务 AI 执行自治',
-    '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现、测试和内部组织方式。你不得向任务端注入 wmux 角色协议、项目/工作项身份、路由预算或固定线程模式。',
-    `任务 AI 如有必要可自主使用内部线程或子代理，同时工作的内部子线程上限为 ${maxChildThreads}；共享写入、共享资源和最终集成必须串行。你只依据结果与证据裁决，不审批其内部组织方案。`,
+    projectManaged ? '## 任务 AI 执行模式' : '## 任务 AI 执行自治',
+    projectManaged
+      ? `当前任务模式为 ${taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread'}。你可根据任务复杂度与运行证据，在 continue/rework 时用 --task-work-mode single-thread|multi-thread 调整后续回合；不要为没有独立并行成果的任务滥用多线程。`
+      : '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现、测试和内部组织方式。你不得向任务端注入 wmux 角色协议、项目/工作项身份、路由预算或固定线程模式。',
+    projectManaged
+      ? taskWorkMode === 'multi-thread'
+        ? `任务 AI 必须使用主线程和必要的内部子线程，同时工作的内部子线程上限为 ${maxChildThreads}；线程内分工由任务 AI 决定，共享写入、共享资源和最终集成必须串行。`
+        : '任务 AI 必须在当前主线程内完成任务，不创建内部子线程或执行子代理。'
+      : `任务 AI 如有必要可自主使用内部线程或子代理，同时工作的内部子线程上限为 ${maxChildThreads}；共享写入、共享资源和最终集成必须串行。你只依据结果与证据裁决，不审批其内部组织方案。`,
+    projectManaged
+      ? '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现与测试细节。不得向任务端注入 wmux 角色协议、项目/工作项身份或路由预算。'
+      : '',
     '',
   ];
   const policyBlock = structuredPolicyBlock(session, lane);

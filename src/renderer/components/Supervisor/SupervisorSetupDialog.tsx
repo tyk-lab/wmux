@@ -31,6 +31,8 @@ import {
 import {
   MAX_TASK_THREAD_RESPONSIBILITY_LENGTH,
   normalizeTaskChildThreadResponsibilities,
+  normalizeTaskMaxChildThreads,
+  normalizeTaskOperationBoundaries,
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
   type TaskWorkMode,
@@ -41,7 +43,6 @@ import {
   stopWhenKindHint,
   stopWhenKindLabel,
   SUPERVISOR_TAB_TITLE,
-  SUPERVISOR_WORKSPACE_TITLE,
   supervisorTabTitle,
   supervisorLaneBriefingChanged,
 } from '../../supervisor/protocol';
@@ -80,7 +81,6 @@ import {
   interactiveAgentShellPromptFailureDetail,
   interactiveAgentStartupDiagnostic,
 } from '../../utils/interactive-agent-runtime';
-import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
 
 const SUPERVISOR_LAUNCH_OPTIONS = [
@@ -271,7 +271,6 @@ export default function SupervisorSetupDialog() {
   const stopOrdinarySupervisor = useStore((s) => s.stopOrdinarySupervisor);
   const addSurface = useStore((s) => s.addSurface);
   const closeSurface = useStore((s) => s.closeSurface);
-  const createWorkspace = useStore((s) => s.createWorkspace);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
   const dialogRef = useRef<HTMLDivElement>(null);
   const lastFocusedFieldRef = useRef<HTMLElement | null>(null);
@@ -372,6 +371,11 @@ export default function SupervisorSetupDialog() {
   const [restoreCandidates, setRestoreCandidates] = useState<Record<string, SupervisorRestoreCandidate[]>>({});
   const [restoreCandidatesLoaded, setRestoreCandidatesLoaded] = useState<Set<string>>(new Set());
   const [restoreSources, setRestoreSources] = useState<Record<string, string>>({});
+  const [snapshotDeleteCandidate, setSnapshotDeleteCandidate] = useState<{
+    surfaceId: string;
+    projectDir: string;
+    snapshot: SupervisorRestoreCandidate;
+  } | null>(null);
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
   const [supervisorModel, setSupervisorModel] = useState(supervisor.supervisorModel || '');
   const [launchChoice, setLaunchChoice] = useState(
@@ -424,7 +428,9 @@ export default function SupervisorSetupDialog() {
       ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource ? [lane.surfaceId] : []),
     ));
     setRestoreSources(Object.fromEntries(
-      ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource ? [[lane.surfaceId, lane.restoreSource.surfaceId]] : []),
+      ordinarySupervisorLanes.flatMap((lane) => lane.restoreSource
+        ? [[lane.surfaceId, lane.restoreSource.snapshotId || lane.restoreSource.surfaceId]]
+        : []),
     ));
     setLaunchCmd(supervisor.supervisorLaunchCmd || '');
     setSupervisorModel(supervisor.supervisorModel || '');
@@ -691,13 +697,17 @@ export default function SupervisorSetupDialog() {
     if (!setupOpen) {
       setRestoreCandidates({});
       setRestoreCandidatesLoaded(new Set());
+      setSnapshotDeleteCandidate(null);
       return;
     }
     let cancelled = false;
     const selectedCandidates = candidates.filter((candidate) => selected.has(candidate.surfaceId));
     void Promise.all(selectedCandidates.map(async (candidate) => [
       candidate.surfaceId,
-      candidate.projectDir ? await listSupervisorRestoreCandidates(candidate.projectDir) : [],
+      candidate.projectDir
+        ? (await listSupervisorRestoreCandidates(candidate.projectDir))
+            .filter((snapshot) => snapshot.surfaceId === candidate.surfaceId)
+        : [],
     ] as const)).then((entries) => {
       if (cancelled) return;
       setRestoreCandidates(Object.fromEntries(entries));
@@ -717,10 +727,10 @@ export default function SupervisorSetupDialog() {
       }
       for (const surfaceId of restoreEnabled) {
         const options = restoreCandidates[surfaceId] || [];
-        const currentStillExists = options.some((candidate) => candidate.surfaceId === next[surfaceId]);
-        const latestSurfaceId = options[0]?.surfaceId;
-        if (!currentStillExists && latestSurfaceId && next[surfaceId] !== latestSurfaceId) {
-          next[surfaceId] = latestSurfaceId;
+        const currentStillExists = options.some((candidate) => candidate.snapshotId === next[surfaceId]);
+        const latestSnapshotId = options[0]?.snapshotId;
+        if (!currentStillExists && latestSnapshotId && next[surfaceId] !== latestSnapshotId) {
+          next[surfaceId] = latestSnapshotId;
           changed = true;
         }
       }
@@ -814,13 +824,34 @@ export default function SupervisorSetupDialog() {
   };
 
   const restoreSourceIdFor = (surfaceId: string): string => (
-    restoreSources[surfaceId] || restoreCandidates[surfaceId]?.[0]?.surfaceId || ''
+    restoreSources[surfaceId] || restoreCandidates[surfaceId]?.[0]?.snapshotId || ''
   );
 
-  const selectRestoreSource = (surfaceId: string, restoreSurfaceId: string) => {
+  const selectRestoreSource = (surfaceId: string, snapshotId: string) => {
     setDialogNotice(null);
     markTerminalConfigDirty(surfaceId);
-    setRestoreSources((current) => ({ ...current, [surfaceId]: restoreSurfaceId }));
+    setRestoreSources((current) => ({ ...current, [surfaceId]: snapshotId }));
+  };
+
+  const deleteSelectedSnapshot = async () => {
+    if (!snapshotDeleteCandidate) return;
+    const { snapshot, projectDir } = snapshotDeleteCandidate;
+    const result = await (window as any).wmux?.supervisor?.deleteRecoverySnapshot?.({
+      projectDir,
+      snapshotId: snapshot.snapshotId,
+    });
+    if (!result?.ok) {
+      setDialogNotice({ kind: 'error', message: `删除恢复档案失败：${result?.error || '未知错误'}` });
+      return;
+    }
+    setRestoreCandidates((current) => Object.fromEntries(Object.entries(current).map(([surfaceId, options]) => [
+      surfaceId,
+      options.filter((candidate) => candidate.snapshotId !== snapshot.snapshotId),
+    ])));
+    setRestoreSources((current) => Object.fromEntries(Object.entries(current)
+      .filter(([, snapshotId]) => snapshotId !== snapshot.snapshotId)));
+    setSnapshotDeleteCandidate(null);
+    setDialogNotice({ kind: 'success', message: `已删除 ${snapshot.label} 的终端恢复档案。` });
   };
 
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
@@ -1045,19 +1076,20 @@ export default function SupervisorSetupDialog() {
       ));
       const selectedSourceId = restoreSourceIdFor(c.surfaceId);
       const selectedSource = restoreEnabled.has(c.surfaceId)
-        ? restoreCandidates[c.surfaceId]?.find((candidate) => candidate.surfaceId === selectedSourceId)
+        ? restoreCandidates[c.surfaceId]?.find((candidate) => candidate.snapshotId === selectedSourceId)
         : undefined;
       const keepsRestoredContext = !!selectedSource
-        && prev?.restoreSource?.surfaceId === selectedSource.surfaceId;
+        && prev?.restoreSource?.snapshotId === selectedSource.snapshotId;
       const keepsCurrentContext = preserveCurrentContext || keepsRestoredContext;
       const restoreSource = selectedSource
         ? {
+            snapshotId: selectedSource.snapshotId,
             surfaceId: selectedSource.surfaceId,
             label: selectedSource.label,
             sessionId: selectedSource.sessionId,
           }
         : undefined;
-      const config = laneConfigs[c.surfaceId]
+      const config = selectedSource?.config || laneConfigs[c.surfaceId]
         || (prev ? effectiveSupervisorLaneConfig(prev) : emptyLaneConfig());
       const finalizesWaiting = supervisorWaitingConfigAction(
         prev ? supervisorLaneControlState(prev) : undefined,
@@ -1081,7 +1113,7 @@ export default function SupervisorSetupDialog() {
           ? 'stopped'
           : keepsCurrentContext && prev
             ? supervisorLaneControlState(prev)
-            : 'active',
+            : selectedSource?.controlState || 'active',
         awaitingStopCheck: keepsCurrentContext ? prev?.awaitingStopCheck || false : false,
         stopConfirmed: keepsCurrentContext ? prev?.stopConfirmed || false : false,
         awaitingReview: keepsCurrentContext ? prev?.awaitingReview || false : false,
@@ -1097,7 +1129,7 @@ export default function SupervisorSetupDialog() {
         autoDecisionLimitReached: keepsCurrentContext ? prev?.autoDecisionLimitReached || false : false,
         autoDecisionsUsed: keepsCurrentContext ? prev?.autoDecisionsUsed || 0 : 0,
         pendingSupervisorDeliveries: keepsCurrentContext ? prev?.pendingSupervisorDeliveries || [] : [],
-        currentTask: keepsCurrentContext ? prev?.currentTask || '' : '',
+        currentTask: keepsCurrentContext ? prev?.currentTask || '' : selectedSource?.currentTask || '',
         decisions: keepsCurrentContext ? prev?.decisions || [] : [],
         ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
         pendingInitialReview: !keepsCurrentContext && agentStates[c.surfaceId]?.state === 'working',
@@ -1120,7 +1152,11 @@ export default function SupervisorSetupDialog() {
           childThreadResponsibilities: normalizeTaskChildThreadResponsibilities(
             config.childThreadResponsibilities,
           ).map((responsibility) => responsibility.trim()),
-          planRevision: keepsCurrentContext
+          maxChildThreads: normalizeTaskMaxChildThreads(config.maxChildThreads),
+          supervisorMayApproveThreads: config.supervisorMayApproveThreads === true,
+          parallelizableOperations: normalizeTaskOperationBoundaries(config.parallelizableOperations),
+          serializedOperations: normalizeTaskOperationBoundaries(config.serializedOperations),
+          planRevision: selectedSource?.config.planRevision || (keepsCurrentContext
             ? (prev?.config?.planRevision || 1) + (
                 prev?.config?.taskGoal !== config.taskGoal.trim()
                 || prev?.config?.taskDescription !== config.taskDescription.trim()
@@ -1131,17 +1167,31 @@ export default function SupervisorSetupDialog() {
                   ? 1
                   : 0
               )
-            : 1,
+            : 1),
         },
-        ...(Array.isArray(lanePermissionOverrides[c.surfaceId])
+        ...(selectedSource
+          ? { autonomyPermissionsOverride: [...selectedSource.autonomyPermissions] }
+          : Array.isArray(lanePermissionOverrides[c.surfaceId])
           ? { autonomyPermissionsOverride: [...lanePermissionOverrides[c.surfaceId]] }
           : {}),
-        ...(!finalizesWaiting && Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, c.surfaceId)
+        ...(selectedSource
+          ? { autonomousOverride: selectedSource.autonomous }
+          : !finalizesWaiting && Object.prototype.hasOwnProperty.call(laneAutonomousOverrides, c.surfaceId)
           ? { autonomousOverride: laneAutonomousOverrides[c.surfaceId] }
           : {}),
-        ...(Array.isArray(laneForbiddenActionOverrides[c.surfaceId])
+        ...(selectedSource
+          ? { forbiddenActionsOverride: [...selectedSource.forbiddenActions] }
+          : Array.isArray(laneForbiddenActionOverrides[c.surfaceId])
           ? { forbiddenActionsOverride: [...laneForbiddenActionOverrides[c.surfaceId]] }
           : {}),
+        ...(selectedSource ? {
+          workScopeOverride: selectedSource.workScope,
+          supervisorLaunchCmdOverride: selectedSource.supervisorAgent,
+          supervisorModelOverride: selectedSource.supervisorModel,
+          supervisorReasoningEffortOverride: selectedSource.supervisorReasoningEffort,
+          recoverySnapshotId: selectedSource.snapshotId,
+          recoverySnapshotSavedAt: selectedSource.lastEventAt,
+        } : {}),
         ...(restoreSource ? { restoreSource } : {}),
         ...(keepsRestoredContext && prev?.restoredHistory ? { restoredHistory: prev.restoredHistory } : {}),
         ...(keepsRestoredContext && prev?.restoredFromSessionId ? { restoredFromSessionId: prev.restoredFromSessionId } : {}),
@@ -1181,23 +1231,7 @@ export default function SupervisorSetupDialog() {
       }
     }
 
-    let supervisorWorkspace = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
-    if (!supervisorWorkspace) {
-      const workspaceId = createWorkspace({
-        title: SUPERVISOR_WORKSPACE_TITLE,
-        pinned: true,
-        transientSupervisorWorkspace: true,
-        splitTree: createLeaf(undefined, 'supervisor'),
-      });
-      patchSupervisor({ supervisorWorkspaceId: workspaceId });
-      supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
-    }
-    const targetPaneId = supervisorWorkspace
-      ? getAllPaneIds(supervisorWorkspace.splitTree)[0]
-      : undefined;
-    if (!supervisorWorkspace || !targetPaneId) return { ok: false, lanes };
-
-    const createdSurfaceIds: SurfaceId[] = [];
+    const createdSurfaces: Array<{ surfaceId: SurfaceId; workspaceId: WorkspaceId; paneId: PaneId }> = [];
     const surfacesToClose = new Map<SurfaceId, {
       surfaceId: SurfaceId;
       workspaceId: WorkspaceId;
@@ -1211,13 +1245,15 @@ export default function SupervisorSetupDialog() {
       if (existingLocation && !replaceExisting) {
         return lane;
       }
+      const targetLocation = terminalLocations.get(lane.surfaceId);
+      if (!targetLocation) return { ...lane, supervisorSurfaceId: null };
       const launchCommand = buildSupervisorLaunchCommand(
-        launchCmd,
-        supervisorModel,
-        reasoningEffort,
+        lane.supervisorLaunchCmdOverride || launchCmd,
+        lane.supervisorModelOverride ?? supervisorModel,
+        lane.supervisorReasoningEffortOverride ?? reasoningEffort,
         { isolateSupervisor: true, projectDir: lane.projectDir, isolationKey: lane.id },
       );
-      const supervisorSurfaceId = addSurface(supervisorWorkspace.id, targetPaneId, 'terminal', {
+      const supervisorSurfaceId = addSurface(targetLocation.workspaceId, targetLocation.paneId, 'terminal', {
         customTitle: supervisorTabTitle(lane.label),
         shell: 'pwsh.exe',
         cwd: lane.projectDir,
@@ -1230,11 +1266,11 @@ export default function SupervisorSetupDialog() {
         laneId: lane.id,
         targetSurfaceId: lane.surfaceId,
         supervisorSurfaceId: supervisorSurfaceId || 'none',
-        launcher: detectSupervisorLauncher(launchCmd),
-        hasConfiguredModel: !!supervisorModel.trim(),
+        launcher: detectSupervisorLauncher(lane.supervisorLaunchCmdOverride || launchCmd),
+        hasConfiguredModel: !!(lane.supervisorModelOverride ?? supervisorModel).trim(),
         isolatedRuntime: true,
       });
-      if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
+      if (supervisorSurfaceId) createdSurfaces.push({ surfaceId: supervisorSurfaceId, ...targetLocation });
       return {
         ...lane,
         supervisorSurfaceId,
@@ -1248,8 +1284,8 @@ export default function SupervisorSetupDialog() {
     });
 
     if (configuredLanes.some((lane) => !lane.supervisorSurfaceId)) {
-      for (const surfaceId of createdSurfaceIds) {
-        closeSurface(supervisorWorkspace.id, targetPaneId, surfaceId);
+      for (const surface of createdSurfaces) {
+        closeSurface(surface.workspaceId, surface.paneId, surface.surfaceId);
       }
       return { ok: false, lanes };
     }
@@ -1665,7 +1701,7 @@ export default function SupervisorSetupDialog() {
                 const restoreContextEnabled = restoreEnabled.has(candidate.surfaceId);
                 const restoreOptions = restoreCandidates[candidate.surfaceId] || [];
                 const selectedRestoreSource = restoreOptions.find((option) => (
-                  option.surfaceId === restoreSources[candidate.surfaceId]
+                  option.snapshotId === restoreSources[candidate.surfaceId]
                 )) || restoreOptions[0];
                 const restoreCandidatesReady = restoreCandidatesLoaded.has(candidate.surfaceId);
                 return (
@@ -1950,19 +1986,19 @@ export default function SupervisorSetupDialog() {
                                         onChange={(event) => toggleRestoreContext(candidate.surfaceId, event.target.checked)}
                                       />
                                       <span className="supervisor-dialog__row-main">
-                                        <span className="supervisor-dialog__row-label">恢复历史监督证据</span>
+                                        <span className="supervisor-dialog__row-label">恢复终端快照</span>
                                         <span className="supervisor-dialog__row-meta">
                                           {isExistingLane
                                             ? '运行中的监督会话不能切换恢复来源；停止后重新配置即可更改。'
-                                            : '勾选后把最新审计摘要仅提供给监督 AI 复核；不会把旧上下文或角色协议发送给任务 AI。'}
+                                            : '勾选后恢复该终端的专属监督配置、最新监督状态和项目上下文；任务 AI 只接收干净续作任务。'}
                                         </span>
                                       </span>
                                     </label>
                                     {restoreContextEnabled && (
                                       <div className="supervisor-dialog__restore-row">
-                                        <div className="supervisor-dialog__row-label">历史监督证据（默认最新）</div>
+                                        <div className="supervisor-dialog__row-label">终端恢复档案（默认最新）</div>
                                         {!restoreCandidatesReady ? (
-                                          <div className="supervisor-dialog__hint">正在查找此工程的监督历史…</div>
+                                          <div className="supervisor-dialog__hint">正在查找此工程主动保存的终端快照…</div>
                                         ) : selectedRestoreSource ? (
                                           <>
                                             <select
@@ -1973,7 +2009,7 @@ export default function SupervisorSetupDialog() {
                                               onChange={(event) => selectRestoreSource(candidate.surfaceId, event.target.value)}
                                             >
                                               {restoreOptions.map((option, index) => (
-                                                <option key={`${option.surfaceId}-${option.sessionId}`} value={option.surfaceId}>
+                                                <option key={option.snapshotId} value={option.snapshotId}>
                                                   {index === 0 ? '（最新）' : ''}{option.label} · {new Date(option.lastEventAt).toLocaleString('zh-CN', { hour12: false })}
                                                   {option.currentTask ? ` · ${option.currentTask.slice(0, 50)}` : ''}
                                                 </option>
@@ -1983,9 +2019,33 @@ export default function SupervisorSetupDialog() {
                                               {selectedRestoreSource.currentTask ? `当前任务：${selectedRestoreSource.currentTask.slice(0, 80)}` : '当前任务：未记录'}
                                               {selectedRestoreSource.lastDecision ? ` · 最近裁决 ${selectedRestoreSource.lastDecision}` : ''}
                                             </div>
+                                            <button
+                                              type="button"
+                                              className="confirm-dialog__btn"
+                                              disabled={isExistingLane}
+                                              onClick={() => setSnapshotDeleteCandidate({
+                                                surfaceId: candidate.surfaceId,
+                                                projectDir: candidate.projectDir || '',
+                                                snapshot: selectedRestoreSource,
+                                              })}
+                                            >
+                                              删除此恢复档案
+                                            </button>
+                                            {snapshotDeleteCandidate?.snapshot.snapshotId === selectedRestoreSource.snapshotId
+                                              && snapshotDeleteCandidate.surfaceId === candidate.surfaceId && (
+                                              <div className="supervisor-dialog__warning" role="alertdialog" aria-label="确认删除终端恢复档案">
+                                                <span>删除后不能再恢复该终端快照，审计记录仍会保留。</span>
+                                                <button type="button" className="confirm-dialog__btn" onClick={() => void deleteSelectedSnapshot()}>
+                                                  确认删除
+                                                </button>
+                                                <button type="button" className="confirm-dialog__btn" onClick={() => setSnapshotDeleteCandidate(null)}>
+                                                  取消
+                                                </button>
+                                              </div>
+                                            )}
                                           </>
                                         ) : (
-                                          <div className="supervisor-dialog__warning">此工程没有可恢复的监督历史，无法启用上下文恢复。</div>
+                                          <div className="supervisor-dialog__warning">此工程没有用户主动保存的终端恢复档案。</div>
                                         )}
                                       </div>
                                     )}

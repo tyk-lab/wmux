@@ -22,6 +22,8 @@ export type ProjectWorkItemStatus =
   | 'failed'
   | 'stopped';
 
+export type ProjectTaskWorkMode = 'single-thread' | 'multi-thread';
+
 export type ProjectEscalationBoundary =
   | 'contract-change'
   | 'cross-item-coordination'
@@ -451,6 +453,8 @@ export interface ProjectWorkItem {
   executionProtocolVersion?: number;
   /** Project-AI decision made before dispatch so one task AI receives one focused outcome. */
   complexityAssessment?: ProjectTaskComplexityAssessment;
+  /** Project AI selects the initial mode; the bound supervisor may revise it for later task turns. */
+  taskWorkMode?: ProjectTaskWorkMode;
   /** Durable in-place context reset state. Project files and terminal identity are never replaced. */
   contextReset?: ProjectTaskContextResetState;
   /** Project AI cannot approve this field; only the bound supervisor decision bridge can. */
@@ -1609,6 +1613,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
           rationale: '内部恢复路径保留现有单一成果工作项；新的项目 AI 任务创建必须显式提交复杂度评估',
           assessedAt: item.updatedAt,
         },
+        taskWorkMode: item.taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread',
         contextReset: normalizeProjectTaskContextResetState(item.contextReset),
         baseline: activeBaseline
           ? item.baseline

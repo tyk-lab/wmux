@@ -6,6 +6,10 @@ import type {
   SupervisorSession,
 } from '../store/supervisor-slice';
 import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
+import type {
+  SupervisedTerminalSnapshot,
+  SupervisedTerminalSnapshotSummary,
+} from '../../shared/supervisor-recovery';
 import { supervisorDeliveryLabel } from './delivery';
 
 const MAX_VALUE = 1_200;
@@ -33,9 +37,19 @@ export interface SupervisorAuditTrail {
 }
 
 export interface SupervisorRestoreCandidate extends SupervisorRestoreSource {
+  snapshotId: string;
   lastEventAt: number;
   currentTask: string;
   lastDecision: string;
+  supervisorAgent: string;
+  supervisorModel: string;
+  supervisorReasoningEffort: string;
+  config: NonNullable<SupervisorLane['config']>;
+  autonomous: boolean;
+  autonomyPermissions: NonNullable<SupervisorLane['autonomyPermissionsOverride']>;
+  forbiddenActions: NonNullable<SupervisorLane['forbiddenActionsOverride']>;
+  workScope: NonNullable<SupervisorLane['workScopeOverride']>;
+  controlState: 'active' | 'paused' | 'waiting';
 }
 
 export interface RestoredLaneHistory {
@@ -43,6 +57,20 @@ export interface RestoredLaneHistory {
   decisions: SupervisorDecision[];
   restoredHistory: string;
   restoredFromSessionId: string;
+  config?: SupervisorLane['config'];
+  autonomousOverride?: boolean;
+  autonomyPermissionsOverride?: SupervisorLane['autonomyPermissionsOverride'];
+  forbiddenActionsOverride?: SupervisorLane['forbiddenActionsOverride'];
+  workScopeOverride?: SupervisorLane['workScopeOverride'];
+  ordinaryContextHealth?: SupervisorLane['ordinaryContextHealth'];
+  goalVortex?: SupervisorLane['goalVortex'];
+  latestSupervisorUserGuidance?: SupervisorLane['latestSupervisorUserGuidance'];
+  workerTurnId?: number;
+  recoverySnapshotId?: string;
+  recoverySnapshotSavedAt?: number;
+  supervisorLaunchCmdOverride?: string;
+  supervisorModelOverride?: string;
+  supervisorReasoningEffortOverride?: string;
 }
 
 function compact(value: unknown): unknown {
@@ -366,53 +394,87 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
   };
 }
 
-/** Read isolated durable history for one lane. Ambiguous labels return no context. */
-export async function restoreLatestLaneHistory(lane: SupervisorLane): Promise<RestoredLaneHistory | null> {
-  if (!lane.projectDir) return null;
-  const api = (window as any).wmux?.supervisor;
-  if (!api?.readLatestHistory) return null;
-  try {
-    const history = await api.readLatestHistory({
-      projectDir: lane.projectDir,
-      surfaceId: lane.surfaceId,
-      terminalLabel: lane.label,
-    }) as HistoryResult;
-    return summarizeRestoredHistory(history);
-  } catch (err) {
-    console.warn('[supervisor] audit restore failed', err);
-    return null;
-  }
+function snapshotRestoredHistory(snapshot: SupervisedTerminalSnapshot): RestoredLaneHistory {
+  const decisions = Array.isArray(snapshot.supervisor.state.decisions)
+    ? snapshot.supervisor.state.decisions.filter((value): value is SupervisorDecision => (
+        !!value && typeof value === 'object' && ['continue', 'rework', 'complete', 'needs-human']
+          .includes(String((value as SupervisorDecision).outcome || ''))
+      ))
+    : [];
+  const lines = [
+    `[终端快照] ${new Date(snapshot.savedAt).toLocaleString('zh-CN', { hour12: false })}`,
+    `任务终端：${snapshot.terminal.label}`,
+    `当前任务：${snapshot.supervisor.state.currentTask || '未记录'}`,
+    `已验证证据：${snapshot.projectContext.verifiedEvidence.join('；') || '无'}`,
+    `验收缺口：${snapshot.projectContext.acceptanceGaps.join('；') || '无'}`,
+  ];
+  return {
+    ...(snapshot.supervisor.state.currentTask ? { currentTask: snapshot.supervisor.state.currentTask } : {}),
+    decisions,
+    restoredHistory: lines.join('\n'),
+    restoredFromSessionId: snapshot.snapshotId,
+    config: snapshot.supervisor.config,
+    autonomousOverride: snapshot.supervisor.autonomous,
+    autonomyPermissionsOverride: [...snapshot.supervisor.autonomyPermissions],
+    forbiddenActionsOverride: [...snapshot.supervisor.forbiddenActions],
+    workScopeOverride: snapshot.supervisor.workScope,
+    ordinaryContextHealth: snapshot.supervisor.state.ordinaryContextHealth as SupervisorLane['ordinaryContextHealth'],
+    goalVortex: snapshot.supervisor.state.goalVortex as SupervisorLane['goalVortex'],
+    latestSupervisorUserGuidance: snapshot.supervisor.state.latestSupervisorUserGuidance as SupervisorLane['latestSupervisorUserGuidance'],
+    workerTurnId: snapshot.supervisor.state.workerTurnId,
+    recoverySnapshotId: snapshot.snapshotId,
+    recoverySnapshotSavedAt: snapshot.savedAt,
+    supervisorLaunchCmdOverride: snapshot.supervisor.launchCmd,
+    supervisorModelOverride: snapshot.supervisor.model,
+    supervisorReasoningEffortOverride: snapshot.supervisor.reasoningEffort,
+  };
 }
 
-/** Restore from the historical terminal explicitly selected by the user. */
+/** Restore the complete terminal snapshot explicitly selected by the user. */
 export async function restoreSelectedLaneHistory(
   lane: SupervisorLane,
   source: SupervisorRestoreSource,
 ): Promise<RestoredLaneHistory | null> {
   if (!lane.projectDir) return null;
   const api = (window as any).wmux?.supervisor;
-  if (!api?.readLatestHistory) return null;
+  if (!api?.readRecoverySnapshot || !source.snapshotId) return null;
   try {
-    const history = await api.readLatestHistory({
+    const result = await api.readRecoverySnapshot({
       projectDir: lane.projectDir,
-      surfaceId: source.surfaceId,
-      terminalLabel: source.label,
-    }) as HistoryResult;
-    return summarizeRestoredHistory(history);
+      snapshotId: source.snapshotId,
+    }) as { ok?: boolean; snapshot?: SupervisedTerminalSnapshot; error?: string };
+    return result.ok && result.snapshot ? snapshotRestoredHistory(result.snapshot) : null;
   } catch (err) {
-    console.warn('[supervisor] selected audit restore failed', err);
+    console.warn('[supervisor] selected terminal snapshot restore failed', err);
     return null;
   }
 }
 
-/** List user-selectable historical terminals for a project; no current-ID matching occurs. */
+/** List user-saved terminal snapshots for a project. Audit history is not a restore source. */
 export async function listSupervisorRestoreCandidates(projectDir: string): Promise<SupervisorRestoreCandidate[]> {
   if (!projectDir) return [];
   const api = (window as any).wmux?.supervisor;
-  if (!api?.listRestoreCandidates) return [];
+  if (!api?.listRecoverySnapshots) return [];
   try {
-    const candidates = await api.listRestoreCandidates(projectDir);
-    return Array.isArray(candidates) ? candidates : [];
+    const candidates = await api.listRecoverySnapshots(projectDir) as SupervisedTerminalSnapshotSummary[];
+    return Array.isArray(candidates) ? candidates.map((candidate) => ({
+      snapshotId: candidate.snapshotId,
+      surfaceId: candidate.surfaceId,
+      label: candidate.label,
+      sessionId: candidate.snapshotId,
+      lastEventAt: candidate.savedAt,
+      currentTask: candidate.currentTask,
+      lastDecision: candidate.lastDecision,
+      supervisorAgent: candidate.supervisorAgent,
+      supervisorModel: candidate.supervisorModel,
+      supervisorReasoningEffort: candidate.supervisorReasoningEffort,
+      config: candidate.config,
+      autonomous: candidate.autonomous,
+      autonomyPermissions: candidate.autonomyPermissions,
+      forbiddenActions: candidate.forbiddenActions,
+      workScope: candidate.workScope,
+      controlState: candidate.controlState,
+    })) : [];
   } catch (err) {
     console.warn('[supervisor] restore candidate list failed', err);
     return [];

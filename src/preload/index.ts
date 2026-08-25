@@ -129,9 +129,12 @@ contextBridge.exposeInMainWorld('wmux', {
     saveEvidence: (options: any) => ipcRenderer.invoke('supervisor:save-evidence', options),
     readEvidence: (options: any) => ipcRenderer.invoke('supervisor:read-evidence', options),
     readEvidenceFile: (options: any) => ipcRenderer.invoke('supervisor:read-evidence-file', options),
-    readLatestHistory: (options: any) => ipcRenderer.invoke('supervisor:read-latest-history', options),
     readAuditTrail: (options: any) => ipcRenderer.invoke('supervisor:read-audit-trail', options),
-    listRestoreCandidates: (projectDir: string) => ipcRenderer.invoke('supervisor:list-restore-candidates', projectDir),
+    captureRecoveryContext: (request: any) => ipcRenderer.invoke('supervisor:capture-recovery-context', request),
+    saveRecoverySnapshot: (snapshot: any) => ipcRenderer.invoke('supervisor:save-recovery-snapshot', snapshot),
+    readRecoverySnapshot: (request: any) => ipcRenderer.invoke('supervisor:read-recovery-snapshot', request),
+    listRecoverySnapshots: (projectDir: string) => ipcRenderer.invoke('supervisor:list-recovery-snapshots', projectDir),
+    deleteRecoverySnapshot: (request: any) => ipcRenderer.invoke('supervisor:delete-recovery-snapshot', request),
     validateModel: (request: { launcher: string; model: string; cwd?: string }) =>
       ipcRenderer.invoke('supervisor:validate-model', request) as Promise<{ ok: boolean; message?: string; error?: string }>,
     listModels: (request: { launcher: string; cwd?: string }) =>

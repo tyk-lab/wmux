@@ -8,6 +8,7 @@ import { ImageAddon } from '@xterm/addon-image';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
+import { openSurfaceById } from '../project-manager/console-surface';
 import { isProjectManagedSupervisorLane } from '../store/supervisor-slice';
 import { notifyOrdinaryTaskRuntimeFailure } from '../supervisor/user-input-precedence';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
@@ -1076,16 +1077,19 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       if (!startupAgent || !isStartupTrustPromptReady(startupAgent, visibleOutput)) return;
       const promptKind = startupTrustPromptKind(startupAgent, visibleOutput);
       if (!promptKind || confirmedStartupTrustPrompts.has(promptKind)) return;
-      if (promptKind === 'hooks' && !allowManagedCodexHookTrust) {
-        failAutomatedStartup(id, 'Codex Hook 需要人工审查：请在任一 Codex 会话执行 /hooks，确认 wmux-hook 后重试');
+      if (promptKind === 'hooks') {
+        if (allowManagedCodexHookTrust) {
+          openSurfaceById(id);
+          return;
+        }
+        failAutomatedStartup(id, 'Codex Hook 需要人工审查：请在当前 Codex 终端确认后重试');
         return;
       }
       const action = startupTrustPromptAction(startupAgent, visibleOutput, promptKind, {
-        allowCodexHookTrust: allowManagedCodexHookTrust,
+        allowCodexHookTrust: false,
       });
       if (!action) {
-        const trustKindLabel = promptKind === 'hooks' ? 'Hook 信任' : '目录信任';
-        failAutomatedStartup(id, `Agent 启动失败：无法安全确定${trustKindLabel}页的当前选中项`);
+        failAutomatedStartup(id, 'Agent 启动失败：无法安全确定目录信任页的当前选中项');
         return;
       }
       if (runtimeReadyTimer) clearTimeout(runtimeReadyTimer);
@@ -1121,8 +1125,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           scheduleRuntimeReadyValidation(id);
           return;
         }
-        const trustKindLabel = promptKind === 'hooks' ? 'Hook 信任' : '目录信任';
-        failAutomatedStartup(id, `Agent 启动失败：${trustKindLabel}确认未生效或终端不可写`);
+        failAutomatedStartup(id, 'Agent 启动失败：目录信任确认未生效或终端不可写');
       });
     };
 

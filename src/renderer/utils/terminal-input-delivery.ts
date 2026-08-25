@@ -102,39 +102,18 @@ export function startupTrustPromptAction(
   agent: StartupTrustPromptAgent,
   output: string,
   kind = startupTrustPromptKind(agent, output),
-  options: StartupTrustPromptActionOptions = {},
+  _options: StartupTrustPromptActionOptions = {},
 ): StartupTrustPromptAction | null {
   if (agent === 'grok') {
     return isStartupTrustPromptReady(agent, output) ? 'type-yes' : null;
   }
   if (agent === 'pi') return null;
-  // Hook changes are executable code. Only an explicitly marked wmux-managed
-  // project-AI, task-AI or dedicated supervisor surface may opt into first-run trust.
-  if (agent === 'codex' && kind === 'hooks' && !options.allowCodexHookTrust) return null;
+  // Hook changes are executable code. Wmux never chooses or confirms this page;
+  // managed Agent surfaces reveal the native TUI and wait for the user instead.
+  if (agent === 'codex' && kind === 'hooks') return null;
 
   const normalizedOutput = normalizedTerminalOutput(output);
   const selectedMarker = '(?:[>❯›➜→]|[●◉])';
-  if (agent === 'codex' && kind === 'hooks') {
-    const hookOptions = [
-      {
-        action: 'select-next' as const,
-        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*1\\.\\s*Review hooks\\b`, 'giu'),
-      },
-      {
-        action: 'confirm-selected' as const,
-        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*2\\.\\s*Trust all and continue\\b`, 'giu'),
-      },
-      {
-        action: 'select-previous' as const,
-        pattern: new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*3\\.\\s*Continue without trust(?:ing)?\\b`, 'giu'),
-      },
-    ];
-    const latest = hookOptions.map((option) => ({
-      action: option.action,
-      index: [...normalizedOutput.matchAll(option.pattern)].at(-1)?.index ?? -1,
-    })).sort((left, right) => right.index - left.index)[0];
-    if (latest.index >= 0) return latest.action;
-  }
   const selectedTrust = agent === 'codex'
     ? new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*(?:1\\.\\s*)?Yes, continue\\b`, 'giu')
     : new RegExp(`(?:^|\\n)\\s*${selectedMarker}\\s*Trust this folder\\b`, 'giu');

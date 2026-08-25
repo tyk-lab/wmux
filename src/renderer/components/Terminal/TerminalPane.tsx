@@ -16,7 +16,7 @@ interface TerminalPaneProps {
   startupInput?: string;
   /** App-owned key for the isolated supervisor runtime directory. */
   supervisorRuntimeIsolationKey?: string;
-  /** Explicit wmux-managed project/supervisor/task authorization for first-run Codex Hook trust. */
+  /** Marks a wmux-managed Agent surface whose native Codex Hook page may be revealed to the user. */
   allowManagedCodexHookTrust?: boolean;
   /** Secret-free key used for one-time SSH password injection in the main process. */
   sshProfileId?: string;

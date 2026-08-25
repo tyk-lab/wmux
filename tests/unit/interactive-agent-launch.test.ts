@@ -7,7 +7,7 @@ import {
 import { buildSupervisorLaunchCommand } from '../../src/renderer/supervisor/launch-command';
 
 describe('interactive Agent launch', () => {
-  it('allows automatic Codex Hook trust only for wmux-managed project, task and supervisor AI surfaces', () => {
+  it('identifies only wmux-managed project, task and supervisor AI surfaces for prompt reveal', () => {
     expect(surfaceAllowsManagedCodexHookTrust({ projectManagerTerminal: true })).toBe(true);
     expect(surfaceAllowsManagedCodexHookTrust({ transientSupervisor: true })).toBe(true);
     expect(surfaceAllowsManagedCodexHookTrust({ projectManagerProjectId: 'pm-1' })).toBe(true);

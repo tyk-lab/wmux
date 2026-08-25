@@ -28,13 +28,18 @@ import { handleAgentStateV2 } from './agent-state-rpc';
 import { acceptHookEventId, applyHookToAgentState, isAgentHookTerminalEvent } from './agent-hook-bridge';
 import {
   appendSupervisorRecord,
-  listSupervisorRestoreCandidates,
   readSupervisorEvidence,
   readSupervisorEvidenceFile,
-  readLatestSupervisorHistory,
   readSupervisorAuditTrail,
   saveSupervisorEvidence,
 } from './supervisor-records';
+import {
+  captureSupervisedTerminalProjectContext,
+  deleteSupervisedTerminalSnapshot,
+  listSupervisedTerminalSnapshots,
+  readSupervisedTerminalSnapshot,
+  saveSupervisedTerminalSnapshot,
+} from './supervisor-recovery';
 import { FeishuSupervisorService, type FeishuSupervisorCommand } from './feishu-supervisor';
 import { createFeishuDirectTaskDirectory, resolveExistingFeishuDirectTaskDirectory } from './feishu-direct-task';
 import {
@@ -679,12 +684,6 @@ app.whenReady().then(() => {
     surfaceId: String(options?.surfaceId || ''),
     isolationScope: options?.isolationScope,
   }));
-  ipcMain.handle('supervisor:read-latest-history', (_event, options) =>
-    readLatestSupervisorHistory(String(options?.projectDir || ''), {
-      surfaceId: String(options?.surfaceId || ''),
-      label: String(options?.terminalLabel || ''),
-    }),
-  );
   feishuSupervisor = new FeishuSupervisorService(controlSupervisorFromFeishu);
   feishuSupervisor.start();
   ipcMain.handle('supervisor:read-audit-trail', (_event, options) =>
@@ -693,8 +692,26 @@ app.whenReady().then(() => {
       label: String(options?.terminalLabel || ''),
     }),
   );
-  ipcMain.handle('supervisor:list-restore-candidates', (_event, projectDir) =>
-    listSupervisorRestoreCandidates(String(projectDir || '')),
+  ipcMain.handle('supervisor:capture-recovery-context', (_event, request) =>
+    captureSupervisedTerminalProjectContext(request),
+  );
+  ipcMain.handle('supervisor:save-recovery-snapshot', (_event, snapshot) =>
+    saveSupervisedTerminalSnapshot(snapshot),
+  );
+  ipcMain.handle('supervisor:read-recovery-snapshot', (_event, request) =>
+    readSupervisedTerminalSnapshot(
+      String(request?.projectDir || ''),
+      String(request?.snapshotId || ''),
+    ),
+  );
+  ipcMain.handle('supervisor:list-recovery-snapshots', (_event, projectDir) =>
+    listSupervisedTerminalSnapshots(String(projectDir || '')),
+  );
+  ipcMain.handle('supervisor:delete-recovery-snapshot', (_event, request) =>
+    deleteSupervisedTerminalSnapshot(
+      String(request?.projectDir || ''),
+      String(request?.snapshotId || ''),
+    ),
   );
   ipcMain.handle('supervisor:validate-model', (_event, request) => {
     const launcher = String(request?.launcher || '');

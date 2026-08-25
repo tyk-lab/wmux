@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { v4 as uuid } from 'uuid';
 import { useStore } from '../../store';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import { formatProjectCompletionCriteria } from '../../project-manager/completion-display';
@@ -10,21 +11,22 @@ import {
   effectiveSupervisorForbiddenActions,
   effectiveSupervisorLaneConfig,
   effectiveSupervisorWorkScope,
-  SUPERVISOR_WORKSPACE_TITLE,
   stopWhenKindLabel,
   supervisorTabTitle,
 } from '../../supervisor/protocol';
 import {
   buildSupervisorLaunchCommand,
   detectSupervisorLauncher,
+  supportedAgentLauncherExecutable,
   supervisorLauncherDisplayName,
 } from '../../supervisor/launch-command';
 import {
   sendTaskToSurface,
   sendToSurface,
+  SUPERVISOR_TUI_READY_DELAY_MS,
   supervisorLaneInputIsolationScope,
 } from '../../supervisor/supervisor-engine';
-import { readTerminalScreen } from '../../pipe-bridge';
+import { readTerminalScreen, redactProjectSafeExitExcerpt } from '../../pipe-bridge';
 import {
   markTerminalRuntimeFailed,
   waitForTerminalRuntimeReady,
@@ -47,11 +49,13 @@ import {
   appendSupervisorRecord,
   formatSupervisorAuditTrail,
   readSupervisorAuditTrail,
+  restoreSelectedLaneHistory,
 } from '../../supervisor/recording';
 import { announceSupervisorWaitingForDirection } from '../../supervisor/waiting-notification';
-import { findLeaf, getAllPaneIds } from '../../store/split-utils';
-import type { PaneId, SurfaceId, WorkspaceId } from '../../../shared/types';
+import { createLeaf, findLeaf, getAllPaneIds } from '../../store/split-utils';
+import type { PaneId, SurfaceId, SurfaceRef, WorkspaceId } from '../../../shared/types';
 import { projectWorkItemCompletionResult } from '../../../shared/project-manager';
+import type { SupervisedTerminalSnapshot } from '../../../shared/supervisor-recovery';
 import {
   normalizeTaskChildThreadResponsibilities,
   normalizeTaskMaxChildThreads,
@@ -119,6 +123,52 @@ const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   'needs-human': '等待人工决定',
 };
 
+function terminalSnapshotConsistency(lane: SupervisorLane): string {
+  const config = effectiveSupervisorLaneConfig(lane);
+  return [
+    lane.id,
+    lane.managementSessionId || '',
+    lane.surfaceId,
+    dedicatedSupervisorSurfaceId(lane) || '',
+    lane.workerTurnId || 0,
+    config.planRevision || 1,
+    lane.decisions?.length || 0,
+    lane.currentTask || '',
+    supervisorLaneControlState(lane),
+  ].join('|');
+}
+
+function taskAgentExecutableFromLabel(value: unknown): string | null {
+  const label = String(value || '').toLowerCase();
+  if (label.includes('codex')) return 'codex';
+  if (label.includes('kimi')) return 'kimi';
+  if (label.includes('grok')) return 'grok';
+  if (/\bpi(?:\s+agent)?\b/u.test(label)) return 'pi';
+  if (label.includes('opencode')) return 'opencode';
+  return null;
+}
+
+function snapshotTaskAgentExecutable(snapshot: SupervisedTerminalSnapshot): string | null {
+  const startup = snapshot.terminal.startupCommands?.[0] || '';
+  return supportedAgentLauncherExecutable(startup)
+    || taskAgentExecutableFromLabel(snapshot.terminal.agent);
+}
+
+function buildSnapshotTaskRecovery(snapshot: SupervisedTerminalSnapshot): string {
+  return [
+    '[终端快照恢复｜继续执行]',
+    `当前成果：${snapshot.supervisor.state.currentTask || snapshot.supervisor.config.taskGoal}`,
+    snapshot.projectContext.verifiedEvidence.length > 0
+      ? `已验证事实：${snapshot.projectContext.verifiedEvidence.join('；')}`
+      : '',
+    snapshot.projectContext.acceptanceGaps.length > 0
+      ? `剩余验收缺口：${snapshot.projectContext.acceptanceGaps.join('；')}`
+      : '',
+    `停止条件：${snapshot.supervisor.config.stopWhen}`,
+    '先读取并遵循当前项目适用的 AGENTS、技能和仓库规范。不要恢复旧命令、旧监督协议或旧对话推理；依据项目文件和上述已核对事实继续形成可验证成果。',
+  ].filter(Boolean).join('\n');
+}
+
 export default function SupervisorPanel({ expanded = false, workspaceId, paneId, agentStates }: SupervisorPanelProps) {
   const supervisor = useStore((s) => s.supervisor);
   const stopOrdinarySupervisor = useStore((s) => s.stopOrdinarySupervisor);
@@ -139,6 +189,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const resetOrdinarySupervisorSession = useStore((s) => s.resetOrdinarySupervisorSession);
   const closeSurface = useStore((s) => s.closeSurface);
   const addSurface = useStore((s) => s.addSurface);
+  const createWorkspace = useStore((s) => s.createWorkspace);
+  const updateSurface = useStore((s) => s.updateSurface);
   const setMarkdownContent = useStore((s) => s.setMarkdownContent);
   const selectSurface = useStore((s) => s.selectSurface);
   const selectWorkspace = useStore((s) => s.selectWorkspace);
@@ -147,6 +199,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const [collapsed, setCollapsed] = useState(false);
   const [expandedStoppedLaneIds, setExpandedStoppedLaneIds] = useState<Set<string>>(() => new Set());
   const [loadingRecordLaneId, setLoadingRecordLaneId] = useState<string | null>(null);
+  const [snapshotActionLaneId, setSnapshotActionLaneId] = useState<string | null>(null);
+  const [snapshotDeleteLaneId, setSnapshotDeleteLaneId] = useState<string | null>(null);
+  const [snapshotNotices, setSnapshotNotices] = useState<Record<string, string>>({});
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
@@ -219,11 +274,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const ordinaryWaiting = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'waiting');
   const ordinaryPaused = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'paused');
   const ordinaryRetained = ordinaryLanes.some(isSupervisorLaneBound);
-  const ordinaryWorkspaceExists = workspaces.some((workspace) => (
-    workspace.id === supervisor.supervisorWorkspaceId
-    && workspace.title === SUPERVISOR_WORKSPACE_TITLE
-  ));
-  if (!expanded && ordinaryLanes.length === 0 && !ordinaryWorkspaceExists) return null;
+  if (!expanded && ordinaryLanes.length === 0) return null;
   const visiblePendingApprovals = supervisor.pendingApprovals.filter((approval) => (
     !supervisor.lanes.some((lane) => (
       lane.id === approval.laneId && isProjectManagedSupervisorLane(lane)
@@ -294,16 +345,16 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   ));
 
   const openSupervisorSession = () => {
-    const target = workspaces.find((workspace) => workspace.id === supervisor.supervisorWorkspaceId);
-    if (target && target.title === SUPERVISOR_WORKSPACE_TITLE) {
-      const hasSessionView = getAllPaneIds(target.splitTree).some((candidatePaneId) =>
-        findLeaf(target.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.type === 'supervisor'),
-      );
-      if (!hasSessionView) {
-        const targetPaneId = getAllPaneIds(target.splitTree)[0];
-        if (targetPaneId) addSurface(target.id, targetPaneId, 'supervisor');
-      }
+    const pairedLane = ordinaryLanes.find((lane) => dedicatedSupervisorSurfaceId(lane));
+    const target = pairedLane?.workspaceId
+      ? workspaces.find((workspace) => workspace.id === pairedLane.workspaceId)
+      : undefined;
+    if (target && pairedLane?.paneId) {
+      const pane = findLeaf(target.splitTree, pairedLane.paneId);
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(pairedLane);
+      const index = pane?.surfaces.findIndex((surface) => surface.id === supervisorSurfaceId) ?? -1;
       selectWorkspace(target.id);
+      if (index >= 0) selectSurface(target.id, pairedLane.paneId, index);
       return;
     }
     openSupervisorSetup();
@@ -794,9 +845,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
 
     for (const { lane, supervisorSurfaceId, location } of lanesToRestart) {
       const launchCommand = buildSupervisorLaunchCommand(
-        supervisor.supervisorLaunchCmd,
-        supervisor.supervisorModel,
-        supervisor.supervisorReasoningEffort,
+        lane.supervisorLaunchCmdOverride || supervisor.supervisorLaunchCmd,
+        lane.supervisorModelOverride ?? supervisor.supervisorModel,
+        lane.supervisorReasoningEffortOverride ?? supervisor.supervisorReasoningEffort,
         { isolateSupervisor: true, projectDir: lane.projectDir, isolationKey: lane.id },
       );
       const newSurfaceId = addSurface(location!.workspaceId, location!.paneId, 'terminal', {
@@ -895,6 +946,323 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     })().catch((error) => {
       appendSupervisorLog('-', '监督 Agent 重启失败', error instanceof Error ? error.message : String(error));
     });
+  };
+
+  const saveTerminalSnapshot = async (lane: SupervisorLane) => {
+    if (!lane.projectDir || isProjectManagedSupervisorLane(lane)) return;
+    setSnapshotActionLaneId(lane.id);
+    setSnapshotNotices((current) => ({ ...current, [lane.id]: '正在采集终端与项目上下文…' }));
+    try {
+      const before = terminalSnapshotConsistency(lane);
+      let terminalSurface: SurfaceRef | undefined;
+      let terminalWorkspace = workspaces.find((workspace) => workspace.id === lane.workspaceId);
+      let terminalPaneId = lane.paneId;
+      if (terminalWorkspace && terminalPaneId) {
+        terminalSurface = findLeaf(terminalWorkspace.splitTree, terminalPaneId)?.surfaces
+          .find((surface) => surface.id === lane.surfaceId);
+      }
+      if (!terminalSurface) {
+        for (const workspace of workspaces) {
+          for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+            const surface = findLeaf(workspace.splitTree, candidatePaneId)?.surfaces
+              .find((candidate) => candidate.id === lane.surfaceId);
+            if (!surface) continue;
+            terminalSurface = surface;
+            terminalWorkspace = workspace;
+            terminalPaneId = candidatePaneId;
+            break;
+          }
+          if (terminalSurface) break;
+        }
+      }
+      if (!terminalSurface || !terminalWorkspace || !terminalPaneId) throw new Error('被监督终端已不存在');
+      const api = (window as any).wmux?.supervisor;
+      if (!api?.captureRecoveryContext || !api?.saveRecoverySnapshot) throw new Error('恢复档案接口尚未就绪');
+      const latestDecision = lane.decisions?.[0];
+      const taskDispatch = latestDecision?.taskDispatch;
+      const verifiedEvidence = [
+        ...(taskDispatch?.evidenceContext || []),
+        ...(latestDecision?.ordinaryPlan?.milestones || []).flatMap((milestone) => milestone.evidence ? [milestone.evidence] : []),
+      ].map(redactProjectSafeExitExcerpt);
+      const acceptanceGaps = taskDispatch?.acceptanceGap || latestDecision?.ordinaryPlan?.remainingWork || [];
+      const terminalScreen = redactProjectSafeExitExcerpt(
+        readTerminalScreen(lane.surfaceId, 120).text || '',
+      );
+      const captured = await api.captureRecoveryContext({
+        projectDir: lane.projectDir,
+        planFilePaths: effectiveSupervisorLaneConfig(lane).planFilePath
+          ? [effectiveSupervisorLaneConfig(lane).planFilePath]
+          : [],
+        currentTask: lane.currentTask || '',
+        verifiedEvidence,
+        acceptanceGaps,
+        terminalScreenTail: terminalScreen,
+      });
+      if (!captured?.ok || !captured.projectContext) throw new Error(captured?.error || '项目上下文采集失败');
+      const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id);
+      if (!currentLane || terminalSnapshotConsistency(currentLane) !== before) {
+        throw new Error('保存期间任务回合、规划或终端绑定发生变化；旧档案保持不变，请重新保存');
+      }
+      const currentSession = useStore.getState().supervisor;
+      const agentMeta = useStore.getState().agentMeta.get(lane.surfaceId);
+      const config = effectiveSupervisorLaneConfig(currentLane);
+      const savedControlState = supervisorLaneControlState(currentLane);
+      const taskAgentExecutable = supportedAgentLauncherExecutable(terminalSurface.startupCommands?.[0] || '')
+        || taskAgentExecutableFromLabel(agentMeta?.label);
+      const snapshot: SupervisedTerminalSnapshot = {
+        version: 1,
+        snapshotId: currentLane.recoverySnapshotId || `snapshot-${uuid()}`,
+        savedAt: Date.now(),
+        terminal: {
+          surfaceId: currentLane.surfaceId,
+          workspaceId: terminalWorkspace.id,
+          paneId: terminalPaneId,
+          workspaceTitle: terminalWorkspace.title,
+          label: currentLane.label,
+          projectDir: lane.projectDir,
+          cwd: terminalSurface.currentCwd || terminalSurface.cwd || lane.projectDir,
+          shell: terminalSurface.shell || 'pwsh.exe',
+          customTitle: terminalSurface.customTitle,
+          startupCommands: taskAgentExecutable ? [taskAgentExecutable] : undefined,
+          agent: taskAgentExecutable || agentMeta?.label,
+          agentState: visibleAgentStates[lane.surfaceId]?.state,
+          screenTail: terminalScreen,
+        },
+        supervisor: {
+          surfaceId: dedicatedSupervisorSurfaceId(currentLane) || undefined,
+          launchCmd: currentLane.supervisorLaunchCmdOverride || currentSession.supervisorLaunchCmd,
+          model: currentLane.supervisorModelOverride ?? currentSession.supervisorModel,
+          reasoningEffort: currentLane.supervisorReasoningEffortOverride ?? currentSession.supervisorReasoningEffort,
+          config,
+          autonomous: effectiveSupervisorAutonomous(currentSession, currentLane),
+          autonomyPermissions: effectiveSupervisorAutonomyPermissions(currentSession, currentLane),
+          forbiddenActions: effectiveSupervisorForbiddenActions(currentSession, currentLane),
+          workScope: effectiveSupervisorWorkScope(currentSession, currentLane),
+          state: {
+            controlState: savedControlState === 'stopped'
+              ? 'paused'
+              : savedControlState,
+            currentTask: currentLane.currentTask || '',
+            workerTurnId: currentLane.workerTurnId || 0,
+            decisions: [...(currentLane.decisions || [])],
+            ordinaryPlan: latestDecision?.ordinaryPlan,
+            ordinaryContextHealth: currentLane.ordinaryContextHealth,
+            goalVortex: currentLane.goalVortex,
+            latestSupervisorUserGuidance: currentLane.latestSupervisorUserGuidance,
+            latestEvidence: verifiedEvidence,
+            acceptanceGaps,
+          },
+        },
+        projectContext: captured.projectContext,
+        consistency: {
+          laneId: currentLane.id,
+          managementSessionId: currentLane.managementSessionId,
+          taskSurfaceId: currentLane.surfaceId,
+          supervisorSurfaceId: dedicatedSupervisorSurfaceId(currentLane) || undefined,
+          workerTurnId: currentLane.workerTurnId || 0,
+          planRevision: config.planRevision || 1,
+          decisionCount: currentLane.decisions?.length || 0,
+        },
+      };
+      const saved = await api.saveRecoverySnapshot(snapshot);
+      if (!saved?.ok || !saved.snapshot) throw new Error(saved?.error || '恢复档案写入失败');
+      updateLane(lane.id, {
+        recoverySnapshotId: saved.snapshot.snapshotId,
+        recoverySnapshotSavedAt: saved.snapshot.savedAt,
+      });
+      appendSupervisorLog(lane.id, '终端恢复档案已保存', `快照=${saved.snapshot.snapshotId}`);
+      setSnapshotNotices((current) => ({
+        ...current,
+        [lane.id]: `已保存 · ${new Date(saved.snapshot.savedAt).toLocaleString('zh-CN', { hour12: false })}`,
+      }));
+    } catch (error) {
+      setSnapshotNotices((current) => ({
+        ...current,
+        [lane.id]: `保存失败：${String((error as Error)?.message || error)}`,
+      }));
+    } finally {
+      setSnapshotActionLaneId(null);
+    }
+  };
+
+  const deleteTerminalSnapshot = async (lane: SupervisorLane) => {
+    if (!lane.projectDir || !lane.recoverySnapshotId) return;
+    setSnapshotActionLaneId(lane.id);
+    try {
+      const result = await (window as any).wmux?.supervisor?.deleteRecoverySnapshot?.({
+        projectDir: lane.projectDir,
+        snapshotId: lane.recoverySnapshotId,
+      });
+      if (!result?.ok) throw new Error(result?.error || '删除恢复档案失败');
+      updateLane(lane.id, { recoverySnapshotId: undefined, recoverySnapshotSavedAt: undefined });
+      if (supervisorLaneControlState(lane) === 'stopped') {
+        stopSupervisorLane(lane.id, '恢复档案已删除，移除停止占位');
+      }
+      appendSupervisorLog(lane.id, '终端恢复档案已删除', '审计记录仍保留，但不再用于恢复');
+      setSnapshotNotices((current) => ({ ...current, [lane.id]: '恢复档案已删除' }));
+      setSnapshotDeleteLaneId(null);
+    } catch (error) {
+      setSnapshotNotices((current) => ({
+        ...current,
+        [lane.id]: `删除失败：${String((error as Error)?.message || error)}`,
+      }));
+    } finally {
+      setSnapshotActionLaneId(null);
+    }
+  };
+
+  const restoreTerminalSnapshot = async (lane: SupervisorLane) => {
+    if (!lane.projectDir || !lane.recoverySnapshotId || isProjectManagedSupervisorLane(lane)) return;
+    setSnapshotActionLaneId(lane.id);
+    setSnapshotNotices((current) => ({ ...current, [lane.id]: '正在恢复任务终端与专属监督…' }));
+    try {
+      const api = (window as any).wmux?.supervisor;
+      const loaded = await api?.readRecoverySnapshot?.({
+        projectDir: lane.projectDir,
+        snapshotId: lane.recoverySnapshotId,
+      });
+      if (!loaded?.ok || !loaded.snapshot) throw new Error(loaded?.error || '恢复档案不可用');
+      const snapshot = loaded.snapshot as SupervisedTerminalSnapshot;
+      let taskSurfaceId = snapshot.terminal.surfaceId as SurfaceId;
+      let taskExists = false;
+      for (const workspace of useStore.getState().workspaces) {
+        for (const candidatePaneId of getAllPaneIds(workspace.splitTree)) {
+          if (findLeaf(workspace.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.id === taskSurfaceId)) {
+            taskExists = true;
+            break;
+          }
+        }
+        if (taskExists) break;
+      }
+      const recoveryTask = buildSnapshotTaskRecovery(snapshot);
+      const recoveryStartupInput = snapshot.supervisor.state.controlState === 'active'
+        ? recoveryTask
+        : undefined;
+      if (!taskExists) {
+        const agentExecutable = snapshotTaskAgentExecutable(snapshot);
+        const startupCommands = snapshot.terminal.startupCommands?.length
+          ? snapshot.terminal.startupCommands
+          : agentExecutable ? [agentExecutable] : undefined;
+        if (!startupCommands?.length) {
+          throw new Error('快照缺少可安全重建任务 AI 的启动命令；请先创建对应 Agent 终端再恢复');
+        }
+        let targetWorkspace = useStore.getState().workspaces.find((workspace) => (
+          workspace.id === snapshot.terminal.workspaceId
+          || workspace.title === snapshot.terminal.workspaceTitle
+        ));
+        let targetPaneId = targetWorkspace && snapshot.terminal.paneId
+          && getAllPaneIds(targetWorkspace.splitTree).includes(snapshot.terminal.paneId as PaneId)
+          ? snapshot.terminal.paneId as PaneId
+          : targetWorkspace ? getAllPaneIds(targetWorkspace.splitTree)[0] : undefined;
+        if (!targetWorkspace || !targetPaneId) {
+          const workspaceId = createWorkspace({
+            title: snapshot.terminal.workspaceTitle || snapshot.terminal.label,
+            cwd: snapshot.terminal.cwd || snapshot.terminal.projectDir,
+            splitTree: createLeaf(),
+          });
+          targetWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+          targetPaneId = targetWorkspace ? getAllPaneIds(targetWorkspace.splitTree)[0] : undefined;
+          const initialSurface = targetWorkspace && targetPaneId
+            ? findLeaf(targetWorkspace.splitTree, targetPaneId)?.surfaces[0]
+            : undefined;
+          if (!initialSurface || !targetPaneId) throw new Error('无法重建任务终端会话');
+          taskSurfaceId = initialSurface.id;
+          updateSurface(targetWorkspace!.id, targetPaneId, taskSurfaceId, {
+            customTitle: snapshot.terminal.customTitle || snapshot.terminal.label,
+            shell: snapshot.terminal.shell,
+            cwd: snapshot.terminal.cwd,
+            startupCommands,
+            startupInput: recoveryStartupInput,
+          });
+        } else {
+          const created = addSurface(targetWorkspace.id, targetPaneId, 'terminal', {
+            customTitle: snapshot.terminal.customTitle || snapshot.terminal.label,
+            shell: snapshot.terminal.shell,
+            cwd: snapshot.terminal.cwd,
+            startupCommands,
+            startupInput: recoveryStartupInput,
+          });
+          if (!created) throw new Error('无法在原会话重建任务终端');
+          taskSurfaceId = created;
+        }
+      }
+      const control = (window as any).__wmux_supervisorRemoteControl;
+      const started = control?.({
+        action: 'start',
+        terminals: [taskSurfaceId],
+        taskGoal: snapshot.supervisor.config.taskGoal,
+        taskDescription: snapshot.supervisor.config.taskDescription,
+        preconditions: snapshot.supervisor.config.preconditions,
+        supervisorNotes: snapshot.supervisor.config.supervisorNotes || '',
+        stopWhen: snapshot.supervisor.config.stopWhen,
+        stopWhenKind: snapshot.supervisor.config.stopWhenKind,
+        planFile: snapshot.supervisor.config.planFilePath,
+        autonomous: snapshot.supervisor.autonomous,
+        autonomyPermissions: snapshot.supervisor.autonomyPermissions,
+        supervisorLaunchCmd: snapshot.supervisor.launchCmd,
+        supervisorModel: snapshot.supervisor.model,
+        supervisorReasoningEffort: snapshot.supervisor.reasoningEffort,
+        taskWorkMode: snapshot.supervisor.config.taskWorkMode,
+        mainThreadResponsibility: snapshot.supervisor.config.mainThreadResponsibility,
+        childThreadResponsibilities: snapshot.supervisor.config.childThreadResponsibilities,
+        maxChildThreads: snapshot.supervisor.config.maxChildThreads,
+        supervisorMayApproveThreads: snapshot.supervisor.config.supervisorMayApproveThreads,
+        parallelizableOperations: snapshot.supervisor.config.parallelizableOperations,
+        serializedOperations: snapshot.supervisor.config.serializedOperations,
+        waitForNextDirection: snapshot.supervisor.config.waitForNextDirection,
+        actor: 'desktop-snapshot-restore',
+        recoverySnapshotId: snapshot.snapshotId,
+      });
+      if (!started?.ok) throw new Error(started?.error || '无法恢复监督通道');
+      const restoredLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.surfaceId === taskSurfaceId);
+      if (!restoredLane) throw new Error('监督通道已启动，但没有建立终端绑定');
+      const restored = await restoreSelectedLaneHistory(restoredLane, {
+        snapshotId: snapshot.snapshotId,
+        surfaceId: snapshot.terminal.surfaceId,
+        label: snapshot.terminal.label,
+        sessionId: snapshot.snapshotId,
+      });
+      if (restored) updateLane(restoredLane.id, {
+        ...restored,
+        ...(!taskExists ? { pendingInitialReview: true, awaitingReview: false } : {}),
+      });
+      const taskState = ((window as any).__wmux_getAgentStates?.() || {})[taskSurfaceId];
+      if (taskExists && snapshot.supervisor.state.controlState === 'active'
+        && String(taskState?.state || 'unknown') === 'idle') {
+        sendTaskToSurface(
+          taskSurfaceId,
+          recoveryTask,
+          true,
+          supervisorLaneInputIsolationScope(restoredLane),
+        );
+      }
+      if (snapshot.supervisor.state.controlState !== 'active') {
+        const supervisorSurfaceId = dedicatedSupervisorSurfaceId(restoredLane);
+        if (supervisorSurfaceId) {
+          const ready = await waitForTerminalRuntimeReady(supervisorSurfaceId);
+          if (ready.ok) {
+            await new Promise<void>((resolve) => window.setTimeout(
+              resolve,
+              SUPERVISOR_TUI_READY_DELAY_MS + 500,
+            ));
+            updateLane(restoredLane.id, { controlState: snapshot.supervisor.state.controlState });
+          }
+        }
+      }
+      setSnapshotNotices((current) => ({
+        ...current,
+        [restoredLane.id]: taskExists
+          ? '恢复完成：原任务终端继续工作，专属监督已重建'
+          : '恢复完成：任务终端和专属监督已在同一会话重建',
+      }));
+    } catch (error) {
+      setSnapshotNotices((current) => ({
+        ...current,
+        [lane.id]: `恢复失败：${String((error as Error)?.message || error)}`,
+      }));
+    } finally {
+      setSnapshotActionLaneId(null);
+    }
   };
 
   if (expanded && visibleLanes.length === 0 && scopedProjectWorkItems.length === 0) {
@@ -1549,10 +1917,50 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         停止此监督
                       </button>
                     )}
+                    {!laneProjectManaged && laneControlState === 'stopped' && lane.recoverySnapshotId && (
+                      <button
+                        type="button"
+                        onClick={() => void restoreTerminalSnapshot(lane)}
+                        disabled={snapshotActionLaneId === lane.id}
+                      >
+                        {snapshotActionLaneId === lane.id ? '恢复中…' : '恢复终端快照'}
+                      </button>
+                    )}
+                    {!laneProjectManaged && laneControlState !== 'stopped' && (
+                      <button
+                        type="button"
+                        onClick={() => void saveTerminalSnapshot(lane)}
+                        disabled={snapshotActionLaneId === lane.id}
+                      >
+                        {snapshotActionLaneId === lane.id
+                          ? '保存中…'
+                          : lane.recoverySnapshotId ? '刷新恢复档案' : '保存恢复档案'}
+                      </button>
+                    )}
+                    {!laneProjectManaged && lane.recoverySnapshotId && snapshotDeleteLaneId !== lane.id && (
+                      <button type="button" onClick={() => setSnapshotDeleteLaneId(lane.id)}>
+                        删除恢复档案
+                      </button>
+                    )}
                     <button type="button" onClick={() => void openAuditTrail(lane)} disabled={loadingRecordLaneId === lane.id}>
                       {loadingRecordLaneId === lane.id ? '读取记录…' : '查看/刷新记录'}
                     </button>
                   </div>
+                  {!laneProjectManaged && snapshotDeleteLaneId === lane.id && (
+                    <div className="sup-panel__approval-actions" role="alertdialog" aria-label={`确认删除 ${lane.label} 的恢复档案`}>
+                      <span>删除后不能再从该快照恢复，审计记录仍保留。</span>
+                      <button type="button" onClick={() => void deleteTerminalSnapshot(lane)} disabled={snapshotActionLaneId === lane.id}>
+                        确认删除
+                      </button>
+                      <button type="button" onClick={() => setSnapshotDeleteLaneId(null)}>取消</button>
+                    </div>
+                  )}
+                  {!laneProjectManaged && (lane.recoverySnapshotSavedAt || snapshotNotices[lane.id]) && (
+                    <div className="sup-panel__lane-supervisor" role="status">
+                      {snapshotNotices[lane.id]
+                        || `恢复档案：${new Date(lane.recoverySnapshotSavedAt!).toLocaleString('zh-CN', { hour12: false })}`}
+                    </div>
+                  )}
                   {laneControlState === 'waiting' && (
                     <div className="sup-panel__lane-supervisor">
                       {laneProjectManaged

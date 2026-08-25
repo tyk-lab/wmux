@@ -72,18 +72,20 @@ describe('project governance P9', () => {
   });
 
   it('makes the task AI the sole project executor', () => {
-    const briefing = buildProjectTaskExecutionEnvelope(contract);
+    const briefing = buildProjectTaskExecutionEnvelope(contract, 'multi-thread');
     expect(briefing).toContain('[成果任务]');
     expect(briefing).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
-    expect(briefing).toContain('自行决定实现路线、文件、命令、测试、技能和内部组织方式');
+    expect(briefing).toContain('自行决定实现路线、文件、命令、测试和技能');
+    expect(briefing).toContain('[执行模式] 多线程');
     expect(briefing).not.toContain('允许范围：');
     expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {
-    const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract });
+    const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract, taskWorkMode: 'single-thread' });
     expect(briefing).toContain('常驻监督和结果裁决者，不是项目执行者');
     expect(briefing).toContain('不向任务端注入项目/工作项身份');
+    expect(briefing).toContain('--task-work-mode single-thread|multi-thread');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {

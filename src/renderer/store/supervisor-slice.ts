@@ -49,6 +49,7 @@ export interface OrdinaryTaskDispatch {
   milestoneId: string;
   outcome: string;
   constraints: string[];
+  /** Task-local evidence criteria chosen by the supervisor; never the whole user stop contract. */
   acceptanceGap: string[];
   evidenceContext: string[];
 }
@@ -119,6 +120,8 @@ export interface SupervisorDecision {
   ordinaryPlan?: OrdinarySupervisorPlan;
   /** Structured assignment that was rendered and delivered to the ordinary task AI. */
   taskDispatch?: OrdinaryTaskDispatch;
+  /** Project supervisor override applied to subsequent task-AI delivery. */
+  taskWorkMode?: 'single-thread' | 'multi-thread';
   contextHealth?: 'healthy' | 'degraded';
   contextSymptoms?: OrdinaryContextSymptom[];
   contextSignal?: string;
@@ -152,6 +155,7 @@ export interface SupervisorDelivery {
 
 /** Explicitly chosen historical terminal whose audit context may be restored. */
 export interface SupervisorRestoreSource {
+  snapshotId?: string;
   surfaceId: string;
   label: string;
   sessionId: string;
@@ -314,6 +318,13 @@ export interface SupervisorLane {
   lastWorkerTerminalLifecycleTurnId?: number;
   /** Independent task configuration for this terminal and its dedicated supervisor. */
   config?: SupervisorLaneConfig;
+  /** Latest user-saved terminal snapshot. The id remains stable across refreshes. */
+  recoverySnapshotId?: string;
+  recoverySnapshotSavedAt?: number;
+  /** Terminal-snapshot-specific supervisor runtime, independent from ordinary session defaults. */
+  supervisorLaunchCmdOverride?: string;
+  supervisorModelOverride?: string;
+  supervisorReasoningEffortOverride?: string;
   /** Optional per-terminal override; undefined inherits the session defaults. */
   autonomyPermissionsOverride?: SupervisorAutonomyPermission[];
   /** Optional per-terminal full-auto switch; undefined inherits the session default. */
@@ -972,12 +983,19 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
     set((s) => {
       const lane = s.supervisor.lanes.find((item) => item.id === laneId);
       if (!lane || supervisorLaneControlState(lane) === 'stopped') return s;
-      // Stopping ends this terminal's management relationship. The audit record
-      // has already been persisted by the caller, so retaining a stopped lane
-      // here only makes the setup dialog treat the worker as still bound and
-      // prevents selecting it for a fresh dedicated supervisor. Pausing uses a
-      // separate path and deliberately keeps the lane and management session.
-      const lanes = s.supervisor.lanes.filter((item) => item.id !== laneId);
+      // A user-saved terminal snapshot keeps one stopped placeholder so the
+      // sidebar can restore or delete it even when the original task terminal
+      // has disappeared. Lanes without a snapshot retain the old remove-on-stop
+      // behavior and immediately release their terminal binding.
+      const lanes = lane.recoverySnapshotId
+        ? s.supervisor.lanes.map((item) => item.id === laneId ? {
+            ...item,
+            controlState: 'stopped' as const,
+            supervisorSurfaceId: null,
+            awaitingReview: false,
+            pendingSupervisorDeliveries: [],
+          } : item)
+        : s.supervisor.lanes.filter((item) => item.id !== laneId);
       const hasRetainedLane = lanes.some((item) => supervisorLaneControlState(item) !== 'stopped');
       return {
         supervisor: {

@@ -1469,6 +1469,17 @@ interface RemoteSupervisorStart {
   parallelizableOperations?: string[];
   serializedOperations?: string[];
   waitForNextDirection?: boolean;
+  recoverySnapshotId?: string;
+}
+
+export function shouldSupersedeStoppedSupervisorLane(
+  lane: SupervisorLane,
+  selectedIds: ReadonlySet<string>,
+  recoverySnapshotId = '',
+): boolean {
+  if (isSupervisorLaneBound(lane)) return false;
+  return selectedIds.has(lane.surfaceId)
+    || (!!recoverySnapshotId && lane.recoverySnapshotId === recoverySnapshotId);
 }
 
 interface RemoteTerminalTask {
@@ -2211,20 +2222,14 @@ function startRemoteSupervisor(
         workspace.transientSupervisorWorkspace === true
         && workspaceHasProjectRuntime(workspace, params.projectManagerProjectId)
       ))
-    : store.workspaces.find((workspace) => (
-        workspace.id === store.supervisor.supervisorWorkspaceId
-        && !workspaceHasProjectRuntime(workspace)
-        && workspace.title === SUPERVISOR_WORKSPACE_TITLE
-      ));
-  if (!supervisorWorkspace) {
+    : undefined;
+  if (projectManagedStart && !supervisorWorkspace) {
     const workspaceId = store.createWorkspace({
-      title: projectManagedStart
-        ? projectSupervisorWorkspaceTitle(project?.goal || '', params.projectManagerProjectId || '')
-        : SUPERVISOR_WORKSPACE_TITLE,
+      title: projectSupervisorWorkspaceTitle(project?.goal || '', params.projectManagerProjectId || ''),
       pinned: true,
-      ...(projectManagedStart && project?.projectDir ? { cwd: project.projectDir } : {}),
+      ...(project?.projectDir ? { cwd: project.projectDir } : {}),
       transientSupervisorWorkspace: true,
-      splitTree: createLeaf(undefined, projectManagedStart ? 'project-manager' : 'supervisor'),
+      splitTree: createLeaf(undefined, 'project-manager'),
     });
     supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
     const projectControlPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
@@ -2239,18 +2244,19 @@ function startRemoteSupervisor(
       });
       supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
     }
-    if (!projectManagedStart) store.patchSupervisor({ supervisorWorkspaceId: workspaceId });
   }
   const targetPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
-  if (!supervisorWorkspace || !targetPaneId) return { ok: false, error: '无法创建专属监督工作区。', message: '' };
+  if (projectManagedStart && (!supervisorWorkspace || !targetPaneId)) {
+    return { ok: false, error: '无法创建专属监督工作区。', message: '' };
+  }
   let projectControlSurfaceId = projectManagedStart
-    ? findLeaf(supervisorWorkspace.splitTree, targetPaneId)?.surfaces.find((surface) => (
+    ? findLeaf(supervisorWorkspace!.splitTree, targetPaneId!)?.surfaces.find((surface) => (
         surface.type === 'supervisor'
         && surface.projectSupervisorProjectId === params.projectManagerProjectId
       ))?.id
     : undefined;
   if (projectManagedStart && !projectControlSurfaceId) {
-    projectControlSurfaceId = store.addSurface(supervisorWorkspace.id, targetPaneId, 'supervisor', {
+    projectControlSurfaceId = store.addSurface(supervisorWorkspace!.id, targetPaneId!, 'supervisor', {
       customTitle: PROJECT_SUPERVISOR_WORKSPACE_TITLE,
       projectSupervisorProjectId: params.projectManagerProjectId,
     }) || undefined;
@@ -2266,6 +2272,10 @@ function startRemoteSupervisor(
     ? params.supervisorReasoningEffort
     : retainedSession ? store.supervisor.supervisorReasoningEffort : '';
   const lanes: SupervisorLane[] = candidates.map((candidate) => {
+    const pairedWorkspace = projectManagedStart
+      ? supervisorWorkspace
+      : store.workspaces.find((workspace) => workspace.id === candidate.workspaceId);
+    const pairedPaneId = projectManagedStart ? targetPaneId : candidate.paneId;
     const launch = buildSupervisorLaunchCommand(
       launchCmd,
       supervisorModel,
@@ -2276,7 +2286,8 @@ function startRemoteSupervisor(
         isolationKey: candidate.surfaceId,
       },
     );
-    const supervisorSurfaceId = store.addSurface(supervisorWorkspace!.id, targetPaneId!, 'terminal', {
+    const supervisorSurfaceId = pairedWorkspace && pairedPaneId
+      ? store.addSurface(pairedWorkspace.id, pairedPaneId, 'terminal', {
       customTitle: supervisorTabTitle(candidate.label),
       shell: 'pwsh.exe',
       cwd: candidate.projectDir,
@@ -2286,7 +2297,8 @@ function startRemoteSupervisor(
       ...(projectManagedStart ? {
         projectSupervisorProjectId: params.projectManagerProjectId,
       } : {}),
-    });
+      })
+      : null;
     if (supervisorSurfaceId) markTerminalRuntimeStarting(supervisorSurfaceId);
     const lane = clearSupervisorLaneContext({
       id: `lane-${uuid()}`,
@@ -2319,6 +2331,9 @@ function startRemoteSupervisor(
         serializedOperations: normalizeTaskOperationBoundaries(params.serializedOperations),
         planRevision: 1,
       },
+      supervisorLaunchCmdOverride: launchCmd,
+      supervisorModelOverride: supervisorModel,
+      supervisorReasoningEffortOverride: supervisorReasoningEffort,
       autonomousOverride: retainedSession || projectManagedStart ? params.autonomous : undefined,
       ...(projectManagedStart ? {
         autonomyPermissionsOverride: [...selectedAutonomyPermissions(params.autonomyPermissions)],
@@ -2340,17 +2355,19 @@ function startRemoteSupervisor(
   });
   if (lanes.some((lane) => !lane.supervisorSurfaceId)) {
     for (const lane of lanes) {
-      if (lane.supervisorSurfaceId) store.closeSurface(supervisorWorkspace.id, targetPaneId, lane.supervisorSurfaceId);
+      if (!lane.supervisorSurfaceId) continue;
+      const location = remoteTerminalList().find((terminal) => terminal.surfaceId === lane.supervisorSurfaceId);
+      if (location) store.closeSurface(location.workspaceId, location.paneId, lane.supervisorSurfaceId);
     }
     return { ok: false, error: '无法为所有终端创建专属监督 AI。', message: '' };
   }
   if (projectManagedStart && projectControlSurfaceId) {
     const refreshedWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === supervisorWorkspace!.id);
     const controlIndex = refreshedWorkspace
-      ? findLeaf(refreshedWorkspace.splitTree, targetPaneId)?.surfaces.findIndex((surface) => surface.id === projectControlSurfaceId) ?? -1
+      ? findLeaf(refreshedWorkspace.splitTree, targetPaneId!)?.surfaces.findIndex((surface) => surface.id === projectControlSurfaceId) ?? -1
       : -1;
-    if (controlIndex >= 0) store.selectSurface(supervisorWorkspace.id, targetPaneId, controlIndex);
-    if (previousActiveWorkspaceId && previousActiveWorkspaceId !== supervisorWorkspace.id) {
+    if (controlIndex >= 0) store.selectSurface(supervisorWorkspace!.id, targetPaneId!, controlIndex);
+    if (previousActiveWorkspaceId && previousActiveWorkspaceId !== supervisorWorkspace!.id) {
       store.selectWorkspace(previousActiveWorkspaceId);
     }
   }
@@ -2361,8 +2378,11 @@ function startRemoteSupervisor(
     closeStoppedSupervisorSurfaces(previousLanes);
   }
   if (retainedSession) {
+    const recoverySnapshotId = params.actor === 'desktop-snapshot-restore'
+      ? String(params.recoverySnapshotId || '').trim()
+      : '';
     const supersededStoppedLanes = previousLanes.filter((lane) => (
-      selectedIds.has(lane.surfaceId) && !isSupervisorLaneBound(lane)
+      shouldSupersedeStoppedSupervisorLane(lane, selectedIds, recoverySnapshotId)
     ));
     for (const lane of supersededStoppedLanes) {
       remoteAudit(store.supervisor, lane, 'session.abandoned', {
@@ -3077,7 +3097,7 @@ function decideRemoteSupervisor(
           ? `对齐充分后，创建成果计划 JSON 和第一项成果任务 JSON，并使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework --stage-plan-file <计划文件> --task-file <任务文件>；计划形成前不得向任务 AI 投递。`
           : `对齐充分后，创建 .wmux/tmp/ 下的阶段计划 JSON，并使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework --stage-plan-file <文件> 携带第一条 --next；计划形成前不得向任务 AI 投递。`
         : lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION
-          ? `整理完成后，把当前成果、约束、验收缺口和必要现状写入 .wmux/tmp/<唯一文件名>.json，并使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework --task-file <文件>。不得把完整用户规划、本消息、实现路线、指定文件、命令或技能发送到任务终端。`
+          ? `整理完成后，把当前成果、约束、本次任务级验收和必要现状写入 .wmux/tmp/<唯一文件名>.json，并使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework --task-file <文件>。不得把完整用户规划、用户总停止条件、本消息、实现路线、指定文件、命令或技能发送到任务终端。`
           : `整理完成后，使用 wmux supervisor decide --surface ${approval.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前项目 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在项目根目录创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
     const delivery: SupervisorDelivery = {
@@ -3718,6 +3738,22 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
   if (!PROJECT_WORK_ITEM_ID.test(milestoneId) || !outcome || acceptanceGap.length === 0) {
     return { error: '普通监督任务派发必须包含有效 milestoneId、outcome 和非空 acceptanceGap' };
   }
+  const taskEnvelope = [
+    outcome,
+    ...constraints,
+    ...acceptanceGap,
+    ...evidenceContext,
+  ];
+  const empiricalTask = /(?:上机|上电|实机|实验|测量|采样|采集|台架|硬件)/iu.test(taskEnvelope.join('\n'));
+  const forcedEmpiricalResult = [outcome, ...constraints, ...acceptanceGap].find((item) => (
+    /(?:\bPASS\b)|(?:(?:实验|测试|测量|上机|上电|实测).{0,12}(?:结果|结论).{0,8}(?:通过|成功|达标))|(?:(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:必须|需要|要求|应当|应|需|须|达到).{0,8}(?:通过|成功|达标))|(?:(?:必须|需要|要求|取得|达到|确保|保证).{0,16}(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:通过|成功|达标))/iu.test(item)
+    && !/(?:FAIL|失败|未通过|未成功|无论|如实|实际结果|真实结果)/iu.test(item)
+  ));
+  if (empiricalTask && forcedEmpiricalResult) {
+    return {
+      error: `实验/上机任务的本次验收不能预设必须 PASS、通过或成功：${forcedEmpiricalResult}。请改为“实际执行完成并如实记录 PASS/FAIL、原始结果和证据”，最终是否满足用户条件由监督 AI 在任务返回后裁决`,
+    };
+  }
   const implementationDirective = [outcome, ...constraints, ...acceptanceGap].join('\n');
   if (/(?:必须|请)(?:修改|编辑|创建|删除).{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)|(?:必须|请)(?:运行|执行).{0,120}\b(?:npm|pnpm|yarn|git|python|cargo|go|dotnet)\b|(?:必须|请)使用.{0,50}(?:技能|skill|框架|依赖|库)\b|\b(?:selectedRoute|expectedPaths|targetedValidation)\b/iu.test(implementationDirective)) {
     return { error: '普通监督任务只能描述成果、约束和验收缺口，不能指定文件、命令、技能或实现路线' };
@@ -3740,11 +3776,11 @@ function renderOrdinaryTaskDispatch(dispatch: OrdinaryTaskDispatch): string {
     '[任务]',
     `成果：${dispatch.outcome}`,
     dispatch.constraints.length > 0 ? `约束：\n${dispatch.constraints.map((item) => `- ${item}`).join('\n')}` : '',
-    `验收缺口：\n${dispatch.acceptanceGap.map((item) => `- ${item}`).join('\n')}`,
+    `本次任务验收（由监督 AI 复核）：\n${dispatch.acceptanceGap.map((item) => `- ${item}`).join('\n')}`,
     dispatch.evidenceContext.length > 0
       ? `已知现状：\n${dispatch.evidenceContext.map((item) => `- ${item}`).join('\n')}`
       : '',
-    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。',
+    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。是否满足用户总体验收条件由监督 AI 在本任务返回后判断。',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -4057,8 +4093,13 @@ function normalizeProjectWorkItemInput(
       error: '复杂度评估结论要求先拆分；请为每个独立可验收成果分别创建 single-task 工作项，不能直接派发复合任务',
     };
   }
+  const rawTaskWorkMode = String(raw?.taskWorkMode ?? previous?.taskWorkMode ?? '').trim();
+  if (!['single-thread', 'multi-thread'].includes(rawTaskWorkMode)) {
+    return { error: 'task-create 必须包含 taskWorkMode=single-thread|multi-thread，由项目 AI 根据任务复杂度选择初始执行模式' };
+  }
+  const taskWorkMode = rawTaskWorkMode as 'single-thread' | 'multi-thread';
   if (contractRaw.execution !== undefined) {
-    return { error: 'P9 不接受项目 AI 指定任务线程或并行模式；任务 AI 按项目规范自主组织执行' };
+    return { error: '线程模式必须使用工作项顶层 taskWorkMode，不能写入 contract.execution' };
   }
   const continuationBoundary = String(contractRaw.authority?.continuationBoundary || '').trim();
   const validContinuationBoundaries = new Set([
@@ -4149,6 +4190,7 @@ function normalizeProjectWorkItemInput(
         ? previousExecutionProtocolVersion
         : CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       complexityAssessment,
+      taskWorkMode,
       contextReset: previous?.contextReset,
       baseline: previousExecutionProtocolVersion >= 7
         ? undefined
@@ -10479,6 +10521,7 @@ async function resetProjectTaskContextInPlace(
     item.contract,
     `上下文已经清空。不要恢复或猜测旧对话；只复用项目文件和下列已核对事实继续完成成果：${input.cleanContext}`,
     true,
+    item.taskWorkMode || 'single-thread',
   ).delivery;
   try {
     let recoveryAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
@@ -11258,7 +11301,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       return { ok: false, error: '任务 AI 输入区已有未提交内容，不能覆盖或追加派发' };
     }
 
-    const packet = prepareProjectTaskDelivery(item.contract, '', true).delivery;
+    const packet = prepareProjectTaskDelivery(
+      item.contract,
+      '',
+      true,
+      item.taskWorkMode || 'single-thread',
+    ).delivery;
     const previousLane = lane;
     store.updateSurface(taskTerminal.workspaceId, taskTerminal.paneId, taskTerminal.surfaceId, {
       projectManagerProjectId: session.id,
@@ -11281,9 +11329,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         stopWhen: [...item.contract.stopWhen, ...item.contract.validation].join('；'),
         stopWhenKind: 'concrete',
         waitForNextDirection: true,
-        taskWorkMode: 'adaptive',
+        taskWorkMode: item.taskWorkMode || 'single-thread',
         maxChildThreads: MAX_TASK_CHILD_THREADS,
-        supervisorMayApproveThreads: false,
+        supervisorMayApproveThreads: true,
         parallelizableOperations: [],
         serializedOperations: [],
         planRevision: (effectiveSupervisorLaneConfig(lane).planRevision || 0) + 1,
@@ -11338,8 +11386,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       item.contract.description ? `说明：${item.contract.description}` : '',
       item.contract.preconditions.length > 0 ? `前置条件：${item.contract.preconditions.join('；')}` : '',
       `验收：${[...item.contract.stopWhen, ...item.contract.validation].join('；')}`,
+      `当前执行模式：${item.taskWorkMode || 'single-thread'}。如任务复杂度或运行证据变化，可在 continue/rework 时附 --task-work-mode single-thread|multi-thread 调整后续任务回合。`,
       '同一任务 AI 和监督通道将跨工作项复用。你负责直接 continue、rework 或 complete；只有需要改变总计划或触及用户边界时才使用 needs-human 交给项目 AI。',
-      '任务 AI 只收到中性成果包，不知道项目 AI 或监督 AI；不得向任务端注入角色、路由、预算、工作项 ID 或固定线程模式。',
+      '任务 AI 只收到中性成果包，不知道项目 AI 或监督 AI；除控制层生成的执行模式外，不得向任务端注入角色、路由、预算或工作项 ID。',
     ].filter(Boolean).join('\n'), item.title, true);
     return { ok: true, workItemId: item.id, laneId: lane.id, surfaceId: taskTerminal.surfaceId, delivery };
   }
@@ -13504,6 +13553,10 @@ export function initPipeBridge(): void {
     const supervisorSurfaceId = String(params?.supervisorSurfaceId || '');
     const outcome = String(params?.outcome || '') as SupervisorDecision['outcome'];
     const reason = String(params?.reason || '').trim().slice(0, 1200);
+    const rawTaskWorkMode = String(params?.taskWorkMode || '').trim();
+    const requestedTaskWorkMode = ['single-thread', 'multi-thread'].includes(rawTaskWorkMode)
+      ? rawTaskWorkMode as 'single-thread' | 'multi-thread'
+      : undefined;
     let next = String(params?.next || '').trim();
     const rawNextFile = String(params?.nextFile || '').trim().replace(/\\/g, '/');
     const nextFile = /^\.wmux\/tmp\/[A-Za-z0-9][A-Za-z0-9._-]{0,239}$/u.test(rawNextFile)
@@ -13657,6 +13710,15 @@ export function initPipeBridge(): void {
       };
     }
     const projectManagedLane = isProjectManagedSupervisorLane(lane);
+    if (rawTaskWorkMode && !requestedTaskWorkMode) {
+      return { ok: false, error: '--task-work-mode 必须是 single-thread 或 multi-thread' };
+    }
+    if (requestedTaskWorkMode && !projectManagedLane) {
+      return { ok: false, error: '--task-work-mode 仅用于项目模式的任务 AI' };
+    }
+    if (requestedTaskWorkMode && !['continue', 'rework'].includes(outcome)) {
+      return { ok: false, error: '--task-work-mode 只能用于 continue 或 rework 裁决' };
+    }
     if (!projectManagedLane && lane.activeReviewId && reviewId !== lane.activeReviewId) {
       return {
         ok: false,
@@ -14208,6 +14270,8 @@ export function initPipeBridge(): void {
           projectWorkItem.contract,
           next,
           lane.projectTaskContractPending === true,
+          requestedTaskWorkMode || projectWorkItem.taskWorkMode || 'single-thread',
+          true,
         )
       : null;
     const guardedNext = preparedProjectTask?.action ?? next;
@@ -14348,12 +14412,35 @@ export function initPipeBridge(): void {
       if (!milestone || milestone.status === 'completed') {
         return { ok: false, error: '任务派发必须绑定当前成果计划中尚未完成的 milestoneId' };
       }
-      const allowedAcceptance = new Set([
-        ...milestone.acceptance,
-        effectiveSupervisorLaneConfig(lane).stopWhen,
-      ].map((item) => item.trim()).filter(Boolean));
-      if (ordinaryTaskDispatch.acceptanceGap.some((item) => !allowedAcceptance.has(item.trim()))) {
-        return { ok: false, error: '任务派发的 acceptanceGap 必须来自当前里程碑或用户停止条件，不能扩大用户规划' };
+      const userStopWhen = effectiveSupervisorLaneConfig(lane).stopWhen.trim();
+      const userStopCriteria = [...new Set([
+        userStopWhen,
+        ...userStopWhen.split(/\r?\n|[;；。，,、]/u),
+      ].map((item) => projectCriterionIdentity(item)).filter((item) => item.length >= 4))];
+      const dispatchedFields = [
+        ordinaryTaskDispatch.outcome,
+        ...ordinaryTaskDispatch.constraints,
+        ...ordinaryTaskDispatch.acceptanceGap,
+        ...ordinaryTaskDispatch.evidenceContext,
+      ];
+      const copiedUserCondition = dispatchedFields.find((item) => {
+        const identity = projectCriterionIdentity(item);
+        if (identity.length < 4) return false;
+        return userStopCriteria.some((criterion) => {
+          if (identity === criterion) return true;
+          const shorter = Math.min(identity.length, criterion.length);
+          const longer = Math.max(identity.length, criterion.length);
+          if (identity.includes(criterion)) {
+            return identity.length - criterion.length <= 12;
+          }
+          return shorter / longer >= 0.75 && criterion.includes(identity);
+        });
+      });
+      if (copiedUserCondition) {
+        return {
+          ok: false,
+          error: `普通监督任务包不能复制或轻微改写用户总停止条件：${copiedUserCondition}。请由监督 AI 针对本次任务分别给出成果、约束、任务级验收和必要现状；用户总条件只用于成果计划和最终 complete 核验`,
+        };
       }
     }
     if (!projectManagedLane
@@ -15011,6 +15098,14 @@ export function initPipeBridge(): void {
       }
     }
 
+    if (requestedTaskWorkMode && projectSession && projectWorkItem) {
+      store.applyProjectManagerAction({
+        type: 'update-work-item',
+        workItemId: projectWorkItem.id,
+        patch: { taskWorkMode: requestedTaskWorkMode },
+      }, projectSession.id);
+    }
+
     const decisionPlan = proposedSupervisorPlan
       || (!projectWorkItem ? lane.decisions?.find((decision) => decision.plan)?.plan : undefined);
     const ordinaryDecisionPlan = proposedOrdinaryPlan
@@ -15030,6 +15125,7 @@ export function initPipeBridge(): void {
       ...(decisionPlan ? { stagePlan: decisionPlan } : {}),
       ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
       ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
+      ...(requestedTaskWorkMode ? { taskWorkMode: requestedTaskWorkMode } : {}),
       ...(ordinaryContextHealthReported ? {
         contextHealth: rawContextHealth,
         contextSymptoms,
@@ -15054,6 +15150,13 @@ export function initPipeBridge(): void {
     store.updateLane(lane.id, {
       autoDecisionsUsed,
       unreportedIdleRecoveryAttempts: 0,
+      ...(requestedTaskWorkMode ? {
+        config: {
+          ...effectiveSupervisorLaneConfig(lane),
+          taskWorkMode: requestedTaskWorkMode,
+          supervisorMayApproveThreads: true,
+        },
+      } : {}),
       decisions: [
         {
           ts: decisionAt,
@@ -15065,6 +15168,7 @@ export function initPipeBridge(): void {
           ...(decisionPlan ? { plan: decisionPlan } : {}),
           ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
           ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
+          ...(requestedTaskWorkMode ? { taskWorkMode: requestedTaskWorkMode } : {}),
           ...(ordinaryContextHealthReported ? {
             contextHealth: rawContextHealth as 'healthy' | 'degraded',
             contextSymptoms,

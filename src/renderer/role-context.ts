@@ -472,7 +472,7 @@ export function buildTaskAiRuntimeContext(options: {
           ]
         : ['按当前任务目标工作；具体本地工具权限由底层 Agent 及其沙箱决定'],
       conditional: projectManaged
-        ? ['内部线程可按任务需要自主使用，上限为 3；共享写入、共享资源和最终集成保持串行']
+        ? ['遵守成果包指定的单线程或多线程模式；多线程内部子线程上限为 3，共享写入、共享资源和最终集成保持串行']
         : [],
       forbidden: [
         '越出当前任务目标或工作目录',

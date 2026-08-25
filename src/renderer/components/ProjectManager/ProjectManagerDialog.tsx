@@ -1325,7 +1325,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             }} />
             {agentDraft.manager.agent === 'codex' && (
               <div className="supervisor-dialog__hint" role="note">
-                wmux 创建的项目 AI、专属监督 AI 和任务 AI 首次出现 Codex Hook 审核时，会自动选择 Trust all and continue；普通终端仍需在 Codex 中执行 /hooks 人工确认。
+                项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核时，wmux 会立即切换到对应终端，由你在 Codex 原生页面确认；wmux 不会自动选择或确认 Hook。
               </div>
             )}
             {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
@@ -1763,7 +1763,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         </summary>
                         <dl>
                           {item.supersededByWorkItemId && <><dt>审计冻结</dt><dd>预算与执行历史保持不变；仅由后继 {item.supersededByWorkItemId} 继续。</dd></>}
-                          <dt>执行者</dt><dd>项目唯一任务 AI；内部线程由任务 AI 按项目规范自主决定</dd>
+                          <dt>执行者</dt><dd>项目唯一任务 AI；当前模式 {item.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}，线程内具体分工由任务 AI 自主决定</dd>
                           <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>

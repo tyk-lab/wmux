@@ -12,6 +12,7 @@ import {
   reconcileResolvedProjectDecisionTransitions,
   projectSupervisorTransitionRedeliveryMs,
   redactProjectSafeExitExcerpt,
+  shouldSupersedeStoppedSupervisorLane,
   shouldScheduleProjectSupervisorTransitionReminder,
   readTerminalScreen,
   terminalBootstrapContext,
@@ -495,6 +496,30 @@ describe('supervisor decision bridge', () => {
     store.startOrdinarySupervisor();
     expect(useStore.getState().supervisor.lanes[0].awaitingReview).toBe(true);
     initPipeBridge();
+  });
+
+  it('supersedes only the stopped recovery placeholder that owns the restored snapshot', () => {
+    const stoppedPlaceholder = {
+      ...lane(),
+      id: 'lane-recovery-placeholder',
+      surfaceId: 'worker-missing' as any,
+      controlState: 'stopped' as const,
+      recoverySnapshotId: 'snapshot-a',
+    };
+    const activeLane = {
+      ...stoppedPlaceholder,
+      id: 'lane-active',
+      controlState: 'active' as const,
+    };
+    const selectedIds = new Set(['worker-restored']);
+
+    expect(shouldSupersedeStoppedSupervisorLane(stoppedPlaceholder, selectedIds, 'snapshot-a')).toBe(true);
+    expect(shouldSupersedeStoppedSupervisorLane(activeLane, selectedIds, 'snapshot-a')).toBe(false);
+    expect(shouldSupersedeStoppedSupervisorLane(
+      { ...stoppedPlaceholder, recoverySnapshotId: 'snapshot-b' },
+      selectedIds,
+      'snapshot-a',
+    )).toBe(false);
   });
 
   afterEach(() => {
@@ -2172,7 +2197,13 @@ describe('supervisor decision bridge', () => {
     expect(remoteControl({
       action: 'start', terminals: [directSurface?.id], taskGoal: '完成登录页错误处理', stopWhen: '测试通过', stopWhenKind: 'concrete', autonomous: false,
     })).toMatchObject({ ok: true });
-    expect(useStore.getState().supervisor.lanes.some((item) => item.surfaceId === directSurface?.id)).toBe(true);
+    const pairedLane = useStore.getState().supervisor.lanes.find((item) => item.surfaceId === directSurface?.id);
+    expect(pairedLane).toBeTruthy();
+    const pairedWorkspace = useStore.getState().workspaces.find((item) => item.id === workspace?.id);
+    expect(pairedWorkspace?.splitTree.type === 'leaf'
+      ? pairedWorkspace.splitTree.surfaces.some((surface) => surface.id === pairedLane?.supervisorSurfaceId)
+      : false).toBe(true);
+    expect(useStore.getState().workspaces.some((item) => item.title === 'AI 监督')).toBe(false);
     surfaceTerminalRegistry.delete(directSurface!.id);
   });
 
@@ -3866,7 +3897,7 @@ describe('supervisor decision bridge', () => {
           milestoneId: 'deliver',
           outcome: rawNext,
           constraints: ['遵循目标项目规范'],
-          acceptanceGap: ['测试任务完成'],
+          acceptanceGap: ['当前成果形成可复核结果'],
           evidenceContext: [],
         },
         ...(!hasPlan && params.stagePlan === undefined ? {
@@ -3888,8 +3919,8 @@ describe('supervisor decision bridge', () => {
     '[任务]',
     `成果：${next}`,
     '约束：\n- 遵循目标项目规范',
-    '验收缺口：\n- 测试任务完成',
-    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。',
+    '本次任务验收（由监督 AI 复核）：\n- 当前成果形成可复核结果',
+    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。是否满足用户总体验收条件由监督 AI 在本任务返回后判断。',
   ].join('\n\n'), false);
 
   it('injects one safe next step from ordinary supervision', () => {
@@ -4126,6 +4157,208 @@ describe('supervisor decision bridge', () => {
         constraints: [], acceptanceGap: ['测试任务完成'], evidenceContext: [],
       },
     })).toMatchObject({ ok: false, error: expect.stringContaining('拒绝投递旧规划') });
+  });
+
+  it('rejects copying the user stop condition into one dispatched task acceptance', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '错误复制用户总条件',
+      stagePlanFile: '.wmux/tmp/stage-plan-user-stop.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '形成结果', outcome: '完成阶段成果',
+          acceptance: ['测试任务完成'], status: 'active',
+        }],
+        remainingWork: ['完成阶段成果'],
+      },
+      taskFile: '.wmux/tmp/task-user-stop.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '形成当前阶段结果', constraints: [],
+        acceptanceGap: ['测试任务完成'], evidenceContext: [],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能复制或轻微改写用户总停止条件'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('rejects a prefixed or comma-split user stop condition anywhere in the task envelope', () => {
+    const currentLane = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(currentLane.id, {
+      config: {
+        ...currentLane.config!,
+        stopWhen: '正向实验形成结果，身份账本保持一致，完成最终复核',
+      },
+    });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '错误转发用户总条件',
+      stagePlanFile: '.wmux/tmp/stage-plan-prefixed-stop.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '形成结果', outcome: '完成阶段成果',
+          acceptance: ['正向实验形成结果'], status: 'active',
+        }],
+        remainingWork: ['完成阶段成果'],
+      },
+      taskFile: '.wmux/tmp/task-prefixed-stop.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '形成本次实验记录',
+        constraints: ['本次任务要求身份账本保持一致'],
+        acceptanceGap: ['实际操作完成并记录结果'],
+        evidenceContext: ['当前需要完成最终复核'],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能复制或轻微改写用户总停止条件'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('allows a task-local evidence criterion that is only part of a broader user stop condition', () => {
+    const currentLane = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(currentLane.id, {
+      config: {
+        ...currentLane.config!,
+        stopWhen: '测试任务完成并提供可复核证据',
+      },
+    });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '派发本次证据闭合任务',
+      stagePlanFile: '.wmux/tmp/stage-plan-local-evidence.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '形成证据', outcome: '取得本次可复核结果',
+          acceptance: ['测试任务完成并提供可复核证据'], status: 'active',
+        }],
+        remainingWork: ['取得本次证据'],
+      },
+      taskFile: '.wmux/tmp/task-local-evidence.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '形成本次执行证据', constraints: [],
+        acceptanceGap: ['提供可复核证据'], evidenceContext: [],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+  });
+
+  it('lets the supervisor define outcome-neutral evidence acceptance for one experiment task', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '执行一次受控上电实验并如实取证',
+      stagePlanFile: '.wmux/tmp/stage-plan-experiment.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '完成实验', outcome: '形成可复核实验结果',
+          acceptance: ['测试任务完成'], status: 'active',
+        }],
+        remainingWork: ['完成实验并由监督判断结果'],
+      },
+      taskFile: '.wmux/tmp/task-experiment.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '执行一次受控正向上电实验', constraints: ['沿用已确认安全条件'],
+        acceptanceGap: ['实际执行完成并如实记录 PASS/FAIL、原始结果和证据'],
+        evidenceContext: ['此前尚未形成上电实验结果'],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('本次任务验收（由监督 AI 复核）'),
+    );
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('无论成功还是失败，都必须如实执行'),
+    );
+  });
+
+  it('rejects a PASS-only acceptance for an empirical task', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '错误地预设实验必须成功',
+      taskFile: '.wmux/tmp/task-forced-pass.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '执行正向上电实验', constraints: [],
+        acceptanceGap: ['取得正向实验 PASS 结果'], evidenceContext: [],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能预设必须 PASS'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('detects an empirical PASS-only requirement even when the outcome is generic', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '用通用成果名掩盖实验成功预设',
+      taskFile: '.wmux/tmp/task-generic-forced-pass.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '形成可复核记录', constraints: [],
+        acceptanceGap: ['上电实验必须 PASS'], evidenceContext: [],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能预设必须 PASS'),
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('allows historical PASS evidence without treating it as a forced result for the next experiment', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '基于历史事实执行下一次实验',
+      stagePlanFile: '.wmux/tmp/stage-plan-historical-pass.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '完成实验', outcome: '形成可复核实验结果',
+          acceptance: ['测试任务完成'], status: 'active',
+        }],
+        remainingWork: ['完成反向实验'],
+      },
+      taskFile: '.wmux/tmp/task-historical-pass.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '执行一次反向上电实验', constraints: [],
+        acceptanceGap: ['实际执行并如实记录 PASS/FAIL、原始结果和证据'],
+        evidenceContext: ['此前正向上电实验 PASS，已按约定停止'],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+  });
+
+  it('allows truthful recording and an existing safety-interlock path for an experiment', () => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '按既有安全路径如实执行实验',
+      stagePlanFile: '.wmux/tmp/stage-plan-truthful-record.json',
+      stagePlan: {
+        objective: '完成当前测试任务',
+        milestones: [{
+          id: 'deliver', title: '完成实验', outcome: '形成可复核实验结果',
+          acceptance: ['测试任务完成'], status: 'active',
+        }],
+        remainingWork: ['完成实验取证'],
+      },
+      taskFile: '.wmux/tmp/task-truthful-record.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '执行一次上电实验',
+        constraints: ['通过既有安全联锁启动实验', '确保安全联锁检查通过'],
+        acceptanceGap: ['实际执行完成并正确记录原始结果和证据'],
+        evidenceContext: [],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
   });
 
   it('rejects file, command, skill and route directives inside an ordinary task dispatch', () => {
@@ -4484,6 +4717,23 @@ describe('supervisor decision bridge', () => {
     expect(String(writes.mock.calls[1][1])).not.toContain('任务事件｜控制层');
   });
 
+  it('lets the project supervisor switch the unique task AI execution mode', () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-task-mode' });
+    const decision = decide({
+      next: '并行核对相互独立的证据并完成当前成果',
+      taskWorkMode: 'multi-thread',
+    });
+    expect(decision?.error).toBeUndefined();
+    expect(decision).toMatchObject({ ok: true, outcome: 'continue' });
+
+    expect(String(writes.mock.calls.at(-1)?.[1])).toContain('[执行模式] 多线程');
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')
+      ?.config.taskWorkMode).toBe('multi-thread');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.workItems[0]?.taskWorkMode)
+      .toBe('multi-thread');
+  });
+
   it('requires project AI to assess task complexity before creating an executable work item', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-complexity-gate' });
     attachProjectManagerSurface(project.id, 'manager-complexity-gate');
@@ -4514,6 +4764,7 @@ describe('supervisor decision bridge', () => {
       projectId: current.id,
       workItem: {
         ...workItem,
+        taskWorkMode: 'single-thread',
         complexityAssessment: {
           complexity: 'high',
           decision: 'split-before-dispatch',
@@ -4531,6 +4782,7 @@ describe('supervisor decision bridge', () => {
       projectId: current.id,
       workItem: {
         ...workItem,
+        taskWorkMode: 'single-thread',
         complexityAssessment: {
           complexity: 'low',
           decision: 'single-task',
@@ -4542,6 +4794,9 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)
       ?.workItems.find((candidate) => candidate.id === 'task-b')?.complexityAssessment)
       .toMatchObject({ decision: 'single-task', complexity: 'low' });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)
+      ?.workItems.find((candidate) => candidate.id === 'task-b')?.taskWorkMode)
+      .toBe('single-thread');
   });
 
   it('clears polluted task context in place once and escalates a repeated reset', async () => {

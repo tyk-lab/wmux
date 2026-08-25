@@ -10,6 +10,15 @@ const panelSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/Sidebar/SupervisorPanel.tsx'),
   'utf8',
 );
+const recordingSource = fs.readFileSync(
+  path.resolve(__dirname, '../../src/renderer/supervisor/recording.ts'),
+  'utf8',
+);
+
+it('captures the newest supervisor decision in recovery snapshots', () => {
+  expect(panelSource).toContain('const latestDecision = lane.decisions?.[0]');
+  expect(panelSource).not.toContain('const latestDecision = lane.decisions?.at(-1)');
+});
 const projectManagerDialogSource = fs.readFileSync(
   path.resolve(__dirname, '../../src/renderer/components/ProjectManager/ProjectManagerDialog.tsx'),
   'utf8',
@@ -90,9 +99,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
-    expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 和任务 AI 首次出现 Codex Hook 审核');
-    expect(projectManagerDialogSource).toContain('自动选择 Trust all and continue');
-    expect(projectManagerDialogSource).toContain('普通终端仍需在 Codex 中执行 /hooks 人工确认');
+    expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核');
+    expect(projectManagerDialogSource).toContain('立即切换到对应终端');
+    expect(projectManagerDialogSource).toContain('不会自动选择或确认 Hook');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('使用 Grok 默认 Thinking');
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
@@ -411,9 +420,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(consoleSurfaceSource).toContain("surface.type === 'project-manager'");
     expect(consoleSurfaceSource).toContain("store.addSurface(projectWorkspace.id, paneId, 'project-manager'");
     expect(consoleSurfaceSource).toContain('openProjectManagerAttentionSurface');
+    expect(consoleSurfaceSource).toContain('openSurfaceById');
+    expect(consoleSurfaceSource).toContain('store.selectSurface(workspace.id, paneId, surfaceIndex)');
     expect(consoleSurfaceSource).toContain('store.closeProjectManagerDialog()');
     expect(pipeBridgeSource).not.toContain('openProjectManagerDialog()');
-    expect(pipeBridgeSource).toContain("createLeaf(undefined, projectManagedStart ? 'project-manager' : 'supervisor')");
+    expect(pipeBridgeSource).toContain("createLeaf(undefined, 'project-manager')");
   });
 
   it('uses the sidebar AI button as the unified creation entry', () => {
@@ -436,17 +447,41 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('不是监督 AI');
   });
 
-  it('restores historical evidence only for the supervisor and allows selecting its source', () => {
-    expect(dialogSource).toContain('恢复历史监督证据');
-    expect(dialogSource).toContain('历史监督证据（默认最新）');
+  it('restores a user-saved terminal snapshot and allows selecting its source', () => {
+    expect(dialogSource).toContain('恢复终端快照');
+    expect(dialogSource).toContain('终端恢复档案（默认最新）');
     expect(dialogSource).toContain('restoreOptions[0]');
     expect(dialogSource).toContain('value={restoreSourceIdFor(candidate.surfaceId)}');
     expect(dialogSource).toContain('selectRestoreSource(candidate.surfaceId, event.target.value)');
     expect(dialogSource).toContain("{index === 0 ? '（最新）' : ''}");
     expect(dialogSource).toContain('restoreTaskContext: restoreEnabled.has(surfaceId)');
     expect(dialogSource).toContain('if (terminalConfig.restoreTaskContext) next.add(surfaceId)');
-    expect(dialogSource).toContain('不会把旧上下文或角色协议发送给任务 AI');
+    expect(dialogSource).toContain('任务 AI 只接收干净续作任务');
+    expect(dialogSource).toContain('删除此恢复档案');
+    expect(dialogSource).toContain('deleteSelectedSnapshot()');
+    expect(dialogSource).toContain('确认删除终端恢复档案');
     expect(dialogSource).not.toContain('恢复审计上下文（手动选择来源）');
+  });
+
+  it('pairs each ordinary supervisor with its task terminal and exposes snapshot controls', () => {
+    expect(dialogSource).toContain('const targetLocation = terminalLocations.get(lane.surfaceId)');
+    expect(dialogSource).toContain("addSurface(targetLocation.workspaceId, targetLocation.paneId, 'terminal'");
+    expect(panelSource).toContain('保存恢复档案');
+    expect(panelSource).toContain('刷新恢复档案');
+    expect(panelSource).toContain('删除恢复档案');
+    expect(panelSource).toContain('恢复终端快照');
+    expect(panelSource).toContain('captureRecoveryContext');
+    expect(panelSource).toContain('saveRecoverySnapshot');
+    expect(panelSource).toContain('deleteRecoverySnapshot');
+    expect(panelSource).toContain("stopSupervisorLane(lane.id, '恢复档案已删除，移除停止占位')");
+    expect(panelSource).toContain('pendingInitialReview: true, awaitingReview: false');
+    expect(panelSource).toContain("String(taskState?.state || 'unknown') === 'idle'");
+    expect(panelSource).toContain('recoverySnapshotId: snapshot.snapshotId');
+    expect(dialogSource).toContain('.filter((snapshot) => snapshot.surfaceId === candidate.surfaceId)');
+    expect(dialogSource).toContain('option.snapshotId === restoreSources[candidate.surfaceId]');
+    expect(dialogSource).toContain('maxChildThreads: normalizeTaskMaxChildThreads(config.maxChildThreads)');
+    expect(dialogSource).toContain('parallelizableOperations: normalizeTaskOperationBoundaries(config.parallelizableOperations)');
+    expect(recordingSource).toContain('snapshot.supervisor.state.latestSupervisorUserGuidance');
   });
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {

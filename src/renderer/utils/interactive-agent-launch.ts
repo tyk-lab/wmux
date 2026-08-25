@@ -9,7 +9,7 @@ export interface InteractiveAgentLaunch {
   startupInput?: string;
 }
 
-/** Only wmux-owned project-AI, task-AI and dedicated supervisor surfaces may auto-trust Codex hooks. */
+/** Wmux-owned Agent surfaces may reveal native startup prompts without exposing ordinary terminals. */
 export function surfaceAllowsManagedCodexHookTrust(
   surface: Pick<SurfaceRef, 'projectManagerProjectId' | 'projectManagerTerminal' | 'transientSupervisor'>,
 ): boolean {
