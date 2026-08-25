@@ -8,7 +8,7 @@ export interface ProjectJsonInput {
 
 const PROJECT_COMMANDS = [
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'status', 'logs', 'terminals',
-  'terminal-rotate', 'task-create', 'task-update', 'record', 'supervise', 'progress-sync',
+  'task-create', 'task-update', 'record', 'supervise', 'progress-sync',
   'transition-ack', 'task-terminal-start', 'task-terminal-control',
   'inspect', 'decide', 'ask', 'pause', 'resume', 'pause-all', 'resume-all', 'complete', 'stop', 'reply',
 ] as const;
@@ -61,10 +61,18 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     'JSON object (normally 3-7 subgoals; every active goal criterion must be covered exactly once):',
     '{"reason":"...","subgoals":[{"id":"stage-1","title":"...","outcome":"...","acceptance":["..."],"dependencies":[],"status":"planned"}]}',
   ].join('\n'),
+  'task-create': [
+    'Usage: wmux project task-create --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
+    '',
+    'JSON must include a project-AI complexity assessment made before dispatch:',
+    '{"id":"task-a","subgoalId":"stage-1","complexityAssessment":{"complexity":"low|medium|high","decision":"single-task|split-before-dispatch","signals":["..."],"rationale":"..."},"contract":{"objective":"...","stopWhen":["..."],"validation":["..."]}}',
+    '',
+    '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead.',
+  ].join('\n'),
 };
 
 const JSON_PROJECT_COMMANDS = new Set<string>([
-  'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'terminal-rotate',
+  'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan',
   'task-create', 'task-update', 'record', 'ask', 'complete',
 ]);
 

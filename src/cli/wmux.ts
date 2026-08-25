@@ -327,6 +327,9 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     diffSummary: getFlag(args, '--diff-summary') || '',
     evidence: getFlag(args, '--evidence') || '',
     contextSummary: getFlag(args, '--context-summary') || '',
+    contextHealth: getFlag(args, '--context-health') || '',
+    contextSymptoms: getFlag(args, '--context-symptoms') || '',
+    contextSignal: getFlag(args, '--context-signal') || '',
     completionStopWhen: getFlag(args, '--completion-stop-when') || '',
     completionValidation: getFlag(args, '--completion-validation') || '',
     remainingWork: getFlag(args, '--remaining-work') || '',
@@ -530,18 +533,6 @@ async function cmdProject(args: string[]): Promise<void> {
     let success = false;
     try {
       const result = await sendV2('project.user.question', { ...input.value, projectId });
-      success = result?.ok !== false;
-      print(result);
-    } finally {
-      cleanupProjectJsonInput(input, success);
-    }
-    return;
-  }
-  if (sub === 'terminal-rotate') {
-    const input = await resolveProjectScopedJsonInput(args, projectId);
-    let success = false;
-    try {
-      const result = await sendV2('project.terminal.rotate', { ...input.value, projectId });
       success = result?.ok !== false;
       print(result);
     } finally {
@@ -1309,7 +1300,7 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry --retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|terminal-rotate|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|supervise|progress-sync|transition-ack|task-terminal-start|task-terminal-control|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>

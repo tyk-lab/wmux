@@ -44,6 +44,8 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--evidence-progress-file <.wmux/tmp/file>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('--context-health <healthy|degraded>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('forgotten-plan');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
