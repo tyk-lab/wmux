@@ -78,6 +78,7 @@ import {
 import {
   interactiveAgentInputReady,
   interactiveAgentShellPromptFailureDetail,
+  interactiveAgentStartupDiagnostic,
 } from '../../utils/interactive-agent-runtime';
 import { createLeaf, getAllPaneIds } from '../../store/split-utils';
 import '../../styles/supervisor.css';
@@ -1227,6 +1228,15 @@ export default function SupervisorSetupDialog() {
         transientSupervisor: true,
         supervisorRuntimeIsolationKey: lane.id,
       });
+      console.debug('[wmux][ordinary-supervisor-startup]', {
+        event: 'dedicated-surface-created',
+        laneId: lane.id,
+        targetSurfaceId: lane.surfaceId,
+        supervisorSurfaceId: supervisorSurfaceId || 'none',
+        launcher: detectSupervisorLauncher(launchCmd),
+        hasConfiguredModel: !!supervisorModel.trim(),
+        isolatedRuntime: true,
+      });
       if (supervisorSurfaceId) createdSurfaceIds.push(supervisorSurfaceId);
       return {
         ...lane,
@@ -1286,6 +1296,16 @@ export default function SupervisorSetupDialog() {
             const detail = ready.error
               || interactiveAgentShellPromptFailureDetail(screen)
               || '未检测到可接收监督任务的 Agent 输入界面；已禁止向未知终端发送监督协议';
+            console.warn('[wmux][ordinary-supervisor-startup]', {
+              event: 'dedicated-runtime-not-ready',
+              laneId: lane.id,
+              targetSurfaceId: lane.surfaceId,
+              supervisorSurfaceId,
+              runtimeReady: ready.ok,
+              screenInputReady: interactiveAgentInputReady(screen),
+              screenDiagnostic: interactiveAgentStartupDiagnostic(screen),
+              detail,
+            });
             markTerminalRuntimeFailed(supervisorSurfaceId, detail);
             const store = useStore.getState();
             store.updateLane(lane.id, {

@@ -53,6 +53,33 @@ export interface OrdinaryTaskDispatch {
   evidenceContext: string[];
 }
 
+export type OrdinaryContextSymptom =
+  | 'instruction-drift'
+  | 'repeated-mistake'
+  | 'forgotten-plan'
+  | 'contradiction'
+  | 'no-progress'
+  | 'irrelevant-context';
+
+export interface OrdinaryContextHealthState {
+  fingerprint: string;
+  symptoms: OrdinaryContextSymptom[];
+  signal: string;
+  evidenceFingerprint: string;
+  occurrences: number;
+  reviewId?: string;
+  workerTurnId?: number;
+  updatedAt: number;
+}
+
+export interface OrdinaryContextResetState {
+  id: string;
+  status: 'clearing' | 'recovering' | 'failed';
+  fingerprint: string;
+  startedAt: number;
+  error?: string;
+}
+
 export interface SupervisorDecision {
   ts: number;
   task: string;
@@ -66,6 +93,9 @@ export interface SupervisorDecision {
   ordinaryPlan?: OrdinarySupervisorPlan;
   /** Structured assignment that was rendered and delivered to the ordinary task AI. */
   taskDispatch?: OrdinaryTaskDispatch;
+  contextHealth?: 'healthy' | 'degraded';
+  contextSymptoms?: OrdinaryContextSymptom[];
+  contextSignal?: string;
   /** Final result attached only to a complete decision. */
   completion?: ProjectCompletionResult;
 }
@@ -186,6 +216,12 @@ export interface SupervisorLane {
     workerTurnId?: number;
     updatedAt: number;
   };
+  /** Consecutive evidence-backed observations of task-AI context degradation. */
+  ordinaryContextHealth?: OrdinaryContextHealthState;
+  /** In-flight or failed same-terminal context reset. Failed resets require user handling. */
+  ordinaryContextReset?: OrdinaryContextResetState;
+  ordinaryContextResetCount?: number;
+  ordinaryContextResetPlanRevision?: number;
   /** Authoritative lifecycle state for this independently owned lane. */
   controlState: SupervisorLaneControlState;
   /** A completed decision is awaiting stop-condition confirmation. */
@@ -484,6 +520,10 @@ export function clearSupervisorLaneContext(
       ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
       pendingInitialReview: false,
       ordinaryBlocker: undefined,
+      ordinaryContextHealth: undefined,
+      ordinaryContextReset: undefined,
+      ordinaryContextResetCount: undefined,
+      ordinaryContextResetPlanRevision: undefined,
     } : {}),
     supervisorProblem: undefined,
     unreportedIdleRecoveryAttempts: 0,

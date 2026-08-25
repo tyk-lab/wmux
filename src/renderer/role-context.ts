@@ -179,7 +179,6 @@ const PROJECT_AI_METHODS = new Set([
   'project.supervisor.inspect',
   'project.supervisor.decide',
   'project.user.question',
-  'project.terminal.rotate',
   'project.execution.record',
   'project.pause',
   'project.resume',
@@ -398,11 +397,6 @@ export function buildProjectAiRuntimeContext(
           condition: '需要监督 AI 基于当前终端证据处理项目级待决或恢复核查',
         },
         {
-          command: `wmux project terminal-rotate --project ${projectId} --json-file <.wmux/tmp/文件>`,
-          available: projectActive && session.workItems.some((item) => !!item.workerSurfaceId),
-          condition: '任务上下文确实过长，且已保存恢复摘要并满足安全轮换条件',
-        },
-        {
           command: `wmux project pause --project ${projectId} --reason <原因>`,
           available: projectActive,
           condition: '项目需要暂停且已记录具体原因',
@@ -505,7 +499,7 @@ export function buildTaskAiRuntimeContext(options: {
     workerRuntime?.resourceClaims.length
       ? `共享资源按控制层租约串行协调：${workerRuntime.resourceClaims.join('、')}`
       : '',
-    authority ? '旧合同 authority 字段只作审计，不限制 P7 任务 AI 的普通项目执行权' : '',
+    authority ? '旧合同 authority 字段只作审计，不限制 P8 任务 AI 的普通项目执行权' : '',
   ].filter(Boolean) : [];
   const contract = workItem?.contract;
 

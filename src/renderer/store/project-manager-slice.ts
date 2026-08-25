@@ -947,7 +947,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
       if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P7 已删除项目基线调查与批准状态' };
+        return { ok: false, error: 'P8 已删除项目基线调查与批准状态' };
       }
       if (['completed', 'stopped'].includes(existing.status)) {
         return { ok: false, error: '已经结束的任务不能再发起项目基线调查' };
@@ -1124,7 +1124,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const existing = session.workItems.find((item) => item.id === action.workItemId);
       if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
       if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P7 已删除项目基线调查与批准状态' };
+        return { ok: false, error: 'P8 已删除项目基线调查与批准状态' };
       }
       if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
         return { ok: false, error: '旧主目标任务已经失效，不能续期监督健康窗口' };

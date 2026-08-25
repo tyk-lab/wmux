@@ -171,7 +171,7 @@ const PROJECT_AGENT_ROWS = [
   {
     key: 'task',
     title: '任务终端',
-    hint: '用于新建或轮换任务终端；既有终端不会被强制重启。',
+    hint: '用于新建任务终端或处理 Agent 配置换代；上下文污染通过原终端 /new 清空，不会重启任务 AI。',
     agents: [['codex', 'Codex'], ['kimi', 'Kimi Code'], ['grok', 'Grok Build']],
   },
 ] as const;

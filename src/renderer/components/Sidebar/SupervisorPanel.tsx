@@ -1261,6 +1261,20 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       {lane.supervisorProblem.detail}
                     </div>
                   )}
+                  {!laneProjectManaged && lane.ordinaryContextReset && (
+                    <div className="sup-panel__waiting-notice" role={lane.ordinaryContextReset.status === 'failed' ? 'alert' : 'status'}>
+                      {lane.ordinaryContextReset.status === 'clearing'
+                        ? '正在清空任务 AI 上下文…'
+                        : lane.ordinaryContextReset.status === 'recovering'
+                          ? '上下文已清空，正在重新发布可信任务摘要…'
+                          : `上下文清空失败：${lane.ordinaryContextReset.error || '请交给用户处理'}`}
+                    </div>
+                  )}
+                  {!laneProjectManaged && !lane.ordinaryContextReset && lane.ordinaryContextHealth && (
+                    <div className="sup-panel__waiting-notice" role="status">
+                      已发现任务 AI 上下文退化迹象（{lane.ordinaryContextHealth.occurrences}/2）；首次先由监督 AI 派发纠偏任务。
+                    </div>
+                  )}
                   {!laneProjectManaged && lane.goalConstruction?.status === 'drafting' && (() => {
                     const construction = lane.goalConstruction;
                     const draft = construction.draft;
