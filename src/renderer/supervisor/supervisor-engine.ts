@@ -193,7 +193,7 @@ function terminalPasteInput(_surfaceId: string, text: string, submitEnter: boole
 export const TERMINAL_INLINE_TEXT_LIMIT = 4_000;
 
 export function stagedTerminalInputPrompt(
-  reference: string,
+  _reference: string,
   filePath: string,
   _isolationScope: TerminalInputIsolationScope,
 ): string {
