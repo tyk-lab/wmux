@@ -556,7 +556,7 @@ function scheduleDeferredRepaint(terminal: Terminal): ReturnType<typeof setTimeo
       try {
         terminal.scrollToBottom();
         terminal.refresh(0, terminal.rows - 1);
-      } catch {}
+      } catch { /* ignored */ }
     });
   }, 300);
 }
@@ -933,7 +933,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
           const text = new TextDecoder('utf-8').decode(bytes);
           if (text) window.wmux?.clipboard?.writeText?.(text);
-        } catch {}
+        } catch { /* ignored */ }
       }
       return true;
     });
@@ -986,7 +986,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
             try {
               const text = await window.wmux.clipboard.readText();
               if (text) terminal.paste(text);
-            } catch {}
+            } catch { /* ignored */ }
           }
         })();
         return false; // Prevent default — we handle paste ourselves
@@ -1020,6 +1020,17 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
     let runtimeReadyValidationAttempts = 0;
     let innerAgentExitHandled = false;
     let attachedPtyId: string | null = null;
+
+    const traceAutomatedStartup = (
+      event: string,
+      id: string,
+      details: Record<string, unknown>,
+      level: 'debug' | 'warn' = 'debug',
+    ) => {
+      const payload = { event, surfaceId: id, ...details };
+      if (level === 'warn') console.warn('[wmux][interactive-agent-startup]', payload);
+      else console.debug('[wmux][interactive-agent-startup]', payload);
+    };
 
     const startupInputScreenText = (): string => {
       try {
@@ -1154,6 +1165,21 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           runtimeReadyValidationAttempts,
           INTERACTIVE_AGENT_RUNTIME_VALIDATION_MAX_ATTEMPTS,
         );
+        const startupDiagnostic = interactiveAgentStartupDiagnostic(visibleOutput);
+        traceAutomatedStartup('readiness-check', id, {
+          attempt: runtimeReadyValidationAttempts,
+          maxAttempts: INTERACTIVE_AGENT_RUNTIME_VALIDATION_MAX_ATTEMPTS,
+          detectedAgent: startupAgent || 'none',
+          runtimeState: terminalRuntimeStatus(id)?.state || 'none',
+          inputReady,
+          promptKind: currentPromptKind || 'none',
+          startupInteractionPending,
+          stability,
+          validationAction,
+          startupDiagnostic,
+          streamDiagnostic: interactiveAgentStartupDiagnostic(startupInputOutput),
+          screenDiagnostic: interactiveAgentStartupDiagnostic(currentScreen),
+        }, validationAction === 'fail' ? 'warn' : 'debug');
         if (validationAction === 'ready') {
           markTerminalRuntimeReady(id);
         } else if (validationAction === 'handle-interaction') {
@@ -1161,10 +1187,16 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         } else if (validationAction === 'retry') {
           scheduleRuntimeReadyValidation(id);
         } else {
-          const diagnostic = interactiveAgentStartupDiagnostic(visibleOutput);
           failAutomatedStartup(
             id,
-            `Agent 启动失败：已有终端输出，但未检测到 Codex、Kimi、Grok 或 Pi 的可输入界面；${diagnostic}`,
+            [
+              'Agent 启动失败：已有终端输出，但未检测到 Codex、Kimi、Grok 或 Pi 的可输入界面',
+              startupDiagnostic,
+              `detectedAgent=${startupAgent || 'none'}`,
+              `inputReady=${inputReady ? 'yes' : 'no'}`,
+              `promptKind=${currentPromptKind || 'none'}`,
+              `attempt=${runtimeReadyValidationAttempts}/${INTERACTIVE_AGENT_RUNTIME_VALIDATION_MAX_ATTEMPTS}`,
+            ].join('；'),
           );
         }
       }, INTERACTIVE_AGENT_RUNTIME_STABILITY_MS);
@@ -1174,6 +1206,14 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       if (disposed || attachedPtyId === id) return;
       attachedPtyId = id;
       ptyIdRef.current = id;
+      if (startupCommandsRef.current?.length || startupInputRef.current) {
+        traceAutomatedStartup('pty-attached', id, {
+          detectedAgent: automatedStartupAgent || 'none',
+          startupCommandCount: startupCommandsRef.current?.length || 0,
+          hasStartupInput: !!startupInputRef.current,
+          runtimeState: terminalRuntimeStatus(id)?.state || 'none',
+        });
+      }
 
       // Wire PTY data → xterm
       const unsubData = window.wmux.pty.onData(id, (data: string) => {
@@ -1220,7 +1260,9 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         // Track SGR/button mouse enable (?1006h, ?1000h, ?1002h, ?1003h) and disable
         // so the wheel handler can distinguish tmux from a plain shell after remount.
         // Mirror the enable pattern for disable so any of the four modes clears the flag.
+        // eslint-disable-next-line no-control-regex -- ANSI escape sequences are intentional here
         if (/\x1b\[\?100[0236]h/.test(data)) surfaceMouseEnabled.set(id, true);
+        // eslint-disable-next-line no-control-regex -- ANSI escape sequences are intentional here
         else if (/\x1b\[\?100[0236]l/.test(data)) surfaceMouseEnabled.set(id, false);
         if (bufferRestorePending) queuedPtyData.push(data);
         else terminal.write(data, () => maybeConfirmStartupTrust(id));
@@ -1522,7 +1564,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         // pty.resize() call above and redraw themselves. A premature refresh here
         // would paint stale/clipped buffer content before their redraw arrives.
         if (!surfaceId || !surfaceMouseEnabled.get(surfaceId)) {
-          try { terminal.refresh(0, terminal.rows - 1); } catch {}
+          try { terminal.refresh(0, terminal.rows - 1); } catch { /* ignored */ }
         }
       });
     });
@@ -1601,7 +1643,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
       try {
         const text = await window.wmux.clipboard.readText();
         if (text) term.paste(text);
-      } catch {}
+      } catch { /* ignored */ }
     };
     document.addEventListener('wmux:paste-terminal', handler);
     return () => document.removeEventListener('wmux:paste-terminal', handler);

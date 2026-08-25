@@ -151,6 +151,22 @@ describe('interactive Agent runtime detection', () => {
     expect(diagnostic).not.toContain('secret-project');
   });
 
+  it('reports structural markers for each supported non-Codex Agent without logging screen text', () => {
+    expect(interactiveAgentStartupDiagnostic(
+      'Kimi Code\nNo session yet — send your first message',
+    )).toContain('markers=kimi-code,kimi-input');
+    expect(interactiveAgentStartupDiagnostic(
+      'Grok Build 1.0.5\nNew worktree\nCtrl+O',
+    )).toContain('markers=grok-build');
+    const piDiagnostic = interactiveAgentStartupDiagnostic([
+      'pi v0.84.2',
+      'ctrl+c/ctrl+d clear/exit · / commands',
+      'Pi can explain its own features',
+    ].join('\n'));
+    expect(piDiagnostic).toContain('markers=pi-version,pi-input');
+    expect(piDiagnostic).not.toContain('Pi can explain');
+  });
+
   it('recognizes a project protocol already pasted after the PowerShell prompt', () => {
     const contaminated = [
       'PS C:\\Users\\tester\\AppData\\Roaming\\wmux\\supervisor\\runtime> e> [目标任务终端和项目指令协议正文]',

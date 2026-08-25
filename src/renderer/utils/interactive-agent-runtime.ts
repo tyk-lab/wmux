@@ -111,10 +111,18 @@ export function interactiveAgentInputReady(output: string): boolean {
 export function interactiveAgentStartupDiagnostic(output: string): string {
   const plain = plainTerminalOutput(output);
   const lines = plain.split('\n').filter((line) => line.trim().length > 0);
+  const piVersionVisible = /(?:^|\n)\s*pi\s+v\d+(?:\.\d+){1,3}\b/imu.test(plain);
+  const piInputVisible = piVersionVisible
+    && /(?:clear\/exit|Pi can explain|commands\b)/iu.test(plain);
   const markers = [
     /\bOpenAI Codex\b/iu.test(plain) ? 'openai-codex' : '',
     /\bAsk Codex to do anything\b/iu.test(plain) ? 'ask-codex' : '',
     /(?:^|\n)\s*gpt-[\w.-]+\b/imu.test(plain) ? 'gpt-model' : '',
+    /\bKimi Code\b/iu.test(plain) ? 'kimi-code' : '',
+    /\bNo session yet\b[\s\S]{0,2000}\bfirst message\b/iu.test(plain) ? 'kimi-input' : '',
+    /\bGrok Build\b/iu.test(plain) ? 'grok-build' : '',
+    piVersionVisible ? 'pi-version' : '',
+    piInputVisible ? 'pi-input' : '',
     /Hooks need review/iu.test(plain) ? 'hooks-review' : '',
     /(?:Do you trust|Trust this folder|Trust all and continue)/iu.test(plain) ? 'trust-prompt' : '',
     /(?:^|\n)\s*(?:PS\s+[A-Za-z]:[\\/]|[A-Za-z]:[\\/])/mu.test(plain) ? 'shell-prompt' : '',
