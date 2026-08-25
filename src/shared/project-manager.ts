@@ -4,7 +4,7 @@ import type { ProjectManagementAgentConfig } from './project-manager-terminal';
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 /** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
-export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 7;
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 8;
 
 export const PROJECT_PARALLELISM_SELECTIONS = [
   'auto',
@@ -79,6 +79,7 @@ export type ProjectManagerEventKind =
   | 'supervisor-direction'
   | 'progress-inspection'
   | 'terminal-rotated'
+  | 'task-context-reset'
   | 'recovery-restored'
   | 'execution-protocol-migrated'
   | 'manager-runtime-restarted'
@@ -615,6 +616,10 @@ export interface ProjectWorkItem {
   authorizationVersion?: number;
   /** Contract semantics version. Older unfinished items must be re-contracted before dispatch. */
   executionProtocolVersion?: number;
+  /** Project-AI decision made before dispatch so one task AI receives one focused outcome. */
+  complexityAssessment?: ProjectTaskComplexityAssessment;
+  /** Durable in-place context reset state. Project files and terminal identity are never replaced. */
+  contextReset?: ProjectTaskContextResetState;
   /** Project AI cannot approve this field; only the bound supervisor decision bridge can. */
   baseline?: ProjectTaskBaseline;
   /** Mutable execution route owned by the supervisor after baseline investigation. */
@@ -660,6 +665,102 @@ export interface ProjectWorkItem {
   latestEvidence?: string;
   latestContextSummary?: string;
   latestBlocker?: string;
+}
+
+export type ProjectTaskComplexityLevel = 'low' | 'medium' | 'high';
+export type ProjectTaskSplitDecision = 'single-task' | 'split-before-dispatch';
+
+export interface ProjectTaskComplexityAssessment {
+  complexity: ProjectTaskComplexityLevel;
+  decision: ProjectTaskSplitDecision;
+  signals: string[];
+  rationale: string;
+  assessedAt: number;
+}
+
+export type ProjectTaskContextResetStatus = 'requested' | 'cleared' | 'republished' | 'failed';
+
+export interface ProjectTaskContextResetState {
+  generation: number;
+  count: number;
+  status: ProjectTaskContextResetStatus;
+  fingerprint: string;
+  reason: string;
+  evidence: string;
+  cleanContext: string;
+  requestedAt: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export function normalizeProjectTaskComplexityAssessment(
+  value: unknown,
+  fallbackAssessedAt?: number,
+): ProjectTaskComplexityAssessment | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectTaskComplexityAssessment>;
+  if (!['low', 'medium', 'high'].includes(String(raw.complexity))
+    || !['single-task', 'split-before-dispatch'].includes(String(raw.decision))
+    || !Array.isArray(raw.signals)
+    || raw.signals.length < 1
+    || raw.signals.length > 8
+    || raw.signals.some((signal) => typeof signal !== 'string' || !signal.trim())
+    || typeof raw.rationale !== 'string'
+    || !raw.rationale.trim()) return undefined;
+  const assessedAt = Number.isFinite(raw.assessedAt) ? Number(raw.assessedAt) : fallbackAssessedAt;
+  if (!Number.isFinite(assessedAt)) return undefined;
+  return {
+    complexity: raw.complexity as ProjectTaskComplexityLevel,
+    decision: raw.decision as ProjectTaskSplitDecision,
+    signals: [...new Set(raw.signals.map((signal) => signal.trim().slice(0, 1000)))],
+    rationale: raw.rationale.trim().slice(0, 4000),
+    assessedAt: Number(assessedAt),
+  };
+}
+
+export function normalizeProjectTaskContextResetState(
+  value: unknown,
+): ProjectTaskContextResetState | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectTaskContextResetState>;
+  if (!Number.isInteger(raw.generation) || Number(raw.generation) < 2
+    || raw.count !== 1
+    || !['requested', 'cleared', 'republished', 'failed'].includes(String(raw.status))
+    || typeof raw.fingerprint !== 'string' || !raw.fingerprint.trim()
+    || typeof raw.reason !== 'string' || !raw.reason.trim()
+    || typeof raw.evidence !== 'string' || !raw.evidence.trim()
+    || typeof raw.cleanContext !== 'string' || !raw.cleanContext.trim()
+    || !Number.isFinite(raw.requestedAt)
+    || (raw.completedAt !== undefined && !Number.isFinite(raw.completedAt))
+    || (raw.error !== undefined && typeof raw.error !== 'string')) return undefined;
+  return {
+    generation: Number(raw.generation),
+    count: Number(raw.count),
+    status: raw.status as ProjectTaskContextResetStatus,
+    fingerprint: raw.fingerprint.trim().slice(0, 200),
+    reason: raw.reason.trim().slice(0, 4000),
+    evidence: raw.evidence.trim().slice(0, 12_000),
+    cleanContext: raw.cleanContext.trim().slice(0, 12_000),
+    requestedAt: Number(raw.requestedAt),
+    ...(raw.completedAt !== undefined ? { completedAt: Number(raw.completedAt) } : {}),
+    ...(raw.error?.trim() ? { error: raw.error.trim().slice(0, 4000) } : {}),
+  };
+}
+
+export function projectTaskContextResetFingerprint(
+  workItemId: string,
+  reason: string,
+  evidence: string,
+): string {
+  const input = [workItemId, reason, evidence]
+    .map((part) => part.trim().toLocaleLowerCase('en-US').replace(/\s+/gu, ' '))
+    .join('\u0000');
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `ctx-${hash.toString(16).padStart(8, '0')}`;
 }
 
 export function normalizeProjectCompletionResult(
@@ -1812,7 +1913,7 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
   };
 }
 
-/** Normalize only the current P7 governance model; older sessions are rejected during recovery. */
+/** Normalize only the current P8 governance model; older sessions are rejected during recovery. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
     goalConstruction?: unknown;
@@ -1957,6 +2058,17 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         requirementsVersion: itemRequirementsVersion,
         authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
         executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+        complexityAssessment: normalizeProjectTaskComplexityAssessment(
+          item.complexityAssessment,
+          item.updatedAt,
+        ) || {
+          complexity: 'medium',
+          decision: 'single-task',
+          signals: ['当前控制层工作项已定义为一个独立可验收成果'],
+          rationale: '内部恢复路径保留现有单一成果工作项；新的项目 AI 任务创建必须显式提交复杂度评估',
+          assessedAt: item.updatedAt,
+        },
+        contextReset: normalizeProjectTaskContextResetState(item.contextReset),
         baseline: activeBaseline
           ? item.baseline
           : requiredProjectTaskBaseline(itemRequirementsVersion),

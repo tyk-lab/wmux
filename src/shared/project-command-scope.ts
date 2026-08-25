@@ -6,7 +6,6 @@ const PROJECT_SCOPED_COMMANDS = new Set([
   'goal-plan',
   'logs',
   'terminals',
-  'terminal-rotate',
   'task-create',
   'task-update',
   'record',
