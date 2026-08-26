@@ -4,6 +4,11 @@
  * that path used to fall through to shell "Running" and look unchanged.
  */
 
+import {
+  activeProjectManagerAttentionEvent,
+  type ProjectManagerEvent,
+} from '../../../shared/project-manager';
+
 export interface StatusTextInputs {
   statusOverride?: 'idle' | 'running';
   runningAgentCount: number;
@@ -15,10 +20,31 @@ export interface StatusTextInputs {
   agentIsIdle: boolean;
   shellState?: string;
   notificationText?: string;
+  projectAlertText?: string | null;
+}
+
+export function resolveManagedProjectAlertText(
+  projects: ReadonlyArray<{
+    id: string;
+    status: string;
+    events: ProjectManagerEvent[];
+  }>,
+  projectIds: ReadonlySet<string>,
+): string | null {
+  const alertedProjects = projects.filter((project) => (
+    projectIds.has(project.id) && !!activeProjectManagerAttentionEvent(project.events)
+  ));
+  if (alertedProjects.length === 0) return null;
+  return alertedProjects.some((project) => project.status === 'paused')
+    ? '项目异常暂停'
+    : '项目需要处理';
 }
 
 /** Priorities 0–2: agent-derived signals. Null → fall through to shell state. */
 export function agentStatusText(s: StatusTextInputs): string | null {
+  // A control-plane alert outranks even a cosmetic manual status override.
+  if (s.projectAlertText) return s.projectAlertText;
+
   // Priority 0: user pinned the status by hand (issue #81).
   if (s.statusOverride) {
     return s.statusOverride === 'running' ? 'Running' : 'Idle';
@@ -83,7 +109,9 @@ export function resolveStatusClass(s: {
   agentIsIdle: boolean;
   shellState?: string;
   notificationText?: string;
+  projectAlertText?: string | null;
 }): string {
+  if (s.projectAlertText) return 'workspace-row__status--blocked';
   if (s.statusOverride) {
     return s.statusOverride === 'running'
       ? 'workspace-row__status--running'

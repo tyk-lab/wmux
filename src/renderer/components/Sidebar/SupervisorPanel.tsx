@@ -41,6 +41,9 @@ import {
 } from '../../supervisor/decision-options';
 import {
   buildSupervisorPlanView,
+  compactProjectAlertSummary,
+  isProjectSupervisorAssignmentPending,
+  summarizeProjectManagedStatus,
   summarizeSupervisorPlan,
   summarizeTaskExecution,
   type SupervisorTaskAgentState,
@@ -112,17 +115,6 @@ const WORK_SCOPE_LABELS: Record<SupervisorWorkScope, string> = {
   project: '当前工程文件夹',
   'task-files': '仅当前任务相关文件',
   'plan-defined': '按计划文件定义',
-};
-
-const PROJECT_WORK_ITEM_STATUS_LABELS: Record<string, string> = {
-  planned: '待派遣',
-  'waiting-dependencies': '等待依赖',
-  running: '监督中',
-  validating: '验证中',
-  'waiting-decision': '待决策',
-  failed: '执行失败',
-  completed: '已完成',
-  stopped: '已关闭',
 };
 
 const PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS: Record<string, string> = {
@@ -1576,18 +1568,36 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       </article>
                     );
                   }
-                  const statusLabel = item.status === 'completed' || item.status === 'stopped'
-                    ? PROJECT_WORK_ITEM_STATUS_LABELS[item.status]
-                    : laneState === 'waiting'
-                      ? '待续'
-                      : laneState === 'paused'
-                        ? '已暂停'
-                        : PROJECT_WORK_ITEM_STATUS_LABELS[item.status] || item.status;
+                  const pendingTransition = [...(scopedProject.pendingSupervisorTransitions || [])].reverse().find((transition) => (
+                    transition.workItemId === item.id || transition.laneId === lane.id
+                  ));
+                  const supervisorAssignmentPending = isProjectSupervisorAssignmentPending({
+                    workItemStatus: item.status,
+                    workItemLaneId: item.supervisorLaneId,
+                    workItemAssignmentVersion: item.assignmentVersion,
+                    laneId: lane.id,
+                    laneAssignmentVersion: lane.projectAssignmentVersion,
+                    laneControlState: laneState,
+                    laneAwaitingReview: lane.awaitingReview,
+                    taskContractPending: lane.projectTaskContractPending,
+                    latestBlocker: item.latestBlocker,
+                  });
+                  const managedStatus = summarizeProjectManagedStatus({
+                    workItemStatus: item.status,
+                    laneControlState: laneState,
+                    pendingTransition,
+                    latestBlocker: item.latestBlocker,
+                    supervisorAssignmentPending,
+                  });
                   const planView = buildSupervisorPlanView({
                     source: 'project-ai',
                     task: item.title,
                     projectTaskBatch: lane.projectTaskBatch,
                     latestDecision: lane.decisions?.[0],
+                    pendingTransition,
+                    workItemStatus: item.status,
+                    latestBlocker: item.latestBlocker,
+                    supervisorAssignmentPending,
                   });
                   const taskExecution = summarizeTaskExecution({
                     controlState: laneState,
@@ -1595,29 +1605,30 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     awaitingReview: lane.awaitingReview,
                     stopConfirmed: lane.stopConfirmed,
                   }, visibleAgentStates[lane.surfaceId]);
-                  const supervisorStatusLabel = item.status === 'completed' || item.status === 'stopped'
-                    ? '已结束'
-                    : laneState === 'active'
-                        ? '已连接'
-                        : laneState === 'waiting'
-                          ? '待续'
-                          : laneState === 'paused'
-                            ? '已暂停'
-                             : '已停止';
                   const completion = projectWorkItemCompletionResult(item);
                   return (
                     <article key={lane.id} data-status={item.status} data-active="1">
                       <div className="sup-panel__project-plan-row">
                         <span className="sup-panel__project-plan-dot" />
                         <strong title={item.title}>{item.title}</strong>
-                        <em>{statusLabel}</em>
+                        <em>{managedStatus.workItemLabel}</em>
                       </div>
                       <div className="sup-panel__project-plan-meta">
                         <span>上级任务：{planView.sourceLabel}</span>
                         <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
-                        <span>监督：{supervisorStatusLabel}</span>
+                        <span>监督：{managedStatus.supervisorLabel}</span>
                         <span>唯一任务 AI · 内部组织自治</span>
                       </div>
+                      {!completion && managedStatus.attention && (
+                        <div className="sup-panel__project-attention" role="alert" title={managedStatus.detail}>
+                          <span className="sup-panel__project-attention-icon">!</span>
+                          <div className="sup-panel__project-attention-copy">
+                            <div><strong>{managedStatus.workItemLabel}</strong><em>{managedStatus.supervisorLabel}</em></div>
+                            <p>{compactProjectAlertSummary(managedStatus.detail)}</p>
+                          </div>
+                          <button type="button" onClick={() => openProjectManagerConsole(scopedProjectId)}>在项目管理中处理</button>
+                        </div>
+                      )}
                       {completion ? <>
                         <div className="sup-panel__project-plan-route"><strong>监督 AI 完成结果</strong><span>{item.status === 'completed' ? '项目 AI 已验收' : '等待项目 AI 验收'}</span></div>
                         <div className="sup-panel__project-plan-detail"><strong>完成结果</strong><span>{completion.summary}</span></div>
@@ -1640,7 +1651,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           ))}
                         </ol>}
                         <div className="sup-panel__project-plan-progress">
-                          任务 AI 执行摘要：{taskExecution.label} · {item.latestEvidence || item.latestContextSummary || taskExecution.detail}
+                          任务终端活动：{taskExecution.label} · {item.latestEvidence || item.latestContextSummary || taskExecution.detail}
                         </div>
                         {(item.latestBlocker || item.latestEvidence || item.latestContextSummary) && (
                           <div className="sup-panel__project-plan-latest" data-blocked={item.latestBlocker ? '1' : '0'}>
@@ -1699,6 +1710,37 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
               const stoppedLaneExpanded = expandedStoppedLaneIds.has(lane.id);
               const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;
               const latestDecision = lane.decisions?.[0];
+              const managedWorkItem = laneProjectManaged
+                ? scopedProjectWorkItems.find((item) => item.id === lane.projectWorkItemId)
+                : undefined;
+              const managedTransition = laneProjectManaged
+                ? [...(scopedProject?.pendingSupervisorTransitions || [])].reverse().find((transition) => (
+                    transition.laneId === lane.id
+                    || (!!managedWorkItem && transition.workItemId === managedWorkItem.id)
+                  ))
+                : undefined;
+              const supervisorAssignmentPending = managedWorkItem
+                ? isProjectSupervisorAssignmentPending({
+                    workItemStatus: managedWorkItem.status,
+                    workItemLaneId: managedWorkItem.supervisorLaneId,
+                    workItemAssignmentVersion: managedWorkItem.assignmentVersion,
+                    laneId: lane.id,
+                    laneAssignmentVersion: lane.projectAssignmentVersion,
+                    laneControlState,
+                    laneAwaitingReview: lane.awaitingReview,
+                    taskContractPending: lane.projectTaskContractPending,
+                    latestBlocker: managedWorkItem.latestBlocker,
+                  })
+                : false;
+              const managedStatus = managedWorkItem
+                ? summarizeProjectManagedStatus({
+                    workItemStatus: managedWorkItem.status,
+                    laneControlState,
+                    pendingTransition: managedTransition,
+                    latestBlocker: managedWorkItem.latestBlocker,
+                    supervisorAssignmentPending,
+                  })
+                : undefined;
               const completion = !laneProjectManaged
                 && latestDecision?.outcome === 'complete'
                 && (lane.stopConfirmed || laneControlState === 'waiting' || laneControlState === 'stopped')
@@ -1727,8 +1769,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 source: laneProjectManaged ? 'project-ai' : 'user',
                 task: lane.currentTask || laneConfig.taskGoal || planFileName,
                 latestDecision,
+                projectTaskBatch: lane.projectTaskBatch,
+                pendingTransition: managedTransition,
+                workItemStatus: managedWorkItem?.status,
+                latestBlocker: managedWorkItem?.latestBlocker,
+                supervisorAssignmentPending,
               });
-              const laneStatusLabel = laneControlState === 'waiting'
+              const laneStatusLabel = managedStatus?.supervisorLabel || (laneControlState === 'waiting'
                 ? '待续'
                 : lane.stopConfirmed
                   ? '已达停止条件'
@@ -1736,7 +1783,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   ? '监督中'
                   : laneControlState === 'paused'
                     ? '已暂停'
-                    : '已停止';
+                    : '已停止');
               const laneHeader = (
                 <>
                   <span className="sup-panel__lane-label">{lane.label}</span>
@@ -1924,7 +1971,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   <div className="sup-panel__lane-detail">
                     {lane.workspaceTitle ? `${lane.workspaceTitle} · ` : ''}
                     {lane.surfaceId.slice(0, 14)}…
-                    {laneControlState === 'waiting'
+                    {managedStatus
+                      ? ` · ${managedStatus.detail}`
+                      : laneControlState === 'waiting'
                       ? ' · 已达停止条件，等待下一步方向'
                       : lane.stopConfirmed
                         ? ' · 已达停止条件'
@@ -2020,7 +2069,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
                     return (
                       <div className="sup-panel__lane-decision" title={decision.reason || decision.next}>
-                        最新裁决：{decision.outcome}{decisionKind} · {decision.reason
+                        {managedStatus?.attention ? '最近历史裁决' : '最新裁决'}：{decision.outcome}{decisionKind} · {decision.reason
                           || decision.taskDispatch?.outcome
                           || decision.next
                           || `依据当前终端证据完成 ${decision.outcome} 判定`}

@@ -3,6 +3,10 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildSupervisorPlanView,
+  compactProjectAlertSummary,
+  isProjectSupervisorAssignmentPending,
+  summarizeProjectManagedStatus,
+  summarizeProjectSubgoalStatus,
   summarizeSupervisorPlan,
   summarizeTaskExecution,
 } from '../../src/renderer/supervisor/status-summary';
@@ -222,6 +226,160 @@ describe('supervisor status summary', () => {
     });
   });
 
+  it('uses a pending project transition instead of a stale lane decision', () => {
+    const view = buildSupervisorPlanView({
+      source: 'project-ai',
+      task: '实现用户管理操作',
+      projectTaskBatch: {
+        kind: 'rework', coverage: 'bounded-batch', outcome: '旧的返工批次',
+        completionDefinition: [], evidenceExpectations: [], unmetCompletionItems: [],
+        knownFacts: [], constraints: [], nonGoals: [],
+      },
+      latestDecision: {
+        ts: 5, task: '实现用户管理操作', outcome: 'rework', reason: '旧裁决', next: '继续返工',
+      },
+      pendingTransition: {
+        kind: 'decision-required',
+        summary: '缺少可信的 GUI 交互验收证据',
+      },
+    });
+
+    expect(view).toMatchObject({
+      mode: 'forming',
+      modeLabel: '等待项目 AI 处理',
+      route: '缺少可信的 GUI 交互验收证据',
+      nextInstruction: '项目 AI 正在处理监督交接，尚未下发新的执行批次',
+    });
+    expect(JSON.stringify(view)).not.toContain('旧裁决');
+  });
+
+  it('keeps waiting-decision visible after the transition has been dequeued', () => {
+    const view = buildSupervisorPlanView({
+      source: 'project-ai',
+      task: '实现用户管理操作',
+      workItemStatus: 'waiting-decision',
+      latestBlocker: '缺少可信的 GUI 交互验收证据',
+      latestDecision: {
+        ts: 4, task: '实现用户管理操作', outcome: 'rework', reason: '旧裁决', next: '继续返工',
+      },
+    });
+
+    expect(view).toMatchObject({
+      modeLabel: '等待项目 AI 处理',
+      route: '缺少可信的 GUI 交互验收证据',
+      nextInstruction: '项目 AI 尚未下发新的执行批次',
+    });
+    expect(JSON.stringify(view)).not.toContain('旧裁决');
+  });
+
+  it('separates project work-item lifecycle from supervisor channel activity', () => {
+    expect(summarizeProjectManagedStatus({
+      workItemStatus: 'waiting-decision',
+      laneControlState: 'active',
+      pendingTransition: { kind: 'decision-required', summary: '需要项目 AI 选择验证路线' },
+    })).toMatchObject({
+      workItemLabel: '等待项目 AI 处理',
+      supervisorLabel: '决策问题已交接',
+      attention: true,
+    });
+    expect(summarizeProjectManagedStatus({
+      workItemStatus: 'running',
+      laneControlState: 'active',
+    })).toMatchObject({
+      workItemLabel: '任务执行中',
+      supervisorLabel: '监督已连接',
+      attention: false,
+    });
+    expect(summarizeProjectManagedStatus({
+      workItemStatus: 'waiting-decision',
+      laneControlState: 'paused',
+      latestBlocker: '监督协议错误，通道已暂停',
+    })).toMatchObject({
+      workItemLabel: '已暂停 · 等待项目 AI 处理',
+      supervisorLabel: '监督已暂停',
+      detail: '监督协议错误，通道已暂停',
+      attention: true,
+    });
+  });
+
+  it('treats a newly assigned work item as waiting for supervisor instead of project AI', () => {
+    const supervisorAssignmentPending = isProjectSupervisorAssignmentPending({
+      workItemStatus: 'waiting-decision',
+      workItemLaneId: 'lane-a',
+      workItemAssignmentVersion: 6,
+      laneId: 'lane-a',
+      laneAssignmentVersion: 6,
+      laneControlState: 'active',
+      laneAwaitingReview: true,
+      latestBlocker: '等待专属监督首次派发中性成果包',
+    });
+
+    expect(supervisorAssignmentPending).toBe(true);
+    expect(summarizeProjectManagedStatus({
+      workItemStatus: 'waiting-decision',
+      laneControlState: 'active',
+      latestBlocker: '等待专属监督首次派发中性成果包',
+      supervisorAssignmentPending,
+    })).toMatchObject({
+      workItemLabel: '等待监督 AI 处理',
+      supervisorLabel: '任务已交接',
+      attention: false,
+    });
+    expect(buildSupervisorPlanView({
+      source: 'project-ai',
+      task: '恢复用户管理任务',
+      workItemStatus: 'waiting-decision',
+      latestBlocker: '等待专属监督首次派发中性成果包',
+      supervisorAssignmentPending,
+    })).toMatchObject({
+      modeLabel: '等待监督 AI 处理',
+      nextInstruction: expect.stringContaining('专属监督确认后'),
+    });
+  });
+
+  it('does not surface a cleared planned item as a stale paused-lane warning', () => {
+    expect(summarizeProjectManagedStatus({
+      workItemStatus: 'planned',
+      laneControlState: 'paused',
+    })).toMatchObject({
+      workItemLabel: '等待派发',
+      supervisorLabel: '监督待分配',
+      attention: false,
+    });
+  });
+
+  it('shows stage closure drift instead of reporting completed work as planning', () => {
+    expect(summarizeProjectSubgoalStatus({
+      status: 'planned',
+      workItemStatuses: ['completed'],
+    })).toMatchObject({ label: '待阶段闭合', attention: true });
+    expect(summarizeProjectSubgoalStatus({
+      status: 'planned',
+      workItemStatuses: ['waiting-decision'],
+    })).toMatchObject({ label: '工作项待处理', attention: true });
+    expect(summarizeProjectSubgoalStatus({
+      status: 'achieved',
+      workItemStatuses: ['completed'],
+    })).toMatchObject({ label: '已达成', attention: false });
+    expect(summarizeProjectSubgoalStatus({
+      status: 'blocked',
+      workItemStatuses: ['completed'],
+    })).toMatchObject({ label: '阻塞中', attention: true });
+    expect(summarizeProjectSubgoalStatus({
+      status: 'planned',
+      workItemStatuses: ['paused'],
+    })).toMatchObject({ label: '工作项已暂停', attention: true });
+  });
+
+  it('keeps long runtime alerts readable while preserving a useful summary', () => {
+    const detail = `项目认知基线尚未确认。${'必须先读取状态与协议字段。'.repeat(30)}`;
+    const summary = compactProjectAlertSummary(detail);
+
+    expect(summary.length).toBeLessThanOrEqual(181);
+    expect(summary).toContain('项目认知基线尚未确认');
+    expect(summary.endsWith('…')).toBe(true);
+  });
+
   it('shows the latest supervisor decision while a formal route is still forming', () => {
     expect(buildSupervisorPlanView({
       source: 'user',
@@ -275,7 +433,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('监督 AI 当前规划');
     expect(panelSource).toContain('下一步给任务 AI');
     expect(panelSource).toContain('projectTaskBatch: lane.projectTaskBatch');
-    expect(panelSource).toContain('任务 AI 执行摘要：{taskExecution.label}');
+    expect(panelSource).toContain('任务终端活动：{taskExecution.label}');
     expect(panelSource).not.toContain('监督 AI 执行规划');
     expect(panelSource).toContain('visibleLanes.map((lane)');
     expect(panelSource).toContain('scopedProjectWorkItems.find((candidate) => candidate.id === lane.projectWorkItemId)');
@@ -285,8 +443,10 @@ describe('supervisor status summary', () => {
     expect(panelSource).not.toContain('item.supervisorPlan');
     expect(panelSource).toContain('item.latestBlocker');
     expect(panelSource).toContain('item.latestEvidence');
-    expect(panelSource).toContain("? '已结束'");
-    expect(panelSource).toContain(": '已停止';");
+    expect(panelSource).toContain('managedStatus.supervisorLabel');
+    expect(panelSource).toContain('managedStatus.detail');
+    expect(panelSource).toContain('className="sup-panel__project-attention"');
+    expect(panelSource).toContain('在项目管理中处理');
     expect(panelSource).toContain('item.latestEvidence || item.latestContextSummary || taskExecution.detail');
     expect(panelSource).toContain('const completion = projectWorkItemCompletionResult(item)');
     expect(panelSource).toContain('completion ? <>');

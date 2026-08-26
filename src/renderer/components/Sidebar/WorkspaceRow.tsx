@@ -7,7 +7,11 @@ import { agentSessionsForWorkspace, HookActivityEntry } from '../../store/agent-
 import UnreadBadge from './UnreadBadge';
 import PrStatusIcon from './PrStatusIcon';
 import { traceState, toolChannel } from './trace-signals';
-import { resolveStatusText, resolveStatusClass } from './status-text';
+import {
+  resolveManagedProjectAlertText,
+  resolveStatusText,
+  resolveStatusClass,
+} from './status-text';
 
 /** Stable empty view — avoids allocating a fresh object every collapsed tick. */
 const EMPTY_AGENTS_VIEW: WorkspaceAgentsView = { lines: [], total: 0, running: 0 };
@@ -15,6 +19,16 @@ const EMPTY_AGENTS_VIEW: WorkspaceAgentsView = { lines: [], total: 0, running: 0
 function getAllSurfaceIds(tree: SplitNode): string[] {
   if (tree.type === 'leaf') return tree.surfaces.map(s => s.id);
   return [...getAllSurfaceIds(tree.children[0]), ...getAllSurfaceIds(tree.children[1])];
+}
+
+function getManagedProjectIds(tree: SplitNode): string[] {
+  if (tree.type === 'leaf') {
+    return tree.surfaces.flatMap((surface) => [
+      surface.projectManagerProjectId,
+      surface.projectSupervisorProjectId,
+    ].filter((id): id is string => !!id));
+  }
+  return [...getManagedProjectIds(tree.children[0]), ...getManagedProjectIds(tree.children[1])];
 }
 
 /** Human-readable label for a tool name */
@@ -285,6 +299,10 @@ export default function WorkspaceRow({
 
   // Busy if any terminal is running (aggregated shellState) or agents work.
   const needsAttention = useStore((s) => !!s.workspaceAttention[workspace.id]);
+  const projectAlertText = useStore((state) => {
+    const projectIds = new Set(getManagedProjectIds(workspace.splitTree));
+    return resolveManagedProjectAlertText(state.projectManagers, projectIds);
+  });
 
   // ── Status text: manual override > tool activity > shell state > default ──
   const statusText = useMemo(() => resolveStatusText({
@@ -298,7 +316,8 @@ export default function WorkspaceRow({
     agentIsIdle,
     shellState: workspace.shellState,
     notificationText: workspace.notificationText,
-  }), [workspace.statusOverride, runningAgentCount, wsAgents, sessions, workingSessions, blockedSessions, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText]);
+    projectAlertText,
+  }), [workspace.statusOverride, runningAgentCount, wsAgents, sessions, workingSessions, blockedSessions, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText, projectAlertText]);
 
   // ── Status color class ──
   const statusClass = useMemo(() => resolveStatusClass({
@@ -311,7 +330,8 @@ export default function WorkspaceRow({
     agentIsIdle,
     shellState: workspace.shellState,
     notificationText: workspace.notificationText,
-  }), [workspace.statusOverride, blockedSessions, runningAgentCount, workingSessions, sessions.length, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText]);
+    projectAlertText,
+  }), [workspace.statusOverride, blockedSessions, runningAgentCount, workingSessions, sessions.length, currentToolLabel, agentIsIdle, workspace.shellState, workspace.notificationText, projectAlertText]);
 
   // ── Context line: "branch* · ~/path/to/dir" ──
   const contextLine = useMemo(() => {
@@ -331,6 +351,7 @@ export default function WorkspaceRow({
 
   // ── State dot class — pulsing when busy; attention blink after idle ──
   const stateDotClass = useMemo(() => {
+    if (projectAlertText) return 'workspace-row__state-dot--interrupted';
     if (workspace.statusOverride) {
       return workspace.statusOverride === 'running'
         ? 'workspace-row__state-dot--running'
@@ -342,7 +363,7 @@ export default function WorkspaceRow({
     if (workspace.shellState === 'interrupted') return 'workspace-row__state-dot--interrupted';
     if (workspace.shellState === 'idle') return 'workspace-row__state-dot--idle';
     return '';
-  }, [workspace.statusOverride, isAgentActive, agentIsIdle, workspace.shellState]);
+  }, [workspace.statusOverride, projectAlertText, isAgentActive, agentIsIdle, workspace.shellState]);
 
   return (
     <div

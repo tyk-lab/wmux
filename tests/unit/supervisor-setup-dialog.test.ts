@@ -222,6 +222,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('添加路径');
     expect(projectManagerDialogSource).toContain('pendingUserQuestion');
     expect(projectManagerDialogSource).toContain('项目阻塞，需要你指示');
+    expect(projectManagerDialogSource).toContain('项目验证受限，需要你选择');
     expect(projectManagerDialogSource).toContain('项目管理 AI 邀请你对齐需求');
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
@@ -339,6 +340,18 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('const projectRuntimeCandidate = projectManagedStart ? candidates[0] : undefined;');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__alert');
+    expect(projectManagerDialogSource).toContain('compactProjectAlertSummary(activeAlert.summary)');
+    expect(projectManagerDialogSource).toContain('查看技术详情');
+  });
+
+  it('orders the project console tabs by execution, requirements, conversation, then agents', () => {
+    const tabs = projectManagerDialogSource.slice(
+      projectManagerDialogSource.indexOf('<nav className="project-manager-dialog__tabs"'),
+      projectManagerDialogSource.indexOf('</nav>', projectManagerDialogSource.indexOf('<nav className="project-manager-dialog__tabs"')),
+    );
+    expect(tabs.indexOf('执行链')).toBeLessThan(tabs.indexOf('目标与需求'));
+    expect(tabs.indexOf('目标与需求')).toBeLessThan(tabs.indexOf('对话与进度'));
+    expect(tabs.indexOf('对话与进度')).toBeLessThan(tabs.indexOf('Agent 配置'));
   });
 
   it('allows optional user guidance to be evaluated by the AI supervisor', () => {
@@ -537,7 +550,8 @@ describe('supervisor setup dialog feedback', () => {
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {
     expect(panelSource).toContain('const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;');
-    expect(panelSource).toMatch(/const laneStatusLabel = laneControlState === 'waiting'[\s\S]+lane\.stopConfirmed[\s\S]+\? '已达停止条件'/);
+    expect(panelSource).toContain('const laneStatusLabel = managedStatus?.supervisorLabel || (laneControlState');
+    expect(panelSource).toMatch(/laneControlState === 'waiting'[\s\S]+lane\.stopConfirmed[\s\S]+\? '已达停止条件'/);
     expect(panelSource).toContain('aria-expanded={stoppedLaneExpanded}');
     expect(panelSource).toContain("title={stoppedLaneExpanded ? '折叠监督详情' : '展开监督详情'}");
     expect(panelSource).toContain('{!laneDetailsCollapsed && (');
