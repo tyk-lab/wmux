@@ -5,7 +5,6 @@ import type {
   SupervisorRestoreSource,
   SupervisorSession,
 } from '../store/supervisor-slice';
-import type { ProjectSupervisorStagePlan } from '../../shared/project-manager';
 import type {
   SupervisedTerminalSnapshot,
   SupervisedTerminalSnapshotSummary,
@@ -65,6 +64,7 @@ export interface RestoredLaneHistory {
   ordinaryContextHealth?: SupervisorLane['ordinaryContextHealth'];
   goalVortex?: SupervisorLane['goalVortex'];
   latestSupervisorUserGuidance?: SupervisorLane['latestSupervisorUserGuidance'];
+  standingUserDecision?: SupervisorLane['standingUserDecision'];
   workerTurnId?: number;
   recoverySnapshotId?: string;
   recoverySnapshotSavedAt?: number;
@@ -95,28 +95,6 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
-}
-
-function payloadStagePlan(payload: Record<string, unknown>): ProjectSupervisorStagePlan | undefined {
-  const value = payload.stagePlan;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const plan = value as Partial<ProjectSupervisorStagePlan>;
-  if (!Number.isFinite(plan.revision)
-    || typeof plan.selectedRoute !== 'string'
-    || !Array.isArray(plan.milestones)
-    || !Array.isArray(plan.expectedPaths)
-    || !Array.isArray(plan.targetedValidation)
-    || !Array.isArray(plan.serializedBoundaries)
-    || !Array.isArray(plan.remainingWork)
-    || !Number.isFinite(plan.updatedAt)) return undefined;
-  if (!plan.milestones.every((milestone) => (
-    !!milestone
-    && typeof milestone.id === 'string'
-    && typeof milestone.title === 'string'
-    && typeof milestone.outcome === 'string'
-    && ['planned', 'active', 'completed'].includes(String(milestone.status))
-  ))) return undefined;
-  return plan as ProjectSupervisorStagePlan;
 }
 
 function timestamp(ts: number): string {
@@ -365,7 +343,6 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
       const reason = payloadText(event.payload || {}, 'reason');
       const next = payloadText(event.payload || {}, 'next');
       const proposalKind = payloadText(event.payload || {}, 'proposalKind');
-      const plan = payloadStagePlan(event.payload || {});
       decisions.unshift({
         ts: event.ts,
         task: currentTask || '（任务未上报）',
@@ -373,7 +350,6 @@ export function summarizeRestoredHistory(history: HistoryResult): RestoredLaneHi
         ...(proposalKind ? { proposalKind: proposalKind as SupervisorDecision['proposalKind'] } : {}),
         reason,
         next,
-        ...(plan ? { plan } : {}),
       });
       const proposal = proposalTitle(proposalKind);
       const proposalLabel = proposal ? `（${proposal}）` : '';
@@ -421,6 +397,7 @@ function snapshotRestoredHistory(snapshot: SupervisedTerminalSnapshot): Restored
     ordinaryContextHealth: snapshot.supervisor.state.ordinaryContextHealth as SupervisorLane['ordinaryContextHealth'],
     goalVortex: snapshot.supervisor.state.goalVortex as SupervisorLane['goalVortex'],
     latestSupervisorUserGuidance: snapshot.supervisor.state.latestSupervisorUserGuidance as SupervisorLane['latestSupervisorUserGuidance'],
+    standingUserDecision: snapshot.supervisor.state.standingUserDecision as SupervisorLane['standingUserDecision'],
     workerTurnId: snapshot.supervisor.state.workerTurnId,
     recoverySnapshotId: snapshot.snapshotId,
     recoverySnapshotSavedAt: snapshot.savedAt,

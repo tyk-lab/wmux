@@ -3500,6 +3500,29 @@
   background: rgba(80, 160, 255, 0.06);
 }
 
+.sup-panel__standing-decision {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.sup-panel__standing-decision > input {
+  margin-top: 2px;
+}
+
+.sup-panel__standing-decision > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sup-panel__standing-decision small {
+  opacity: 0.66;
+}
+
 .sup-panel__decision-divider {
   display: flex;
   align-items: center;

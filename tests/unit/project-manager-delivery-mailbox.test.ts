@@ -63,7 +63,7 @@ describe('project manager delivery mailbox', () => {
     expect(compactProjectManagerPendingDeliveries([latest, old])).toEqual([latest]);
   });
 
-  it('keeps only the newest runtime recovery notice per work item, including legacy records', () => {
+  it('deduplicates only deliveries carrying an explicit key', () => {
     const old = {
       ...delivery('old-1'),
       text: '[项目运行链自动重建失败]\n项目：pm-a；任务：task-a',
@@ -77,7 +77,7 @@ describe('project manager delivery mailbox', () => {
       text: '[项目运行链自动重建失败]\n项目：pm-a；任务：task-b',
     };
     expect(compactProjectManagerPendingDeliveries([old, latest, otherTask]))
-      .toEqual([latest, otherTask]);
+      .toEqual([old, latest, otherTask]);
 
     const keyedOld = { ...delivery('keyed-old-4'), dedupeKey: 'runtime-recovery:task-a' };
     const keyedLatest = { ...delivery('keyed-latest-5'), dedupeKey: 'runtime-recovery:task-a' };

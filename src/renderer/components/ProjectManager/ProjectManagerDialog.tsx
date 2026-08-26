@@ -5,6 +5,7 @@ import {
   activeProjectSubgoals,
   MAX_PROJECT_PLAN_FILES,
   projectDisplayName,
+  projectManagerQuestionAllowsReusableDecision,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
   type ProjectPlanFileSnapshot,
@@ -270,7 +271,6 @@ interface ProjectRecoveryCandidate {
   status: string;
   workItemCount: number;
   executionProtocolVersion: number;
-  requiresProtocolMigration: boolean;
   updatedAt: number;
 }
 
@@ -350,6 +350,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [recoveryDeleteCandidate, setRecoveryDeleteCandidate] = useState<ProjectRecoveryCandidate | null>(null);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
+  const [reuseSimilarDecision, setReuseSimilarDecision] = useState(false);
   const [workItemInterventionId, setWorkItemInterventionId] = useState('');
   const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
   const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
@@ -519,6 +520,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   useEffect(() => {
     setClarificationOptionId('');
     setClarificationAnswer('');
+    setReuseSimilarDecision(false);
     if (!open || !session?.pendingUserQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => {
       clarificationRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -681,6 +683,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       }
       const result = await invoke({
         action: restore ? 'restore-projects' : 'skip-project-recovery',
+        backgroundRuntimeStart: true,
         ...(restore ? {
           ...(recoveryMode === 'runtime' ? { mode: 'runtime' } : {}),
           projectIds: selectedRecoveryIds,
@@ -766,6 +769,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     try {
       const result = await invoke({
         action: 'start',
+        backgroundRuntimeStart: true,
         sourceTerminalId: creationMode === 'terminal' ? contextTerminal?.surfaceId : undefined,
         projectDir: projectDir.trim(),
         projectName: projectName.trim(),
@@ -905,9 +909,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         optionId: selected?.id,
         answer: clarificationAnswer.trim() || selected?.label || '',
         source: 'desktop',
+        reuseForSimilar: reuseSimilarDecision,
       });
       setClarificationOptionId('');
       setClarificationAnswer('');
+      setReuseSimilarDecision(false);
       setConfigNotice(result.message || '答复已提交给项目管理 AI。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
@@ -1097,7 +1103,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const projectDefinitionDraftDirty = projectDefinitionChanged || !!definitionPlanFilePath.trim();
   const closeDialog = () => {
     if (embedded) return;
-    if (busy) return;
     if (!creating && session && projectDefinitionDraftDirty) discardProjectDefinitionChanges();
     close();
   };
@@ -1186,7 +1191,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               <small>{candidate.projectDir}</small>
                               <em>
                                 {STATUS_LABELS[candidate.status] || candidate.status} · {candidate.workItemCount} 个工作项
-                                {candidate.requiresProtocolMigration ? ' · 恢复时升级到最新执行协议' : ''}
                                 {' · '}最后更新 {new Date(candidate.updatedAt).toLocaleString('zh-CN', { hour12: false })}
                               </em>
                             </span>
@@ -1309,6 +1313,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 ))}
               </div>
               <textarea className="supervisor-dialog__textarea" rows={3} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="可补充说明，或不选上述选项直接填写自定义答复" />
+              <label className="project-manager-dialog__reuse-decision">
+                <input
+                  type="checkbox"
+                  checked={reuseSimilarDecision}
+                  disabled={!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion)}
+                  onChange={(event) => setReuseSimilarDecision(event.target.checked)}
+                />
+                <span>以后遇到同类问题，沿用本次决定，由项目 AI / 监督 AI 自行处理，不再重复询问</span>
+              </label>
+              {!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
+                <div className="supervisor-dialog__hint">当前问题涉及人工操作、凭据、权限或高风险边界，必须逐次确认，不能自动沿用。</div>
+              )}
               <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || (!clarificationOptionId && !clarificationAnswer.trim())} onClick={() => void answerClarification()}>{busy ? '正在提交…' : '确认并交给项目管理 AI'}</button>
               <div className="supervisor-dialog__hint">该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。</div>
             </section>
@@ -1727,9 +1743,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     const supervisorPlanView = buildSupervisorPlanView({
                       source: 'project-ai',
                       task: item.title,
-                      plan: item.supervisorPlan,
                       latestDecision: itemLane?.decisions?.[0],
-                      baselineStatus: item.baseline?.status,
                     });
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
                     const itemCompletion = projectWorkItemCompletionResult(item);
@@ -1737,9 +1751,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       event.kind === 'user-work-item-intervention'
                     ));
                     const intervention = latestIntervention?.payload?.intervention;
-                    const statusLabel = item.supersededByWorkItemId
-                      ? '已冻结并接续'
-                      : item.status === 'stopped' && intervention === 'skip'
+                    const statusLabel = item.status === 'stopped' && intervention === 'skip'
                       ? '已跳过'
                       : item.status === 'stopped' && intervention === 'close'
                         ? '已关闭'
@@ -1765,9 +1777,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <strong>{item.title}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
-                          {item.supersededByWorkItemId && <><dt>审计冻结</dt><dd>预算与执行历史保持不变；仅由后继 {item.supersededByWorkItemId} 继续。</dd></>}
                           <dt>执行者</dt><dd>项目唯一任务 AI；当前模式 {item.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}，线程内具体分工由任务 AI 自主决定</dd>
-                          <dt>项目基线</dt><dd>{item.baseline?.status === 'approved' ? `已审核：${item.baseline.workspaceVersion || '工作区快照已记录'}` : item.baseline?.status === 'investigating' ? '只读调查已下达，等待任务 AI 报告和监督 AI 审核' : '待任务 AI 只读调查并由监督 AI 审核；审核前禁止写入和测试'}</dd>
                           <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
                           <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
@@ -2030,7 +2040,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               onClick={() => void updateProjectDefinition()}
             >{busy ? '正在应用…' : '确认生效'}</button>
           </>}
-          {!embedded && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={closeDialog}>{projectDefinitionDraftDirty ? '关闭（取消变更）' : '关闭'}</button>}
+          {!embedded && <button type="button" className="confirm-dialog__btn" onClick={closeDialog} title={busy ? '关闭窗口；已经提交的后台操作不会中断' : undefined}>{projectDefinitionDraftDirty ? '关闭（取消变更）' : '关闭'}</button>}
           {!awaitingRecovery && (creating || (!embedded && !session)) && <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void start()}>{busy ? '正在添加…' : creationMode === 'terminal' ? '基于终端创建项目 AI' : '添加项目'}</button>}
         </div>
 

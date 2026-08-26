@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  blockingSupervisorDecisionDeliveries,
   canDeliverToSupervisor,
   enqueueSupervisorDelivery,
   isRecoverableStaleSupervisorState,
@@ -8,6 +9,7 @@ import {
   removeFailedSupervisorDelivery,
   shouldRecoverProjectSupervisorIdleReview,
   shouldRecoverWorkerStopHookFailure,
+  shouldIgnoreProjectWorkerLifecycleBeforeDispatch,
   shouldReportUnacknowledgedSupervisorIdle,
   supervisorComposerRecoveryReady,
   supervisorDeliveryLabel,
@@ -29,6 +31,25 @@ const event = (id: string, kind: 'task-end', task: string, turnId?: number) => (
 });
 
 describe('supervisor delivery queue', () => {
+  it('ignores project task startup lifecycle until a real work contract is dispatched', () => {
+    expect(shouldIgnoreProjectWorkerLifecycleBeforeDispatch({
+      projectManaged: true,
+      projectTaskContractPending: true,
+      projectWorkItemId: 'task-a',
+      currentTask: '交付功能',
+    })).toBe(true);
+    expect(shouldIgnoreProjectWorkerLifecycleBeforeDispatch({
+      projectManaged: true,
+      projectTaskContractPending: false,
+      projectWorkItemId: 'task-a',
+      currentTask: '交付功能',
+    })).toBe(false);
+    expect(shouldIgnoreProjectWorkerLifecycleBeforeDispatch({
+      projectManaged: false,
+      currentTask: '',
+    })).toBe(false);
+  });
+
   it('preserves repeated task text from different worker turns', () => {
     const first = event('end-1', 'task-end', '运行测试', 1);
     const second = event('end-2', 'task-end', '运行测试', 2);
@@ -139,11 +160,11 @@ describe('supervisor delivery queue', () => {
       id: 'later', kind: 'control-message' as const, task: '更新方向',
       text: '后续控制消息', createdAt: 2, stage: 'pending' as const,
     };
-    const legacyBootstrap = {
+    const unflaggedBootstrap = {
       ...bootstrap,
-      id: 'legacy-startup',
+      id: 'unflagged-startup',
       bootstrapOnRuntimeReady: undefined,
-      text: '# 项目监督 AI · 首次启动任务终端\n旧版持久化协议',
+      text: '# 项目监督 AI · 首次启动任务终端\n缺少显式启动标志',
     };
 
     expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, false)).toBeUndefined();
@@ -151,8 +172,8 @@ describe('supervisor delivery queue', () => {
       .toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([bootstrap, later], { state: 'unknown' }, true, true)?.id)
       .toBe('startup');
-    expect(nextDeliverableSupervisorDelivery([legacyBootstrap], { state: 'unknown' }, true, true)?.id)
-      .toBe('legacy-startup');
+    expect(nextDeliverableSupervisorDelivery([unflaggedBootstrap], { state: 'unknown' }, true, true))
+      .toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([later], { state: 'unknown' }, true, true)).toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'working' }, true, true)).toBeUndefined();
     expect(nextDeliverableSupervisorDelivery([bootstrap], { state: 'blocked', blockedReason: 'permission' }, true, true))
@@ -249,6 +270,48 @@ describe('supervisor delivery queue', () => {
     expect(nextDeliverableSupervisorDelivery([submitted, later], 'idle')).toBeUndefined();
     expect(enqueueSupervisorDelivery([submitted], later).map((item) => item.id))
       .toEqual(['submitted-control', 'end']);
+  });
+
+  it('delivers a project assignment before an already queued worker review', () => {
+    const review = { ...event('review', 'task-end', '复核任务结果', 3), createdAt: 1 };
+    const assignment = {
+      id: 'assignment', kind: 'control-message' as const, task: '接收工作项',
+      text: '[项目 AI 已交付工作项]', createdAt: 2, stage: 'pending' as const,
+      projectAssignmentVersion: 4,
+    };
+
+    expect(nextDeliverableSupervisorDelivery([review, assignment], 'idle')?.id).toBe('assignment');
+  });
+
+  it('blocks only the control facts that causally precede the current decision', () => {
+    const assignment = {
+      id: 'assignment', kind: 'control-message' as const, task: '接收工作项',
+      text: '[项目 AI 已交付工作项]', createdAt: 1, stage: 'pending' as const,
+      projectAssignmentVersion: 4,
+    };
+    const earlierControl = {
+      ...assignment, id: 'earlier-control', text: '先处理的约束', createdAt: 5,
+      projectAssignmentVersion: undefined,
+    };
+    const futureControl = { ...earlierControl, id: 'future-control', text: '下一轮约束', createdAt: 20 };
+    const unversionedAssignment = {
+      ...earlierControl, id: 'unversioned-assignment', text: '[项目 AI 已交付工作项｜缺少版本]',
+    };
+    const context = {
+      activeReviewId: 'review-4',
+      reviewOpenedAt: 10,
+      projectAssignmentVersion: 4,
+      projectTaskContractPending: false,
+    };
+
+    expect(blockingSupervisorDecisionDeliveries(
+      [assignment, earlierControl, futureControl, unversionedAssignment],
+      context,
+    ).map((delivery) => delivery.id)).toEqual(['assignment', 'earlier-control', 'unversioned-assignment']);
+    expect(blockingSupervisorDecisionDeliveries([assignment], {
+      ...context,
+      projectAssignmentConfirmedVersion: 4,
+    })).toEqual([]);
   });
 
   it('detects an expired submitted delivery without making it retryable', () => {

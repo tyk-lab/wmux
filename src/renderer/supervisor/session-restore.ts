@@ -5,9 +5,9 @@ export function shouldInitializeWorkspaceLayout(existingWorkspaceCount: number):
   return existingWorkspaceCount === 0;
 }
 
-/** Dedicated supervisor terminals are transient: their state lives only in the active renderer session. */
+/** Agent runtimes are transient; the ordinary status page itself is safe to restore beside the task terminal. */
 export function isTransientSupervisorSurface(surface: SurfaceRef): boolean {
-  return surface.type === 'supervisor'
+  return (surface.type === 'supervisor' && !!surface.projectSupervisorProjectId)
     || surface.transientSupervisor === true
     || surface.userRecordsTerminal === true
     || !!surface.projectManagerProjectId;
@@ -15,11 +15,20 @@ export function isTransientSupervisorSurface(surface: SurfaceRef): boolean {
 
 function stripTransientSurfacesFromTree(tree: SplitNode, transientSurfaceIds: ReadonlySet<string>): SplitNode | null {
   if (tree.type === 'leaf') {
-    const surfaces = tree.surfaces.filter((surface) =>
-      surface.type !== 'diff'
+    const restorableCompanionExists = tree.surfaces.some((surface) => (
+      surface.type !== 'supervisor'
+      && surface.type !== 'diff'
+      && !isTransientSupervisorSurface(surface)
+      && !transientSurfaceIds.has(surface.id)
+    ));
+    const surfaces = tree.surfaces.filter((surface) => {
+      if (surface.type === 'supervisor' && !surface.projectSupervisorProjectId) {
+        return restorableCompanionExists;
+      }
+      return surface.type !== 'diff'
         && !isTransientSupervisorSurface(surface)
-        && !transientSurfaceIds.has(surface.id),
-    );
+        && !transientSurfaceIds.has(surface.id);
+    });
     if (surfaces.length === 0) return null;
 
     const previousActive = tree.surfaces[tree.activeSurfaceIndex];

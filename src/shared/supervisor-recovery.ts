@@ -86,6 +86,7 @@ export interface SupervisedTerminalSnapshot {
       ordinaryContextHealth?: unknown;
       goalVortex?: unknown;
       latestSupervisorUserGuidance?: unknown;
+      standingUserDecision?: unknown;
       latestEvidence: string[];
       acceptanceGaps: string[];
     };

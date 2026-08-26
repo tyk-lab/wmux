@@ -22,7 +22,7 @@ describe('SupervisorFileBridge', () => {
     fs.mkdirSync(requestDir, { recursive: true });
     const id = '12345678-1234-1234-1234-123456789abc';
     fs.writeFileSync(path.join(requestDir, `${id}.json`), JSON.stringify({
-      method: 'supervisor.context',
+      method: 'role.context',
       params: {},
       id,
       token: 'surface-token',
@@ -33,7 +33,7 @@ describe('SupervisorFileBridge', () => {
       'instance-token',
       (token) => token === 'surface-token' ? 'supervisor-surface' : undefined,
       async (surfaceId, method) => ({
-        allowed: surfaceId === 'supervisor-surface' && method === 'supervisor.context',
+        allowed: surfaceId === 'supervisor-surface' && method === 'role.context',
       }),
     );
     pipeServer.on('v2', (request, respond) => respond({
@@ -50,7 +50,7 @@ describe('SupervisorFileBridge', () => {
     const response = JSON.parse(fs.readFileSync(path.join(responseDir, `${id}.json`), 'utf8'));
     expect(response.result).toEqual({
       callerSurfaceId: 'supervisor-surface',
-      method: 'supervisor.context',
+      method: 'role.context',
     });
     expect(fs.existsSync(path.join(requestDir, `${id}.json.processing`))).toBe(false);
   });
@@ -116,10 +116,10 @@ describe('SupervisorFileBridge', () => {
     bridge.start();
     try {
       await expect(sendFileBridgeRequest(bridgeRoot, {
-        method: 'supervisor.context',
+        method: 'role.context',
         params: {},
         token: 'surface-token',
-      }, 2_000)).resolves.toEqual({ method: 'supervisor.context', ok: true });
+      }, 2_000)).resolves.toEqual({ method: 'role.context', ok: true });
       expect(fs.readdirSync(path.join(bridgeRoot, 'requests'))).toEqual([]);
       expect(fs.readdirSync(path.join(bridgeRoot, 'responses'))).toEqual([]);
     } finally {

@@ -98,6 +98,20 @@ describe('project command help', () => {
     expect(resolveProjectCommandHelp(['project', subcommand, '-h'])).toContain(expectedField);
   });
 
+  it('documents the project AI recovery and user-confirmation contracts', () => {
+    expect(PROJECT_USAGE).toContain('dispatch');
+    expect(PROJECT_USAGE).not.toContain('supervise');
+    expect(resolveProjectCommandHelp(['project', 'dispatch', '--help']))
+      .toContain('waiting-decision');
+    expect(resolveProjectCommandHelp(['project', 'supervise', '--help'])).not.toContain('supervise');
+    expect(resolveProjectCommandHelp(['project', 'task-update', '--help']))
+      .toContain('partial update');
+    expect(resolveProjectCommandHelp(['project', 'alignment-confirm', '--help']))
+      .toContain('userConfirmationEventId');
+    expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
+      .toContain('internal-project-failure');
+  });
+
   it('returns lightweight command-specific help for non-JSON commands', () => {
     expect(resolveProjectCommandHelp(['project', 'status', '--help']))
       .toBe('Usage: wmux project status [--project <id>] [options]');
@@ -115,7 +129,7 @@ describe('project command scope', () => {
 
   it('requires an explicit project ID for scoped commands in a multi-project portfolio', () => {
     expect(projectCommandNeedsExplicitId('task-create', '', projects)).toBe(true);
-    expect(projectCommandNeedsExplicitId('supervisor-decide', '', projects)).toBe(true);
+    expect(projectCommandNeedsExplicitId('dispatch', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('goal-plan', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('orientation-confirm', '', projects)).toBe(true);
     expect(projectCommandNeedsExplicitId('task-create', 'project-a', projects)).toBe(false);

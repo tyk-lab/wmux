@@ -45,7 +45,7 @@ export interface ProjectAiRuntimeContext {
       | 'needs-definition-update';
     orientation: 'ready' | 'required';
     progressSync: 'ready' | 'review-required';
-    executionProtocol: 'current' | 'migration-required';
+    executionProtocol: 'current';
   };
   scope: {
     projectDir: string;
@@ -104,12 +104,6 @@ export interface TaskAiRuntimeContext {
     stopWhen: string[];
     validation: string[];
     safetyBoundaries: string[];
-    supervisorPlan?: {
-      revision: number;
-      selectedRoute: string;
-      milestones: Array<{ id: string; status: string; outcome: string }>;
-      remainingWork: string[];
-    };
   };
   actions: {
     available: string[];
@@ -120,12 +114,6 @@ export interface TaskAiRuntimeContext {
   commands: {
     available: string[];
     forbidden: string[];
-  };
-  budget?: {
-    decisionsUsed: number;
-    decisionsRemaining: number;
-    attempts: number;
-    retriesRemaining: number;
   };
 }
 
@@ -174,7 +162,6 @@ const PROJECT_AI_METHODS = new Set([
   'project.supervisor.transition.ack',
   'project.goal.plan',
   'project.supervisor.inspect',
-  'project.supervisor.decide',
   'project.user.question',
   'project.execution.record',
   'project.pause',
@@ -214,12 +201,9 @@ export function authorizeManagedRoleV2(
   }
 
   if ((binding.role === 'supervisor' || binding.role === 'project-supervisor')
-    && (method === 'supervisor.context'
-      || method === 'supervisor.evidence'
+    && (method === 'supervisor.evidence'
       || method === 'supervisor.completion.verify'
-      || method === 'supervisor.decide'
-      || (binding.role === 'supervisor' && method === 'supervisor.goal.draft')
-      || (binding.role === 'supervisor' && method === 'supervisor.reply'))) {
+      || method === 'supervisor.decide')) {
     return { allowed: true };
   }
 
@@ -262,23 +246,20 @@ export function buildProjectAiRuntimeContext(
   const progressReady = session.progressSync?.status !== 'review-required';
   const goal = activeProjectGoal(session);
   const subgoals = activeProjectSubgoals(session);
-  const executionProtocolMigrationRequired = session.workItems.some((item) => (
-    !['completed', 'stopped'].includes(item.status)
-    && (item.executionProtocolVersion || 0) < CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
-  ));
-  const readyWorkItems = session.workItems.filter((item) => (
+  const dispatchableWorkItems = session.workItems.filter((item) => (
     item.goalId === goal.id
     && item.requirementsVersion === requirementsVersion
     && item.authorizationVersion === authorizationVersion
-    && (item.executionProtocolVersion || 0) >= CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
-    && projectWorkItemReady(item, session.workItems)
+    && item.executionProtocolVersion === CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
+    && (projectWorkItemReady(item, session.workItems)
+      || ['waiting-decision', 'paused', 'failed'].includes(item.status))
     && !projectWorkItemSubgoalDependencyError(session, item)
   ));
   const projectActive = session.status === 'active';
   const mutableProject = !['completed', 'stopped'].includes(session.status);
   const planningReady = alignmentConfirmed && orientationReady && progressReady;
   const executionReady = executionVersionAccepted && planningReady;
-  const runnableWorkItem = readyWorkItems.some((item) => item.goalId === goal.id);
+  const runnableWorkItem = dispatchableWorkItems.some((item) => item.goalId === goal.id);
   const goalWorkItems = session.workItems.filter((item) => item.goalId === goal.id && item.status !== 'stopped');
   const goalComplete = goalWorkItems.length > 0
     && goalWorkItems.every((item) => item.status === 'completed');
@@ -303,7 +284,7 @@ export function buildProjectAiRuntimeContext(
       requirementsAlignment: alignmentPhase,
       orientation: orientationReady ? 'ready' : 'required',
       progressSync: progressReady ? 'ready' : 'review-required',
-      executionProtocol: executionProtocolMigrationRequired ? 'migration-required' : 'current',
+      executionProtocol: 'current',
     },
     scope: {
       projectDir: session.projectDir,
@@ -318,7 +299,7 @@ export function buildProjectAiRuntimeContext(
       supervisorTransitions: session.pendingSupervisorTransitions?.length || 0,
       supervisorApprovals: Math.max(0, options.pendingSupervisorApprovals || 0),
       workItems: session.workItems.filter((item) => !['completed', 'stopped'].includes(item.status)).length,
-      readyWorkItems: readyWorkItems.length,
+      readyWorkItems: dispatchableWorkItems.length,
     },
     commands: {
       available: [
@@ -360,16 +341,14 @@ export function buildProjectAiRuntimeContext(
           condition: '项目运行中、阶段计划存在且所有门禁就绪',
         },
         {
-          command: `wmux project supervise --project ${projectId} --task <工作项ID>`,
+          command: `wmux project dispatch --project ${projectId} --task <工作项ID>`,
           available: projectActive && executionReady && runnableWorkItem,
-          condition: '把依赖已满足的工作项交给专属监督；项目 AI 不会写入主任务终端',
+          condition: '把依赖已满足或等待恢复的工作项交给专属监督；项目 AI 不会写入主任务终端',
         },
         {
           command: `wmux project task-update --project ${projectId} --json-file <.wmux/tmp/文件>`,
           available: mutableProject && session.workItems.length > 0,
-          condition: executionProtocolMigrationRequired
-            ? `旧项目存在过期工作项；控制层会冻结其预算与审计并建立执行协议 v${CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION} 后继，只能更新返回的后继工作项`
-            : '持久化工作项状态、证据、上下文或阻塞',
+          condition: '持久化工作项状态、证据、上下文或阻塞',
         },
         {
           command: `wmux project record --project ${projectId} --json-file <.wmux/tmp/文件>`,
@@ -380,11 +359,6 @@ export function buildProjectAiRuntimeContext(
           command: `wmux project transition-ack --project ${projectId} --transition <ID> --resolution <结果> --summary <摘要>`,
           available: mutableProject && (session.pendingSupervisorTransitions?.length || 0) > 0,
           condition: '存在尚未回执的监督状态交接',
-        },
-        {
-          command: `wmux project decide --project ${projectId} --approval <ID> --decision <决定>`,
-          available: mutableProject && (options.pendingSupervisorApprovals || 0) > 0,
-          condition: '当前项目存在等待项目 AI 处理的监督待决项',
         },
         {
           command: `wmux project inspect --project ${projectId} --reason <原因>`,

@@ -251,13 +251,12 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.requirementsVersion !== undefined && (!Number.isFinite(session.requirementsVersion) || Number(session.requirementsVersion) < 1))
     || (session.authorizationVersion !== undefined && (!Number.isFinite(session.authorizationVersion) || Number(session.authorizationVersion) < 1))
     || (session.acceptedRequirementsVersion !== undefined && (!Number.isFinite(session.acceptedRequirementsVersion) || Number(session.acceptedRequirementsVersion) < 0))
-    || (session.executionProtocolVersion !== undefined && (
-      !Number.isInteger(session.executionProtocolVersion) || Number(session.executionProtocolVersion) < 0
-    ))
+    || session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
     || (session.progressSnapshot !== undefined && !normalizeProjectProgressSnapshot(session.progressSnapshot))
     || (session.progressSync !== undefined && !normalizeProjectProgressSyncState(session.progressSync))
     || (session.orientation !== undefined && !normalizeProjectOrientationState(session.orientation))
     || (session.safeExit !== undefined && !isProjectSafeExitState(session.safeExit))
+    || session.goalConstruction !== undefined
     || typeof session.status !== 'string' || !SESSION_STATUSES.has(session.status)
     || (session.pausedByPortfolio !== undefined && typeof session.pausedByPortfolio !== 'boolean')
     || (session.taskTerminalSurfaceId !== undefined && typeof session.taskTerminalSurfaceId !== 'string')
@@ -276,23 +275,22 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && item.predecessorWorkItemId === undefined
       && item.supersededByWorkItemId === undefined
       && item.successionReason === undefined
-      && (item.goalId === undefined || typeof item.goalId === 'string')
-      && (item.subgoalId === undefined || typeof item.subgoalId === 'string')
-      && (item.requirementsVersion === undefined || (Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1))
-      && (item.authorizationVersion === undefined || (Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1))
+      && typeof item.goalId === 'string' && !!item.goalId.trim()
+      && typeof item.subgoalId === 'string' && !!item.subgoalId.trim()
+      && Number.isFinite(item.requirementsVersion) && item.requirementsVersion >= 1
+      && Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1
       && item.executionProtocolVersion === CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
       && !!normalizeProjectTaskComplexityAssessment(item.complexityAssessment)
       && (item.contextReset === undefined || !!normalizeProjectTaskContextResetState(item.contextReset))
       && item.baseline === undefined
       && item.supervisorPlan === undefined
-      && item.supervisorPlanRequired === false
-      && item.decisionsUsed === 0
+      && item.supervisorPlanRequired === undefined
       && (item.completion === undefined || isProjectCompletionResult(item.completion))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)
       && Array.isArray(item.executionHistory)
-      && Number.isFinite(item.attempts) && Number.isFinite(item.decisionsUsed) && Number.isFinite(item.updatedAt)
+      && Number.isFinite(item.attempts) && Number.isFinite(item.updatedAt)
       && typeof contract?.objective === 'string' && typeof contract?.description === 'string'
       && isStringArray(contract?.preconditions) && isStringArray(contract?.stopWhen) && isStringArray(contract?.validation)
       && (contract?.supervisorNotes === undefined || isStringArray(contract.supervisorNotes))
@@ -312,40 +310,16 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && (authority?.authorizedDevices === undefined || isStringArray(authority.authorizedDevices))
       && (authority?.authorizedEnvironments === undefined || isStringArray(authority.authorizedEnvironments))
       && (authority?.authorizedOperations === undefined || isStringArray(authority.authorizedOperations))
-      && ['maxDecisions', 'maxContinuousMinutes', 'maxIdenticalFailures', 'maxNoProgressRounds',
+      && ['maxContinuousMinutes', 'maxIdenticalFailures', 'maxNoProgressRounds',
         'maxTaskRetries', 'maxSameTestRuns', 'maxFullSuiteRunsPerVersion']
         .every((key) => Number.isFinite(budget?.[key]) && budget[key] >= 1)
+      && budget?.maxDecisions === undefined
       && (budget?.maxAggregateWorkerMinutes === undefined
         || (Number.isFinite(budget.maxAggregateWorkerMinutes) && budget.maxAggregateWorkerMinutes >= 1))
       && contract?.execution === undefined;
   });
   if (!workItemsValid) return false;
-  const workItemsById = new Map(session.workItems.map((item) => [item.id, item]));
-  if (workItemsById.size !== session.workItems.length || session.workItems.some((item) => {
-    const predecessor = item.predecessorWorkItemId
-      ? workItemsById.get(item.predecessorWorkItemId)
-      : undefined;
-    const successor = item.supersededByWorkItemId
-      ? workItemsById.get(item.supersededByWorkItemId)
-      : undefined;
-    return item.predecessorWorkItemId === item.id
-      || item.supersededByWorkItemId === item.id
-      || (!!item.successionReason !== !!item.predecessorWorkItemId)
-      || (!!item.predecessorWorkItemId && !predecessor)
-      || (!!predecessor && predecessor.supersededByWorkItemId !== item.id)
-      || (!!item.supersededByWorkItemId && (
-        !successor || successor.predecessorWorkItemId !== item.id
-      ));
-  })) return false;
-  for (const item of session.workItems) {
-    const visited = new Set<string>();
-    let current: typeof item | undefined = item;
-    while (current?.supersededByWorkItemId) {
-      if (visited.has(current.id)) return false;
-      visited.add(current.id);
-      current = workItemsById.get(current.supersededByWorkItemId);
-    }
-  }
+  if (new Set(session.workItems.map((item) => item.id)).size !== session.workItems.length) return false;
   const goals = Array.isArray(session.goals) ? session.goals as Array<Record<string, unknown>> : [];
   const subgoals = Array.isArray(session.subgoals) ? session.subgoals as Array<Record<string, unknown>> : [];
   if (goals.some((goal) => goal.status === 'completed' && (goal.doneWhen as unknown[]).length === 0)) {

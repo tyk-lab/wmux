@@ -140,6 +140,7 @@ describe('supervisor decision options', () => {
       reason: '现有路线受阻',
       impact: '可能增加改动范围',
       alternatives: 'A) 保持当前路线；B) 切换到备选实现',
+      reuseForSimilarIssues: true,
     });
 
     expect(briefing).toContain('[用户选择] 方案 B：切换到备选实现');
@@ -151,6 +152,9 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('--next-file');
     expect(briefing).toContain('禁止在目标项目创建监督草稿');
     expect(briefing).toContain('不要把本消息原样转发');
+    expect(briefing).toContain('[持续用户决策]');
+    expect(briefing).toContain('语义相近、范围与风险等级不变的问题');
+    expect(briefing).toContain('出现实质不同的问题、新的高风险');
   });
 
   it('lets the AI supervisor decide from user guidance when no plan is selected', () => {

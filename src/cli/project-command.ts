@@ -8,9 +8,9 @@ export interface ProjectJsonInput {
 
 const PROJECT_COMMANDS = [
   'update', 'alignment-confirm', 'orientation-confirm', 'goal-plan', 'status', 'logs', 'terminals',
-  'task-create', 'task-update', 'record', 'supervise', 'auxiliary-dispatch', 'auxiliary-status', 'progress-sync',
+  'task-create', 'task-update', 'record', 'dispatch', 'auxiliary-dispatch', 'auxiliary-status', 'progress-sync',
   'transition-ack',
-  'inspect', 'decide', 'ask', 'pause', 'resume', 'pause-all', 'resume-all', 'complete', 'stop', 'reply',
+  'inspect', 'ask', 'pause', 'resume', 'pause-all', 'resume-all', 'complete', 'stop', 'reply',
 ] as const;
 
 export const PROJECT_USAGE = [
@@ -47,8 +47,8 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
   'alignment-confirm': [
     'Usage: wmux project alignment-confirm --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
-    'JSON object:',
-    '{"goalUnderstanding":"...","scopeSummary":"...","acceptanceSummary":"...","reason":"..."}',
+    'JSON object (userConfirmationEventId must reference the latest structured user confirmation):',
+    '{"userConfirmationEventId":"pm-event-...","goalUnderstanding":"...","scopeSummary":"...","acceptanceSummary":"...","reason":"..."}',
   ].join('\n'),
   'orientation-confirm': [
     'Usage: wmux project orientation-confirm --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
@@ -70,10 +70,26 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     '',
     '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead. `taskWorkMode` controls the unique task AI internal execution mode.',
   ].join('\n'),
-  supervise: [
-    'Usage: wmux project supervise --project <id> --task <work-item-id>',
+  'task-update': [
+    'Usage: wmux project task-update --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
-    'Assigns one ready work item to the dedicated supervisor. The project AI cannot write the main task terminal; only the bound supervisor may dispatch the neutral task package.',
+    'JSON object (partial update; omitted fields keep their current values):',
+    '{"workItemId":"task-a","status":"planned","contract":{"objective":"updated outcome"},"latestContextSummary":"...","latestEvidence":"...","latestBlocker":"..."}',
+    '`running` and `validating` are supervisor-owned execution states. Replanned work should use `planned`, then `dispatch`.',
+  ].join('\n'),
+  dispatch: [
+    'Usage: wmux project dispatch --project <id> --task <work-item-id>',
+    '',
+    'Assigns or reassigns one eligible work item to the dedicated supervisor. Eligible states are planned, waiting-dependencies, waiting-decision, paused, or failed after dependencies are satisfied.',
+    'The project AI cannot write the task terminal; only the bound supervisor may send the neutral outcome package.',
+  ].join('\n'),
+  ask: [
+    'Usage: wmux project ask --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
+    '',
+    'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","question":"...","context":"...","options":[{"id":"confirm-requirements","label":"确认需求","description":"..."},{"id":"revise-requirements","label":"补充调整","description":"..."}],"recommendedOptionId":"confirm-requirements"}',
+    'Use the same stable decisionKey only when the question has the same meaning and may reuse a user-authorized answer within the current requirements and authorization versions.',
+    'Manual-intervention JSON additionally requires workItemId, blocker, and reasonCode.',
+    'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, internal-project-failure.',
   ].join('\n'),
   'auxiliary-dispatch': [
     'Usage: wmux project auxiliary-dispatch --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',

@@ -2,7 +2,6 @@ import type { StateCreator } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import {
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
-  MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS,
   activeProjectGoal,
   normalizeProjectManagerSession,
   projectDirectoryIdentity,
@@ -10,12 +9,13 @@ import {
   projectCompletionCriteriaError,
   projectCriterionIdentity,
   projectManagerGoalChangeHasUserBasis,
+  projectManagerQuestionAllowsReusableDecision,
+  projectManagerQuestionDecisionKey,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
   projectSubgoalCompletionResult,
   requiredProjectOrientation,
-  requiredProjectTaskBaseline,
   type ProjectManagerAction,
   type ProjectCompletionResult,
   type ProjectManagerEvent,
@@ -28,65 +28,6 @@ import type { ProjectManagementAgentConfig } from '../../shared/project-manager-
 
 const MAX_PROJECT_EVENTS = 500;
 const MAX_EXECUTION_HISTORY = 100;
-
-function projectContractDeltaSummary(
-  previous: ProjectWorkItem['contract'],
-  next: ProjectWorkItem['contract'],
-): string {
-  const changed: string[] = [];
-  const previousAllowPaths = new Set(previous.scope.allowPaths);
-  const nextAllowPaths = new Set(next.scope.allowPaths);
-  const addedAllowPaths = [...nextAllowPaths].filter((entry) => !previousAllowPaths.has(entry));
-  const removedAllowPaths = [...previousAllowPaths].filter((entry) => !nextAllowPaths.has(entry));
-  if (addedAllowPaths.length > 0) changed.push(`新增允许路径：${addedAllowPaths.join('、')}`);
-  if (removedAllowPaths.length > 0) changed.push(`移除允许路径：${removedAllowPaths.join('、')}`);
-  const fields: Array<[keyof ProjectWorkItem['contract'], string]> = [
-    ['objective', '任务目标'],
-    ['description', '任务说明'],
-    ['preconditions', '前置条件'],
-    ['supervisorNotes', '监督注意事项'],
-    ['authority', '执行权限'],
-    ['stopWhen', '完成条件'],
-    ['validation', '验证要求'],
-    ['budget', '执行预算'],
-  ];
-  for (const [field, label] of fields) {
-    if (JSON.stringify(previous[field]) !== JSON.stringify(next[field])) changed.push(label);
-  }
-  if (previous.scope.root !== next.scope.root) changed.push('任务根目录');
-  if (JSON.stringify(previous.scope.denyPaths) !== JSON.stringify(next.scope.denyPaths)) changed.push('禁止路径');
-  if (JSON.stringify(previous.scope.forbiddenActions) !== JSON.stringify(next.scope.forbiddenActions)) changed.push('禁止动作');
-  return [...new Set(changed)].join('；').slice(0, 2000) || '任务合同细节发生变化';
-}
-
-function incrementalProjectTaskBaseline(
-  baseline: NonNullable<ProjectWorkItem['baseline']>,
-  requirementsVersion: number,
-  deltaSummary: string,
-  now: number,
-): NonNullable<ProjectWorkItem['baseline']> {
-  const priorEvidence = baseline.status === 'approved'
-    ? baseline.evidence
-    : baseline.priorEvidence;
-  const priorWorkspaceVersion = baseline.status === 'approved'
-    ? baseline.workspaceVersion
-    : baseline.priorWorkspaceVersion;
-  const priorApprovedAt = baseline.status === 'approved'
-    ? baseline.approvedAt
-    : baseline.priorApprovedAt;
-  return {
-    status: 'investigating',
-    requirementsVersion,
-    requestedAt: now,
-    investigationRounds: Math.max(1, Math.trunc(baseline.investigationRounds || 1)),
-    reviewKind: 'contract-delta',
-    deltaSummary: [baseline.reviewKind === 'contract-delta' ? baseline.deltaSummary : '', deltaSummary]
-      .filter(Boolean).join('；').slice(0, 4000),
-    ...(priorWorkspaceVersion ? { priorWorkspaceVersion } : {}),
-    ...(priorEvidence ? { priorEvidence: priorEvidence.slice(0, 12000) } : {}),
-    ...(priorApprovedAt ? { priorApprovedAt } : {}),
-  };
-}
 
 export interface ProjectManagerMutationResult {
   ok: boolean;
@@ -488,9 +429,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         return {
           ...item,
           status: 'waiting-decision' as const,
-          baseline: (item.executionProtocolVersion || 0) >= 7
-            ? undefined
-            : requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
           latestBlocker: '当前主目标要求已调整，等待项目 AI 评估后显式重新绑定需求和授权版本',
           updatedAt: now,
         };
@@ -694,9 +632,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           : {
               ...item,
               status: 'waiting-decision' as const,
-              baseline: (item.executionProtocolVersion || 0) >= 7
-                ? undefined
-                : requiredProjectTaskBaseline(item.requirementsVersion || projectRequirementsVersion(session)),
               latestBlocker: '项目前置条件已更新，等待项目管理 AI 按新条件重新核对任务安全性和可执行性',
               updatedAt: now,
             }
@@ -765,10 +700,40 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const answer = action.answer.trim();
       if (!answer) return { ok: false, error: '用户答复不能为空' };
+      if (action.reuseForSimilar && !projectManagerQuestionAllowsReusableDecision(pending)) {
+        return { ok: false, error: '物理操作、凭据、权限授予、破坏性操作、生产操作和内部故障不能授权自动复用答复' };
+      }
+      const reusableDecision = action.reuseForSimilar ? {
+        id: `reusable-decision-${uuid()}`,
+        decisionKey: projectManagerQuestionDecisionKey(pending),
+        category: pending.category || 'clarification' as const,
+        ...(pending.reasonCode ? { reasonCode: pending.reasonCode } : {}),
+        question: pending.question,
+        answer,
+        ...(action.optionId ? { optionId: action.optionId } : {}),
+        requirementsVersion: projectRequirementsVersion(session),
+        authorizationVersion: projectAuthorizationVersion(session),
+        answeredBy: action.answeredBy,
+        createdAt: now,
+      } : undefined;
       // Keep the project waiting after a user answer. The answer belongs to the
       // project manager, which must explicitly choose resume/replan/stop before
       // any supervisor or task terminal is allowed to continue.
-      next = { ...session, status: 'waiting', pendingUserQuestion: undefined };
+      next = {
+        ...session,
+        status: 'waiting',
+        pendingUserQuestion: undefined,
+        ...(reusableDecision ? {
+          reusableUserDecisions: [
+            ...(session.reusableUserDecisions || []).filter((decision) => (
+              decision.decisionKey !== reusableDecision.decisionKey
+              || decision.requirementsVersion !== reusableDecision.requirementsVersion
+              || decision.authorizationVersion !== reusableDecision.authorizationVersion
+            )),
+            reusableDecision,
+          ].slice(-50),
+        } : {}),
+      };
       eventInput = {
         kind: 'user-clarification-answered',
         workItemId: pending.workItemId,
@@ -781,6 +746,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           optionId: action.optionId,
           answeredBy: action.answeredBy,
           category: pending.category,
+          reuseForSimilar: !!reusableDecision,
+          ...(reusableDecision ? { decisionKey: reusableDecision.decisionKey } : {}),
         },
       };
     } else if (action.type === 'create-work-item') {
@@ -793,12 +760,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goalId: action.workItem.goalId || activeGoal.id,
         requirementsVersion: action.workItem.requirementsVersion || projectRequirementsVersion(session),
         authorizationVersion: action.workItem.authorizationVersion || projectAuthorizationVersion(session),
-        baseline: (action.workItem.executionProtocolVersion || 0) >= 7
-          ? undefined
-          : requiredProjectTaskBaseline(
-              action.workItem.requirementsVersion || projectRequirementsVersion(session),
-            ),
-        supervisorPlanRequired: false,
       };
       if (workItem.goalId !== activeGoal.id) return { ok: false, error: '只能为当前主目标创建任务' };
       if (workItem.subgoalId) {
@@ -855,20 +816,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         ));
         if (!targetSubgoal) return { ok: false, error: '任务只能重分配到当前主目标下的有效阶段' };
       }
-      const { baseline: _untrustedBaseline, ...requestedPatch } = action.patch;
-      const safePatch = requestedPatch.status === 'stopped'
-        ? { ...requestedPatch, supervisorLaneId: undefined, workerSurfaceId: undefined }
-        : requestedPatch;
+      const safePatch = action.patch.status === 'stopped'
+        ? { ...action.patch, supervisorLaneId: undefined, workerSurfaceId: undefined }
+        : action.patch;
       const updated = updateWorkItem(session, action.workItemId, (item) => {
-        const nextRequirementsVersion = safePatch.requirementsVersion || item.requirementsVersion
-          || projectRequirementsVersion(session);
-        const requirementsChanged = nextRequirementsVersion !== item.requirementsVersion;
-        const contractChanged = safePatch.contract !== undefined
-          && JSON.stringify(safePatch.contract) !== JSON.stringify(item.contract);
-        const subgoalChanged = safePatch.subgoalId !== undefined && safePatch.subgoalId !== item.subgoalId;
-        // Requirements/stage changes invalidate the full baseline. Contract-only
-        // changes retain the previous approval and open a bounded delta review.
-        const resetBaseline = requirementsChanged || subgoalChanged;
         const nextStatus = safePatch.status || item.status;
         const completion = safePatch.completion !== undefined
           ? normalizeProjectCompletionResult(safePatch.completion)
@@ -880,21 +831,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           ...safePatch,
           id: item.id,
           goalId: item.goalId,
-          baseline: (item.executionProtocolVersion || 0) >= 7
-            ? undefined
-            : resetBaseline
-              ? requiredProjectTaskBaseline(nextRequirementsVersion)
-              : contractChanged && item.baseline && (
-                item.baseline.status === 'approved'
-                || item.baseline.reviewKind === 'contract-delta'
-              )
-              ? incrementalProjectTaskBaseline(
-                  item.baseline,
-                  nextRequirementsVersion,
-                  projectContractDeltaSummary(item.contract, safePatch.contract!),
-                  now,
-                )
-                : item.baseline || requiredProjectTaskBaseline(nextRequirementsVersion),
           completion,
           updatedAt: now,
         };
@@ -906,122 +842,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         ? releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId)
         : updated;
       eventInput = { kind: 'work-item-updated', workItemId: action.workItemId, summary: `更新任务：${action.workItemId}` };
-    } else if (action.type === 'reset-work-item-baseline') {
-      const existing = session.workItems.find((item) => item.id === action.workItemId);
-      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      if (['completed', 'stopped'].includes(existing.status)) {
-        return { ok: false, error: '已经结束的任务不能重置项目基线' };
-      }
-      const reason = action.reason.trim().slice(0, 1200);
-      if (!reason) return { ok: false, error: '重置项目基线必须说明原因' };
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({
-        ...item,
-        baseline: (item.executionProtocolVersion || 0) >= 7
-          ? undefined
-          : requiredProjectTaskBaseline(
-              item.requirementsVersion || projectRequirementsVersion(session),
-            ),
-        updatedAt: now,
-      }));
-      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = updated;
-      eventInput = {
-        kind: 'work-item-updated',
-        workItemId: action.workItemId,
-        summary: `重置任务工作区基线：${action.workItemId}；${reason}`,
-        payload: { baselineReset: true, reason },
-      };
-    } else if (action.type === 'start-work-item-baseline') {
-      const existing = session.workItems.find((item) => item.id === action.workItemId);
-      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P9 已删除项目基线调查与批准状态' };
-      }
-      if (['completed', 'stopped'].includes(existing.status)) {
-        return { ok: false, error: '已经结束的任务不能再发起项目基线调查' };
-      }
-      if (existing.requirementsVersion !== projectRequirementsVersion(session)) {
-        return { ok: false, error: '任务尚未绑定当前需求版本，不能发起项目基线调查' };
-      }
-      const previousInvestigationRounds = existing.baseline?.status === 'investigating'
-        ? Math.max(1, Math.trunc(existing.baseline.investigationRounds || 1))
-        : 0;
-      if (previousInvestigationRounds >= 2) {
-        return { ok: false, error: '项目基线已经完成初次调查和一次定向补查；必须基于现有报告批准、暂缓或上报明确阻塞，不能继续重复调查' };
-      }
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({
-        ...item,
-        baseline: {
-          status: 'investigating',
-          requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
-          requestedAt: now,
-          investigationRounds: previousInvestigationRounds + 1,
-        },
-        updatedAt: now,
-      }));
-      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = updated;
-      eventInput = {
-        kind: 'work-item-baseline-started',
-        workItemId: action.workItemId,
-        summary: `监督 AI 已发起只读项目基线调查：${action.workItemId}`,
-      };
-    } else if (action.type === 'approve-work-item-baseline') {
-      const evidence = action.evidence.trim().slice(0, 12000);
-      const workspaceVersion = action.workspaceVersion.trim().slice(0, 2000);
-      if (!evidence || !workspaceVersion) {
-        return { ok: false, error: '批准项目基线必须提供工作区版本和审核证据' };
-      }
-      const existing = session.workItems.find((item) => item.id === action.workItemId);
-      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      if (['completed', 'stopped'].includes(existing.status)) {
-        return { ok: false, error: '已经结束的任务不能再批准项目基线' };
-      }
-      if (existing.requirementsVersion !== projectRequirementsVersion(session)) {
-        return { ok: false, error: '任务尚未绑定当前需求版本，不能批准项目基线' };
-      }
-      if (existing.baseline?.status !== 'investigating') {
-        return { ok: false, error: '项目基线尚未完成调查轮次，不能预先批准' };
-      }
-      const inheritedEvidence = existing.baseline.reviewKind === 'contract-delta'
-        && existing.baseline.priorEvidence?.trim()
-        ? [
-            '[继承的已批准基线证据]',
-            existing.baseline.priorEvidence.trim().slice(0, 7000),
-            '',
-            `[本次合同增量复核｜${existing.baseline.deltaSummary || '合同变化'}]`,
-            evidence.slice(0, 4000),
-          ].join('\n').slice(0, 12000)
-        : evidence;
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({
-        ...item,
-        baseline: {
-          status: 'approved',
-          requirementsVersion: item.requirementsVersion || projectRequirementsVersion(session),
-          investigationRounds: item.baseline?.investigationRounds,
-          workspaceVersion,
-          evidence: inheritedEvidence,
-          approvedAt: now,
-        },
-        executionWindowReplan: undefined,
-        executionWindowReplanHistory: [],
-        consecutiveInternalReplans: 0,
-        updatedAt: now,
-      }));
-      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = updated;
-      eventInput = {
-        kind: 'work-item-baseline-approved',
-        workItemId: action.workItemId,
-        summary: `监督 AI 已审核项目基线：${action.workItemId}`,
-        payload: {
-          workspaceVersion,
-          evidence: inheritedEvidence,
-          ...(existing.baseline.reviewKind === 'contract-delta'
-            ? { incremental: true, deltaSummary: existing.baseline.deltaSummary }
-            : {}),
-        },
-      };
     } else if (action.type === 'intervene-work-item') {
       if (['completed', 'stopped'].includes(session.status)) {
         return { ok: false, error: '已完成或停止的项目不能再干预工作项' };
@@ -1063,10 +883,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        decisionsUsed: (item.executionProtocolVersion || 0) >= 7
-          ? 0
-          : item.decisionsUsed + (action.consumeDecision === false ? 0 : 1),
-        totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed)
+        totalDecisionsUsed: (item.totalDecisionsUsed || 0)
           + (action.consumeDecision === false ? 0 : 1),
         updatedAt: now,
         executionHistory: [
@@ -1082,63 +899,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         summary: action.consumeDecision === false
           ? `记录未生效的监督尝试：${action.workItemId}`
           : `记录监督决策：${action.workItemId}`,
-      };
-    } else if (action.type === 'renew-execution-window') {
-      const existing = session.workItems.find((item) => item.id === action.workItemId);
-      if (!existing) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      if ((existing.executionProtocolVersion || 0) >= 7) {
-        return { ok: false, error: 'P9 已删除项目基线调查与批准状态' };
-      }
-      if (existing.goalId && existing.goalId !== activeProjectGoal(session).id) {
-        return { ok: false, error: '旧主目标任务已经失效，不能续期监督健康窗口' };
-      }
-      const previousDecisions = existing.decisionsUsed;
-      const internalReplan = action.reason === 'internal-replan';
-      const previousConsecutiveReplans = existing.consecutiveInternalReplans || 0;
-      if (internalReplan
-        && previousConsecutiveReplans >= MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS) {
-        return {
-          ok: false,
-          error: '当前真实进展检查点已经使用过一次内部重规划；必须先产生新的代码、测试、错误或已核验工件证据，或者由项目 AI 拆分/暂缓该分支并推进独立工作，不能继续改写路线重置窗口',
-        };
-      }
-      const renewalCount = (existing.budgetWindowRenewals || 0) + (internalReplan ? 0 : 1);
-      const internalReplanCount = (existing.internalReplanCount || 0) + (internalReplan ? 1 : 0);
-      const updated = updateWorkItem(session, action.workItemId, (item) => ({
-        ...item,
-        decisionsUsed: 0,
-        totalDecisionsUsed: Math.max(item.totalDecisionsUsed ?? item.decisionsUsed, item.decisionsUsed),
-        budgetWindowRenewals: renewalCount,
-        internalReplanCount,
-        consecutiveInternalReplans: internalReplan ? previousConsecutiveReplans + 1 : 0,
-        lastBudgetCheckpointSignature: internalReplan
-          ? item.lastBudgetCheckpointSignature
-          : action.checkpointSignature || item.lastBudgetCheckpointSignature,
-        executionWindowReplan: internalReplan ? item.executionWindowReplan : undefined,
-        executionWindowReplanHistory: internalReplan ? item.executionWindowReplanHistory : [],
-        startedAt: action.startedAt,
-        updatedAt: now,
-      }));
-      if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = updated;
-      eventInput = {
-        kind: 'guard-triggered',
-        workItemId: action.workItemId,
-        summary: action.reason === 'internal-replan'
-          ? `项目 AI 已提供一次内部执行路线修正，原工作项原地开启窗口（累计第 ${internalReplanCount} 次；本进展检查点仅允许一次）`
-          : `监督 AI 提供了可核验的新进展，已原地续期自治健康窗口（第 ${renewalCount} 次）`,
-        payload: {
-          decision: 'continue',
-          action: 'autonomy-window-renewed',
-          reason: action.reason,
-          attentionRequired: false,
-          previousDecisions,
-          totalDecisionsUsed: existing.totalDecisionsUsed ?? existing.decisionsUsed,
-          renewalCount,
-          internalReplanCount,
-          consecutiveInternalReplans: internalReplan ? previousConsecutiveReplans + 1 : 0,
-          checkpointSignature: action.checkpointSignature,
-        },
       };
     } else if (action.type === 'pause-project') {
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };

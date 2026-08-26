@@ -956,12 +956,6 @@ export interface FeishuProjectManagerView {
     latestContextSummary?: string;
     latestBlocker?: string;
     attempts?: number;
-    supervisorPlan?: {
-      revision?: number;
-      selectedRoute?: string;
-      milestones?: Array<{ id?: string; title?: string; outcome?: string; status?: string }>;
-      remainingWork?: string[];
-    };
     contract?: {
       execution?: { taskWorkMode?: string; modeReason?: string };
       budget?: { maxTaskRetries?: number };
@@ -1410,12 +1404,6 @@ export function buildProjectManagerConversationCard(
           - (workItemStatusPriority[String(right.status || '')] ?? 99);
     })
     .slice(0, 2);
-  const planWorkItem = currentWorkItems.find((item) => item.supervisorPlan);
-  const currentPlan = planWorkItem?.supervisorPlan;
-  const planMilestones = Array.isArray(currentPlan?.milestones) ? currentPlan.milestones : [];
-  const completedMilestones = planMilestones.filter((milestone) => milestone.status === 'completed').length;
-  const currentMilestone = planMilestones.find((milestone) => milestone.status === 'active')
-    || planMilestones.find((milestone) => milestone.status === 'planned');
   const currentProgressSummary = currentWorkItems.find((item) => item.latestContextSummary)?.latestContextSummary
     || currentWorkItems.find((item) => item.latestEvidence)?.latestEvidence
     || latestReply?.summary;
@@ -1461,7 +1449,7 @@ export function buildProjectManagerConversationCard(
       content: compactProjectCardText([
         '**当前阶段**',
         `${projectManagerStatusMarker(currentSubgoal.status)} S${currentSubgoal.order || '-'} · **${currentSubgoal.title || currentSubgoal.id}** · ${projectManagerStageStatusLabel(currentSubgoal.status)}`,
-        currentPlan && currentSubgoal.outcome ? `阶段目标：${currentSubgoal.outcome}` : '',
+        currentSubgoal.outcome ? `阶段目标：${currentSubgoal.outcome}` : '',
       ].filter(Boolean).join('\n'), 700),
     }] : []),
     {
@@ -1475,19 +1463,11 @@ export function buildProjectManagerConversationCard(
     },
     {
       tag: 'markdown',
-      content: currentPlan
-        ? compactProjectCardText([
-            '**当前计划**',
-            currentPlan.selectedRoute ? `执行路线：${currentPlan.selectedRoute}` : '',
-            planMilestones.length > 0 ? `里程碑：${completedMilestones}/${planMilestones.length} 已完成` : '',
-            currentMilestone ? `正在进行：${currentMilestone.title || currentMilestone.id || '未命名里程碑'}${currentMilestone.outcome ? `\n目标：${currentMilestone.outcome}` : ''}` : '',
-            ...(currentPlan.remainingWork || []).slice(0, 2).map((item, index) => `${index === 0 ? '接下来' : '随后'}：${item}`),
-          ].filter(Boolean).join('\n'), 1000)
-        : compactProjectCardText([
-            '**当前计划**',
-            currentSubgoal?.outcome ? `阶段目标：${currentSubgoal.outcome}` : currentSubgoal ? `推进 S${currentSubgoal.order || '-'} · ${currentSubgoal.title || currentSubgoal.id}` : '等待项目 AI 建立阶段计划。',
-            nextSubgoal ? `下一阶段：S${nextSubgoal.order || '-'} · ${nextSubgoal.title || nextSubgoal.id}` : currentSubgoal ? '下一步：完成当前阶段后进行目标验收或衔接后续计划。' : '',
-          ].filter(Boolean).join('\n'), 700),
+      content: compactProjectCardText([
+        '**当前计划**',
+        currentSubgoal?.outcome ? `阶段目标：${currentSubgoal.outcome}` : currentSubgoal ? `推进 S${currentSubgoal.order || '-'} · ${currentSubgoal.title || currentSubgoal.id}` : '等待项目 AI 建立阶段计划。',
+        nextSubgoal ? `下一阶段：S${nextSubgoal.order || '-'} · ${nextSubgoal.title || nextSubgoal.id}` : currentSubgoal ? '下一步：完成当前阶段后进行目标验收或衔接后续计划。' : '',
+      ].filter(Boolean).join('\n'), 700),
     },
     ...(currentSubgoals.length > 0 ? [{
       tag: 'markdown',

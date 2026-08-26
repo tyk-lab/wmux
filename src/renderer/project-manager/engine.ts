@@ -5,19 +5,11 @@ import {
   projectAuthorizationVersion,
   projectOrientationReady,
   projectRequirementsVersion,
-  projectTaskBaselineApproved,
   projectWorkItemReady,
-  type ProjectEscalationBoundary,
   type ProjectManagerSession,
   type ProjectSupervisorContract,
-  type ProjectSupervisorStagePlan,
-  type ProjectTaskBaseline,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
-
-export const PROJECT_TASK_BASELINE_INVESTIGATION_MARKER = '[项目基线调查]';
-export const PROJECT_TASK_BASELINE_REPORT_MARKER = '[项目基线报告]';
-export const PROJECT_TASK_BASELINE_APPROVAL_MARKER = '[批准项目基线]';
 
 export interface ProjectExecutionIdentity {
   projectId: string;
@@ -38,22 +30,6 @@ export function buildProjectExecutionIdentityBlock(identity: ProjectExecutionIde
     `授权版本：A${identity.authorizationVersion}`,
     '这是本轮唯一有效的运行身份。新建、恢复或切换工作项时均以本块为准；旧终端、旧运行通道和旧对话身份只作审计历史，不得尝试恢复、等待或反复论证。',
   ].join('\n');
-}
-
-export function projectBaselineProgressDirective(baseline?: ProjectTaskBaseline): string {
-  if (baseline?.status === 'approved') {
-    return '基线已批准：直接推进合同内下一项高价值动作，不再重新调查身份或重复论证已有事实。';
-  }
-  if (baseline?.status === 'investigating') {
-    if (baseline.reviewKind === 'contract-delta') {
-      return `合同增量基线正在复核：继承原批准证据，只核对“${baseline.deltaSummary || '合同变化'}”对当前工作树、权限和下一动作的影响；不得重复完整调查、重跑已有测试或重做设备操作。证据充分后立即批准并继续主目标。`;
-    }
-    const rounds = Math.max(1, Math.trunc(baseline.investigationRounds || 1));
-    return rounds >= 2
-      ? '基线已完成初次调查和一次定向补查：必须根据现有报告批准基线，或一次性上报明确阻塞并建议暂缓；禁止第三轮调查。'
-      : '基线初次调查已投递：先审查已有报告；只有报告缺少一个会改变执行路径的关键事实时，才允许一次定向补查，禁止重新做整套调查。';
-  }
-  return '基线待调查：只下达一次有界只读调查，收到报告后立即转入批准、一次定向补查或明确阻塞分支。';
 }
 
 export function isProjectTargetedTestCommand(command: string): boolean {
@@ -93,83 +69,6 @@ export function projectPermissionAuthorizationError(
     : '权限命令不在任务契约 allowedCommandPrefixes 授权范围内';
 }
 
-/** Require a reviewed, current workspace baseline before any project task can write or finish. */
-export function projectTaskBaselineViolation(
-  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'executionProtocolVersion' | 'baseline'>,
-  proposal: {
-    outcome: SupervisorDecisionOutcome;
-    instruction?: string;
-    changedFiles?: string[];
-    testCommand?: string;
-    testResult?: string;
-    fullSuite?: boolean;
-    retry?: boolean;
-    permissionResponse?: string;
-    evidence?: string;
-    workspaceVersion?: string;
-    escalationBoundary?: ProjectEscalationBoundary;
-  },
-): string | null {
-  const instruction = proposal.instruction?.trim() || '';
-  if ((item.executionProtocolVersion || 0) >= 7) {
-    return instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER)
-      || instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER)
-      ? 'P9 已删除监督批准项目基线的多轮握手；请直接下达结果导向的任务批次'
-      : null;
-  }
-  if (projectTaskBaselineApproved(item)) {
-    if (instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER)
-      || instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER)) {
-      return '当前需求版本的项目基线已经批准；不得重复调查或再次发送 [批准项目基线]。若任务 AI 重复返回 [项目基线报告]，直接使用不含基线标记的 continue/rework 重申已批准执行批次';
-    }
-    return null;
-  }
-  if (proposal.outcome === 'needs-human') {
-    return proposal.escalationBoundary
-      ? null
-      : '项目基线尚未审核；只有明确标注上级决策边界的真实外部阻塞、范围变化或高风险事项才能提前升级';
-  }
-  if (proposal.permissionResponse) return '项目基线尚未审核，不能自动确认权限或执行写操作';
-  if (proposal.outcome === 'complete') return '项目基线尚未审核，不能把工作项判定为完成';
-
-  const investigationRequested = instruction.startsWith(PROJECT_TASK_BASELINE_INVESTIGATION_MARKER);
-  const approvalRequested = instruction.includes(PROJECT_TASK_BASELINE_APPROVAL_MARKER);
-  if (investigationRequested && approvalRequested) {
-    return '项目基线调查与批准必须分成两轮，不能在尚未收到报告时预先批准';
-  }
-  const investigationRounds = item.baseline?.status === 'investigating'
-    ? Math.max(1, Math.trunc(item.baseline.investigationRounds || 1))
-    : 0;
-  if (investigationRequested && investigationRounds >= 2) {
-    return '项目基线已经完成初次调查和一次定向补查；必须根据现有报告批准基线，或上报明确阻塞并建议暂缓当前工作项，不能继续重复调查';
-  }
-  if (!investigationRequested && !approvalRequested) {
-    return `项目基线尚未审核；只能先下达以 ${PROJECT_TASK_BASELINE_INVESTIGATION_MARKER} 开头的只读调查，或在审查报告后使用 ${PROJECT_TASK_BASELINE_APPROVAL_MARKER}`;
-  }
-  if ((proposal.changedFiles || []).length > 0
-    || !!proposal.testCommand?.trim()
-    || !!proposal.testResult?.trim()
-    || proposal.fullSuite === true
-    || proposal.retry === true) {
-    if (approvalRequested) {
-      return '批准项目基线的原子裁决不得携带 --changed-files、--test-command、--test-result、--full-suite 或 --retry；这些字段只记录基线获批后已经发生的执行结果。未来写入路径和验证命令分别填写在阶段计划的 expectedPaths 与 targetedValidation 中';
-    }
-    return '项目基线门禁阶段只允许只读调查，不能报告任务写入、运行测试、全量验证或重试';
-  }
-  if (approvalRequested && item.baseline?.status !== 'investigating') {
-    return '项目基线尚未完成已投递的只读调查轮次，不能预先批准';
-  }
-  if (approvalRequested && (
-    !proposal.evidence?.trim()
-    || !proposal.workspaceVersion?.trim()
-  )) {
-    return `批准项目基线必须同时提供 --evidence 和 --workspace-version，以记录已审查报告及当前工作区快照`;
-  }
-  return null;
-}
-
-type SupervisorDecisionOutcome = 'continue' | 'rework' | 'complete' | 'needs-human';
-
 export function buildProjectTaskExecutionEnvelope(
   contract: ProjectSupervisorContract,
   taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
@@ -196,10 +95,18 @@ export interface PreparedProjectTaskDelivery {
   delivery: string;
 }
 
-const PROJECT_ORCHESTRATION_DISCLOSURE = /项目\s*AI|监督\s*AI|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu;
+const PROJECT_ORCHESTRATION_DISCLOSURES = [
+  /项目\s*AI|项目管理(?:\s*AI)?|监督\s*AI|专属监督(?:\s*AI)?|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu,
+  /\bproject\s+ai\b|\bproject\s+manager\s+ai\b|\b(?:dedicated|project)\s+supervisor(?:\s+ai)?\b|\bsupervisor\s+ai\b|\bcontrol\s+plane\b|\bauxiliary(?:\s+task)?\s+ai\b|\b(?:project|work\s*item)\s+id\b/iu,
+  /\b(?:ask|notify|follow|wait\s+for|coordinate\s+with|escalate\s+to|report(?:\s+back)?\s+to)\s+(?:your\s+|the\s+)?(?:project\s+manager|supervisor)\b/iu,
+  /\b(?:project\s+manager|supervisor)['’]s\s+(?:plan|instructions?|decision|approval)\b/iu,
+];
 
 export function projectTaskInstructionDisclosureError(instruction: string): string | null {
-  const disclosure = instruction.trim().match(PROJECT_ORCHESTRATION_DISCLOSURE)?.[0];
+  const normalized = instruction.trim();
+  const disclosure = PROJECT_ORCHESTRATION_DISCLOSURES
+    .map((pattern) => normalized.match(pattern)?.[0])
+    .find(Boolean);
   return disclosure
     ? `任务 AI 指令不能暴露内部编排身份或路由信息：${disclosure}`
     : null;
@@ -226,13 +133,10 @@ export function prepareProjectTaskDelivery(
   }
 
   const envelope = buildProjectTaskExecutionEnvelope(contract, taskWorkMode);
-  const legacyPayload = requested.startsWith(envelope)
-    ? requested.slice(envelope.length).trim().replace(/^\[本轮执行指令\]\s*/u, '').trim()
-    : requested;
   return {
-    action: legacyPayload,
-    delivery: legacyPayload
-      ? `${envelope}\n\n[本轮执行指令]\n${legacyPayload}`
+    action: requested,
+    delivery: requested
+      ? `${envelope}\n\n[本轮执行指令]\n${requested}`
       : envelope,
   };
 }
@@ -493,8 +397,6 @@ export function buildProjectSupervisorBriefing(options: {
   workItemId: string;
   contract: ProjectSupervisorContract;
   taskWorkMode?: 'single-thread' | 'multi-thread';
-  baseline?: ProjectTaskBaseline;
-  supervisorPlan?: ProjectSupervisorStagePlan;
   executionIdentity?: ProjectExecutionIdentity;
   projectGoal?: string;
   stage?: {

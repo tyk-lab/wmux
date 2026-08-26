@@ -51,8 +51,6 @@ export type ProjectManagerEventKind =
   | 'user-message'
   | 'work-item-created'
   | 'work-item-updated'
-  | 'work-item-baseline-started'
-  | 'work-item-baseline-approved'
   | 'user-work-item-intervention'
   | 'dispatch-mode-selected'
   | 'supervisor-status'
@@ -65,7 +63,6 @@ export type ProjectManagerEventKind =
   | 'terminal-rotated'
   | 'task-context-reset'
   | 'recovery-restored'
-  | 'execution-protocol-migrated'
   | 'manager-runtime-restarted'
   | 'manager-runtime-failed'
   | 'supervisor-runtime-failed'
@@ -138,6 +135,8 @@ export interface ProjectManagerUserQuestion {
   workItemId?: string;
   blocker?: string;
   reasonCode?: ProjectManagerManualInterventionReasonCode;
+  /** Stable semantic scope supplied by Project AI; equal keys may reuse one user-authorized decision. */
+  decisionKey?: string;
   question: string;
   context: string;
   options: ProjectManagerQuestionOption[];
@@ -146,8 +145,52 @@ export interface ProjectManagerUserQuestion {
   createdAt: number;
 }
 
+export interface ProjectReusableUserDecision {
+  id: string;
+  decisionKey: string;
+  category: 'clarification' | 'manual-intervention';
+  reasonCode?: ProjectManagerManualInterventionReasonCode;
+  question: string;
+  answer: string;
+  optionId?: string;
+  requirementsVersion: number;
+  authorizationVersion: number;
+  answeredBy: 'desktop' | 'feishu';
+  createdAt: number;
+}
+
+export function projectManagerQuestionAllowsReusableDecision(
+  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode'>,
+): boolean {
+  return question.category !== 'manual-intervention' || question.reasonCode === 'business-choice';
+}
+
+function projectDecisionKeyHash(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193) >>> 0;
+    right = Math.imul(right ^ (code + index), 0x85ebca6b) >>> 0;
+  }
+  return `${left.toString(16).padStart(8, '0')}${right.toString(16).padStart(8, '0')}`;
+}
+
+export function projectManagerQuestionDecisionKey(
+  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode' | 'decisionKey' | 'question' | 'options'>,
+): string {
+  const explicit = question.decisionKey?.trim().toLocaleLowerCase();
+  if (explicit) return `explicit:${explicit}`;
+  const normalized = [
+    question.category || 'clarification',
+    question.reasonCode || '',
+    question.question.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim(),
+    ...question.options.map((option) => `${option.id}:${option.label}`.toLocaleLowerCase()),
+  ].join('|');
+  return `derived:${projectDecisionKeyHash(normalized)}`;
+}
+
 export interface ProjectExecutionBudget {
-  maxDecisions: number;
   maxContinuousMinutes: number;
   /** Aggregate task-AI time across a worker group; parallelism must not multiply the budget. */
   maxAggregateWorkerMinutes: number;
@@ -167,11 +210,7 @@ export const PROJECT_RETRY_KINDS = [
 
 export type ProjectRetryKind = typeof PROJECT_RETRY_KINDS[number];
 
-/** One route correction is enough to prove whether a new direction can produce material progress. */
-export const MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS = 1;
-
 export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
-  maxDecisions: 12,
   maxContinuousMinutes: 90,
   maxAggregateWorkerMinutes: 180,
   maxIdenticalFailures: 2,
@@ -183,7 +222,6 @@ export const DEFAULT_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
 
 /** Hard ceilings prevent a project-management AI from disabling anti-loop controls through its task contract. */
 export const MAX_PROJECT_EXECUTION_BUDGET: ProjectExecutionBudget = {
-  maxDecisions: 50,
   maxContinuousMinutes: 240,
   maxAggregateWorkerMinutes: 720,
   maxIdenticalFailures: 5,
@@ -251,20 +289,11 @@ export interface ProjectExecutionRecord {
   testResult?: string;
   diffSummary?: string;
   evidenceSummary?: string;
-  /** Verified supervisor-plan progress used to renew a healthy autonomy window. */
-  planProgressSignature?: string;
   /** Content-addressed project artifacts verified by the control plane for a read-only evidence review. */
   evidenceProgressSignature?: string;
   /** Only task-failure consumes the work item's task retry budget. */
   retryKind?: ProjectRetryKind;
   escalationBoundary?: ProjectEscalationBoundary;
-}
-
-export interface ProjectExecutionWindowReplan {
-  reason: string;
-  requestedAt: number;
-  trigger: 'decision-limit' | 'time-limit' | 'no-progress';
-  previousDirectionSignature?: string;
 }
 
 export type ProjectCriterionVerificationStatus = 'satisfied' | 'unsatisfied' | 'unverified';
@@ -296,48 +325,6 @@ export interface ProjectCompletionResult {
   evidence?: string;
   criteria?: ProjectCriterionVerification[];
   completedAt: number;
-}
-
-export type ProjectSupervisorMilestoneStatus = 'planned' | 'active' | 'completed';
-
-export interface ProjectSupervisorMilestone {
-  id: string;
-  title: string;
-  outcome: string;
-  status: ProjectSupervisorMilestoneStatus;
-  evidence?: string;
-}
-
-/** Supervisor-owned route and milestone state inside the project AI's hard contract. */
-export interface ProjectSupervisorStagePlan {
-  revision: number;
-  selectedRoute: string;
-  milestones: ProjectSupervisorMilestone[];
-  expectedPaths: string[];
-  targetedValidation: string[];
-  serializedBoundaries: string[];
-  remainingWork: string[];
-  updatedAt: number;
-}
-
-export type ProjectTaskBaselineStatus = 'required' | 'investigating' | 'approved';
-
-/** Control-plane-owned proof that the task inspected the current project before writing. */
-export interface ProjectTaskBaseline {
-  status: ProjectTaskBaselineStatus;
-  requirementsVersion: number;
-  requestedAt?: number;
-  /** Initial read-only investigation plus at most one targeted supplement. */
-  investigationRounds?: number;
-  /** A contract-only change reuses the last approval and reviews only the delta. */
-  reviewKind?: 'contract-delta';
-  deltaSummary?: string;
-  priorWorkspaceVersion?: string;
-  priorEvidence?: string;
-  priorApprovedAt?: number;
-  workspaceVersion?: string;
-  evidence?: string;
-  approvedAt?: number;
 }
 
 export type ProjectProgressEntrySource = 'workspace' | 'plan';
@@ -438,31 +425,21 @@ export interface ProjectSubgoal {
 
 export interface ProjectWorkItem {
   id: string;
-  /** Immutable predecessor/successor audit chain owned by the control plane. */
-  predecessorWorkItemId?: string;
-  supersededByWorkItemId?: string;
-  successionReason?: 'protocol-migration' | 'budget-exhausted';
-  /** Immutable main-goal ownership. Old-goal tasks cannot be rebound across a pivot. */
-  goalId?: string;
+  /** Immutable main-goal ownership. */
+  goalId: string;
   /** Coarse project-AI stage that owns this executable task. */
-  subgoalId?: string;
+  subgoalId: string;
   /** Requirements and inherited-authorization versions accepted for this task contract. */
-  requirementsVersion?: number;
-  authorizationVersion?: number;
-  /** Contract semantics version. Older unfinished items must be re-contracted before dispatch. */
-  executionProtocolVersion?: number;
+  requirementsVersion: number;
+  authorizationVersion: number;
+  /** Current P9 contract semantics version. */
+  executionProtocolVersion: number;
   /** Project-AI decision made before dispatch so one task AI receives one focused outcome. */
-  complexityAssessment?: ProjectTaskComplexityAssessment;
+  complexityAssessment: ProjectTaskComplexityAssessment;
   /** Project AI selects the initial mode; the bound supervisor may revise it for later task turns. */
-  taskWorkMode?: ProjectTaskWorkMode;
+  taskWorkMode: ProjectTaskWorkMode;
   /** Durable in-place context reset state. Project files and terminal identity are never replaced. */
   contextReset?: ProjectTaskContextResetState;
-  /** Project AI cannot approve this field; only the bound supervisor decision bridge can. */
-  baseline?: ProjectTaskBaseline;
-  /** Mutable execution route owned by the supervisor after baseline investigation. */
-  supervisorPlan?: ProjectSupervisorStagePlan;
-  /** Control-plane migration gate for supervisor-owned planning after baseline approval. */
-  supervisorPlanRequired?: boolean;
   title: string;
   contract: ProjectSupervisorContract;
   status: ProjectWorkItemStatus;
@@ -472,22 +449,8 @@ export interface ProjectWorkItem {
   /** Monotonic assignment generation shared with the dedicated supervisor lane. */
   assignmentVersion?: number;
   attempts: number;
-  /** Decisions consumed in the current renewable autonomy window. */
-  decisionsUsed: number;
-  /** Monotonic audit total across all renewed autonomy windows. */
+  /** Monotonic audit total of supervisor decisions. */
   totalDecisionsUsed?: number;
-  /** Number of verified-progress autonomy-window renewals; internal replans are counted separately. */
-  budgetWindowRenewals?: number;
-  /** Monotonic audit count of accepted in-place route corrections. */
-  internalReplanCount?: number;
-  /** Route corrections since the latest verified checkpoint or baseline approval. */
-  consecutiveInternalReplans?: number;
-  /** Last verified progress already credited with opening a new autonomy window. */
-  lastBudgetCheckpointSignature?: string;
-  /** Control-owned gate requiring the project AI to provide a materially different internal route. */
-  executionWindowReplan?: ProjectExecutionWindowReplan;
-  /** Recent accepted internal-route signatures prevent A/B cycling across renewed windows. */
-  executionWindowReplanHistory?: string[];
   startedAt?: number;
   updatedAt: number;
   completedAt?: number;
@@ -997,6 +960,8 @@ export interface ProjectManagerSession {
   /** Blocks project-level planning and dispatch until the project AI records a structured understanding. */
   orientation?: ProjectOrientationState;
   pendingUserQuestion?: ProjectManagerUserQuestion;
+  /** User-authorized answers reusable only within the recorded requirement and authorization versions. */
+  reusableUserDecisions?: ProjectReusableUserDecision[];
   /** Project-specific runtime selection; absent legacy sessions inherit current defaults. */
   agentConfig?: ProjectManagementAgentConfig;
   /** Provider quota/rate-limit issue waiting for a user-selected runtime replacement. */
@@ -1436,26 +1401,12 @@ export function compactProjectSupervisorTransitions(
   return compacted.reverse();
 }
 
-/** Upgrade stored sessions once at the boundary so runtime code has one coherent goal model. */
+/** Normalize the current P9 governance state. Older protocols are rejected before this boundary. */
 function normalizeProjectGovernanceSessionState(session: ProjectManagerSession): ProjectManagerSession {
-  if ((session.executionProtocolVersion || 0) < 7) return session;
   return {
     ...session,
     workItems: session.workItems.map((item) => ({
       ...item,
-      predecessorWorkItemId: undefined,
-      supersededByWorkItemId: undefined,
-      successionReason: undefined,
-      baseline: undefined,
-      supervisorPlan: undefined,
-      supervisorPlanRequired: false,
-      decisionsUsed: 0,
-      budgetWindowRenewals: undefined,
-      internalReplanCount: undefined,
-      consecutiveInternalReplans: undefined,
-      lastBudgetCheckpointSignature: undefined,
-      executionWindowReplan: undefined,
-      executionWindowReplanHistory: undefined,
       contract: {
         ...item.contract,
         scope: {
@@ -1484,9 +1435,6 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
 
 /** Normalize only the current P9 single-task-runtime model; older sessions are rejected during recovery. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
-  const { goalConstruction: _legacyGoalConstruction, ...sessionWithoutLegacyGoalConstruction } = session as ProjectManagerSession & {
-    goalConstruction?: unknown;
-  };
   const requirementsVersion = projectRequirementsVersion(session);
   const authorizationVersion = projectAuthorizationVersion(session);
   const rawGoals = Array.isArray(session.goals) ? session.goals : [];
@@ -1507,24 +1455,9 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     ...subgoal,
     completion: normalizeProjectCompletionResult(subgoal.completion),
   }));
-  const needsLegacySubgoal = rawSubgoals.length === 0 && session.workItems.length > 0;
-  const legacySubgoalId = `${session.id}-legacy-${activeGoalId}`;
-  const subgoals = needsLegacySubgoal
-    ? [{
-        id: legacySubgoalId,
-        goalId: activeGoalId,
-        title: '历史执行工作',
-        outcome: '保留升级前已有工作项的归属和审计记录',
-        acceptance: activeGoal.doneWhen,
-        dependencies: [],
-        status: 'active' as const,
-        order: 1,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-      }]
-    : rawSubgoals;
+  const subgoals = rawSubgoals;
   return normalizeProjectGovernanceSessionState({
-    ...sessionWithoutLegacyGoalConstruction,
+    ...session,
     projectName: projectDisplayName(session),
     projectScope: session.projectScope?.trim() || `仅限项目目录 ${session.projectDir} 内与本项目直接相关的工作`,
     activeGoalId,
@@ -1577,34 +1510,8 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
       }))),
     workItems: session.workItems.map((item) => {
       const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
-      const legacyInternalReplanCount = item.internalReplanCount === undefined
-        ? session.events.filter((event) => (
-            event.workItemId === item.id
-            && event.kind === 'guard-triggered'
-            && event.payload?.action === 'autonomy-window-renewed'
-            && event.payload?.reason === 'internal-replan'
-          )).length
-        : 0;
-      const internalReplanCount = item.internalReplanCount === undefined
-        ? legacyInternalReplanCount
-        : Math.max(0, Math.trunc(item.internalReplanCount || 0));
-      const verifiedProgressRenewals = item.internalReplanCount === undefined
-        ? Math.max(0, Math.trunc(item.budgetWindowRenewals || 0) - legacyInternalReplanCount)
-        : Math.max(0, Math.trunc(item.budgetWindowRenewals || 0));
-      const activeBaseline = item.baseline?.requirementsVersion === itemRequirementsVersion && (
-        (item.baseline.status === 'investigating' && Number.isFinite(item.baseline.requestedAt))
-        || (item.baseline.status === 'approved'
-          && !!item.baseline.workspaceVersion?.trim()
-          && !!item.baseline.evidence?.trim())
-      );
       return {
         ...item,
-        predecessorWorkItemId: item.predecessorWorkItemId?.trim() || undefined,
-        supersededByWorkItemId: item.supersededByWorkItemId?.trim() || undefined,
-        successionReason: item.successionReason === 'protocol-migration'
-          || item.successionReason === 'budget-exhausted'
-          ? item.successionReason
-          : undefined,
         contract: {
           ...item.contract,
           budget: normalizeProjectExecutionBudget(item.contract.budget),
@@ -1616,57 +1523,15 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
             .filter(Boolean),
         },
         goalId: item.goalId || activeGoalId,
-        subgoalId: item.subgoalId || (needsLegacySubgoal ? legacySubgoalId : undefined),
+        subgoalId: item.subgoalId || '',
         requirementsVersion: itemRequirementsVersion,
         authorizationVersion: Math.max(1, Math.trunc(item.authorizationVersion || authorizationVersion)),
         executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
-        complexityAssessment: normalizeProjectTaskComplexityAssessment(
-          item.complexityAssessment,
-          item.updatedAt,
-        ) || {
-          complexity: 'medium',
-          decision: 'single-task',
-          signals: ['当前控制层工作项已定义为一个独立可验收成果'],
-          rationale: '内部恢复路径保留现有单一成果工作项；新的项目 AI 任务创建必须显式提交复杂度评估',
-          assessedAt: item.updatedAt,
-        },
+        complexityAssessment: normalizeProjectTaskComplexityAssessment(item.complexityAssessment, item.updatedAt)!,
         taskWorkMode: item.taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread',
         contextReset: normalizeProjectTaskContextResetState(item.contextReset),
-        baseline: activeBaseline
-          ? item.baseline
-          : requiredProjectTaskBaseline(itemRequirementsVersion),
-        decisionsUsed: Math.max(0, Math.trunc(item.decisionsUsed || 0)),
-        totalDecisionsUsed: Math.max(
-          Math.max(0, Math.trunc(item.decisionsUsed || 0)),
-          Math.max(0, Math.trunc(item.totalDecisionsUsed ?? item.decisionsUsed ?? 0)),
-        ),
-        budgetWindowRenewals: verifiedProgressRenewals,
-        internalReplanCount,
-        consecutiveInternalReplans: Math.max(0, Math.min(
-          MAX_PROJECT_CONSECUTIVE_INTERNAL_REPLANS,
-          Math.trunc(item.consecutiveInternalReplans || 0),
-        )),
-        lastBudgetCheckpointSignature: item.lastBudgetCheckpointSignature?.trim().slice(0, 200) || undefined,
-        executionWindowReplan: item.executionWindowReplan
-          && Number.isFinite(item.executionWindowReplan.requestedAt)
-          && !!String(item.executionWindowReplan.reason || '').trim()
-          && ['decision-limit', 'time-limit', 'no-progress'].includes(item.executionWindowReplan.trigger)
-          ? {
-              reason: String(item.executionWindowReplan.reason || '').trim().slice(0, 4000),
-              requestedAt: item.executionWindowReplan.requestedAt,
-              trigger: item.executionWindowReplan.trigger,
-              previousDirectionSignature: item.executionWindowReplan.previousDirectionSignature?.trim().slice(0, 200)
-                || undefined,
-            }
-          : undefined,
-        executionWindowReplanHistory: Array.isArray(item.executionWindowReplanHistory)
-          ? [...new Set(item.executionWindowReplanHistory
-            .map((entry) => String(entry || '').trim().slice(0, 200))
-            .filter(Boolean))].slice(-20)
-          : [],
+        totalDecisionsUsed: Math.max(0, Math.trunc(item.totalDecisionsUsed || 0)),
         completion: normalizeProjectCompletionResult(item.completion),
-        supervisorPlanRequired: item.supervisorPlanRequired
-          ?? !['completed', 'stopped'].includes(item.status),
       };
     }),
   });
@@ -1695,17 +1560,16 @@ export type ProjectManagerAction =
   | { type: 'set-project-subgoals'; subgoals: ProjectSubgoal[]; reason?: string; source: 'user' | 'manager' }
   | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
   | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
-  | { type: 'answer-user-clarification'; questionId: string; answer: string; optionId?: string; answeredBy: 'desktop' | 'feishu' }
+  | {
+      type: 'answer-user-clarification';
+      questionId: string;
+      answer: string;
+      optionId?: string;
+      answeredBy: 'desktop' | 'feishu';
+      reuseForSimilar?: boolean;
+    }
   | { type: 'create-work-item'; workItem: ProjectWorkItem }
   | { type: 'update-work-item'; workItemId: string; patch: Partial<ProjectWorkItem> }
-  | { type: 'start-work-item-baseline'; workItemId: string }
-  | { type: 'reset-work-item-baseline'; workItemId: string; reason: string }
-  | {
-    type: 'approve-work-item-baseline';
-    workItemId: string;
-    workspaceVersion: string;
-    evidence: string;
-  }
   | {
     type: 'intervene-work-item';
     workItemId: string;
@@ -1718,13 +1582,6 @@ export type ProjectManagerAction =
     record: ProjectExecutionRecord;
     /** Rejected or failed delivery attempts remain auditable without spending autonomy budget. */
       consumeDecision?: boolean;
-    }
-  | {
-      type: 'renew-execution-window';
-      workItemId: string;
-      reason: 'verified-progress' | 'internal-replan' | 'decision-limit' | 'time-limit' | 'decision-and-time';
-      startedAt: number;
-      checkpointSignature?: string;
     }
   | {
     type: 'pause-project';
@@ -1753,24 +1610,6 @@ export function projectWorkItemReady(
   return item.dependencies.every((dependency) => byId.get(dependency)?.status === 'completed');
 }
 
-export function requiredProjectTaskBaseline(requirementsVersion: number): ProjectTaskBaseline {
-  return {
-    status: 'required',
-    requirementsVersion: Math.max(1, Math.trunc(requirementsVersion || 1)),
-  };
-}
-
-export function projectTaskBaselineApproved(
-  item: Pick<ProjectWorkItem, 'requirementsVersion' | 'executionProtocolVersion' | 'baseline'>,
-): boolean {
-  if ((item.executionProtocolVersion || 0) >= 7) return true;
-  const requirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || 1));
-  return item.baseline?.status === 'approved'
-    && item.baseline.requirementsVersion === requirementsVersion
-    && !!item.baseline.workspaceVersion?.trim()
-    && !!item.baseline.evidence?.trim();
-}
-
 export function normalizeProjectExecutionBudget(
   value?: Partial<ProjectExecutionBudget>,
 ): ProjectExecutionBudget {
@@ -1780,7 +1619,6 @@ export function normalizeProjectExecutionBudget(
       : fallback
   );
   return {
-    maxDecisions: positiveInteger(value?.maxDecisions, DEFAULT_PROJECT_EXECUTION_BUDGET.maxDecisions, MAX_PROJECT_EXECUTION_BUDGET.maxDecisions),
     maxContinuousMinutes: positiveInteger(value?.maxContinuousMinutes, DEFAULT_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes, MAX_PROJECT_EXECUTION_BUDGET.maxContinuousMinutes),
     maxAggregateWorkerMinutes: positiveInteger(
       value?.maxAggregateWorkerMinutes,

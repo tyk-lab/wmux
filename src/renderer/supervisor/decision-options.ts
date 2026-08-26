@@ -14,8 +14,15 @@ export function buildAdoptedPlanBriefing(options: {
   impact?: string;
   alternatives?: string;
   clarification?: boolean;
+  reuseForSimilarIssues?: boolean;
 }): string {
   const userGuidance = options.userGuidance?.trim() || '';
+  const standingDecisionBlock = options.reuseForSimilarIssues
+    ? [
+        '[持续用户决策] 用户确认：后续遇到语义相近、范围与风险等级不变的问题时，以本次决定的意思为准，不要反复提问。',
+        '只有出现实质不同的问题、新的高风险/不可逆动作、范围或验收变化、现有决定无法合理覆盖时，才重新请求用户决策，并明确说明差异。',
+      ]
+    : [];
   if (options.clarification) {
     return [
       '[需求对齐答复] 用户已集中回答普通监督提出的实质歧义问题。',
@@ -23,6 +30,7 @@ export function buildAdoptedPlanBriefing(options: {
       options.reason?.trim() ? `[原对齐问题] ${options.reason.trim()}` : '',
       options.impact?.trim() ? `[答案影响] ${options.impact.trim()}` : '',
       options.alternatives?.trim() ? `[AI 推荐默认答案] ${options.alternatives.trim()}` : '',
+      ...standingDecisionBlock,
       '',
       '先根据整组答复完成需求对齐；不得重复询问已经回答的内容。仍有会实质改变方向、范围或验收的歧义时，才可再提出一批必要问题。',
       `对齐充分后，创建 .wmux/tmp/ 下的阶段计划 JSON，并使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework --stage-plan-file <文件> 携带第一条 --next；计划形成前不得向任务 AI 投递。`,
@@ -40,6 +48,7 @@ export function buildAdoptedPlanBriefing(options: {
     options.reason?.trim() ? `[待决事项] ${options.reason.trim()}` : '',
     options.impact?.trim() ? `[决策原因] ${options.impact.trim()}` : '',
     options.alternatives?.trim() ? `[AI 备选方案] ${options.alternatives.trim()}` : '',
+    ...standingDecisionBlock,
     '',
     '用户补充信息是决策依据，不是可原样发送到任务终端的命令。请先 read-screen 获取任务终端最新状态，再基于用户选择、用户补充信息、当前任务、计划约束和终端证据，判断并整理成完整、明确、可执行的下一步。',
     `整理完成后，使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在目标项目创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,

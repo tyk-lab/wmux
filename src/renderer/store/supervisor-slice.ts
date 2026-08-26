@@ -9,7 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
-import type { ProjectCompletionResult, ProjectSupervisorStagePlan } from '../../shared/project-manager';
+import type { ProjectCompletionResult } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -114,8 +114,6 @@ export interface SupervisorDecision {
   proposalKind?: 'route-adjustment' | 'route-change' | 'important' | 'context-recovery' | 'direction-needed' | 'clarification';
   reason: string;
   next: string;
-  /** Supervisor-owned execution plan snapshot; one milestone means direct execution. */
-  plan?: ProjectSupervisorStagePlan;
   /** Outcome-only plan used by the current ordinary-supervision protocol. */
   ordinaryPlan?: OrdinarySupervisorPlan;
   /** Structured assignment that was rendered and delivered to the ordinary task AI. */
@@ -144,6 +142,8 @@ export interface SupervisorDelivery {
   reviewId?: string;
   /** Owner decision identity used to coalesce decisions that have not reached the supervisor yet. */
   correlationId?: string;
+  /** Project work assignment version that must be accepted before reviewing the worker. */
+  projectAssignmentVersion?: number;
   /** First briefing may use verified TUI readiness before the new Agent has emitted its first hook. */
   bootstrapOnRuntimeReady?: boolean;
   /** Transport progress; submitted remains queued until the Agent hook confirms consumption. */
@@ -185,22 +185,6 @@ export interface SupervisorLaneConfig {
   planRevision?: number;
 }
 
-export interface SupervisorGoalConstructionMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  ts: number;
-}
-
-export interface SupervisorGoalConstructionState {
-  status: 'drafting' | 'confirmed';
-  initialIdea: string;
-  draft: Pick<SupervisorLaneConfig, 'taskGoal' | 'taskDescription' | 'preconditions' | 'stopWhen' | 'stopWhenKind'>;
-  messages: SupervisorGoalConstructionMessage[];
-  startedAt: number;
-  confirmedAt?: number;
-}
-
 export interface SupervisorLane {
   id: string;
   /** Stable identity for this terminal's management/audit conversation. */
@@ -211,6 +195,8 @@ export interface SupervisorLane {
   projectManagerProjectId?: string;
   /** Must match the bound work item before this lane may dispatch or judge it. */
   projectAssignmentVersion?: number;
+  /** Latest assignment version accepted by the dedicated supervisor Agent. */
+  projectAssignmentConfirmedVersion?: number;
   /** Project manager requested context rotation; only this lane's supervisor may execute it. */
   projectTaskRotationPending?: boolean;
   projectTaskRotationSummary?: string;
@@ -232,7 +218,7 @@ export interface SupervisorLane {
   projectDir?: string;
   /** Immutable work-scope root captured when this supervision session starts. */
   scopeRoot?: string;
-  /** Undefined values are legacy ordinary lanes and cannot be resumed under the current protocol. */
+  /** Required on ordinary lanes; project-managed lanes do not use this protocol. */
   ordinaryProtocolVersion?: number;
   /** Initial takeover waits for a running task turn instead of interrupting it. */
   pendingInitialReview?: boolean;
@@ -253,6 +239,15 @@ export interface SupervisorLane {
     updatedAt: number;
     planRevision: number;
     requirementsVersion?: number;
+  };
+  /** User-approved standing decision for semantically similar questions in this lane and plan revision. */
+  standingUserDecision?: {
+    decision: string;
+    subject: string;
+    proposalKind?: PendingApproval['proposalKind'];
+    sourceApprovalId: string;
+    updatedAt: number;
+    planRevision: number;
   };
   /** In-flight or failed same-terminal context reset. Failed resets require user handling. */
   ordinaryContextReset?: OrdinaryContextResetState;
@@ -330,6 +325,8 @@ export interface SupervisorLane {
   supervisorLaunchCmdOverride?: string;
   supervisorModelOverride?: string;
   supervisorReasoningEffortOverride?: string;
+  /** Project task delivery submits independently of ordinary-supervision UI preferences. */
+  submitEnterOverride?: boolean;
   /** Optional per-terminal override; undefined inherits the session defaults. */
   autonomyPermissionsOverride?: SupervisorAutonomyPermission[];
   /** Optional per-terminal full-auto switch; undefined inherits the session default. */
@@ -346,8 +343,6 @@ export interface SupervisorLane {
   taskRoleAnchorPending?: boolean;
   /** New ordinary lanes must align material ambiguity and persist a plan before first execution. */
   ordinaryPlanRequired?: boolean;
-  /** Terminal-context bootstrap gate; the same supervisor becomes active after evidence is sufficient or gaps are answered. */
-  goalConstruction?: SupervisorGoalConstructionState;
   /** Bounded permission audit used to stop repeated confirmations that make no progress. */
   permissionConfirmations?: Array<{
     ts: number;
@@ -362,14 +357,11 @@ export interface SupervisorLane {
   restoredFromSessionId?: string;
   /** User-selected historical terminal; intentionally independent of this lane's surfaceId. */
   restoreSource?: SupervisorRestoreSource;
-  /** User-gated bootstrap that rebuilds a task terminal from restored audit context. */
-  contextRecoveryStatus?: 'draft-pending' | 'awaiting-confirmation' | 'sent';
 }
 
 export type ApprovalSource =
   | 'supervisor-route'
-  | 'supervisor-important'
-  | 'supervisor-context-recovery';
+  | 'supervisor-important';
 
 export interface PendingApproval {
   id: string;
@@ -379,7 +371,7 @@ export interface PendingApproval {
   text: string;
   source: ApprovalSource;
   /** A supervisor proposal that must be decided by the user before injection. */
-  proposalKind?: 'route-change' | 'important' | 'context-recovery' | 'clarification';
+  proposalKind?: 'route-change' | 'important' | 'clarification';
   reason?: string;
   impact?: string;
   alternatives?: string;
@@ -390,6 +382,7 @@ export interface PendingApproval {
 export interface SupervisorLogEntry {
   ts: number;
   laneId: string;
+  scope?: 'ordinary' | 'project';
   action: string;
   detail: string;
 }
@@ -588,7 +581,6 @@ export function clearSupervisorLaneContext(
     restoredHistory: undefined,
     restoredFromSessionId: undefined,
     restoreSource: undefined,
-    contextRecoveryStatus: undefined,
   };
 }
 
@@ -634,32 +626,14 @@ export function normalizeSupervisorLaneBinding(lane: SupervisorLane): Supervisor
     ? lane
     : { ...lane, supervisorSurfaceId: null };
   if (!isProjectManagedSupervisorLane(normalized)) {
-    if (normalized.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION) {
-      return {
-        ...normalized,
-        taskRoleAnchorPending: false,
-        goalConstruction: undefined,
-        contextRecoveryStatus: undefined,
-      };
-    }
     return {
       ...normalized,
-      controlState: 'stopped',
-      awaitingReview: false,
-      awaitingStopCheck: false,
-      pendingInitialReview: false,
-      pendingSupervisorDeliveries: [],
       taskRoleAnchorPending: false,
-      goalConstruction: undefined,
-      supervisorProblem: {
-        kind: 'runtime-failed',
-        detail: '旧普通监督协议已停用；请使用新的任务 AI 会话重新创建监督通道',
-        detectedAt: Date.now(),
-      },
     };
   }
   return {
     ...normalized,
+    submitEnterOverride: normalized.submitEnterOverride ?? true,
     autonomousOverride: normalized.autonomousOverride ?? true,
     autonomyPermissionsOverride: Array.isArray(normalized.autonomyPermissionsOverride)
       ? normalized.autonomyPermissionsOverride
@@ -669,6 +643,11 @@ export function normalizeSupervisorLaneBinding(lane: SupervisorLane): Supervisor
       ? normalized.forbiddenActionsOverride
       : [...DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS],
   };
+}
+
+function currentOrdinaryApproval(approval: PendingApproval): boolean {
+  return (approval.source === 'supervisor-route' || approval.source === 'supervisor-important')
+    && (approval as unknown as Record<string, unknown>).proposalKind !== 'context-recovery';
 }
 
 /** Paused and waiting lanes remain bound; stopped lanes can be selected for a fresh supervisor. */
@@ -733,14 +712,19 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   },
   setOrdinarySupervisorLanes(lanes) {
     set((s) => {
-      const legacyOrdinaryLaneIds = new Set(lanes
-        .filter((lane) => !isProjectManagedSupervisorLane(lane)
-          && lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION)
-        .map((lane) => lane.id));
       const projectLanes = s.supervisor.lanes.filter(isProjectManagedSupervisorLane);
+      const projectSurfaceIds = new Set(projectLanes.map((lane) => lane.surfaceId));
       const ordinaryLanes = lanes
-        .filter((lane) => !isProjectManagedSupervisorLane(lane))
+        .filter((lane) => !isProjectManagedSupervisorLane(lane)
+          && lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION
+          && (lane as SupervisorLane & Record<string, unknown>).goalConstruction === undefined
+          && (lane as SupervisorLane & Record<string, unknown>).contextRecoveryStatus === undefined
+          && !(lane.decisions || []).some((decision) => (
+            (decision as SupervisorDecision & Record<string, unknown>).plan !== undefined
+          ))
+          && !projectSurfaceIds.has(lane.surfaceId))
         .map(normalizeSupervisorLaneBinding);
+      const ordinaryLaneIds = new Set(ordinaryLanes.map((lane) => lane.id));
       const nextLanes = [...projectLanes, ...ordinaryLanes];
       return {
         supervisor: {
@@ -748,23 +732,29 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           ...(s.supervisor.sessionId ? supervisorRuntimeFlags(nextLanes) : {}),
           lanes: nextLanes,
           pendingApprovals: s.supervisor.pendingApprovals
-            .filter((approval) => !legacyOrdinaryLaneIds.has(approval.laneId)),
+            .filter((approval) => ordinaryLaneIds.has(approval.laneId) && currentOrdinaryApproval(approval)),
         },
       };
     });
   },
   setProjectSupervisorLanes(lanes) {
     set((s) => {
-      const ordinaryLanes = s.supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
       const projectLanes = lanes
         .filter(isProjectManagedSupervisorLane)
         .map(normalizeSupervisorLaneBinding);
+      const projectSurfaceIds = new Set(projectLanes.map((lane) => lane.surfaceId));
+      const ordinaryLanes = s.supervisor.lanes.filter((lane) => (
+        !isProjectManagedSupervisorLane(lane) && !projectSurfaceIds.has(lane.surfaceId)
+      ));
+      const ordinaryLaneIds = new Set(ordinaryLanes.map((lane) => lane.id));
       const nextLanes = [...ordinaryLanes, ...projectLanes];
       return {
         supervisor: {
           ...s.supervisor,
           ...(s.supervisor.sessionId ? supervisorRuntimeFlags(nextLanes) : {}),
           lanes: nextLanes,
+          pendingApprovals: s.supervisor.pendingApprovals
+            .filter((approval) => ordinaryLaneIds.has(approval.laneId) && currentOrdinaryApproval(approval)),
         },
       };
     });
@@ -777,15 +767,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           .map((lane) => lane.id),
       );
       if (ordinaryLaneIds.size === 0) return s;
-      const projectLaneIds = new Set(
-        s.supervisor.lanes
-          .filter(isProjectManagedSupervisorLane)
-          .map((lane) => lane.id),
-      );
       const lanes = s.supervisor.lanes.map((rawLane) => {
         if (!ordinaryLaneIds.has(rawLane.id)) return rawLane;
         const lane = normalizeSupervisorLaneBinding(rawLane);
-        if (lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION) return lane;
         return {
           ...lane,
           controlState: 'active' as const,
@@ -803,10 +787,11 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           sessionId: s.supervisor.sessionId
             || `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           setupOpen: false,
-          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => projectLaneIds.has(item.laneId)),
+          pendingApprovals: [],
           log: [{
             ts: Date.now(),
             laneId: '-',
+            scope: 'ordinary' as const,
             action: '启动普通监督',
             detail: `普通监督 通道=${ordinaryLaneIds.size}`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
@@ -826,7 +811,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           controlState: 'active' as const,
           managementSessionId: lane.managementSessionId
             || `sup-lane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          awaitingReview: true,
+          awaitingReview: !!lane.projectWorkItemId,
           resumeAfterCancelledDecision: false,
         };
       });
@@ -838,9 +823,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           lanes,
           sessionId: s.supervisor.sessionId
             || `sup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          setupOpen: false,
           log: [{
-            ts: Date.now(), laneId: '-', action: '启动项目监督', detail: `项目监督 通道=${targetIds.size}`,
+            ts: Date.now(), laneId: '-', scope: 'project' as const, action: '启动项目监督', detail: `项目监督 通道=${targetIds.size}`,
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };
@@ -865,7 +849,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           ...supervisorRuntimeFlags(lanes),
           lanes,
           log: [{
-            ts: Date.now(), laneId: '-', action: '暂停普通监督',
+            ts: Date.now(), laneId: '-', scope: 'ordinary' as const, action: '暂停普通监督',
             detail: detail || '普通监督已暂停；项目监督状态不变',
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
@@ -899,7 +883,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           lanes,
           setupOpen: false,
           log: [{
-            ts: Date.now(), laneId: '-', action: '继续普通监督', detail: '继续普通监督会话；项目监督状态不变',
+            ts: Date.now(), laneId: '-', scope: 'ordinary' as const, action: '继续普通监督', detail: '继续普通监督会话；项目监督状态不变',
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
       };
@@ -926,9 +910,9 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           ...supervisorRuntimeFlags(lanes),
           lanes,
           autonomous: false,
-          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => !ordinaryLaneIds.has(item.laneId)),
+          pendingApprovals: [],
           log: [{
-            ts: Date.now(), laneId: '-', action: '停止普通监督',
+            ts: Date.now(), laneId: '-', scope: 'ordinary' as const, action: '停止普通监督',
             detail: detail || '普通监督已停止；项目监督状态不变',
           }, ...s.supervisor.log].slice(0, MAX_LOG),
         },
@@ -1038,6 +1022,8 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
   enqueueApproval(item) {
     const id = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     set((s) => {
+      const lane = s.supervisor.lanes.find((candidate) => candidate.id === item.laneId);
+      if (!lane || isProjectManagedSupervisorLane(lane)) return s;
       const rest = s.supervisor.pendingApprovals.filter((a) => a.laneId !== item.laneId);
       return {
         supervisor: {
@@ -1163,7 +1149,6 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           },
         };
       }
-      const projectLaneIds = new Set(projectLanes.map((lane) => lane.id));
       return {
         supervisor: {
           ...defaults,
@@ -1171,7 +1156,7 @@ export const createSupervisorSlice: StateCreator<SupervisorSlice, [], [], Superv
           sessionId: s.supervisor.sessionId,
           lanes: projectLanes,
           supervisorWorkspaceId: s.supervisor.supervisorWorkspaceId ?? null,
-          pendingApprovals: s.supervisor.pendingApprovals.filter((item) => projectLaneIds.has(item.laneId)),
+          pendingApprovals: [],
           log: s.supervisor.log,
         },
       };

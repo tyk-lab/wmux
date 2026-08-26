@@ -1,6 +1,3 @@
-import type {
-  ProjectSupervisorStagePlan,
-} from '../../shared/project-manager';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -28,7 +25,6 @@ export interface SupervisorProjectContext {
   workItemStatus?: string;
   bindingCurrent?: boolean;
   dependencyError?: string;
-  supervisorPlan?: ProjectSupervisorStagePlan;
 }
 
 export interface SupervisorConditionalCommand {
@@ -81,7 +77,6 @@ export interface SupervisorRuntimeContext {
   };
   plan?: {
     revision: number;
-    selectedRoute?: string;
     objective?: string;
     milestones: Array<{ id: string; status: string; outcome: string }>;
     remainingWork: string[];
@@ -225,9 +220,6 @@ export function buildSupervisorRuntimeContext(
     },
   ];
   const supervisorLauncher = detectSupervisorLauncher(session.supervisorLaunchCmd);
-  const currentPlan = projectManaged
-    ? undefined
-    : project?.supervisorPlan || lane.decisions?.find((decision) => decision.plan)?.plan;
   const currentOrdinaryPlan = !projectManaged
     ? lane.decisions?.find((decision) => decision.ordinaryPlan)?.ordinaryPlan
     : undefined;
@@ -278,7 +270,6 @@ export function buildSupervisorRuntimeContext(
     commands: {
       available: [
         'wmux context',
-        'wmux supervisor context',
         'wmux supervisor evidence --review-id <本轮ID> --file（优先）',
         'wmux supervisor evidence --review-id <本轮ID> [--page N] [--page-lines N]（文件不可用时兜底）',
         `wmux read-screen --surface ${targetSurfaceId}`,
@@ -321,17 +312,6 @@ export function buildSupervisorRuntimeContext(
         })),
         remainingWork: [...currentOrdinaryPlan.remainingWork],
       },
-    } : currentPlan ? {
-      plan: {
-        revision: currentPlan.revision,
-        selectedRoute: currentPlan.selectedRoute,
-        milestones: currentPlan.milestones.map((milestone) => ({
-          id: milestone.id,
-          status: milestone.status,
-          outcome: milestone.outcome,
-        })),
-        remainingWork: [...currentPlan.remainingWork],
-      },
     } : {}),
   };
 }
@@ -355,7 +335,7 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       : ''}`,
     `可用裁决: ${context.commands.decisionOutcomes.join('、')}`,
     context.plan
-      ? `监督成果计划: r${context.plan.revision}；目标=${context.plan.objective || context.plan.selectedRoute || '（未设置）'}；剩余=${context.plan.remainingWork.join('、') || '无'}`
+      ? `监督成果计划: r${context.plan.revision}；目标=${context.plan.objective || '（未设置）'}；剩余=${context.plan.remainingWork.join('、') || '无'}`
       : context.role === 'project-supervisor'
         ? '监督成果计划: 只维护阶段成果、验收缺口、检查点和剩余成果，不维护实现路线、写入路径或命令'
         : '监督成果计划: 根据用户规划用 --stage-plan-file 建立；只记录 objective、成果、验收和剩余工作',
@@ -364,7 +344,7 @@ export function buildSupervisorCapabilityCard(context: SupervisorRuntimeContext)
       : '项目监督职责: 只编排阶段成果、检查规范和证据，不规定任务 AI 的实现路线、文件、命令或技能。任务 AI 完整遵循目标项目 AGENTS、技能和产物规范；发现违规时阻断检查点并由原任务 AI 返工。',
     `核心命令: ${context.commands.available.join('；')}`,
     enabledConditional.length > 0 ? `当前条件命令: ${enabledConditional.join('；')}` : '当前条件命令: 无',
-    '实时查询: 每次唤醒先运行 wmux context；wmux supervisor context 保留为兼容别名。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',
+    '实时查询: 每次唤醒先运行 wmux context。返回值由当前终端 capability 绑定，不接受手工指定或伪造身份。',
     '以上信息只说明当前允许提交的监督动作，不授予直接实现、测试、跨终端输入或其他项目管理权限。',
     '',
   ];

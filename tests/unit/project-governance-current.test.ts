@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   projectPlanningConfirmationError,
   type ProjectSupervisorContract,
-  type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 import {
   buildProjectSupervisorBriefing,
   buildProjectTaskExecutionEnvelope,
-  projectTaskBaselineViolation,
 } from '../../src/renderer/project-manager/engine';
 import { evaluateProjectExecutionGuard } from '../../src/renderer/project-manager/anti-loop';
 
@@ -27,7 +24,6 @@ const contract: ProjectSupervisorContract = {
   stopWhen: ['成果完成'],
   validation: ['按项目规范验证'],
   budget: {
-    maxDecisions: 1,
     maxContinuousMinutes: 1,
     maxAggregateWorkerMinutes: 60,
     maxIdenticalFailures: 2,
@@ -93,19 +89,13 @@ describe('project governance P9', () => {
       history: [],
       proposal: { action: '继续形成成果', changedFiles: ['src/a.ts'], workspaceVersion: 'v2', now: 120_000 },
       budget: contract.budget,
-      decisionsUsed: contract.budget.maxDecisions,
       startedAt: 0,
     });
     expect(result.decision).toBe('allow');
   });
 
-  it('does not require the legacy baseline handshake for P9 work', () => {
-    const item = {
-      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
-      requirementsVersion: 1,
-      baseline: { status: 'required' as const, requirementsVersion: 1 },
-    } satisfies Pick<ProjectWorkItem, 'executionProtocolVersion' | 'requirementsVersion' | 'baseline'>;
-    expect(projectTaskBaselineViolation(item, { outcome: 'continue', instruction: '形成下一阶段成果' }))
-      .toBeNull();
+  it('does not mention the removed baseline handshake in P9 briefings', () => {
+    const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract });
+    expect(briefing).not.toMatch(/项目基线|baseline|selectedRoute|expectedPaths/iu);
   });
 });

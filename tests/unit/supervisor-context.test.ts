@@ -69,7 +69,7 @@ describe('supervisor runtime context', () => {  it('keeps project decisions avai
     expect(context.commands.available).not.toContain(
       'wmux supervisor decide --surface task-a --outcome <结果>',
     );
-    expect(context.commands.available).toContain('wmux supervisor context');
+    expect(context.commands.available).not.toContain('wmux supervisor context');
     expect(context.commands.available).toContain(
       'wmux supervisor evidence --review-id <本轮ID> --file（优先）',
     );
@@ -81,7 +81,7 @@ describe('supervisor runtime context', () => {  it('keeps project decisions avai
 
     expect(card).toContain('监督身份与能力快照');
     expect(card).toContain('唯一任务终端: task-a');
-    expect(card).toContain('wmux supervisor context');
+    expect(card).not.toContain('wmux supervisor context');
     expect(card).toContain('普通监督职责');
     expect(card).toContain('--task-file');
     expect(card).toContain('不向任务 AI 注入 wmux 角色协议');

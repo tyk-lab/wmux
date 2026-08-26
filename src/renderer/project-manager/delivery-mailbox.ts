@@ -5,11 +5,7 @@ const DEFAULT_PROJECT_MANAGER_MAILBOX_LIMIT = 100;
 export const MAX_PROJECT_MANAGER_DELIVERY_RETRY_ATTEMPTS = 2;
 
 function projectManagerDeliveryDedupeKey(delivery: ProjectManagerPendingDelivery): string | undefined {
-  if (delivery.dedupeKey?.trim()) return delivery.dedupeKey.trim();
-  if (!delivery.text.includes('[项目运行链自动重建失败]')
-    && !delivery.text.includes('[项目运行链自动重建异常]')) return undefined;
-  const workItemId = delivery.text.match(/(?:^|[；\r\n])任务：([^；\r\n]+)/u)?.[1]?.trim();
-  return `legacy-runtime-recovery:${workItemId || 'project'}`;
+  return delivery.dedupeKey?.trim() || undefined;
 }
 
 /** Project AI control messages require an explicit Agent prompt-ready state. */

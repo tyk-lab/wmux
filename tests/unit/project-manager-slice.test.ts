@@ -541,6 +541,7 @@ describe('project-manager slice', () => {
       type: 'request-user-clarification',
       question: {
         id: 'goal-choice', category: 'clarification', question: '是否采用用户提出的新目标？',
+        decisionKey: 'goal-choice-policy',
         context: '目标选择会改变最终结果。',
         options: [{ id: 'adopt', label: '采用新目标' }, { id: 'keep', label: '保留旧目标' }],
         recommendedOptionId: 'adopt', previousStatus: 'active', createdAt: 2,
@@ -548,8 +549,14 @@ describe('project-manager slice', () => {
     }, session.id)).toMatchObject({ ok: true });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'answer-user-clarification', questionId: 'goal-choice', answer: '采用新目标',
-      optionId: 'adopt', answeredBy: 'desktop',
+      optionId: 'adopt', answeredBy: 'desktop', reuseForSimilar: true,
     }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.reusableUserDecisions).toEqual([
+      expect.objectContaining({
+        decisionKey: 'explicit:goal-choice-policy', answer: '采用新目标', optionId: 'adopt',
+        requirementsVersion: 1, authorizationVersion: 1,
+      }),
+    ]);
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-project-definition', goal: '用户答复明确的新主目标',
       preconditions: ['测试环境可用'], planFiles: [], doneWhen: ['新目标验收通过'],
@@ -882,6 +889,10 @@ describe('project-manager slice', () => {
     }, first.id)).toMatchObject({ ok: false, error: expect.stringContaining('已有') });
 
     expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: 'question-1', answer: '保留现有配置', optionId: 'keep',
+      answeredBy: 'desktop', reuseForSimilar: true,
+    }, first.id)).toMatchObject({ ok: false, error: expect.stringContaining('不能授权自动复用') });
+    expect(useStore.getState().applyProjectManagerAction({
       type: 'answer-user-clarification', questionId: 'question-1', answer: '保留现有配置', optionId: 'keep', answeredBy: 'desktop',
     }, first.id)).toMatchObject({ ok: true, event: { kind: 'user-clarification-answered' } });
     expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({ status: 'waiting' });
@@ -921,7 +932,6 @@ describe('project-manager slice', () => {
       type: 'record-execution', workItemId: 'auth', record, consumeDecision: false,
     }, session.id)).toMatchObject({ ok: true });
     expect(useStore.getState().projectManagers[0].workItems[0]).toMatchObject({
-      decisionsUsed: 0,
       executionHistory: [record],
     });
   });  it('requires completed work and project-level evidence before completion', () => {

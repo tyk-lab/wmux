@@ -201,8 +201,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('重试保存并安全退出');
     expect(projectManagerDialogSource).toContain('projectSupervisorTransitionDisplaySummary(transition.summary)');
     expect(projectManagerDialogSource).toContain("action: 'recovery-candidates'");
-    expect(projectManagerDialogSource).toContain('恢复时升级到最新执行协议');
+    expect(projectManagerDialogSource).not.toContain('恢复时升级到最新执行协议');
     expect(projectManagerDialogSource).toContain("'restore-projects'");
+    expect(projectManagerDialogSource).toContain('以后遇到同类问题，沿用本次决定');
+    expect(projectManagerDialogSource).toContain('backgroundRuntimeStart: true');
+    expect(projectManagerDialogSource).toContain("title={busy ? '关闭窗口；已经提交的后台操作不会中断' : undefined}");
+    expect(pipeBridgeSource).toContain('params?.backgroundRuntimeStart === true');
     expect(projectManagerDialogSource).toContain("'skip-project-recovery'");
     expect(projectManagerDialogSource).toContain("action: 'delete-recovery-project'");
     expect(projectManagerDialogSource).toContain('删除记录');
@@ -322,7 +326,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('stopOrdinarySupervisor()');
     expect(panelSource).toContain('resetOrdinarySupervisorSession()');
     expect(panelSource).toContain("surface.type === 'supervisor' && surface.projectSupervisorProjectId");
-    expect(panelSource).toContain("scopedProjectId ? '项目专属监督' : 'AI 监督'");
+    expect(panelSource).toContain("scopedProjectId ? '监督 AI' : 'AI 监督'");
+    expect(panelSource).toContain('const visiblePendingApprovals = scopedProjectId');
+    expect(panelSource).toContain("entry.scope === 'ordinary'");
+    expect(panelSource).toContain("entry.scope === 'project'");
     expect(pipeBridgeSource).toContain('projectManagerWorkspaceTitle');
     expect(pipeBridgeSource).toContain('projectSupervisorWorkspaceTitle');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
@@ -465,8 +472,9 @@ describe('supervisor setup dialog feedback', () => {
   it('restores a user-saved terminal snapshot and allows selecting its source', () => {
     expect(dialogSource).toContain('恢复终端快照');
     expect(dialogSource).toContain('前往恢复入口');
-    expect(dialogSource).toContain('此处就是恢复入口');
-    expect(dialogSource).toContain('首次创建档案请先在侧栏对应监督卡片点击“保存恢复档案”');
+    expect(dialogSource).toContain('监督进度与恢复');
+    expect(dialogSource).toContain('saveCurrentSupervisorProgress');
+    expect(dialogSource).toContain('requestSupervisorSnapshotSave');
     expect(dialogSource).toContain('终端恢复档案（默认最新）');
     expect(dialogSource).toContain('restoreOptions[0]');
     expect(dialogSource).toContain('value={restoreSourceIdFor(candidate.surfaceId)}');
@@ -487,12 +495,16 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('保存恢复档案');
     expect(panelSource).toContain('保存监督进度');
     expect(panelSource).toContain('刷新监督进度');
-    expect(panelSource).toContain("addSurface(taskLocation.workspace.id, taskLocation.paneId, 'supervisor'");
+    expect(panelSource).toContain('openOrdinarySupervisorStatusForTask');
+    expect(panelSource).toContain('ensureOrdinarySupervisorStatusSurface');
+    expect(dialogSource).toContain('ensureOrdinarySupervisorStatusSurface');
     expect(panelSource).toContain('监督状态');
     expect(panelSource).toContain('任务终端');
     expect(surfaceTabBarSource).toContain("? '监督中'");
     expect(surfaceTabBarSource).toContain("? '监督暂停'");
     expect(surfaceTabBarSource).toContain("'监督待续'");
+    expect(panelSource).toContain('同类问题沿用本次决定，不再重复询问');
+    expect(panelSource).toContain('standingUserDecision');
     expect(panelSource).toContain('刷新恢复档案');
     expect(panelSource).toContain('删除恢复档案');
     expect(panelSource).toContain('恢复终端快照');
@@ -504,12 +516,13 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain("String(taskState?.state || 'unknown') === 'idle'");
     expect(panelSource).toContain('recoverySnapshotId: snapshot.snapshotId');
     expect(panelSource).not.toContain('不要恢复旧命令、旧监督协议');
-    expect(panelSource).toContain("cancelPending(item.id, '当前普通监督协议禁止向任务 AI 注入旧监督上下文')");
+    expect(panelSource).not.toContain('当前普通监督协议禁止向任务 AI 注入旧监督上下文');
     expect(dialogSource).toContain('.filter((snapshot) => snapshot.surfaceId === candidate.surfaceId)');
     expect(dialogSource).toContain('option.snapshotId === restoreSources[candidate.surfaceId]');
     expect(dialogSource).toContain('maxChildThreads: normalizeTaskMaxChildThreads(config.maxChildThreads)');
     expect(dialogSource).toContain('parallelizableOperations: normalizeTaskOperationBoundaries(config.parallelizableOperations)');
     expect(recordingSource).toContain('snapshot.supervisor.state.latestSupervisorUserGuidance');
+    expect(recordingSource).toContain('snapshot.supervisor.state.standingUserDecision');
   });
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {

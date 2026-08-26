@@ -26,7 +26,7 @@ describe('project auxiliary task AI policy', () => {
     expect(projectAuxiliaryWritablePathAllowed(path)).toBe(false);
   });
 
-  it('keeps legacy auxiliary settings disabled because the task AI is the only executor', () => {
+  it('ignores removed auxiliary settings and keeps the reserved slot disabled', () => {
     expect(normalizeProjectManagementAgentConfig({
       auxiliary: {
         enabled: false,
@@ -47,8 +47,8 @@ describe('project auxiliary task AI policy', () => {
     }).auxiliary).toMatchObject({
       enabled: false,
       allowProjectMaintenance: false,
-      agent: 'grok',
-      model: 'grok-4.6',
+      agent: 'codex',
+      model: '',
     });
   });
 });

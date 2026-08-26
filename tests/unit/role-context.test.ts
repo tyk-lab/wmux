@@ -32,19 +32,12 @@ function workItem(partial: Partial<ProjectWorkItem> = {}): ProjectWorkItem {
     requirementsVersion: 2,
     authorizationVersion: 3,
     executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
-    baseline: {
-      status: 'approved',
-      requirementsVersion: 2,
-      workspaceVersion: 'head:abc',
-      evidence: '已审核工作区',
-    },
     title: '实现认证',
     status: 'planned',
     dependencies: [],
     supervisorLaneId: 'lane-a',
     workerSurfaceId: 'task-a',
     attempts: 1,
-    decisionsUsed: 2,
     updatedAt: 1,
     executionHistory: [],
     contract: {
@@ -68,7 +61,7 @@ function workItem(partial: Partial<ProjectWorkItem> = {}): ProjectWorkItem {
       },
       stopWhen: ['认证测试通过'],
       validation: ['运行认证单元测试'],
-      budget: { ...DEFAULT_PROJECT_EXECUTION_BUDGET, maxDecisions: 12, maxTaskRetries: 3 },
+      budget: { ...DEFAULT_PROJECT_EXECUTION_BUDGET, maxTaskRetries: 3 },
     },
     ...partial,
   };
@@ -153,21 +146,18 @@ describe('unified managed AI role context', () => {
       executionProtocol: 'current',
     });
     expect(context.commands.available).toContain('wmux context');
-    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
+    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
       .toMatchObject({ available: true });
     expect(context.commands.conditional.find((item) => item.command.includes('project decide')))
-      .toMatchObject({ available: true });
+      .toBeUndefined();
   });
 
-  it('requires a control-owned successor before advertising dispatch for old work', () => {
-    const context = buildProjectAiRuntimeContext(project(workItem({ executionProtocolVersion: 1 })));
+  it('advertises dispatch when a current work item is waiting for project-level recovery', () => {
+    const context = buildProjectAiRuntimeContext(project(workItem({ status: 'waiting-decision' })));
 
-    expect(context.state.executionProtocol).toBe('migration-required');
-    expect(context.pending.readyWorkItems).toBe(0);
-    expect(context.commands.conditional.find((item) => item.command.includes('project supervise')))
-      .toMatchObject({ available: false });
-    expect(context.commands.conditional.find((item) => item.command.includes('task-update'))?.condition)
-      .toContain('控制层会冻结');
+    expect(context.pending.readyWorkItems).toBe(1);
+    expect(context.commands.conditional.find((item) => item.command.includes('project dispatch')))
+      .toMatchObject({ available: true });
   });
 
   it('distinguishes a recorded alignment decision from execution-version acceptance', () => {
@@ -252,9 +242,9 @@ describe('unified managed AI role context', () => {
       targetSurfaceId: 'ordinary-task',
     };
     expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.goal.draft', { surfaceId: 'ordinary-task' }).allowed)
-      .toBe(true);
+      .toBe(false);
     expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.reply', { surfaceId: 'ordinary-task' }).allowed)
-      .toBe(true);
+      .toBe(false);
     expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.evidence', {
       reviewId: 'review-current',
     }).allowed).toBe(true);
@@ -345,5 +335,6 @@ describe('unified managed AI role context', () => {
     expect(followUp).toBe('继续实现');
     expect(projectTaskInstructionDisclosureError('继续完成当前成果并返回验证证据')).toBeNull();
     expect(projectTaskInstructionDisclosureError('根据项目 AI 和监督 AI 的安排继续')).toContain('不能暴露');
+    expect(projectTaskInstructionDisclosureError('专属监督要求继续当前工作项')).toContain('不能暴露');
   });
 });

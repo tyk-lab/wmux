@@ -93,13 +93,13 @@ describe('supervisor status summary', () => {
     const view = buildSupervisorPlanView({
       source: 'user',
       task: '修复配置缺失崩溃',
-      plan: {
+      ordinaryPlan: {
+        sourceRevision: 1,
         revision: 1,
-        selectedRoute: '完成聚焦修复并运行定向测试',
+        objective: '完成聚焦修复并运行定向测试',
         milestones: [{
-          id: 'fix_and_test', title: '修复并验证', outcome: '形成修复和测试证据', status: 'active',
+          id: 'fix_and_test', title: '修复并验证', outcome: '形成修复和测试证据', acceptance: ['定向测试通过'], status: 'active',
         }],
-        expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
         remainingWork: ['完成修复'], updatedAt: 1,
       },
     });
@@ -135,21 +135,10 @@ describe('supervisor status summary', () => {
     });
   });
 
-  it('uses multiple milestones as staged execution for a project AI work item', () => {
+  it('shows project work from the latest supervisor decision without a legacy stage plan', () => {
     const view = buildSupervisorPlanView({
       source: 'project-ai',
       task: '建立控制台程序基础',
-      plan: {
-        revision: 2,
-        selectedRoute: '先建骨架，再补启动流程和验证',
-        milestones: [
-          { id: 'skeleton', title: '建立骨架', outcome: '工程可构建', status: 'completed' },
-          { id: 'startup', title: '补启动流程', outcome: '程序可启动', status: 'active' },
-          { id: 'verify', title: '定向验证', outcome: '形成验证证据', status: 'planned' },
-        ],
-        expectedPaths: [], targetedValidation: [], serializedBoundaries: [],
-        remainingWork: ['完成启动流程', '执行验证'], updatedAt: 2,
-      },
       latestDecision: {
         ts: 2, task: '建立控制台程序基础', outcome: 'continue', reason: '骨架已完成',
         next: '补齐启动流程并报告结果',
@@ -157,10 +146,10 @@ describe('supervisor status summary', () => {
     });
 
     expect(view).toMatchObject({
-      sourceLabel: '项目 AI 工作项', mode: 'staged', modeLabel: '分阶段监督执行',
-      nextInstruction: '补齐启动流程并报告结果', completedSteps: 1,
+      sourceLabel: '项目 AI 工作项', mode: 'forming', modeLabel: '形成正式路线中',
+      route: '骨架已完成', nextInstruction: '补齐启动流程并报告结果', completedSteps: 0,
     });
-    expect(view.steps).toHaveLength(3);
+    expect(view.steps).toHaveLength(1);
   });
 
   it('shows the latest supervisor decision while a formal route is still forming', () => {
@@ -204,7 +193,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('className="sup-panel__lane-config"');
     expect(panelSource).toContain('const visibleChannelCount = scopedProjectId ? enabled.length : visibleBoundLanes.length;');
     expect(panelSource).toContain('{visibleChannelCount} 通道');
-    expect(panelSource).toMatch(/\{!laneProjectManaged && lane\.goalConstruction\?\.status !== 'drafting' && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
+    expect(panelSource).toMatch(/\{!laneProjectManaged && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
   });
 
   it('shows only each project supervisor lane and its own execution plan', () => {
@@ -222,9 +211,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('item.workerSurfaceId');
     expect(panelSource).toContain('planView.steps.map');
     expect(panelSource).toContain('{planView.route}');
-    expect(panelSource).toContain('item.supervisorPlan.remainingWork');
-    expect(panelSource).toContain('item.supervisorPlan.targetedValidation');
-    expect(panelSource).toContain('item.supervisorPlan.serializedBoundaries');
+    expect(panelSource).not.toContain('item.supervisorPlan');
     expect(panelSource).toContain('item.latestBlocker');
     expect(panelSource).toContain('item.latestEvidence');
     expect(panelSource).toContain("? '已结束'");

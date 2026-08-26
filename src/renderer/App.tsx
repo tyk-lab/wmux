@@ -80,6 +80,7 @@ import {
   supervisorEvidenceContinuity,
 } from './supervisor/evidence';
 import {
+  blockingSupervisorDecisionDeliveries,
   compactSupervisorDeliveries,
   enqueueSupervisorDelivery,
   isRecoverableStaleSupervisorState,
@@ -88,6 +89,7 @@ import {
   removeFailedSupervisorDelivery,
   shouldRecoverProjectSupervisorIdleReview,
   shouldRecoverWorkerStopHookFailure,
+  shouldIgnoreProjectWorkerLifecycleBeforeDispatch,
   signalSupervisorDeliveryReady,
   shouldReportUnacknowledgedSupervisorIdle,
   SUPERVISOR_DELIVERY_ACK_TIMEOUT_MS,
@@ -129,7 +131,6 @@ import {
   clearSupervisorProviderLimitAlert,
   reportSupervisorProviderLimit,
 } from './supervisor/provider-limit';
-import { projectBaselineProgressDirective } from './project-manager/engine';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
 import {
   fireDesktopNotification,
@@ -1035,7 +1036,13 @@ function handleUnacknowledgedSupervisorReview(
     awaitingReview: lane.awaitingReview === true,
     providerLimited,
     hasPendingDecision,
-    pendingDeliveries: (lane.pendingSupervisorDeliveries || []).length,
+    pendingDeliveries: blockingSupervisorDecisionDeliveries(lane.pendingSupervisorDeliveries, {
+      activeReviewId: lane.activeReviewId,
+      reviewOpenedAt: lane.reviewOpenedAt,
+      projectAssignmentVersion: lane.projectAssignmentVersion,
+      projectAssignmentConfirmedVersion: lane.projectAssignmentConfirmedVersion,
+      projectTaskContractPending: lane.projectTaskContractPending,
+    }).length,
   })) return;
 
   const recoveryAction = unacknowledgedSupervisorIdleAction(
@@ -1068,10 +1075,6 @@ function handleUnacknowledgedSupervisorReview(
       recoveryAttempts: 1,
       reason: '监督首次结束回合但未提交结构化裁决，原地补报一次',
     });
-    const projectWorkItem = recoveryLane.projectManagerProjectId && recoveryLane.projectWorkItemId
-      ? store.projectManagers.find((project) => project.id === recoveryLane.projectManagerProjectId)
-        ?.workItems.find((item) => item.id === recoveryLane.projectWorkItemId)
-      : undefined;
     queueSupervisorDelivery(
       session,
       recoveryLane,
@@ -1079,9 +1082,6 @@ function handleUnacknowledgedSupervisorReview(
       recoveryLane.currentTask || recoveryLane.projectWorkItemId || '当前监督任务',
       buildUnacknowledgedSupervisorIdlePrompt(
         recoveryLane,
-        projectWorkItem
-          ? `当前推进门槛：${projectBaselineProgressDirective(projectWorkItem.baseline)}`
-          : '',
       ),
       reviewId,
     );
@@ -1247,6 +1247,23 @@ function handleSupervisorHookEvent(event: any): void {
 
   const deliveryKind = supervisorWakeDeliveryKind(lifecycle);
   if (deliveryKind) {
+    if (shouldIgnoreProjectWorkerLifecycleBeforeDispatch({
+      projectManaged: isProjectManagedSupervisorLane(lane),
+      projectWorkItemId: lane.projectWorkItemId,
+      currentTask: lane.currentTask,
+      projectTaskContractPending: lane.projectTaskContractPending,
+    })) {
+      store.updateLane(lane.id, {
+        awaitingReview: false,
+        pendingInitialReview: false,
+        userDirectTaskTurnId: undefined,
+      });
+      appendSupervisorRecord(session, auditLane, 'worker.lifecycle-ignored', {
+        event: lifecycle,
+        reason: '项目任务合同尚未派发；本次仅为任务 AI 启动或空闲回合，不生成业务评审',
+      });
+      return;
+    }
     const reviewId = ensureOrdinarySupervisorReview(lane) || `review-${uuid()}`;
     const evidence = freezeSupervisorEvidence(
       session,
@@ -1355,7 +1372,13 @@ function recoverProjectSupervisorIdleReview(
   if (!shouldRecoverProjectSupervisorIdleReview({
     projectManaged: isProjectManagedSupervisorLane(current),
     awaitingReview: current.awaitingReview === true,
-    pendingDeliveries: (current.pendingSupervisorDeliveries || []).length,
+    pendingDeliveries: blockingSupervisorDecisionDeliveries(current.pendingSupervisorDeliveries, {
+      activeReviewId: current.activeReviewId,
+      reviewOpenedAt: current.reviewOpenedAt,
+      projectAssignmentVersion: current.projectAssignmentVersion,
+      projectAssignmentConfirmedVersion: current.projectAssignmentConfirmedVersion,
+      projectTaskContractPending: current.projectTaskContractPending,
+    }).length,
     hasPendingDecision: session.pendingApprovals.some((approval) => approval.laneId === current.id),
     providerLimited: current.supervisorProblem?.kind === 'provider-limit',
     runtimeReady: terminalRuntimeStatus(supervisorSurfaceId)?.state === 'ready',

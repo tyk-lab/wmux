@@ -53,6 +53,20 @@ export function shouldRecoverWorkerStopHookFailure(options: {
   return state === 'working' || state === 'unknown';
 }
 
+/** Project task startup/role-anchor turns are not business work and must not open a supervisor review. */
+export function shouldIgnoreProjectWorkerLifecycleBeforeDispatch(options: {
+  projectManaged: boolean;
+  projectWorkItemId?: string;
+  currentTask?: string;
+  projectTaskContractPending?: boolean;
+}): boolean {
+  return options.projectManaged && (
+    !options.projectWorkItemId?.trim()
+    || !options.currentTask?.trim()
+    || options.projectTaskContractPending === true
+  );
+}
+
 /** Wake a project supervisor that returned to an empty prompt without deciding its open review. */
 export function shouldRecoverProjectSupervisorIdleReview(options: {
   projectManaged: boolean;
@@ -122,6 +136,7 @@ function sameDeliveryTurn(left: SupervisorDelivery, right: SupervisorDelivery): 
 }
 
 function deliveryPriority(delivery: SupervisorDelivery): number {
+  if (delivery.projectAssignmentVersion !== undefined) return -1;
   if (delivery.kind === 'owner-decision') return 0;
   if (delivery.reviewId || delivery.kind === 'task-end' || delivery.kind === 'task-interrupted') return 0;
   if (delivery.kind === 'control-message') return 1;
@@ -132,13 +147,40 @@ function deliveryPriority(delivery: SupervisorDelivery): number {
   return 5;
 }
 
+export interface SupervisorDecisionDeliveryContext {
+  activeReviewId?: string;
+  reviewOpenedAt?: number;
+  projectAssignmentVersion?: number;
+  projectAssignmentConfirmedVersion?: number;
+  projectTaskContractPending?: boolean;
+}
+
+/** Whether this delivery must be accepted before the current review can be decided. */
+export function supervisorDeliveryBlocksDecision(
+  delivery: SupervisorDelivery,
+  context: SupervisorDecisionDeliveryContext,
+): boolean {
+  if (delivery.kind === 'owner-decision') return true;
+  if (delivery.stage === 'pasted' || delivery.stage === 'submitted') return true;
+  if (delivery.projectAssignmentVersion !== undefined) {
+    return delivery.projectAssignmentVersion === context.projectAssignmentVersion
+      && context.projectAssignmentConfirmedVersion !== context.projectAssignmentVersion;
+  }
+  if (delivery.kind !== 'control-message') return false;
+  return context.reviewOpenedAt === undefined || delivery.createdAt <= context.reviewOpenedAt;
+}
+
+export function blockingSupervisorDecisionDeliveries(
+  pending: SupervisorDelivery[] | undefined,
+  context: SupervisorDecisionDeliveryContext,
+): SupervisorDelivery[] {
+  return compactSupervisorDeliveries(pending).filter((delivery) => (
+    supervisorDeliveryBlocksDecision(delivery, context)
+  ));
+}
+
 function isRuntimeBootstrapDelivery(delivery: SupervisorDelivery): boolean {
-  if (delivery.bootstrapOnRuntimeReady === true) return true;
-  // Compatibility for startup briefings persisted before the explicit flag was added.
-  return delivery.kind === 'control-message' && (
-    delivery.text.startsWith('# 项目监督 AI · 首次启动任务终端')
-    || delivery.text.startsWith('[普通监督终端上下文启动｜控制层｜')
-  );
+  return delivery.bootstrapOnRuntimeReady === true;
 }
 
 function appendCompactedSupervisorDelivery(

@@ -242,39 +242,21 @@ describe('supervisor config file', () => {
     });
   });
 
-  it('imports legacy files with a single-thread default while exporting version 4', () => {
+  it('rejects old config versions and exports version 4', () => {
     const legacy = JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
       version: 1,
       config: { stopWhen: '旧版停止条件', supervisorLaunchCmd: 'codex' },
     });
 
-    expect(parseSupervisorConfig(legacy)).toMatchObject({
-      stopWhen: '旧版停止条件',
-      taskWorkMode: 'single-thread',
-      mainThreadResponsibility: '',
-      childThreadResponsibilities: [],
-      restoreTaskContext: false,
-      autonomyPermissions: [
-        'same-route-next',
-        'technical-choice',
-        'route-adjustment',
-        'permission-confirm',
-      ],
-      workScope: 'project',
-    });
+    expect(parseSupervisorConfig(legacy)).toMatchObject({ error: expect.stringContaining('受支持') });
     expect(JSON.parse(serializeSupervisorConfig(currentConfig()))).toMatchObject({ version: 4 });
 
     expect(parseSupervisorConfig(JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
       version: 2,
       config: { stopWhen: '旧版 V2 停止条件' },
-    }))).toMatchObject({
-      stopWhen: '旧版 V2 停止条件',
-      taskWorkMode: 'single-thread',
-      childThreadResponsibilities: [],
-      restoreTaskContext: false,
-    });
+    }))).toMatchObject({ error: expect.stringContaining('受支持') });
 
     expect(parseSupervisorConfig(JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
@@ -283,34 +265,19 @@ describe('supervisor config file', () => {
         stopWhen: '旧版 V3 停止条件',
         terminals: [{ surfaceId: 'surf-injected', label: '不得按 V4 导入' }],
       },
-    }))).toMatchObject({
-      stopWhen: '旧版 V3 停止条件',
-      terminals: [],
-    });
+    }))).toMatchObject({ error: expect.stringContaining('受支持') });
   });
 
-  it('rejects null v2 config and keeps missing v2 policy fields restrictive', () => {
+  it('rejects all v2 configs without attempting migration', () => {
     expect(parseSupervisorConfig(JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
       version: 2,
       config: null,
-    }))).toMatchObject({ error: expect.stringContaining('config') });
+    }))).toMatchObject({ error: expect.stringContaining('受支持') });
     expect(parseSupervisorConfig(JSON.stringify({
       kind: 'wmux-ai-supervisor-config',
       version: 2,
       config: { stopWhen: '完成' },
-    }))).toMatchObject({
-      autonomyPermissions: [],
-      workScope: 'task-files',
-      forbiddenActions: [
-        'new-dependencies',
-        'public-api-change',
-        'large-refactor',
-        'weaken-tests',
-        'build-release-config',
-        'external-network',
-      ],
-      maxAutoDecisions: 1,
-    });
+    }))).toMatchObject({ error: expect.stringContaining('受支持') });
   });
 });

@@ -83,6 +83,54 @@ describe('supervisor wake event envelope', () => {
     expect(text).not.toContain('项目 AI 给定的硬边界');
   });
 
+  it('keeps a user-approved standing decision in the ordinary supervisor briefing for the same plan revision', () => {
+    const session = createDefaultSupervisorSession();
+    const supervisedLane = lane({
+      config: {
+        taskGoal: '完成认证修复', taskDescription: '', preconditions: '',
+        stopWhen: '认证测试通过', stopWhenKind: 'concrete', planFilePath: '', planRevision: 3,
+      },
+      standingUserDecision: {
+        decision: '保持现有 API，优先补测试后继续',
+        subject: '是否改变现有 API 以绕过当前失败',
+        proposalKind: 'route-change',
+        sourceApprovalId: 'approval-standing',
+        updatedAt: 10,
+        planRevision: 3,
+      },
+    });
+
+    const briefing = buildSupervisorBriefing(session, { lane: supervisedLane, state: 'idle' });
+
+    expect(briefing).toContain('用户确认的持续决策');
+    expect(briefing).toContain('保持现有 API，优先补测试后继续');
+    expect(briefing).toContain('不得换个说法反复询问用户');
+    expect(briefing).toContain('新的高风险或不可逆动作');
+  });
+
+  it('does not carry a standing user decision into a newer plan revision', () => {
+    const session = createDefaultSupervisorSession();
+    const supervisedLane = lane({
+      config: {
+        taskGoal: '完成认证修复', taskDescription: '', preconditions: '',
+        stopWhen: '认证测试通过', stopWhenKind: 'concrete', planFilePath: '', planRevision: 4,
+      },
+      standingUserDecision: {
+        decision: '保持旧 API',
+        subject: '旧规划中的 API 选择',
+        proposalKind: 'route-change',
+        sourceApprovalId: 'approval-old-plan',
+        updatedAt: 10,
+        planRevision: 3,
+      },
+    });
+
+    const briefing = buildSupervisorBriefing(session, { lane: supervisedLane, state: 'idle' });
+
+    expect(briefing).not.toContain('用户确认的持续决策');
+    expect(briefing).not.toContain('保持旧 API');
+  });
+
   it('uses inline evidence for ordinary success and requires the file for risky events', () => {
     const success = buildSupervisorWakeEventEnvelope('worker-a', 'review-ok', true, 'on-demand');
     const risky = buildSupervisorWakeEventEnvelope('worker-a', 'review-risk');
@@ -98,7 +146,7 @@ describe('supervisor wake event envelope', () => {
   });
 
   it('keeps the normal read-screen handoff after a real task terminal is bound', () => {
-    const retry = buildUnacknowledgedSupervisorIdlePrompt(lane({ activeReviewId: 'review-123' }), '');
+    const retry = buildUnacknowledgedSupervisorIdlePrompt(lane({ activeReviewId: 'review-123' }));
 
     expect(retry).toContain('wmux read-screen --surface worker-a');
     expect(retry).toContain('--review-id review-123');
@@ -164,7 +212,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('已授权原路线继续');
     expect(text).toContain('已授权技术方案选择');
     expect(text).toContain('已授权小范围路线调整');
-    expect(text).toContain('控制层会直接要求项目 AI 在同一工作项和终端内重规划');
+    expect(text).toContain('由项目 AI 决策并回执');
     expect(text).toContain('控制层不会创建普通 pendingApproval');
     expect(text).toContain('复杂或高影响决定交给项目管理 AI');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
@@ -276,10 +324,10 @@ describe('supervisor isolation', () => {
 
     expect(boundary).toContain('任务 AI 的逐次权限确认');
     expect(boundary).toContain('任务 AI 的权限提示先由你处理');
-    expect(boundary).toContain('项目内取舍仍由项目 AI 决定');
+    expect(boundary).toContain('项目内取舍由项目 AI 决定');
 
     expect(boundary).toContain('推进当前工作项对主目标的贡献');
-    expect(boundary).toContain('增量基线复核');
+    expect(boundary).toContain('现状复核');
     expect(boundary).toContain('不能改写主目标、扩大工作项合同');
     expect(boundary).toContain('已有授权覆盖的后续实测');
     expect(boundary).toContain('不得逐次要求用户重复批准');
@@ -465,20 +513,14 @@ describe('supervisor isolation', () => {
     });
   });
 
-  it('stops a legacy ordinary lane instead of pretending its task-role context was withdrawn', () => {
+  it('drops an ordinary lane that does not declare the current protocol', () => {
     const store = makeStore();
     const { ordinaryProtocolVersion: _version, ...legacyLane } = lane();
 
     store.getState().setOrdinarySupervisorLanes([legacyLane as SupervisorLane]);
     store.getState().startOrdinarySupervisor();
 
-    expect(store.getState().supervisor.lanes[0]).toMatchObject({
-      controlState: 'stopped',
-      supervisorProblem: {
-        kind: 'runtime-failed',
-        detail: expect.stringContaining('旧普通监督协议已停用'),
-      },
-    });
+    expect(store.getState().supervisor.lanes).toEqual([]);
     expect(store.getState().supervisor).toMatchObject({ active: false, paused: false });
   });
 
@@ -565,8 +607,7 @@ describe('supervisor isolation', () => {
     expect(supervisorLaneControlState(
       store.getState().supervisor.lanes.find((item) => item.id === 'lane-project')!,
     )).toBe('active');
-    expect(store.getState().supervisor.pendingApprovals).toHaveLength(1);
-    expect(store.getState().supervisor.pendingApprovals[0].laneId).toBe('lane-project');
+    expect(store.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
   it('resets ordinary supervision without clearing project lanes or inheriting ordinary policy', () => {
@@ -926,6 +967,56 @@ describe('supervisor isolation', () => {
     session.lanes[0].controlState = 'stopped';
     expect(isSurfaceSupervised(session, 'worker-a' as any)).toBe(false);
     expect(surfaceSupervisionControlState(session, 'worker-a' as any)).toBeNull();
+  });
+
+  it('keeps ordinary setup open and project supervision idle until a work item is bound', () => {
+    const store = makeStore();
+    const projectLane = lane({
+      id: 'lane-project-idle',
+      surfaceId: 'worker-project-idle' as any,
+      projectManagerProjectId: 'project-idle',
+      projectWorkItemId: undefined,
+      awaitingReview: true,
+    });
+    store.getState().setProjectSupervisorLanes([projectLane]);
+    store.getState().openSupervisorSetup();
+
+    store.getState().startProjectSupervisor([projectLane.id]);
+
+    expect(store.getState().supervisor.setupOpen).toBe(true);
+    expect(store.getState().supervisor.lanes[0]).toMatchObject({
+      id: 'lane-project-idle',
+      controlState: 'active',
+      awaitingReview: false,
+    });
+  });
+
+  it('gives project ownership exclusive precedence for the same task surface', () => {
+    const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane({
+      id: 'lane-ordinary', surfaceId: 'worker-shared' as any,
+    })]);
+    store.getState().enqueueApproval({
+      laneId: 'lane-ordinary', surfaceId: 'worker-shared' as any, laneLabel: 'ordinary',
+      text: '普通监督遗留审批', source: 'supervisor-important', proposalKind: 'important',
+    });
+
+    store.getState().setProjectSupervisorLanes([lane({
+      id: 'lane-project', surfaceId: 'worker-shared' as any,
+      projectManagerProjectId: 'project-a', projectWorkItemId: 'task-a',
+    })]);
+    store.getState().setOrdinarySupervisorLanes([lane({
+      id: 'lane-ordinary-retry', surfaceId: 'worker-shared' as any,
+    })]);
+    store.getState().enqueueApproval({
+      laneId: 'lane-project', surfaceId: 'worker-shared' as any, laneLabel: 'project',
+      text: '项目监督不得写入普通审批', source: 'supervisor-important', proposalKind: 'important',
+    });
+
+    expect(store.getState().supervisor.lanes).toEqual([
+      expect.objectContaining({ id: 'lane-project', projectManagerProjectId: 'project-a' }),
+    ]);
+    expect(store.getState().supervisor.pendingApprovals).toEqual([]);
   });
 
   it('names each visible supervisor tab after its worker lane', () => {
@@ -1399,6 +1490,7 @@ describe('supervisor isolation', () => {
 
   it('retains the route-change proposal details until the user resolves them', () => {
     const store = makeStore();
+    store.getState().setOrdinarySupervisorLanes([lane()]);
     store.getState().enqueueApproval({
       laneId: 'lane-a',
       surfaceId: 'worker-a' as any,
@@ -1519,7 +1611,6 @@ describe('supervisor isolation', () => {
         restoreSource: { surfaceId: 'worker-old', label: 'pwsh.exe', sessionId: 'sup-old' },
         restoredFromSessionId: 'sup-old',
         restoredHistory: '[2026/8/13 12:27:14] 收到任务：继续多线程工程',
-        contextRecoveryStatus: 'draft-pending',
         config: {
           taskGoal: '恢复项目工作', taskDescription: '', preconditions: '', stopWhen: '测试通过',
           stopWhenKind: 'concrete', planFilePath: '', taskWorkMode: 'multi-thread',
@@ -1562,10 +1653,6 @@ describe('supervisor isolation', () => {
         proposalKind: 'route-adjustment',
         reason: '缺少测试',
         next: '改用现有测试夹具补单测',
-        plan: {
-          selectedRoute: '先补测试，再复核登录流程',
-          milestones: [{ id: 'tests', status: 'active' }],
-        },
       }],
     });
     expect(restored?.restoredHistory).toContain('监督裁决：rework（小范围路线调整）');

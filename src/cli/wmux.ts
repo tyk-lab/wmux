@@ -190,10 +190,6 @@ async function cmdBrowser(args: string[]): Promise<void> {
 }
 
 async function cmdSupervisor(args: string[]): Promise<void> {
-  if (args[1] === 'context') {
-    printContextResult(await sendV2('supervisor.context', {}));
-    return;
-  }
   if (args[1] === 'evidence') {
     const reviewId = getFlag(args, '--review-id') || '';
     if (!reviewId) throw new Error('--review-id is required');
@@ -205,41 +201,12 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     }));
     return;
   }
-  if (args[1] === 'draft' || args[1] === 'finalize') {
-    const action = args[1];
-    const surfaceId = getFlag(args, '--surface') || '';
-    if (!surfaceId) throw new Error(`supervisor ${action} requires --surface`);
-    const input = resolveProjectJsonInput(
-      args,
-      process.cwd(),
-    );
-    let success = false;
-    try {
-      const result = await sendV2(
-        action === 'finalize' ? 'supervisor.goal.finalize' : 'supervisor.goal.draft',
-        { ...input.value, surfaceId },
-      );
-      success = result?.ok !== false;
-      if (result?.ok === false) print(result);
-    } finally {
-      cleanupProjectJsonInput(input, success);
-    }
-    return;
-  }
-  if (args[1] === 'reply') {
-    const surfaceId = getFlag(args, '--surface') || '';
-    const message = getFlag(args, '--message') || '';
-    if (!surfaceId || !message) throw new Error('supervisor reply requires --surface and --message');
-    const result = await sendV2('supervisor.reply', { surfaceId, message });
-    if (result?.ok === false) print(result);
-    return;
-  }
   if (isSupervisorDecideHelp(args)) {
     console.log(SUPERVISOR_DECIDE_USAGE);
     return;
   }
   if (args[1] !== 'decide') {
-    throw new Error(`Usage: wmux supervisor <context|evidence|draft|finalize|reply|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
+    throw new Error(`Usage: wmux supervisor <evidence|decide>\n${SUPERVISOR_DECIDE_USAGE}`);
   }
   const surfaceId = getFlag(args, '--surface') || process.env.WMUX_SURFACE_ID || '';
   const outcome = getFlag(args, '--outcome') || '';
@@ -470,9 +437,9 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.auxiliary.status', { projectId }));
     return;
   }
-  if (sub === 'supervise') {
+  if (sub === 'dispatch') {
     const workItemId = getFlag(args, '--task') || '';
-    if (!projectId || !workItemId) throw new Error('project supervise requires --project and --task');
+    if (!projectId || !workItemId) throw new Error(`project ${sub} requires --project and --task`);
     print(await sendV2('project.supervisor.assign', { workItemId, projectId }));
     return;
   }
@@ -527,19 +494,6 @@ async function cmdProject(args: string[]): Promise<void> {
     print(await sendV2('project.supervisor.inspect', {
       projectId,
       reason: getFlag(args, '--reason') || '',
-    }));
-    return;
-  }
-  if (sub === 'decide') {
-    const approvalId = getFlag(args, '--approval') || '';
-    const decision = getFlag(args, '--decision') || '';
-    if (!approvalId || !decision) throw new Error('project decide requires --approval and --decision');
-    print(await sendV2('project.supervisor.decide', {
-      projectId,
-      approvalId,
-      decision,
-      selection: getFlag(args, '--selection') || '',
-      task: getFlag(args, '--task-message') || '',
     }));
     return;
   }
@@ -1297,11 +1251,8 @@ Sidebar:    set-status, set-progress, log, sidebar-state
 Hook:       hook --event <type> --tool <name> [--agent <id>]
             install-hooks [--no-opencode] [--trust-codex-hooks]
             (write Kimi/Codex/Grok/Pi turn hooks + OpenCode plugin)
-Supervisor:  supervisor context
+Supervisor:  supervisor evidence, supervisor decide
              supervisor evidence --review-id <id> [--file] [--page N] [--page-lines N]
-             supervisor draft --surface <id> --json-file <.wmux/tmp/file>
-             supervisor finalize --surface <id> --json-file <.wmux/tmp/file>
-             supervisor reply --surface <id> --message <text>
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
                           [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
                           [--stage-plan-file <.wmux/tmp/file>] [--completion-file <.wmux/tmp/file>]
@@ -1315,12 +1266,12 @@ Supervisor:  supervisor context
                           [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry --retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
-Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|dispatch|progress-sync|transition-ack|inspect|decide|ask|pause|resume|pause-all|resume-all|complete|stop|reply
+Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|dispatch|progress-sync|transition-ack|inspect|ask|pause|resume|pause-all|resume-all|complete|stop|reply
             update/alignment-confirm/orientation-confirm/goal-plan/task-create/task-update/record/ask/complete use --json or --json-file <.wmux/tmp/file>
             progress-sync [--ack --summary <影响判断和安排>] 在恢复或派发前同步外部项目进度
             transition-ack --transition <id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <处理结果和新方向>
             project-specific commands use --project <id> (required when multiple projects exist)
-            supervise --project <id> --task <id> assigns one ready work item to its dedicated supervisor without writing the task AI
+            dispatch --project <id> --task <id> assigns an eligible work item to its dedicated supervisor
 Agent state: report-agent --blocked [reason] | --unblocked | --run-start | --run-end
                           [--run-depth N] [--seq N] [--surface <id>]
             report-metadata [--model M] [--tokens T] [--context-pct N] [--ttl ms]

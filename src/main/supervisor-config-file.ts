@@ -70,13 +70,13 @@ function text(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.slice(0, 30_000) : fallback;
 }
 
-function maxAutoDecisions(value: unknown, legacyDefaults: boolean): number | null {
+function maxAutoDecisions(value: unknown): number | null {
   if (value === null) return null;
-  if (value === undefined || value === '') return legacyDefaults ? null : 1;
+  if (value === undefined || value === '') return 1;
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) && parsed >= 1
     ? Math.min(20, parsed)
-    : legacyDefaults ? null : 1;
+    : 1;
 }
 
 function normalizeOrdinaryTaskWorkMode(value: unknown): TaskWorkMode {
@@ -136,7 +136,6 @@ function terminalConfigs(value: unknown): SupervisorTerminalConfigFileData[] {
 /** Validate untrusted renderer/file data before it becomes a supervisor form preset. */
 export function normalizeSupervisorConfig(
   value: unknown,
-  legacyDefaults = false,
 ): SupervisorConfigFileData {
   const config = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
@@ -157,14 +156,14 @@ export function normalizeSupervisorConfig(
     supervisorLaunchCmd: text(config.supervisorLaunchCmd, 'pi'),
     supervisorModel: text(config.supervisorModel),
     supervisorReasoningEffort: text(config.supervisorReasoningEffort),
-    maxAutoDecisions: maxAutoDecisions(config.maxAutoDecisions, legacyDefaults),
-    autonomyPermissions: !legacyDefaults && config.autonomyPermissions === undefined
+    maxAutoDecisions: maxAutoDecisions(config.maxAutoDecisions),
+    autonomyPermissions: config.autonomyPermissions === undefined
       ? []
       : normalizeSupervisorAutonomyPermissions(config.autonomyPermissions),
-    workScope: !legacyDefaults && config.workScope === undefined
+    workScope: config.workScope === undefined
       ? 'task-files'
       : normalizeSupervisorWorkScope(config.workScope),
-    forbiddenActions: !legacyDefaults && config.forbiddenActions === undefined
+    forbiddenActions: config.forbiddenActions === undefined
       ? [...SUPERVISOR_FORBIDDEN_ACTION_VALUES]
       : normalizeSupervisorForbiddenActions(config.forbiddenActions),
     terminals: terminalConfigs(config.terminals),
@@ -191,26 +190,18 @@ export function parseSupervisorConfig(content: string): SupervisorConfigFileData
       version?: number;
       config?: unknown;
     };
-    const supportedVersion = file.version === 1
-      || file.version === 2
-      || file.version === 3
-      || file.version === SUPERVISOR_CONFIG_FILE_VERSION;
-    if (file.kind !== SUPERVISOR_CONFIG_FILE_KIND || !supportedVersion) {
+    if (file.kind !== SUPERVISOR_CONFIG_FILE_KIND || file.version !== SUPERVISOR_CONFIG_FILE_VERSION) {
       return { error: '不是受支持的 AI 监督配置文件' };
     }
-    if ((file.version === 2 || file.version === 3 || file.version === SUPERVISOR_CONFIG_FILE_VERSION)
-      && (!file.config || typeof file.config !== 'object' || Array.isArray(file.config))) {
+    if (!file.config || typeof file.config !== 'object' || Array.isArray(file.config)) {
       return { error: 'AI 监督配置缺少有效的 config 对象' };
     }
-    const config = normalizeSupervisorConfig(file.config, file.version === 1);
-    if (file.version === SUPERVISOR_CONFIG_FILE_VERSION) {
-      if (!Array.isArray((file.config as Record<string, unknown>).terminals)
-        || config.terminals.length === 0) {
-        return { error: 'AI 监督 V4 配置至少需要包含一个有效终端' };
-      }
-      return config;
+    const config = normalizeSupervisorConfig(file.config);
+    if (!Array.isArray((file.config as Record<string, unknown>).terminals)
+      || config.terminals.length === 0) {
+      return { error: 'AI 监督 V4 配置至少需要包含一个有效终端' };
     }
-    return { ...config, terminals: [] };
+    return config;
   } catch {
     return { error: '配置文件不是有效的 JSON' };
   }

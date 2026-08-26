@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PROJECT_TASK_BASELINE_APPROVAL_MARKER,
-  PROJECT_TASK_BASELINE_INVESTIGATION_MARKER,
-  PROJECT_TASK_BASELINE_REPORT_MARKER,
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
   prepareProjectTaskDelivery,
+  projectTaskInstructionDisclosureError,
   projectPermissionAuthorizationError,
   projectProgressObligation,
-  projectTaskBaselineViolation,
   projectContractViolation,
   projectCompletionState,
   projectDependencyError,
@@ -29,7 +26,9 @@ function item(id: string, status: ProjectWorkItem['status'], dependencies: strin
     status,
     dependencies,
     attempts: 0,
-    decisionsUsed: 0,
+    executionProtocolVersion: 9,
+    requirementsVersion: 1,
+    authorizationVersion: 1,
     updatedAt: 1,
     executionHistory: [],
     contract: {
@@ -60,6 +59,7 @@ function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['st
   const normalized = normalizeProjectManagerSession({
     id: 'pm-1', projectDir: 'E:\\repo', goal: '完成项目', preconditions: ['环境已准备'], planFiles: [], doneWhen: ['全部测试通过'], status,
     requirementsVersion: 1, authorizationVersion: 1, acceptedRequirementsVersion: 1,
+    executionProtocolVersion: 9,
     workItems, events: [], createdAt: 1, updatedAt: 1,
   });
   return {
@@ -86,7 +86,13 @@ describe('project-manager engine', () => {
     const base = item('base', 'completed');
     const ui = item('ui', 'waiting-dependencies', ['base']);
     const api = item('api', 'planned', ['base']);
-    expect(readyProjectWorkItems(session([base, ui, api])).map((entry) => entry.id)).toEqual(['ui', 'api']);
+    const project = session([base, ui, api]);
+    project.subgoals = [{
+      id: 'stage', goalId: project.activeGoalId!, title: '测试阶段', outcome: '完成测试工作项',
+      acceptance: ['工作项完成'], dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    project.workItems = project.workItems.map((entry) => ({ ...entry, subgoalId: 'stage' }));
+    expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['ui', 'api']);
   });
 
   it('does not dispatch work before its coarse stage dependencies finish', () => {
@@ -162,6 +168,22 @@ describe('project-manager engine', () => {
     expect(prepared.delivery).toContain('[成果任务]');
     expect(prepared.delivery).toContain('继续当前合同');
     expect(prepared.delivery).not.toMatch(/项目 ID|工作项|需求版本|授权版本|监督 AI|普通监督链|裁决|lane/iu);
+  });  it('rejects English orchestration identities without blocking domain component names', () => {
+    const disclosures = [
+      "Follow the project manager's plan and finish the current outcome.",
+      'Report back to your supervisor after validation.',
+      'Wait for the control plane before continuing.',
+      'Attach the work item ID to the result.',
+      'Ask the auxiliary task AI to handle the tests.',
+    ];
+
+    for (const instruction of disclosures) {
+      expect(projectTaskInstructionDisclosureError(instruction))
+        .toContain('不能暴露内部编排身份或路由信息');
+    }
+    expect(projectTaskInstructionDisclosureError(
+      'Update the SupervisorPanel component and project manager dialog labels.',
+    )).toBeNull();
   });  it('injects the trusted contract while exposing only the executable action to guards', () => {
     const contract = item('auth', 'planned').contract;
     const envelope = buildProjectTaskExecutionEnvelope(contract);
@@ -180,11 +202,11 @@ describe('project-manager engine', () => {
     expect(supervisedModeChange.action).toBe('继续完成当前成果');
     expect(supervisedModeChange.delivery).toContain('[执行模式] 多线程');
 
-    const legacy = prepareProjectTaskDelivery(
+    const alreadyWrapped = prepareProjectTaskDelivery(
       contract,
       `${envelope}\n\n[本轮执行指令]\n检查认证实现`,
       true,
     );
-    expect(legacy.action).toBe('检查认证实现');
-    expect(legacy.delivery).toBe(`${envelope}\n\n[本轮执行指令]\n检查认证实现`);
+    expect(alreadyWrapped.action).toContain(envelope);
+    expect(alreadyWrapped.delivery).toContain(`${envelope}\n\n[本轮执行指令]\n${envelope}`);
   });});

@@ -73,6 +73,8 @@ import {
 } from '../../supervisor/model-catalog';
 import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import { readTerminalScreen, workScopeBlockReason } from '../../pipe-bridge';
+import { ensureOrdinarySupervisorStatusSurface } from '../../supervisor/status-surface';
+import { requestSupervisorSnapshotSave } from '../../supervisor/recovery-request';
 import {
   markTerminalRuntimeFailed,
   waitForTerminalRuntimeReady,
@@ -330,12 +332,6 @@ export default function SupervisorSetupDialog() {
         if (s.projectManagerProjectId || s.projectManagerWorkItemId) continue;
         if (supervisorSurfaceIds.has(s.surfaceId)) continue;
         if (s.title.startsWith(SUPERVISOR_TAB_TITLE) || s.title === 'AI Supervisor') continue;
-        const legacyLane = supervisor.lanes.find((lane) => (
-          !isProjectManagedSupervisorLane(lane)
-          && lane.surfaceId === s.surfaceId
-          && lane.ordinaryProtocolVersion !== ORDINARY_SUPERVISION_PROTOCOL_VERSION
-        ));
-        if (legacyLane) continue;
         const meta = agentMeta.get(s.surfaceId);
         const st = agentStates[s.surfaceId]?.state || 'unknown';
         const existingLane = supervisor.lanes.find((lane) => (
@@ -377,6 +373,8 @@ export default function SupervisorSetupDialog() {
     projectDir: string;
     snapshot: SupervisorRestoreCandidate;
   } | null>(null);
+  const [snapshotSavingSurfaceId, setSnapshotSavingSurfaceId] = useState<string | null>(null);
+  const [snapshotSaveNotices, setSnapshotSaveNotices] = useState<Record<string, string>>({});
   const [launchCmd, setLaunchCmd] = useState(supervisor.supervisorLaunchCmd);
   const [supervisorModel, setSupervisorModel] = useState(supervisor.supervisorModel || '');
   const [launchChoice, setLaunchChoice] = useState(
@@ -855,6 +853,34 @@ export default function SupervisorSetupDialog() {
     setDialogNotice({ kind: 'success', message: `已删除 ${snapshot.label} 的终端恢复档案。` });
   };
 
+  const saveCurrentSupervisorProgress = async (surfaceId: SurfaceId, projectDir: string) => {
+    setSnapshotSavingSurfaceId(surfaceId);
+    setSnapshotSaveNotices((current) => ({ ...current, [surfaceId]: '正在采集监督现场与项目上下文…' }));
+    try {
+      const result = await requestSupervisorSnapshotSave(surfaceId);
+      if (!result.ok) throw new Error(result.error || '保存监督进度失败');
+      const options = projectDir
+        ? (await listSupervisorRestoreCandidates(projectDir)).filter((snapshot) => snapshot.surfaceId === surfaceId)
+        : [];
+      setRestoreCandidates((current) => ({ ...current, [surfaceId]: options }));
+      setRestoreCandidatesLoaded((current) => new Set(current).add(surfaceId));
+      if (result.snapshotId) {
+        setRestoreSources((current) => ({ ...current, [surfaceId]: result.snapshotId! }));
+      }
+      setSnapshotSaveNotices((current) => ({
+        ...current,
+        [surfaceId]: `已保存 · ${new Date(result.savedAt || Date.now()).toLocaleString('zh-CN', { hour12: false })}`,
+      }));
+    } catch (error) {
+      setSnapshotSaveNotices((current) => ({
+        ...current,
+        [surfaceId]: `保存失败：${error instanceof Error ? error.message : String(error)}`,
+      }));
+    } finally {
+      setSnapshotSavingSurfaceId(null);
+    }
+  };
+
   const updateLaneConfig = (surfaceId: string, patch: Partial<SupervisorLaneConfig>) => {
     setDialogNotice(null);
     markTerminalConfigDirty(surfaceId);
@@ -1136,7 +1162,6 @@ export default function SupervisorSetupDialog() {
         pendingInitialReview: !keepsCurrentContext && agentStates[c.surfaceId]?.state === 'working',
         ordinaryBlocker: keepsCurrentContext ? prev?.ordinaryBlocker : undefined,
         ordinaryPlanRequired: keepsCurrentContext ? prev?.ordinaryPlanRequired : true,
-        goalConstruction: undefined,
         config: {
           taskGoal: config.taskGoal.trim(),
           taskDescription: config.taskDescription.trim(),
@@ -1243,10 +1268,19 @@ export default function SupervisorSetupDialog() {
       const existingLocation = existingSupervisorSurfaceId
         ? terminalLocations.get(existingSupervisorSurfaceId)
         : undefined;
+      const targetLocation = terminalLocations.get(lane.surfaceId);
+      if (targetLocation) {
+        const statusSurface = ensureOrdinarySupervisorStatusSurface(
+          targetLocation.workspaceId,
+          targetLocation.paneId,
+        );
+        if (statusSurface?.created) {
+          createdSurfaces.push({ surfaceId: statusSurface.surfaceId, ...targetLocation });
+        }
+      }
       if (existingLocation && !replaceExisting) {
         return lane;
       }
-      const targetLocation = terminalLocations.get(lane.surfaceId);
       if (!targetLocation) return { ...lane, supervisorSurfaceId: null };
       const launchCommand = buildSupervisorLaunchCommand(
         lane.supervisorLaunchCmdOverride || launchCmd,
@@ -1830,18 +1864,38 @@ export default function SupervisorSetupDialog() {
                                   <div className="supervisor-dialog__section">
                                     <div className="supervisor-dialog__label">需要恢复监督现场？</div>
                                     <div className="supervisor-dialog__hint">
-                                      恢复入口位于上方“上下文资料”。只有先在侧栏监督卡片中主动保存过恢复档案，这里才会显示可恢复快照。
+                                      “上下文资料”可直接保存、刷新或恢复此终端的监督进度。
                                     </div>
-                                    <button
-                                      type="button"
-                                      className="confirm-dialog__btn"
-                                      onClick={() => setTerminalConfigSections((current) => ({
-                                        ...current,
-                                        [candidate.surfaceId]: 'context',
-                                      }))}
-                                    >
-                                      前往恢复入口
-                                    </button>
+                                    <div className="supervisor-dialog__plan-actions">
+                                      <button
+                                        type="button"
+                                        className="confirm-dialog__btn"
+                                        disabled={!existingLane || snapshotSavingSurfaceId !== null}
+                                        onClick={() => void saveCurrentSupervisorProgress(
+                                          candidate.surfaceId,
+                                          candidate.projectDir || existingLane?.projectDir || '',
+                                        )}
+                                      >
+                                        {snapshotSavingSurfaceId === candidate.surfaceId
+                                          ? '保存中…'
+                                          : existingLane?.recoverySnapshotId ? '刷新监督进度' : '保存监督进度'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="confirm-dialog__btn"
+                                        onClick={() => setTerminalConfigSections((current) => ({
+                                          ...current,
+                                          [candidate.surfaceId]: 'context',
+                                        }))}
+                                      >
+                                        前往恢复入口
+                                      </button>
+                                    </div>
+                                    {snapshotSaveNotices[candidate.surfaceId] && (
+                                      <div className="supervisor-dialog__hint" role="status">
+                                        {snapshotSaveNotices[candidate.surfaceId]}
+                                      </div>
+                                    )}
                                   </div>
                                   <div className="supervisor-dialog__section">
                                     <div className="supervisor-dialog__label">任务目标（与计划文件至少填写一项）</div>
@@ -2006,10 +2060,28 @@ export default function SupervisorSetupDialog() {
 
                               {activeConfigSection === 'context' && (
                                 <div id={`terminal-config-${candidate.surfaceId}-context`} role="tabpanel" className="supervisor-dialog__config-panel">
-                                  <div className="supervisor-dialog__hint">
-                                    此处就是恢复入口。首次创建档案请先在侧栏对应监督卡片点击“保存恢复档案”；返回这里后即可勾选并恢复该终端快照。
-                                  </div>
                                   <div className="supervisor-dialog__section">
+                                    <div className="supervisor-dialog__label">监督进度与恢复</div>
+                                    <div className="supervisor-dialog__plan-actions">
+                                      <button
+                                        type="button"
+                                        className="confirm-dialog__btn"
+                                        disabled={!existingLane || snapshotSavingSurfaceId !== null}
+                                        onClick={() => void saveCurrentSupervisorProgress(
+                                          candidate.surfaceId,
+                                          candidate.projectDir || existingLane?.projectDir || '',
+                                        )}
+                                      >
+                                        {snapshotSavingSurfaceId === candidate.surfaceId
+                                          ? '保存中…'
+                                          : existingLane?.recoverySnapshotId ? '刷新监督进度' : '保存监督进度'}
+                                      </button>
+                                      <span className="supervisor-dialog__hint">
+                                        {existingLane
+                                          ? snapshotSaveNotices[candidate.surfaceId] || '保存任务终端、监督配置、最新裁决和项目上下文，供下次恢复。'
+                                          : '请先启动此终端的普通监督，之后即可保存监督进度。'}
+                                      </span>
+                                    </div>
                                     <label className="supervisor-dialog__row">
                                       <input
                                         type="checkbox"

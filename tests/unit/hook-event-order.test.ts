@@ -51,6 +51,8 @@ describe('hook event ordering', () => {
     expect(handler).toContain('userDirectTaskTurnId: confirmedUserSubmit ? nextWorkerTurnId : undefined');
     expect(handler).toContain('userDirectTaskTurnId: undefined');
     expect(handler).toContain('if (confirmedUserSubmit)');
+    expect(handler).toContain('shouldIgnoreProjectWorkerLifecycleBeforeDispatch');
+    expect(handler).toContain("'worker.lifecycle-ignored'");
     expect(handler).toContain("'user-task'");
     expect(handler.indexOf('workerTurnId: nextWorkerTurnId')).toBeLessThan(handler.indexOf("'user-task'"));
     expect(handler.indexOf('confirmSupervisorUserSubmitFromHook')).toBeLessThan(handler.indexOf("'user-task'"));

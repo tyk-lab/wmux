@@ -134,22 +134,6 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_supervisorDecide?.(${S(p || {})})`,
     requireResult: 'No active supervisor lane for this terminal',
   },
-  'supervisor.goal.draft': {
-    js: (p) => `window.__wmux_supervisorGoalDraft?.(${S(p || {})})`,
-    requireResult: 'No goal construction lane for this supervisor',
-  },
-  'supervisor.goal.finalize': {
-    js: (p) => `window.__wmux_supervisorGoalFinalize?.(${S(p || {})})`,
-    requireResult: 'No terminal-context goal construction lane for this supervisor',
-  },
-  'supervisor.reply': {
-    js: (p) => `window.__wmux_supervisorReply?.(${S(p || {})})`,
-    requireResult: 'No goal construction lane for this supervisor',
-  },
-  'supervisor.context': {
-    js: (p) => `window.__wmux_supervisorContext?.(${S(p || {})})`,
-    requireResult: 'No active supervisor lane for this terminal',
-  },
   'supervisor.evidence': {
     js: (p) => `window.__wmux_supervisorEvidence?.(${S(p || {})})`,
     requireResult: 'No evidence available for this supervisor review',
@@ -216,10 +200,6 @@ const SPECS: Record<string, BridgeSpec> = {
   },
   'project.supervisor.inspect': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-inspect' })})`,
-    requireResult: 'Project manager bridge is unavailable',
-  },
-  'project.supervisor.decide': {
-    js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'supervisor-decide' })})`,
     requireResult: 'Project manager bridge is unavailable',
   },
   'project.user.question': {

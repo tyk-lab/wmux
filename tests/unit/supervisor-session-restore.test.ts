@@ -16,7 +16,7 @@ describe('supervisor session restore', () => {
     expect(shouldInitializeWorkspaceLayout(3)).toBe(false);
   });
 
-  it('omits dedicated supervisor terminals and the supervisor panel from restored layouts', () => {
+  it('retains an ordinary status page beside its task terminal while omitting the Agent runtime', () => {
     const result = omitNonRestorableWorkspaces([
       {
         id: 'ws-work' as any,
@@ -32,8 +32,11 @@ describe('supervisor session restore', () => {
     const restored = result.workspaces[0].splitTree;
     expect(restored.type).toBe('leaf');
     if (restored.type !== 'leaf') return;
-    expect(restored.surfaces).toEqual([{ id: 'worker', type: 'terminal' }]);
-    expect(restored.activeSurfaceIndex).toBe(0);
+    expect(restored.surfaces).toEqual([
+      { id: 'worker', type: 'terminal' },
+      { id: 'supervisor-panel', type: 'supervisor' },
+    ]);
+    expect(restored.activeSurfaceIndex).toBe(1);
   });
 
   it('does not restore a saved Diff tab on startup', () => {

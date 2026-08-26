@@ -121,7 +121,7 @@ describe('supervisor user input precedence', () => {
 
     expect(handleSupervisorUserSubmit('worker-user', '直接执行新的回归任务')).toBe(true);
 
-    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
     expect(useStore.getState().supervisor.lanes[0].pendingSupervisorDeliveries?.[0]?.kind).toBe('task-end');
     expect(confirmSupervisorUserSubmitFromHook('worker-user', '直接执行新的回归任务')).toBe(true);
 

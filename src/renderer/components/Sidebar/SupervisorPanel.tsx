@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { useStore } from '../../store';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
@@ -76,11 +76,19 @@ import {
   dedicatedSupervisorSurfaceId,
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
-  ORDINARY_SUPERVISION_PROTOCOL_VERSION,
   supervisorLaneControlState,
   type SupervisorLane,
 } from '../../store/supervisor-slice';
 import { isAwaitingNextPromptState } from '../../agent-state-semantics';
+import {
+  ensureOrdinarySupervisorStatusSurface,
+  openOrdinarySupervisorStatusForTask,
+} from '../../supervisor/status-surface';
+import {
+  SUPERVISOR_SNAPSHOT_SAVE_EVENT,
+  type SupervisorSnapshotSaveRequest,
+  type SupervisorSnapshotSaveResult,
+} from '../../supervisor/recovery-request';
 import '../../styles/supervisor.css';
 
 interface SupervisorPanelProps {
@@ -135,9 +143,14 @@ function terminalSnapshotConsistency(lane: SupervisorLane): string {
     config.planRevision || 1,
     lane.decisions?.length || 0,
     lane.currentTask || '',
+    lane.standingUserDecision
+      ? `${lane.standingUserDecision.sourceApprovalId}:${lane.standingUserDecision.updatedAt}`
+      : '',
     supervisorLaneControlState(lane),
   ].join('|');
 }
+
+const snapshotSaveInFlightLaneIds = new Set<string>();
 
 function taskAgentExecutableFromLabel(value: unknown): string | null {
   const label = String(value || '').toLowerCase();
@@ -181,7 +194,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const resumeOrdinarySupervisor = useStore((s) => s.resumeOrdinarySupervisor);
   const openSupervisorSetup = useStore((s) => s.openSupervisorSetup);
   const approvePending = useStore((s) => s.approvePending);
-  const cancelPending = useStore((s) => s.cancelPending);
   const updateLane = useStore((s) => s.updateLane);
   const setOrdinarySupervisorLanes = useStore((s) => s.setOrdinarySupervisorLanes);
   const patchSupervisor = useStore((s) => s.patchSupervisor);
@@ -207,9 +219,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
-  const [goalConstructionInputs, setGoalConstructionInputs] = useState<Record<string, string>>({});
-  const [goalConstructionNotices, setGoalConstructionNotices] = useState<Record<string, string>>({});
-  const goalConversationRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [proposalStandingDecisions, setProposalStandingDecisions] = useState<Record<string, boolean>>({});
   const [polledAgentStates, setPolledAgentStates] = useState<Record<string, SupervisorTaskAgentState | undefined>>({});
 
   useEffect(() => {
@@ -231,20 +241,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       return retained.size === current.size ? current : retained;
     });
   }, [supervisor.lanes]);
-
-  const goalConversationRevision = supervisor.lanes.map((lane) => {
-    const messages = lane.goalConstruction?.messages || [];
-    return `${lane.id}:${messages.length}:${messages.at(-1)?.id || ''}`;
-  }).join('|');
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      for (const conversation of goalConversationRefs.current.values()) {
-        conversation.scrollTo({ top: conversation.scrollHeight, behavior: 'smooth' });
-      }
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [goalConversationRevision]);
 
   const ordinaryLanes = supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane));
   const projectLanes = supervisor.lanes.filter(isProjectManagedSupervisorLane);
@@ -277,12 +273,33 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const ordinaryPaused = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) === 'paused');
   const savableOrdinaryLanes = ordinaryLanes.filter((lane) => supervisorLaneControlState(lane) !== 'stopped');
   const ordinaryRetained = ordinaryLanes.some(isSupervisorLaneBound);
+  const ordinaryStatusSurfaceRevision = ordinaryLanes
+    .filter(isSupervisorLaneBound)
+    .map((lane) => `${lane.surfaceId}:${lane.workspaceId || ''}:${lane.paneId || ''}`)
+    .join('|');
+
+  useEffect(() => {
+    if (expanded || !ordinaryStatusSurfaceRevision) return;
+    const state = useStore.getState();
+    for (const lane of state.supervisor.lanes.filter((candidate) => (
+      !isProjectManagedSupervisorLane(candidate) && isSupervisorLaneBound(candidate)
+    ))) {
+      for (const workspace of state.workspaces) {
+        const taskPaneId = getAllPaneIds(workspace.splitTree).find((candidatePaneId) => (
+          findLeaf(workspace.splitTree, candidatePaneId)?.surfaces.some((surface) => surface.id === lane.surfaceId)
+        ));
+        if (!taskPaneId) continue;
+        ensureOrdinarySupervisorStatusSurface(workspace.id, taskPaneId);
+        break;
+      }
+    }
+  }, [expanded, ordinaryStatusSurfaceRevision, workspaces]);
+
   if (!expanded && ordinaryLanes.length === 0) return null;
-  const visiblePendingApprovals = supervisor.pendingApprovals.filter((approval) => (
-    !supervisor.lanes.some((lane) => (
-      lane.id === approval.laneId && isProjectManagedSupervisorLane(lane)
-    ))
-  ));
+  const ordinaryLaneIds = new Set(ordinaryLanes.map((lane) => lane.id));
+  const visiblePendingApprovals = scopedProjectId
+    ? []
+    : supervisor.pendingApprovals.filter((approval) => ordinaryLaneIds.has(approval.laneId));
   const pendingCount = visiblePendingApprovals.length;
   const ordinaryBoundLanes = ordinaryLanes.filter(isSupervisorLaneBound);
   const ordinaryWorkingCount = ordinaryBoundLanes.filter((lane) => (
@@ -343,8 +360,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
   const visibleLogs = supervisor.log.filter((entry) => (
     visibleLaneIds.has(entry.laneId)
-    || (!scopedProjectId && entry.laneId === '-' && !entry.action.includes('项目监督'))
-    || (!!scopedProjectId && entry.laneId === '-' && entry.action.includes('项目监督'))
+    || (!scopedProjectId && entry.laneId === '-' && entry.scope === 'ordinary')
+    || (!!scopedProjectId && entry.laneId === '-' && entry.scope === 'project')
   ));
 
   const locateSurface = (surfaceId: SurfaceId) => {
@@ -377,56 +394,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       openSupervisorSetup();
       return;
     }
-    const taskLocation = locateSurface(pairedLane.surfaceId)!;
-    let pane = findLeaf(taskLocation.workspace.splitTree, taskLocation.paneId);
-    let panelSurfaceId = pane?.surfaces.find((surface) => (
-      surface.type === 'supervisor' && !surface.projectSupervisorProjectId
-    ))?.id;
-    if (!panelSurfaceId) {
-      panelSurfaceId = addSurface(taskLocation.workspace.id, taskLocation.paneId, 'supervisor', {
-        customTitle: '普通监督状态',
-      }) || undefined;
-    }
-    if (!panelSurfaceId || !focusSurface(panelSurfaceId)) openSupervisorSetup();
-  };
-
-  const sendGoalConstructionMessage = (lane: SupervisorLane) => {
-    const message = (goalConstructionInputs[lane.id] || '').trim();
-    if (!message) return;
-    const control = (window as any).__wmux_supervisorRemoteControl;
-    if (typeof control !== 'function') {
-      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: '监督控制层尚未就绪' }));
-      return;
-    }
-    const result = control({
-      action: 'send-supervisor-message',
-      terminal: lane.surfaceId,
-      message,
-      actor: 'desktop-goal-construction',
-    });
-    if (result?.ok === false) {
-      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: result.error || '消息发送失败' }));
-      return;
-    }
-    setGoalConstructionInputs((current) => ({ ...current, [lane.id]: '' }));
-    setGoalConstructionNotices((current) => ({ ...current, [lane.id]: result?.message || '已发送' }));
-  };
-
-  const confirmGoalConstruction = (lane: SupervisorLane) => {
-    const control = (window as any).__wmux_supervisorRemoteControl;
-    if (typeof control !== 'function') {
-      setGoalConstructionNotices((current) => ({ ...current, [lane.id]: '监督控制层尚未就绪' }));
-      return;
-    }
-    const result = control({
-      action: 'confirm-goal-construction',
-      terminal: lane.surfaceId,
-      actor: 'desktop-goal-construction',
-    });
-    setGoalConstructionNotices((current) => ({
-      ...current,
-      [lane.id]: result?.ok === false ? result.error || '目标确认失败' : result?.message || '目标已确认',
-    }));
+    if (!openOrdinarySupervisorStatusForTask(pairedLane.surfaceId)) openSupervisorSetup();
   };
 
   const openAuditTrail = async (lane: SupervisorLane) => {
@@ -475,25 +443,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const onApprove = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
+    const reuseForSimilarIssues = proposalStandingDecisions[id] === true;
     try {
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
-      const isContextRecovery = item.source === 'supervisor-context-recovery';
-      if (isContextRecovery && lane?.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION) {
-        cancelPending(item.id, '当前普通监督协议禁止向任务 AI 注入旧监督上下文');
-        appendSupervisorLog(item.laneId, '旧恢复指令已取消', '任务 AI 只接收当前成果任务和项目事实');
-        return;
-      }
       let adoptedPlan = '';
-      if (isContextRecovery) {
-        if (!lane || supervisorLaneControlState(lane) !== 'active' || !item.text.trim()) return;
-        sendTaskToSurface(
-          item.surfaceId,
-          item.text,
-          supervisor.submitEnter,
-          supervisorLaneInputIsolationScope(lane),
-        );
-      } else if (isHumanProposal) {
+      if (isHumanProposal) {
         const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
         const choices = supervisorDecisionOptions(item.alternatives, item.text);
         const selected = choices.find((choice) => choice.value === proposalSelections[id]);
@@ -514,10 +469,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           userGuidance,
           recommendation: item.text,
           reason: item.reason,
-           impact: item.impact,
-           alternatives: item.alternatives,
-           clarification: item.proposalKind === 'clarification',
-         }), true, supervisorLaneInputIsolationScope(lane));
+          impact: item.impact,
+          alternatives: item.alternatives,
+          clarification: item.proposalKind === 'clarification',
+          reuseForSimilarIssues,
+        }), true, supervisorLaneInputIsolationScope(lane));
       } else if (item.text.trim()) {
         sendTaskToSurface(
           item.surfaceId,
@@ -542,42 +498,53 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         delete next[id];
         return next;
       });
-      if (isContextRecovery && lane) {
-        updateLane(lane.id, {
-          contextRecoveryStatus: 'sent',
-          awaitingReview: false,
-          currentTask: item.text.trim(),
-          autoDecisionLimitReached: false,
-          autoDecisionsUsed: 0,
-        });
-        appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
-          approvalId: item.id,
-          resolution: 'approved',
-          proposalKind: 'context-recovery',
-          text: item.text.trim(),
-        });
-      } else if (isHumanProposal && lane) {
+      setProposalStandingDecisions((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      if (isHumanProposal && lane) {
+        const selected = supervisorDecisionOptions(item.alternatives, item.text)
+          .find((choice) => choice.value === proposalSelections[id]);
+        const userGuidance = proposalGuidance[id]?.trim() || '';
+        const standingDecision = reuseForSimilarIssues
+          ? {
+              decision: [
+                selected ? `${selected.value}：${selected.detail}` : '',
+                userGuidance,
+              ].filter(Boolean).join('\n'),
+              subject: [item.reason, item.impact, item.alternatives, item.text]
+                .filter(Boolean).join('\n').slice(0, 4000),
+              proposalKind: item.proposalKind,
+              sourceApprovalId: item.id,
+              updatedAt: Date.now(),
+              planRevision: effectiveSupervisorLaneConfig(lane).planRevision || 1,
+            }
+          : undefined;
         updateLane(lane.id, {
           awaitingReview: true,
           autoDecisionLimitReached: false,
           autoDecisionsUsed: 0,
+          ...(standingDecision ? { standingUserDecision: standingDecision } : {}),
         });
         appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
           approvalId: item.id,
           resolution: 'approved',
           proposalKind: item.proposalKind || 'important',
           text: adoptedPlan,
+          reuseForSimilarIssues,
         });
+        if (standingDecision) {
+          appendSupervisorLog(lane.id, '已记录持续用户决策', standingDecision.decision.slice(0, 160));
+        }
       }
       appendSupervisorLog(
         item.laneId,
-        isContextRecovery
-          ? '已确认并发送上下文恢复指令'
-          : isHumanProposal
+        isHumanProposal
             ? proposalSelections[id]
               ? '已将所选方案交给 AI 监督处理'
               : '已将用户补充交给 AI 监督判断'
-            : '已批准发送',
+          : '已批准发送',
         `${item.laneLabel} → ${item.surfaceId}`,
       );
     } catch (err: any) {
@@ -590,6 +557,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     const lane = item ? supervisor.lanes.find((entry) => entry.id === item.laneId) : undefined;
     const text = proposalEdits[id]?.trim() || '';
     if (!item || !lane || supervisorLaneControlState(lane) !== 'active' || !text) return;
+    const reuseForSimilarIssues = proposalStandingDecisions[id] === true;
     try {
       sendTaskToSurface(
         item.surfaceId,
@@ -613,18 +581,48 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         delete next[id];
         return next;
       });
+      const standingDecision = reuseForSimilarIssues
+        ? {
+            decision: text,
+            subject: [item.reason, item.impact, item.alternatives, item.text]
+              .filter(Boolean).join('\n').slice(0, 4000),
+            proposalKind: item.proposalKind,
+            sourceApprovalId: item.id,
+            updatedAt: Date.now(),
+            planRevision: effectiveSupervisorLaneConfig(lane).planRevision || 1,
+          }
+        : undefined;
+      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
+      if (standingDecision && supervisorSurfaceId) {
+        sendToSurface(supervisorSurfaceId, [
+          '[持续用户决策] 用户已直接向任务终端发送本次决定。',
+          `适用问题：${standingDecision.subject}`,
+          `用户决定：${standingDecision.decision}`,
+          '后续遇到语义相近且范围、前提、风险和验收没有实质变化的问题时，以本次决定为主直接继续，不要反复询问；出现实质差异或新风险时再说明差异并请求决策。',
+        ].join('\n'), true, supervisorLaneInputIsolationScope(lane));
+      }
+      setProposalStandingDecisions((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       updateLane(lane.id, {
         awaitingReview: false,
         currentTask: text,
         autoDecisionLimitReached: false,
         autoDecisionsUsed: 0,
+        ...(standingDecision ? { standingUserDecision: standingDecision } : {}),
       });
       appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
         approvalId: item.id,
         resolution: 'handled-manually',
         proposalKind: item.proposalKind || 'important',
         text,
+        reuseForSimilarIssues,
       });
+      if (standingDecision) {
+        appendSupervisorLog(lane.id, '已记录持续用户决策', standingDecision.decision.slice(0, 160));
+      }
       appendSupervisorLog(item.laneId, '已直接发送用户决策', `${item.laneLabel} → ${item.surfaceId}`);
     } catch (err: any) {
       appendSupervisorLog(item.laneId, '发送失败', String(err?.message || err));
@@ -983,8 +981,14 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     });
   };
 
-  const saveTerminalSnapshot = async (lane: SupervisorLane) => {
-    if (!lane.projectDir || isProjectManagedSupervisorLane(lane)) return;
+  const saveTerminalSnapshot = async (lane: SupervisorLane): Promise<SupervisorSnapshotSaveResult> => {
+    if (!lane.projectDir || isProjectManagedSupervisorLane(lane)) {
+      return { ok: false, error: '当前终端没有可保存的普通监督项目上下文' };
+    }
+    if (snapshotSaveInFlightLaneIds.has(lane.id)) {
+      return { ok: false, error: '此终端的监督进度正在保存，请等待当前保存完成' };
+    }
+    snapshotSaveInFlightLaneIds.add(lane.id);
     setSnapshotActionLaneId(lane.id);
     setSnapshotNotices((current) => ({ ...current, [lane.id]: '正在采集终端与项目上下文…' }));
     try {
@@ -1084,6 +1088,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
             ordinaryContextHealth: currentLane.ordinaryContextHealth,
             goalVortex: currentLane.goalVortex,
             latestSupervisorUserGuidance: currentLane.latestSupervisorUserGuidance,
+            standingUserDecision: currentLane.standingUserDecision,
             latestEvidence: verifiedEvidence,
             acceptanceGaps,
           },
@@ -1110,15 +1115,41 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         ...current,
         [lane.id]: `已保存 · ${new Date(saved.snapshot.savedAt).toLocaleString('zh-CN', { hour12: false })}`,
       }));
+      return {
+        ok: true,
+        snapshotId: saved.snapshot.snapshotId,
+        savedAt: saved.snapshot.savedAt,
+      };
     } catch (error) {
+      const message = String((error as Error)?.message || error);
       setSnapshotNotices((current) => ({
         ...current,
-        [lane.id]: `保存失败：${String((error as Error)?.message || error)}`,
+        [lane.id]: `保存失败：${message}`,
       }));
+      return { ok: false, error: message };
     } finally {
+      snapshotSaveInFlightLaneIds.delete(lane.id);
       setSnapshotActionLaneId(null);
     }
   };
+
+  useEffect(() => {
+    if (expanded) return undefined;
+    const handleSnapshotSave = (event: Event) => {
+      const detail = (event as CustomEvent<SupervisorSnapshotSaveRequest>).detail;
+      if (!detail?.surfaceId || typeof detail.resolve !== 'function') return;
+      const lane = useStore.getState().supervisor.lanes.find((candidate) => (
+        candidate.surfaceId === detail.surfaceId && !isProjectManagedSupervisorLane(candidate)
+      ));
+      if (!lane) {
+        detail.resolve({ ok: false, error: '没有找到此终端的普通监督通道' });
+        return;
+      }
+      void saveTerminalSnapshot(lane).then(detail.resolve);
+    };
+    window.addEventListener(SUPERVISOR_SNAPSHOT_SAVE_EVENT, handleSnapshotSave);
+    return () => window.removeEventListener(SUPERVISOR_SNAPSHOT_SAVE_EVENT, handleSnapshotSave);
+  }, [expanded, saveTerminalSnapshot]);
 
   const deleteTerminalSnapshot = async (lane: SupervisorLane) => {
     if (!lane.projectDir || !lane.recoverySnapshotId) return;
@@ -1385,7 +1416,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         title={collapsed ? '展开监督会话' : '折叠监督会话'}
       >
         <span className="sup-panel__dot" />
-        <span className="sup-panel__title">{scopedProjectId ? '项目专属监督' : 'AI 监督'}</span>
+        <span className="sup-panel__title">{scopedProjectId ? '监督 AI' : 'AI 监督'}</span>
         <span className="sup-panel__status">{statusLabel}</span>
         <span className="sup-panel__meta-right">
           {visibleChannelCount} 通道{waiting.length > 0 ? ` · ${waiting.length} 待续` : ''}{!scopedProjectId && supervisor.autonomous ? ' · 全自动' : ''}
@@ -1465,9 +1496,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   const planView = buildSupervisorPlanView({
                     source: 'project-ai',
                     task: item.title,
-                    plan: item.supervisorPlan,
                     latestDecision: lane.decisions?.[0],
-                    baselineStatus: item.baseline?.status,
                   });
                   const taskExecution = summarizeTaskExecution({
                     controlState: laneState,
@@ -1519,15 +1548,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                             </li>
                           ))}
                         </ol>}
-                        {item.supervisorPlan?.remainingWork.length ? (
-                          <div className="sup-panel__project-plan-detail"><strong>剩余工作</strong><span>{item.supervisorPlan.remainingWork.join('；')}</span></div>
-                        ) : null}
-                        {item.supervisorPlan?.targetedValidation.length ? (
-                          <div className="sup-panel__project-plan-detail"><strong>定向验证</strong><span>{item.supervisorPlan.targetedValidation.join('；')}</span></div>
-                        ) : null}
-                        {item.supervisorPlan?.serializedBoundaries.length ? (
-                          <div className="sup-panel__project-plan-detail"><strong>串行边界</strong><span>{item.supervisorPlan.serializedBoundaries.join('；')}</span></div>
-                        ) : null}
                         <div className="sup-panel__project-plan-progress">
                           任务 AI 执行摘要：{taskExecution.label} · {item.latestEvidence || item.latestContextSummary || taskExecution.detail}
                         </div>
@@ -1616,8 +1636,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
               });
               const laneStatusLabel = laneControlState === 'waiting'
                 ? '待续'
-                : lane.goalConstruction?.status === 'drafting'
-                  ? '目标构建中'
                 : lane.stopConfirmed
                   ? '已达停止条件'
                   : laneControlState === 'active'
@@ -1686,59 +1704,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       已发现任务 AI 上下文退化迹象（{lane.ordinaryContextHealth.occurrences}/2）；首次先由监督 AI 派发纠偏任务。
                     </div>
                   )}
-                  {!laneProjectManaged && lane.goalConstruction?.status === 'drafting' && (() => {
-                    const construction = lane.goalConstruction;
-                    const draft = construction.draft;
-                    return (
-                      <section className="sup-panel__goal-construction" aria-label={`${lane.label} 的终端上下文汇总`}>
-                        <header>
-                          <div>
-                            <span>监督 AI 正在汇总终端上下文</span>
-                            <strong>信息充分时自动开始；关键条件不足时在此询问</strong>
-                          </div>
-                          <em>同一个 Agent</em>
-                        </header>
-                        <div className="sup-panel__goal-draft">
-                          <div><span>任务目标</span><strong>{draft.taskGoal || '等待监督 AI 补全'}</strong></div>
-                          <div><span>任务范围</span><strong>{draft.taskDescription || '仅限所选任务终端和项目目录'}</strong></div>
-                          <div><span>前置条件</span><strong>{draft.preconditions || '等待监督 AI 补全'}</strong></div>
-                          <div><span>停止条件</span><strong>{draft.stopWhen || '等待监督 AI 补全'}</strong></div>
-                        </div>
-                        <div
-                          ref={(element) => {
-                            if (element) goalConversationRefs.current.set(lane.id, element);
-                            else goalConversationRefs.current.delete(lane.id);
-                          }}
-                          className="sup-panel__goal-conversation"
-                        >
-                          {construction.messages.map((entry) => (
-                            <article key={entry.id} data-role={entry.role}>
-                              <header><strong>{entry.role === 'assistant' ? '监督 AI' : '你'}</strong><time>{new Date(entry.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time></header>
-                              <p>{entry.text}</p>
-                            </article>
-                          ))}
-                        </div>
-                        <textarea
-                          className="supervisor-dialog__textarea"
-                          rows={2}
-                          value={goalConstructionInputs[lane.id] || ''}
-                          onChange={(event) => setGoalConstructionInputs((current) => ({ ...current, [lane.id]: event.target.value }))}
-                          placeholder="仅在监督 AI 提问时补充目标、边界或验收信息"
-                          aria-label={`回复 ${lane.label} 的终端上下文汇总问题`}
-                        />
-                        {goalConstructionNotices[lane.id] && <div className="sup-panel__goal-notice" role="status">{goalConstructionNotices[lane.id]}</div>}
-                        <div className="sup-panel__approval-actions">
-                          <button type="button" disabled={!(goalConstructionInputs[lane.id] || '').trim()} onClick={() => sendGoalConstructionMessage(lane)}>发送给监督 AI</button>
-                          <button
-                            type="button"
-                            disabled={!draft.taskGoal.trim() || !draft.preconditions.trim() || !draft.stopWhen.trim()}
-                            onClick={() => confirmGoalConstruction(lane)}
-                          >确认补全并开始</button>
-                        </div>
-                      </section>
-                    );
-                  })()}
-                  {!laneProjectManaged && lane.goalConstruction?.status !== 'drafting' && (
+                  {!laneProjectManaged && (
                     <>
                       <div className="sup-panel__lane-status-grid" aria-label={`${lane.label} 的规划与执行状态`}>
                         <div title={lane.currentTask || laneConfig.taskGoal || planFileName}>
@@ -2065,9 +2031,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
               {visiblePendingApprovals.map((a) => {
                 const lane = supervisor.lanes.find((entry) => entry.id === a.laneId);
                 const laneControlState = lane ? supervisorLaneControlState(lane) : 'stopped';
-                const isContextRecovery = a.source === 'supervisor-context-recovery';
                 const isClarification = a.proposalKind === 'clarification';
-                const decisionOptions = a.proposalKind && !isContextRecovery && !isClarification
+                const decisionOptions = a.proposalKind && !isClarification
                   ? supervisorDecisionOptions(a.alternatives, a.text)
                   : [];
                 const selectedOption = proposalSelections[a.id] || '';
@@ -2077,51 +2042,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 return (
                 <div key={a.id} className="sup-panel__approval">
                   <div className="sup-panel__approval-head">
-                    <strong>{isContextRecovery ? '上下文恢复指令' : isClarification ? '需求对齐' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
+                    <strong>{isClarification ? '需求对齐' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
                     {a.proposalKind && <span>{a.laneLabel}</span>}
                   </div>
-                  {isContextRecovery ? (
-                    <div className="sup-panel__proposal">
-                      <section className="sup-panel__decision-section">
-                        <h4>AI 监督拟定的任务恢复指令</h4>
-                        <p>确认后将把以下原文直接发送到任务终端；确认前不会改动任务终端。</p>
-                        <textarea
-                          className="sup-panel__proposal-input"
-                          value={a.text}
-                          rows={12}
-                          readOnly
-                          aria-label={`${a.laneLabel} 的上下文恢复指令`}
-                        />
-                      </section>
-                      <div className="sup-panel__approval-actions sup-panel__decision-actions">
-                        {laneControlState === 'paused' ? (
-                          <button
-                            type="button"
-                            onClick={() => lane && resumeLane(lane)}
-                            disabled={!supervisor.active || !lane}
-                          >
-                            继续此监督
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onPause(a.id)}
-                            disabled={!supervisor.active || laneControlState === 'stopped'}
-                          >
-                            暂不发送
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="sup-panel__btn-primary"
-                          onClick={() => onApprove(a.id)}
-                          disabled={!supervisor.active || laneControlState !== 'active' || !a.text.trim()}
-                        >
-                          确认并发送到任务终端
-                        </button>
-                      </div>
-                    </div>
-                  ) : a.proposalKind ? (
+                  {a.proposalKind ? (
                     <div className="sup-panel__proposal">
                       <section className="sup-panel__decision-section">
                         <h4>{isClarification ? '需要集中确认的问题' : '决策背景'}</h4>
@@ -2197,6 +2121,21 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           <small>{isClarification
                             ? '答复只交给监督 AI 完成对齐；监督 AI 形成正式计划前不会向任务 AI 发送执行指令。'
                             : '采用时会与所选方案一起交给 AI 监督分析，不会直接发送到任务终端。没有可选方案时，也可以只提交这段信息。'}</small>
+                        </label>
+                        <label className="sup-panel__standing-decision">
+                          <input
+                            type="checkbox"
+                            checked={proposalStandingDecisions[a.id] === true}
+                            onChange={(event) => setProposalStandingDecisions((current) => ({
+                              ...current,
+                              [a.id]: event.target.checked,
+                            }))}
+                            disabled={!supervisor.active || laneControlState === 'stopped'}
+                          />
+                          <span>
+                            <strong>同类问题沿用本次决定，不再重复询问</strong>
+                            <small>仅限当前终端和当前规划版本；出现新风险、范围或验收变化时仍需重新确认。</small>
+                          </span>
                         </label>
                       </section>
 

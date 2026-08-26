@@ -132,7 +132,7 @@ describe('project manager records', () => {
     });
   });
 
-  it('drops the abandoned conversational project-goal state during recovery', () => {
+  it('rejects the abandoned conversational project-goal state', () => {
     const appData = root();
     const drafting = normalizeProjectManagerSession({
       ...session('pm-goal-drafting', 20),
@@ -144,8 +144,7 @@ describe('project manager records', () => {
       },
     });
 
-    saveProjectManagerSession(drafting, appData);
-    expect((recoveredSession(appData, drafting.id) as Record<string, unknown>)?.goalConstruction).toBeUndefined();
+    expect(() => saveProjectManagerSession(drafting, appData)).toThrow('invalid project manager session payload');
   });
 
   it('rejects another live project AI for the same normalized directory', () => {
