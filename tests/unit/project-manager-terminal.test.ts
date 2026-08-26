@@ -23,6 +23,18 @@ describe('project manager runtime startup protocol', () => {
     expect(input).not.toContain('/manage-project');
     expect(input).not.toContain('wmux project ask');
     expect(input.length).toBeLessThan(600);
+    expect(agents).toContain('将该阶段状态更新为 `achieved`');
+    expect(agents).toContain('同一证据与拓扑状态下最多回执一次 `replanned`');
+    expect(agents).toContain('`reasonCode=verification-limited`');
+    expect(agents).toContain('跳过当前验证并由后续新计划重新承接');
+    expect(agents).toContain('当前验证工作项进入 `stopped`');
+    expect(agents).toContain('接受项目已完成');
+    expect(agents).toContain('`update-definition mode=refine`');
+    expect(agents).toContain('`mode=pivot`');
+    expect(agents).toContain('不得将对应标准写为 `satisfied`');
+    expect(agents).toContain('缺少自动化通道改写成同义任务反复派发');
+    expect(agents).toContain('恢复耗尽并准备暂停时才可用 `runtime-recovery`');
+    expect(agents).toContain('不得只弹警告');
 
     expect(agents).toContain('首次需求摘要必须通过结构化 `wmux project ask`');
     expect(agents).toContain('任务 AI 是唯一项目执行者和最终技术决策者');

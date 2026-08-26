@@ -11,6 +11,8 @@ import {
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
   normalizeProjectReusableUserDecision,
+  normalizeProjectVerificationDecision,
+  normalizeProjectVerificationLimitation,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 
@@ -79,6 +81,7 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.reasonCode === undefined || [
       'physical-action', 'credentials', 'access-grant', 'business-choice',
       'destructive-action', 'production-action', 'task-input-conflict',
+      'verification-limited', 'final-acceptance', 'runtime-recovery',
     ].includes(String(question.reasonCode)))
     && (question.decisionKey === undefined || (typeof question.decisionKey === 'string'
       && /^[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}$/u.test(question.decisionKey)))
@@ -299,11 +302,16 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && Number.isFinite(item.authorizationVersion) && item.authorizationVersion >= 1
       && item.executionProtocolVersion === CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
       && !!normalizeProjectTaskComplexityAssessment(item.complexityAssessment)
+      && ['single-thread', 'multi-thread'].includes(String(item.taskWorkMode))
       && (item.contextReset === undefined || !!normalizeProjectTaskContextResetState(item.contextReset))
       && item.baseline === undefined
       && item.supervisorPlan === undefined
       && item.supervisorPlanRequired === undefined
       && (item.completion === undefined || isProjectCompletionResult(item.completion))
+      && (item.status !== 'completed' || isProjectCompletionResult(item.completion))
+      && (item.verificationLimitation === undefined
+        || !!normalizeProjectVerificationLimitation(item.verificationLimitation))
+      && (item.verificationDecision === undefined || !!normalizeProjectVerificationDecision(item.verificationDecision))
       && typeof item.title === 'string'
       && typeof item.status === 'string' && WORK_ITEM_STATUSES.has(item.status)
       && isStringArray(item.dependencies)

@@ -167,7 +167,103 @@ describe('project manager records', () => {
       ...session('pm-second', 20),
       projectDir: 'e:/repo/.',
     }, appData)).toThrow('该目录已存在项目 AI：pm-first');
-  });  it('atomically replaces one project snapshot without hiding a project from another directory', () => {
+  });
+
+  it.each(['verification-limited', 'final-acceptance', 'runtime-recovery'] as const)(
+    'persists a %s user decision across restart',
+    (reasonCode) => {
+      const appData = root();
+      const saved: ProjectManagerSession = {
+        ...session(`pm-${reasonCode}`, 20),
+        status: 'waiting',
+        pendingUserQuestion: {
+          id: `question-${reasonCode}`,
+          category: 'manual-intervention',
+          reasonCode,
+          blocker: '当前自动恢复或验证路线已经耗尽',
+          question: '请选择下一步处理方式。',
+          context: '保留当前成果，不重复失败路线。',
+          options: [
+            { id: 'continue', label: '继续', description: '按新路线继续。' },
+            { id: 'pause', label: '暂停', description: '保持暂停。' },
+          ],
+          recommendedOptionId: 'continue',
+          previousStatus: 'paused',
+          createdAt: 10,
+        },
+      };
+
+      expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();
+      expect(recoveredSession(appData, saved.id)?.pendingUserQuestion).toMatchObject({ reasonCode });
+    },
+  );
+
+  it('persists an explicit verification deferral on its work item', () => {
+    const appData = root();
+    const goalId = 'pm-verification-deferral-goal-1';
+    const saved = normalizeProjectManagerSession({
+      ...session('pm-verification-deferral', 20),
+      activeGoalId: goalId,
+      goals: [{
+        id: goalId, sequence: 1, statement: '完成 GUI 项目', doneWhen: ['核心交互已验证'],
+        status: 'active', requirementsVersion: 1, createdAt: 1, activatedAt: 1,
+      }],
+      subgoals: [{
+        id: 'gui-stage', goalId, title: 'GUI 交互', outcome: '完成核心交互',
+        acceptance: ['核心交互已验证'], dependencies: [], status: 'active', order: 1,
+        createdAt: 1, updatedAt: 1,
+      }],
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      acceptedRequirementsVersion: 1,
+      status: 'waiting',
+      workItems: [{
+        id: 'gui-work', goalId, subgoalId: 'gui-stage', title: 'GUI 交互',
+        requirementsVersion: 1, authorizationVersion: 1,
+        executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+        complexityAssessment: {
+          complexity: 'medium', decision: 'single-task', signals: ['单一 GUI 成果'],
+          rationale: '一个任务 AI 可以完成', assessedAt: 1,
+        },
+        taskWorkMode: 'single-thread', status: 'waiting-decision', dependencies: [], attempts: 0,
+        updatedAt: 20, executionHistory: [],
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable', detail: 'Win32 自动化通道不可用',
+          missingEvidence: ['GUI 点击与输入结果'], affectedAcceptance: ['核心交互已验证'],
+          requirementsVersion: 1, authorizationVersion: 1, detectedAt: 18,
+        },
+        verificationDecision: {
+          action: 'defer-verification', questionId: 'question-gui', reason: 'Win32 自动化不可用',
+          answeredBy: 'desktop', requirementsVersion: 1, authorizationVersion: 1, decidedAt: 19,
+        },
+        contract: {
+          objective: '完成 GUI 交互', description: '', preconditions: [],
+          scope: { root: 'E:\\repo', allowPaths: [], denyPaths: [], forbiddenActions: [] },
+          authority: {
+            technicalChoices: true, lowRiskRetries: true, targetedTests: true, internalThreads: false,
+          },
+          stopWhen: ['核心交互已验证'], validation: ['运行 GUI 交互测试'],
+          budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
+        },
+      }],
+    });
+
+    expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();
+    expect(recoveredSession(appData, saved.id)?.workItems[0].verificationDecision).toMatchObject({
+      action: 'defer-verification', questionId: 'question-gui', answeredBy: 'desktop',
+    });
+    expect(recoveredSession(appData, saved.id)?.workItems[0].verificationLimitation).toMatchObject({
+      kind: 'gui-automation-unavailable', missingEvidence: ['GUI 点击与输入结果'],
+    });
+
+    saved.workItems[0].verificationDecision!.action = 'skip-verification';
+    expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();
+    expect(recoveredSession(appData, saved.id)?.workItems[0].verificationDecision).toMatchObject({
+      action: 'skip-verification', questionId: 'question-gui', answeredBy: 'desktop',
+    });
+  });
+
+  it('atomically replaces one project snapshot without hiding a project from another directory', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-old', 10), projectDir: 'E:\\old' }, appData);
     saveProjectManagerSession({ ...session('pm-new', 20), projectDir: 'E:\\new' }, appData);

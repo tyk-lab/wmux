@@ -127,6 +127,9 @@ export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
   'destructive-action',
   'production-action',
   'task-input-conflict',
+  'verification-limited',
+  'final-acceptance',
+  'runtime-recovery',
 ] as const;
 
 export type ProjectManagerManualInterventionReasonCode =
@@ -603,6 +606,136 @@ export interface ProjectSubgoal {
   completion?: ProjectCompletionResult;
 }
 
+export interface ProjectVerificationLimitation {
+  kind: 'gui-automation-unavailable';
+  detail: string;
+  missingEvidence: string[];
+  affectedAcceptance: string[];
+  requirementsVersion: number;
+  authorizationVersion: number;
+  detectedAt: number;
+}
+
+export function normalizeProjectVerificationLimitation(
+  value: ProjectVerificationLimitation | undefined,
+): ProjectVerificationLimitation | undefined {
+  if (!value || value.kind !== 'gui-automation-unavailable') return undefined;
+  const detail = String(value.detail || '').trim().slice(0, 12_000);
+  const strings = (input: unknown): string[] => (Array.isArray(input) ? input : [])
+    .map((item) => String(item || '').trim().slice(0, 4000))
+    .filter(Boolean);
+  const missingEvidence = strings(value.missingEvidence).slice(0, 30);
+  const affectedAcceptance = strings(value.affectedAcceptance).slice(0, 30);
+  if (!detail || missingEvidence.length === 0
+    || !Number.isFinite(value.requirementsVersion) || value.requirementsVersion < 1
+    || !Number.isFinite(value.authorizationVersion) || value.authorizationVersion < 1
+    || !Number.isFinite(value.detectedAt)) return undefined;
+  return {
+    kind: value.kind,
+    detail,
+    missingEvidence,
+    affectedAcceptance,
+    requirementsVersion: Math.trunc(value.requirementsVersion),
+    authorizationVersion: Math.trunc(value.authorizationVersion),
+    detectedAt: value.detectedAt,
+  };
+}
+
+export interface ProjectVerificationDecision {
+  action: 'alternative-validation' | 'defer-verification' | 'skip-verification';
+  questionId: string;
+  reason: string;
+  answeredBy: 'desktop' | 'feishu';
+  requirementsVersion: number;
+  authorizationVersion: number;
+  decidedAt: number;
+}
+
+export function normalizeProjectVerificationDecision(
+  value: ProjectVerificationDecision | undefined,
+): ProjectVerificationDecision | undefined {
+  if (!value || !['alternative-validation', 'defer-verification', 'skip-verification'].includes(String(value.action))) return undefined;
+  const questionId = String(value.questionId || '').trim().slice(0, 200);
+  const reason = String(value.reason || '').trim().slice(0, 12_000);
+  if (!questionId || !reason || !['desktop', 'feishu'].includes(String(value.answeredBy))
+    || !Number.isFinite(value.requirementsVersion) || value.requirementsVersion < 1
+    || !Number.isFinite(value.authorizationVersion) || value.authorizationVersion < 1
+    || !Number.isFinite(value.decidedAt)) return undefined;
+  return {
+    action: value.action,
+    questionId,
+    reason,
+    answeredBy: value.answeredBy,
+    requirementsVersion: Math.trunc(value.requirementsVersion),
+    authorizationVersion: Math.trunc(value.authorizationVersion),
+    decidedAt: value.decidedAt,
+  };
+}
+
+export function projectFinalAcceptanceScope(session: ProjectManagerSession): string {
+  const goal = activeProjectGoal(session);
+  return [
+    `goalId=${goal.id}`,
+    `requirementsVersion=${projectRequirementsVersion(session)}`,
+    `authorizationVersion=${projectAuthorizationVersion(session)}`,
+    `doneWhenDigest=${projectPlanningConfirmationDigest(goal.doneWhen)}`,
+  ].join('; ');
+}
+
+export function projectFinalAcceptanceEligibilityError(session: ProjectManagerSession): string | null {
+  const goal = activeProjectGoal(session);
+  const requirementsVersion = projectRequirementsVersion(session);
+  const authorizationVersion = projectAuthorizationVersion(session);
+  const items = session.workItems.filter((item) => (
+    item.goalId === goal.id
+    && item.requirementsVersion === requirementsVersion
+    && item.authorizationVersion === authorizationVersion
+  ));
+  if (!items.some((item) => item.status === 'completed' && !!normalizeProjectCompletionResult(item.completion))) {
+    return '当前主目标还没有任何已完成成果，不能用最终效果接受代替项目执行';
+  }
+  const failedItem = items.find((item) => item.status === 'failed');
+  if (failedItem) {
+    return `工作项存在真实失败状态，不能作为验证缺口跳过：${failedItem.title}`;
+  }
+  const isVerificationGap = (item: ProjectWorkItem): boolean => {
+    const decision = item.verificationDecision;
+    const settledStatus = ['waiting-decision', 'paused', 'stopped'].includes(item.status);
+    return settledStatus
+      && !!decision
+      && ['defer-verification', 'skip-verification'].includes(decision.action)
+      && decision.requirementsVersion === requirementsVersion
+      && decision.authorizationVersion === authorizationVersion;
+  };
+  const gaps = items.filter(isVerificationGap);
+  if (gaps.length === 0) return '当前主目标没有可由用户最终接受收口的验证能力缺口';
+  const unfinishedImplementation = items.find((item) => (
+    item.status !== 'completed' && !isVerificationGap(item)
+  ));
+  if (unfinishedImplementation) {
+    return `工作项仍未形成成果，不能作为验证缺口跳过：${unfinishedImplementation.title}`;
+  }
+  const knownFailure = items.flatMap((item) => (
+    normalizeProjectCompletionResult(item.completion)?.criteria || []
+  )).find((criterion) => criterion.status === 'unsatisfied' || criterion.result === 'failed');
+  if (knownFailure) {
+    return `存在已知失败结论，必须先处理或由用户修改目标，不能直接接受为完成：${knownFailure.criterion}`;
+  }
+  const safetyCriticalCriterion = goal.doneWhen.find((criterion) => (
+    /(?:安全|人身|急停|联锁|生产|线上|权限|认证|授权|加密|隐私|合规|泄漏|数据完整|备份|恢复|不可逆|破坏)/iu.test(criterion)
+  ));
+  if (safetyCriticalCriterion) {
+    return `安全、权限、生产或数据完整性验收不能用最终效果接受代替：${safetyCriticalCriterion}`;
+  }
+  const uncoveredSubgoal = activeProjectSubgoals(session).find((subgoal) => (
+    !['achieved', 'obsolete'].includes(subgoal.status)
+    && !gaps.some((item) => item.subgoalId === subgoal.id)
+  ));
+  return uncoveredSubgoal
+    ? `阶段尚未完成且不是验证能力缺口：${uncoveredSubgoal.title}`
+    : null;
+}
+
 export interface ProjectWorkItem {
   id: string;
   /** Immutable main-goal ownership. */
@@ -614,6 +747,8 @@ export interface ProjectWorkItem {
   authorizationVersion: number;
   /** Current managed-project contract semantics version. */
   executionProtocolVersion: number;
+  /** Distinguishes task-local stop conditions from legacy stage-acceptance inheritance. */
+  stopWhenScopeVersion?: number;
   /** Project-AI decision made before dispatch so one task AI receives one focused outcome. */
   complexityAssessment: ProjectTaskComplexityAssessment;
   /** Project AI selects the initial mode; the bound supervisor may revise it for later task turns. */
@@ -635,6 +770,10 @@ export interface ProjectWorkItem {
   updatedAt: number;
   completedAt?: number;
   completion?: ProjectCompletionResult;
+  /** Control-plane fact explaining why current acceptance cannot be automated. */
+  verificationLimitation?: ProjectVerificationLimitation;
+  /** Explicit user disposition for a verification route that cannot currently be automated. */
+  verificationDecision?: ProjectVerificationDecision;
   executionHistory: ProjectExecutionRecord[];
   latestEvidence?: string;
   latestContextSummary?: string;
@@ -854,22 +993,12 @@ export function projectCompletionCriteriaError(
   return null;
 }
 
-/** Present pre-upgrade completed work without mutating its historical record. */
+/** Read only the structured completion result produced by the current protocol. */
 export function projectWorkItemCompletionResult(item: ProjectWorkItem): ProjectCompletionResult | undefined {
-  const stored = normalizeProjectCompletionResult(item.completion);
-  if (stored) return stored;
-  if (!['validating', 'completed'].includes(item.status)) return undefined;
-  const summary = item.latestContextSummary?.trim() || item.latestEvidence?.trim();
-  if (!summary) return undefined;
-  return {
-    summary: summary.slice(0, 12_000),
-    validation: item.contract.validation.slice(0, 20),
-    ...(item.latestEvidence?.trim() ? { evidence: item.latestEvidence.trim().slice(0, 12_000) } : {}),
-    completedAt: item.completedAt || item.updatedAt,
-  };
+  return normalizeProjectCompletionResult(item.completion);
 }
 
-/** Preserve old completed projects by deriving a stage result from their completed work items. */
+/** Aggregate a stage result from current-protocol structured work-item completions. */
 export function projectSubgoalCompletionResult(
   subgoal: Pick<ProjectSubgoal, 'id' | 'status' | 'updatedAt' | 'completion'>,
   workItems: readonly ProjectWorkItem[],
@@ -878,7 +1007,7 @@ export function projectSubgoalCompletionResult(
   if (stored) return stored;
   if (subgoal.status !== 'achieved') return undefined;
   const completedItems = workItems.filter((item) => (
-    item.subgoalId === subgoal.id && (item.status === 'completed' || !!item.completion)
+    item.subgoalId === subgoal.id && !!item.completion
   ));
   const summaries = completedItems.map((item) => (
     projectWorkItemCompletionResult(item)?.summary
@@ -944,8 +1073,18 @@ export type ProjectManagerEventSummary = Pick<ProjectManagerEvent, 'kind' | 'ts'
  * blocker, or when the producer marks a non-failure event as non-recoverable.
  */
 export function projectManagerEventNeedsUserAttention(
-  event: Pick<ProjectManagerEvent, 'kind' | 'payload'> | { kind: string; payload?: Record<string, unknown> },
+  event: Pick<ProjectManagerEvent, 'kind' | 'summary' | 'payload'> | {
+    kind: string;
+    summary?: string;
+    payload?: Record<string, unknown>;
+  },
 ): boolean {
+  // Current-protocol records created before runtime-pause alerts were enabled
+  // may explicitly suppress this exact terminal failure. Keep other runtime
+  // pauses suppressed when a dedicated *-failed event owns their notification.
+  if (event.kind === 'project-paused'
+    && event.payload?.source === 'runtime'
+    && event.summary?.startsWith('内部恢复连续失败')) return true;
   if (event.payload?.attentionRequired === false) return false;
   return event.payload?.attentionRequired === true || event.kind.endsWith('-failed');
 }
@@ -1075,6 +1214,8 @@ export interface ProjectSupervisorTransition {
   summary: string;
   evidence?: string;
   contextSummary?: string;
+  /** Evidence/topology identity used to prevent repeated replans without material progress. */
+  replanBaselineFingerprint?: string;
   createdAt: number;
   notifiedAt: number;
   notificationCount: number;
@@ -1696,6 +1837,8 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         && typeof transition.summary === 'string' && !!transition.summary.trim()
         && (transition.evidence === undefined || typeof transition.evidence === 'string')
         && (transition.contextSummary === undefined || typeof transition.contextSummary === 'string')
+        && (transition.replanBaselineFingerprint === undefined
+          || typeof transition.replanBaselineFingerprint === 'string')
         && Number.isFinite(transition.createdAt)
         && Number.isFinite(transition.notifiedAt)
         && Number.isFinite(transition.notificationCount)
@@ -1711,12 +1854,19 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         ...(transition.contextSummary?.trim()
           ? { contextSummary: transition.contextSummary.trim().slice(0, 12_000) }
           : {}),
+        ...(transition.replanBaselineFingerprint?.trim()
+          ? { replanBaselineFingerprint: transition.replanBaselineFingerprint.trim().slice(0, 200) }
+          : {}),
         notificationCount: Math.max(1, Math.trunc(transition.notificationCount)),
       }))),
     workItems: session.workItems.map((item) => {
       const itemRequirementsVersion = Math.max(1, Math.trunc(item.requirementsVersion || requirementsVersion));
+      const verificationLimitation = normalizeProjectVerificationLimitation(item.verificationLimitation);
+      const verificationDecision = normalizeProjectVerificationDecision(item.verificationDecision);
       return {
         ...item,
+        verificationLimitation,
+        verificationDecision,
         contract: {
           ...item.contract,
           budget: normalizeProjectExecutionBudget(item.contract.budget),
@@ -1810,7 +1960,12 @@ export type ProjectManagerAction =
     /** Only the authenticated project-manager protocol may accept a new requirements version. */
     acceptRequirementsVersion?: boolean;
   }
-  | { type: 'complete-current-goal'; evidence: string; completion?: ProjectCompletionResult }
+  | {
+      type: 'complete-current-goal';
+      evidence: string;
+      completion?: ProjectCompletionResult;
+      userAcceptanceEventId?: string;
+    }
   | { type: 'stop-project'; reason: string; emergency?: boolean }
   | { type: 'reply'; correlationId?: string; message: string };
 

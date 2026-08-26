@@ -59,28 +59,21 @@ describe('project-manager domain', () => {
     const target = workItem('ui', 'waiting-dependencies', ['base']);
     expect(projectWorkItemReady(target, [dependency, target])).toBe(false);
     expect(projectWorkItemReady(target, [{ ...dependency, status: 'completed' }, target])).toBe(true);
-  });  it('derives completion results for pre-upgrade work items and achieved stages', () => {
+  });
+
+  it('does not derive completion from unstructured status text or evidence', () => {
     const completed = {
-      ...workItem('legacy-result', 'completed'),
-      subgoalId: 'legacy-stage',
-      latestContextSummary: '旧工作项已经形成可验收结果',
-      latestEvidence: '旧版本回归测试通过',
+      ...workItem('unstructured-result', 'completed'),
+      subgoalId: 'validation-stage',
+      latestContextSummary: '任务自报已经完成',
+      latestEvidence: '只有自然语言证据',
       completedAt: 20,
     };
 
-    expect(projectWorkItemCompletionResult(completed)).toMatchObject({
-      summary: '旧工作项已经形成可验收结果',
-      validation: ['npm test'],
-      evidence: '旧版本回归测试通过',
-      completedAt: 20,
-    });
+    expect(projectWorkItemCompletionResult(completed)).toBeUndefined();
     expect(projectSubgoalCompletionResult({
-      id: 'legacy-stage', status: 'achieved', updatedAt: 21, completion: undefined,
-    }, [completed])).toMatchObject({
-      summary: '旧工作项已经形成可验收结果',
-      evidence: '旧版本回归测试通过',
-      completedAt: 21,
-    });
+      id: 'validation-stage', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [completed])).toBeUndefined();
   });
 });
 

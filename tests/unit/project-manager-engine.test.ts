@@ -11,6 +11,7 @@ import {
   projectCompletionState,
   projectDependencyError,
   projectWorkItemSubgoalDependencyError,
+  projectWorkItemVerificationDeferred,
   readyProjectWorkItems,
   renderProjectTaskBatch,
   PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY,
@@ -123,6 +124,61 @@ describe('project-manager engine', () => {
     project.subgoals[0] = { ...project.subgoals[0], status: 'achieved' };
     expect(projectWorkItemSubgoalDependencyError(project, project.workItems[0])).toBeNull();
     expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['implementation']);
+  });
+
+  it('continues downstream work only after an explicit current-version verification deferral', () => {
+    const blocked = item('gui-validation', 'paused');
+    const downstream = item('persistence', 'planned');
+    const project = session([blocked, downstream]);
+    const goalId = project.activeGoalId!;
+    project.subgoals = [
+      {
+        id: 'gui-stage', goalId, title: 'GUI 核心交互', outcome: '形成可交互界面', acceptance: ['交互已验证'],
+        dependencies: [], status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+      },
+      {
+        id: 'persistence-stage', goalId, title: '数据保存', outcome: '数据可以保存', acceptance: ['保存逻辑完成'],
+        dependencies: ['gui-stage'], status: 'planned', order: 2, createdAt: 1, updatedAt: 1,
+      },
+    ];
+    project.workItems = [
+      {
+        ...project.workItems[0], goalId, subgoalId: 'gui-stage',
+        verificationDecision: {
+          action: 'defer-verification', questionId: 'question-1', reason: 'GUI 自动化不可用',
+          answeredBy: 'desktop', requirementsVersion: 1, authorizationVersion: 1, decidedAt: 2,
+        },
+      },
+      { ...project.workItems[1], goalId, subgoalId: 'persistence-stage' },
+    ];
+
+    expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(true);
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toBeNull();
+    expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['persistence']);
+    expect(projectProgressObligation(project)).toMatchObject({ kind: 'dispatch-work', workItemId: 'persistence' });
+
+    project.workItems[0] = {
+      ...project.workItems[0],
+      status: 'stopped',
+      verificationDecision: {
+        ...project.workItems[0].verificationDecision!,
+        action: 'skip-verification',
+      },
+    };
+    expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(true);
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toBeNull();
+
+    const unfinishedSibling = {
+      ...project.workItems[0], id: 'gui-unfinished-sibling', status: 'planned' as const,
+      verificationDecision: undefined,
+    };
+    project.workItems.splice(1, 0, unfinishedSibling);
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[2])).toContain('gui-stage');
+    project.workItems.splice(1, 1);
+
+    project.authorizationVersion = 2;
+    expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(false);
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toContain('gui-stage');
   });
 
   it('requires project-level validation after all work completes', () => {

@@ -200,7 +200,14 @@ describe('managed agent watchdog bridge', () => {
       type: 'manager-runtime-failed',
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-      title: '项目运行异常',
+      title: '项目需要你的处理',
     }));
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        reasonCode: 'runtime-recovery',
+        recommendedOptionId: 'recover-latest-protocol',
+      },
+    });
   });
 });

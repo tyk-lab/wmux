@@ -343,6 +343,17 @@ export type ProjectProgressObligationKind =
   | 'resolve-dependencies'
   | 'complete-goal';
 
+export function projectWorkItemVerificationDeferred(
+  session: ProjectManagerSession,
+  item: ProjectWorkItem,
+): boolean {
+  const decision = item.verificationDecision;
+  if (!decision) return false;
+  return ['defer-verification', 'skip-verification'].includes(decision.action)
+    && decision.requirementsVersion === projectRequirementsVersion(session)
+    && decision.authorizationVersion === projectAuthorizationVersion(session);
+}
+
 export interface ProjectProgressObligation {
   kind: ProjectProgressObligationKind;
   summary: string;
@@ -436,11 +447,16 @@ export function projectProgressObligation(
   if (ready) {
     return { kind: 'dispatch-work', workItemId: ready.id, summary: `工作项 ${ready.id} 已满足依赖，需要派发专属监督链` };
   }
-  const decision = currentItems.find((item) => item.status === 'waiting-decision' || item.status === 'failed');
+  const decision = currentItems.find((item) => (
+    (item.status === 'waiting-decision' || item.status === 'failed')
+    && !projectWorkItemVerificationDeferred(session, item)
+  ));
   if (decision) {
     return { kind: 'resolve-decision', workItemId: decision.id, summary: `工作项 ${decision.id} 等待项目 AI 裁决、重规划或暂缓` };
   }
-  const paused = currentItems.find((item) => item.status === 'paused');
+  const paused = currentItems.find((item) => (
+    item.status === 'paused' && !projectWorkItemVerificationDeferred(session, item)
+  ));
   if (paused) {
     return { kind: 'resume-paused', workItemId: paused.id, summary: `工作项 ${paused.id} 已暂缓；需要恢复、改派独立工作或向用户升级真实阻塞` };
   }
@@ -462,7 +478,7 @@ export function projectProgressObligation(
   };
 }
 
-/** A task may run only after every coarse stage dependency has been closed. */
+/** A task may run after coarse dependencies close or the user explicitly defers their verification. */
 export function projectWorkItemSubgoalDependencyError(
   session: ProjectManagerSession,
   item: ProjectWorkItem,
@@ -473,7 +489,15 @@ export function projectWorkItemSubgoalDependencyError(
   const byId = new Map(subgoals.map((candidate) => [candidate.id, candidate]));
   const incomplete = subgoal.dependencies.find((dependencyId) => {
     const dependency = byId.get(dependencyId);
-    return !dependency || !['achieved', 'obsolete'].includes(dependency.status);
+    const dependencyItems = session.workItems.filter((candidate) => (
+      candidate.goalId === item.goalId && candidate.subgoalId === dependencyId
+    ));
+    const verificationDeferred = dependencyItems.some((candidate) => (
+      projectWorkItemVerificationDeferred(session, candidate)
+    )) && dependencyItems.every((candidate) => (
+      candidate.status === 'completed' || projectWorkItemVerificationDeferred(session, candidate)
+    ));
+    return !dependency || (!['achieved', 'obsolete'].includes(dependency.status) && !verificationDeferred);
   });
   return incomplete
     ? `阶段目标 ${subgoal.id} 依赖尚未完成：${incomplete}`

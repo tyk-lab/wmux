@@ -55,12 +55,17 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     '',
     'Copy all binding fields from `wmux project status`; do not guess them:',
     '{"requirementsVersion":1,"authorizationVersion":1,"snapshotFingerprint":"...","requestedAt":123,"summary":"...","knownFacts":["..."],"unknowns":[],"workItems":[]}',
+    '',
+    'Recovery-safe form: write that object to .wmux/tmp/orientation-<requestedAt>.json, then run:',
+    'wmux project orientation-confirm --project <id> --json-file .wmux/tmp/orientation-<requestedAt>.json',
+    'Do not pass JSON as a positional argument. `project inspect` is read-only and cannot satisfy the orientation gate.',
   ].join('\n'),
   'goal-plan': [
     'Usage: wmux project goal-plan --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
     'JSON object (normally 3-7 subgoals; every active goal criterion must be covered exactly once):',
     '{"reason":"...","subgoals":[{"id":"stage-1","title":"...","outcome":"...","acceptance":["..."],"dependencies":[],"status":"planned"}]}',
+    'Stage status values are planned, active, blocked, achieved, or obsolete. After completed work items cover a stage, resubmit that stage as achieved; never use completed or delete dependencies to bypass closure.',
   ].join('\n'),
   'task-create': [
     'Usage: wmux project task-create --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
@@ -89,7 +94,13 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","decisionScope":"用户可见的同类决定含义边界","question":"是否确认按 GUI 版本推进？","context":"完成定义见推荐方案。","options":[{"id":"confirm-requirements","label":"确认需求","description":"完成标准：GUI 可运行；数据可保存并重新加载。","confirmationScope":["doneWhen: GUI 可运行；数据可保存并重新加载"]},{"id":"revise-requirements","label":"补充调整","description":"继续补充目标、范围或验收。","confirmationScope":[]}],"recommendedOptionId":"confirm-requirements"}',
     'Reusable decisions require the same stable decisionKey and user-visible decisionScope. Planning changes must put exact canonical field:value entries in each authorizing option confirmationScope; every value must be visible in that option. Later submit the matching userConfirmationEventId.',
     'Manual-intervention JSON additionally requires workItemId, blocker, and reasonCode.',
-    'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, task-input-conflict.',
+    'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, task-input-conflict, verification-limited, runtime-recovery. final-acceptance is reserved for a control-layer generated final-effect question and cannot be submitted directly.',
+  ].join('\n'),
+  'complete': [
+    'Usage: wmux project complete --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
+    '',
+    'Normal JSON: {"summary":"...","evidence":"...","criteria":[...]}',
+    'If the control layer asks whether to accept the current final effect, answer that question first, then submit: {"userAcceptanceEventId":"pm-event-..."}. This may close validation-only gaps, but never known failures, unfinished implementation, or safety issues.',
   ].join('\n'),
   'auxiliary-dispatch': [
     'Usage: wmux project auxiliary-dispatch --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
@@ -99,6 +110,12 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
   ].join('\n'),
   'auxiliary-status': [
     'Usage: wmux project auxiliary-status --project <id>',
+  ].join('\n'),
+  'transition-ack': [
+    'Usage: wmux project transition-ack --project <id> --transition <transition-id> --resolution <continued|accepted|replanned|paused|escalated|recovered> --summary <result>',
+    '',
+    '`replanned` requires a material planning update and is allowed only once for the same work item evidence/topology state. Rewording the same task is not a new route.',
+    'If the same no-progress handoff returns, pause, advance a genuinely independent work item, or escalate a real user-controlled prerequisite.',
   ].join('\n'),
 };
 
@@ -157,7 +174,13 @@ export function resolveProjectJsonInput(args: string[], cwd = process.cwd()): Pr
     if (!fs.statSync(sourceFile).isFile()) throw new Error('--json-file must reference a regular file');
     text = fs.readFileSync(sourceFile, 'utf8');
   }
-  if (!text) throw new Error('--json or --json-file is required');
+  if (!text) {
+    const command = args[1] || '<command>';
+    throw new Error(
+      `project ${command} requires --json <object> or --json-file <.wmux/tmp/file>; positional JSON is not accepted. `
+      + `Run "wmux project ${command} --help" and retry the same command; read-only project inspect cannot substitute for a rejected mutation.`,
+    );
+  }
   const parsed = JSON.parse(text) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('project JSON must be an object');

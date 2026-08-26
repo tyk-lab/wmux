@@ -8,6 +8,8 @@ import {
   normalizeProjectCompletionResult,
   projectCompletionCriteriaError,
   projectCriterionIdentity,
+  projectFinalAcceptanceEligibilityError,
+  projectFinalAcceptanceScope,
   projectManagerGoalChangeHasUserBasis,
   projectManagerDestructiveDecisionScopeMatches,
   projectManagerQuestionAllowsReusableDecision,
@@ -730,7 +732,19 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         kind: 'user-clarification-requested',
         summary: action.question.question,
         correlationId: action.question.id,
-        payload: { question: action.question },
+        payload: {
+          question: action.question,
+          ...(action.question.category === 'manual-intervention'
+            ? {
+                resolvedAttentionKinds: [
+                  'project-paused',
+                  'manager-runtime-failed',
+                  'supervisor-runtime-failed',
+                  'task-runtime-failed',
+                ],
+              }
+            : {}),
+        },
       };
     } else if (action.type === 'answer-user-clarification') {
       const pending = session.pendingUserQuestion;
@@ -770,12 +784,45 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         answeredBy: action.answeredBy,
         createdAt: now,
       } : undefined;
+      const verificationAction = pending.reasonCode === 'verification-limited'
+        && ['alternative-validation', 'defer-verification', 'skip-verification'].includes(action.optionId || '')
+        ? action.optionId as 'alternative-validation' | 'defer-verification' | 'skip-verification'
+        : undefined;
+      const manualVerificationReported = pending.reasonCode === 'verification-limited'
+        && action.optionId === 'manual-verify';
+      const workItems = (verificationAction || manualVerificationReported) && pending.workItemId
+        ? session.workItems.map((item) => item.id === pending.workItemId ? {
+            ...item,
+            ...(manualVerificationReported ? { verificationLimitation: undefined } : {}),
+            ...(verificationAction ? {
+              verificationDecision: {
+                action: verificationAction,
+                questionId: pending.id,
+                reason: pending.blocker || pending.context || pending.question,
+                answeredBy: action.answeredBy,
+                requirementsVersion: projectRequirementsVersion(session),
+                authorizationVersion: projectAuthorizationVersion(session),
+                decidedAt: now,
+              },
+            } : {}),
+            ...(verificationAction === 'defer-verification' ? {
+              latestBlocker: '用户已明确授权暂缓当前验证并继续后续工作；该验收项仍未验证，不能据此完成阶段或项目。',
+            } : verificationAction === 'skip-verification' ? {
+              status: 'stopped' as const,
+              supervisorLaneId: undefined,
+              workerSurfaceId: undefined,
+              latestBlocker: '用户已跳过当前验证工作项并要求后续新计划重新承接；该验收项仍未验证，不能据此完成阶段或项目。',
+            } : {}),
+            updatedAt: now,
+          } : item)
+        : session.workItems;
       // Keep the project waiting after a user answer. The answer belongs to the
       // project manager, which must explicitly choose resume/replan/stop before
       // any supervisor or task terminal is allowed to continue.
-      next = {
+      const answeredSession: ProjectManagerSession = {
         ...session,
         status: session.status === 'paused' ? 'paused' : 'waiting',
+        workItems,
         pendingUserQuestion: undefined,
         ...(reusableDecision ? {
           reusableUserDecisions: [
@@ -787,8 +834,15 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
             )),
             reusableDecision,
           ].slice(-50),
-        } : {}),
+          } : {}),
       };
+      next = verificationAction === 'skip-verification' && pending.workItemId
+        ? releaseProjectTaskTerminalBinding(
+            answeredSession,
+            pending.workItemId,
+            session.workItems.find((item) => item.id === pending.workItemId)?.workerSurfaceId,
+          )
+        : answeredSession;
       eventInput = {
         kind: 'user-clarification-answered',
         workItemId: pending.workItemId,
@@ -990,6 +1044,49 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     } else if (action.type === 'complete-current-goal') {
       const activeGoal = activeProjectGoal(session);
       const goalCompletion = normalizeProjectCompletionResult(action.completion);
+      const userAcceptanceEvent = action.userAcceptanceEventId
+        ? session.events.find((event) => event.id === action.userAcceptanceEventId)
+        : undefined;
+      const acceptanceQuestionId = String(userAcceptanceEvent?.payload?.questionId || '');
+      const acceptanceRequest = acceptanceQuestionId
+        ? session.events.find((event) => (
+            event.kind === 'user-clarification-requested'
+            && event.correlationId === acceptanceQuestionId
+            && (event.payload?.question as { reasonCode?: string } | undefined)?.reasonCode === 'final-acceptance'
+          ))
+        : undefined;
+      const acceptanceQuestion = acceptanceRequest?.payload?.question as { decisionScope?: string } | undefined;
+      const confirmedScope = Array.isArray(userAcceptanceEvent?.payload?.confirmationScope)
+        ? userAcceptanceEvent.payload.confirmationScope.map((entry) => String(entry || '').trim())
+        : [];
+      const currentFinalAcceptanceScope = projectFinalAcceptanceScope(session);
+      const latestFinalAcceptanceAnswer = [...session.events].reverse().find((event) => {
+        if (event.kind !== 'user-clarification-answered') return false;
+        const questionId = String(event.payload?.questionId || '');
+        const request = session.events.find((candidate) => (
+          candidate.kind === 'user-clarification-requested'
+          && candidate.correlationId === questionId
+          && (candidate.payload?.question as { reasonCode?: string; decisionScope?: string } | undefined)?.reasonCode === 'final-acceptance'
+        ));
+        return (request?.payload?.question as { decisionScope?: string } | undefined)?.decisionScope
+          === currentFinalAcceptanceScope;
+      });
+      const finalAccepted = !!action.userAcceptanceEventId
+        && userAcceptanceEvent?.kind === 'user-clarification-answered'
+        && userAcceptanceEvent.payload?.optionId === 'accept-current-result'
+        && ['desktop', 'feishu'].includes(String(userAcceptanceEvent.payload?.answeredBy || ''))
+        && !!acceptanceRequest
+        && latestFinalAcceptanceAnswer?.id === userAcceptanceEvent.id
+        && confirmedScope.includes('finalAcceptance')
+        && userAcceptanceEvent.payload?.confirmationDigest === projectPlanningConfirmationDigest(confirmedScope)
+        && acceptanceQuestion?.decisionScope === currentFinalAcceptanceScope;
+      if (action.userAcceptanceEventId && !finalAccepted) {
+        return { ok: false, error: '最终效果接受必须引用当前目标和需求版本下、由用户亲自选择“接受项目已完成”的结构化答复' };
+      }
+      if (finalAccepted) {
+        const eligibilityError = projectFinalAcceptanceEligibilityError(session);
+        if (eligibilityError) return { ok: false, error: eligibilityError };
+      }
       const activeItems = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
       const staleOpenItem = activeItems.find((item) => (
         item.status !== 'completed'
@@ -1003,11 +1100,11 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         item.requirementsVersion === projectRequirementsVersion(session)
         && item.authorizationVersion === projectAuthorizationVersion(session)
       ));
-      if (required.length === 0 || required.some((item) => item.status !== 'completed')) {
+      if (required.length === 0 || (!finalAccepted && required.some((item) => item.status !== 'completed'))) {
         return { ok: false, error: '当前版本必须至少有一项完成成果，且所有当前版本未停止任务完成后才能完成主目标' };
       }
       const blocked = required.find((item) => !!item.latestBlocker?.trim());
-      if (blocked) {
+      if (blocked && !finalAccepted) {
         return { ok: false, error: `任务仍有未解决阻塞，不能完成主目标：${blocked.title} · ${blocked.latestBlocker}` };
       }
       if (!action.evidence.trim()) return { ok: false, error: '完成主目标必须提供目标级验证证据' };
@@ -1016,7 +1113,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         goalCompletion,
         '主目标完成条件',
       );
-      if (goalCriteriaError) return { ok: false, error: goalCriteriaError };
+      if (goalCriteriaError && !finalAccepted) return { ok: false, error: goalCriteriaError };
       const supervisorCriteriaByIdentity = new Map<string, NonNullable<ProjectCompletionResult['criteria']>[number]>();
       for (const criterion of required.flatMap((item) => (
         normalizeProjectCompletionResult(item.completion)?.criteria || []
@@ -1049,8 +1146,8 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         '主目标完成条件的监督证据',
         { allowExtra: true, requireArtifacts: true },
       );
-      if (supervisorSupportError) return { ok: false, error: supervisorSupportError };
-      for (const criterion of activeGoal.doneWhen) {
+      if (supervisorSupportError && !finalAccepted) return { ok: false, error: supervisorSupportError };
+      if (!finalAccepted) for (const criterion of activeGoal.doneWhen) {
         const identity = projectCriterionIdentity(criterion);
         const declared = goalCompletion?.criteria?.find((item) => (
           projectCriterionIdentity(item.criterion) === identity
@@ -1067,7 +1164,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           return { ok: false, error: `主目标完成声明引用了未经监督核验的证据文件：${criterion}` };
         }
       }
-      if (session.status !== 'active') {
+      if (session.status !== 'active' && !(finalAccepted && session.status === 'waiting')) {
         return { ok: false, error: '项目必须处于运行中，完成复核后才能结束当前主目标' };
       }
       if (projectAcceptedRequirementsVersion(session) !== projectRequirementsVersion(session)) {
@@ -1077,7 +1174,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         subgoal.goalId === activeGoal.id
         && !['achieved', 'obsolete'].includes(subgoal.status)
       ));
-      if (incompleteSubgoal) {
+      if (incompleteSubgoal && !finalAccepted) {
         return { ok: false, error: `阶段目标尚未验收：${incompleteSubgoal.title}` };
       }
       const invalidSubgoalCompletion = (session.subgoals || []).flatMap((subgoal) => {
@@ -1092,10 +1189,24 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         );
         return error ? [error] : [];
       })[0];
-      if (invalidSubgoalCompletion) return { ok: false, error: invalidSubgoalCompletion };
+      if (invalidSubgoalCompletion && !finalAccepted) return { ok: false, error: invalidSubgoalCompletion };
       next = {
         ...session,
         status: 'waiting',
+        ...(finalAccepted ? {
+          activeWorkItemId: undefined,
+          workItems: session.workItems.map((item) => (
+            item.goalId === activeGoal.id && !['completed', 'stopped'].includes(item.status)
+              ? {
+                  ...item,
+                  status: 'stopped' as const,
+                  supervisorLaneId: undefined,
+                  workerSurfaceId: undefined,
+                  updatedAt: now,
+                }
+              : item
+          )),
+        } : {}),
         goals: (session.goals || []).map((goal) => goal.id === activeGoal.id ? {
           ...goal,
           status: 'achieved' as const,
@@ -1103,7 +1214,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         } : goal),
         subgoals: (session.subgoals || []).map((subgoal) => (
           subgoal.goalId === activeGoal.id && subgoal.status !== 'obsolete'
-            ? { ...subgoal, status: 'achieved' as const, updatedAt: now }
+            ? {
+                ...subgoal,
+                status: finalAccepted && subgoal.status !== 'achieved'
+                  ? 'obsolete' as const
+                  : 'achieved' as const,
+                updatedAt: now,
+              }
             : subgoal
         )),
       };
@@ -1114,6 +1231,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           goalId: activeGoal.id,
           evidence: action.evidence.trim(),
           completion: goalCompletion,
+          ...(finalAccepted ? {
+            finalAcceptance: {
+              eventId: userAcceptanceEvent!.id,
+              answer: String(userAcceptanceEvent!.payload?.answer || ''),
+              answeredBy: userAcceptanceEvent!.payload?.answeredBy,
+              scope: currentFinalAcceptanceScope,
+            },
+          } : {}),
           attentionRequired: true,
         },
       };

@@ -213,7 +213,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain(`[监督动态上下文｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`);
     expect(supervisorAgentsSource).toContain('只处理 `wmux context` 返回的当前 lane 和唯一任务终端');
     expect(supervisorAgentsSource).toContain('小任务不机械拆分');
+    expect(supervisorAgentsSource).toContain('跳过当前验证并后续重排');
     expect(supervisorAgentsSource).toContain('首次 `continue/rework` 使用 `--stage-plan-file`');
+    expect(supervisorAgentsSource).toContain('缺少 Win32/GUI/桌面自动化通道属于“验证能力受限”');
+    expect(supervisorAgentsSource).toContain('不得重复原自动化路径、重复派发同义任务');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
     expect(text).not.toContain('项目 pm-project');
     expect(text).not.toContain('worker-b');
@@ -450,6 +453,8 @@ describe('supervisor isolation', () => {
       .toBe('访问外部网络或调用外部服务');
     expect(configuredActionBlockReason('执行 npm install foo', [])).toBeNull();
     expect(configuredActionBlockReason('不要改变公共 API', ['public-api-change'])).toBeNull();
+    expect(configuredActionBlockReason('不改变对外 API、协议或兼容行为', ['public-api-change'])).toBeNull();
+    expect(configuredActionBlockReason('Do not change the public API', ['public-api-change'])).toBeNull();
     expect(configuredActionBlockReason('不要 npm install；改用 pnpm add lodash', ['new-dependencies']))
       .toBe('新增或升级第三方依赖');
     expect(configuredActionBlockReason('只读取 Dockerfile', ['build-release-config'])).toBeNull();

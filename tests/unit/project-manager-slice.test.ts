@@ -105,6 +105,11 @@ describe('project-manager slice', () => {
       kind: 'guard-triggered',
       payload: { attentionRequired: true },
     })).toBe(true);
+    expect(projectManagerEventNeedsUserAttention({
+      kind: 'project-paused',
+      summary: '内部恢复连续失败：项目认知门禁未解除',
+      payload: { source: 'runtime', attentionRequired: false },
+    })).toBe(true);
   });
 
   it('keeps only the newest unavailable handoff across replacement lanes', () => {

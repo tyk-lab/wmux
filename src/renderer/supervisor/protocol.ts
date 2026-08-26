@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-export const SUPERVISOR_PROTOCOL_REVISION = '15';
+export const SUPERVISOR_PROTOCOL_REVISION = '18';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -359,6 +359,7 @@ export function humanDecisionBoundary(
       ? '只有需要改变任务契约、跨任务协调、项目级路线调整、硬执行预算或重试耗尽，或涉及不可逆、高影响及用户专属信息/授权时，才通过 needs-human 提交项目状态通知；控制层不会创建普通 pendingApproval。项目内取舍由项目 AI 决定，只有改变用户目标、对外结果、验收、范围、真实偏好或新增外部访问/风险授权时才继续询问用户。'
       : '只有重大任务方向/范围变化、不可逆或高影响操作（安全、关键数据、生产、发布或对外提交）、需求/业务取舍，或缺少用户独有信息、凭据或授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
+    '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human + external-blocker 上报一次，由项目 AI 请求用户选择人工验收、暂缓验证、跳过当前验证并后续重排，或保持暂停，不得重复原路径或同义返工。',
     projectManaged
       ? '你的首要执行义务是推进当前工作项对主目标的贡献：合同内技术路线、现状复核、证据整理、低风险重试和已有授权内的后续验证由你主动完成；不得把内部微步骤退回项目 AI。你不能改写主目标、扩大工作项合同、伪造阶段证据或新增硬件/风险授权。'
       : '',

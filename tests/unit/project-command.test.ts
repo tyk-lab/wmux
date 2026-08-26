@@ -26,7 +26,11 @@ afterEach(() => {
 
 describe('project command JSON input', () => {
   it('keeps required JSON validation for real commands', () => {
-    expect(() => resolveProjectJsonInput(['project', 'update'])).toThrow('--json or --json-file is required');
+    expect(() => resolveProjectJsonInput(['project', 'orientation-confirm'])).toThrow(
+      'project orientation-confirm requires --json <object> or --json-file <.wmux/tmp/file>',
+    );
+    expect(() => resolveProjectJsonInput(['project', 'orientation-confirm', '{"summary":"positional"}']))
+      .toThrow('positional JSON is not accepted');
   });
 
   it('reads and removes a consumed JSON draft inside .wmux/tmp', () => {
@@ -98,6 +102,18 @@ describe('project command help', () => {
     expect(resolveProjectCommandHelp(['project', subcommand, '-h'])).toContain(expectedField);
   });
 
+  it('documents stage closure and the bounded replan rule', () => {
+    expect(resolveProjectCommandHelp(['project', 'goal-plan', '--help'])).toContain('achieved');
+    expect(resolveProjectCommandHelp(['project', 'transition-ack', '--help']))
+      .toContain('allowed only once for the same work item evidence/topology state');
+  });
+
+  it('documents an exact recovery-safe orientation command and rejects inspect as a substitute', () => {
+    const help = resolveProjectCommandHelp(['project', 'orientation-confirm', '--help']);
+    expect(help).toContain('orientation-confirm --project <id> --json-file .wmux/tmp/orientation-<requestedAt>.json');
+    expect(help).toContain('project inspect` is read-only');
+  });
+
   it('documents the project AI recovery and user-confirmation contracts', () => {
     expect(PROJECT_USAGE).toContain('dispatch');
     expect(PROJECT_USAGE).not.toContain('supervise');
@@ -110,6 +126,14 @@ describe('project command help', () => {
       .toContain('userConfirmationEventId');
     expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
       .toContain('task-input-conflict');
+    expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
+      .toContain('verification-limited');
+    expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
+      .toContain('final-acceptance');
+    expect(resolveProjectCommandHelp(['project', 'complete', '--help']))
+      .toContain('userAcceptanceEventId');
+    expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
+      .toContain('runtime-recovery');
     expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
       .not.toContain('internal-project-failure');
   });
