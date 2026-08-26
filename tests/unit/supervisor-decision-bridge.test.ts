@@ -4561,6 +4561,34 @@ describe('supervisor decision bridge', () => {
       ok: false,
       error: expect.stringContaining('不能指定文件、命令、技能或实现路线'),
     });
+
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'English implementation directive', taskFile: '.wmux/tmp/task-en.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: 'Edit src/auth.ts and run npm test',
+        constraints: ['Use the authentication skill'],
+        acceptanceGap: ['Return the command output'], evidenceContext: [],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能指定文件、命令、技能或实现路线'),
+    });
+
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'Control identity disclosure', taskFile: '.wmux/tmp/task-role.json',
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: "Follow the project manager's plan and report back to your supervisor",
+        constraints: ['Keep the control plane informed'],
+        acceptanceGap: ['Current outcome is verified'], evidenceContext: [],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能暴露监督或内部编排身份'),
+    });
   });
 
   it('rejects ordinary completion until every plan acceptance item has evidence', () => {
@@ -4656,18 +4684,87 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
+  it('rejects a high-confidence repeat of a standing user decision', () => {
+    const reason = '是否改变现有 API 以绕过当前失败';
+    const impact = '改变后会破坏现有调用方兼容性';
+    const alternatives = '方案 A：保持现有 API；方案 B：改变 API';
+    const next = '推荐方案 A：保持现有 API';
+    const currentLane = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(currentLane.id, {
+      standingUserDecisions: [{
+        decision: '保持现有 API，优先补充证据后继续',
+        subject: [reason, impact, alternatives, next].join('\n'),
+        proposalKind: 'route-change', sourceApprovalId: 'approval-api',
+        updatedAt: 1, planRevision: 1,
+      }],
+    });
+
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'needs-human', proposalKind: 'route-change',
+      reason, impact, alternatives, next,
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已由用户持续决策 approval-api 覆盖'),
+    });
+    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
+  it('opens an ordinary-only review when a long task turn returns idle after bounded interruption', async () => {
+    vi.useFakeTimers();
+    useStore.getState().updateLane('lane-a', { awaitingReview: false, workerTurnId: 1 });
+    screenText = 'OpenAI Codex\nWorking';
+    agentState = { ...agentState, state: 'working', updatedAt: 2 };
+
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'worker-a', event: 'UserPromptSubmit', task: '长期执行任务',
+    });
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(writes).toHaveBeenCalledWith('worker-a', '\x1b');
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(writes).toHaveBeenCalledWith('worker-a', '\x03');
+
+    screenText = 'OpenAI Codex\n› Ask Codex to do anything';
+    agentState = { ...agentState, state: 'idle', updatedAt: 3 };
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    const watchedLane = useStore.getState().supervisor.lanes[0];
+    expect(watchedLane).toMatchObject({
+      awaitingReview: true,
+      activeReviewId: expect.stringContaining('ordinary-watchdog-review-'),
+    });
+    expect(watchedLane.projectManagerProjectId).toBeUndefined();
+    expect(watchedLane.projectWorkItemId).toBeUndefined();
+    expect(watchedLane.pendingSupervisorDeliveries)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'task-interrupted',
+          text: expect.stringContaining('不调用项目 AI'),
+        }),
+      ]));
+  });
+
   it('clears the same task Agent context after two degraded reviews and republishes trusted context', async () => {
     vi.useFakeTimers();
     screenText = 'Pi Agent\nAsk anything';
     let pendingBody = '';
+    let sessionReadyAt = 0;
+    let recoverySubmittedAt = 0;
     const submittedBodies: string[] = [];
     const writeReliable = vi.fn(async (surfaceId: string, data: string) => {
       if (data !== '\r') {
         pendingBody = data;
         submittedBodies.push(data);
+        if (data.includes('[上下文已清空｜可信任务恢复]')) recoverySubmittedAt = Date.now();
       } else if (pendingBody === '/new') {
-        screenText = 'Pi Agent\nAsk anything';
-        agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+        screenText = 'Pi Agent\nStarting a new session…';
+        agentState = { ...agentState, state: 'working', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+        window.setTimeout(() => {
+          screenText = 'Pi Agent\nAsk anything';
+          agentState = { ...agentState, state: 'idle', runDepth: 0, updatedAt: agentState.updatedAt + 1 };
+          sessionReadyAt = Date.now();
+        }, 1_500);
       } else {
         agentState = { ...agentState, state: 'working', updatedAt: agentState.updatedAt + 1 };
         acknowledgeTaskPrompt(surfaceId);
@@ -4683,7 +4780,7 @@ describe('supervisor decision bridge', () => {
       contextSymptoms: 'forgotten-plan,repeated-mistake',
       contextSignal: '任务 AI 遗忘用户规划并再次重复已经纠正的错误',
     });
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(5_000);
     await expect(first).resolves.toMatchObject({ ok: true, outcome: 'rework' });
     expect(useStore.getState().supervisor.lanes[0].ordinaryContextHealth?.occurrences).toBe(1);
 
@@ -4702,12 +4799,14 @@ describe('supervisor decision bridge', () => {
       contextSymptoms: 'forgotten-plan,repeated-mistake',
       contextSignal: '新任务回合仍遗忘用户规划并重复相同错误',
     });
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(5_000);
     await expect(second).resolves.toMatchObject({ ok: true, outcome: 'rework' });
 
     expect(submittedBodies).toHaveLength(3);
     expect(submittedBodies[1]).toBe('/new');
     expect(submittedBodies[2]).toContain('[上下文已清空｜可信任务恢复]');
+    expect(sessionReadyAt).toBeGreaterThan(0);
+    expect(recoverySubmittedAt).toBeGreaterThanOrEqual(sessionReadyAt);
     expect(submittedBodies[2]).not.toMatch(/监督 AI|普通监督链|裁决|lane/iu);
     expect(submittedBodies[2]).toContain('用户规划版本：r1');
     expect(submittedBodies[2]).toContain('AGENTS、技能与仓库规范');

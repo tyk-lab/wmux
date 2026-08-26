@@ -331,7 +331,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain("entry.scope === 'ordinary'");
     expect(panelSource).toContain("entry.scope === 'project'");
     expect(pipeBridgeSource).toContain('projectManagerWorkspaceTitle');
-    expect(pipeBridgeSource).toContain('projectSupervisorWorkspaceTitle');
+    expect(pipeBridgeSource).not.toContain('projectSupervisorWorkspaceTitle');
+    expect(pipeBridgeSource).toContain('const projectRuntimeCandidate = projectManagedStart ? candidates[0] : undefined;');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__tabs');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__alert');
   });
@@ -446,7 +447,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(consoleSurfaceSource).toContain('store.selectSurface(workspace.id, paneId, surfaceIndex)');
     expect(consoleSurfaceSource).toContain('store.closeProjectManagerDialog()');
     expect(pipeBridgeSource).not.toContain('openProjectManagerDialog()');
-    expect(pipeBridgeSource).toContain("createLeaf(undefined, 'project-manager')");
+    expect(pipeBridgeSource).not.toContain("createLeaf(undefined, 'project-manager')");
+    expect(pipeBridgeSource).toContain('项目任务 AI 不在有效的项目执行会话中，不能创建独立监督工作区');
   });
 
   it('uses the sidebar AI button as the unified creation entry', () => {
@@ -504,6 +506,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(surfaceTabBarSource).toContain("? '监督暂停'");
     expect(surfaceTabBarSource).toContain("'监督待续'");
     expect(panelSource).toContain('同类问题沿用本次决定，不再重复询问');
+    expect(panelSource).toContain('{lane && !isProjectManagedSupervisorLane(lane) && (');
+    expect(panelSource).toContain('const reuseForSimilarIssues = !isProjectManagedSupervisorLane(lane)');
     expect(panelSource).toContain('standingUserDecision');
     expect(panelSource).toContain('刷新恢复档案');
     expect(panelSource).toContain('删除恢复档案');
@@ -512,7 +516,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('saveRecoverySnapshot');
     expect(panelSource).toContain('deleteRecoverySnapshot');
     expect(panelSource).toContain("stopSupervisorLane(lane.id, '恢复档案已删除，移除停止占位')");
-    expect(panelSource).toContain('pendingInitialReview: true, awaitingReview: false');
+    expect(panelSource).toContain('pendingInitialReview: true,');
+    expect(panelSource).toContain('awaitingReview: false,');
+    expect(panelSource).toContain('ordinaryContextHealth: undefined');
     expect(panelSource).toContain("String(taskState?.state || 'unknown') === 'idle'");
     expect(panelSource).toContain('recoverySnapshotId: snapshot.snapshotId');
     expect(panelSource).not.toContain('不要恢复旧命令、旧监督协议');

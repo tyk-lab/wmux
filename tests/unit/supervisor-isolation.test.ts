@@ -98,12 +98,29 @@ describe('supervisor wake event envelope', () => {
         updatedAt: 10,
         planRevision: 3,
       },
+      standingUserDecisions: [{
+        decision: '允许在既有安全范围内继续实测',
+        subject: '是否继续当前安全范围内的实测',
+        subjectFingerprint: '是否继续当前安全范围内的实测',
+        proposalKind: 'important',
+        sourceApprovalId: 'approval-hardware',
+        updatedAt: 11,
+        planRevision: 3,
+      }],
+      latestSupervisorUserGuidance: {
+        text: '优先取得真实运行证据，不要重复离线推演。',
+        updatedAt: 12,
+        planRevision: 3,
+      },
     });
 
     const briefing = buildSupervisorBriefing(session, { lane: supervisedLane, state: 'idle' });
 
     expect(briefing).toContain('用户确认的持续决策');
     expect(briefing).toContain('保持现有 API，优先补测试后继续');
+    expect(briefing).toContain('允许在既有安全范围内继续实测');
+    expect(briefing).toContain('用户最近直接提供给监督 AI 的权威指导');
+    expect(briefing).toContain('优先取得真实运行证据，不要重复离线推演。');
     expect(briefing).toContain('不得换个说法反复询问用户');
     expect(briefing).toContain('新的高风险或不可逆动作');
   });

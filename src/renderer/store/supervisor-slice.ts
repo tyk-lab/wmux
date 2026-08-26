@@ -81,6 +81,16 @@ export interface OrdinaryContextResetState {
   error?: string;
 }
 
+export interface StandingUserDecision {
+  decision: string;
+  subject: string;
+  subjectFingerprint?: string;
+  proposalKind?: PendingApproval['proposalKind'];
+  sourceApprovalId: string;
+  updatedAt: number;
+  planRevision: number;
+}
+
 export type GoalVortexKind =
   | 'offline-overanalysis'
   | 'repeated-validation'
@@ -241,14 +251,9 @@ export interface SupervisorLane {
     requirementsVersion?: number;
   };
   /** User-approved standing decision for semantically similar questions in this lane and plan revision. */
-  standingUserDecision?: {
-    decision: string;
-    subject: string;
-    proposalKind?: PendingApproval['proposalKind'];
-    sourceApprovalId: string;
-    updatedAt: number;
-    planRevision: number;
-  };
+  standingUserDecision?: StandingUserDecision;
+  /** Bounded ordinary-mode registry; the singular field remains a latest-decision compatibility alias. */
+  standingUserDecisions?: StandingUserDecision[];
   /** In-flight or failed same-terminal context reset. Failed resets require user handling. */
   ordinaryContextReset?: OrdinaryContextResetState;
   ordinaryContextResetCount?: number;
@@ -277,7 +282,7 @@ export interface SupervisorLane {
   reviewWatchdogState?: 'pending' | 'retrying' | 'failed';
   /** User-visible fault that prevents the dedicated supervisor from completing reviews. */
   supervisorProblem?: {
-    kind: 'provider-limit' | 'runtime-failed' | 'unreported-decision';
+    kind: 'provider-limit' | 'runtime-failed' | 'unreported-decision' | 'task-stalled';
     detail: string;
     detectedAt: number;
   };

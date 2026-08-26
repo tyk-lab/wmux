@@ -83,10 +83,15 @@ export interface SupervisedTerminalSnapshot {
       workerTurnId: number;
       decisions: unknown[];
       ordinaryPlan?: unknown;
+      ordinaryBlocker?: unknown;
       ordinaryContextHealth?: unknown;
+      ordinaryContextReset?: unknown;
+      ordinaryContextResetCount?: number;
+      ordinaryContextResetPlanRevision?: number;
       goalVortex?: unknown;
       latestSupervisorUserGuidance?: unknown;
       standingUserDecision?: unknown;
+      standingUserDecisions?: unknown;
       latestEvidence: string[];
       acceptanceGaps: string[];
     };

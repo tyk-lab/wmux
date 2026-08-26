@@ -34,11 +34,6 @@ export interface SupervisorAuditEvent {
   payload: Record<string, unknown>;
 }
 
-export interface SupervisorHistory {
-  sessionId: string | null;
-  events: SupervisorAuditEvent[];
-}
-
 export interface SupervisorAuditSession {
   sessionId: string;
   createdAt: number;
@@ -49,15 +44,6 @@ export interface SupervisorAuditTrail {
   sessions: SupervisorAuditSession[];
 }
 
-export interface SupervisorRestoreCandidate {
-  surfaceId: string;
-  label: string;
-  sessionId: string;
-  lastEventAt: number;
-  currentTask: string;
-  lastDecision: string;
-}
-
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 const REVIEW_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const IGNORE_ENTRIES = ['.wmux/supervisor/', '.wmux/tmp/'] as const;
@@ -65,7 +51,6 @@ const MAX_HISTORY_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY_EVENTS = 200;
 const MAX_HISTORY_SESSIONS = 50;
 const MAX_EVIDENCE_FILES_PER_SCOPE = 50;
-const RESTORABLE_EVENT_TYPES = new Set(['worker.task', 'worker.lifecycle', 'supervisor.decision']);
 
 function supervisorSessionDirectory(projectDir: string, sessionId: string, create = false): string {
   if (!path.isAbsolute(projectDir)) throw new Error('projectDir must be absolute');
@@ -364,10 +349,6 @@ export function appendSupervisorRecord(record: SupervisorRecord): { path: string
   return { path: recordPath };
 }
 
-function emptyHistory(): SupervisorHistory {
-  return { sessionId: null, events: [] };
-}
-
 function emptyAuditTrail(): SupervisorAuditTrail {
   return { sessions: [] };
 }
@@ -439,31 +420,6 @@ function readAuditSessions(projectDir: string): Array<SupervisorAuditSession & {
   }
 }
 
-/** Keep only events recorded after the most recent explicit context reset. */
-function eventsAfterLastAbandonment(events: SupervisorAuditEvent[]): SupervisorAuditEvent[] {
-  let startIndex = 0;
-  for (let index = 0; index < events.length; index += 1) {
-    if (events[index].type === 'session.abandoned') startIndex = index + 1;
-  }
-  return events.slice(startIndex);
-}
-
-function latestRestorableHistory(
-  sessions: Array<SupervisorAuditSession & { directory: string }>,
-  matches: (event: SupervisorAuditEvent) => boolean,
-): SupervisorHistory {
-  for (const session of sessions) {
-    const matching = session.events.filter(matches);
-    if (matching.length === 0) continue;
-    const usable = eventsAfterLastAbandonment(matching);
-    if (usable.some((event) => RESTORABLE_EVENT_TYPES.has(event.type))) {
-      return { sessionId: session.sessionId, events: usable.slice(-MAX_HISTORY_EVENTS) };
-    }
-    if (usable.length !== matching.length) return emptyHistory();
-  }
-  return emptyHistory();
-}
-
 /**
  * Return all durable audit sessions belonging to exactly one terminal task.
  * Unlike context recovery, reset tombstones remain visible here so users can
@@ -507,81 +463,4 @@ export function readSupervisorAuditTrail(
       events: events.slice(-MAX_HISTORY_EVENTS),
     })),
   };
-}
-
-/**
- * List explicitly selectable restore sources in one project. The caller chooses
- * the source terminal, so no current-terminal surfaceId matching is involved.
- * A reset tombstone removes that terminal from the list to keep “start over” a
- * hard recovery boundary.
- */
-export function listSupervisorRestoreCandidates(projectDir: string): SupervisorRestoreCandidate[] {
-  const sessions = readAuditSessions(projectDir);
-  const grouped = new Map<string, SupervisorAuditEvent[]>();
-  for (const session of sessions.slice().reverse()) {
-    for (const event of session.events) {
-      const events = grouped.get(event.terminal.surfaceId) || [];
-      events.push(event);
-      grouped.set(event.terminal.surfaceId, events);
-    }
-  }
-  return [...grouped.entries()].flatMap(([surfaceId, events]) => {
-    const usable = eventsAfterLastAbandonment(events);
-    const last = usable[usable.length - 1];
-    if (!last || !usable.some((event) => RESTORABLE_EVENT_TYPES.has(event.type))) return [];
-    let currentTask = '';
-    let lastDecision = '';
-    for (const event of usable) {
-      if (event.type === 'worker.task' && typeof event.payload.task === 'string') currentTask = event.payload.task;
-      if (event.type === 'supervisor.decision' && typeof event.payload.outcome === 'string') {
-        lastDecision = event.payload.outcome;
-      }
-    }
-    const session = sessions.find((item) => item.events.some((event) => event === last));
-    return [{
-      surfaceId,
-      label: last.terminal.label,
-      sessionId: session?.sessionId || '',
-      lastEventAt: last.ts,
-      currentTask,
-      lastDecision,
-    }];
-  }).sort((a, b) => b.lastEventAt - a.lastEventAt);
-}
-
-/**
- * Return the latest usable audit stream for exactly one terminal task.
- * A `session.abandoned` entry is a reset tombstone: it deliberately prevents
- * an older context from being restored after the user chooses "start over".
- */
-export function readLatestSupervisorHistory(
-  projectDir: string,
-  terminal: Pick<SupervisorRecord['terminal'], 'surfaceId' | 'label'>,
-): SupervisorHistory {
-  if (!path.isAbsolute(projectDir) || !terminal.surfaceId || !terminal.label.trim()) return emptyHistory();
-  const sessionEvents = readAuditSessions(projectDir);
-  if (sessionEvents.length === 0) return emptyHistory();
-
-  const exact = latestRestorableHistory(
-    sessionEvents,
-    (event) => event.terminal.surfaceId === terminal.surfaceId,
-  );
-  if (exact.sessionId) return exact;
-
-  const labelMatches = sessionEvents.map((session) => ({
-    ...session,
-    events: session.events.filter((event) =>
-      event.terminal.label === terminal.label
-      && (RESTORABLE_EVENT_TYPES.has(event.type) || event.type === 'session.abandoned'),
-    ),
-  }));
-
-  // A restored terminal can receive a new surfaceId. Only fall back to its
-  // display label when that label identifies one and only one historical
-  // surface in this project; duplicate labels must never mix task contexts.
-  const historicalSurfaceIds = new Set(
-    labelMatches.flatMap((session) => session.events.map((event) => event.terminal.surfaceId)),
-  );
-  if (historicalSurfaceIds.size !== 1) return emptyHistory();
-  return latestRestorableHistory(labelMatches, () => true);
 }

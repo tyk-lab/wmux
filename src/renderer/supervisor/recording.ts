@@ -61,10 +61,15 @@ export interface RestoredLaneHistory {
   autonomyPermissionsOverride?: SupervisorLane['autonomyPermissionsOverride'];
   forbiddenActionsOverride?: SupervisorLane['forbiddenActionsOverride'];
   workScopeOverride?: SupervisorLane['workScopeOverride'];
+  ordinaryBlocker?: SupervisorLane['ordinaryBlocker'];
   ordinaryContextHealth?: SupervisorLane['ordinaryContextHealth'];
+  ordinaryContextReset?: SupervisorLane['ordinaryContextReset'];
+  ordinaryContextResetCount?: number;
+  ordinaryContextResetPlanRevision?: number;
   goalVortex?: SupervisorLane['goalVortex'];
   latestSupervisorUserGuidance?: SupervisorLane['latestSupervisorUserGuidance'];
   standingUserDecision?: SupervisorLane['standingUserDecision'];
+  standingUserDecisions?: SupervisorLane['standingUserDecisions'];
   workerTurnId?: number;
   recoverySnapshotId?: string;
   recoverySnapshotSavedAt?: number;
@@ -394,10 +399,15 @@ function snapshotRestoredHistory(snapshot: SupervisedTerminalSnapshot): Restored
     autonomyPermissionsOverride: [...snapshot.supervisor.autonomyPermissions],
     forbiddenActionsOverride: [...snapshot.supervisor.forbiddenActions],
     workScopeOverride: snapshot.supervisor.workScope,
+    ordinaryBlocker: snapshot.supervisor.state.ordinaryBlocker as SupervisorLane['ordinaryBlocker'],
     ordinaryContextHealth: snapshot.supervisor.state.ordinaryContextHealth as SupervisorLane['ordinaryContextHealth'],
+    ordinaryContextReset: snapshot.supervisor.state.ordinaryContextReset as SupervisorLane['ordinaryContextReset'],
+    ordinaryContextResetCount: snapshot.supervisor.state.ordinaryContextResetCount,
+    ordinaryContextResetPlanRevision: snapshot.supervisor.state.ordinaryContextResetPlanRevision,
     goalVortex: snapshot.supervisor.state.goalVortex as SupervisorLane['goalVortex'],
     latestSupervisorUserGuidance: snapshot.supervisor.state.latestSupervisorUserGuidance as SupervisorLane['latestSupervisorUserGuidance'],
     standingUserDecision: snapshot.supervisor.state.standingUserDecision as SupervisorLane['standingUserDecision'],
+    standingUserDecisions: snapshot.supervisor.state.standingUserDecisions as SupervisorLane['standingUserDecisions'],
     workerTurnId: snapshot.supervisor.state.workerTurnId,
     recoverySnapshotId: snapshot.snapshotId,
     recoverySnapshotSavedAt: snapshot.savedAt,

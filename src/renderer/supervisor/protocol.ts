@@ -27,6 +27,7 @@ import {
   buildSupervisorCapabilityCard,
   buildSupervisorRuntimeContext,
 } from './supervisor-context';
+import { activeStandingUserDecisions } from './standing-user-decision';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
 export const SUPERVISOR_PROTOCOL_REVISION = '8';
@@ -544,18 +545,33 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
-  const standingDecision = !projectManaged
-    && lane.standingUserDecision?.planRevision === (laneConfig.planRevision || 1)
-    ? lane.standingUserDecision
+  const latestUserGuidance = !projectManaged
+    && lane.latestSupervisorUserGuidance?.planRevision === (laneConfig.planRevision || 1)
+    ? lane.latestSupervisorUserGuidance
     : undefined;
-  const standingDecisionBlock = standingDecision
+  const latestUserGuidanceBlock = latestUserGuidance
+    ? [
+        '## 用户最近直接提供给监督 AI 的权威指导',
+        latestUserGuidance.text,
+        '',
+        '这是当前规划版本内最近的用户直接指导；恢复或重建监督上下文后仍须继承。若与更早审计或任务 AI 自述冲突，以该指导为准，但它不能放宽硬安全边界。',
+        '',
+      ]
+    : [];
+  const standingDecisions = projectManaged
+    ? []
+    : activeStandingUserDecisions(lane, laneConfig.planRevision || 1);
+  const standingDecisionBlock = standingDecisions.length > 0
     ? [
         '## 用户确认的持续决策（当前终端 / 当前规划版本）',
-        `适用问题：${standingDecision.subject}`,
-        `用户决定：${standingDecision.decision}`,
+        ...standingDecisions.flatMap((decision, index) => [
+          `${index + 1}. 决策 ID：${decision.sourceApprovalId}`,
+          `   适用问题：${decision.subject}`,
+          `   用户决定：${decision.decision}`,
+        ]),
         '',
-        '遇到语义相近且范围、前提、风险等级和验收没有实质变化的问题时，必须以该决定的意思为主直接继续，不得换个说法反复询问用户。',
-        '只有问题实质不同、出现新的高风险或不可逆动作、范围/验收/权威条件变化，或该决定无法合理覆盖时，才可再次 needs-human；再次询问必须明确说明与已记录决定的差异。',
+        '遇到任一持续决策覆盖的语义相近问题，且范围、前提、风险等级和验收没有实质变化时，必须以对应决定为主直接继续，不得换个说法反复询问用户。',
+        '只有问题实质不同、出现新的高风险或不可逆动作、范围/验收/权威条件变化，或既有决定无法合理覆盖时，才可再次 needs-human；再次询问必须明确引用相关决策 ID 并说明差异。',
         '',
       ]
     : [];
@@ -699,6 +715,7 @@ export function buildSupervisorBriefing(
       ...stopContextBlock,
       ...preconditionsBlock,
       ...supervisorNotesBlock,
+      ...latestUserGuidanceBlock,
       ...standingDecisionBlock,
       ...planBlock,
       ...policyBlock,

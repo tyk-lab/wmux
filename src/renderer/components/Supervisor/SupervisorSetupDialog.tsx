@@ -71,10 +71,11 @@ import {
   supervisorModelCatalogScope,
   type SupervisorModelCatalog,
 } from '../../supervisor/model-catalog';
-import { sendToSurface, SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
+import { SUPERVISOR_TUI_READY_DELAY_MS } from '../../supervisor/supervisor-engine';
 import { readTerminalScreen, workScopeBlockReason } from '../../pipe-bridge';
 import { ensureOrdinarySupervisorStatusSurface } from '../../supervisor/status-surface';
 import { requestSupervisorSnapshotSave } from '../../supervisor/recovery-request';
+import { queueOrdinarySupervisorControlDelivery } from '../../supervisor/ordinary-control-delivery';
 import {
   markTerminalRuntimeFailed,
   waitForTerminalRuntimeReady,
@@ -1390,7 +1391,14 @@ export default function SupervisorSetupDialog() {
             lane: currentLane,
             state: String(states[currentLane.surfaceId]?.state || 'unknown'),
           });
-          sendToSurface(supervisorSurfaceId, text, true, 'ordinary');
+          if (!queueOrdinarySupervisorControlDelivery(currentLane.id, text, {
+            bootstrapOnRuntimeReady: true,
+          })) {
+            useStore.getState().pauseSupervisorLane(
+              currentLane.id,
+              '监督 briefing 无法进入可靠投递队列；已暂停此普通监督通道',
+            );
+          }
         }
       } catch (err) {
         console.warn('[supervisor] briefing inject failed', err);

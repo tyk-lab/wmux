@@ -34,6 +34,11 @@ function snapshot(projectDir: string, currentTask = '完成登录功能'): Super
       state: {
         controlState: 'active', currentTask, workerTurnId: 3,
         decisions: [{ outcome: 'rework' }, { outcome: 'continue' }],
+        ordinaryContextResetCount: 1,
+        ordinaryContextResetPlanRevision: 2,
+        latestSupervisorUserGuidance: {
+          text: '保持现有 API 并继续推进', updatedAt: 2, planRevision: 2,
+        },
         standingUserDecision: {
           decision: '同类接口问题保持现有 API',
           subject: '是否改变现有 API',
@@ -42,6 +47,11 @@ function snapshot(projectDir: string, currentTask = '完成登录功能'): Super
           updatedAt: 3,
           planRevision: 2,
         },
+        standingUserDecisions: [{
+          decision: '同类接口问题保持现有 API', subject: '是否改变现有 API',
+          proposalKind: 'route-change', sourceApprovalId: 'approval-standing',
+          updatedAt: 3, planRevision: 2,
+        }],
         latestEvidence: ['接口测试通过'], acceptanceGaps: ['完成界面联调'],
       },
     },
@@ -88,11 +98,19 @@ describe('supervised terminal recovery snapshots', () => {
         supervisor: {
           state: {
             currentTask: '完成界面联调',
+            ordinaryContextResetCount: 1,
+            ordinaryContextResetPlanRevision: 2,
+            latestSupervisorUserGuidance: {
+              text: '保持现有 API 并继续推进', planRevision: 2,
+            },
             standingUserDecision: {
               decision: '同类接口问题保持现有 API',
               sourceApprovalId: 'approval-standing',
               planRevision: 2,
             },
+            standingUserDecisions: [expect.objectContaining({
+              sourceApprovalId: 'approval-standing', planRevision: 2,
+            })],
           },
         },
       },

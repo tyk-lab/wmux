@@ -77,6 +77,31 @@ describe('supervisor user input precedence', () => {
     });
   });
 
+  it('preserves task-context degradation until verified health or a successful context reset', () => {
+    const store = useStore.getState();
+    store.updateLane('lane-user', {
+      ordinaryContextHealth: {
+        fingerprint: 'forgotten-plan', symptoms: ['forgotten-plan'],
+        signal: '任务 AI 已遗忘规划', evidenceFingerprint: 'evidence-a',
+        occurrences: 1, reviewId: 'review-a', workerTurnId: 1, updatedAt: 1,
+      },
+    });
+
+    expect(handleSupervisorUserSubmit('worker-user')).toBe(true);
+    expect(confirmSupervisorUserSubmitFromHook('worker-user', '继续当前成果')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0].ordinaryContextHealth)
+      .toMatchObject({ occurrences: 1, fingerprint: 'forgotten-plan' });
+
+    store.enqueueApproval({
+      laneId: 'lane-user', surfaceId: 'worker-user' as any, laneLabel: 'worker',
+      text: '再次确认路线', source: 'supervisor-important', proposalKind: 'important',
+      reason: '需要用户决定', task: '当前成果',
+    });
+    expect(handleSupervisorUserSubmit('supervisor-user', '沿当前路线继续')).toBe(true);
+    expect(useStore.getState().supervisor.lanes[0].ordinaryContextHealth)
+      .toMatchObject({ occurrences: 1, fingerprint: 'forgotten-plan' });
+  });
+
   it('ignores unrelated terminals', () => {
     expect(handleSupervisorUserSubmit('other-worker')).toBe(false);
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);

@@ -273,6 +273,14 @@ import { detectSupervisorProviderLimit } from './supervisor/provider-limit';
 import { isAwaitingNextPromptState } from './agent-state-semantics';
 import { ordinaryTaskDeliveryBlockReason } from './supervisor/task-runtime-readiness';
 import {
+  activeStandingUserDecisions,
+  repeatedStandingUserDecisionError,
+} from './supervisor/standing-user-decision';
+import {
+  ordinaryWorkerWatchdogCandidate,
+  ordinaryWorkerWatchdogPolicy,
+} from './supervisor/ordinary-worker-watchdog';
+import {
   ensureOrdinarySupervisorStatusSurface,
   removeOrdinarySupervisorStatusSurfaceForTask,
 } from './supervisor/status-surface';
@@ -2130,6 +2138,50 @@ function waitForControlPlaneDelay(delayMs: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, delayMs));
 }
 
+const ORDINARY_CONTEXT_CLEAR_READY_TIMEOUT_MS = 20_000;
+
+async function waitForOrdinaryContextClearReady(options: {
+  surfaceId: SurfaceId;
+  validate: () => string | null;
+  timeoutMs?: number;
+}): Promise<string | null> {
+  const deadline = Date.now() + (options.timeoutMs || ORDINARY_CONTEXT_CLEAR_READY_TIMEOUT_MS);
+  let stableReadyFingerprint = '';
+  let stableReadySamples = 0;
+  while (Date.now() < deadline) {
+    const stateError = options.validate();
+    if (stateError) return stateError;
+    const runtime = terminalRuntimeStatus(options.surfaceId);
+    if (runtime?.state === 'failed' || runtime?.state === 'exited') {
+      return `任务 AI 执行 /new 后运行时已${runtime.state === 'failed' ? '失败' : '退出'}`;
+    }
+    const screen = terminalScreenTail(options.surfaceId, 80);
+    const shellError = interactiveAgentShellPromptFailureDetail(screen);
+    if (shellError) return `任务 AI 执行 /new 后落入普通 shell：${shellError}`;
+    const buffer = surfaceTerminalRegistry.get(options.surfaceId)?.buffer.active;
+    const agentState = ((window as any).__wmux_getAgentStates?.() || {})[options.surfaceId];
+    const declaredIdle = agentState?.state === 'idle' || isAwaitingNextPromptState(agentState);
+    const noNestedRun = Number(agentState?.runDepth || 0) <= 0;
+    const inputReady = interactiveAgentPromptReady(screen) || interactiveAgentInputReady(screen);
+    const noPendingInput = !buffer || !hasPendingTerminalInput(buffer);
+    if (declaredIdle && noNestedRun && inputReady && noPendingInput) {
+      const fingerprint = normalizeProjectActivityFingerprintText(screen).slice(-2_000);
+      if (fingerprint && fingerprint === stableReadyFingerprint) {
+        stableReadySamples += 1;
+      } else {
+        stableReadyFingerprint = fingerprint;
+        stableReadySamples = fingerprint ? 1 : 0;
+      }
+      if (stableReadySamples >= 2) return null;
+    } else {
+      stableReadyFingerprint = '';
+      stableReadySamples = 0;
+    }
+    await waitForControlPlaneDelay(100);
+  }
+  return `任务 AI 执行 /new 后 ${Math.round((options.timeoutMs || ORDINARY_CONTEXT_CLEAR_READY_TIMEOUT_MS) / 1000)} 秒内没有回到可安全接收任务的 Agent 输入态`;
+}
+
 async function deliverSupervisorStartupBriefing(laneId: string): Promise<void> {
   const initial = useStore.getState().supervisor.lanes.find((lane) => lane.id === laneId);
   if (!initial?.supervisorSurfaceId) return;
@@ -2931,10 +2983,6 @@ function decideRemoteSupervisor(
       awaitingReview: true,
       autoDecisionLimitReached: false,
       autoDecisionsUsed: 0,
-      ...(lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION ? {
-        ordinaryContextHealth: undefined,
-        ordinaryContextReset: undefined,
-      } : {}),
     });
     remoteAudit(session, lane, 'supervisor.proposal.resolved', {
       approvalId,
@@ -3501,6 +3549,10 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
     ...acceptanceGap,
     ...evidenceContext,
   ];
+  const disclosureError = projectTaskInstructionDisclosureError(taskEnvelope.join('\n'));
+  if (disclosureError) {
+    return { error: `普通监督任务必须保持中性，不能暴露监督或内部编排身份：${disclosureError}` };
+  }
   const empiricalTask = /(?:上机|上电|实机|实验|测量|采样|采集|台架|硬件)/iu.test(taskEnvelope.join('\n'));
   const forcedEmpiricalResult = [outcome, ...constraints, ...acceptanceGap].find((item) => (
     /(?:\bPASS\b)|(?:(?:实验|测试|测量|上机|上电|实测).{0,12}(?:结果|结论).{0,8}(?:通过|成功|达标))|(?:(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:必须|需要|要求|应当|应|需|须|达到).{0,8}(?:通过|成功|达标))|(?:(?:必须|需要|要求|取得|达到|确保|保证).{0,16}(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:通过|成功|达标))/iu.test(item)
@@ -3512,7 +3564,12 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
     };
   }
   const implementationDirective = [outcome, ...constraints, ...acceptanceGap].join('\n');
-  if (/(?:必须|请)(?:修改|编辑|创建|删除).{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)|(?:必须|请)(?:运行|执行).{0,120}\b(?:npm|pnpm|yarn|git|python|cargo|go|dotnet)\b|(?:必须|请)使用.{0,50}(?:技能|skill|框架|依赖|库)\b|\b(?:selectedRoute|expectedPaths|targetedValidation)\b/iu.test(implementationDirective)) {
+  const explicitImplementationDirective = /(?:必须|请)(?:修改|编辑|创建|删除).{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)|(?:必须|请)(?:运行|执行).{0,120}\b(?:npm|pnpm|yarn|git|python|cargo|go|dotnet)\b|(?:必须|请)使用.{0,50}(?:技能|skill|框架|依赖|库)\b|\b(?:selectedRoute|expectedPaths|targetedValidation)\b/iu.test(implementationDirective)
+    || /\b(?:(?:you\s+)?(?:must|should)|please|required\s+to)\s+(?:edit|modify|create|delete|remove)\b.{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)/iu.test(implementationDirective)
+    || /\b(?:run|execute)\s+(?:npm|pnpm|yarn|git|python|pytest|cargo|go|dotnet)\b/iu.test(implementationDirective)
+    || /\b(?:use|invoke)\s+(?:the\s+)?[^\r\n]{0,50}\b(?:skill|framework|dependency|library)\b/iu.test(implementationDirective)
+    || /\b(?:follow|use)\s+(?:the\s+)?(?:selected|specified|supervisor['’]s?)?\s*(?:implementation\s+)?(?:route|plan)\b/iu.test(implementationDirective);
+  if (explicitImplementationDirective) {
     return { error: '普通监督任务只能描述成果、约束和验收缺口，不能指定文件、命令、技能或实现路线' };
   }
   return {
@@ -5617,8 +5674,12 @@ const managedAgentDurationHistory = new Map<string, number[]>();
 const managedAgentOutputTails = new Map<string, string>();
 const managedAgentRecoveries = new Set<string>();
 const managedAgentRecoveryFailures = new Set<string>();
+const ordinaryAgentWatchdogs = new Map<string, ManagedAgentWatchdogRuntime>();
+const ordinaryAgentWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const ordinaryAgentOutputTails = new Map<string, string>();
 let projectLivenessWatchdogTimer: ReturnType<typeof setTimeout> | undefined;
 let managedAgentWatchdogGeneration = 0;
+let ordinaryAgentWatchdogGeneration = 0;
 
 function projectManagerTerminal(options: { surfaceId?: string; projectId?: string } = {}): RemoteTaskTerminalLocation | undefined {
   for (const workspace of useStore.getState().workspaces) {
@@ -5659,6 +5720,263 @@ function effectiveProjectAgentConfig(session: ProjectManagerSession) {
   return normalizeProjectManagementAgentConfig(
     session.agentConfig ?? useStore.getState().workspacePrefs.projectManagementAgents,
   );
+}
+
+function ordinarySupervisorTaskLane(surfaceId: string): SupervisorLane | undefined {
+  const lane = useStore.getState().supervisor.lanes.find((candidate) => candidate.surfaceId === surfaceId);
+  return ordinaryWorkerWatchdogCandidate(lane, surfaceId) ? lane : undefined;
+}
+
+function clearOrdinaryAgentWatchdog(surfaceId: string): ManagedAgentWatchdogRuntime | undefined {
+  const timer = ordinaryAgentWatchdogTimers.get(surfaceId);
+  if (timer) globalThis.clearTimeout(timer);
+  ordinaryAgentWatchdogTimers.delete(surfaceId);
+  const runtime = ordinaryAgentWatchdogs.get(surfaceId);
+  ordinaryAgentWatchdogs.delete(surfaceId);
+  ordinaryAgentOutputTails.delete(surfaceId);
+  return runtime;
+}
+
+function reportOrdinaryAgentWatchdogFailure(
+  lane: SupervisorLane,
+  runtime: ManagedAgentWatchdogRuntime,
+  detail: string,
+): void {
+  clearOrdinaryAgentWatchdog(runtime.surfaceId);
+  const store = useStore.getState();
+  const currentLane = store.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+  if (!currentLane || isProjectManagedSupervisorLane(currentLane)) return;
+  store.updateLane(currentLane.id, {
+    supervisorProblem: { kind: 'task-stalled', detail, detectedAt: Date.now() },
+  });
+  store.pauseSupervisorLane(currentLane.id, detail);
+  appendSupervisorRecord(store.supervisor, currentLane, 'supervisor.review.watchdog-failed', {
+    workerTurnId: currentLane.workerTurnId,
+    reason: detail,
+    source: 'ordinary-task-watchdog',
+  });
+  store.appendSupervisorLog(currentLane.id, '任务 AI 长回合恢复失败', detail);
+  const workspaceId = currentLane.workspaceId || store.activeWorkspaceId;
+  const notificationSurfaceId = dedicatedSupervisorSurfaceId(currentLane) || currentLane.surfaceId;
+  if (workspaceId) store.addNotification({
+    surfaceId: notificationSurfaceId,
+    workspaceId,
+    title: '普通 AI 监督需要你的处理',
+    text: detail,
+    ...notificationMetadata({
+      owner: 'supervisor', entityId: currentLane.id, kind: 'task-watchdog-failed',
+      laneId: currentLane.id, sourceLabel: currentLane.label, severity: 'error',
+    }),
+  });
+  fireDesktopNotification({
+    surfaceId: notificationSurfaceId,
+    title: '普通 AI 监督需要你的处理',
+    text: detail,
+  });
+}
+
+function queueOrdinaryAgentWatchdogReview(
+  lane: SupervisorLane,
+  runtime: ManagedAgentWatchdogRuntime,
+): void {
+  clearOrdinaryAgentWatchdog(runtime.surfaceId);
+  const store = useStore.getState();
+  const currentLane = store.supervisor.lanes.find((candidate) => candidate.id === lane.id);
+  if (!currentLane
+    || isProjectManagedSupervisorLane(currentLane)
+    || supervisorLaneControlState(currentLane) !== 'active'
+    || currentLane.awaitingReview) return;
+  const reviewId = `ordinary-watchdog-review-${uuid()}`;
+  const screenTail = terminalScreenTail(currentLane.surfaceId, 100).slice(-8_000);
+  const delivery: SupervisorDelivery = {
+    id: `ordinary-watchdog-${uuid()}`,
+    kind: 'task-interrupted',
+    task: currentLane.currentTask || currentLane.config?.taskGoal || '当前普通任务',
+    text: [
+      `[普通任务 AI 长回合已中断] ${currentLane.label} (${currentLane.surfaceId})`,
+      '控制层检测到当前回合长期没有可确认的语义进展，已依次发送 Esc 和 Ctrl+C；任务终端现在已回到空闲检查点。',
+      '本次只保留并复用原任务终端，不调用项目 AI，也不执行项目运行时重建。',
+      runtime.sourceTask ? `原任务摘要：${runtime.sourceTask}` : '',
+      screenTail ? `中断后终端摘要：\n${screenTail}` : '',
+      '先只读核对任务终端、工作树和最近证据，再通过 rework 派发一个改变假设、条件或执行路径的中性成果任务。不得盲目重放可能已有副作用的旧命令；无法闭合时使用 needs-human 上报用户。',
+      buildSupervisorWakeEventEnvelope(currentLane.surfaceId, reviewId, false, 'on-demand'),
+    ].filter(Boolean).join('\n'),
+    createdAt: Date.now(),
+    turnId: currentLane.workerTurnId,
+    reviewId,
+    stage: 'pending',
+  };
+  store.updateLane(currentLane.id, {
+    awaitingReview: true,
+    activeReviewId: reviewId,
+    reviewWorkerTurnId: currentLane.workerTurnId,
+    reviewOpenedAt: Date.now(),
+    reviewDeliveryConfirmedAt: undefined,
+    reviewWatchdogState: 'pending',
+    pendingSupervisorDeliveries: enqueueSupervisorDelivery(
+      currentLane.pendingSupervisorDeliveries,
+      delivery,
+    ),
+  });
+  appendSupervisorRecord(store.supervisor, currentLane, 'supervisor.review.opened', {
+    reviewId,
+    workerTurnId: currentLane.workerTurnId,
+    source: 'ordinary-task-watchdog',
+  });
+  store.appendSupervisorLog(currentLane.id, '任务 AI 长回合已中断', '已进入专属监督复核，不重建任务终端');
+  signalSupervisorDeliveryReady();
+}
+
+function armOrdinaryAgentWatchdog(surfaceId: string): void {
+  const existing = ordinaryAgentWatchdogTimers.get(surfaceId);
+  if (existing) globalThis.clearTimeout(existing);
+  ordinaryAgentWatchdogTimers.delete(surfaceId);
+  const runtime = ordinaryAgentWatchdogs.get(surfaceId);
+  if (!runtime || runtime.phase === 'paused' || !Number.isFinite(runtime.nextDeadlineAt)) return;
+  const expectedAt = runtime.nextDeadlineAt;
+  const generation = runtime.generation;
+  const timer = globalThis.setTimeout(() => {
+    ordinaryAgentWatchdogTimers.delete(surfaceId);
+    const current = ordinaryAgentWatchdogs.get(surfaceId);
+    const lane = ordinarySupervisorTaskLane(surfaceId);
+    if (!current || current.generation !== generation || !lane) {
+      clearOrdinaryAgentWatchdog(surfaceId);
+      return;
+    }
+    const now = Date.now();
+    const adjusted = shiftManagedAgentDeadlineForSuspend(current, Math.max(0, now - expectedAt));
+    if (adjusted !== current) {
+      ordinaryAgentWatchdogs.set(surfaceId, adjusted);
+      armOrdinaryAgentWatchdog(surfaceId);
+      return;
+    }
+    const activity = remoteTerminalActivity(surfaceId as SurfaceId, true).activityState;
+    if (activity === 'blocked') {
+      ordinaryAgentWatchdogs.set(surfaceId, pauseManagedAgentWatchdog(current, now));
+      return;
+    }
+    if (activity === 'idle') {
+      clearOrdinaryAgentWatchdog(surfaceId);
+      if (current.escapeSentAt || current.interruptSentAt) queueOrdinaryAgentWatchdogReview(lane, current);
+      return;
+    }
+    const decision = evaluateManagedAgentDeadline({
+      runtime: current,
+      now,
+      policy: ordinaryWorkerWatchdogPolicy(),
+    });
+    ordinaryAgentWatchdogs.set(surfaceId, decision.runtime);
+    if (decision.action === 'escape' || decision.action === 'interrupt') {
+      void writeProjectSupervisorControl(
+        surfaceId as SurfaceId,
+        decision.action === 'escape' ? '\x1b' : '\x03',
+      ).then((accepted) => {
+        const fresh = ordinaryAgentWatchdogs.get(surfaceId);
+        if (!accepted && fresh?.generation === generation) {
+          reportOrdinaryAgentWatchdogFailure(
+            lane,
+            fresh,
+            `任务 AI 长回合无进展，且控制层无法发送${decision.action === 'escape' ? '安全退出键' : '中断键'}；监督已暂停`,
+          );
+        }
+      });
+    } else if (decision.action === 'recover') {
+      reportOrdinaryAgentWatchdogFailure(
+        lane,
+        decision.runtime,
+        '任务 AI 在 Esc、Ctrl+C 和有界等待后仍未回到空闲检查点；监督已暂停并上报用户',
+      );
+      return;
+    }
+    armOrdinaryAgentWatchdog(surfaceId);
+  }, Math.max(0, expectedAt - Date.now()));
+  (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+  ordinaryAgentWatchdogTimers.set(surfaceId, timer);
+}
+
+function handleOrdinaryAgentWatchdogHook(event: any): void {
+  const surfaceId = String(event?.surfaceId || '').trim();
+  const lifecycle = String(event?.event || '').trim();
+  const lane = surfaceId ? ordinarySupervisorTaskLane(surfaceId) : undefined;
+  if (!lane) return;
+  const now = Date.now();
+  if (lifecycle === 'UserPromptSubmit') {
+    const runtime = beginManagedAgentTurn({
+      surfaceId,
+      role: 'task',
+      generation: ++ordinaryAgentWatchdogGeneration,
+      now,
+      policy: ordinaryWorkerWatchdogPolicy(),
+      sourceTask: String(event?.task || ''),
+    });
+    clearOrdinaryAgentWatchdog(surfaceId);
+    ordinaryAgentWatchdogs.set(surfaceId, runtime);
+    armOrdinaryAgentWatchdog(surfaceId);
+    return;
+  }
+  const runtime = ordinaryAgentWatchdogs.get(surfaceId);
+  if (!runtime) return;
+  if (lifecycle === 'PermissionRequest') {
+    ordinaryAgentWatchdogs.set(surfaceId, pauseManagedAgentWatchdog(runtime, now));
+    return;
+  }
+  if (lifecycle === 'Notification') return;
+  if (lifecycle === 'PermissionResult') {
+    ordinaryAgentWatchdogs.set(surfaceId, resumeManagedAgentWatchdog(runtime, now));
+    armOrdinaryAgentWatchdog(surfaceId);
+    return;
+  }
+  if (lifecycle === 'PreToolUse') {
+    const command = String(event?.command || '').trim();
+    const active = resumeManagedAgentWatchdog(runtime, now);
+    ordinaryAgentWatchdogs.set(
+      surfaceId,
+      command
+        ? noteManagedAgentCommand(active, now, command)
+        : noteManagedAgentSemanticProgress(active, now, ordinaryWorkerWatchdogPolicy()),
+    );
+    armOrdinaryAgentWatchdog(surfaceId);
+    return;
+  }
+  if (lifecycle === 'PostToolUse' || lifecycle === 'SubagentStop') {
+    ordinaryAgentWatchdogs.set(
+      surfaceId,
+      noteManagedAgentSemanticProgress(
+        resumeManagedAgentWatchdog(runtime, now),
+        now,
+        ordinaryWorkerWatchdogPolicy(),
+      ),
+    );
+    armOrdinaryAgentWatchdog(surfaceId);
+    return;
+  }
+  if (lifecycle === 'Stop' || lifecycle === 'StopFailure' || lifecycle === 'Interrupt') {
+    clearOrdinaryAgentWatchdog(surfaceId);
+  }
+}
+
+function handleOrdinaryAgentWatchdogOutput(surfaceId: string, data: string): void {
+  const runtime = ordinaryAgentWatchdogs.get(surfaceId);
+  const lane = ordinarySupervisorTaskLane(surfaceId);
+  if (!runtime || runtime.phase === 'paused' || !lane) return;
+  const tail = `${ordinaryAgentOutputTails.get(surfaceId) || ''}${data}`.slice(-6_000);
+  ordinaryAgentOutputTails.set(surfaceId, tail);
+  const fingerprint = normalizeProjectActivityFingerprintText(tail).slice(-2_000);
+  const next = noteManagedAgentOutput(runtime, Date.now(), fingerprint);
+  ordinaryAgentWatchdogs.set(surfaceId, next);
+  if ((runtime.phase === 'escape-sent' || runtime.phase === 'interrupt-sent')
+    && fingerprint !== runtime.outputFingerprint
+    && looksLikeManagedShellPrompt(tail)) {
+    reportOrdinaryAgentWatchdogFailure(
+      lane,
+      next,
+      '任务 AI 长回合中断后已退出到普通 shell；无法继续自动投递，监督已暂停并上报用户',
+    );
+    return;
+  }
+  if (next.nextDeadlineAt !== runtime.nextDeadlineAt || next.phase !== runtime.phase) {
+    armOrdinaryAgentWatchdog(surfaceId);
+  }
 }
 
 function managedProjectAgentTarget(surfaceId: string): ManagedProjectAgentTarget | undefined {
@@ -6019,6 +6337,7 @@ function armManagedAgentWatchdog(surfaceId: string): void {
 
 function handleManagedAgentHookEvent(event: any): void {
   if (handleProjectAuxiliaryHookEvent(event)) return;
+  handleOrdinaryAgentWatchdogHook(event);
   const surfaceId = String(event?.surfaceId || '').trim();
   const lifecycle = String(event?.event || '').trim();
   let taskPromptAcknowledged = false;
@@ -6193,6 +6512,7 @@ function reportProjectAgentProviderLimit(target: ManagedProjectAgentTarget, text
 }
 
 function handleManagedAgentOutput(surfaceId: string, data: string): void {
+  handleOrdinaryAgentWatchdogOutput(surfaceId, data);
   const runtime = managedAgentWatchdogs.get(surfaceId);
   const target = managedProjectAgentTarget(surfaceId);
   if (!runtime || runtime.phase === 'paused' || !target) return;
@@ -13543,14 +13863,17 @@ export function initPipeBridge(): void {
       const guidanceMatchesCurrentAuthority = !!latestSupervisorUserGuidance
         && latestSupervisorUserGuidance.planRevision === (authoritativeLaneConfig.planRevision || 1)
         && latestSupervisorUserGuidance.requirementsVersion === projectSession?.requirementsVersion;
-      const standingUserDecision = !projectManagedLane
-        && lane.standingUserDecision?.planRevision === (authoritativeLaneConfig.planRevision || 1)
-        ? lane.standingUserDecision
-        : undefined;
+      const standingUserDecisions = projectManagedLane
+        ? []
+        : activeStandingUserDecisions(
+            lane,
+            authoritativeLaneConfig.planRevision || 1,
+          );
+      const escalationText = [reason, impact, alternatives, next].filter(Boolean).join('\n');
       const redundantConfirmationError = redundantAuthoritativeGuidanceConfirmation({
         preconditions: [
           authoritativeLaneConfig.preconditions,
-          standingUserDecision?.decision || '',
+          ...standingUserDecisions.map((decision) => decision.decision),
           ...(projectSession?.preconditions || []),
           ...(projectWorkItem?.contract.preconditions || []),
         ].filter(Boolean).join('\n'),
@@ -13559,13 +13882,20 @@ export function initPipeBridge(): void {
           ...(projectSession?.supervisorNotes || []),
           ...(projectWorkItem?.contract.supervisorNotes || []),
         ].filter(Boolean).join('\n'),
-        escalationText: [reason, impact, alternatives, next].filter(Boolean).join('\n'),
+        escalationText,
         latestUserGuidance: guidanceMatchesCurrentAuthority
           ? latestSupervisorUserGuidance.text
           : undefined,
       });
       if (redundantConfirmationError) {
         return { ok: false, error: redundantConfirmationError };
+      }
+      const repeatedStandingDecisionError = repeatedStandingUserDecisionError(
+        standingUserDecisions,
+        escalationText,
+      );
+      if (repeatedStandingDecisionError) {
+        return { ok: false, error: repeatedStandingDecisionError };
       }
     }
     if (projectManagedLane && proposalKind === 'context-recovery') {
@@ -15601,7 +15931,10 @@ export function initPipeBridge(): void {
           startedAt: resetStartedAt,
         },
       });
-      const contextResetPreSubmitError = (expectedStatus: 'clearing' | 'recovering'): string | null => {
+      const contextResetPreSubmitError = (
+        expectedStatus: 'clearing' | 'recovering',
+        allowAgentTransition = false,
+      ): string | null => {
         const currentStore = useStore.getState();
         const currentSession = currentStore.supervisor;
         const currentLane = currentSession.lanes.find((candidate) => candidate.id === lane.id);
@@ -15628,7 +15961,7 @@ export function initPipeBridge(): void {
           return '用户输入已经先行生效，禁止自动清空或恢复旧任务上下文';
         }
         const currentAgentState = ((window as any).__wmux_getAgentStates?.() || {})[currentLane.surfaceId];
-        if (String(currentAgentState?.state || '') === 'working') {
+        if (!allowAgentTransition && String(currentAgentState?.state || '') === 'working') {
           return '任务 AI 已开始新的工作回合，禁止自动清空或恢复上下文';
         }
         return null;
@@ -15651,19 +15984,15 @@ export function initPipeBridge(): void {
             undefined,
             () => contextResetPreSubmitError('clearing'),
           ));
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
-          const currentStore = useStore.getState();
-          const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id);
-          const currentBuffer = surfaceTerminalRegistry.get(lane.surfaceId)?.buffer.active;
-          if (!currentLane
-            || currentLane.surfaceId !== lane.surfaceId
-            || !isSupervisorDecisionAuthorised(currentLane, supervisorSurfaceId)
-            || supervisorLaneControlState(currentLane) !== 'active'
-            || (currentBuffer && hasPendingTerminalInput(currentBuffer))
-            || remoteTerminalActivity(lane.surfaceId, true).activityState !== 'idle'
-            || !interactiveAgentInputReady(terminalScreenTail(lane.surfaceId, 80))) {
-            return failOrdinaryContextReset('任务 AI 执行 /new 后没有回到可安全接收任务的空白输入态；已停止自动重试', 'clearing');
+          const clearReadyError = await waitForOrdinaryContextClearReady({
+            surfaceId: lane.surfaceId,
+            validate: () => contextResetPreSubmitError('clearing', true),
+          });
+          if (clearReadyError) {
+            return failOrdinaryContextReset(`${clearReadyError}；已停止自动重试`, 'clearing');
           }
+          const currentStore = useStore.getState();
+          const currentLane = currentStore.supervisor.lanes.find((candidate) => candidate.id === lane.id)!;
           currentStore.updateLane(lane.id, {
             ordinaryContextReset: {
               id: resetId,

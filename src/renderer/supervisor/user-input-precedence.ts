@@ -187,10 +187,6 @@ export function handleSupervisorUserSubmit(
         resumeAfterCancelledDecision: false,
         autoDecisionLimitReached: false,
         autoDecisionsUsed: 0,
-        ...(!isProjectManagedSupervisorLane(currentLane) ? {
-          ordinaryContextHealth: undefined,
-          ordinaryContextReset: undefined,
-        } : {}),
         pendingSupervisorDeliveries: (currentLane.pendingSupervisorDeliveries || [])
           .filter((delivery) => !inFlightDeliveryIds.includes(delivery.id))
           .filter((delivery) => delivery.kind !== 'owner-decision'
@@ -288,10 +284,6 @@ export function handleSupervisorUserSubmit(
     autoDecisionLimitReached: false,
     autoDecisionsUsed: 0,
     pendingSupervisorDeliveries: [],
-    ...(!projectManaged ? {
-      ordinaryContextHealth: undefined,
-      ordinaryContextReset: undefined,
-    } : {}),
     ...(resumedFromWaiting ? { awaitingDirectionAfterWaitingResume: true } : {}),
   });
   if (projectManaged && directTask) {
