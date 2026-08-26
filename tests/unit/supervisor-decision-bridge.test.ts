@@ -424,6 +424,28 @@ function bindAuthorizedPiOptimizationProject(projectId: string): ProjectManagerS
     projectManagerWorkItemId: workItemId,
   });
   expect(taskLocation?.workspace.transientSupervisorWorkspace).not.toBe(true);
+  const supervisorLocation = useStore.getState().workspaces.flatMap((workspace) => (
+    workspace.splitTree.type === 'leaf'
+      ? workspace.splitTree.surfaces.map((surface) => ({ workspace, surface }))
+      : []
+  )).find(({ surface }) => surface.id === lane?.supervisorSurfaceId);
+  expect(supervisorLocation?.workspace.id).toBe(taskLocation?.workspace.id);
+  expect(
+    supervisorLocation?.workspace.splitTree.type === 'leaf'
+      ? supervisorLocation.workspace.splitTree.paneId
+      : undefined,
+  ).toBe(
+    taskLocation?.workspace.splitTree.type === 'leaf'
+      ? taskLocation.workspace.splitTree.paneId
+      : undefined,
+  );
+  expect(useStore.getState().workspaces.filter((workspace) => (
+    workspace.splitTree.type === 'leaf'
+    && workspace.splitTree.surfaces.some((surface) => (
+      surface.projectManagerProjectId === projectId
+      || surface.projectSupervisorProjectId === projectId
+    ))
+  ))).toHaveLength(1);
   expect(useStore.getState().projectManagers.find((project) => project.id === projectId))
     .toMatchObject({ taskTerminalSurfaceId: created.surfaceId, activeWorkItemId: workItemId });
   return { created, lane, pendingLane: lane };
@@ -3759,6 +3781,34 @@ describe('supervisor decision bridge', () => {
     });
 
     consumeQueuedControlMessage(assignedLane.id);
+    const projectSurfaceCount = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf'
+        ? workspace.splitTree.surfaces.filter((surface) => (
+            surface.projectManagerProjectId === projectId
+            || surface.projectSupervisorProjectId === projectId
+          ))
+        : []
+    )).length;
+    await expect(request({
+      action: 'supervisor-assign',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId,
+      workItemId: assignment.id,
+    })).resolves.toMatchObject({
+      ok: true,
+      alreadyAssigned: true,
+      laneId: assignedLane.id,
+    });
+    expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === assignedLane.id)
+      ?.supervisorSurfaceId).toBe(assignedLane.supervisorSurfaceId);
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf'
+        ? workspace.splitTree.surfaces.filter((surface) => (
+            surface.projectManagerProjectId === projectId
+            || surface.projectSupervisorProjectId === projectId
+          ))
+        : []
+    ))).toHaveLength(projectSurfaceCount);
     (globalThis.window as any).wmux.pty.writeReliable = vi.fn(async (surfaceId: string, data: string) => {
       writes(surfaceId, data);
       if (surfaceId === taskSurfaceId && data === '\r') acknowledgeTaskPrompt(taskSurfaceId);

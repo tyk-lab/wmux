@@ -116,7 +116,6 @@ import {
   SUPERVISOR_TAB_TITLE,
   SUPERVISOR_WORKSPACE_TITLE,
   projectManagerWorkspaceTitle,
-  projectSupervisorWorkspaceTitle,
   supervisorTabTitle,
 } from './supervisor/protocol';
 import { buildSupervisorLaunchCommand, supervisorLaunchIsolationError } from './supervisor/launch-command';
@@ -2250,9 +2249,6 @@ function startRemoteSupervisor(
     return { ok: false, error: '普通监督计划文件必须位于每个任务终端对应的目标项目目录内。', message: '' };
   }
 
-  const project = projectManagedStart
-    ? store.projectManagers.find((candidate) => candidate.id === params.projectManagerProjectId)
-    : undefined;
   const previousActiveWorkspaceId = store.activeWorkspaceId;
   const workspaceHasProjectRuntime = (workspace: typeof store.workspaces[number], projectId?: string): boolean => (
     getAllPaneIds(workspace.splitTree).some((paneId) => (
@@ -2264,37 +2260,27 @@ function startRemoteSupervisor(
       ))
     ))
   );
-  let supervisorWorkspace = projectManagedStart
+  const projectRuntimeCandidate = projectManagedStart ? candidates[0] : undefined;
+  const supervisorWorkspace = projectRuntimeCandidate
     ? store.workspaces.find((workspace) => (
-        workspace.transientSupervisorWorkspace === true
+        workspace.id === projectRuntimeCandidate.workspaceId
         && workspaceHasProjectRuntime(workspace, params.projectManagerProjectId)
       ))
     : undefined;
-  if (projectManagedStart && !supervisorWorkspace) {
-    const workspaceId = store.createWorkspace({
-      title: projectSupervisorWorkspaceTitle(project?.goal || '', params.projectManagerProjectId || ''),
-      pinned: true,
-      ...(project?.projectDir ? { cwd: project.projectDir } : {}),
-      transientSupervisorWorkspace: true,
-      splitTree: createLeaf(undefined, 'project-manager'),
-    });
-    supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
-    const projectControlPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
-    const projectManagerSurfaceId = projectManagedStart && supervisorWorkspace && projectControlPaneId
-      ? findLeaf(supervisorWorkspace.splitTree, projectControlPaneId)?.surfaces
-        .find((surface) => surface.type === 'project-manager')?.id
-      : undefined;
-    if (projectManagerSurfaceId && projectControlPaneId) {
-      store.updateSurface(supervisorWorkspace!.id, projectControlPaneId, projectManagerSurfaceId, {
-        customTitle: '项目管理',
-        projectManagerProjectId: params.projectManagerProjectId,
-      });
-      supervisorWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
-    }
-  }
-  const targetPaneId = supervisorWorkspace ? getAllPaneIds(supervisorWorkspace.splitTree)[0] : undefined;
-  if (projectManagedStart && (!supervisorWorkspace || !targetPaneId)) {
-    return { ok: false, error: '无法创建专属监督工作区。', message: '' };
+  const targetPaneId = projectRuntimeCandidate?.paneId;
+  if (
+    projectManagedStart
+    && (
+      !supervisorWorkspace
+      || !targetPaneId
+      || !findLeaf(supervisorWorkspace.splitTree, targetPaneId)
+    )
+  ) {
+    return {
+      ok: false,
+      error: '项目任务 AI 不在有效的项目执行会话中，不能创建独立监督工作区。',
+      message: '',
+    };
   }
   let projectControlSurfaceId = projectManagedStart
     ? findLeaf(supervisorWorkspace!.splitTree, targetPaneId!)?.surfaces.find((surface) => (
@@ -8694,6 +8680,11 @@ async function ensureProjectSupervisorRuntime(sessionId: string, options: {
     lane.projectManagerProjectId === session.id
     && supervisorLaneControlState(lane) !== 'stopped'
   ));
+  const existingSupervisorLocation = existing?.supervisorSurfaceId
+    ? remoteSurfaceTerminalLocation(existing.supervisorSurfaceId)
+    : undefined;
+  const existingSharesProjectSession = existingSupervisorLocation?.workspaceId === taskTerminal.workspaceId
+    && existingSupervisorLocation?.paneId === taskTerminal.paneId;
   const existingSupervisorState = existing?.supervisorSurfaceId
     ? terminalRuntimeStatus(existing.supervisorSurfaceId)?.state
     : undefined;
@@ -8703,6 +8694,7 @@ async function ensureProjectSupervisorRuntime(sessionId: string, options: {
   if (!options.forceRestart
     && existing?.surfaceId === taskTerminal.surfaceId
     && existing.supervisorSurfaceId
+    && existingSharesProjectSession
     && existingSupervisorState !== 'failed'
     && existingSupervisorState !== 'exited'
     && !existingSupervisorFailure) {
