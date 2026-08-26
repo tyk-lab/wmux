@@ -22,15 +22,13 @@ import {
   normalizeTaskThreadResponsibility,
   normalizeTaskWorkMode,
 } from '../../shared/supervisor-work-mode';
-import supervisorProtocolSource from '../../../resources/prompts/supervisor-protocol.md?raw';
 import {
   buildSupervisorCapabilityCard,
   buildSupervisorRuntimeContext,
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
-export const SUPERVISOR_PROTOCOL_REVISION = '12';
+export const SUPERVISOR_PROTOCOL_REVISION = '13';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -506,11 +504,7 @@ export function buildSupervisorBriefing(
   const completionBehavior = laneConfig.waitForNextDirection
     ? `达到停止条件后仍提交 complete；wmux 会把通道转为“待续”，保留上下文并等待${decisionOwnerLabel}的新指令或方向。待续恢复后，若${decisionOwnerLabel}的新方向仍不足以形成可执行下一步，使用 needs-human 并附 --proposal-kind direction-needed 说明缺少的信息；wmux 会让通道再次进入待续并重新通知${decisionOwnerLabel}。权限、业务取舍或路线变更仍使用原有上级决策类型，不得标记 direction-needed。`
     : '达到停止条件后提交 complete；wmux 会把本通道正式停止。';
-  const autonomyPermissions = effectiveSupervisorAutonomyPermissions(session, lane);
   const autonomous = effectiveSupervisorAutonomous(session, lane);
-  const laneAutonomyPermissions = lane.remoteSshControl
-    ? autonomyPermissions.filter((permission) => permission !== 'permission-confirm')
-    : autonomyPermissions;
   const planFilePath = laneConfig.planFilePath.trim();
   const planBlock = planFilePath
     ? [
@@ -585,12 +579,6 @@ export function buildSupervisorBriefing(
         '',
       ]
     : [];
-  const decisionReadStep = planFilePath
-    ? `1. 收到带 reviewId 的任务事件时先看摘要；evidence=required，或摘要截断、证据不足、验收不一致、返工/风险异常时，运行 wmux supervisor evidence --review-id <本轮ID> --file，并用文件工具检查 suggestedRanges 和相关区段；只有文件不可用时分页兜底，证据仍矛盾或不足时才读全文。随后检查计划文件（${planFilePath}）是否更新，并用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态。`
-    : `1. 收到带 reviewId 的任务事件时先看摘要；evidence=required，或摘要截断、证据不足、验收不一致、返工/风险异常时，运行 wmux supervisor evidence --review-id <本轮ID> --file，并用文件工具检查 suggestedRanges 和相关区段；只有文件不可用时分页兜底，证据仍矛盾或不足时才读全文。随后用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态。`;
-  const decisionEvidence = planFilePath
-    ? '综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。'
-    : '综合停止条件补充说明、已确认前置条件和终端证据，提交 continue / rework / complete / needs-human。';
   const stopContextBlock = laneConfig.taskDescription.trim()
     ? [
         '## 停止条件补充说明（可选）',
@@ -628,26 +616,6 @@ export function buildSupervisorBriefing(
         '',
       ].filter(Boolean)
     : [];
-  const supervisorPlanningBlock = [
-    '## 监督 AI 自己的执行规划',
-    projectManaged
-      ? '项目 AI 只把上级工作项交给你，不会直接写入主任务终端。首次收到工作项时，由你通过 supervisor decide 的 continue 触发控制层发送中性成果包；之后在其硬边界内依据任务证据 continue、rework、complete 或 needs-human。'
-      : '上级规划由用户明确提供；你负责把它拆成成果、验收缺口和检查点，不得维护或下发实现路线、指定文件、命令或技能。',
-    '任务已经具体且可一次完成时，不要机械拆分：使用一个 milestone，界面会显示“直接监督执行”。只有存在真实阶段依赖、中间验证、风险边界或可并行工作时，才使用多个 milestones，界面显示“分阶段监督执行”。',
-    projectManaged
-      ? ''
-      : '先一次性检查目标、计划文件、范围、优先级、用户偏好和完成条件是否足以执行。只要存在会影响执行或验收的疑问，就必须使用 needs-human --proposal-kind clarification，一次集中提出 2-5 个关键问题并等待用户答复；不得默认忽略、套用推荐答案或把疑问藏进成果计划后继续。只有不存在此类疑问时才直接建立计划。首次 continue/rework 必须通过 --stage-plan-file 建立成果计划，以后仅在成果状态或剩余工作变化时更新。',
-    projectManaged
-      ? '项目 P9 监督不提交普通阶段计划。'
-      : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。任务 JSON 的 acceptanceGap 是本轮完成定义，不是用户总停止条件或“必须验证通过”；verification 单独说明验证可行性 direct|partial|blocked|not-applicable、期望证据和验证受限回退，returnWhen 明确何时应停止当前任务并如实返回。验证方式由任务 AI 按项目规范自主选择。实验/上机任务不得预设必须 PASS；应要求实际执行并如实返回 PASS/FAIL、原始结果和证据，再由你判断下一步。',
-    projectManaged
-      ? '项目启用辅助任务 AI 时，你可使用 wmux project auxiliary-dispatch --project <项目ID> 派发只读资料、受控文档/进度或已授权的 Git commit 辅助任务，并用 auxiliary-status 查看状态。辅助结果只回到你或项目 AI，禁止向主任务 AI 暴露辅助 AI 身份。'
-      : '',
-    projectManaged
-      ? '你的运行目录只是监督隔离目录，不是实现工作区。禁止在其中创建项目副本、源码、可执行文件或实现文档，禁止编译和运行项目测试；所有实现、命令和测试只能由主任务 AI 在目标项目目录执行。你只读取任务终端与控制层提供的证据并裁决。'
-      : '',
-    '',
-  ];
   const maxChildThreads = normalizeTaskMaxChildThreads(laneConfig.maxChildThreads);
   const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
   const taskWorkModeBlock = [
@@ -671,56 +639,18 @@ export function buildSupervisorBriefing(
     lane,
     { taskState: state },
   ));
-  const decisionBoundary = autonomous
-    ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
-    : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
-  const effectiveDecisionBoundary = decisionBoundary.filter(Boolean).map((line) => {
-    if (line.startsWith('短文本可直接使用 --next')) {
-      return projectManaged
-        ? '成果批次必须以 UTF-8 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并通过 --task-file 提交；字段只允许 kind、coverage、outcome、completionDefinition、evidenceExpectations、unmetCompletionItems、knownFacts、constraints、nonGoals，只有 outcome 和 completionDefinition 必填。evidenceExpectations 仅在确有用户、项目规则或风险证据要求时填写；unmetCompletionItems 只用于已有执行证据后的续作或返工。low 原子工作项可用 whole-item 整项派发，其他情况使用 bounded-batch 且最多包含 3 个完成定义。裁决成功后 CLI 自动删除，失败时保留供检查。'
-        : '成果任务必须以 UTF-8 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并通过 --task-file 提交；字段只允许 kind、sourceRevision、milestoneId、outcome、constraints、acceptanceGap、evidenceContext、verification、returnWhen。acceptanceGap 必填；verification 使用 feasibility、expectedEvidence、fallbackWhenUnavailable，允许 direct、partial、blocked 或 not-applicable。partial/blocked/not-applicable 必须说明验证受限时如何如实收口；提供 verification 时 returnWhen 必填。裁决成功后 CLI 自动删除，失败时保留供检查。该目录不是目标项目，禁止在项目目录创建监督草稿。';
-    }
-    if (projectManaged) {
-      return line
-        .replaceAll('非空 --next', '非空 --task-file')
-        .replaceAll('携带 --next', '通过 --task-file')
-        .replaceAll('更短的 --next', '更小的 --task-file 成果批次')
-        .replaceAll('--next-file', '--task-file');
-    }
-    return line.replaceAll('--next-file', '--task-file').replaceAll('--next', '--task-file');
-  });
-  const decisionBoundaryStart = 7;
-  const postDecisionRule = effectiveDecisionBoundary.length + decisionBoundaryStart;
-
   const kind = laneConfig.stopWhenKind;
   return [
-      SUPERVISOR_PROTOCOL_CORE,
-      '',
-      `[监督协议｜控制层｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
-      '本完整 briefing 只在启动、恢复、工作项切换或协议变化时加载；同一协议版本的普通事件使用短事件信封，不重新确认角色。',
-      '',
+      `[监督动态上下文｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`,
+      '稳定角色规则已由当前隔离目录 AGENTS.md 自动加载；本消息只提供当前绑定、权限、任务和证据状态。',
       `[监督隔离域｜${projectManaged ? 'project' : 'ordinary'}｜lane=${lane.id}｜target=${lane.surfaceId}]`,
       projectManaged
         ? `当前是项目专属监督，只接受项目 ${lane.projectManagerProjectId || '（缺失）'} / 工作项 ${lane.projectWorkItemId || '（待绑定）'} 的项目 AI 链指令；不得读取或执行 .wmux/tmp/terminal-input/ordinary/ 下的普通监督投递文件。`
         : '当前是普通 AI 监督，决策上级仅为用户，不属于任何项目 AI 链；不得读取或执行 .wmux/tmp/terminal-input/project/ 下的项目投递文件。',
       '',
-      projectManaged ? '# 项目专属 AI 监督' : '# 普通 AI 监督',
-      '',
-      autonomous
-        ? projectManaged
-          ? `本终端启用全自动监督。你应在当前合同内通过 --task-file 自主编排单成果批次；low 原子任务可整项派发，不得机械拆小。真正超出工作项合同或需要宏观调整的问题使用 needs-human 交给${decisionOwnerLabel}。`
-          : `本终端启用全自动监督。你应依据用户规划维护成果计划，并通过 --task-file 派发成果型任务；任务 AI 自主选择实现方式。真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
-        : projectManaged
-          ? `本终端启用有限自主监督。你应根据启动信息、合同约束和终端证据，通过 --task-file 派发低风险、可逆且可验证的单成果批次；low 原子任务可整项派发。超出合同的决定交给${decisionOwnerLabel}。`
-          : `本终端启用有限自主监督。你应依据用户规划维护成果计划，并通过 --task-file 派发原目标内低风险、可验证的成果型任务；复杂或高影响决定交给${decisionOwnerLabel}。`,
-      projectManaged
-        ? '用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向；用户输入先行生效，控制层只向你同步知情。你不得审批、拦截、撤销、改写或要求重发，也不得抢在任务 AI 当前回合结束前投递替代指令；回合结束后照常按项目合同和安全边界核验证据。用户直发本身不扩大项目范围、合同权限或高风险授权。收到“[用户直发任务｜只同步，不审批、不拦截]”时属于下方“每轮必须裁决”规则的唯一例外：只更新理解并结束通知回合，不提交 supervisor decide，等待任务终端结束、阻塞或中断事件再裁决。'
-        : '',
-      '',
       ...capabilityBlock,
       ...taskContextBlock,
       ...ordinaryContextHealthBlock,
-      ...supervisorPlanningBlock,
       ...taskWorkModeBlock,
       ...stopContextBlock,
       ...preconditionsBlock,
@@ -746,34 +676,6 @@ export function buildSupervisorBriefing(
       '## 监控终端',
       worker,
       '',
-      '## 本轮裁决流程',
-      decisionReadStep,
-      `2. 条件仅作参考；${decisionEvidence}`,
-      autonomous
-        ? `3. ${projectManaged ? '项目监督的 continue / rework 必须通过 --task-file 提交自适应单成果批次' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；超出当前决策层边界时使用 needs-human 并等待${decisionOwnerLabel}。`
-        : `3. ${projectManaged ? '项目监督的 continue / rework 必须通过 --task-file 提交自适应单成果批次' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；超出当前决策层边界时使用 needs-human。`,
-      '',
-      '## 规则',
-      `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
-      '2. 终端本轮结束不等于停止条件满足；先验证当前证据。',
-      projectManaged
-        ? '3. 任务 AI 每轮结束应提供结构化交接；缺少交接时先结合冻结证据和工程事实补证，不得仅凭屏幕末尾猜测。'
-        : '3. 普通任务 AI 不承担 wmux 强制交接协议；你必须结合冻结终端证据、项目实际状态和证据文件独立判断，不得只相信任务 AI 自报。',
-      '4. 只有全部停止条件与验收要求形成可收敛结论且没有剩余工作时才提交 complete。必须先在 .wmux/tmp/ 创建完成核验 JSON，并用 --completion-file 提交；任一未满足、未验证、不确定、未运行或非空 remainingWork 都不得 complete。',
-      ...(!projectManaged ? [
-        '5. 每次 continue/rework 复核任务 AI 上下文健康。存在可观察退化时附 --context-health degraded、--context-symptoms 和 --context-signal。症状只允许 instruction-drift、repeated-mistake、forgotten-plan、contradiction、no-progress、irrelevant-context。不得仅凭任务时间长或上下文占用高判定污染。已有退化记录时，只有新的任务回合或复核形成了不同的新进展证据，才可附 --context-health healthy，并同时提交 --evidence、--diff-summary、--test-result 或 --changed-files。',
-        '6. 同时复核推进健康。重复离线资格、重复验证、已有实测授权却长期不上机、单一条件死磕或无新证据推演，使用 --progress-health stalled，并完整附 --stall-kind、--stall-signal、--wasted-effort、--missing-evidence、--decisive-next-step、--authorization-boundary；单条件或受限条件死路还要用 --experiment-conditions 给出 2-4 个授权范围内条件。第一次立即 rework，第二次必须改变假设、条件或路径；扩大安全边界才 needs-human。只有新的任务回合或复核形成了不同的新进展证据，才可使用 --progress-health healthy，并同时提交对应证据字段。',
-        '7. 第一次 degraded 仍通过 diagnostic/rework 成果任务纠偏；同类症状连续两个独立复核回合且无新证据时，控制层会在安全门禁通过后向原任务终端统一发送 /new，再发送最小可信恢复任务。清空或恢复失败后不得自动重试，必须 needs-human 上报用户。',
-      ] : []),
-      ...(isProjectManagedSupervisorLane(lane) ? [
-        '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待上级决策，并且存在明确、低风险、合同内且可验证的成果批次，也可通过 --task-file 主动提交一次 continue/rework；不得重复上一批次、注入运行中终端或绕过权限与反循环护栏。',
-        '6. 任务端只报告成果、证据、缺口和阻塞，不知道内部编排角色。你和项目 AI 默认拥有用户已确认目标内低风险、可逆的技术选择、聚焦测试、重试、小范围路线调整和安全权限判断裁量权。风险、不可逆、凭据、生产、外部访问及改变目标、范围或验收的事项必须先上报项目 AI；项目 AI 根据用户既有指令和授权决策，只有仍无法决定时才询问用户。',
-      ] : []),
-      ...effectiveDecisionBoundary.map((line, index) => `${index + decisionBoundaryStart}. ${line}`),
-      `${postDecisionRule}. 每轮结束先读取本轮冻结证据（若事件提供 reviewId），再用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态，最后通过 wmux supervisor decide 记录裁决；该命令成功时静默。`,
-      lane.remoteSshControl
-        ? `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；SSH 远程控制终端不允许自动权限确认。`
-        : `${postDecisionRule + 1}. CLI: wmux agent-state / wmux read-screen / wmux supervisor decide；允许时，自动权限确认可附 --permission-command 与 --permission-response。`,
       '',
     ].join('\n');
 }

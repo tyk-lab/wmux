@@ -1,47 +1,33 @@
+import fs from 'fs';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
-  PROJECT_MANAGER_ALIGNMENT_GATE,
+  PROJECT_MANAGER_PROTOCOL_REVISION,
   projectManagerStartupInput,
-  type ProjectManagerRuntimeAgent,
 } from '../../src/shared/project-manager-terminal';
 
 describe('project manager runtime startup protocol', () => {
-  it.each<ProjectManagerRuntimeAgent>(['codex', 'kimi', 'grok'])(
-    'forces %s to use the structured user-alignment channel',
-    (agent) => {
-      const input = projectManagerStartupInput(agent, 'E:\\runtime\\manage-project\\SKILL.md', 'pm-test-project');
+  it('uses isolated AGENTS.md and a short capability-bound startup message', () => {
+    const input = projectManagerStartupInput('pm-test-project');
+    const agents = fs.readFileSync(
+      path.join(process.cwd(), 'resources', 'agents', 'project-ai', 'ROLE_AGENTS.md'),
+      'utf8',
+    );
 
-      expect(input).toContain(PROJECT_MANAGER_ALIGNMENT_GATE);
-      expect(input).toContain('wmux project ask');
-      expect(input).toContain('category=clarification');
-      expect(input).toContain('禁止只在项目管理终端输出问题后等待');
-      expect(input).toContain('recommendedOptionId');
-      expect(input).toContain('下一轮结构化提问');
-      expect(input).toContain('decisionScope');
-      expect(input).toContain('confirmationScope');
-      expect(input).toContain('category=manual-intervention');
-      expect(input).toContain('wmux project status --project pm-test-project');
-      expect(input).toContain('只能管理这一个项目');
-      expect(input).toContain('无决策权的项目中心');
-      expect(input).toContain('当前需求版本内持续有效');
-      expect(input).toContain('不得让项目 AI、监督 AI 或任务 AI 逐步重复确认');
-      expect(input).toContain('wmux project goal-plan');
-      expect(input).toContain('mode=refine');
-      expect(input).toContain('mode=pivot');
-      expect(input).toContain('旧 goalId 任务不得在新目标下复活');
-      expect(input).toContain('用户提供的主目标是权威输入');
-      expect(input).toContain('项目 AI 不得自行替换成另一个目标');
-      expect(input).toContain('补全必要前置条件、可验证完成条件、阶段计划和工作项合同');
-      expect(input).toContain('首要活性义务是推进当前主目标');
-      expect(input).toContain('内部合同、基线同步、证据路径和普通技术失败');
-      expect(input).toContain('不得把参数调整、技术路线、候选选择、普通失败后的重新资格包装成 business-choice');
-      expect(input).toContain('扩大设备、环境、参数安全上限、接线、固件、控制环和风险授权');
-      expect(input).toContain('项目内部的实现路线、优先级、候选方案、资源分配');
-      expect(input).toContain('任务 AI 权限提示由监督 AI 处理');
-      expect(input).toContain('创建任务时只定义成果、验收、依赖和用户安全边界');
-      expect(input).toContain('外部访问、凭据、提权、发布、生产和真实硬件高风险授权才可询问用户');
-      expect(input).toContain('不再用 allowPaths/denyPaths 充当任务 AI 文件权限');
-      expect(input).toContain('任务 AI 必须优先核对适用的 AGENTS、项目技能、产物目录和命名规则');
-    },
-  );
+    expect(input).toContain('当前隔离目录 AGENTS.md');
+    expect(input).toContain(`protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}`);
+    expect(input).toContain('wmux context');
+    expect(input).toContain(`wmux role-ready --protocol ${PROJECT_MANAGER_PROTOCOL_REVISION}`);
+    expect(input).toContain('成功前不得规划、提问、创建工作项或派发任务');
+    expect(input).not.toContain('$manage-project');
+    expect(input).not.toContain('/manage-project');
+    expect(input).not.toContain('wmux project ask');
+    expect(input.length).toBeLessThan(600);
+
+    expect(agents).toContain('首次需求摘要必须通过结构化 `wmux project ask`');
+    expect(agents).toContain('任务 AI 是唯一项目执行者和最终技术决策者');
+    expect(agents).toContain('监督 AI无法在工作项合同内决策时才上报项目 AI');
+    expect(agents).toContain('验证通过、失败或当前无法取得都必须如实返回');
+    expect(agents).toContain('辅助 AI默认关闭');
+  });
 });

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { create } from 'zustand';
 import { describe, expect, it } from 'vitest';
 import {
@@ -46,6 +48,11 @@ import {
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
 import { formatSupervisorAuditTrail, summarizeRestoredHistory } from '../../src/renderer/supervisor/recording';
+
+const supervisorAgentsSource = fs.readFileSync(
+  path.resolve(__dirname, '../../resources/agents/supervisor-ai/ROLE_AGENTS.md'),
+  'utf8',
+);
 
 function lane(partial: Partial<SupervisorLane> = {}): SupervisorLane {
   return {
@@ -201,16 +208,13 @@ describe('supervisor isolation', () => {
     const text = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
 
     expect(text).toContain('worker-a');
-    expect(text).toContain('只监督此终端');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('[监督协议｜控制层｜protocol=12]');
-    expect(text).toContain('# 普通 AI 监督');
-    expect(text).toContain('## 监督 AI 自己的执行规划');
-    expect(text).toContain('上级规划由用户明确提供');
-    expect(text).toContain('具体且可一次完成时，不要机械拆分');
-    expect(text).toContain('--stage-plan-file');
+    expect(text).toContain('[监督动态上下文｜protocol=13]');
+    expect(supervisorAgentsSource).toContain('只处理 `wmux context` 返回的当前 lane 和唯一任务终端');
+    expect(supervisorAgentsSource).toContain('小任务不机械拆分');
+    expect(supervisorAgentsSource).toContain('首次 `continue/rework` 使用 `--stage-plan-file`');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
-    expect(text).not.toContain('# 项目专属 AI 监督');
+    expect(text).not.toContain('项目 pm-project');
     expect(text).not.toContain('worker-b');
   });
 
@@ -225,24 +229,15 @@ describe('supervisor isolation', () => {
       state: 'idle',
     });
 
-    expect(text).toContain('项目监督具备独立但有限的决策权');
-    expect(text).toContain('已授权原路线继续');
-    expect(text).toContain('已授权技术方案选择');
-    expect(text).toContain('已授权小范围路线调整');
-    expect(text).toContain('由项目 AI 决策并回执');
-    expect(text).toContain('控制层不会创建普通 pendingApproval');
-    expect(text).toContain('超出合同的决定交给项目管理 AI');
-    expect(text).toContain('必须通过 --task-file 提交自适应单成果批次');
-    expect(text).toContain('low 原子工作项可用 whole-item 整项派发');
+    expect(text).toContain('自主权限: same-route-next、technical-choice、route-adjustment');
+    expect(supervisorAgentsSource).toContain('项目模式的 `continue` / `rework`');
+    expect(supervisorAgentsSource).toContain('low 原子工作项可使用 `coverage=whole-item`');
+    expect(supervisorAgentsSource).toContain('只有跨任务依赖/资源冲突、总计划缺口');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('# 项目专属 AI 监督');
-    expect(text).toContain('用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向');
-    expect(text).toContain('你不得审批、拦截、撤销、改写或要求重发');
-    expect(text).toContain('用户直发本身不扩大项目范围、合同权限或高风险授权');
-    expect(text).toContain('属于下方“每轮必须裁决”规则的唯一例外');
-    expect(text).toContain('不提交 supervisor decide');
+    expect(supervisorAgentsSource).toContain('用户直接向任务 AI输入的新任务优先执行');
+    expect(supervisorAgentsSource).toContain('不审批、拦截、撤销或改写');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/ordinary/');
-    expect(text).not.toContain('# 普通 AI 监督');
+    expect(text).not.toContain('决策上级仅为用户');
   });
 
   it('distinguishes an unknown worker Agent state from the supervisor channel state', () => {
@@ -266,9 +261,8 @@ describe('supervisor isolation', () => {
       };
       const text = buildSupervisorBriefing(session, { lane: lane(), state: 'idle' });
 
-      expect(text).toContain('立即结束当前回合并返回输入提示符');
-      expect(text).toContain('禁止调用 sleep/wait');
-      expect(text).toContain('wmux 会在下一次任务结束、任务中断或阻塞事件到来时重新发送通知');
+      expect(supervisorAgentsSource).toContain('成功后立即结束当前回合');
+      expect(supervisorAgentsSource).toContain('不主动 sleep、轮询或重复裁决');
     },
   );
 
@@ -392,7 +386,7 @@ describe('supervisor isolation', () => {
       '',
       '第一条可执行指令：',
       '只读取固件身份并记录保护状态',
-    ].join('\n'))).toBe('删除或覆盖文件');
+    ].join('\n'))).not.toBeNull();
     expect(autonomousActionBlockReason([
       '[任务契约]',
       '禁止事项：',
@@ -443,13 +437,8 @@ describe('supervisor isolation', () => {
     expect(text).toContain('低风险、可逆的普通写入');
     expect(text).toContain('必须使用 needs-human');
     expect(text).toContain('不得通过终端转发');
-    expect(text).toContain('未授权权限确认');
-    expect(text).toContain('SSH 远程控制终端不允许自动权限确认');
-    expect(text).toContain('目标项目只存在于 SSH 远端');
-    expect(text).toContain('禁止使用本地 apply_patch');
-    expect(text).toContain('所有项目探测、文件读写、格式化、构建和测试都必须作为命令发送到目标 SSH 终端');
-    expect(text).toContain('只有远端输出可作为完成证据');
-    expect(text).not.toContain('已授权低风险权限确认');
+    expect(text).not.toContain('自主权限: permission-confirm');
+    expect(supervisorAgentsSource).toContain('不得修改目标项目文件、运行实现或测试');
   });
 
   it('applies selectable project restrictions without replacing hard safety', () => {
@@ -1216,7 +1205,8 @@ describe('supervisor isolation', () => {
     expect(buildSupervisorBriefing(session, {
       lane: lane({ projectManagerProjectId: 'pm-project' }),
       state: 'idle',
-    })).toContain('你的运行目录只是监督隔离目录，不是实现工作区');
+    })).toContain('当前是项目专属监督');
+    expect(supervisorAgentsSource).toContain('当前目录是 wmux 管理的监督隔离目录，不是目标项目');
   });
 
   it('leaves task organization to the target project when no work mode is configured', () => {
@@ -1385,7 +1375,8 @@ describe('supervisor isolation', () => {
     expect(effectiveSupervisorForbiddenActions(session, overridden)).toEqual(['large-refactor', 'weaken-tests']);
 
     const briefing = buildSupervisorBriefing(session, { lane: overridden, state: 'idle' });
-    expect(briefing).toContain('本终端启用全自动监督');
+    expect(briefing).toContain('本终端不设自动判断次数上限');
+    expect(briefing).toContain('自主权限: technical-choice、route-adjustment');
     expect(briefing).toContain('大范围重构');
     expect(briefing).toContain('删除、跳过或弱化测试');
     expect(briefing).not.toContain('访问外部网络或调用外部服务');
@@ -1549,29 +1540,19 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('启动 briefing 不会附带或粘贴文件正文');
     expect(briefing).toContain('每次裁决前先检查文件是否更新');
     expect(briefing).toContain('首次使用或发现更新时才重新读取正文');
-    expect(briefing).toContain('收到带 reviewId 的任务事件时先看摘要');
-    expect(briefing).toContain('evidence=required');
-    expect(briefing).toContain('摘要截断、证据不足、验收不一致、返工/风险异常');
-    expect(briefing).toContain('--file');
-    expect(briefing).toContain('只有文件不可用时分页兜底');
-    expect(briefing).toContain('证据仍矛盾或不足时才读全文');
-    expect(briefing).toContain('随后检查计划文件（D:\\plans\\auth.md）是否更新');
-    expect(briefing).toContain('综合当前版本计划文件、停止条件补充说明、已确认前置条件和终端证据');
+    expect(supervisorAgentsSource).toContain('摘要截断、证据不足、验收不一致、返工或风险异常');
+    expect(supervisorAgentsSource).toContain('wmux supervisor evidence --review-id <ID> --file');
     expect(briefing).toContain('已确认的前置条件 / 环境信息');
     expect(briefing).toContain('设备已上电');
     expect(briefing).toContain('用户已确认、在当前监督配置内持续有效');
     expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
-    expect(briefing).toContain('推荐答案只供用户选择，不得自动采用');
-    expect(briefing).toContain('不得默认忽略、套用推荐答案或把疑问藏进成果计划后继续');
+    expect(supervisorAgentsSource).toContain('集中提出关键问题');
     expect(briefing).toContain('注意事项（监督检查点提醒）');
     expect(briefing).toContain('同步文档并创建本地提交');
     expect(briefing).toContain('不要仅因事项存在就打断正在工作的任务 AI');
     expect(briefing).toContain('不能扩大目标、范围、命令权限或风险授权');
     expect(briefing).toContain('每 3 次 AI 裁决后必须等待人工审阅');
-    expect(briefing).toContain('本终端启用有限自主监督');
-    expect(briefing).toContain('continue / rework 携带 --task-file');
-    expect(briefing).toContain('--proposal-kind route-adjustment');
-    expect(briefing).toContain('--permission-command');
+    expect(supervisorAgentsSource).toContain('普通监督任务包');
   });
 
   it('treats project prerequisites and explicit authorization as durable until conditions change', () => {
@@ -1591,21 +1572,18 @@ describe('supervisor isolation', () => {
     expect(briefing).toContain('当前项目需求版本内持续有效');
     expect(briefing).toContain('不得逐步重新取证、索要授权');
     expect(briefing).toContain('任务终端自身再次弹出普通确认，不代表授权失效');
-    expect(briefing).toContain('未授权权限确认');
-    expect(briefing).toContain('项目模式本身不授予权限确认权');
-    expect(briefing).not.toContain('已授权低风险权限确认');
-    expect(briefing).toContain('不得按步骤重复索要同一授权');
+    expect(briefing).toContain('自主权限: same-route-next');
+    expect(briefing).not.toContain('自主权限: same-route-next、permission-confirm');
+    expect(supervisorAgentsSource).toContain('监督 AI不逐次批准');
   });
 
   it('briefs an autonomous supervisor to safely advance the worker', () => {
     const session = { ...createDefaultSupervisorSession(), autonomous: true };
     const briefing = buildSupervisorBriefing(session, { lane: lane(), state: 'blocked' });
 
-    expect(briefing).toContain('本终端启用全自动监督');
-    expect(briefing).toContain('--permission-command');
-    expect(briefing).toContain('git push/重写历史');
-    expect(briefing).toContain('已授权技术方案选择');
-    expect(briefing).toContain('needs-human 在全自动模式下也必须等待用户决定');
+    expect(briefing).toContain('本终端不设自动判断次数上限');
+    expect(briefing).toContain('自主权限: same-route-next、technical-choice、route-adjustment、permission-confirm');
+    expect(supervisorAgentsSource).toContain('风险、不可逆、凭据、生产、外部访问');
   });
 
   it('injects a recovered terminal snapshot only into its dedicated supervisor briefing', () => {

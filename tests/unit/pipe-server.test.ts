@@ -397,6 +397,39 @@ describe('PipeServer', () => {
     expect(received.params.callerSurfaceId).toBe('surf-role-owner');
   });
 
+  it('requires a live surface capability for role protocol acknowledgement', async () => {
+    const pipe = uniquePipe();
+    server = new PipeServer(
+      pipe,
+      'instance-secret',
+      (token) => token === 'role-secret' ? 'surf-role-owner' : undefined,
+    );
+    let received: any;
+    server.on('v2', (req, respond) => {
+      received = req;
+      respond({ ok: true });
+    });
+    server.start();
+    await new Promise(r => setTimeout(r, 200));
+
+    const rejected = await connectAndSend(pipe, JSON.stringify({
+      method: 'role.ready',
+      params: { callerSurfaceId: 'surf-role-owner', protocolRevision: '1', protocolFingerprint: 'public' },
+      id: 15,
+      token: 'instance-secret',
+    }));
+    expect(JSON.parse(rejected).error?.code).toBe(-32001);
+
+    const accepted = await connectAndSend(pipe, JSON.stringify({
+      method: 'role.ready',
+      params: { callerSurfaceId: 'forged', protocolRevision: '1', protocolFingerprint: 'public' },
+      id: 16,
+      token: 'role-secret',
+    }));
+    expect(JSON.parse(accepted).result).toEqual({ ok: true });
+    expect(received.params.callerSurfaceId).toBe('surf-role-owner');
+  });
+
   it('requires and binds a live surface capability for managed SSH file editing', async () => {
     const pipe = uniquePipe();
     const authorize = vi.fn(async (surfaceId: string, method: string) => ({

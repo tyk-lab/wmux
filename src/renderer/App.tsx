@@ -639,10 +639,6 @@ function confirmSubmittedSupervisorDelivery(
     ...(delivery.reviewId && current.activeReviewId === delivery.reviewId ? {
       reviewDeliveryConfirmedAt: Date.now(),
     } : {}),
-    ...(delivery.bootstrapOnRuntimeReady ? {
-      supervisorBriefingStatus: 'confirmed' as const,
-      supervisorBriefingConfirmedAt: Date.now(),
-    } : {}),
   });
   if (delivery.reviewId) noteSupervisorReviewScreen(delivery.reviewId, supervisorSurfaceId);
   appendSupervisorRecord(session, current, 'supervisor.delivery.delivered', {

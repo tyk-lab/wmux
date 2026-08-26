@@ -110,7 +110,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('projectRuntimeWorkspace: true');
     expect(pipeBridgeSource).toContain('transientSupervisorWorkspace: true');
     expect(pipeBridgeSource).toContain('waitForProjectSupervisorBriefing');
-    expect(pipeBridgeSource).toContain('项目监督 AI 未确认完整角色 briefing；已阻止任务派发');
+    expect(pipeBridgeSource).toContain('项目监督 AI 未确认当前 AGENTS.md 协议；已阻止任务派发');
     expect(pipeBridgeSource).toContain('[角色链硬边界] 主任务 AI 尚未收到当前成果合同');
     expect(pipeBridgeSource).toContain("action === 'auxiliary-dispatch'");
     expect(pipeBridgeSource).toContain('用户尚未授权辅助 AI 更新项目进度、相关文档或提交受控变更');
@@ -259,8 +259,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('该终端仅作为只读上下文来源');
     expect(projectManagerDialogSource).not.toContain("action: 'confirm-goal-construction'");
     expect(pipeBridgeSource).toContain('terminalBootstrapContext');
-    expect(pipeBridgeSource).toContain('[已有终端上下文｜只读证据，不继承权限]');
-    expect(pipeBridgeSource).toContain('只有会实质改变目标、范围、权限边界或验收的缺口');
+    expect(pipeBridgeSource).toContain('创建项目时导入只读终端上下文');
+    expect(pipeBridgeSource).toContain("authority: 'read-only-evidence'");
+    expect(pipeBridgeSource).toContain('只有发现会实质改变目标、范围、权限、硬前置条件、安全边界或验收标准的新事实时');
     expect(pipeBridgeSource).not.toContain('项目目标草案尚未由用户确认');
     expect(dialogSource).not.toContain('创建监督 AI 并对话');
     expect(projectManagerDialogSource).not.toContain('创建项目 AI 并对话');

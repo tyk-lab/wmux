@@ -8,7 +8,6 @@ import {
 import {
   PROJECT_MANAGER_PROTOCOL_REVISION,
   projectManagerEventEnvelope,
-  projectManagerRoleAnchor,
   projectManagerStartupInput,
   withProjectManagerEventEnvelope,
 } from '../../src/shared/project-manager-terminal';
@@ -248,6 +247,7 @@ describe('unified managed AI role context', () => {
     }).allowed).toBe(true);
     expect(authorizeManagedRoleV2(supervisor, 'supervisor.goal.draft', { surfaceId: 'task-a' }).allowed)
       .toBe(false);
+    expect(authorizeManagedRoleV2(supervisor, 'role.ready').allowed).toBe(true);
 
     const ordinarySupervisor = {
       role: 'supervisor' as const,
@@ -264,6 +264,7 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(ordinarySupervisor, 'supervisor.completion.verify', {
       surfaceId: 'ordinary-task', supervisorSurfaceId: 'ordinary-supervisor', refs: ['result.json'],
     }).allowed).toBe(true);
+    expect(authorizeManagedRoleV2(ordinarySupervisor, 'role.ready').allowed).toBe(true);
 
     const manager = { role: 'project-ai' as const, callerSurfaceId: 'manager-a', projectId: 'project-a' };
     expect(authorizeManagedRoleV2(manager, 'project.status', { projectId: 'project-a' }).allowed)
@@ -290,6 +291,7 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(manager, 'supervisor.completion.verify', {
       surfaceId: 'task-a', refs: ['evidence/result.json'],
     }).allowed).toBe(false);
+    expect(authorizeManagedRoleV2(manager, 'role.ready').allowed).toBe(true);
 
     const task = {
       role: 'project-task' as const,
@@ -302,6 +304,7 @@ describe('unified managed AI role context', () => {
     expect(authorizeManagedRoleV2(task, 'supervisor.completion.verify', {
       surfaceId: 'task-a', refs: ['evidence/result.json'],
     }).allowed).toBe(false);
+    expect(authorizeManagedRoleV2(task, 'role.ready').allowed).toBe(false);
   });
 
   it('keeps ordinary supervised tasks explicit about wmux versus native Agent authority', () => {
@@ -317,29 +320,19 @@ describe('unified managed AI role context', () => {
   });
 
   it('loads the full project role once and keeps routine events compact', () => {
-    const startup = projectManagerStartupInput('codex', '', 'project-a');
-    expect(projectManagerRoleAnchor('project-a')).toContain('wmux context');
-    expect(startup).toContain('$manage-project');
-    expect(startup).toContain(`项目管理协议版本：${PROJECT_MANAGER_PROTOCOL_REVISION}`);
+    const startup = projectManagerStartupInput('project-a');
+    expect(startup).toContain('当前隔离目录 AGENTS.md');
+    expect(startup).toContain(`protocol=${PROJECT_MANAGER_PROTOCOL_REVISION}`);
+    expect(startup).toContain('wmux role-ready');
+    expect(startup).not.toContain('$manage-project');
 
     const event = withProjectManagerEventEnvelope('进度通知', 'project-a');
     expect(event).toContain(projectManagerEventEnvelope('project-a'));
-    expect(event).toContain('无需重读技能或重新确认角色');
+    expect(event).toContain('无需重读 AGENTS.md 或重新确认角色');
     expect(event).toContain('普通任务检查点由监督 AI 原地接受或返工');
     expect(event).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(withProjectManagerEventEnvelope(event, 'project-a')).toBe(event);
 
-    const legacyDelivery = [
-      '[项目 AI 角色锚点｜控制层]',
-      '你是项目 project-a 的专属项目 AI，只能管理这一个项目。',
-      '先运行 wmux context 获取实时身份、状态、权限和命令；该结果由当前终端 capability 绑定，不接受手工指定项目身份。',
-      '不得直接修改项目交付文件、执行实现/测试，或使用通用 send/send-key 控制监督 AI 与任务 AI。',
-      '',
-      '旧队列事件',
-    ].join('\n');
-    const hydrated = withProjectManagerEventEnvelope(legacyDelivery, 'project-a');
-    expect(hydrated).toContain('旧队列事件');
-    expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
     const taskDelivery = renderProjectTaskBatch(workItem().contract, {
       kind: 'task', coverage: 'bounded-batch', outcome: '继续形成认证成果',
       completionDefinition: ['认证行为形成'], evidenceExpectations: ['认证行为可复核'],

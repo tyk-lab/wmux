@@ -62,6 +62,20 @@ export interface SupervisorRuntimeContext {
     workScope: SupervisorWorkScope;
     forbiddenActions: SupervisorForbiddenAction[];
   };
+  assignment: {
+    objective: string;
+    currentTask: string;
+    taskDescription: string;
+    preconditions: string;
+    supervisorNotes: string;
+    stopWhen: string;
+    stopWhenKind: 'concrete' | 'direction';
+    waitForNextDirection: boolean;
+    planFilePath: string;
+    taskWorkMode: string;
+    maxChildThreads: number;
+    scopeRoot: string;
+  };
   commands: {
     available: string[];
     decisionOutcomes: Array<'continue' | 'rework' | 'complete' | 'needs-human'>;
@@ -120,6 +134,9 @@ export function evaluateSupervisorDecisionPreflight(
       ? '当前通道已有待决审批'
       : '',
     lane.autoDecisionLimitReached && !autonomous ? '已达到自动裁决上限' : '',
+    lane.supervisorDecisionErrorGuard?.blocked
+      ? '当前监督裁决处于协议纠错暂停；必须先由项目 AI 实质更新工作项合同或版本'
+      : '',
   ].filter(Boolean);
   const baseReady = blockers.length === 0;
   const reviewReady = baseReady && lane.awaitingReview === true;
@@ -202,12 +219,10 @@ export function buildSupervisorRuntimeContext(
     : [];
   const conditional: SupervisorConditionalCommand[] = [
     {
-      command: projectManaged
-        ? `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --next <成果与验收缺口>`
-        : `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --task-file <.wmux/tmp/成果任务.json>`,
+      command: `wmux supervisor decide --surface ${targetSurfaceId}${reviewFlag} --outcome continue|rework --task-file <.wmux/tmp/成果任务.json>`,
       available: sameRouteAvailable,
       condition: projectManaged
-        ? '仅限原目标内明确、低风险、可逆且可验证的下一步'
+        ? '结构化成果批次只描述一个成果、完成定义、已确认事实与约束'
         : '结构化任务只包含当前成果、约束、验收缺口和必要现状',
     },
     {
@@ -265,6 +280,20 @@ export function buildSupervisorRuntimeContext(
       autonomy: permissions,
       workScope: lane.workScopeOverride || session.workScope || DEFAULT_SUPERVISOR_WORK_SCOPE,
       forbiddenActions: effectiveForbiddenActions(session, lane),
+    },
+    assignment: {
+      objective: lane.config?.taskGoal?.trim() || '',
+      currentTask: lane.currentTask?.trim() || '',
+      taskDescription: lane.config?.taskDescription?.trim() || '',
+      preconditions: lane.config?.preconditions?.trim() || '',
+      supervisorNotes: lane.config?.supervisorNotes?.trim() || '',
+      stopWhen: lane.config?.stopWhen?.trim() || '',
+      stopWhenKind: lane.config?.stopWhenKind === 'direction' ? 'direction' : 'concrete',
+      waitForNextDirection: lane.config?.waitForNextDirection === true,
+      planFilePath: lane.config?.planFilePath?.trim() || '',
+      taskWorkMode: lane.config?.taskWorkMode || 'single-thread',
+      maxChildThreads: Math.max(1, lane.config?.maxChildThreads || 3),
+      scopeRoot: lane.scopeRoot?.trim() || lane.projectDir?.trim() || '',
     },
     commands: {
       available: [

@@ -182,6 +182,13 @@ export function authorizeManagedRoleV2(
   params: Record<string, any> = {},
 ): ManagedRoleAuthorization {
   if (method === 'role.context') return { allowed: true };
+  if (method === 'role.ready') {
+    return binding.role === 'project-ai'
+      || binding.role === 'supervisor'
+      || binding.role === 'project-supervisor'
+      ? { allowed: true }
+      : { allowed: false, reason: '任务 AI 不使用管理角色协议确认' };
+  }
 
   if (SELF_SCOPED_V2_METHODS.has(method)) {
     const requested = requestedSurfaceId(params) || binding.callerSurfaceId;
@@ -304,6 +311,7 @@ export function buildProjectAiRuntimeContext(
     commands: {
       available: [
         'wmux context',
+        'wmux role-ready --protocol <启动消息中的版本>',
         `wmux project status --project ${projectId}`,
         `wmux project logs --project ${projectId}`,
         `wmux project terminals --project ${projectId}`,

@@ -40,7 +40,7 @@ const SELF_SCOPED_SURFACE_TELEMETRY_METHODS = new Set<string>([
 ]);
 
 function requiresSurfaceCapability(method: string): boolean {
-  return method === 'role.context'
+  return (method === 'role.context' || method === 'role.ready')
     || method.startsWith('project.')
     || method.startsWith('supervisor.')
     || method.startsWith('ssh-file.');

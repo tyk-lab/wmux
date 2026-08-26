@@ -142,6 +142,10 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_roleContext?.(${S(p || {})})`,
     requireResult: 'No managed AI role for this terminal',
   },
+  'role.ready': {
+    js: (p) => `window.__wmux_roleReady?.(${S(p || {})})`,
+    requireResult: 'Managed AI role protocol acknowledgement is unavailable',
+  },
   'project.status': {
     js: (p) => `window.__wmux_projectManagerRequest?.(${S({ ...(p || {}), action: 'status' })})`,
     requireResult: 'Project manager bridge is unavailable',

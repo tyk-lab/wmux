@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const mainSource = fs.readFileSync(path.resolve(__dirname, '../../src/main/index.ts'), 'utf8');
 const appSource = fs.readFileSync(path.resolve(__dirname, '../../src/renderer/App.tsx'), 'utf8');
+const pipeBridgeSource = fs.readFileSync(path.resolve(__dirname, '../../src/renderer/pipe-bridge.ts'), 'utf8');
 const hookSource = fs.readFileSync(path.resolve(__dirname, '../../src/cli/wmux-hook.ts'), 'utf8');
 
 describe('hook event ordering', () => {
@@ -44,8 +45,9 @@ describe('hook event ordering', () => {
     const handler = appSource.match(/function handleSupervisorHookEvent\(event: any\): void \{[\s\S]*?^\}/m)?.[0] || '';
     expect(handler).toContain("lifecycle === 'UserPromptSubmit'");
     expect(handler).toContain('confirmSubmittedSupervisorDelivery');
-    expect(appSource).toContain("supervisorBriefingStatus: 'confirmed'");
-    expect(appSource).toContain('delivery.bootstrapOnRuntimeReady');
+    expect(appSource).not.toContain("supervisorBriefingStatus: 'confirmed'");
+    expect(pipeBridgeSource).toContain("supervisorBriefingStatus: 'confirmed'");
+    expect(pipeBridgeSource).toContain('w.__wmux_roleReady');
     expect(handler).toContain("supervisorLaneControlState(item) !== 'stopped'");
     expect(handler).toContain('confirmSupervisorUserSubmitFromHook');
     expect(handler).toContain('userDirectTaskTurnId: confirmedUserSubmit ? nextWorkerTurnId : undefined');

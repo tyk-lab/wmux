@@ -2,6 +2,8 @@ const CALLER_AWARE_SURFACE_METHODS = new Set([
   'surface.send_text',
   'surface.send_key',
   'supervisor.evidence',
+  'role.context',
+  'role.ready',
 ]);
 
 /** Attach the ambient wmux surface so main can enforce supervisor isolation. */

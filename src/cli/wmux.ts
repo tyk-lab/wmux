@@ -31,6 +31,7 @@ import {
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 import { requireSuccessfulContext } from './context-result';
 import { sendFileBridgeRequest } from './file-bridge';
+import { roleProtocolFingerprint } from '../shared/role-protocol';
 
 // Respect WMUX_PIPE when set (e.g. by a parent wmux running with WMUX_INSTANCE),
 // so the CLI talks to the same instance that spawned the shell.
@@ -165,6 +166,23 @@ function stripFlag(args: string[], name: string): string[] {
 }
 
 const print = (v: any) => console.log(JSON.stringify(v, null, 2));
+
+async function cmdRoleReady(args: string[]): Promise<void> {
+  const protocolRevision = getFlag(args, '--protocol')?.trim() || '';
+  if (!protocolRevision) throw new Error('--protocol <版本> is required');
+  const agentsPath = path.join(process.cwd(), 'AGENTS.md');
+  let agentsContent: string;
+  try {
+    agentsContent = fs.readFileSync(agentsPath, 'utf8');
+  } catch (error) {
+    throw new Error(
+      `无法读取当前隔离目录 AGENTS.md：${String((error as Error)?.message || error)}`,
+      { cause: error },
+    );
+  }
+  const protocolFingerprint = roleProtocolFingerprint(agentsContent);
+  print(await sendV2('role.ready', { protocolRevision, protocolFingerprint }));
+}
 
 // Each browser subcommand maps to the V2 request it issues. sendV2 auto-attaches
 // the caller surface so concurrent agents get isolated browsers (issue #62).
@@ -1035,6 +1053,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   identify: async () => print(await sendV2('system.identify')),
   capabilities: async () => print(await sendV2('system.capabilities')),
   context: async () => printContextResult(await sendV2('role.context', {})),
+  'role-ready': cmdRoleReady,
   'list-windows': async () => print(await sendV2('window.list')),
   'focus-window': async (args) => print(await sendV2('window.focus', { id: args[1] })),
   'new-window': async () => print(await sendV2('window.create')),

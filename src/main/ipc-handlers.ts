@@ -49,6 +49,7 @@ import {
 } from './ssh-known-hosts';
 import { SshCredentialStore } from './ssh-credential-store';
 import { ensureCodexSupervisorRuntimeTrusted, ensureSupervisorRuntimeDirectory } from './codex-context';
+import { ensureRoleRuntimeInstructions } from './role-runtime-instructions';
 import {
   SshTransferCache,
   validateLocalUploadFiles,
@@ -141,6 +142,12 @@ export function registerIpcHandlers(windowManager: WindowManager, cdpProxyInstan
           app.getPath('appData'),
           supervisorRuntimeIsolationKey,
         );
+        const protocol = ensureRoleRuntimeInstructions({
+          appPath: app.getAppPath(),
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+        }, 'supervisor-ai', runtimeDirectory);
+        if (!protocol.ok) throw new Error(protocol.error || '无法准备监督 AI AGENTS.md');
         ptyOptions.env = {
           ...ptyOptions.env,
           WMUX_FILE_BRIDGE_DIR: path.join(runtimeDirectory, 'bridge'),

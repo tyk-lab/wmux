@@ -155,11 +155,6 @@ function isolatedSupervisorCommand(
       /(?:^|\s)--no-prompt-templates(?:\s|$)/i,
       '--no-prompt-templates',
     );
-    isolatedCommand = appendFlagIfMissing(
-      isolatedCommand,
-      /(?:^|\s)--no-context-files(?:\s|$)/i,
-      '--no-context-files',
-    );
   } else if (launcher === 'grok') {
     isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-memory(?:\s|$)/i, '--no-memory');
     isolatedCommand = appendFlagIfMissing(isolatedCommand, /(?:^|\s)--no-subagents(?:\s|$)/i, '--no-subagents');

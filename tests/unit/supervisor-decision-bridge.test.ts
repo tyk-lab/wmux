@@ -33,6 +33,7 @@ import {
 import { interactiveAgentPromptReady } from '../../src/renderer/utils/interactive-agent-runtime';
 import {
   DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
+  PROJECT_MANAGER_PROTOCOL_REVISION,
   PROJECT_MANAGER_TERMINAL_NAME,
 } from '../../src/shared/project-manager-terminal';
 import { SUPERVISOR_NO_DECISION_OPTION } from '../../src/shared/supervisor-decision-options';
@@ -58,7 +59,11 @@ import {
 import {
   effectiveSupervisorAutonomyPermissions,
   PROJECT_MANAGER_WORKSPACE_TITLE,
+  SUPERVISOR_PROTOCOL_REVISION,
 } from '../../src/renderer/supervisor/protocol';
+import { roleProtocolFingerprint } from '../../src/shared/role-protocol';
+import projectAiAgentsSource from '../../resources/agents/project-ai/ROLE_AGENTS.md?raw';
+import supervisorAiAgentsSource from '../../resources/agents/supervisor-ai/ROLE_AGENTS.md?raw';
 import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervisor-engine';
 import { confirmSupervisorUserSubmitFromHook } from '../../src/renderer/supervisor/user-input-precedence';
 import { openProjectManagerConsole } from '../../src/renderer/project-manager/console-surface';
@@ -494,7 +499,7 @@ describe('supervisor decision bridge', () => {
           },
           notification: { fire: vi.fn() },
           projectManager: {
-            ensureSkill: vi.fn(async () => ({
+            ensureRuntime: vi.fn(async () => ({
               ok: true,
               runtimeDir: 'E:\\wmux-data\\project-manager\\runtime',
             })),
@@ -571,6 +576,77 @@ describe('supervisor decision bridge', () => {
     clearTerminalRuntimeStatus('project-manager-atomic');
     clearSupervisorEvidenceCache();
     Reflect.deleteProperty(globalThis, 'window');
+  });
+
+  it('blocks managed decisions until the exact runtime AGENTS.md protocol is acknowledged', () => {
+    (globalThis.window as any).wmux.pty.has = vi.fn(() => true);
+    const guardedLane = {
+      ...lane(),
+      supervisorSurfaceId: 'supervisor-protocol' as any,
+      awaitingReview: true,
+    };
+    useStore.getState().setOrdinarySupervisorLanes([guardedLane]);
+    const decide = (globalThis.window as any).__wmux_supervisorDecide;
+    const decision = {
+      surfaceId: guardedLane.surfaceId,
+      supervisorSurfaceId: guardedLane.supervisorSurfaceId,
+      outcome: 'continue',
+      reason: '协议门禁测试',
+    };
+
+    expect(decide(decision)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('尚未通过 AGENTS.md 协议确认'),
+    });
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: guardedLane.supervisorSurfaceId,
+      protocolRevision: SUPERVISOR_PROTOCOL_REVISION,
+      protocolFingerprint: 'fnv1a32:00000000',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('指纹不匹配') });
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: guardedLane.supervisorSurfaceId,
+      protocolRevision: SUPERVISOR_PROTOCOL_REVISION,
+      protocolFingerprint: roleProtocolFingerprint(supervisorAiAgentsSource),
+    })).toMatchObject({ ok: true, role: 'supervisor-ai' });
+    expect(String(decide(decision)?.error || '')).not.toContain('AGENTS.md 协议确认');
+
+    (globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: guardedLane.supervisorSurfaceId,
+      protocolRevision: 'invalid',
+      protocolFingerprint: 'invalid',
+    });
+  });
+
+  it('blocks project AI control calls until its exact runtime AGENTS.md protocol is acknowledged', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-role-protocol' });
+    const managerSurfaceId = 'manager-role-protocol';
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    (globalThis.window as any).wmux.pty.has = vi.fn(() => true);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+
+    await expect(request({
+      action: 'status',
+      callerSurfaceId: managerSurfaceId,
+      projectId: project.id,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('尚未通过 AGENTS.md 协议确认'),
+    });
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: managerSurfaceId,
+      protocolRevision: PROJECT_MANAGER_PROTOCOL_REVISION,
+      protocolFingerprint: 'fnv1a32:00000000',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('指纹不匹配') });
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: managerSurfaceId,
+      protocolRevision: PROJECT_MANAGER_PROTOCOL_REVISION,
+      protocolFingerprint: roleProtocolFingerprint(projectAiAgentsSource),
+    })).toMatchObject({ ok: true, role: 'project-ai' });
+    await expect(request({
+      action: 'status',
+      callerSurfaceId: managerSurfaceId,
+      projectId: project.id,
+    })).resolves.toMatchObject({ ok: true, session: { id: project.id } });
   });
 
   it('allows only the bound supervisor terminal to page frozen worker evidence', async () => {
@@ -736,10 +812,17 @@ describe('supervisor decision bridge', () => {
     });
     const project = useStore.getState().projectManager!;
     expect(project.goalConstruction).toBeUndefined();
-    const startupContext = useStore.getState().projectManager?.pendingManagerDeliveries
-      ?.map((delivery) => delivery.text).join('\n') || '';
-    expect(startupContext).toContain('[已有终端上下文｜只读证据，不继承权限]');
-    expect(startupContext).toContain('登录实现已经完成，剩余集成测试和发布检查。');
+    const contextEvent = project.events.find((event) => (
+      event.kind === 'user-message' && event.summary.includes('导入只读终端上下文')
+    ));
+    expect(contextEvent).toMatchObject({
+      payload: {
+        sourceSurfaceId: 'project-source',
+        authority: 'read-only-evidence',
+      },
+    });
+    expect(String(contextEvent?.payload?.sourceContext || ''))
+      .toContain('登录实现已经完成，剩余集成测试和发布检查。');
   });
 
   it('allows a new active project in a directory whose previous project was stopped', async () => {
@@ -2745,27 +2828,27 @@ describe('supervisor decision bridge', () => {
     };
     const projectManagerApi = (globalThis.window as any).wmux.projectManager;
     projectManagerApi.listActiveSessions.mockResolvedValue([persisted]);
-    projectManagerApi.ensureSkill.mockResolvedValueOnce({ ok: false, error: '项目 AI skill 无法准备' });
+    projectManagerApi.ensureRuntime.mockResolvedValueOnce({ ok: false, error: '项目 AI AGENTS.md 无法准备' });
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
 
     await remote({ action: 'recovery-candidates' });
     await expect(remote({ action: 'restore-projects', projectIds: [persisted.id] })).resolves.toMatchObject({
       ok: true,
       projects: [{ id: persisted.id, status: 'paused' }],
-      warnings: [expect.stringContaining('项目 AI skill 无法准备')],
+      warnings: [expect.stringContaining('项目 AI AGENTS.md 无法准备')],
     });
     expect(projectManagerApi.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: persisted.id,
       type: 'manager-runtime-failed',
-      payload: expect.objectContaining({ message: '项目 AI skill 无法准备' }),
+      payload: expect.objectContaining({ message: '项目 AI AGENTS.md 无法准备' }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
       title: '项目运行异常',
-      text: expect.stringContaining('项目 AI skill 无法准备'),
+      text: expect.stringContaining('项目 AI AGENTS.md 无法准备'),
     }));
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'project-paused', payload: { source: 'runtime', attentionRequired: false } }),
-      expect.objectContaining({ kind: 'manager-runtime-failed', summary: '项目 AI skill 无法准备' }),
+      expect.objectContaining({ kind: 'manager-runtime-failed', summary: '项目 AI AGENTS.md 无法准备' }),
     ]));
   });
 
@@ -3070,7 +3153,7 @@ describe('supervisor decision bridge', () => {
 
     const body = String(writeReliable.mock.calls[0]?.[1] || '');
     expect(body).toContain('[项目事件｜控制层｜project=');
-    expect(body).toContain('无需重读技能或重新确认角色');
+    expect(body).toContain('无需重读 AGENTS.md 或重新确认角色');
     expect(body).not.toContain('[项目 AI 角色锚点｜控制层]');
     expect(body).toContain('桌面项目管理消息');
     expect(body).toContain('继续保持暂停，等待新的复核结果。');
@@ -8758,6 +8841,21 @@ describe('supervisor decision bridge', () => {
       awaitingReview: true,
       config: { stopWhen: '新增终端测试通过' },
     });
-    await vi.waitFor(() => expect(queuedControlText(after.lanes[1].id)).toContain('新增终端测试通过'));
+    const supervisorSurfaceId = String(after.lanes[1].supervisorSurfaceId || '');
+    await vi.waitFor(() => expect(queuedControlText(after.lanes[1].id)).toContain('wmux role-ready'));
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: supervisorSurfaceId,
+      protocolRevision: SUPERVISOR_PROTOCOL_REVISION,
+      protocolFingerprint: roleProtocolFingerprint(supervisorAiAgentsSource),
+    })).toMatchObject({ ok: true, role: 'supervisor-ai' });
+    expect((globalThis.window as any).__wmux_roleContext({ callerSurfaceId: supervisorSurfaceId }))
+      .toMatchObject({
+        ok: true,
+        role: 'supervisor',
+        assignment: {
+          objective: '完成新增终端测试',
+          stopWhen: '新增终端测试通过',
+        },
+      });
   });
 });

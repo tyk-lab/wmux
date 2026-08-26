@@ -118,7 +118,7 @@ describe('supervisor launch command', () => {
     expect(command).not.toMatch(/(?:^|\s)--approve(?:\s|$)/i);
     expect(command).toContain('--no-skills');
     expect(command).toContain('--no-prompt-templates');
-    expect(command).toContain('--no-context-files');
+    expect(command).not.toContain('--no-context-files');
     expect(command).toContain('finally { exit');
   });
 

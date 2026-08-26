@@ -33,22 +33,26 @@ describe('electron-builder packaging', () => {
     expect(fs.existsSync(path.join(__dirname, '../../resources/agent-instructions.md'))).toBe(true);
   });
 
-  it('ships the project management orchestration skill outside the asar', () => {
-    expect(extraResources).toContainEqual({ from: 'resources/skills', to: 'skills' });
+  it('ships application-owned project and supervisor role instructions outside the asar', () => {
+    expect(extraResources).toContainEqual({ from: 'resources/agents', to: 'agents' });
     expect(fs.existsSync(path.join(
       __dirname,
-      '../../resources/skills/manage-project/SKILL.md',
+      '../../resources/agents/project-ai/ROLE_AGENTS.md',
+    ))).toBe(true);
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/agents/supervisor-ai/ROLE_AGENTS.md',
     ))).toBe(true);
   });
 
-  it('keeps dedicated supervisor instructions as an application prompt, not an agent skill', () => {
+  it('does not ship managed role instructions as an agent skill', () => {
+    expect(fs.existsSync(path.join(
+      __dirname,
+      '../../resources/skills/manage-project/SKILL.md',
+    ))).toBe(false);
     expect(fs.existsSync(path.join(
       __dirname,
       '../../resources/prompts/supervisor-protocol.md',
-    ))).toBe(true);
-    expect(fs.existsSync(path.join(
-      __dirname,
-      '../../resources/skills/supervise-task/SKILL.md',
     ))).toBe(false);
   });
 

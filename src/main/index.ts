@@ -67,7 +67,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { initializeLoginStartup } from './login-startup';
-import { ensureProjectManagerSkill } from './project-manager-skill';
+import { ensureProjectManagerRuntimeInstructions } from './role-runtime-instructions';
 import {
   appendProjectManagerRecord,
   deleteProjectManagerSession,
@@ -736,13 +736,12 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('project-manager:save-session', (_event, session) => saveProjectManagerSession(session));
   ipcMain.handle('project-manager:delete-session', (_event, sessionId) => deleteProjectManagerSession(String(sessionId || '')));
-  ipcMain.handle('project-manager:ensure-skill', (_event, requestedAgent) => {
-    const agent = requestedAgent === 'kimi' || requestedAgent === 'grok' ? requestedAgent : 'codex';
-    const result = ensureProjectManagerSkill({
+  ipcMain.handle('project-manager:ensure-runtime', () => {
+    const result = ensureProjectManagerRuntimeInstructions({
       appPath: app.getAppPath(),
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
-    }, agent);
+    });
     return result;
   });
   ipcMain.handle('project-manager:list-active-sessions', () => readActiveProjectManagerSessions());
