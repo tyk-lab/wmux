@@ -5,7 +5,7 @@ import {
 } from '../../src/shared/project-manager';
 import {
   buildProjectSupervisorBriefing,
-  buildProjectTaskExecutionEnvelope,
+  renderProjectTaskBatch,
 } from '../../src/renderer/project-manager/engine';
 import { evaluateProjectExecutionGuard } from '../../src/renderer/project-manager/anti-loop';
 
@@ -68,11 +68,17 @@ describe('project governance P9', () => {
   });
 
   it('makes the task AI the sole project executor', () => {
-    const briefing = buildProjectTaskExecutionEnvelope(contract, 'multi-thread');
+    const briefing = renderProjectTaskBatch(contract, {
+      kind: 'task', coverage: 'bounded-batch', outcome: '形成当前可验收成果',
+      completionDefinition: ['成果完成'], evidenceExpectations: ['按项目规范提供适用证据'],
+      unmetCompletionItems: [], knownFacts: [], constraints: [], nonGoals: [],
+    }, 'multi-thread');
     expect(briefing).toContain('[成果任务]');
     expect(briefing).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
-    expect(briefing).toContain('自行决定实现路线、文件、命令、测试和技能');
-    expect(briefing).toContain('[执行模式] 多线程');
+    expect(briefing).toContain('自行决定实现路线、必要的相邻修改、文件、命令、测试、技能和任务内部组织方式');
+    expect(briefing).toContain('完成定义');
+    expect(briefing).toContain('证据期望（如适用）');
+    expect(briefing).toContain('[并行能力] 允许内部并行');
     expect(briefing).not.toContain('允许范围：');
     expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
   });
@@ -81,7 +87,12 @@ describe('project governance P9', () => {
     const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract, taskWorkMode: 'single-thread' });
     expect(briefing).toContain('常驻监督和结果裁决者，不是项目执行者');
     expect(briefing).toContain('不向任务端注入项目/工作项身份');
-    expect(briefing).toContain('--task-work-mode single-thread|multi-thread');
+    expect(briefing).toContain('--task-file');
+    expect(briefing).toContain('coverage=whole-item');
+    expect(briefing).toContain('工作项合同内直接决定');
+    expect(briefing).toContain('项目 AI 仍无法决定');
+    expect(briefing).toContain('--task-work-mode multi-thread 开放并行');
+    expect(briefing).toContain('用 single-thread 恢复串行');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {

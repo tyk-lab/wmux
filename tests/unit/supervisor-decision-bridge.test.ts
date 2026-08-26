@@ -62,6 +62,7 @@ import {
 import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervisor-engine';
 import { confirmSupervisorUserSubmitFromHook } from '../../src/renderer/supervisor/user-input-precedence';
 import { openProjectManagerConsole } from '../../src/renderer/project-manager/console-surface';
+import { TASK_VALIDATION_REPORTING_POLICY } from '../../src/renderer/project-manager/engine';
 
 async function confirmProjectOrientation(projectId: string): Promise<void> {
   const session = useStore.getState().projectManagers.find((project) => project.id === projectId);
@@ -308,7 +309,7 @@ function bindProjectLaneToWorkItem(options: {
           lowRiskRetries: true,
           targetedTests: true,
           internalThreads: false,
-          continuousExecution: options.continuousExecution === true,
+          continuousExecution: options.continuousExecution !== false,
           permissionConfirm: options.permissionConfirm === true,
           allowedCommandPrefixes: options.allowedCommandPrefixes || [],
         },
@@ -769,10 +770,10 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
-  it('does not derive route-adjustment authority from retry authority', () => {
+  it('grants bounded route adjustment independently by default', () => {
     const project = bindProjectLaneToWorkItem();
     const contract = project.workItems[0].contract;
-    expect(projectContractAutonomyPermissions(contract)).not.toContain('route-adjustment');
+    expect(projectContractAutonomyPermissions(contract)).toContain('route-adjustment');
     expect(projectContractAutonomyPermissions({
       ...contract,
       authority: { ...contract.authority, routeAdjustments: true },
@@ -815,7 +816,7 @@ describe('supervisor decision bridge', () => {
     expect(context({ callerSurfaceId: 'worker-a', projectId: 'forged' }).identity).not.toHaveProperty('workItemId');
     useStore.getState().stopSupervisorLane('lane-a', '验证失效绑定');
     expect(context({ callerSurfaceId: 'worker-a' })).toMatchObject({
-      ok: false, error: expect.stringContaining('绑定不完整'),
+      ok: false, error: expect.stringContaining('任务上下文绑定无效'),
     });
     expect((globalThis.window as any).__wmux_authorizeSurfaceCapability({
       callerSurfaceId: 'worker-a', method: 'surface.close', params: { surfaceId: 'supervisor-a' },
@@ -2326,7 +2327,7 @@ describe('supervisor decision bridge', () => {
       decisionScope: '配置冲突时是否保留现有兼容性设置',
       context: '计划文件提供了另一种配置方向。',
       options: [
-        { id: 'keep', label: '保留现有配置', description: '采用兼容性修改。' },
+        { id: 'keep', label: '保留现有配置', description: '采用兼容性修改，暂不包含复杂多人权限和公网发布。' },
         { id: 'replace', label: '采用新配置', description: '配置更简洁，但兼容策略不同。' },
       ],
       recommendedOptionId: 'keep',
@@ -2351,7 +2352,7 @@ describe('supervisor decision bridge', () => {
       question: '同类配置冲突仍应如何处理？', decisionKey: 'configuration-strategy',
       decisionScope: '配置冲突时是否保留现有兼容性设置',
       options: [
-        { id: 'keep', label: '保留现有配置', description: '继续采用兼容性修改。' },
+        { id: 'keep', label: '保留现有配置', description: '继续采用兼容性修改，暂不包含复杂多人权限和公网发布。' },
         { id: 'replace', label: '采用新配置', description: '采用不同的兼容策略。' },
       ],
       recommendedOptionId: 'keep',
@@ -2368,6 +2369,131 @@ describe('supervisor decision bridge', () => {
       type: 'user-clarification-requested',
       payload: expect.objectContaining({ question: expect.objectContaining({ question: '是否继续采用现有兼容配置方案？' }) }),
     }));
+  });
+
+  it('carries one scoped machine authorization through the definition version it authorizes', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start', projectDir: 'E:\\machine-authorization', goal: '完成实验台上机验证',
+      preconditions: ['实验台尚未获得上机授权'], doneWhen: ['实验结果已记录并通过验收'],
+    });
+    const project = started.session;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const authorizedPrecondition = '实验台 A 已完成安全检查，允许在当前项目执行既定上机实验';
+    const confirmationScope = [`preconditions: ${authorizedPrecondition}`];
+    const question = {
+      action: 'user-question', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      category: 'manual-intervention', reasonCode: 'physical-action',
+      blocker: '实验台需要用户授予上机许可。',
+      question: '是否授权在实验台 A 执行既定上机实验？',
+      context: '授权仅覆盖当前项目、当前实验台和既定安全范围。',
+      decisionKey: 'machine-authorization-lab-a',
+      decisionScope: '当前项目在实验台 A 的既定安全范围内执行上机实验',
+      confirmationScope,
+      options: [
+        { id: 'authorize', label: '授权上机', description: '允许在既定安全范围内执行并记录实验。' },
+        { id: 'wait', label: '暂不授权', description: '保持等待，不执行上机实验。' },
+      ],
+      recommendedOptionId: 'authorize',
+    };
+    await expect(request(question)).resolves.toMatchObject({ ok: true });
+    const pending = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    const answered = await remote({
+      action: 'answer-question', projectId: project.id, questionId: pending?.id,
+      optionId: 'authorize', answer: '授权上机', source: 'desktop', reuseForSimilar: true,
+    });
+    expect(answered).toMatchObject({
+      ok: true,
+      event: { id: expect.any(String), payload: { reuseForSimilar: true, semanticFingerprint: expect.any(String) } },
+    });
+
+    await expect(request({
+      action: 'update-definition', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      goal: project.goal, preconditions: [authorizedPrecondition],
+      doneWhen: ['额外增加一个未经用户确认的验收条件'],
+      reason: '尝试扩大上机授权的规划范围', userConfirmationEventId: answered.event.id,
+    })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('用户确认未覆盖当前规划变更'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.doneWhen)
+      .toEqual(project.doneWhen);
+
+    await expect(request({
+      action: 'update-definition', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      goal: project.goal, preconditions: [authorizedPrecondition], doneWhen: project.doneWhen,
+      reason: '按用户上机授权更新项目级前置条件', userConfirmationEventId: answered.event.id,
+    })).resolves.toMatchObject({ ok: true });
+    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(updated.reusableUserDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requirementsVersion: updated.requirementsVersion,
+        authorizationVersion: updated.authorizationVersion,
+      }),
+    ]));
+    await expect(request({
+      action: 'alignment-confirm', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      userConfirmationEventId: answered.event.id,
+      goalUnderstanding: project.goal,
+      scopeSummary: '仅当前项目、实验台 A 和既定安全范围',
+      acceptanceSummary: project.doneWhen.join('；'),
+      reason: '用户授权已明确覆盖本次前置条件更新，不存在未覆盖的需求变化',
+    })).resolves.toMatchObject({ ok: true });
+    const reused = await request(question);
+    expect(reused, JSON.stringify(reused)).toMatchObject({
+      ok: true, autoAnswered: true, answer: '授权上机', optionId: 'authorize',
+    });
+  });
+
+  it('reuses a user-approved single test-record deletion without allowing broad deletes', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-test-record-cleanup' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const question = {
+      action: 'user-question', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      category: 'manual-intervention', workItemId: 'task-a',
+      blocker: 'GUI 删除验收需要创建并删除一条专用测试记录。',
+      reasonCode: 'destructive-action', decisionKey: 'gui-delete-verification-v1',
+      decisionScope: `project=${project.id}; workItem=task-a; operation=single-test-record-delete; environment=local-desktop-app; acceptance=GUI CRUD evidence`,
+      confirmationScope: ['manualOperationAuthorization', 'acceptance'],
+      question: '是否授权创建并删除一条专用测试记录？',
+      context: '不会删除用户现有数据、项目文件或共享数据。',
+      options: [
+        { id: 'authorize-test-delete', label: '授权专用测试删除', description: '仅创建并删除一条专用测试记录。' },
+        { id: 'accept-automation', label: '接受替代证据', description: '不执行实际 GUI 删除。' },
+      ],
+      recommendedOptionId: 'authorize-test-delete',
+    };
+    await expect(request(question)).resolves.toMatchObject({ ok: true });
+    const pending = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    await expect(remote({
+      action: 'answer-question', projectId: project.id, questionId: pending?.id,
+      optionId: 'authorize-test-delete', answer: '授权专用测试删除',
+      source: 'desktop', reuseForSimilar: true,
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request(question)).resolves.toMatchObject({
+      ok: true, autoAnswered: true, answer: '授权专用测试删除', optionId: 'authorize-test-delete',
+    });
+    await expect(request({ ...question, workItemId: 'task-b' })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('任务不存在'),
+    });
+
+    const broadQuestion = {
+      ...question,
+      decisionKey: 'broad-delete',
+      decisionScope: `project=${project.id}; operation=bulk-record-delete; environment=local-desktop-app; acceptance=data-cleanup`,
+      question: '是否授权批量删除现有记录？',
+    };
+    const broadResult = await request(broadQuestion);
+    expect(broadResult).toMatchObject({ ok: true, question: { decisionKey: 'broad-delete' } });
+    expect(broadResult).not.toHaveProperty('autoAnswered');
+    const broadPending = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    await expect(remote({
+      action: 'answer-question', projectId: project.id, questionId: broadPending?.id,
+      optionId: 'authorize-test-delete', answer: '授权批量删除',
+      source: 'desktop', reuseForSimilar: true,
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('删除复用授权') });
   });
 
   it('keeps a pending question when a replacement definition is invalid and supersedes it only after a valid update', async () => {
@@ -2503,6 +2629,49 @@ describe('supervisor decision bridge', () => {
         recommendedOptionId: 'confirm-requirements',
       }),
     });
+  });
+
+  it('does not repeat alignment after a user answer followed only by an internal supervisor-note update', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start', projectDir: 'E:\\current-alignment-recovery',
+      goal: '实现本地用户管理系统', preconditions: ['本地开发环境可用'],
+      doneWhen: ['用户数据管理核心流程验证通过'],
+    });
+    const project = started.session;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'user-question', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      category: 'clarification', question: '请选择产品形态。',
+      context: '当前目标、范围、前置条件和验收标准保持不变。',
+      options: [
+        { id: 'desktop', label: '桌面单机应用', description: '使用本地数据存储。' },
+        { id: 'web', label: '本地网页系统', description: '通过浏览器使用。' },
+      ],
+      recommendedOptionId: 'desktop',
+    })).resolves.toMatchObject({ ok: true });
+    const pending = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    const answered = await remote({
+      action: 'answer-question', projectId: project.id, questionId: pending?.id,
+      optionId: 'desktop', answer: '桌面单机应用', source: 'desktop',
+    });
+    expect(answered).toMatchObject({ ok: true, event: { id: expect.any(String) } });
+    await expect(request({
+      action: 'update-definition', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      goal: project.goal, preconditions: project.preconditions, doneWhen: project.doneWhen,
+      supervisorNotes: ['产品形态：桌面单机应用'],
+      reason: '按用户选择记录项目内部监督说明',
+    })).resolves.toMatchObject({ ok: true });
+    await expect(request({
+      action: 'alignment-confirm', callerSurfaceId: project.managerSurfaceId, projectId: project.id,
+      userConfirmationEventId: answered.event.id,
+      goalUnderstanding: project.goal,
+      scopeSummary: '目标、范围和前置条件均未变化，仅记录产品形态',
+      acceptanceSummary: project.doneWhen.join('；'),
+      reason: '用户已经完成产品形态选择，定义更新未扩大用户计划',
+    })).resolves.toMatchObject({ ok: true });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion)
+      .toBeUndefined();
   });
 
   it('reuses a persisted initial alignment decision when restoring a project', async () => {
@@ -3815,11 +3984,33 @@ describe('supervisor decision bridge', () => {
       return true;
     });
     useStore.getState().patchSupervisor({ submitEnter: false });
+    const unstructuredDecision = await (globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: taskSurfaceId,
+      supervisorSurfaceId: assignedLane.supervisorSurfaceId,
+      outcome: 'continue',
+      next: '直接完成整个项目任务',
+    });
+    expect(unstructuredDecision).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--task-file'),
+    });
+    expect(writes.mock.calls.filter(([surfaceId]) => surfaceId === taskSurfaceId)).toHaveLength(0);
     const decision = await (globalThis.window as any).__wmux_supervisorDecide({
       surfaceId: taskSurfaceId,
       supervisorSurfaceId: assignedLane.supervisorSurfaceId,
       outcome: 'continue',
-      next: '完成当前合同成果并返回可验证证据',
+      taskFile: '.wmux/tmp/project-batch.json',
+      taskDispatch: {
+        kind: 'task',
+        coverage: 'whole-item',
+        outcome: assignment.contract.objective,
+        completionDefinition: [...assignment.contract.stopWhen],
+        evidenceExpectations: [...assignment.contract.validation],
+        unmetCompletionItems: [],
+        knownFacts: ['测试环境可用'],
+        constraints: ['遵循目标项目规则与技能'],
+        nonGoals: [],
+      },
       taskWorkMode: 'single-thread',
     });
     expect(decision, JSON.stringify(decision)).toMatchObject({ ok: true, outcome: 'continue' });
@@ -4025,6 +4216,10 @@ describe('supervisor decision bridge', () => {
       && currentLane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION
       && rawNext
       && ['continue', 'rework'].includes(String(params.outcome || 'continue'));
+    const projectStructured = currentLane
+      && !!currentLane.projectManagerProjectId
+      && rawNext
+      && ['continue', 'rework'].includes(String(params.outcome || 'continue'));
     const needsHuman = String(params.outcome || 'continue') === 'needs-human';
     const ordinaryComplete = currentLane
       && !currentLane.projectManagerProjectId
@@ -4095,6 +4290,21 @@ describe('supervisor decision bridge', () => {
             remainingWork: ['测试任务完成'],
           },
         } : {}),
+        } : {}),
+      ...(projectStructured ? {
+        next: '',
+        taskFile: '.wmux/tmp/project-batch.json',
+        taskDispatch: {
+          kind: String(params.outcome || 'continue') === 'rework' ? 'rework' : 'task',
+          coverage: 'bounded-batch',
+          outcome: rawNext,
+          completionDefinition: ['当前成果形成'],
+          evidenceExpectations: [],
+          unmetCompletionItems: [],
+          knownFacts: [],
+          constraints: ['遵循目标项目规则与技能'],
+          nonGoals: [],
+        },
       } : {}),
     });
   }
@@ -4103,8 +4313,10 @@ describe('supervisor decision bridge', () => {
     '[任务]',
     `成果：${next}`,
     '约束：\n- 遵循目标项目规范',
-    '本次任务验收：\n- 当前成果形成可复核结果',
-    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。完成后简要报告成果、验证证据、剩余工作和真实阻塞。',
+    '本次任务验收（完成定义）：\n- 当前成果形成可复核结果',
+    '验证可行性：未单独声明；按项目规范选择与风险相称的最低成本验证',
+    '返回条件：\n- 完成本次任务验收；若验证受限，则准确报告已完成部分、未验证项、受限原因和剩余不确定性',
+    `请自主读取并遵循目标项目适用的规范与技能，自主选择实现和验证方式。验收定义说明本轮要交付什么，不代表验证必须成功；验证失败、只能部分验证、当前受阻或不适用都可以作为真实结果返回。${TASK_VALIDATION_REPORTING_POLICY}不得反复死磕或扩大范围。完成后简要报告成果、已执行验证及结果、未验证项、受限原因、剩余不确定性、剩余工作和真实阻塞。`,
   ].join('\n\n'), false);
 
   it('injects one safe next step from ordinary supervision', () => {
@@ -4370,6 +4582,47 @@ describe('supervisor decision bridge', () => {
     expect(writes).not.toHaveBeenCalled();
   });
 
+  it('rejects a short user stop condition copied into completion or verification fields', () => {
+    const currentLane = useStore.getState().supervisor.lanes[0];
+    useStore.getState().updateLane(currentLane.id, {
+      config: { ...currentLane.config!, stopWhen: '完成' },
+    });
+    const base = {
+      kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+      outcome: '形成当前阶段结果', constraints: [], evidenceContext: [],
+    };
+    const stagePlan = {
+      objective: '完成当前阶段成果',
+      milestones: [{
+        id: 'deliver', title: '形成局部结果', outcome: '形成边界清楚的局部结果',
+        acceptance: ['形成边界清楚的局部结果'], status: 'active',
+      }],
+      remainingWork: ['形成局部结果'],
+    };
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '复制短停止条件', taskFile: '.wmux/tmp/task-short-stop.json',
+      stagePlanFile: '.wmux/tmp/stage-plan-short-stop.json', stagePlan,
+      taskDispatch: { ...base, acceptanceGap: ['完成'] },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能复制或轻微改写用户总停止条件') });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: '在返回条件复制短停止条件', taskFile: '.wmux/tmp/task-short-return.json',
+      stagePlanFile: '.wmux/tmp/stage-plan-short-return.json', stagePlan,
+      taskDispatch: {
+        ...base,
+        acceptanceGap: ['形成边界清楚的局部结果'],
+        verification: {
+          feasibility: 'partial',
+          expectedEvidence: ['当前环境内可取得的相关证据'],
+          fallbackWhenUnavailable: ['说明未验证项和受限原因'],
+        },
+        returnWhen: ['完成'],
+      },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能复制或轻微改写用户总停止条件') });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   it('rejects a prefixed or comma-split user stop condition anywhere in the task envelope', () => {
     const currentLane = useStore.getState().supervisor.lanes[0];
     useStore.getState().updateLane(currentLane.id, {
@@ -4461,9 +4714,126 @@ describe('supervisor decision bridge', () => {
     );
     expect(writes).toHaveBeenCalledWith(
       'worker-a',
-      expect.stringContaining('无论成功还是失败，都必须如实执行'),
+      expect.stringContaining('验证失败、只能部分验证、当前受阻或不适用都可以作为真实结果返回'),
+    );
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('若能在当前成果、项目规则和风险边界内合理修正并形成新证据，可自主修正并重新验证'),
+    );
+    expect(writes).toHaveBeenCalledWith(
+      'worker-a',
+      expect.stringContaining('允许返回失败或无法验证，不代表完成定义已经满足'),
     );
     expect(String(writes.mock.calls.at(-1)?.[1] || '')).not.toContain('监督 AI');
+  });
+
+  it.each([
+    {
+      feasibility: 'direct',
+      expectedEvidence: ['与本轮成果直接相关的可复核结果'],
+      fallbackWhenUnavailable: [],
+      renderedLabel: '可直接验证',
+    },
+    {
+      feasibility: 'partial',
+      expectedEvidence: ['当前环境内能够完成的相关检查结果'],
+      fallbackWhenUnavailable: ['列出未验证行为、受限原因和剩余不确定性'],
+      renderedLabel: '只能部分验证',
+    },
+    {
+      feasibility: 'blocked',
+      expectedEvidence: [],
+      fallbackWhenUnavailable: ['说明缺失的设备或授权，并给出恢复验证所需的最小条件'],
+      renderedLabel: '当前验证受阻',
+    },
+    {
+      feasibility: 'not-applicable',
+      expectedEvidence: [],
+      fallbackWhenUnavailable: ['说明本轮属于事实整理，并区分已确认事实、推断和未知项'],
+      renderedLabel: '本任务不适用直接验证',
+    },
+  ] as const)('renders $feasibility verification without forcing a passing result', ({
+    feasibility,
+    expectedEvidence,
+    fallbackWhenUnavailable,
+    renderedLabel,
+  }) => {
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: `派发 ${feasibility} 验证任务`,
+      stagePlanFile: `.wmux/tmp/stage-plan-${feasibility}.json`,
+      stagePlan: {
+        objective: '完成当前阶段成果',
+        milestones: [{
+          id: 'deliver', title: '形成阶段成果', outcome: '形成可复核阶段结论',
+          acceptance: ['阶段结论边界清楚'], status: 'active',
+        }],
+        remainingWork: ['形成阶段结论'],
+      },
+      taskFile: `.wmux/tmp/task-${feasibility}.json`,
+      taskDispatch: {
+        kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+        outcome: '形成边界清楚的阶段结论', constraints: ['保持现有用户范围'],
+        acceptanceGap: ['明确已完成内容、剩余不确定性和真实阻塞'],
+        evidenceContext: ['当前尚未形成阶段结论'],
+        verification: { feasibility, expectedEvidence, fallbackWhenUnavailable },
+        returnWhen: ['形成当前成果，或者验证限制已经明确且继续分析不会产生新证据'],
+      },
+    })).toMatchObject({ ok: true, outcome: 'continue' });
+    const taskText = String(writes.mock.calls.at(-1)?.[1] || '');
+    expect(taskText).toContain(`验证可行性：${renderedLabel}`);
+    expect(taskText).toContain('本次任务验收（完成定义）');
+    expect(taskText).toContain('返回条件');
+    expect(taskText).toContain('验证失败、只能部分验证、当前受阻或不适用都可以作为真实结果返回');
+    expect(taskText).toContain('继续尝试不会产生新证据，应结束本轮并如实返回');
+    expect(taskText).toContain('返回验证失败或无法验证时，说明实际结果、已有证据、影响');
+    for (const item of [...expectedEvidence, ...fallbackWhenUnavailable]) expect(taskText).toContain(item);
+  });
+
+  it('rejects incomplete verification metadata instead of making validation an implicit pass gate', () => {
+    const base = {
+      kind: 'task', sourceRevision: 1, milestoneId: 'deliver',
+      outcome: '形成阶段结论', constraints: [],
+      acceptanceGap: ['明确结论及其边界'], evidenceContext: [],
+      returnWhen: ['形成结论或准确说明验证限制'],
+    };
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'direct 缺少证据要求', taskFile: '.wmux/tmp/task-direct-invalid.json',
+      taskDispatch: { ...base, verification: { feasibility: 'direct', expectedEvidence: [], fallbackWhenUnavailable: [] } },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('expectedEvidence') });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'blocked 缺少回退说明', taskFile: '.wmux/tmp/task-blocked-invalid.json',
+      taskDispatch: { ...base, verification: { feasibility: 'blocked', expectedEvidence: [], fallbackWhenUnavailable: [] } },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('fallbackWhenUnavailable') });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'verification 缺少返回条件', taskFile: '.wmux/tmp/task-return-invalid.json',
+      taskDispatch: {
+        ...base,
+        returnWhen: [],
+        verification: { feasibility: 'partial', expectedEvidence: ['当前可用静态证据'], fallbackWhenUnavailable: ['说明未验证项'] },
+      },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('returnWhen') });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'returnWhen 缺少 verification', taskFile: '.wmux/tmp/task-return-only.json',
+      taskDispatch: { ...base },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('必须同时提供 verification') });
+    expect((globalThis.window as any).__wmux_supervisorDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'continue', reason: 'verification 夹带指定命令', taskFile: '.wmux/tmp/task-verification-command.json',
+      taskDispatch: {
+        ...base,
+        verification: {
+          feasibility: 'direct',
+          expectedEvidence: ['Run npm test and return its output'],
+          fallbackWhenUnavailable: [],
+        },
+      },
+    })).toMatchObject({ ok: false, error: expect.stringContaining('不能指定文件、命令、技能或实现路线') });
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('rejects a PASS-only acceptance for an empirical task', () => {
@@ -5012,7 +5382,7 @@ describe('supervisor decision bridge', () => {
     expect(decision?.error).toBeUndefined();
     expect(decision).toMatchObject({ ok: true, outcome: 'continue' });
 
-    expect(writes.mock.calls.map(([, data]) => String(data)).join('\n')).toContain('[执行模式] 多线程');
+    expect(writes.mock.calls.map(([, data]) => String(data)).join('\n')).toContain('[并行能力] 允许内部并行');
     expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')
       ?.config.taskWorkMode).toBe('multi-thread');
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
@@ -5031,6 +5401,10 @@ describe('supervisor decision bridge', () => {
         id: 'stage-complexity', goalId: current.activeGoalId!, title: '复杂度评估',
         outcome: '形成独立可验收成果', acceptance: ['成果完成'], dependencies: [],
         status: 'active', order: 1, createdAt: 1, updatedAt: 1,
+      }, {
+        id: 'stage-future', goalId: current.activeGoalId!, title: '后续验收阶段',
+        outcome: '形成后续独立成果', acceptance: ['未来阶段验收'], dependencies: ['stage-complexity'],
+        status: 'planned', order: 2, createdAt: 1, updatedAt: 1,
       }],
     });
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -5073,6 +5447,26 @@ describe('supervisor decision bridge', () => {
       ok: false,
       error: expect.stringContaining('先拆分'),
     });
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'medium', decision: 'single-task',
+          signals: ['声称多个阶段共享实现'], rationale: '尝试把未来阶段合并到一个任务',
+        },
+        contract: {
+          ...workItem.contract,
+          stopWhen: [...workItem.contract.stopWhen, '未来阶段验收'],
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('合同包含其他未完成阶段'),
+    });
     const acceptedCreation = await request({
       action: 'task-create',
       callerSurfaceId: current.managerSurfaceId,
@@ -5080,6 +5474,7 @@ describe('supervisor decision bridge', () => {
       workItem: {
         ...workItem,
         taskWorkMode: 'single-thread',
+        contract: { ...workItem.contract, authority: {} },
         complexityAssessment: {
           complexity: 'low',
           decision: 'single-task',
@@ -5095,6 +5490,37 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)
       ?.workItems.find((candidate) => candidate.id === 'task-b')?.taskWorkMode)
       .toBe('single-thread');
+    const accepted = useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)!
+      .workItems.find((candidate) => candidate.id === 'task-b')!;
+    expect(accepted.contract.authority).toMatchObject({
+      technicalChoices: true,
+      lowRiskRetries: true,
+      routeAdjustments: true,
+      targetedTests: true,
+      permissionConfirm: true,
+      continuousExecution: true,
+    });
+    await expect(request({
+      action: 'task-update', callerSurfaceId: current.managerSurfaceId, projectId: current.id,
+      workItemId: 'task-b', stopWhen: [...accepted.contract.stopWhen, '未来阶段验收'],
+    })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('合同包含其他未完成阶段'),
+    });
+    const latest = useStore.getState().projectManagers.find((candidate) => candidate.id === current.id)!;
+    useStore.getState().restoreProjectManager({
+      ...latest,
+      activeWorkItemId: undefined,
+      workItems: [{
+        ...accepted,
+        contract: { ...accepted.contract, stopWhen: [...accepted.contract.stopWhen, '未来阶段验收'] },
+      }],
+    });
+    await expect(request({
+      action: 'supervisor-assign', callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id, workItemId: 'task-b',
+    })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining('合同包含其他未完成阶段'),
+    });
   });
 
   it('clears polluted task context in place once and escalates a repeated reset', async () => {
@@ -6329,13 +6755,14 @@ describe('supervisor decision bridge', () => {
     });
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
 
-    await expect(request({
+    const updateResult = await request({
       action: 'task-update', callerSurfaceId: managerSurfaceId, projectId: project.id,
       workItemId: 'task-a', status: 'planned',
       objective: '形成现有证据覆盖判定并明确剩余缺口',
       latestContextSummary: '复用已有证据，不重复无变化验证',
       latestBlocker: '仅保留尚未验证的真实权限边界',
-    })).resolves.toMatchObject({
+    });
+    expect(updateResult, JSON.stringify(updateResult)).toMatchObject({
       ok: true,
       workItem: expect.objectContaining({
         id: 'task-a', status: 'planned',
@@ -7286,6 +7713,8 @@ describe('supervisor decision bridge', () => {
       reason: '外部测试环境凭据已经失效',
       impact: '本地无法恢复该外部环境',
     })).toMatchObject({ ok: true, outcome: 'needs-human' });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.workItems[0]?.latestContextSummary).toBe('本地无法恢复该外部环境');
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
     const transition = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
       ?.pendingSupervisorTransitions?.[0];

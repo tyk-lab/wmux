@@ -79,6 +79,7 @@ import {
   isProjectManagedSupervisorLane,
   isSupervisorLaneBound,
   ORDINARY_SUPERVISION_PROTOCOL_VERSION,
+  ORDINARY_VERIFICATION_FEASIBILITY_VALUES,
   supervisorLaneControlState,
   type OrdinaryContextHealthState,
   type GoalVortexState,
@@ -163,6 +164,7 @@ import {
   projectCriterionRequiresRuntimeTest,
   projectAuthorizationVersion,
   projectDisplayName,
+  projectManagerDestructiveDecisionScopeMatches,
   projectManagerEventNeedsUserAttention,
   projectManagerGoalChangeHasUserBasis,
   projectManagerQuestionAllowsReusableDecision,
@@ -199,6 +201,7 @@ import {
   type ProjectPlanFileSnapshot,
   type ProjectSubgoal,
   type ProjectSupervisorContract,
+  type ProjectTaskBatch,
   type ProjectRetryKind,
   type ProjectWorkItem,
 } from '../shared/project-manager';
@@ -219,8 +222,10 @@ import {
   projectRetryKindEvidenceError,
 } from './project-manager/anti-loop';
 import {
+  isCurrentProjectTaskBatch,
   isProjectTargetedTestCommand,
-  prepareProjectTaskDelivery,
+  normalizeProjectTaskBatch,
+  projectTaskImplementationDirectiveError,
   projectTaskContractDisclosureError,
   projectTaskInstructionDisclosureError,
   projectContractViolation,
@@ -229,6 +234,8 @@ import {
   projectPermissionAuthorizationError,
   projectHasRunnableGoalPlan,
   projectProgressObligation,
+  renderProjectTaskBatch,
+  TASK_VALIDATION_REPORTING_POLICY,
   type ProjectProgressObligation,
   projectWorkItemSubgoalDependencyError,
 } from './project-manager/engine';
@@ -3295,9 +3302,9 @@ export function projectContractAutonomyPermissions(
 ): SupervisorAutonomyPermission[] {
   return [
     'same-route-next',
-    ...(contract.authority.technicalChoices ? ['technical-choice' as const] : []),
-    ...(contract.authority.routeAdjustments ? ['route-adjustment' as const] : []),
-    ...(contract.authority.permissionConfirm ? ['permission-confirm' as const] : []),
+    ...(contract.authority.technicalChoices !== false ? ['technical-choice' as const] : []),
+    ...(contract.authority.routeAdjustments !== false ? ['route-adjustment' as const] : []),
+    ...(contract.authority.permissionConfirm !== false ? ['permission-confirm' as const] : []),
   ];
 }
 
@@ -3522,6 +3529,7 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
   const input = raw as Record<string, unknown>;
   const allowedFields = new Set([
     'kind', 'sourceRevision', 'milestoneId', 'outcome', 'constraints', 'acceptanceGap', 'evidenceContext',
+    'verification', 'returnWhen',
   ]);
   const unknownFields = Object.keys(input).filter((field) => !allowedFields.has(field));
   if (unknownFields.length > 0) {
@@ -3534,6 +3542,7 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
   const constraints = projectStringArray(input.constraints).slice(0, 30);
   const acceptanceGap = projectStringArray(input.acceptanceGap).slice(0, 30);
   const evidenceContext = projectStringArray(input.evidenceContext).slice(0, 30);
+  const returnWhen = projectStringArray(input.returnWhen).slice(0, 20);
   if (!['task', 'diagnostic', 'rework'].includes(kind)) {
     return { error: '普通监督任务派发 kind 必须是 task、diagnostic 或 rework' };
   }
@@ -3543,18 +3552,63 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
   if (!PROJECT_WORK_ITEM_ID.test(milestoneId) || !outcome || acceptanceGap.length === 0) {
     return { error: '普通监督任务派发必须包含有效 milestoneId、outcome 和非空 acceptanceGap' };
   }
+  let verification: OrdinaryTaskDispatch['verification'];
+  if (input.verification === undefined && input.returnWhen !== undefined) {
+    return { error: '普通监督任务提供 returnWhen 时必须同时提供 verification' };
+  }
+  if (input.verification !== undefined) {
+    if (!input.verification || typeof input.verification !== 'object' || Array.isArray(input.verification)) {
+      return { error: '普通监督任务 verification 必须是对象' };
+    }
+    const verificationInput = input.verification as Record<string, unknown>;
+    const verificationUnknownFields = Object.keys(verificationInput).filter((field) => ![
+      'feasibility', 'expectedEvidence', 'fallbackWhenUnavailable',
+    ].includes(field));
+    if (verificationUnknownFields.length > 0) {
+      return { error: `普通监督任务 verification 包含未授权字段：${verificationUnknownFields.join('、')}` };
+    }
+    const feasibility = String(verificationInput.feasibility || '').trim();
+    const expectedEvidence = projectStringArray(verificationInput.expectedEvidence).slice(0, 30);
+    const fallbackWhenUnavailable = projectStringArray(verificationInput.fallbackWhenUnavailable).slice(0, 20);
+    if (!(ORDINARY_VERIFICATION_FEASIBILITY_VALUES as readonly string[]).includes(feasibility)) {
+      return { error: '普通监督任务 verification.feasibility 必须是 direct、partial、blocked 或 not-applicable' };
+    }
+    if (['direct', 'partial'].includes(feasibility) && expectedEvidence.length === 0) {
+      return { error: `${feasibility} 验证必须提供非空 expectedEvidence` };
+    }
+    if (['partial', 'blocked', 'not-applicable'].includes(feasibility)
+      && fallbackWhenUnavailable.length === 0) {
+      return { error: `${feasibility} 验证必须说明 fallbackWhenUnavailable` };
+    }
+    if (returnWhen.length === 0) {
+      return { error: '带 verification 的普通监督任务必须提供非空 returnWhen' };
+    }
+    verification = {
+      feasibility: feasibility as NonNullable<OrdinaryTaskDispatch['verification']>['feasibility'],
+      expectedEvidence,
+      fallbackWhenUnavailable,
+    };
+  }
+  const verificationText = verification
+    ? [
+        ...verification.expectedEvidence,
+        ...verification.fallbackWhenUnavailable,
+        ...returnWhen,
+      ]
+    : [];
   const taskEnvelope = [
     outcome,
     ...constraints,
     ...acceptanceGap,
     ...evidenceContext,
+    ...verificationText,
   ];
   const disclosureError = projectTaskInstructionDisclosureError(taskEnvelope.join('\n'));
   if (disclosureError) {
     return { error: `普通监督任务必须保持中性，不能暴露监督或内部编排身份：${disclosureError}` };
   }
   const empiricalTask = /(?:上机|上电|实机|实验|测量|采样|采集|台架|硬件)/iu.test(taskEnvelope.join('\n'));
-  const forcedEmpiricalResult = [outcome, ...constraints, ...acceptanceGap].find((item) => (
+  const forcedEmpiricalResult = [outcome, ...constraints, ...acceptanceGap, ...verificationText].find((item) => (
     /(?:\bPASS\b)|(?:(?:实验|测试|测量|上机|上电|实测).{0,12}(?:结果|结论).{0,8}(?:通过|成功|达标))|(?:(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:必须|需要|要求|应当|应|需|须|达到).{0,8}(?:通过|成功|达标))|(?:(?:必须|需要|要求|取得|达到|确保|保证).{0,16}(?:实验|测试|测量|上机|上电|实测|结果).{0,16}(?:通过|成功|达标))/iu.test(item)
     && !/(?:FAIL|失败|未通过|未成功|无论|如实|实际结果|真实结果)/iu.test(item)
   ));
@@ -3563,15 +3617,10 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
       error: `实验/上机任务的本次验收不能预设必须 PASS、通过或成功：${forcedEmpiricalResult}。请改为“实际执行完成并如实记录 PASS/FAIL、原始结果和证据”，最终是否满足用户条件由监督 AI 在任务返回后裁决`,
     };
   }
-  const implementationDirective = [outcome, ...constraints, ...acceptanceGap].join('\n');
-  const explicitImplementationDirective = /(?:必须|请)(?:修改|编辑|创建|删除).{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)|(?:必须|请)(?:运行|执行).{0,120}\b(?:npm|pnpm|yarn|git|python|cargo|go|dotnet)\b|(?:必须|请)使用.{0,50}(?:技能|skill|框架|依赖|库)\b|\b(?:selectedRoute|expectedPaths|targetedValidation)\b/iu.test(implementationDirective)
-    || /\b(?:(?:you\s+)?(?:must|should)|please|required\s+to)\s+(?:edit|modify|create|delete|remove)\b.{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)/iu.test(implementationDirective)
-    || /\b(?:run|execute)\s+(?:npm|pnpm|yarn|git|python|pytest|cargo|go|dotnet)\b/iu.test(implementationDirective)
-    || /\b(?:use|invoke)\s+(?:the\s+)?[^\r\n]{0,50}\b(?:skill|framework|dependency|library)\b/iu.test(implementationDirective)
-    || /\b(?:follow|use)\s+(?:the\s+)?(?:selected|specified|supervisor['’]s?)?\s*(?:implementation\s+)?(?:route|plan)\b/iu.test(implementationDirective);
-  if (explicitImplementationDirective) {
-    return { error: '普通监督任务只能描述成果、约束和验收缺口，不能指定文件、命令、技能或实现路线' };
-  }
+  const implementationDirectiveError = projectTaskImplementationDirectiveError(
+    [outcome, ...constraints, ...acceptanceGap, ...verificationText].join('\n'),
+  );
+  if (implementationDirectiveError) return { error: `普通监督${implementationDirectiveError}` };
   return {
     dispatch: {
       kind: kind as OrdinaryTaskDispatch['kind'],
@@ -3581,20 +3630,39 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
       constraints,
       acceptanceGap,
       evidenceContext,
+      ...(verification ? { verification, returnWhen } : {}),
     },
   };
 }
 
 function renderOrdinaryTaskDispatch(dispatch: OrdinaryTaskDispatch): string {
+  const verificationLabels: Record<NonNullable<OrdinaryTaskDispatch['verification']>['feasibility'], string> = {
+    direct: '可直接验证',
+    partial: '只能部分验证',
+    blocked: '当前验证受阻',
+    'not-applicable': '本任务不适用直接验证',
+  };
+  const verification = dispatch.verification;
+  const returnWhen = dispatch.returnWhen?.length
+    ? dispatch.returnWhen
+    : ['完成本次任务验收；若验证受限，则准确报告已完成部分、未验证项、受限原因和剩余不确定性'];
   return [
     '[任务]',
     `成果：${dispatch.outcome}`,
     dispatch.constraints.length > 0 ? `约束：\n${dispatch.constraints.map((item) => `- ${item}`).join('\n')}` : '',
-    `本次任务验收：\n${dispatch.acceptanceGap.map((item) => `- ${item}`).join('\n')}`,
+    `本次任务验收（完成定义）：\n${dispatch.acceptanceGap.map((item) => `- ${item}`).join('\n')}`,
+    verification ? `验证可行性：${verificationLabels[verification.feasibility]}` : '验证可行性：未单独声明；按项目规范选择与风险相称的最低成本验证',
+    verification?.expectedEvidence.length
+      ? `期望证据：\n${verification.expectedEvidence.map((item) => `- ${item}`).join('\n')}`
+      : '',
+    verification?.fallbackWhenUnavailable.length
+      ? `验证受限时：\n${verification.fallbackWhenUnavailable.map((item) => `- ${item}`).join('\n')}`
+      : '',
+    `返回条件：\n${returnWhen.map((item) => `- ${item}`).join('\n')}`,
     dispatch.evidenceContext.length > 0
       ? `已知现状：\n${dispatch.evidenceContext.map((item) => `- ${item}`).join('\n')}`
       : '',
-    '请自主读取并遵循目标项目适用的规范与技能，选择实现方式并推进到可验证结果。实验、测试或操作无论成功还是失败，都必须如实执行并返回实际结果、失败信息和可复核证据；不得为了满足预设结论而隐瞒失败、篡改结果或无边界重复。完成后简要报告成果、验证证据、剩余工作和真实阻塞。',
+    `请自主读取并遵循目标项目适用的规范与技能，自主选择实现和验证方式。验收定义说明本轮要交付什么，不代表验证必须成功；验证失败、只能部分验证、当前受阻或不适用都可以作为真实结果返回。${TASK_VALIDATION_REPORTING_POLICY}不得反复死磕或扩大范围。完成后简要报告成果、已执行验证及结果、未验证项、受限原因、剩余不确定性、剩余工作和真实阻塞。`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -3826,12 +3894,14 @@ function normalizeProjectWorkItemInput(
   }
   const allowedCommandPrefixes = projectStringArray(contractRaw.authority?.allowedCommandPrefixes)
     .map((item) => item.slice(0, 240));
-  if (contractRaw.authority?.permissionConfirm === true
-    && contractRaw.authority?.targetedTests !== true
+  const permissionConfirm = contractRaw.authority?.permissionConfirm !== false;
+  const targetedTests = contractRaw.authority?.targetedTests !== false;
+  if (permissionConfirm
+    && !targetedTests
     && allowedCommandPrefixes.length === 0) {
     return { error: '启用 permissionConfirm 时必须授权 targetedTests 或提供 allowedCommandPrefixes' };
   }
-  if (contractRaw.authority?.permissionConfirm !== true && allowedCommandPrefixes.length > 0) {
+  if (!permissionConfirm && allowedCommandPrefixes.length > 0) {
     return { error: '未启用 permissionConfirm 时不能提供 allowedCommandPrefixes' };
   }
   // Runtime bindings are control-plane owned. Project AI defines the contract;
@@ -3876,6 +3946,11 @@ function normalizeProjectWorkItemInput(
   const linkedSubgoal = subgoalId
     ? activeProjectSubgoals(session).find((candidate) => candidate.id === subgoalId)
     : undefined;
+  const stageScopeError = projectWorkItemStageScopeError(session, subgoalId, [
+    ...stopWhen,
+    ...validation,
+  ]);
+  if (stageScopeError) return { error: stageScopeError };
   const effectiveStopWhen = mergeProjectRequirements(stopWhen, linkedSubgoal?.acceptance || []);
   const taskContractDisclosureError = projectTaskContractDisclosureError({
     objective,
@@ -3916,16 +3991,16 @@ function normalizeProjectWorkItemInput(
           forbiddenActions: projectStringArray(contractRaw.scope?.forbiddenActions),
         },
         authority: {
-          technicalChoices: contractRaw.authority?.technicalChoices === true,
-          lowRiskRetries: contractRaw.authority?.lowRiskRetries === true,
-          routeAdjustments: contractRaw.authority?.routeAdjustments === true,
-          targetedTests: contractRaw.authority?.targetedTests === true,
-          internalThreads: contractRaw.authority?.internalThreads === true,
-          continuousExecution: contractRaw.authority?.continuousExecution === true,
+          technicalChoices: contractRaw.authority?.technicalChoices !== false,
+          lowRiskRetries: contractRaw.authority?.lowRiskRetries !== false,
+          routeAdjustments: contractRaw.authority?.routeAdjustments !== false,
+          targetedTests,
+          internalThreads: contractRaw.authority?.internalThreads !== false,
+          continuousExecution: contractRaw.authority?.continuousExecution !== false,
           ...(continuationBoundary ? {
             continuationBoundary: continuationBoundary as ProjectSupervisorContract['authority']['continuationBoundary'],
           } : {}),
-          permissionConfirm: contractRaw.authority?.permissionConfirm === true,
+          permissionConfirm,
           allowedCommandPrefixes,
           authorizedDevices: projectStringArray(contractRaw.authority?.authorizedDevices),
           authorizedEnvironments: projectStringArray(contractRaw.authority?.authorizedEnvironments),
@@ -4213,12 +4288,13 @@ function projectPlanningActionConfirmationError(
   action: string,
   params: any,
 ): string | null {
+  const updatesDefinition = action === 'update' || action === 'update-definition';
   const input = action === 'task-create' || action === 'task-update'
     ? params?.workItem || params || {}
     : params?.definition || params || {};
   const supplements = projectStringArray(input?.planningSupplements ?? input?.supplements);
   let changesUserPlan = false;
-  if (action === 'update') {
+  if (updatesDefinition) {
     const owns = (field: string) => Object.prototype.hasOwnProperty.call(input, field);
     changesUserPlan = (owns('goal') && String(input.goal || '').trim() !== session.goal.trim())
       || (owns('projectScope') && String(input.projectScope || '').trim() !== String(session.projectScope || '').trim())
@@ -4228,21 +4304,21 @@ function projectPlanningActionConfirmationError(
         && JSON.stringify(projectStringArray(input.doneWhen)) !== JSON.stringify(session.doneWhen))
       || owns('planFiles');
   }
-  if (!['update', 'goal-plan', 'task-create', 'task-update'].includes(action)) return null;
+  if (!['update', 'update-definition', 'goal-plan', 'task-create', 'task-update'].includes(action)) return null;
   const confirmationScope = [
-    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'goal')
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'goal')
       && String(input.goal || '').trim() !== session.goal.trim()
       ? [`goal: ${String(input.goal || '').trim()}`] : []),
-    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'projectScope')
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'projectScope')
       && String(input.projectScope || '').trim() !== String(session.projectScope || '').trim()
       ? [`projectScope: ${String(input.projectScope || '').trim() || '（空）'}`] : []),
-    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'preconditions')
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'preconditions')
       && JSON.stringify(projectStringArray(input.preconditions)) !== JSON.stringify(session.preconditions)
       ? [`preconditions: ${projectStringArray(input.preconditions).join('；') || '（空）'}`] : []),
-    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'doneWhen')
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'doneWhen')
       && JSON.stringify(projectStringArray(input.doneWhen)) !== JSON.stringify(session.doneWhen)
       ? [`doneWhen: ${projectStringArray(input.doneWhen).join('；') || '（空）'}`] : []),
-    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'planFiles')
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'planFiles')
       ? [`planFiles: ${(Array.isArray(input.planFiles) ? input.planFiles : []).map((file: any) => String(file?.path || file?.name || '')).filter(Boolean).join('；') || '（空）'}`] : []),
     ...supplements.map((supplement) => `supplement: ${supplement}`),
   ];
@@ -5192,10 +5268,69 @@ function projectRequirementAlignmentState(session: ProjectManagerSession): Proje
       ? index
       : latest
   ), -1);
+  if (projectRequirementConfirmationCoversCurrentDefinition(
+    session,
+    latestAnswerIndex,
+    latestRequiredIndex,
+    latestDefinitionIndex,
+  )) return 'sufficient';
   if (latestAnswerIndex <= Math.max(latestRequiredIndex, latestDefinitionIndex)) return 'needs-question';
-  return session.events[latestAnswerIndex]?.payload?.optionId === 'confirm-requirements'
-    ? 'sufficient'
-    : 'needs-definition-update';
+  return 'needs-definition-update';
+}
+
+function projectWorkItemStageScopeError(
+  session: ProjectManagerSession,
+  subgoalId: string,
+  criteria: readonly string[],
+): string | null {
+  if (!subgoalId) return null;
+  const criterionIds = new Set(criteria.map(projectCriterionIdentity).filter(Boolean));
+  const crossedStage = activeProjectSubgoals(session).find((subgoal) => (
+    subgoal.id !== subgoalId
+    && !['achieved', 'obsolete'].includes(subgoal.status)
+    && subgoal.acceptance.some((criterion) => criterionIds.has(projectCriterionIdentity(criterion)))
+  ));
+  if (!crossedStage) return null;
+  const crossedCriterion = crossedStage.acceptance.find((criterion) => (
+    criterionIds.has(projectCriterionIdentity(criterion))
+  ));
+  return `工作项绑定 ${subgoalId}，但合同包含其他未完成阶段 ${crossedStage.id} 的验收项：${crossedCriterion}；请按阶段创建聚焦工作项，不能用 single-task 复杂度声明合并跨阶段成果`;
+}
+
+function projectRequirementConfirmationCoversCurrentDefinition(
+  session: ProjectManagerSession,
+  confirmationIndex: number,
+  latestRequiredIndex: number,
+  latestDefinitionIndex: number,
+): boolean {
+  const confirmation = confirmationIndex >= 0 ? session.events[confirmationIndex] : undefined;
+  if (!confirmation || confirmation.kind !== 'user-clarification-answered' || confirmation.workItemId) return false;
+  const latestRootAnswerIndex = session.events.reduce((latest, event, index) => (
+    event.kind === 'user-clarification-answered' && !event.workItemId ? index : latest
+  ), -1);
+  if (confirmationIndex !== latestRootAnswerIndex) return false;
+  const directlyConfirmed = confirmation.payload?.category !== 'manual-intervention'
+    && confirmation.payload?.optionId === 'confirm-requirements'
+    && confirmationIndex > Math.max(latestRequiredIndex, latestDefinitionIndex);
+  if (directlyConfirmed) return true;
+  const latestDefinition = latestDefinitionIndex >= 0 ? session.events[latestDefinitionIndex] : undefined;
+  const latestRequired = latestRequiredIndex >= 0 ? session.events[latestRequiredIndex] : undefined;
+  const explicitlyLinked = latestDefinitionIndex > confirmationIndex
+    && latestDefinition?.payload?.userConfirmationEventId === confirmation.id
+    && (
+      latestRequiredIndex < latestDefinitionIndex
+      || latestRequired?.payload?.userConfirmationEventId === confirmation.id
+    );
+  if (explicitlyLinked) return true;
+  const previous = latestDefinition?.payload?.previous as Record<string, unknown> | undefined;
+  const next = latestDefinition?.payload?.next as Record<string, unknown> | undefined;
+  const changesUserPlan = !previous || !next || ['goal', 'preconditions', 'planFiles', 'doneWhen'].some((key) => (
+    JSON.stringify(previous[key] ?? null) !== JSON.stringify(next[key] ?? null)
+  ));
+  return latestDefinitionIndex > confirmationIndex
+    && latestRequiredIndex === latestDefinitionIndex + 1
+    && !latestDefinition?.payload?.userConfirmationEventId
+    && !changesUserPlan;
 }
 
 function projectAlignmentQuestionInput(session: ProjectManagerSession): Record<string, unknown> {
@@ -8918,6 +9053,7 @@ async function ensureProjectAuxiliaryRuntime(sessionId: string, options: {
     name: `${projectDisplayName(session)} · 辅助任务 AI`,
     task: [
       '你是隔离的项目辅助任务 AI，不是主任务执行者。保持空闲，直到项目 AI 或监督 AI 通过控制层派发辅助任务。',
+      '你知道项目 AI 和监督 AI 是任务请求方，但交互只限接收单项杂务并向原请求方回报；不得参与编排、审批、项目决策或主任务技术路线。',
       '只允许执行资料调查、项目进度保存、受控文档维护，以及用户已明确授权且仅包含任务自有文档的 Git commit。',
       '不得修改业务源码、测试、构建配置或依赖，不得运行项目实现/测试，不得 push、发布、改写 Git 历史，也不得寻找、联系或控制主任务 AI。',
     ].join(' '),
@@ -9899,6 +10035,7 @@ async function updateProjectDefinition(
 
   const reason = String(params?.reason || '').trim().slice(0, 2000)
     || `${source === 'user' ? '用户通过项目配置' : '项目 AI 根据用户对话'}${mode === 'pivot' ? '切换新的主目标' : '调整当前主目标'}`;
+  const userConfirmationEventId = String(params?.userConfirmationEventId || '').trim();
   const store = useStore.getState();
   const quiesce = await quiesceProjectRuntimeLanes(
     session,
@@ -9914,6 +10051,7 @@ async function updateProjectDefinition(
     planFiles,
     doneWhen,
     reason,
+    ...(userConfirmationEventId ? { userConfirmationEventId } : {}),
     source,
     mode,
   }, session.id);
@@ -9923,6 +10061,7 @@ async function updateProjectDefinition(
     reason: mode === 'pivot'
       ? '主目标已切换，需要按新目标重新确认需求、范围和验收充分性'
       : '目标或需求已调整，需要按新版本重新确认需求、范围和验收充分性',
+    ...(userConfirmationEventId ? { userConfirmationEventId } : {}),
   }, session.id);
   if (!alignmentResult.ok) return alignmentResult;
   for (const laneId of projectSupervisorLaneIds(session)) {
@@ -10359,12 +10498,34 @@ async function resetProjectTaskContextInPlace(
     workItemId: item.id,
     patch: { contextReset: { ...requestedReset, status: 'cleared' } },
   }, session.id);
-  const cleanPacket = prepareProjectTaskDelivery(
+  const currentTaskBatch = isCurrentProjectTaskBatch(lane.projectTaskBatch)
+    ? lane.projectTaskBatch
+    : undefined;
+  const recoveryBatch: ProjectTaskBatch = currentTaskBatch
+    ? {
+        ...currentTaskBatch,
+        kind: 'rework',
+        knownFacts: [...new Set([
+          ...currentTaskBatch.knownFacts,
+          `上下文已经清空；不要恢复或猜测旧对话。已核对事实：${input.cleanContext}`,
+        ])],
+      }
+    : {
+        kind: 'rework',
+        coverage: 'bounded-batch',
+        outcome: lane.currentTask || item.contract.objective,
+        completionDefinition: item.contract.stopWhen.slice(0, 3),
+        evidenceExpectations: [],
+        unmetCompletionItems: [],
+        knownFacts: [`上下文已经清空；不要恢复或猜测旧对话。已核对事实：${input.cleanContext}`],
+        constraints: ['遵循当前目录适用的项目规则和技能规范'],
+        nonGoals: [],
+      };
+  const cleanPacket = renderProjectTaskBatch(
     item.contract,
-    `上下文已经清空。不要恢复或猜测旧对话；只复用项目文件和下列已核对事实继续完成成果：${input.cleanContext}`,
-    true,
+    recoveryBatch,
     item.taskWorkMode || 'single-thread',
-  ).delivery;
+  );
   try {
     let recoveryAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
     await Promise.resolve(sendTaskToSurfaceReliably(
@@ -10402,7 +10563,8 @@ async function resetProjectTaskContextInPlace(
   }, session.id);
   store.updateLane(lane.id, {
     awaitingReview: false,
-    currentTask: item.contract.objective,
+    currentTask: recoveryBatch.outcome,
+    projectTaskBatch: recoveryBatch,
     projectTaskContractPending: false,
     permissionConfirmations: [],
   });
@@ -10744,6 +10906,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       `目标：${task}`,
       allowedPaths.length > 0 ? `唯一允许写入/暂存的路径：${allowedPaths.join('；')}` : '只读调查：禁止修改任何项目文件。',
       '开始前读取并严格遵循当前目录适用的 AGENTS、项目技能和文档/进度落位规范。',
+      '你与项目 AI/监督 AI 的交互仅限接收本任务并向原请求方报告结果；不得参与编排、审批、项目决策或主任务技术路线。',
       '禁止修改业务源码、测试、构建配置、依赖和主任务 AI 产物；禁止运行项目实现或测试；禁止寻找、通知或控制主任务 AI。',
       kind === 'git-commit'
         ? '用户已授权本次 Git commit。必须使用项目 commit-gatekeeper 规则，只暂存上述路径并使用中文提交信息；不得暂存其他改动，不得 push、发布或改写历史。'
@@ -10866,6 +11029,60 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }
     const normalized = normalizeProjectManagerUserQuestion(params, session.status);
     if (!normalized.question) return { ok: false, error: normalized.error };
+    const reusableDecision = !session.pendingUserQuestion
+      && projectManagerQuestionAllowsReusableDecision(normalized.question)
+      ? [...(session.reusableUserDecisions || [])].reverse().find((decision) => (
+          decision.decisionKey === projectManagerQuestionDecisionKey(normalized.question!)
+          && decision.semanticFingerprint === projectManagerQuestionSemanticFingerprint(normalized.question!)
+          && decision.requirementsVersion === projectRequirementsVersion(session)
+          && decision.authorizationVersion === projectAuthorizationVersion(session)
+          && (decision.reasonCode !== 'destructive-action' || (
+            decision.projectId === session.id
+            && decision.workItemId === normalized.question?.workItemId
+            && projectManagerDestructiveDecisionScopeMatches(
+              normalized.question?.decisionScope,
+              session.id,
+              normalized.question?.workItemId,
+            )
+          ))
+        ))
+      : undefined;
+    if (reusableDecision) {
+      await appendRecordedProjectEvent(session, {
+        kind: 'user-clarification-answered',
+        workItemId: normalized.question.workItemId,
+        summary: `自动沿用用户已授权的同类答复：${reusableDecision.answer}`,
+        payload: {
+          questionId: normalized.question.id,
+          decisionKey: reusableDecision.decisionKey,
+          answer: reusableDecision.answer,
+          optionId: reusableDecision.optionId,
+          category: normalized.question.category,
+          autoReused: true,
+          sourceDecisionId: reusableDecision.id,
+          semanticFingerprint: reusableDecision.semanticFingerprint,
+          ...(normalized.question.confirmationScope?.length ? {
+            confirmationScope: normalized.question.confirmationScope,
+            confirmationDigest: projectPlanningConfirmationDigest(normalized.question.confirmationScope),
+          } : {}),
+        },
+      });
+      queueProjectManagerDelivery([
+        '[用户已授权复用同类决定｜不得再次提问]',
+        `问题：${normalized.question.question}`,
+        `沿用答复：${reusableDecision.answer}`,
+        `decisionKey：${reusableDecision.decisionKey}`,
+        '请把该答复视为当前需求与授权版本内的权威用户指导，自行决定恢复、改线、继续等待或结束。',
+      ].join('\n'), session.id, { priority: true });
+      return {
+        ok: true,
+        autoAnswered: true,
+        answer: reusableDecision.answer,
+        optionId: reusableDecision.optionId,
+        decisionKey: reusableDecision.decisionKey,
+        message: '已沿用用户授权的同类决定；未暂停项目，也未重复通知用户。',
+      };
+    }
     if (!projectRequirementsAlignmentPending(session) && normalized.question.category !== 'manual-intervention') {
       return { ok: false, error: '项目执行中仅在无法由项目管理 AI 处理、需要人工操作或越权授权时才能提问；请使用 category=manual-intervention' };
     }
@@ -10974,51 +11191,6 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         };
       }
     }
-    const reusableDecision = !session.pendingUserQuestion
-      && projectManagerQuestionAllowsReusableDecision(normalized.question)
-      ? [...(session.reusableUserDecisions || [])].reverse().find((decision) => (
-          decision.decisionKey === projectManagerQuestionDecisionKey(normalized.question!)
-          && decision.semanticFingerprint === projectManagerQuestionSemanticFingerprint(normalized.question!)
-          && decision.requirementsVersion === projectRequirementsVersion(session)
-          && decision.authorizationVersion === projectAuthorizationVersion(session)
-        ))
-      : undefined;
-    if (reusableDecision) {
-      await appendRecordedProjectEvent(session, {
-        kind: 'user-clarification-answered',
-        workItemId: normalized.question.workItemId,
-        summary: `自动沿用用户已授权的同类答复：${reusableDecision.answer}`,
-        payload: {
-          questionId: normalized.question.id,
-          decisionKey: reusableDecision.decisionKey,
-          answer: reusableDecision.answer,
-          optionId: reusableDecision.optionId,
-          category: normalized.question.category,
-          autoReused: true,
-          sourceDecisionId: reusableDecision.id,
-          semanticFingerprint: reusableDecision.semanticFingerprint,
-          ...(normalized.question.confirmationScope?.length ? {
-            confirmationScope: normalized.question.confirmationScope,
-            confirmationDigest: projectPlanningConfirmationDigest(normalized.question.confirmationScope),
-          } : {}),
-        },
-      });
-      queueProjectManagerDelivery([
-        '[用户已授权复用同类决定｜不得再次提问]',
-        `问题：${normalized.question.question}`,
-        `沿用答复：${reusableDecision.answer}`,
-        `decisionKey：${reusableDecision.decisionKey}`,
-        '请把该答复视为当前需求与授权版本内的权威用户指导，自行决定恢复、改线、继续等待或结束。',
-      ].join('\n'), session.id, { priority: true });
-      return {
-        ok: true,
-        autoAnswered: true,
-        answer: reusableDecision.answer,
-        optionId: reusableDecision.optionId,
-        decisionKey: reusableDecision.decisionKey,
-        message: '已沿用用户授权的同类决定；未暂停项目，也未重复通知用户。',
-      };
-    }
     const result = store.applyProjectManagerAction({
       type: 'request-user-clarification',
       question: normalized.question,
@@ -11064,21 +11236,21 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     const assessment = params?.assessment || params;
     const confirmationEventId = String(assessment?.userConfirmationEventId || '').trim();
     const confirmationIndex = session.events.findIndex((event) => event.id === confirmationEventId);
-    const confirmation = confirmationIndex >= 0 ? session.events[confirmationIndex] : undefined;
     const latestRequiredIndex = session.events.reduce((latest, event, index) => (
       event.kind === 'requirements-alignment-required' ? index : latest
     ), -1);
     const latestDefinitionIndex = session.events.reduce((latest, event, index) => (
       event.kind === 'project-definition-updated' ? index : latest
     ), -1);
-    if (!confirmation
-      || confirmation.kind !== 'user-clarification-answered'
-      || confirmation.payload?.category === 'manual-intervention'
-      || confirmation.payload?.optionId !== 'confirm-requirements'
-      || confirmationIndex <= Math.max(latestRequiredIndex, latestDefinitionIndex)) {
+    if (!projectRequirementConfirmationCoversCurrentDefinition(
+      session,
+      confirmationIndex,
+      latestRequiredIndex,
+      latestDefinitionIndex,
+    )) {
       return {
         ok: false,
-        error: '首次需求对齐必须引用最近一次“确认需求”的结构化用户答复；请先通过 project ask 展示完整目标、范围、前置条件和验收标准',
+        error: '首次需求对齐必须引用最新的完整需求确认，或引用已由本次定义更新明确采用的结构化用户答复；只有仍有未覆盖的目标、范围、前置条件或验收变化时才再次提问',
       };
     }
     const result = store.applyProjectManagerAction({
@@ -11311,6 +11483,11 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (item.complexityAssessment.decision !== 'single-task') {
       return { ok: false, error: '该工作项必须先拆成更聚焦的顺序任务，不能直接派发' };
     }
+    const stageScopeError = projectWorkItemStageScopeError(session, item.subgoalId, [
+      ...item.contract.stopWhen,
+      ...item.contract.validation,
+    ]);
+    if (stageScopeError) return { ok: false, error: stageScopeError };
 
     const taskRuntime = await ensureProjectTaskRuntime(session.id);
     if (!taskRuntime.ok || !taskRuntime.terminal) return { ok: false, error: taskRuntime.error || '任务 AI 未就绪' };
@@ -11363,6 +11540,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       label: item.title,
       currentTask: item.contract.objective,
       projectTaskContractPending: !historicallyDelivered,
+      projectTaskBatch: undefined,
       awaitingReview: true,
       autoDecisionLimitReached: false,
       config: {
@@ -11435,7 +11613,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       item.contract.description ? `说明：${item.contract.description}` : '',
       item.contract.preconditions.length > 0 ? `前置条件：${item.contract.preconditions.join('；')}` : '',
       `验收：${[...item.contract.stopWhen, ...item.contract.validation].join('；')}`,
-      `当前执行模式：${item.taskWorkMode || 'single-thread'}。如任务复杂度或运行证据变化，可在 continue/rework 时附 --task-work-mode single-thread|multi-thread 调整后续任务回合。`,
+      `当前并行边界：${item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}。如任务复杂度、共享资源或运行证据变化，可在 continue/rework 时用 --task-work-mode multi-thread 开放并行或用 single-thread 恢复串行；任务 AI 自行决定是否并行和内部如何分工。`,
       historicallyDelivered
         ? '先运行 wmux context 并只读核对主任务终端；不得把恢复动作当成首次派发。'
         : `先运行 wmux context；确认合同与任务状态后，使用 wmux supervisor decide --surface ${taskTerminal.surfaceId} --outcome continue --next "完成当前合同成果并返回可验证证据" --task-work-mode ${item.taskWorkMode || 'single-thread'} 首次派发。`,
@@ -12390,7 +12568,7 @@ export function initPipeBridge(): void {
         '你只管理当前这一个项目。任务 AI 已先创建并保持空闲，监督 AI 也已建立常驻通道；任务 AI 不接收项目或监督角色协议。不得读取或决定其他项目。',
         '[首次需求对齐门禁｜必须先执行]',
         PROJECT_MANAGER_ALIGNMENT_GATE,
-        `若前置条件或完成条件未填写，先基于当前主目标起草完整定义，并执行 wmux project update --project ${activeSession.id} 写回。计划文件可选；定义完整后仍必须通过结构化 project ask 向用户展示目标、范围、前置条件和验收标准，取得“确认需求”的答复，并在 alignment-confirm 中携带该 userConfirmationEventId。`,
+        `若前置条件或完成条件未填写，先基于当前主目标起草完整定义并写回。用户答复已通过 confirmationScope 覆盖本次定义变更，且 update 明确携带对应 userConfirmationEventId 时，直接用同一事件执行 alignment-confirm，不得再次询问；只有最终定义仍含未被该答复覆盖的实质变化时，才展示完整摘要补充确认。`,
         `[项目认知基线｜需求对齐后必须执行]\n先读取 project status 中的目标、前置条件、当前目录快照、orientation、全部工作项和最近事件，再用 wmux project orientation-confirm --project ${activeSession.id} --json-file <项目目录内的 .wmux/tmp/文件> 提交 orientation 中原样读取的 requirementsVersion、authorizationVersion、snapshotFingerprint、requestedAt，以及 summary、knownFacts、unknowns 和 workItems。新项目的 workItems 传空数组。认知基线由控制层绑定当前需求、授权和目录快照；确认过程中任何版本或目录变化都会拒绝旧结果。`,
         `认知基线确认后，再用 wmux project goal-plan --project ${activeSession.id} --json-file <项目目录内的 .wmux/tmp/文件> 保存 3-7 个粗粒度阶段目标，然后 resume、创建执行任务，并用 wmux project dispatch --project ${activeSession.id} --task <工作项ID> 把首个依赖已满足的任务交给专属监督。项目 AI 不得直接写入主任务终端；阶段目标描述成果、依赖和验收，不得写成命令级微步骤。`,
         '每个执行任务必须携带当前 goalId 和 subgoalId。主目标切换后旧 goalId 的任务永久失效，只能复用其证据，不能复活执行。',
@@ -13468,7 +13646,7 @@ export function initPipeBridge(): void {
 
     const taskTerminal = locateRemoteTaskTerminal(callerSurfaceId).terminal;
     if (!taskTerminal) {
-      return { ok: false, error: '当前 surface 不是可识别的项目 AI、监督 AI 或受监督任务 AI 终端' };
+      return { ok: false, error: '当前 surface 不是可识别的受管终端' };
     }
     const taskLane = state.supervisor.lanes.find((item) => (
       item.surfaceId === callerSurfaceId
@@ -13479,7 +13657,7 @@ export function initPipeBridge(): void {
     if (taskLane?.projectManagerProjectId
       && taskTerminal.surface.projectManagerProjectId
       && taskLane.projectManagerProjectId !== taskTerminal.surface.projectManagerProjectId) {
-      return { ok: false, error: '任务终端与监督 lane 的项目绑定不一致，无法生成任务上下文' };
+      return { ok: false, error: '当前任务上下文绑定不一致，无法生成运行上下文' };
     }
     const project = projectId
       ? state.projectManagers.find((item) => item.id === projectId)
@@ -13489,7 +13667,7 @@ export function initPipeBridge(): void {
     if (taskLane?.projectWorkItemId
       && taskTerminal.surface.projectManagerWorkItemId
       && taskLane.projectWorkItemId !== taskTerminal.surface.projectManagerWorkItemId) {
-      return { ok: false, error: '任务终端与监督 lane 的工作项绑定不一致，无法生成任务上下文' };
+      return { ok: false, error: '当前任务上下文绑定不一致，无法生成运行上下文' };
     }
     const workItem = project?.workItems.find((item) => item.id === workItemId);
     if (projectId && (
@@ -13498,7 +13676,7 @@ export function initPipeBridge(): void {
       || !taskLane
       || !projectSupervisorLaneOwnsWorkItem(taskLane, workItem)
     )) {
-      return { ok: false, error: '项目任务终端绑定不完整、已过期或与工作项不一致，无法生成任务上下文' };
+      return { ok: false, error: '当前任务上下文绑定无效或已过期，无法生成运行上下文' };
     }
     const taskState = String(w.__wmux_getAgentStates?.()?.[callerSurfaceId]?.state || 'unknown');
     if (project && workItem) {
@@ -13518,7 +13696,7 @@ export function initPipeBridge(): void {
     if (taskLane) {
       return { ok: false, error: '当前终端不承载 wmux 管理角色；请直接遵循目标项目规范和当前成果任务' };
     }
-    return { ok: false, error: '当前终端未绑定项目工作项，无法确认项目任务 AI 身份' };
+    return { ok: false, error: '当前终端没有有效任务上下文' };
   };
 
   w.__wmux_roleContext = (params: any) => (
@@ -13780,7 +13958,7 @@ export function initPipeBridge(): void {
       return { ok: false, error: '--task-file 必须是当前监督隔离目录 .wmux/tmp/ 下的单个安全 JSON 文件名' };
     }
     if (params?.taskDispatch !== undefined && !taskFile) {
-      return { ok: false, error: '普通监督任务只能通过 --task-file 提交，不能绕过受控临时文件边界' };
+      return { ok: false, error: '监督成果任务只能通过 --task-file 提交，不能绕过受控临时文件边界' };
     }
     if (rawCompletionFile && !completionFile) {
       return { ok: false, error: '--completion-file 必须是当前监督隔离目录 .wmux/tmp/ 下的单个安全 JSON 文件名' };
@@ -13927,6 +14105,7 @@ export function initPipeBridge(): void {
     const currentOrdinaryProtocol = !projectManagedLane
       && lane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION;
     let ordinaryTaskDispatch: OrdinaryTaskDispatch | undefined;
+    let projectTaskBatch: ProjectTaskBatch | undefined;
     let ordinaryContextHealthReported = false;
     let proposedOrdinaryContextHealth: OrdinaryContextHealthState | undefined;
     let ordinaryContextResetRequired = false;
@@ -13953,6 +14132,31 @@ export function initPipeBridge(): void {
       }
       if (rawNextFile || String(params?.next || '').trim()) {
         return { ok: false, error: '当前普通监督协议不能把 --task-file 与 --next/--next-file 混用' };
+      }
+    }
+    if (projectManagedLane && projectWorkItem && params?.taskDispatch !== undefined) {
+      const normalizedBatch = normalizeProjectTaskBatch(params.taskDispatch, projectWorkItem, {
+        allowUnmetCompletionItems: (lane.workerTurnId || 0) > 0,
+      });
+      if (!normalizedBatch.batch) return { ok: false, error: normalizedBatch.error };
+      projectTaskBatch = normalizedBatch.batch;
+      next = renderProjectTaskBatch(
+        projectWorkItem.contract,
+        projectTaskBatch,
+        requestedTaskWorkMode || projectWorkItem.taskWorkMode || 'single-thread',
+      );
+    }
+    if (projectManagedLane && projectTaskBatch
+      && outcome !== 'continue' && outcome !== 'rework') {
+      return { ok: false, error: '--task-file 仅用于项目监督的 continue 或 rework 裁决' };
+    }
+    if (projectManagedLane && projectWorkItem
+      && (outcome === 'continue' || outcome === 'rework') && !permissionResponse) {
+      if (!projectTaskBatch) {
+        return { ok: false, error: '项目监督必须通过 --task-file 提交单成果批次；禁止使用任意 --next 指令' };
+      }
+      if (rawNextFile || String(params?.next || '').trim()) {
+        return { ok: false, error: '项目监督不能把 --task-file 与 --next/--next-file 混用' };
       }
     }
     if (rawContextHealth && !currentOrdinaryProtocol) {
@@ -14418,16 +14622,7 @@ export function initPipeBridge(): void {
       ? projectTaskContractDisclosureError(projectWorkItem.contract)
       : null;
     if (contractDisclosureError) return { ok: false, error: contractDisclosureError };
-    const preparedProjectTask = next && projectSession && projectWorkItem
-      ? prepareProjectTaskDelivery(
-          projectWorkItem.contract,
-          next,
-          lane.projectTaskContractPending === true,
-          requestedTaskWorkMode || projectWorkItem.taskWorkMode || 'single-thread',
-          true,
-        )
-      : null;
-    const guardedNext = preparedProjectTask?.action ?? next;
+    const guardedNext = next;
     const projectPolicyViolation = projectSession?.progressSnapshot?.entries
       .find((entry) => entry.status === 'POLICY-VIOLATION');
     if (projectWorkItem && projectPolicyViolation && outcome !== 'needs-human') {
@@ -14489,18 +14684,23 @@ export function initPipeBridge(): void {
       const userStopCriteria = [...new Set([
         userStopWhen,
         ...userStopWhen.split(/\r?\n|[;；。，,、]/u),
-      ].map((item) => projectCriterionIdentity(item)).filter((item) => item.length >= 4))];
+      ].map((item) => projectCriterionIdentity(item)).filter(Boolean))];
+      const comparableUserStopCriteria = userStopCriteria.filter((item) => item.length >= 4);
       const dispatchedFields = [
         ordinaryTaskDispatch.outcome,
         ...ordinaryTaskDispatch.constraints,
         ...ordinaryTaskDispatch.acceptanceGap,
         ...ordinaryTaskDispatch.evidenceContext,
+        ...(ordinaryTaskDispatch.verification?.expectedEvidence || []),
+        ...(ordinaryTaskDispatch.verification?.fallbackWhenUnavailable || []),
+        ...(ordinaryTaskDispatch.returnWhen || []),
       ];
       const copiedUserCondition = dispatchedFields.find((item) => {
         const identity = projectCriterionIdentity(item);
+        if (!identity) return false;
+        if (userStopCriteria.includes(identity)) return true;
         if (identity.length < 4) return false;
-        return userStopCriteria.some((criterion) => {
-          if (identity === criterion) return true;
+        return comparableUserStopCriteria.some((criterion) => {
           const shorter = Math.min(identity.length, criterion.length);
           const longer = Math.max(identity.length, criterion.length);
           if (identity.includes(criterion)) {
@@ -14883,7 +15083,9 @@ export function initPipeBridge(): void {
               status: 'waiting-decision',
               latestBlocker: [reason || '监督 AI 提交项目状态通知', guard.reason].filter(Boolean).join('；'),
               ...(evidence ? { latestEvidence: evidence } : {}),
-              ...(contextSummary || diffSummary ? { latestContextSummary: contextSummary || diffSummary } : {}),
+              ...(contextSummary || diffSummary || impact
+                ? { latestContextSummary: contextSummary || diffSummary || impact }
+                : {}),
             },
           }, projectSession.id);
           // The project transition is the completed handoff for this supervisor
@@ -14939,7 +15141,9 @@ export function initPipeBridge(): void {
             status: 'waiting-decision',
             latestBlocker: reason || '监督 AI 提交项目状态通知',
             ...(evidence ? { latestEvidence: evidence } : {}),
-            ...(contextSummary || diffSummary ? { latestContextSummary: contextSummary || diffSummary } : {}),
+            ...(contextSummary || diffSummary || impact
+              ? { latestContextSummary: contextSummary || diffSummary || impact }
+              : {}),
           },
         }, projectSession.id);
         saveProjectManagerSnapshot(projectSession.id);
@@ -15149,6 +15353,7 @@ export function initPipeBridge(): void {
       escalationBoundary,
       ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
       ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
+      ...(projectTaskBatch ? { projectTaskBatch } : {}),
       ...(requestedTaskWorkMode ? { taskWorkMode: requestedTaskWorkMode } : {}),
       ...(ordinaryContextHealthReported ? {
         contextHealth: rawContextHealth,
@@ -15638,7 +15843,9 @@ export function initPipeBridge(): void {
             status: 'waiting-decision',
             latestBlocker: reason || '专属监督提交项目状态通知',
             ...(evidence ? { latestEvidence: evidence } : {}),
-            ...(contextSummary || diffSummary ? { latestContextSummary: contextSummary || diffSummary } : {}),
+            ...(contextSummary || diffSummary || impact
+              ? { latestContextSummary: contextSummary || diffSummary || impact }
+              : {}),
           },
         }, projectSession.id);
         const notice = queueProjectSupervisorNotice({
@@ -15808,9 +16015,10 @@ export function initPipeBridge(): void {
         reviewWatchdogState: undefined,
         ...(lane.supervisorProblem?.kind === 'unreported-decision' ? { supervisorProblem: undefined } : {}),
         awaitingDirectionAfterWaitingResume: false,
-        ...(next ? { currentTask: (ordinaryTaskDispatch?.outcome || next).slice(0, 8_000) } : {}),
+        ...(next ? { currentTask: (projectTaskBatch?.outcome || ordinaryTaskDispatch?.outcome || next).slice(0, 8_000) } : {}),
         ...(next && projectSession && projectWorkItem ? {
           projectTaskContractPending: false,
+          ...(projectTaskBatch ? { projectTaskBatch } : {}),
           permissionConfirmations: [],
         } : {}),
         ...(isQuestionBlockedState(agentState) ? {
@@ -15835,7 +16043,7 @@ export function initPipeBridge(): void {
       if (next) {
         const boundLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
         appendSupervisorRecord(useStore.getState().supervisor, boundLane, 'worker.task.bound', {
-          task: (ordinaryTaskDispatch?.outcome || next).slice(0, 8_000),
+          task: (projectTaskBatch?.outcome || ordinaryTaskDispatch?.outcome || next).slice(0, 8_000),
           workerTurnId: boundLane.workerTurnId,
           source: delivery?.confirmed ? 'confirmed-supervisor-delivery' : 'supervisor-delivery',
         });
@@ -15843,7 +16051,7 @@ export function initPipeBridge(): void {
       return {
         ok: true,
         outcome,
-        ...(nextFile && !preparedProjectTask ? { retainNextFile: true } : {}),
+        ...(nextFile ? { retainNextFile: true } : {}),
         ...(delivery ? { delivery } : {}),
       };
     };
@@ -16056,7 +16264,7 @@ export function initPipeBridge(): void {
             `确认读取成功后，只删除这一个临时文件：${nextFile}。`,
           ].join('\n')
         : next;
-      const deliveryText = preparedProjectTask?.delivery ?? unanchoredDeliveryText;
+      const deliveryText = unanchoredDeliveryText;
       let taskPromptAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
       supervisorDeliveriesInFlight.add(lane.id);
       try {

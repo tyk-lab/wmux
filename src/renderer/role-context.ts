@@ -10,7 +10,7 @@ import {
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../shared/project-manager';
-import { projectWorkItemSubgoalDependencyError } from './project-manager/engine';
+import { isCurrentProjectTaskBatch, projectWorkItemSubgoalDependencyError } from './project-manager/engine';
 import { effectiveSupervisorLaneConfig } from './supervisor/protocol';
 import {
   supervisorLaneControlState,
@@ -92,7 +92,7 @@ export interface TaskAiRuntimeContext {
   };
   state: {
     task: string;
-    supervision: string;
+    supervision?: string;
     baseline?: string;
     contract?: 'current' | 'stale' | 'inactive';
   };
@@ -423,6 +423,9 @@ export function buildTaskAiRuntimeContext(options: {
   runtime?: { agent?: string; model?: string; reasoningEffort?: string };
 }): TaskAiRuntimeContext {
   const { callerSurfaceId, lane, project, workItem } = options;
+  const projectTaskBatch = isCurrentProjectTaskBatch(lane?.projectTaskBatch)
+    ? lane.projectTaskBatch
+    : undefined;
   const projectManaged = !!project;
   const config = lane ? effectiveSupervisorLaneConfig(lane) : undefined;
   const contract = workItem?.contract;
@@ -442,20 +445,28 @@ export function buildTaskAiRuntimeContext(options: {
           ...(lane?.supervisorSurfaceId ? { supervisorSurfaceId: lane.supervisorSurfaceId } : {}),
           ...(lane ? { laneId: lane.id } : {}),
         },
-    state: {
-      task: options.taskState || 'unknown',
-      supervision: projectManaged ? 'unbound' : lane ? supervisorLaneControlState(lane) : 'unbound',
-    },
+    state: projectManaged
+      ? { task: options.taskState || 'unknown' }
+      : {
+          task: options.taskState || 'unknown',
+          supervision: lane ? supervisorLaneControlState(lane) : 'unbound',
+        },
     contract: {
-      objective: contract?.objective || config?.taskGoal || lane?.currentTask || '',
+      objective: projectManaged
+        ? projectTaskBatch?.outcome || lane?.currentTask || contract?.objective || ''
+        : contract?.objective || config?.taskGoal || lane?.currentTask || '',
       ...(contract?.scope.root ? { projectRoot: contract.scope.root } : {}),
       executionAuthority: projectManaged ? 'full-project' : 'task-scoped',
       preconditions: [...new Set([
         ...(project?.preconditions || []),
         ...(contract?.preconditions || (config?.preconditions ? [config.preconditions] : [])),
       ])],
-      stopWhen: [...(contract?.stopWhen || (config?.stopWhen ? [config.stopWhen] : []))],
-      validation: [...(contract?.validation || [])],
+      stopWhen: projectManaged
+        ? [...(projectTaskBatch?.completionDefinition || [])]
+        : [...(contract?.stopWhen || (config?.stopWhen ? [config.stopWhen] : []))],
+      validation: projectManaged
+        ? [...(projectTaskBatch?.evidenceExpectations || [])]
+        : [...(contract?.validation || [])],
       safetyBoundaries: ['破坏性覆盖', '外部访问', '凭据', '提权', '发布', '生产环境', '真实硬件高风险操作'],
     },
     actions: {
@@ -467,7 +478,9 @@ export function buildTaskAiRuntimeContext(options: {
           ]
         : ['按当前任务目标工作；具体本地工具权限由底层 Agent 及其沙箱决定'],
       conditional: projectManaged
-        ? ['遵守成果包指定的单线程或多线程模式；多线程内部子线程上限为 3，共享写入、共享资源和最终集成保持串行']
+        ? [workItem?.taskWorkMode === 'multi-thread'
+            ? '当前允许内部并行；是否使用、如何拆分和整合由你根据项目实际情况决定，内部子线程上限为 3，共享写入、共享资源和最终集成保持串行'
+            : '当前成果要求串行推进，不启用内部并行执行']
         : [],
       forbidden: [
         '越出当前任务目标或工作目录',
@@ -475,7 +488,7 @@ export function buildTaskAiRuntimeContext(options: {
         '使用 wmux 操作其他终端',
       ],
       nativeToolNotice: projectManaged
-        ? '目标项目 AGENTS、技能和规范始终优先；wmux 不向任务 AI 暴露内部编排身份。'
+        ? '目标项目 AGENTS、技能和规范始终优先；wmux 不改变当前成果任务和项目规则定义的权限边界。'
         : 'wmux 能力不扩大原生 Agent 权限；具体本地工具仍由当前 Agent 及其沙箱配置决定。',
     },
     commands: {
@@ -483,11 +496,13 @@ export function buildTaskAiRuntimeContext(options: {
         'wmux context',
         'wmux agent-state --surface ' + callerSurfaceId,
       ],
-      forbidden: [
-        'wmux supervisor decide',
-        'wmux project 管理命令',
-        'wmux send/send-key 操作其他终端',
-      ],
+      forbidden: projectManaged
+        ? ['wmux 管理与跨终端控制命令']
+        : [
+            'wmux supervisor decide',
+            'wmux project 管理命令',
+            'wmux send/send-key 操作其他终端',
+          ],
     },
   };
 }

@@ -13,9 +13,8 @@ import {
   withProjectManagerEventEnvelope,
 } from '../../src/shared/project-manager-terminal';
 import {
-  buildProjectTaskExecutionEnvelope,
-  prepareProjectTaskDelivery,
   projectTaskInstructionDisclosureError,
+  renderProjectTaskBatch,
 } from '../../src/renderer/project-manager/engine';
 import {
   authorizeManagedRoleV2,
@@ -185,16 +184,30 @@ describe('unified managed AI role context', () => {
     const item = workItem({ requirementsVersion: 1, status: 'paused' });
     const context = buildTaskAiRuntimeContext({
       callerSurfaceId: 'task-a',
-      lane: lane({ controlState: 'paused' }),
+      lane: lane({
+        controlState: 'paused',
+        projectTaskBatch: {
+          kind: 'task', coverage: 'bounded-batch', outcome: '形成认证接口行为',
+          completionDefinition: ['成果形成并完成验证'],
+          evidenceExpectations: ['接口结果可复核'], unmetCompletionItems: [],
+          knownFacts: ['测试环境可用'],
+          constraints: ['遵循项目规范'], nonGoals: ['不处理支付模块'],
+        },
+      }),
       project: project(item),
       workItem: item,
     });
 
     expect(context.role).toBe('task');
     expect(context.identity).toEqual({ taskSurfaceId: 'task-a' });
-    expect(context.state).toEqual({ task: 'unknown', supervision: 'unbound' });
+    expect(context.state).toEqual({ task: 'unknown' });
+    expect(context.contract.objective).toBe('形成认证接口行为');
+    expect(context.contract.validation).toEqual(['接口结果可复核']);
+    expect(context.contract.stopWhen).toEqual(['成果形成并完成验证']);
     expect(context.actions.available).toContain('读取并遵循当前目录适用的 AGENTS、技能和项目规范');
-    expect(context.actions.nativeToolNotice).toContain('不向任务 AI 暴露内部编排身份');
+    expect(context.actions.nativeToolNotice).not.toMatch(/项目 AI|监督 AI|内部编排|项目 ID|工作项 ID|lane/iu);
+    expect(context.commands.forbidden.join('\n')).not.toMatch(/project|supervisor|项目 AI|监督 AI/iu);
+    expect(JSON.stringify(context)).not.toMatch(/project-ai|supervisor|项目 AI|监督 AI|内部编排|控制层|laneId/iu);
     expect(context.identity).not.toHaveProperty('projectId');
     expect(context.identity).not.toHaveProperty('workItemId');
     expect(context.identity).not.toHaveProperty('laneId');
@@ -327,12 +340,15 @@ describe('unified managed AI role context', () => {
     const hydrated = withProjectManagerEventEnvelope(legacyDelivery, 'project-a');
     expect(hydrated).toContain('旧队列事件');
     expect(hydrated).not.toContain('[项目 AI 角色锚点｜控制层]');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('[成果任务]');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).toContain('读取并严格遵循当前目录层级适用的 AGENTS');
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
-    expect(buildProjectTaskExecutionEnvelope(workItem().contract)).not.toMatch(/项目 AI|辅助任务 AI|内部规划|控制层/iu);
-    const followUp = prepareProjectTaskDelivery(workItem().contract, '继续实现', false).delivery;
-    expect(followUp).toBe('继续实现');
+    const taskDelivery = renderProjectTaskBatch(workItem().contract, {
+      kind: 'task', coverage: 'bounded-batch', outcome: '继续形成认证成果',
+      completionDefinition: ['认证行为形成'], evidenceExpectations: ['认证行为可复核'],
+      unmetCompletionItems: [], knownFacts: [], constraints: [], nonGoals: [],
+    });
+    expect(taskDelivery).toContain('[成果任务]');
+    expect(taskDelivery).toContain('读取并严格遵循当前目录层级适用的 AGENTS');
+    expect(taskDelivery).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
+    expect(taskDelivery).not.toMatch(/项目 AI|辅助任务 AI|内部规划|控制层/iu);
     expect(projectTaskInstructionDisclosureError('继续完成当前成果并返回验证证据')).toBeNull();
     expect(projectTaskInstructionDisclosureError('根据项目 AI 和监督 AI 的安排继续')).toContain('不能暴露');
     expect(projectTaskInstructionDisclosureError('专属监督要求继续当前工作项')).toContain('不能暴露');

@@ -203,7 +203,7 @@ describe('supervisor isolation', () => {
     expect(text).toContain('worker-a');
     expect(text).toContain('只监督此终端');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('[监督协议｜控制层｜protocol=8]');
+    expect(text).toContain('[监督协议｜控制层｜protocol=12]');
     expect(text).toContain('# 普通 AI 监督');
     expect(text).toContain('## 监督 AI 自己的执行规划');
     expect(text).toContain('上级规划由用户明确提供');
@@ -231,7 +231,9 @@ describe('supervisor isolation', () => {
     expect(text).toContain('已授权小范围路线调整');
     expect(text).toContain('由项目 AI 决策并回执');
     expect(text).toContain('控制层不会创建普通 pendingApproval');
-    expect(text).toContain('复杂或高影响决定交给项目管理 AI');
+    expect(text).toContain('超出合同的决定交给项目管理 AI');
+    expect(text).toContain('必须通过 --task-file 提交自适应单成果批次');
+    expect(text).toContain('low 原子工作项可用 whole-item 整项派发');
     expect(text).toContain('[监督隔离域｜project｜lane=lane-a｜target=worker-a]');
     expect(text).toContain('# 项目专属 AI 监督');
     expect(text).toContain('用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向');
@@ -1689,6 +1691,12 @@ describe('supervisor isolation', () => {
               constraints: ['保持现有公共接口'],
               acceptanceGap: ['异常路径仍未覆盖'],
               evidenceContext: ['当前只验证了成功路径'],
+              verification: {
+                feasibility: 'partial',
+                expectedEvidence: ['当前环境内可以完成的异常路径检查结果'],
+                fallbackWhenUnavailable: ['列出未验证分支和缺失环境'],
+              },
+              returnWhen: ['形成异常路径结论或准确说明验证限制'],
             },
           } },
           { ts: 3.5, type: 'supervisor.goal-vortex.replan-required', payload: {
@@ -1731,7 +1739,11 @@ describe('supervisor isolation', () => {
     expect(text).toContain('【AI 裁决】需要返工 · 小范围路线调整');
     expect(text).toContain('判断结果：需要返工');
     expect(text).toContain('下发成果：形成认证异常路径的可复核测试结果');
-    expect(text).toContain('验收缺口：异常路径仍未覆盖');
+    expect(text).toContain('本次完成定义：异常路径仍未覆盖');
+    expect(text).toContain('验证可行性：只能部分验证');
+    expect(text).toContain('期望证据：当前环境内可以完成的异常路径检查结果');
+    expect(text).toContain('验证受限回退：列出未验证分支和缺失环境');
+    expect(text).toContain('返回条件：形成异常路径结论或准确说明验证限制');
     expect(text).not.toContain('建议下一步：[任务]');
     expect(text).toContain('【目标旋涡】连续空耗，强制重规划');
     expect(text).toContain('空耗细节：两轮没有新增条件或实际证据');

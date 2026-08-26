@@ -524,7 +524,7 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
   });
 
-  it('does not persist a reusable answer without a user-visible decision scope', () => {
+  it('rejects an explicit reusable decision key without a user-visible decision scope', () => {
     const useStore = store();
     const session = useStore.getState().startProjectManager({
       projectDir: 'E:\\repo', goal: '保持项目配置兼容',
@@ -534,6 +534,7 @@ describe('project-manager slice', () => {
       type: 'request-user-clarification',
       question: {
         id: 'scope-missing', category: 'clarification', question: '是否保留兼容配置？',
+        decisionKey: 'configuration-policy',
         decisionKey: 'configuration-policy', context: '当前配置发生冲突。',
         options: [{ id: 'keep', label: '保留', description: '继续兼容。' }, { id: 'replace', label: '替换', description: '采用新配置。' }],
         recommendedOptionId: 'keep', previousStatus: 'active', createdAt: 2,
@@ -544,6 +545,37 @@ describe('project-manager slice', () => {
       optionId: 'keep', answeredBy: 'desktop', reuseForSimilar: true,
     }, session.id)).toMatchObject({ ok: false, error: expect.stringContaining('decisionScope') });
     expect(useStore.getState().projectManager?.reusableUserDecisions || []).toHaveLength(0);
+  });
+
+  it('derives a narrow reusable scope when a product choice only mentions excluded permissions', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '实现用户管理系统',
+      preconditions: ['本地开发环境可用'], doneWhen: ['核心业务流程验证通过'],
+    });
+    const question = '你希望先按哪种产品形态实现用户管理系统？';
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification',
+      question: {
+        id: 'product-form', category: 'clarification', question,
+        options: [
+          { id: 'web', label: '本地网页系统', description: '暂不包含复杂多人权限和公网发布。' },
+          { id: 'desktop', label: '桌面单机应用', description: '适合固定电脑离线使用。' },
+        ],
+        recommendedOptionId: 'web', previousStatus: 'active', createdAt: 2,
+      },
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: 'product-form', answer: '本地网页系统',
+      optionId: 'web', answeredBy: 'desktop', reuseForSimilar: true,
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.reusableUserDecisions).toEqual([
+      expect.objectContaining({
+        decisionScope: `当前问题：${question}`,
+        answer: '本地网页系统',
+        optionId: 'web',
+      }),
+    ]);
   });
 
   it('keeps the user-owned goal authoritative while allowing project AI to complete a goal draft', () => {

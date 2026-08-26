@@ -9,7 +9,7 @@ import {
   type SupervisorWorkScope,
 } from '../../shared/supervisor-policy';
 import type { TaskWorkMode } from '../../shared/supervisor-work-mode';
-import type { ProjectCompletionResult } from '../../shared/project-manager';
+import type { ProjectCompletionResult, ProjectTaskBatch } from '../../shared/project-manager';
 
 /**
  * How the supervisor AI should interpret stopWhen:
@@ -42,6 +42,24 @@ export interface OrdinarySupervisorPlan {
   updatedAt: number;
 }
 
+export const ORDINARY_VERIFICATION_FEASIBILITY_VALUES = [
+  'direct',
+  'partial',
+  'blocked',
+  'not-applicable',
+] as const;
+
+export type OrdinaryVerificationFeasibility =
+  typeof ORDINARY_VERIFICATION_FEASIBILITY_VALUES[number];
+
+export interface OrdinaryTaskVerification {
+  feasibility: OrdinaryVerificationFeasibility;
+  /** Evidence categories or observations, never prescribed commands or implementation routes. */
+  expectedEvidence: string[];
+  /** Truthful fallback when some or all validation cannot be completed in the current environment. */
+  fallbackWhenUnavailable: string[];
+}
+
 /** One bounded result-oriented assignment rendered by the control plane for the task AI. */
 export interface OrdinaryTaskDispatch {
   kind: 'task' | 'diagnostic' | 'rework';
@@ -52,6 +70,10 @@ export interface OrdinaryTaskDispatch {
   /** Task-local evidence criteria chosen by the supervisor; never the whole user stop contract. */
   acceptanceGap: string[];
   evidenceContext: string[];
+  /** Required for new task packets; optional only for persisted legacy decisions. */
+  verification?: OrdinaryTaskVerification;
+  /** Explicit conditions for returning even when verification is partial, blocked, or not applicable. */
+  returnWhen?: string[];
 }
 
 export type OrdinaryContextSymptom =
@@ -344,6 +366,8 @@ export interface SupervisorLane {
   pendingSupervisorDeliveries?: SupervisorDelivery[];
   /** True until the dedicated supervisor has delivered this work item's complete task contract. */
   projectTaskContractPending?: boolean;
+  /** Latest neutral execution batch; used for role-blind context and in-place recovery. */
+  projectTaskBatch?: ProjectTaskBatch;
   /** True until an ordinary task terminal receives its one-time role anchor. */
   taskRoleAnchorPending?: boolean;
   /** New ordinary lanes must align material ambiguity and persist a plan before first execution. */
@@ -560,6 +584,7 @@ export function clearSupervisorLaneContext(
     reviewDeliveryConfirmedAt: undefined,
     reviewWatchdogState: undefined,
     goalVortex: undefined,
+    projectTaskBatch: undefined,
     ...(!isProjectManagedSupervisorLane(lane) ? {
       ordinaryProtocolVersion: ORDINARY_SUPERVISION_PROTOCOL_VERSION,
       pendingInitialReview: false,

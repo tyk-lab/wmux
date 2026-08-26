@@ -69,6 +69,12 @@ describe('ordinary context health', () => {
         kind: 'rework', sourceRevision: 3, milestoneId: 'ui', outcome: '完成界面联调',
         constraints: ['保持公共 API'], acceptanceGap: ['登录测试通过'],
         evidenceContext: ['接口测试已经通过'],
+        verification: {
+          feasibility: 'partial',
+          expectedEvidence: ['当前环境内可以完成的界面检查结果'],
+          fallbackWhenUnavailable: ['说明缺失的浏览器环境、未验证行为和剩余不确定性'],
+        },
+        returnWhen: ['完成界面联调，或者验证限制已经明确且继续离线分析不会产生新证据'],
       },
     });
 
@@ -78,6 +84,12 @@ describe('ordinary context health', () => {
     expect(text).toContain('自行加载和遵循目标项目适用的 AGENTS、技能与仓库规范');
     expect(text).toContain('不要尝试恢复旧对话、旧实现路线或旧命令');
     expect(text).toContain('不要等待或恢复旧子线程');
+    expect(text).toContain('可自主修正并重新验证');
+    expect(text).toContain('继续尝试不会产生新证据，应结束本轮并如实返回');
+    expect(text).toContain('允许返回失败或无法验证，不代表完成定义已经满足');
+    expect(text).toContain('验证可行性：只能部分验证');
+    expect(text).toContain('缺失的浏览器环境、未验证行为和剩余不确定性');
+    expect(text).toContain('返回条件');
   });
 
   it('uses the native clear command only for supported ordinary task agents', () => {

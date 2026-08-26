@@ -9,8 +9,10 @@ import {
   projectCompletionCriteriaError,
   projectCriterionIdentity,
   projectManagerGoalChangeHasUserBasis,
+  projectManagerDestructiveDecisionScopeMatches,
   projectManagerQuestionAllowsReusableDecision,
   projectManagerQuestionDecisionKey,
+  projectManagerQuestionReusableDecisionScope,
   projectManagerQuestionSemanticFingerprint,
   projectPlanningConfirmationDigest,
   projectAcceptedRequirementsVersion,
@@ -338,6 +340,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = {
         kind: 'requirements-alignment-required',
         summary: action.reason.trim() || '项目必须先完成需求充分性判定',
+        ...(action.userConfirmationEventId?.trim() ? {
+          payload: { userConfirmationEventId: action.userConfirmationEventId.trim() },
+        } : {}),
       };
     } else if (action.type === 'confirm-requirements-alignment') {
       const goalUnderstanding = action.goalUnderstanding.trim();
@@ -386,6 +391,27 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const nextAuthorizationVersion = authorizationChanged
         ? projectAuthorizationVersion(session) + 1
         : projectAuthorizationVersion(session);
+      const sourceDecisionEvent = action.userConfirmationEventId?.trim()
+        ? session.events.find((event) => event.id === action.userConfirmationEventId?.trim())
+        : undefined;
+      const sourceDecisionKey = typeof sourceDecisionEvent?.payload?.decisionKey === 'string'
+        ? sourceDecisionEvent.payload.decisionKey
+        : '';
+      const sourceSemanticFingerprint = typeof sourceDecisionEvent?.payload?.semanticFingerprint === 'string'
+        ? sourceDecisionEvent.payload.semanticFingerprint
+        : '';
+      const reusableUserDecisions = (session.reusableUserDecisions || []).map((decision) => (
+        sourceDecisionKey
+        && sourceSemanticFingerprint
+        && decision.decisionKey === sourceDecisionKey
+        && decision.semanticFingerprint === sourceSemanticFingerprint
+          ? {
+              ...decision,
+              requirementsVersion: nextRequirementsVersion,
+              authorizationVersion: nextAuthorizationVersion,
+            }
+          : decision
+      ));
       const nextGoalId = action.mode === 'pivot'
         ? `${session.id}-goal-${Math.max(0, ...(session.goals || []).map((entry) => entry.sequence)) + 1}-${uuid()}`
         : activeGoal.id;
@@ -446,6 +472,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         doneWhen,
         requirementsVersion: nextRequirementsVersion,
         authorizationVersion: nextAuthorizationVersion,
+        reusableUserDecisions,
         workItems,
         status: 'waiting',
         pausedByPortfolio: false,
@@ -475,6 +502,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           activeGoalId: nextGoalId,
           requirementsVersion: nextRequirementsVersion,
           authorizationVersion: nextAuthorizationVersion,
+          ...(action.userConfirmationEventId?.trim()
+            ? { userConfirmationEventId: action.userConfirmationEventId.trim() }
+            : {}),
           supersededQuestionId: session.pendingUserQuestion?.id,
           previous,
           next: {
@@ -702,17 +732,26 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const answer = action.answer.trim();
       if (!answer) return { ok: false, error: '用户答复不能为空' };
-      if (action.reuseForSimilar && !pending.decisionScope?.trim()) {
-        return { ok: false, error: '缺少用户可见的 decisionScope，不能授权自动复用答复' };
+      if (action.reuseForSimilar
+        && pending.reasonCode === 'destructive-action'
+        && !projectManagerDestructiveDecisionScopeMatches(
+          pending.decisionScope,
+          session.id,
+          pending.workItemId,
+        )) {
+        return { ok: false, error: '删除复用授权的 project/workItem 必须与当前项目和当前工作项完全一致' };
       }
       if (action.reuseForSimilar && !projectManagerQuestionAllowsReusableDecision(pending)) {
-        return { ok: false, error: '物理操作、凭据、权限授予、破坏性操作、生产操作和内部故障不能授权自动复用答复' };
+        return { ok: false, error: '当前问题不能授权自动复用；仅普通需求选择、明确范围的上机/访问授权和结构化单条测试记录清理可以复用，显式 decisionKey 必须同时提供 decisionScope' };
       }
       const reusableDecision = action.reuseForSimilar ? {
         id: `reusable-decision-${uuid()}`,
         decisionKey: projectManagerQuestionDecisionKey(pending),
         semanticFingerprint: projectManagerQuestionSemanticFingerprint(pending),
-        ...(pending.decisionScope ? { decisionScope: pending.decisionScope } : {}),
+        decisionScope: projectManagerQuestionReusableDecisionScope(pending),
+        ...(pending.reasonCode === 'destructive-action'
+          ? { projectId: session.id, workItemId: pending.workItemId }
+          : {}),
         category: pending.category || 'clarification' as const,
         ...(pending.reasonCode ? { reasonCode: pending.reasonCode } : {}),
         question: pending.question,
@@ -756,6 +795,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           category: pending.category,
           reuseForSimilar: !!reusableDecision,
           ...(reusableDecision ? { decisionKey: reusableDecision.decisionKey } : {}),
+          ...(reusableDecision ? { semanticFingerprint: reusableDecision.semanticFingerprint } : {}),
           ...(pending.confirmationScope?.length ? {
             confirmationScope: pending.confirmationScope,
             confirmationDigest: projectPlanningConfirmationDigest(pending.confirmationScope),

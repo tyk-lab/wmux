@@ -26,7 +26,9 @@ describe('project auxiliary task AI policy', () => {
     expect(projectAuxiliaryWritablePathAllowed(path)).toBe(false);
   });
 
-  it('ignores removed auxiliary settings and keeps the reserved slot disabled', () => {
+  it('keeps auxiliary AI off by default and enables it only from explicit user configuration', () => {
+    expect(normalizeProjectManagementAgentConfig(undefined).auxiliary)
+      .toMatchObject({ enabled: false, allowProjectMaintenance: false });
     expect(normalizeProjectManagementAgentConfig({
       auxiliary: {
         enabled: false,
@@ -35,7 +37,7 @@ describe('project auxiliary task AI policy', () => {
         model: '',
         reasoningEffort: '',
       },
-    }).auxiliary).toMatchObject({ enabled: false, allowProjectMaintenance: false });
+    }).auxiliary).toMatchObject({ enabled: false, allowProjectMaintenance: false, agent: 'codex' });
     expect(normalizeProjectManagementAgentConfig({
       auxiliary: {
         enabled: true,
@@ -45,10 +47,11 @@ describe('project auxiliary task AI policy', () => {
         reasoningEffort: 'high',
       },
     }).auxiliary).toMatchObject({
-      enabled: false,
-      allowProjectMaintenance: false,
-      agent: 'codex',
-      model: '',
+      enabled: true,
+      allowProjectMaintenance: true,
+      agent: 'grok',
+      model: 'grok-4.6',
+      reasoningEffort: 'high',
     });
   });
 });

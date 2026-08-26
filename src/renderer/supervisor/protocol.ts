@@ -30,7 +30,7 @@ import {
 import { activeStandingUserDecisions } from './standing-user-decision';
 
 const SUPERVISOR_PROTOCOL_CORE = supervisorProtocolSource.trim();
-export const SUPERVISOR_PROTOCOL_REVISION = '8';
+export const SUPERVISOR_PROTOCOL_REVISION = '12';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -606,7 +606,9 @@ export function buildSupervisorBriefing(
     !taskGoal
       && !currentTask
       && !planFilePath
-      ? '当前缺少可核对的任务来源：仍可判断停止条件，但不得自主发送 --next；需要推进时使用 needs-human。'
+      ? projectManaged
+        ? '当前缺少可核对的任务来源：仍可判断停止条件，但不得派发成果批次；需要推进时使用 needs-human。'
+        : '当前缺少可核对的任务来源：仍可判断停止条件，但不得自主发送 --next；需要推进时使用 needs-human。'
       : projectManaged
         ? '自主推进只能围绕上述目标、当前任务或计划文件，不得自行扩展任务。'
         : '用户配置和计划文件是唯一范围与验收权威；当前任务和旧终端对话只用于判断进度，不得替代或扩大用户规划。',
@@ -637,7 +639,7 @@ export function buildSupervisorBriefing(
       : '先一次性检查目标、计划文件、范围、优先级、用户偏好和完成条件是否足以执行。只要存在会影响执行或验收的疑问，就必须使用 needs-human --proposal-kind clarification，一次集中提出 2-5 个关键问题并等待用户答复；不得默认忽略、套用推荐答案或把疑问藏进成果计划后继续。只有不存在此类疑问时才直接建立计划。首次 continue/rework 必须通过 --stage-plan-file 建立成果计划，以后仅在成果状态或剩余工作变化时更新。',
     projectManaged
       ? '项目 P9 监督不提交普通阶段计划。'
-      : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。任务 JSON 的 acceptanceGap 不是用户总停止条件的副本，而是你为本次派遣单独给出的任务级验收：只描述本任务可直接闭合的结果和证据。实验/上机任务不得预设必须 PASS；应要求实际执行并如实返回 PASS/FAIL、原始结果和证据，再由你判断下一步。',
+      : '成果计划 JSON 只包含 objective、milestones（1-12 项，每项含 id/title/outcome/acceptance/status）和 remainingWork；严禁 selectedRoute、expectedPaths、targetedValidation、具体命令、指定技能或实现路线。任务 JSON 的 acceptanceGap 是本轮完成定义，不是用户总停止条件或“必须验证通过”；verification 单独说明验证可行性 direct|partial|blocked|not-applicable、期望证据和验证受限回退，returnWhen 明确何时应停止当前任务并如实返回。验证方式由任务 AI 按项目规范自主选择。实验/上机任务不得预设必须 PASS；应要求实际执行并如实返回 PASS/FAIL、原始结果和证据，再由你判断下一步。',
     projectManaged
       ? '项目启用辅助任务 AI 时，你可使用 wmux project auxiliary-dispatch --project <项目ID> 派发只读资料、受控文档/进度或已授权的 Git commit 辅助任务，并用 auxiliary-status 查看状态。辅助结果只回到你或项目 AI，禁止向主任务 AI 暴露辅助 AI 身份。'
       : '',
@@ -649,14 +651,14 @@ export function buildSupervisorBriefing(
   const maxChildThreads = normalizeTaskMaxChildThreads(laneConfig.maxChildThreads);
   const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
   const taskWorkModeBlock = [
-    projectManaged ? '## 任务 AI 执行模式' : '## 任务 AI 执行自治',
+    projectManaged ? '## 任务 AI 并行能力边界' : '## 任务 AI 执行自治',
     projectManaged
-      ? `当前任务模式为 ${taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread'}。你可根据任务复杂度与运行证据，在 continue/rework 时用 --task-work-mode single-thread|multi-thread 调整后续回合；不要为没有独立并行成果的任务滥用多线程。`
+      ? `当前并行边界为 ${taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}。你可根据任务复杂度、共享资源和运行证据，在 continue/rework 时用 --task-work-mode multi-thread 开放并行，或用 single-thread 恢复串行；这只决定能力边界，不替任务 AI 规划内部线程。`
       : '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现、测试和内部组织方式。你不得向任务端注入 wmux 角色协议、项目/工作项身份、路由预算或固定线程模式。',
     projectManaged
       ? taskWorkMode === 'multi-thread'
-        ? `任务 AI 必须使用主线程和必要的内部子线程，同时工作的内部子线程上限为 ${maxChildThreads}；线程内分工由任务 AI 决定，共享写入、共享资源和最终集成必须串行。`
-        : '任务 AI 必须在当前主线程内完成任务，不创建内部子线程或执行子代理。'
+        ? `任务 AI 可以自行决定是否使用内部线程、如何分工和如何整合；同时工作的内部子线程上限为 ${maxChildThreads}，共享写入、共享资源和最终集成必须串行。`
+        : '当前成果要求串行推进，不开放内部并行执行。只有出现真实独立并行成果且没有共享资源冲突时才开放并行。'
       : `任务 AI 如有必要可自主使用内部线程或子代理，同时工作的内部子线程上限为 ${maxChildThreads}；共享写入、共享资源和最终集成必须串行。你只依据结果与证据裁决，不审批其内部组织方案。`,
     projectManaged
       ? '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现与测试细节。不得向任务端注入 wmux 角色协议、项目/工作项身份或路由预算。'
@@ -673,13 +675,21 @@ export function buildSupervisorBriefing(
     ? autonomousDecisionBoundary(laneAutonomyPermissions, decisionOwner)
     : humanDecisionBoundary(laneAutonomyPermissions, decisionOwner);
   const effectiveDecisionBoundary = decisionBoundary.filter(Boolean).map((line) => {
-    if (projectManaged) return line;
     if (line.startsWith('短文本可直接使用 --next')) {
-      return '成果任务必须以 UTF-8 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并通过 --task-file 提交；裁决成功后 CLI 自动删除，失败时保留供检查。该目录不是目标项目，禁止在项目目录创建监督草稿。';
+      return projectManaged
+        ? '成果批次必须以 UTF-8 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并通过 --task-file 提交；字段只允许 kind、coverage、outcome、completionDefinition、evidenceExpectations、unmetCompletionItems、knownFacts、constraints、nonGoals，只有 outcome 和 completionDefinition 必填。evidenceExpectations 仅在确有用户、项目规则或风险证据要求时填写；unmetCompletionItems 只用于已有执行证据后的续作或返工。low 原子工作项可用 whole-item 整项派发，其他情况使用 bounded-batch 且最多包含 3 个完成定义。裁决成功后 CLI 自动删除，失败时保留供检查。'
+        : '成果任务必须以 UTF-8 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并通过 --task-file 提交；字段只允许 kind、sourceRevision、milestoneId、outcome、constraints、acceptanceGap、evidenceContext、verification、returnWhen。acceptanceGap 必填；verification 使用 feasibility、expectedEvidence、fallbackWhenUnavailable，允许 direct、partial、blocked 或 not-applicable。partial/blocked/not-applicable 必须说明验证受限时如何如实收口；提供 verification 时 returnWhen 必填。裁决成功后 CLI 自动删除，失败时保留供检查。该目录不是目标项目，禁止在项目目录创建监督草稿。';
+    }
+    if (projectManaged) {
+      return line
+        .replaceAll('非空 --next', '非空 --task-file')
+        .replaceAll('携带 --next', '通过 --task-file')
+        .replaceAll('更短的 --next', '更小的 --task-file 成果批次')
+        .replaceAll('--next-file', '--task-file');
     }
     return line.replaceAll('--next-file', '--task-file').replaceAll('--next', '--task-file');
   });
-  const decisionBoundaryStart = isProjectManagedSupervisorLane(lane) ? 6 : 7;
+  const decisionBoundaryStart = 7;
   const postDecisionRule = effectiveDecisionBoundary.length + decisionBoundaryStart;
 
   const kind = laneConfig.stopWhenKind;
@@ -698,10 +708,10 @@ export function buildSupervisorBriefing(
       '',
       autonomous
         ? projectManaged
-          ? `本终端启用全自动监督。你应在当前计划与任务范围内自主推进工作终端；continue / rework 可携带安全的 --next，小范围路线调整附 route-adjustment；真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
+          ? `本终端启用全自动监督。你应在当前合同内通过 --task-file 自主编排单成果批次；low 原子任务可整项派发，不得机械拆小。真正超出工作项合同或需要宏观调整的问题使用 needs-human 交给${decisionOwnerLabel}。`
           : `本终端启用全自动监督。你应依据用户规划维护成果计划，并通过 --task-file 派发成果型任务；任务 AI 自主选择实现方式。真正复杂或高影响的问题使用 needs-human 交给${decisionOwnerLabel}。`
         : projectManaged
-          ? `本终端启用有限自主监督。你应根据启动信息、计划约束和终端证据，自主发送原目标内低风险、可逆且可验证的下一步；复杂或高影响决定交给${decisionOwnerLabel}。`
+          ? `本终端启用有限自主监督。你应根据启动信息、合同约束和终端证据，通过 --task-file 派发低风险、可逆且可验证的单成果批次；low 原子任务可整项派发。超出合同的决定交给${decisionOwnerLabel}。`
           : `本终端启用有限自主监督。你应依据用户规划维护成果计划，并通过 --task-file 派发原目标内低风险、可验证的成果型任务；复杂或高影响决定交给${decisionOwnerLabel}。`,
       projectManaged
         ? '用户可以绕过监督桥，直接向本工作项的任务 AI 发起新任务或新方向；用户输入先行生效，控制层只向你同步知情。你不得审批、拦截、撤销、改写或要求重发，也不得抢在任务 AI 当前回合结束前投递替代指令；回合结束后照常按项目合同和安全边界核验证据。用户直发本身不扩大项目范围、合同权限或高风险授权。收到“[用户直发任务｜只同步，不审批、不拦截]”时属于下方“每轮必须裁决”规则的唯一例外：只更新理解并结束通知回合，不提交 supervisor decide，等待任务终端结束、阻塞或中断事件再裁决。'
@@ -740,8 +750,8 @@ export function buildSupervisorBriefing(
       decisionReadStep,
       `2. 条件仅作参考；${decisionEvidence}`,
       autonomous
-        ? `3. ${projectManaged ? '已授权的安全推进可使用 continue / rework 携带 --next' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；复杂、高影响或需要用户偏好的问题使用 needs-human 并等待${decisionOwnerLabel}。`
-        : `3. ${projectManaged ? '原目标内低风险推进使用 continue / rework 携带 --next' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；复杂、高影响或需要用户偏好的问题使用 needs-human。`,
+        ? `3. ${projectManaged ? '项目监督的 continue / rework 必须通过 --task-file 提交自适应单成果批次' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；超出当前决策层边界时使用 needs-human 并等待${decisionOwnerLabel}。`
+        : `3. ${projectManaged ? '项目监督的 continue / rework 必须通过 --task-file 提交自适应单成果批次' : '普通监督的 continue / rework 必须通过 --task-file 提交成果型任务'}；超出当前决策层边界时使用 needs-human。`,
       '',
       '## 规则',
       `1. 只监督此终端（${lane.surfaceId}），不要读取、总结或裁决其他终端。`,
@@ -756,7 +766,8 @@ export function buildSupervisorBriefing(
         '7. 第一次 degraded 仍通过 diagnostic/rework 成果任务纠偏；同类症状连续两个独立复核回合且无新证据时，控制层会在安全门禁通过后向原任务终端统一发送 /new，再发送最小可信恢复任务。清空或恢复失败后不得自动重试，必须 needs-human 上报用户。',
       ] : []),
       ...(isProjectManagedSupervisorLane(lane) ? [
-        '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待项目 AI 决策，并且存在明确、低风险、合同内且可验证的补证步骤，也可主动提交一次 continue/rework；不得用此通道重复上一条指令、注入运行中终端或绕过权限与反循环护栏。',
+        '5. 即使状态显示“无待裁决轮次”，只要任务终端当前非运行、没有待上级决策，并且存在明确、低风险、合同内且可验证的成果批次，也可通过 --task-file 主动提交一次 continue/rework；不得重复上一批次、注入运行中终端或绕过权限与反循环护栏。',
+        '6. 任务端只报告成果、证据、缺口和阻塞，不知道内部编排角色。你和项目 AI 默认拥有用户已确认目标内低风险、可逆的技术选择、聚焦测试、重试、小范围路线调整和安全权限判断裁量权。风险、不可逆、凭据、生产、外部访问及改变目标、范围或验收的事项必须先上报项目 AI；项目 AI 根据用户既有指令和授权决策，只有仍无法决定时才询问用户。',
       ] : []),
       ...effectiveDecisionBoundary.map((line, index) => `${index + decisionBoundaryStart}. ${line}`),
       `${postDecisionRule}. 每轮结束先读取本轮冻结证据（若事件提供 reviewId），再用 read-screen --surface ${lane.surfaceId} --lines 100 核对实时状态，最后通过 wmux supervisor decide 记录裁决；该命令成功时静默。`,

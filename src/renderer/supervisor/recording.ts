@@ -152,6 +152,17 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
     const constraints = stringArray(taskDispatch?.constraints);
     const acceptanceGap = stringArray(taskDispatch?.acceptanceGap);
     const evidenceContext = stringArray(taskDispatch?.evidenceContext);
+    const verification = payloadObject(taskDispatch || {}, 'verification');
+    const verificationFeasibility = payloadText(verification || {}, 'feasibility');
+    const verificationFeasibilityLabel = ({
+      direct: '可直接验证',
+      partial: '只能部分验证',
+      blocked: '当前验证受阻',
+      'not-applicable': '不适用直接验证',
+    } as Record<string, string>)[verificationFeasibility] || verificationFeasibility;
+    const expectedEvidence = stringArray(verification?.expectedEvidence);
+    const fallbackWhenUnavailable = stringArray(verification?.fallbackWhenUnavailable);
+    const returnWhen = stringArray(taskDispatch?.returnWhen);
     const goalVortex = payloadObject(payload, 'goalVortex');
     const decisionBasis = reason
       || evidenceContext.join('；')
@@ -170,7 +181,11 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
       alternatives ? `- 备选：${markdownText(alternatives)}` : '',
       taskOutcome ? `- 下发成果：${markdownText(taskOutcome)}` : '',
       constraints.length > 0 ? `- 执行约束：${markdownText(constraints.join('；'))}` : '',
-      acceptanceGap.length > 0 ? `- 验收缺口：${markdownText(acceptanceGap.join('；'))}` : '',
+      acceptanceGap.length > 0 ? `- 本次完成定义：${markdownText(acceptanceGap.join('；'))}` : '',
+      verificationFeasibilityLabel ? `- 验证可行性：${markdownText(verificationFeasibilityLabel)}` : '',
+      expectedEvidence.length > 0 ? `- 期望证据：${markdownText(expectedEvidence.join('；'))}` : '',
+      fallbackWhenUnavailable.length > 0 ? `- 验证受限回退：${markdownText(fallbackWhenUnavailable.join('；'))}` : '',
+      returnWhen.length > 0 ? `- 返回条件：${markdownText(returnWhen.join('；'))}` : '',
       evidenceContext.length > 0 ? `- 必要现状：${markdownText(evidenceContext.join('；'))}` : '',
       !taskOutcome && next ? `- 建议下一步：${markdownText(next)}` : '',
       goalVortex ? `- 推进性纠偏：${markdownText(payloadText(goalVortex, 'decisiveNextStep') || '已记录目标旋涡并要求改变推进路径')}` : '',

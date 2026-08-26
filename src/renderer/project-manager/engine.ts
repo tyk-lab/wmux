@@ -8,6 +8,8 @@ import {
   projectWorkItemReady,
   type ProjectManagerSession,
   type ProjectSupervisorContract,
+  type ProjectTaskBatch,
+  type ProjectTaskBatchCoverage,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
 
@@ -59,7 +61,7 @@ export function commandMatchesAuthorizedPrefix(command: string, prefixes: readon
   });
 }
 
-/** Project permission confirmation is opt-in and command-scoped; project mode itself grants nothing. */
+/** Low-risk permission confirmation is on by default but remains command-scoped and fail-closed. */
 export function projectPermissionAuthorizationError(
   contract: ProjectSupervisorContract,
   command: string,
@@ -81,30 +83,170 @@ export function projectPermissionAuthorizationError(
     : '权限命令不在任务契约 allowedCommandPrefixes 授权范围内';
 }
 
-export function buildProjectTaskExecutionEnvelope(
+function projectTaskBatchStrings(value: unknown, limit: number): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => String(entry).trim().slice(0, 2_000)).filter(Boolean).slice(0, limit)
+    : [];
+}
+
+function projectTaskBatchIdentity(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+export const TASK_VALIDATION_REPORTING_POLICY = [
+  '验证结果无论通过、失败还是当前无法取得，都必须如实记录和报告，不得为了得到通过结果而隐瞒、筛选、改写或伪造结果。',
+  '验证失败后，若能在当前成果、项目规则和风险边界内合理修正并形成新证据，可自主修正并重新验证；若失败本身是有效实验结果、当前条件无法解决、继续需要扩大范围或授权，或者继续尝试不会产生新证据，应结束本轮并如实返回。',
+  '返回验证失败或无法验证时，说明实际结果、已有证据、影响、尚未满足的完成定义、已知原因或未知项，以及后续验证或继续工作所需条件。允许返回失败或无法验证，不代表完成定义已经满足。',
+].join('');
+
+export function isCurrentProjectTaskBatch(value: unknown): value is ProjectTaskBatch {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  const allowedFields = new Set([
+    'kind', 'coverage', 'outcome', 'completionDefinition', 'evidenceExpectations',
+    'unmetCompletionItems', 'knownFacts', 'constraints', 'nonGoals',
+  ]);
+  return ['task', 'diagnostic', 'rework'].includes(String(raw.kind || ''))
+    && ['whole-item', 'bounded-batch'].includes(String(raw.coverage || ''))
+    && typeof raw.outcome === 'string'
+    && raw.outcome.trim().length > 0
+    && Object.keys(raw).every((field) => allowedFields.has(field))
+    && ['completionDefinition', 'evidenceExpectations', 'unmetCompletionItems', 'knownFacts', 'constraints', 'nonGoals']
+      .every((field) => Array.isArray(raw[field]) && (raw[field] as unknown[]).every((entry) => typeof entry === 'string'))
+    && (raw.completionDefinition as string[]).some((entry) => entry.trim().length > 0);
+}
+
+export function projectTaskImplementationDirectiveError(value: string): string | null {
+  const implementationDirective = /(?:必须|请)(?:修改|编辑|创建|删除).{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)|(?:必须|请)(?:运行|执行).{0,120}\b(?:npm|pnpm|yarn|git|python|cargo|go|dotnet)\b|(?:必须|请)使用.{0,50}(?:技能|skill|框架|依赖|库)\b|\b(?:selectedRoute|expectedPaths|targetedValidation)\b/iu.test(value)
+    || /\b(?:(?:you\s+)?(?:must|should)|please|required\s+to)\s+(?:edit|modify|create|delete|remove)\b.{0,120}(?:[\\/]|\.(?:ts|tsx|js|jsx|py|rs|go|java|cpp|h|md)\b)/iu.test(value)
+    || /\b(?:run|execute)\s+(?:npm|pnpm|yarn|git|python|pytest|cargo|go|dotnet)\b/iu.test(value)
+    || /\b(?:use|invoke)\s+(?:the\s+)?[^\r\n]{0,50}\b(?:skill|framework|dependency|library)\b/iu.test(value)
+    || /\b(?:follow|use)\s+(?:the\s+)?(?:selected|specified|supervisor['’]s?)?\s*(?:implementation\s+)?(?:route|plan)\b/iu.test(value);
+  return implementationDirective
+    ? '成果批次只能描述结果、完成定义、证据期望、事实和约束，不能指定文件、命令、技能或实现路线'
+    : null;
+}
+
+export function normalizeProjectTaskBatch(
+  value: unknown,
+  workItem: Pick<ProjectWorkItem, 'complexityAssessment' | 'contract'>,
+  options: { allowUnmetCompletionItems?: boolean } = {},
+): { batch?: ProjectTaskBatch; error?: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { error: '项目成果批次必须是 JSON 对象' };
+  }
+  const raw = value as Record<string, unknown>;
+  const allowedFields = new Set([
+    'kind', 'coverage', 'outcome', 'completionDefinition', 'evidenceExpectations',
+    'unmetCompletionItems', 'knownFacts', 'constraints', 'nonGoals',
+  ]);
+  const unknownFields = Object.keys(raw).filter((field) => !allowedFields.has(field));
+  if (unknownFields.length > 0) {
+    return { error: `项目成果批次包含未授权字段：${unknownFields.join('、')}` };
+  }
+  const invalidArrayField = [
+    'completionDefinition', 'evidenceExpectations', 'unmetCompletionItems',
+    'knownFacts', 'constraints', 'nonGoals',
+  ].find((field) => raw[field] !== undefined && (
+    !Array.isArray(raw[field])
+    || (raw[field] as unknown[]).some((entry) => typeof entry !== 'string')
+  ));
+  if (invalidArrayField) {
+    return { error: `项目成果批次 ${invalidArrayField} 必须是字符串数组` };
+  }
+  const kind = String(raw.kind || '').trim();
+  const coverage = String(raw.coverage || '').trim();
+  const outcome = String(raw.outcome || '').trim().slice(0, 4_000);
+  const completionDefinition = projectTaskBatchStrings(raw.completionDefinition, 50);
+  const evidenceExpectations = projectTaskBatchStrings(raw.evidenceExpectations, 10);
+  const unmetCompletionItems = projectTaskBatchStrings(raw.unmetCompletionItems, 10);
+  const knownFacts = projectTaskBatchStrings(raw.knownFacts, 10);
+  const constraints = projectTaskBatchStrings(raw.constraints, 10);
+  const nonGoals = projectTaskBatchStrings(raw.nonGoals, 8);
+  if (!['task', 'diagnostic', 'rework'].includes(kind)) {
+    return { error: '项目成果批次 kind 必须是 task、diagnostic 或 rework' };
+  }
+  if (!['whole-item', 'bounded-batch'].includes(coverage)) {
+    return { error: '项目成果批次 coverage 必须是 whole-item 或 bounded-batch' };
+  }
+  if (!outcome || completionDefinition.length === 0) {
+    return { error: '项目成果批次必须包含 outcome 和非空 completionDefinition' };
+  }
+  if (coverage === 'bounded-batch' && completionDefinition.length > 3) {
+    return { error: '单个 bounded-batch 最多包含 3 个完成定义；请缩小本批成果' };
+  }
+  if (unmetCompletionItems.length > 0
+    && !options.allowUnmetCompletionItems) {
+    return { error: '首次派遣不能包含 unmetCompletionItems；只有已有执行证据后的续作或返工才能列出本轮未通过项' };
+  }
+  if (coverage === 'whole-item') {
+    if (workItem.complexityAssessment.complexity !== 'low'
+      || workItem.complexityAssessment.decision !== 'single-task') {
+      return { error: '只有项目 AI 已判定为 low 的原子工作项才能整项派发；当前工作项必须使用 bounded-batch' };
+    }
+    if (projectTaskBatchIdentity(outcome) !== projectTaskBatchIdentity(workItem.contract.objective)) {
+      return { error: 'whole-item 的 outcome 必须与项目 AI 已确认的工作项成果一致，监督 AI 不能改写成果目标' };
+    }
+    const batchCriteria = new Set(completionDefinition.map(projectTaskBatchIdentity));
+    const missingCriteria = workItem.contract.stopWhen
+      .find((criterion) => !batchCriteria.has(projectTaskBatchIdentity(criterion)));
+    if (missingCriteria) {
+      return { error: `whole-item 的完成定义必须覆盖工作项全部停止条件，当前缺少：${missingCriteria}` };
+    }
+  }
+  const taskFields = [
+    outcome, ...completionDefinition, ...evidenceExpectations, ...unmetCompletionItems,
+    ...knownFacts, ...constraints, ...nonGoals,
+  ];
+  const disclosureError = projectTaskInstructionDisclosureError(taskFields.join('\n'));
+  if (disclosureError) return { error: disclosureError };
+  const implementationDirectiveError = projectTaskImplementationDirectiveError([
+    outcome, ...completionDefinition, ...evidenceExpectations, ...constraints, ...nonGoals,
+  ].join('\n'));
+  if (implementationDirectiveError) return { error: implementationDirectiveError };
+  if (taskFields.join('\n').length > 16_000) {
+    return { error: '项目成果批次内容超过 16000 字符；请只保留当前成果所需事实和边界' };
+  }
+  return {
+    batch: {
+      kind: kind as ProjectTaskBatch['kind'],
+      coverage: coverage as ProjectTaskBatchCoverage,
+      outcome,
+      completionDefinition,
+      evidenceExpectations,
+      unmetCompletionItems,
+      knownFacts,
+      constraints,
+      nonGoals,
+    },
+  };
+}
+
+export function renderProjectTaskBatch(
   contract: ProjectSupervisorContract,
+  batch: ProjectTaskBatch,
   taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
 ): string {
   return [
     '[成果任务]',
-    `目标：${contract.objective}`,
-    contract.description ? `说明：${contract.description}` : '',
-    contract.preconditions.length > 0 ? `前置条件：${contract.preconditions.join('；')}` : '',
-    `验收条件：${[...contract.stopWhen, ...contract.validation].join('；')}`,
-    '开始前读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范；若任务描述与项目规范冲突，以项目规范为准。',
-    '你自行决定实现路线、文件、命令、测试和技能；线程内的具体分工也由你决定，但必须遵守本成果包指定的执行模式。',
+    `成果方向：${contract.objective}`,
+    `本批成果：${batch.outcome}`,
+    contract.preconditions.length > 0 ? `前置条件：\n${contract.preconditions.map((item) => `- ${item}`).join('\n')}` : '',
+    `完成定义：\n${batch.completionDefinition.map((item) => `- ${item}`).join('\n')}`,
+    batch.evidenceExpectations.length > 0 ? `证据期望（如适用）：\n${batch.evidenceExpectations.map((item) => `- ${item}`).join('\n')}` : '',
+    batch.unmetCompletionItems.length > 0 ? `本轮未通过项：\n${batch.unmetCompletionItems.map((item) => `- ${item}`).join('\n')}` : '',
+    batch.knownFacts.length > 0 ? `已知现状（请先核对）：\n${batch.knownFacts.map((item) => `- ${item}`).join('\n')}` : '',
+    batch.knownFacts.length > 0 ? '以上现状如与项目代码或实际状态不符，以项目事实为准并在结果中说明。' : '',
+    batch.constraints.length > 0 ? `硬边界：\n${batch.constraints.map((item) => `- ${item}`).join('\n')}` : '',
+    batch.nonGoals.length > 0 ? `本批不要求交付：\n${batch.nonGoals.map((item) => `- ${item}`).join('\n')}` : '',
+    '开始前读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范；若本任务与项目规范冲突，以项目规范为准。',
+    '自行决定实现路线、必要的相邻修改、文件、命令、测试、技能和任务内部组织方式；本批不要求交付的内容不限制完成当前成果所必需的支持性工作。',
+    `自行选择与风险相称的验证方式。${TASK_VALIDATION_REPORTING_POLICY}`,
     taskWorkMode === 'multi-thread'
-      ? '[执行模式] 多线程：使用主线程和必要的内部子线程推进，同时工作的内部子线程不得超过 3 个；共享写入、共享资源和最终集成必须串行。'
-      : '[执行模式] 单线程：在当前主线程内完成任务，不创建内部子线程或执行子代理。',
-    '持续推进到形成可验证成果、真实阻塞或用户授权边界，不要因内部微步骤完成而停顿，也不要等待外部逐步批准普通技术选择。',
-    '删除或破坏性覆盖、外部访问、凭据、提权、发布、生产环境和真实硬件高风险操作仍须遵守项目规范及用户授权边界。',
-    '结束本轮时简要报告成果、实际修改、验证结果、证据、剩余工作和真实阻塞。',
-  ].filter(Boolean).join('\n');
-}
-
-export interface PreparedProjectTaskDelivery {
-  action: string;
-  delivery: string;
+      ? '[并行能力] 允许内部并行：是否使用、如何拆分和如何整合由你根据项目实际情况决定；同时工作的内部子线程不得超过 3 个，共享写入、共享资源和最终集成必须串行。'
+      : '[并行边界] 要求串行：当前成果按串行边界推进，不启用内部并行执行。',
+    '达到完成定义，或遇到真实阻塞、约束冲突、授权边界时结束本轮；如实报告成果、实际修改、已有证据、未验证项、剩余工作和阻塞。',
+  ].filter(Boolean).join('\n\n');
 }
 
 const PROJECT_ORCHESTRATION_DISCLOSURES = [
@@ -139,35 +281,6 @@ export function projectTaskContractDisclosureError(
     if (error) return `任务合同 ${field} 不能进入任务 AI：${error}`;
   }
   return null;
-}
-
-/** Keep the persisted contract authoritative while exposing only the executable action to guards. */
-export function prepareProjectTaskDelivery(
-  contract: ProjectSupervisorContract,
-  instruction: string,
-  contractPending: boolean,
-  taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
-  repeatWorkMode = false,
-): PreparedProjectTaskDelivery {
-  const requested = instruction.trim();
-  if (!contractPending) {
-    return {
-      action: requested,
-      delivery: repeatWorkMode
-        ? `${taskWorkMode === 'multi-thread'
-          ? '[执行模式] 多线程：使用主线程和必要的内部子线程推进，同时工作的内部子线程不得超过 3 个；共享写入、共享资源和最终集成必须串行。'
-          : '[执行模式] 单线程：在当前主线程内完成任务，不创建内部子线程或执行子代理。'}\n${requested}`
-        : requested,
-    };
-  }
-
-  const envelope = buildProjectTaskExecutionEnvelope(contract, taskWorkMode);
-  return {
-    action: requested,
-    delivery: requested
-      ? `${envelope}\n\n[本轮执行指令]\n${requested}`
-      : envelope,
-  };
 }
 
 export function projectDependencyError(items: readonly ProjectWorkItem[]): string | null {
@@ -443,10 +556,15 @@ export function buildProjectSupervisorBriefing(options: {
     options.contract.description ? '说明：' + options.contract.description : '',
     '停止与验收：' + [...options.contract.stopWhen, ...options.contract.validation].join('；'),
     '你是常驻监督和结果裁决者，不是项目执行者。不得修改项目文件、运行实现或测试命令、选择任务技能、规定具体实现路线，或代替任务 AI 做普通技术决策。',
-    '项目 AI 只负责总计划和顺序派发；你直接决定 continue、rework 或 complete。只有需要改变总计划、跨任务协调、外部凭据、人工操作、高风险授权或用户目标/验收时，才使用 needs-human 交给项目 AI。',
+    '你和项目 AI 默认拥有用户已确认目标内低风险、可逆的技术选择、聚焦测试、重试、小范围路线调整和安全权限判断裁量权；显式合同限制仍可收紧该权力。',
+    '你先在当前工作项合同内直接决定 continue、rework 或 complete。只有需要改变总计划、跨任务协调、成果定义冲突或超出当前合同边界时，才使用 needs-human 上报项目 AI；由项目 AI 依据用户已确认计划决策，项目 AI 仍无法决定或涉及用户专属信息与授权时再向用户提问。禁止越级或把普通技术问题逐层上报。',
+    '风险、不可逆、凭据、生产、外部访问及改变目标、范围或验收的事项必须先上报项目 AI，不得直接询问用户；项目 AI 能依据用户既有指令和授权决定时直接回执，只有仍无法决定时才继续询问用户。',
     '如果你认为用户的目标、范围、前置条件、验收或正式计划需要补充，禁止先按补充内容执行。使用 needs-human important + contract-change，一次提交待补充细节、影响、可选方案和推荐项；项目 AI 必须通过 project ask 取得用户确认并更新账本后才能重新派发。',
-    `任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现与测试细节。当前执行模式为 ${options.taskWorkMode === 'multi-thread' ? 'multi-thread' : 'single-thread'}；你可在掌握任务复杂度或运行证据后，通过 continue/rework 的 --task-work-mode single-thread|multi-thread 调整后续任务回合。`,
-    '你只描述下一批次需要形成的结果和验收缺口，不向任务端注入项目/工作项身份、监督协议、路由预算、指定文件、命令或技能；线程内的具体分工仍由任务 AI 决定。',
+    `任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现、测试与内部组织。当前并行边界为 ${options.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}；你可根据任务复杂度、共享资源和运行证据，通过 continue/rework 的 --task-work-mode multi-thread 开放并行或用 single-thread 恢复串行，但不得替任务 AI 规划具体线程分工。`,
+    'continue/rework 必须先把中性成果批次 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，再通过 --task-file 提交。字段只允许 kind、coverage、outcome、completionDefinition、evidenceExpectations、unmetCompletionItems、knownFacts、constraints、nonGoals；只有 outcome 和 completionDefinition 必填，其余字段没有真实内容时省略或传空数组。',
+    'completionDefinition 只说明做到什么程度可以结束当前批次，不规定验证方法；evidenceExpectations 可选，只有用户明确要求、项目规则要求或风险确实需要特定证据时才填写。验证通过、失败或当前无法取得都必须如实返回；能在当前边界内形成新证据时由任务 AI 自主修正并重验，有效失败、条件不足或继续不会产生新证据时应停止空耗。允许返回失败或无法验证，不代表完成定义已经满足。',
+    'unmetCompletionItems 只用于已有执行证据后的续作或返工，首次派遣禁止填写。项目 AI 已判定为 low 且成果原子的工作项可使用 coverage=whole-item 整项派发，不得为了形式而强拆；其他情况使用 coverage=bounded-batch，每批只有一个成果且最多包含 3 个完成定义。',
+    '你只描述当前批次需要形成的结果、完成定义、必要证据期望、已确认事实和约束，不向任务端注入项目/工作项身份、监督协议、路由预算、指定文件、命令、技能或实现路线；任务端始终只按目标项目规则和技能自主工作。',
     '只有出现忘记项目规则、重复已完成工作、连续矛盾、偏离当前成果，或同一阻塞连续两轮没有新证据时，才判定严重上下文污染。确认任务 AI 的 runDepth=0 后，使用 context-recovery 让控制层在原终端执行一次 /new 并重发中性成果包；同一工作项不得重复清空。',
     '完整成果满足后提交 complete；仍有任务内工作时直接 continue/rework，不得把微步骤交给项目 AI 或用户。',
   ].filter(Boolean).join('\n');

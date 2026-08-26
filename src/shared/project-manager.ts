@@ -154,6 +154,8 @@ export interface ProjectReusableUserDecision {
   decisionKey: string;
   semanticFingerprint: string;
   decisionScope?: string;
+  projectId?: string;
+  workItemId?: string;
   category: 'clarification' | 'manual-intervention';
   reasonCode?: ProjectManagerManualInterventionReasonCode;
   question: string;
@@ -165,20 +167,72 @@ export interface ProjectReusableUserDecision {
   createdAt: number;
 }
 
+export function projectManagerQuestionReusableDecisionScope(
+  question: Pick<ProjectManagerUserQuestion, 'question' | 'decisionScope'>,
+): string {
+  return question.decisionScope?.trim() || `当前问题：${question.question.trim()}`;
+}
+
+export interface ProjectManagerReusableDestructiveScope {
+  project: string;
+  workItem: string;
+  operation: 'single-test-record-delete';
+  environment: 'local-desktop-app';
+  acceptance: string;
+}
+
+export function projectManagerReusableDestructiveScope(
+  scope: string | undefined,
+): ProjectManagerReusableDestructiveScope | undefined {
+  const entries = (scope || '').split(';').map((entry): [string, string] => {
+    const separator = entry.indexOf('=');
+    return separator > 0
+      ? [entry.slice(0, separator).trim().toLocaleLowerCase(), entry.slice(separator + 1).trim()]
+      : ['', ''];
+  }).filter(([key, value]) => !!key && !!value);
+  const fields = new Map<string, string>(entries);
+  const allowedFields = new Set(['project', 'workitem', 'operation', 'environment', 'acceptance']);
+  if (fields.size !== entries.length
+    || fields.size !== allowedFields.size
+    || [...fields.keys()].some((key) => !allowedFields.has(key))) return undefined;
+  const project = fields.get('project') || '';
+  const workItem = fields.get('workitem') || '';
+  const operation = String(fields.get('operation') || '').toLocaleLowerCase();
+  const environment = String(fields.get('environment') || '').toLocaleLowerCase();
+  const acceptance = fields.get('acceptance') || '';
+  if (!/^pm-[\p{L}\p{N}_-]+$/u.test(project)
+    || !/^[\p{L}\p{N}_-]{1,80}$/u.test(workItem)
+    || operation !== 'single-test-record-delete'
+    || environment !== 'local-desktop-app'
+    || !acceptance) return undefined;
+  return { project, workItem, operation, environment, acceptance };
+}
+
+export function projectManagerDestructiveDecisionScopeMatches(
+  scope: string | undefined,
+  projectId: string,
+  workItemId: string | undefined,
+): boolean {
+  const parsed = projectManagerReusableDestructiveScope(scope);
+  return !!parsed && parsed.project === projectId && parsed.workItem === workItemId;
+}
+
 export function projectManagerQuestionAllowsReusableDecision(
   question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode'>
-    & Partial<Pick<ProjectManagerUserQuestion, 'question' | 'context' | 'options' | 'decisionScope' | 'confirmationScope'>>,
+    & Partial<Pick<ProjectManagerUserQuestion, 'decisionKey' | 'question' | 'decisionScope' | 'confirmationScope'>>,
 ): boolean {
-  if (question.category === 'manual-intervention' && question.reasonCode !== 'business-choice') return false;
-  if (!question.decisionScope?.trim()) return false;
-  const text = [
-    question.question,
-    question.context,
-    question.decisionScope,
-    ...(question.confirmationScope || []),
-    ...(question.options || []).flatMap((option) => [option.label, option.description]),
-  ].filter(Boolean).join('\n');
-  return !/(?:密码|密钥|令牌|凭据|账号|登录|授权|权限|访问许可|提权|删除|覆盖|清空|销毁|破坏性|发布|部署|生产环境|真实硬件|上电|断电|接线|固件|人工操作|credential|secret|token|password|privilege|destructive|production|deploy)/iu.test(text);
+  const questionText = question.question?.trim() || '';
+  if (!questionText) return false;
+  if (question.decisionKey?.trim() && !question.decisionScope?.trim()) return false;
+  if (question.category !== 'manual-intervention') return true;
+  if (['physical-action', 'access-grant', 'business-choice'].includes(question.reasonCode || '')) return true;
+  const confirmationScope = new Set((question.confirmationScope || []).map((entry) => (
+    entry.trim().toLocaleLowerCase()
+  )));
+  return question.reasonCode === 'destructive-action'
+    && !!projectManagerReusableDestructiveScope(question.decisionScope)
+    && confirmationScope.has('manualoperationauthorization')
+    && confirmationScope.has('acceptance');
 }
 
 function projectDecisionKeyHash(value: string): string {
@@ -211,16 +265,28 @@ function normalizedProjectDecisionText(value: string | undefined): string {
 }
 
 export function projectManagerQuestionSemanticFingerprint(
-  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode' | 'question' | 'context' | 'options' | 'decisionScope' | 'confirmationScope'>,
+  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode' | 'question' | 'context' | 'options' | 'decisionScope' | 'confirmationScope' | 'workItemId'>,
 ): string {
+  const destructiveAuthorization = question.reasonCode === 'destructive-action';
   const semanticBasis = question.decisionScope?.trim()
-    ? `scope:${normalizedProjectDecisionText(question.decisionScope)}`
+    ? [
+        `scope:${normalizedProjectDecisionText(question.decisionScope)}`,
+        ...(destructiveAuthorization ? [
+          `question:${normalizedProjectDecisionText(question.question)}`,
+          `context:${normalizedProjectDecisionText(question.context)}`,
+          `workItem:${normalizedProjectDecisionText(question.workItemId)}`,
+        ] : []),
+      ].join('|')
     : `question:${normalizedProjectDecisionText(question.question)}|context:${normalizedProjectDecisionText(question.context)}`;
   const normalized = [
     question.category || 'clarification',
     question.reasonCode || '',
     semanticBasis,
-    ...question.options.map((option) => `${option.id}:${normalizedProjectDecisionText(option.label)}`),
+    ...question.options.map((option) => [
+      option.id,
+      normalizedProjectDecisionText(option.label),
+      ...(destructiveAuthorization ? [normalizedProjectDecisionText(option.description)] : []),
+    ].join(':')),
     ...(question.confirmationScope || []).map((entry) => `confirmation:${normalizedProjectDecisionText(entry)}`),
   ].join('|');
   return `semantic:${projectDecisionKeyHash(normalized)}`;
@@ -235,8 +301,16 @@ export function normalizeProjectReusableUserDecision(value: unknown): ProjectReu
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as Partial<ProjectReusableUserDecision>;
   const category = raw.category === 'manual-intervention' ? 'manual-intervention' : raw.category === 'clarification' ? 'clarification' : undefined;
+  const destructiveScope = raw.reasonCode === 'destructive-action'
+    ? projectManagerReusableDestructiveScope(raw.decisionScope)
+    : undefined;
   if (!category
-    || (category === 'manual-intervention' && raw.reasonCode !== 'business-choice')
+    || (category === 'manual-intervention'
+      && !['physical-action', 'access-grant', 'business-choice'].includes(raw.reasonCode || '')
+      && !(raw.reasonCode === 'destructive-action'
+        && destructiveScope
+        && raw.projectId === destructiveScope.project
+        && raw.workItemId === destructiveScope.workItem))
     || typeof raw.id !== 'string' || !raw.id.trim()
     || typeof raw.decisionKey !== 'string' || !/^(?:explicit:[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}|derived:[0-9a-f]{16})$/u.test(raw.decisionKey)
     || typeof raw.semanticFingerprint !== 'string' || !/^semantic:[0-9a-f]{16}$/u.test(raw.semanticFingerprint)
@@ -253,6 +327,7 @@ export function normalizeProjectReusableUserDecision(value: unknown): ProjectReu
     decisionKey: raw.decisionKey,
     semanticFingerprint: raw.semanticFingerprint,
     ...(raw.decisionScope?.trim() ? { decisionScope: raw.decisionScope.trim().slice(0, 1000) } : {}),
+    ...(destructiveScope ? { projectId: destructiveScope.project, workItemId: destructiveScope.workItem } : {}),
     category,
     ...(raw.reasonCode ? { reasonCode: raw.reasonCode } : {}),
     question: raw.question.trim().slice(0, 2000),
@@ -347,6 +422,21 @@ export interface ProjectSupervisorContract {
   stopWhen: string[];
   validation: string[];
   budget: ProjectExecutionBudget;
+}
+
+export type ProjectTaskBatchCoverage = 'whole-item' | 'bounded-batch';
+
+/** One neutral, result-oriented batch selected by the dedicated supervisor. */
+export interface ProjectTaskBatch {
+  kind: 'task' | 'diagnostic' | 'rework';
+  coverage: ProjectTaskBatchCoverage;
+  outcome: string;
+  completionDefinition: string[];
+  evidenceExpectations: string[];
+  unmetCompletionItems: string[];
+  knownFacts: string[];
+  constraints: string[];
+  nonGoals: string[];
 }
 
 export interface ProjectExecutionRecord {
@@ -1508,13 +1598,13 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
           forbiddenActions: [],
         },
         authority: {
-          technicalChoices: false,
-          lowRiskRetries: false,
-          routeAdjustments: false,
-          targetedTests: item.contract.authority.targetedTests === true,
-          internalThreads: false,
-          continuousExecution: true,
-          permissionConfirm: item.contract.authority.permissionConfirm === true,
+          technicalChoices: item.contract.authority.technicalChoices !== false,
+          lowRiskRetries: item.contract.authority.lowRiskRetries !== false,
+          routeAdjustments: item.contract.authority.routeAdjustments !== false,
+          targetedTests: item.contract.authority.targetedTests !== false,
+          internalThreads: item.contract.authority.internalThreads !== false,
+          continuousExecution: item.contract.authority.continuousExecution !== false,
+          permissionConfirm: item.contract.authority.permissionConfirm !== false,
           allowedCommandPrefixes: Array.isArray(item.contract.authority.allowedCommandPrefixes)
             ? item.contract.authority.allowedCommandPrefixes.map((entry) => String(entry).trim().slice(0, 240)).filter(Boolean)
             : [],
@@ -1636,7 +1726,7 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
 }
 
 export type ProjectManagerAction =
-  | { type: 'require-requirements-alignment'; reason: string }
+  | { type: 'require-requirements-alignment'; reason: string; userConfirmationEventId?: string }
   | {
     type: 'confirm-requirements-alignment';
     goalUnderstanding: string;
@@ -1652,6 +1742,7 @@ export type ProjectManagerAction =
     planFiles: ProjectPlanFileSnapshot[];
     doneWhen: string[];
     reason?: string;
+    userConfirmationEventId?: string;
     source: 'user' | 'manager';
     mode: 'refine' | 'pivot';
   }

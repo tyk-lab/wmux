@@ -104,8 +104,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
     expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
     expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核');
-    expect(projectManagerDialogSource).not.toContain('启用辅助任务 AI（项目最多两个任务 AI）');
-    expect(projectManagerDialogSource).not.toContain('授权辅助 AI 根据项目情况更新项目进度和相关文档，并提交受控变更');
+    expect(projectManagerDialogSource).toContain('启用辅助 AI（只服务项目 AI 和监督 AI）');
+    expect(projectManagerDialogSource).toContain('允许辅助 AI 维护受控文档、进度和用户授权的 Git 提交');
     expect(pipeBridgeSource).toContain('ensureProjectAuxiliaryRuntime');
     expect(pipeBridgeSource).toContain('projectRuntimeWorkspace: true');
     expect(pipeBridgeSource).toContain('transientSupervisorWorkspace: true');
@@ -114,6 +114,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('[角色链硬边界] 主任务 AI 尚未收到当前成果合同');
     expect(pipeBridgeSource).toContain("action === 'auxiliary-dispatch'");
     expect(pipeBridgeSource).toContain('用户尚未授权辅助 AI 更新项目进度、相关文档或提交受控变更');
+    expect(pipeBridgeSource).toContain('交互只限接收单项杂务并向原请求方回报');
+    expect(pipeBridgeSource).toContain('该结果只提供给项目 AI/监督 AI；主任务 AI 未收到此消息。');
     expect(projectManagerDialogSource).toContain('立即切换到对应终端');
     expect(projectManagerDialogSource).toContain('不会自动选择或确认 Hook');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");

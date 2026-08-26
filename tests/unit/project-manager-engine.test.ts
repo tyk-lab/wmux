@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
-  prepareProjectTaskDelivery,
+  isCurrentProjectTaskBatch,
+  normalizeProjectTaskBatch,
   projectTaskContractDisclosureError,
   projectTaskInstructionDisclosureError,
   projectPermissionAuthorizationError,
@@ -12,6 +12,8 @@ import {
   projectDependencyError,
   projectWorkItemSubgoalDependencyError,
   readyProjectWorkItems,
+  renderProjectTaskBatch,
+  TASK_VALIDATION_REPORTING_POLICY,
 } from '../../src/renderer/project-manager/engine';
 import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
@@ -174,16 +176,128 @@ describe('project-manager engine', () => {
 
     pivot.goals = pivot.goals.map((goal) => goal.id === pivot.activeGoalId ? { ...goal, status: 'achieved' as const } : goal);
     expect(projectProgressObligation(pivot)).toBeNull();
-  });  it('keeps control-plane identity out of the task packet', () => {
-    const contract = item('auth', 'planned').contract;
-    const prepared = prepareProjectTaskDelivery(
-      contract,
-      '继续当前合同',
-      true,
-    );
-    expect(prepared.delivery).toContain('[成果任务]');
-    expect(prepared.delivery).toContain('继续当前合同');
-    expect(prepared.delivery).not.toMatch(/项目 ID|工作项|需求版本|授权版本|监督 AI|普通监督链|裁决|lane/iu);
+  });  it('allows a low atomic work item to remain one whole neutral batch', () => {
+    const workItem = {
+      ...item('auth', 'planned'),
+      complexityAssessment: {
+        complexity: 'low' as const,
+        decision: 'single-task' as const,
+        signals: ['只有一个独立可验收成果'],
+        rationale: '无需为了形式拆小',
+        assessedAt: 1,
+      },
+    };
+    const normalized = normalizeProjectTaskBatch({
+      kind: 'task',
+      coverage: 'whole-item',
+      outcome: workItem.contract.objective,
+      completionDefinition: [...workItem.contract.stopWhen],
+      evidenceExpectations: [...workItem.contract.validation],
+      unmetCompletionItems: [],
+      knownFacts: ['认证模块尚未形成验证证据'],
+      constraints: ['遵循当前项目规则'],
+      nonGoals: ['不处理支付模块'],
+    }, workItem);
+    expect(normalized.error).toBeUndefined();
+    const delivery = renderProjectTaskBatch(workItem.contract, normalized.batch!);
+    expect(delivery).toContain(`成果方向：${workItem.contract.objective}`);
+    expect(delivery).toContain(`本批成果：${workItem.contract.objective}`);
+    expect(delivery).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
+    expect(delivery).not.toMatch(/项目 AI|监督 AI|项目 ID|工作项 ID|\blane\b|控制层/iu);
+
+    const smallWithSeveralChecks = {
+      ...workItem,
+      contract: {
+        ...workItem.contract,
+        stopWhen: ['成果形成', '边界行为明确', '错误结果可复核', '没有剩余工作'],
+        validation: ['相关检查完成', '证据可以复查'],
+      },
+    };
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'whole-item', outcome: smallWithSeveralChecks.contract.objective,
+      completionDefinition: [...smallWithSeveralChecks.contract.stopWhen],
+      evidenceExpectations: [], unmetCompletionItems: [],
+      knownFacts: [], constraints: [], nonGoals: [],
+    }, smallWithSeveralChecks).batch?.coverage).toBe('whole-item');
+  });  it('requires a bounded batch for larger work and keeps each batch focused', () => {
+    const workItem = {
+      ...item('auth', 'planned'),
+      complexityAssessment: {
+        complexity: 'medium' as const,
+        decision: 'single-task' as const,
+        signals: ['一个成果需要多个顺序检查点'],
+        rationale: '由同一任务上下文分批完成',
+        assessedAt: 1,
+      },
+    };
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'whole-item', outcome: workItem.contract.objective,
+      completionDefinition: [...workItem.contract.stopWhen],
+    }, workItem).error).toContain('bounded-batch');
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '形成认证接口的可验证行为',
+      completionDefinition: ['接口行为可复核', '错误路径明确', '边界结果清晰', '集成行为完整'],
+    }, workItem).error).toContain('最多包含 3 个');
+    const focused = normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '形成认证接口的可验证行为',
+      completionDefinition: ['接口行为形成', '错误路径行为明确'],
+      evidenceExpectations: [], unmetCompletionItems: [],
+      knownFacts: [], constraints: ['遵循项目规范'], nonGoals: ['不处理支付流程'],
+    }, workItem);
+    expect(focused.batch).toMatchObject({
+      coverage: 'bounded-batch',
+      completionDefinition: ['接口行为形成', '错误路径行为明确'],
+      evidenceExpectations: [],
+      unmetCompletionItems: [],
+    });
+    const delivery = renderProjectTaskBatch(workItem.contract, focused.batch!, 'multi-thread');
+    expect(delivery).toContain('[并行能力] 允许内部并行');
+    expect(delivery).toContain('是否使用、如何拆分和如何整合由你');
+    expect(delivery).toContain('完成定义');
+    expect(delivery).toContain(TASK_VALIDATION_REPORTING_POLICY);
+    expect(delivery).toContain('可自主修正并重新验证');
+    expect(delivery).toContain('允许返回失败或无法验证，不代表完成定义已经满足');
+    expect(TASK_VALIDATION_REPORTING_POLICY).not.toMatch(/项目 AI|监督 AI|辅助 AI|控制层|\blane\b/iu);
+    expect(delivery).toContain('本批不要求交付');
+    expect(delivery).not.toContain('证据期望（如适用）');
+    expect(delivery).not.toContain('本轮未通过项');
+    expect(delivery).not.toMatch(/必须使用.*线程|必须创建.*线程/iu);
+
+    const firstDispatchWithUnmet = normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '形成认证接口行为',
+      completionDefinition: ['接口行为形成'],
+      unmetCompletionItems: ['上一轮接口行为未形成'],
+    }, workItem);
+    expect(firstDispatchWithUnmet.error).toContain('首次派遣不能包含');
+
+    const continuation = normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '继续形成认证接口行为',
+      completionDefinition: ['接口行为形成'], evidenceExpectations: [],
+      unmetCompletionItems: ['上一轮接口行为未形成'],
+    }, workItem, { allowUnmetCompletionItems: true });
+    expect(continuation.error).toBeUndefined();
+    expect(renderProjectTaskBatch(workItem.contract, continuation.batch!)).toContain('本轮未通过项');
+    expect(isCurrentProjectTaskBatch(continuation.batch)).toBe(true);
+    expect(isCurrentProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '旧任务包',
+      acceptanceGap: ['旧验收缺口'], knownFacts: [], constraints: [], nonGoals: [], returnWhen: [],
+    })).toBe(false);
+  });  it('rejects orchestration identity and prescribed implementation details in a project batch', () => {
+    const workItem = {
+      ...item('auth', 'planned'),
+      complexityAssessment: {
+        complexity: 'low' as const, decision: 'single-task' as const,
+        signals: ['单一成果'], rationale: '原子任务', assessedAt: 1,
+      },
+    };
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '按监督 AI 安排形成成果',
+      completionDefinition: ['结果形成'],
+    }, workItem).error).toContain('不能暴露');
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'bounded-batch', outcome: '必须修改 src/auth.ts 形成成果',
+      completionDefinition: ['结果形成'],
+    }, workItem).error).toContain('不能指定文件');
   });  it('rejects English orchestration identities without blocking domain component names', () => {
     const disclosures = [
       "Follow the project manager's plan and finish the current outcome.",
@@ -244,29 +358,4 @@ describe('project-manager engine', () => {
     expect(projectPlanningConfirmationError(project, {
       changesUserPlan: true, userConfirmationEventId: 'confirmed-plan', confirmationScope: ['goal: 未确认目标'],
     })).toContain('未覆盖');
-  });  it('injects the trusted contract while exposing only the executable action to guards', () => {
-    const contract = item('auth', 'planned').contract;
-    const envelope = buildProjectTaskExecutionEnvelope(contract);
-    const prepared = prepareProjectTaskDelivery(contract, '检查认证实现并完成合同内验证', true);
-    expect(prepared.action).toBe('检查认证实现并完成合同内验证');
-    expect(prepared.delivery).toBe(`${envelope}\n\n[本轮执行指令]\n${prepared.action}`);
-    expect(projectContractViolation(contract, { instruction: prepared.action })).toBeNull();
-
-    const supervisedModeChange = prepareProjectTaskDelivery(
-      contract,
-      '继续完成当前成果',
-      false,
-      'multi-thread',
-      true,
-    );
-    expect(supervisedModeChange.action).toBe('继续完成当前成果');
-    expect(supervisedModeChange.delivery).toContain('[执行模式] 多线程');
-
-    const alreadyWrapped = prepareProjectTaskDelivery(
-      contract,
-      `${envelope}\n\n[本轮执行指令]\n检查认证实现`,
-      true,
-    );
-    expect(alreadyWrapped.action).toContain(envelope);
-    expect(alreadyWrapped.delivery).toContain(`${envelope}\n\n[本轮执行指令]\n${envelope}`);
   });});

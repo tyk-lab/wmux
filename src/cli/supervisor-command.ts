@@ -130,7 +130,7 @@ export function cleanupSupervisorStagePlanInput(
   if (decisionSucceeded) input.cleanup?.();
 }
 
-/** Read one structured result-oriented ordinary task assignment. */
+/** Read one structured result-oriented task assignment from either supervision mode. */
 export function resolveSupervisorTaskInput(
   args: string[],
   cwd = process.cwd(),

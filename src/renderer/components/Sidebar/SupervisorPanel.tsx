@@ -138,6 +138,13 @@ const SUPERVISOR_DECISION_OUTCOME_LABELS: Record<string, string> = {
   'needs-human': '等待人工决定',
 };
 
+const ORDINARY_VERIFICATION_FEASIBILITY_LABELS: Record<string, string> = {
+  direct: '可直接验证',
+  partial: '只能部分验证',
+  blocked: '当前验证受阻',
+  'not-applicable': '不适用直接验证',
+};
+
 function terminalSnapshotConsistency(lane: SupervisorLane): string {
   const config = effectiveSupervisorLaneConfig(lane);
   return [
@@ -1880,7 +1887,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                                         : `依据当前终端证据作出 ${SUPERVISOR_DECISION_OUTCOME_LABELS[decision.outcome] || decision.outcome} 裁决`)}</p>
                                     <small><b>→ 下发成果</b>{decision.taskDispatch?.outcome || decision.next || '本次裁决不下发新任务'}</small>
                                     {decision.taskDispatch?.acceptanceGap.length ? (
-                                      <small><b>验收缺口</b>{decision.taskDispatch.acceptanceGap.join('；')}</small>
+                                      <small><b>本次完成定义</b>{decision.taskDispatch.acceptanceGap.join('；')}</small>
+                                    ) : null}
+                                    {decision.taskDispatch?.verification ? (
+                                      <small><b>验证可行性</b>{ORDINARY_VERIFICATION_FEASIBILITY_LABELS[decision.taskDispatch.verification.feasibility]}</small>
+                                    ) : null}
+                                    {decision.taskDispatch?.verification?.expectedEvidence.length ? (
+                                      <small><b>期望证据</b>{decision.taskDispatch.verification.expectedEvidence.join('；')}</small>
+                                    ) : null}
+                                    {decision.taskDispatch?.verification?.fallbackWhenUnavailable.length ? (
+                                      <small><b>验证受限回退</b>{decision.taskDispatch.verification.fallbackWhenUnavailable.join('；')}</small>
+                                    ) : null}
+                                    {decision.taskDispatch?.returnWhen?.length ? (
+                                      <small><b>返回条件</b>{decision.taskDispatch.returnWhen.join('；')}</small>
                                     ) : null}
                                     {decision.goalVortex ? (
                                       <small><b>目标旋涡纠偏</b>{decision.goalVortex.decisiveNextStep}</small>

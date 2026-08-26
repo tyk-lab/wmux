@@ -6,6 +6,7 @@ import {
   MAX_PROJECT_PLAN_FILES,
   projectDisplayName,
   projectManagerQuestionAllowsReusableDecision,
+  projectManagerQuestionReusableDecisionScope,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
   type ProjectPlanFileSnapshot,
@@ -167,6 +168,12 @@ const PROJECT_AGENT_ROWS = [
     hint: '用于新建任务终端或处理 Agent 配置换代；上下文污染通过原终端 /new 清空，不会重启任务 AI。',
     agents: [['codex', 'Codex'], ['kimi', 'Kimi Code'], ['grok', 'Grok Build']],
   },
+  {
+    key: 'auxiliary',
+    title: '辅助 AI（可选）',
+    hint: '知道项目 AI/监督 AI 是请求方，但只接单和回报；用于调查、证据、进度与受控维护杂活，不参与主任务技术决策。',
+    agents: [['codex', 'Codex'], ['kimi', 'Kimi Code'], ['grok', 'Grok Build']],
+  },
 ] as const;
 
 function projectReasoningOptions(agent: string): Array<{ value: string; label: string }> {
@@ -222,7 +229,12 @@ function ProjectAgentConfigFields({
                 const agent = event.target.value;
                 onChange(normalizeProjectManagementAgentConfig({
                   ...value,
-                  [row.key]: { agent, model: '', reasoningEffort: projectAgentDefaultReasoningEffort(agent) },
+                  [row.key]: {
+                    ...value[row.key],
+                    agent,
+                    model: '',
+                    reasoningEffort: projectAgentDefaultReasoningEffort(agent),
+                  },
                 } as Partial<ProjectManagementAgentConfig>));
               }}>
                 {row.agents.map(([agent, label]) => <option key={agent} value={agent}>{label}</option>)}
@@ -255,6 +267,31 @@ function ProjectAgentConfigFields({
               </select>
             </label>
             <p>{row.hint}</p>
+            {row.key === 'auxiliary' && <>
+              <label className="supervisor-dialog__checkbox">
+                <input
+                  type="checkbox"
+                  checked={value.auxiliary.enabled}
+                  onChange={(event) => onChange(normalizeProjectManagementAgentConfig({
+                    ...value,
+                    auxiliary: { ...value.auxiliary, enabled: event.target.checked },
+                  }))}
+                />
+                <span>启用辅助 AI（只服务项目 AI 和监督 AI）</span>
+              </label>
+              <label className="supervisor-dialog__checkbox">
+                <input
+                  type="checkbox"
+                  checked={value.auxiliary.allowProjectMaintenance}
+                  disabled={!value.auxiliary.enabled}
+                  onChange={(event) => onChange(normalizeProjectManagementAgentConfig({
+                    ...value,
+                    auxiliary: { ...value.auxiliary, allowProjectMaintenance: event.target.checked },
+                  }))}
+                />
+                <span>允许辅助 AI 维护受控文档、进度和用户授权的 Git 提交</span>
+              </label>
+            </>}
           </article>
         );
       })}
@@ -1313,8 +1350,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 ))}
               </div>
               <textarea className="supervisor-dialog__textarea" rows={3} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="可补充说明，或不选上述选项直接填写自定义答复" />
-              {session.pendingUserQuestion.decisionScope && (
-                <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{session.pendingUserQuestion.decisionScope}</div>
+              {projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
+                <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{projectManagerQuestionReusableDecisionScope(session.pendingUserQuestion)}</div>
               )}
               {!!session.pendingUserQuestion.confirmationScope?.length && (
                 <div className="supervisor-dialog__hint">
@@ -1332,7 +1369,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <span>以后遇到同类问题，沿用本次决定，由项目 AI / 监督 AI 自行处理，不再重复询问</span>
               </label>
               {!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
-                <div className="supervisor-dialog__hint">当前问题涉及人工操作、凭据、权限或高风险边界，必须逐次确认，不能自动沿用。</div>
+                <div className="supervisor-dialog__hint">凭据、生产操作、内部故障及未结构化限定的删除不能自动沿用；单条专用测试记录清理必须明确 project、operation、environment 和 acceptance。</div>
               )}
               <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || (!clarificationOptionId && !clarificationAnswer.trim())} onClick={() => void answerClarification()}>{busy ? '正在提交…' : '确认并交给项目管理 AI'}</button>
               <div className="supervisor-dialog__hint">该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。</div>
@@ -1786,7 +1823,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <strong>{item.title}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
-                          <dt>执行者</dt><dd>项目唯一任务 AI；当前模式 {item.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}，线程内具体分工由任务 AI 自主决定</dd>
+                          <dt>执行者</dt><dd>项目唯一任务 AI；当前并行边界为 {item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}，是否并行及内部具体分工由任务 AI 自主决定</dd>
                           <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                           <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
                           <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
