@@ -10,6 +10,7 @@ import {
   normalizeProjectOrientationState,
   normalizeProjectProgressSnapshot,
   normalizeProjectProgressSyncState,
+  normalizeProjectReusableUserDecision,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 
@@ -73,6 +74,13 @@ function isPendingUserQuestion(value: unknown): boolean {
       'physical-action', 'credentials', 'access-grant', 'business-choice',
       'destructive-action', 'production-action', 'internal-project-failure',
     ].includes(String(question.reasonCode)))
+    && (question.decisionKey === undefined || (typeof question.decisionKey === 'string'
+      && /^[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}$/u.test(question.decisionKey)))
+    && (question.decisionScope === undefined || (typeof question.decisionScope === 'string'
+      && !!question.decisionScope.trim() && question.decisionScope.length <= 1000))
+    && (question.confirmationScope === undefined || (Array.isArray(question.confirmationScope)
+      && question.confirmationScope.length <= 20
+      && question.confirmationScope.every((entry) => typeof entry === 'string' && !!entry.trim() && entry.length <= 1000)))
     && typeof question.question === 'string'
     && typeof question.context === 'string'
     && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
@@ -211,6 +219,11 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     || (session.supervisorNotes !== undefined && !isStringArray(session.supervisorNotes))
     || (session.planFiles !== undefined && (!Array.isArray(session.planFiles) || session.planFiles.length > 3 || !session.planFiles.every(isPlanFileSnapshot)))
     || (session.pendingUserQuestion !== undefined && !isPendingUserQuestion(session.pendingUserQuestion))
+    || (session.reusableUserDecisions !== undefined && (
+      !Array.isArray(session.reusableUserDecisions)
+      || session.reusableUserDecisions.length > 50
+      || !session.reusableUserDecisions.every((decision) => !!normalizeProjectReusableUserDecision(decision))
+    ))
     || (session.agentConfig !== undefined && !isProjectAgentConfig(session.agentConfig))
     || (session.agentIssue !== undefined && !isProjectAgentIssue(session.agentIssue))
     || (session.agentReconfiguration !== undefined && !isProjectAgentReconfiguration(session.agentReconfiguration))

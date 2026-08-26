@@ -1313,6 +1313,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 ))}
               </div>
               <textarea className="supervisor-dialog__textarea" rows={3} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="可补充说明，或不选上述选项直接填写自定义答复" />
+              {session.pendingUserQuestion.decisionScope && (
+                <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{session.pendingUserQuestion.decisionScope}</div>
+              )}
+              {!!session.pendingUserQuestion.confirmationScope?.length && (
+                <div className="supervisor-dialog__hint">
+                  <strong>本次确认覆盖的规划变更：</strong>
+                  <ul>{session.pendingUserQuestion.confirmationScope.map((entry) => <li key={entry}>{entry}</li>)}</ul>
+                </div>
+              )}
               <label className="project-manager-dialog__reuse-decision">
                 <input
                   type="checkbox"

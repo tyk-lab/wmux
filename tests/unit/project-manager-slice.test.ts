@@ -524,6 +524,28 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('旧主目标') });
   });
 
+  it('does not persist a reusable answer without a user-visible decision scope', () => {
+    const useStore = store();
+    const session = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '保持项目配置兼容',
+      preconditions: ['测试环境可用'], doneWhen: ['配置测试通过'],
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification',
+      question: {
+        id: 'scope-missing', category: 'clarification', question: '是否保留兼容配置？',
+        decisionKey: 'configuration-policy', context: '当前配置发生冲突。',
+        options: [{ id: 'keep', label: '保留', description: '继续兼容。' }, { id: 'replace', label: '替换', description: '采用新配置。' }],
+        recommendedOptionId: 'keep', previousStatus: 'active', createdAt: 2,
+      },
+    }, session.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: 'scope-missing', answer: '保留',
+      optionId: 'keep', answeredBy: 'desktop', reuseForSimilar: true,
+    }, session.id)).toMatchObject({ ok: false, error: expect.stringContaining('decisionScope') });
+    expect(useStore.getState().projectManager?.reusableUserDecisions || []).toHaveLength(0);
+  });
+
   it('keeps the user-owned goal authoritative while allowing project AI to complete a goal draft', () => {
     const useStore = store();
     const session = useStore.getState().startProjectManager({
@@ -542,6 +564,7 @@ describe('project-manager slice', () => {
       question: {
         id: 'goal-choice', category: 'clarification', question: '是否采用用户提出的新目标？',
         decisionKey: 'goal-choice-policy',
+        decisionScope: '项目目标变化时是否采用用户明确提出的新目标',
         context: '目标选择会改变最终结果。',
         options: [{ id: 'adopt', label: '采用新目标' }, { id: 'keep', label: '保留旧目标' }],
         recommendedOptionId: 'adopt', previousStatus: 'active', createdAt: 2,
@@ -554,6 +577,7 @@ describe('project-manager slice', () => {
     expect(useStore.getState().projectManager?.reusableUserDecisions).toEqual([
       expect.objectContaining({
         decisionKey: 'explicit:goal-choice-policy', answer: '采用新目标', optionId: 'adopt',
+        decisionScope: '项目目标变化时是否采用用户明确提出的新目标',
         requirementsVersion: 1, authorizationVersion: 1,
       }),
     ]);

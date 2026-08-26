@@ -336,6 +336,24 @@ describe('project manager records', () => {
     expect(recoveredSession(appData, 'pm-bad')).toBeUndefined();
   });
 
+  it('rejects malformed reusable user decisions during recovery', () => {
+    const appData = root();
+    const valid = normalizeProjectManagerSession({
+      ...session('pm-reusable-corrupt', 100),
+      reusableUserDecisions: [{
+        id: 'decision-1', decisionKey: 'explicit:configuration', semanticFingerprint: 'semantic:0123456789abcdef',
+        decisionScope: '配置冲突时是否保留兼容设置', category: 'clarification', question: '是否保留配置？',
+        answer: '保留', optionId: 'keep', requirementsVersion: 1, authorizationVersion: 1,
+        answeredBy: 'desktop', createdAt: 10,
+      }],
+    });
+    const saved = saveProjectManagerSession(valid, appData).path;
+    const payload = JSON.parse(fs.readFileSync(saved, 'utf8'));
+    payload.session.reusableUserDecisions = [{ decisionKey: 7, answer: { unsafe: true } }];
+    fs.writeFileSync(saved, JSON.stringify(payload), 'utf8');
+    expect(recoveredSession(appData, valid.id)).toBeUndefined();
+  });
+
   it('appends bounded audit records outside the project tree', () => {
     const appData = root();
     const result = appendProjectManagerRecord({

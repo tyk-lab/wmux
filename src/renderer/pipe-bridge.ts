@@ -168,6 +168,8 @@ import {
   projectManagerGoalChangeHasUserBasis,
   projectManagerQuestionAllowsReusableDecision,
   projectManagerQuestionDecisionKey,
+  projectManagerQuestionSemanticFingerprint,
+  projectPlanningConfirmationDigest,
   projectOrientationReady,
   projectPlanningConfirmationError,
   projectAcceptedRequirementsVersion,
@@ -220,6 +222,7 @@ import {
 import {
   isProjectTargetedTestCommand,
   prepareProjectTaskDelivery,
+  projectTaskContractDisclosureError,
   projectTaskInstructionDisclosureError,
   projectContractViolation,
   projectArtifactCommandViolation,
@@ -3726,6 +3729,8 @@ function normalizeProjectWorkItemInput(
   if (!PROJECT_WORK_ITEM_ID.test(id)) return { error: '任务 ID 仅允许 1-80 位字母、数字、下划线或短横线' };
   const contractRaw = raw?.contract || previous?.contract || {};
   const objective = String(contractRaw.objective || '').trim();
+  const description = String(contractRaw.description || '').trim().slice(0, 4000);
+  const contractPreconditions = projectStringArray(contractRaw.preconditions);
   const stopWhen = projectStringArray(contractRaw.stopWhen);
   const validation = projectStringArray(contractRaw.validation);
   if (!objective || stopWhen.length === 0 || validation.length === 0) {
@@ -3829,6 +3834,14 @@ function normalizeProjectWorkItemInput(
     ? activeProjectSubgoals(session).find((candidate) => candidate.id === subgoalId)
     : undefined;
   const effectiveStopWhen = mergeProjectRequirements(stopWhen, linkedSubgoal?.acceptance || []);
+  const taskContractDisclosureError = projectTaskContractDisclosureError({
+    objective,
+    description,
+    preconditions: contractPreconditions,
+    stopWhen: effectiveStopWhen,
+    validation,
+  });
+  if (taskContractDisclosureError) return { error: taskContractDisclosureError };
   const rebindCurrentRequirements = raw?.rebindCurrentRequirements === true;
   const requirementsVersion = previous && !rebindCurrentRequirements
     ? previous.requirementsVersion
@@ -3849,8 +3862,8 @@ function normalizeProjectWorkItemInput(
       title: String(raw?.title || previous?.title || id).trim().slice(0, 200),
       contract: {
         objective,
-        description: String(contractRaw.description || '').trim().slice(0, 4000),
-        preconditions: projectStringArray(contractRaw.preconditions),
+        description,
+        preconditions: contractPreconditions,
         supervisorNotes: projectStringArray(contractRaw.supervisorNotes)
           .slice(0, 20).map((note) => note.slice(0, 4000)),
         scope: {
@@ -4173,9 +4186,27 @@ function projectPlanningActionConfirmationError(
       || owns('planFiles');
   }
   if (!['update', 'goal-plan', 'task-create', 'task-update'].includes(action)) return null;
+  const confirmationScope = [
+    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'goal')
+      && String(input.goal || '').trim() !== session.goal.trim()
+      ? [`goal: ${String(input.goal || '').trim()}`] : []),
+    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'projectScope')
+      && String(input.projectScope || '').trim() !== String(session.projectScope || '').trim()
+      ? [`projectScope: ${String(input.projectScope || '').trim() || '（空）'}`] : []),
+    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'preconditions')
+      && JSON.stringify(projectStringArray(input.preconditions)) !== JSON.stringify(session.preconditions)
+      ? [`preconditions: ${projectStringArray(input.preconditions).join('；') || '（空）'}`] : []),
+    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'doneWhen')
+      && JSON.stringify(projectStringArray(input.doneWhen)) !== JSON.stringify(session.doneWhen)
+      ? [`doneWhen: ${projectStringArray(input.doneWhen).join('；') || '（空）'}`] : []),
+    ...(action === 'update' && Object.prototype.hasOwnProperty.call(input, 'planFiles')
+      ? [`planFiles: ${(Array.isArray(input.planFiles) ? input.planFiles : []).map((file: any) => String(file?.path || file?.name || '')).filter(Boolean).join('；') || '（空）'}`] : []),
+    ...supplements.map((supplement) => `supplement: ${supplement}`),
+  ];
   return projectPlanningConfirmationError(session, {
     changesUserPlan,
     supplements,
+    confirmationScope,
     userConfirmationEventId: String(
       input?.userConfirmationEventId ?? params?.userConfirmationEventId ?? '',
     ),
@@ -4943,6 +4974,17 @@ function normalizeProjectManagerUserQuestion(
   if (rawDecisionKey && !/^[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}$/u.test(rawDecisionKey)) {
     return { error: 'decisionKey 必须是 1-120 个字母、数字、点、下划线、冒号、斜杠或连字符' };
   }
+  const decisionScope = String(value?.decisionScope || '').trim().slice(0, 1000);
+  if (rawDecisionKey && !decisionScope) {
+    return { error: 'decisionScope 必须明确说明用户授权复用的同类决定含义' };
+  }
+  if (value?.confirmationScope !== undefined && !Array.isArray(value.confirmationScope)) {
+    return { error: 'confirmationScope 必须是用户可见的规划变更字符串数组' };
+  }
+  const confirmationScope: string[] = Array.isArray(value?.confirmationScope)
+    ? value.confirmationScope.slice(0, 20).map((entry: unknown) => String(entry || '').trim().slice(0, 1000))
+    : [];
+  if (confirmationScope.some((entry) => !entry)) return { error: 'confirmationScope 不能包含空变更项' };
   return {
     question: {
       id: `pm-question-${uuid()}`,
@@ -4953,6 +4995,8 @@ function normalizeProjectManagerUserQuestion(
         ? value.reasonCode
         : undefined,
       ...(rawDecisionKey ? { decisionKey: rawDecisionKey } : {}),
+      ...(decisionScope ? { decisionScope } : {}),
+      ...(confirmationScope.length ? { confirmationScope } : {}),
       question,
       context,
       options,
@@ -9896,6 +9940,11 @@ async function resetProjectTaskContextInPlace(
       message: '已交回项目 AI 做宏观拆分或重规划；控制层未再次清空任务上下文',
     };
   }
+  const disclosureError = projectTaskInstructionDisclosureError(input.cleanContext)
+    || projectTaskContractDisclosureError(item.contract);
+  if (disclosureError) {
+    return { ok: false, error: `上下文恢复摘要不能污染任务 AI：${disclosureError}` };
+  }
   const taskTerminal = locateRemoteTaskTerminal(lane.surfaceId).terminal;
   if (!taskTerminal || taskTerminal.surfaceId !== item.workerSurfaceId) {
     return { ok: false, error: '当前任务终端与工作项绑定不一致，不能清空上下文' };
@@ -10617,6 +10666,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       && projectManagerQuestionAllowsReusableDecision(normalized.question)
       ? [...(session.reusableUserDecisions || [])].reverse().find((decision) => (
           decision.decisionKey === projectManagerQuestionDecisionKey(normalized.question!)
+          && decision.semanticFingerprint === projectManagerQuestionSemanticFingerprint(normalized.question!)
           && decision.requirementsVersion === projectRequirementsVersion(session)
           && decision.authorizationVersion === projectAuthorizationVersion(session)
         ))
@@ -10634,6 +10684,11 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           category: normalized.question.category,
           autoReused: true,
           sourceDecisionId: reusableDecision.id,
+          semanticFingerprint: reusableDecision.semanticFingerprint,
+          ...(normalized.question.confirmationScope?.length ? {
+            confirmationScope: normalized.question.confirmationScope,
+            confirmationDigest: projectPlanningConfirmationDigest(normalized.question.confirmationScope),
+          } : {}),
         },
       });
       queueProjectManagerDelivery([
@@ -13531,10 +13586,17 @@ export function initPipeBridge(): void {
       if (next) {
         return { ok: false, error: '上下文清空不得携带 --next；请通过 --context-summary 提交只含权威事实的干净任务摘要' };
       }
-      if (!reason || !evidence || !contextSummary) {
-        return { ok: false, error: '上下文清空必须同时提供 --reason、--evidence 和 --context-summary' };
+    if (!reason || !evidence || !contextSummary) {
+      return { ok: false, error: '上下文清空必须同时提供 --reason、--evidence 和 --context-summary' };
+    }
+    if ((projectWorkItem.contextReset?.count || 0) < 1) {
+      const recoveryDisclosureError = projectTaskInstructionDisclosureError(contextSummary)
+        || projectTaskContractDisclosureError(projectWorkItem.contract);
+      if (recoveryDisclosureError) {
+        return { ok: false, error: `上下文恢复摘要不能污染任务 AI：${recoveryDisclosureError}` };
       }
-      return resetProjectTaskContextInPlace(projectSession, lane, projectWorkItem, {
+    }
+    return resetProjectTaskContextInPlace(projectSession, lane, projectWorkItem, {
         reason,
         evidence,
         cleanContext: contextSummary,
@@ -14030,6 +14092,10 @@ export function initPipeBridge(): void {
       ? projectTaskInstructionDisclosureError(next)
       : null;
     if (disclosureError) return { ok: false, error: disclosureError };
+    const contractDisclosureError = projectWorkItem && lane.projectTaskContractPending === true
+      ? projectTaskContractDisclosureError(projectWorkItem.contract)
+      : null;
+    if (contractDisclosureError) return { ok: false, error: contractDisclosureError };
     const preparedProjectTask = next && projectSession && projectWorkItem
       ? prepareProjectTaskDelivery(
           projectWorkItem.contract,
@@ -14042,12 +14108,6 @@ export function initPipeBridge(): void {
     const guardedNext = preparedProjectTask?.action ?? next;
     const projectPolicyViolation = projectSession?.progressSnapshot?.entries
       .find((entry) => entry.status === 'POLICY-VIOLATION');
-    if (projectWorkItem && permissionResponse) {
-      return {
-        ok: false,
-        error: 'P9 项目监督不能替任务 AI 确认普通命令权限；低风险项目操作由任务 AI 自主决定，高风险操作必须进入用户授权边界',
-      };
-    }
     if (projectWorkItem && projectPolicyViolation && outcome !== 'needs-human') {
       store.updateLane(lane.id, { awaitingReview: true });
       return {

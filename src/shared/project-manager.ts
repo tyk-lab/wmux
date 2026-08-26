@@ -137,6 +137,10 @@ export interface ProjectManagerUserQuestion {
   reasonCode?: ProjectManagerManualInterventionReasonCode;
   /** Stable semantic scope supplied by Project AI; equal keys may reuse one user-authorized decision. */
   decisionKey?: string;
+  /** User-visible meaning boundary for reusable decisions. Paraphrased questions must retain this exact scope. */
+  decisionScope?: string;
+  /** Exact planning changes shown to the user and authorized by the answer. */
+  confirmationScope?: string[];
   question: string;
   context: string;
   options: ProjectManagerQuestionOption[];
@@ -148,6 +152,8 @@ export interface ProjectManagerUserQuestion {
 export interface ProjectReusableUserDecision {
   id: string;
   decisionKey: string;
+  semanticFingerprint: string;
+  decisionScope?: string;
   category: 'clarification' | 'manual-intervention';
   reasonCode?: ProjectManagerManualInterventionReasonCode;
   question: string;
@@ -160,9 +166,19 @@ export interface ProjectReusableUserDecision {
 }
 
 export function projectManagerQuestionAllowsReusableDecision(
-  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode'>,
+  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode'>
+    & Partial<Pick<ProjectManagerUserQuestion, 'question' | 'context' | 'options' | 'decisionScope' | 'confirmationScope'>>,
 ): boolean {
-  return question.category !== 'manual-intervention' || question.reasonCode === 'business-choice';
+  if (question.category === 'manual-intervention' && question.reasonCode !== 'business-choice') return false;
+  if (!question.decisionScope?.trim()) return false;
+  const text = [
+    question.question,
+    question.context,
+    question.decisionScope,
+    ...(question.confirmationScope || []),
+    ...(question.options || []).flatMap((option) => [option.label, option.description]),
+  ].filter(Boolean).join('\n');
+  return !/(?:密码|密钥|令牌|凭据|账号|登录|授权|权限|访问许可|提权|删除|覆盖|清空|销毁|破坏性|发布|部署|生产环境|真实硬件|上电|断电|接线|固件|人工操作|credential|secret|token|password|privilege|destructive|production|deploy)/iu.test(text);
 }
 
 function projectDecisionKeyHash(value: string): string {
@@ -188,6 +204,65 @@ export function projectManagerQuestionDecisionKey(
     ...question.options.map((option) => `${option.id}:${option.label}`.toLocaleLowerCase()),
   ].join('|');
   return `derived:${projectDecisionKeyHash(normalized)}`;
+}
+
+function normalizedProjectDecisionText(value: string | undefined): string {
+  return (value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+export function projectManagerQuestionSemanticFingerprint(
+  question: Pick<ProjectManagerUserQuestion, 'category' | 'reasonCode' | 'question' | 'context' | 'options' | 'decisionScope' | 'confirmationScope'>,
+): string {
+  const semanticBasis = question.decisionScope?.trim()
+    ? `scope:${normalizedProjectDecisionText(question.decisionScope)}`
+    : `question:${normalizedProjectDecisionText(question.question)}|context:${normalizedProjectDecisionText(question.context)}`;
+  const normalized = [
+    question.category || 'clarification',
+    question.reasonCode || '',
+    semanticBasis,
+    ...question.options.map((option) => `${option.id}:${normalizedProjectDecisionText(option.label)}`),
+    ...(question.confirmationScope || []).map((entry) => `confirmation:${normalizedProjectDecisionText(entry)}`),
+  ].join('|');
+  return `semantic:${projectDecisionKeyHash(normalized)}`;
+}
+
+export function projectPlanningConfirmationDigest(scope: readonly string[]): string {
+  const normalized = [...new Set(scope.map(normalizedProjectDecisionText).filter(Boolean))].sort().join('|');
+  return `planning:${projectDecisionKeyHash(normalized)}`;
+}
+
+export function normalizeProjectReusableUserDecision(value: unknown): ProjectReusableUserDecision | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ProjectReusableUserDecision>;
+  const category = raw.category === 'manual-intervention' ? 'manual-intervention' : raw.category === 'clarification' ? 'clarification' : undefined;
+  if (!category
+    || (category === 'manual-intervention' && raw.reasonCode !== 'business-choice')
+    || typeof raw.id !== 'string' || !raw.id.trim()
+    || typeof raw.decisionKey !== 'string' || !/^(?:explicit:[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}|derived:[0-9a-f]{16})$/u.test(raw.decisionKey)
+    || typeof raw.semanticFingerprint !== 'string' || !/^semantic:[0-9a-f]{16}$/u.test(raw.semanticFingerprint)
+    || typeof raw.question !== 'string' || !raw.question.trim()
+    || typeof raw.answer !== 'string' || !raw.answer.trim()
+    || (raw.decisionScope !== undefined && (typeof raw.decisionScope !== 'string' || !raw.decisionScope.trim()))
+    || (raw.optionId !== undefined && typeof raw.optionId !== 'string')
+    || !Number.isInteger(raw.requirementsVersion) || Number(raw.requirementsVersion) < 1
+    || !Number.isInteger(raw.authorizationVersion) || Number(raw.authorizationVersion) < 1
+    || !['desktop', 'feishu'].includes(String(raw.answeredBy))
+    || !Number.isFinite(raw.createdAt)) return undefined;
+  return {
+    id: raw.id.trim().slice(0, 200),
+    decisionKey: raw.decisionKey,
+    semanticFingerprint: raw.semanticFingerprint,
+    ...(raw.decisionScope?.trim() ? { decisionScope: raw.decisionScope.trim().slice(0, 1000) } : {}),
+    category,
+    ...(raw.reasonCode ? { reasonCode: raw.reasonCode } : {}),
+    question: raw.question.trim().slice(0, 2000),
+    answer: raw.answer.trim().slice(0, 4000),
+    ...(raw.optionId?.trim() ? { optionId: raw.optionId.trim().slice(0, 80) } : {}),
+    requirementsVersion: Number(raw.requirementsVersion),
+    authorizationVersion: Number(raw.authorizationVersion),
+    answeredBy: raw.answeredBy as 'desktop' | 'feishu',
+    createdAt: Number(raw.createdAt),
+  };
 }
 
 export interface ProjectExecutionBudget {
@@ -1317,6 +1392,7 @@ export function projectPlanningConfirmationError(
     changesUserPlan: boolean;
     supplements?: readonly string[];
     userConfirmationEventId?: string;
+    confirmationScope?: readonly string[];
   },
 ): string | null {
   const supplements = (options.supplements || []).map((item) => item.trim()).filter(Boolean);
@@ -1339,6 +1415,22 @@ export function projectPlanningConfirmationError(
   }
   if (supplements.length > 0 && confirmation.kind !== 'user-clarification-answered') {
     return 'AI 补充规划必须先通过 project ask 取得结构化用户答复，不能用普通用户消息替代确认';
+  }
+  const requiredScope = [...new Set((options.confirmationScope || []).map((entry) => entry.trim()).filter(Boolean))];
+  if (requiredScope.length > 0) {
+    if (confirmation.kind !== 'user-clarification-answered') {
+      return '改变用户规划必须引用包含 confirmationScope 的结构化用户答复';
+    }
+    const confirmedScope = Array.isArray(confirmation.payload?.confirmationScope)
+      ? confirmation.payload.confirmationScope.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    const digest = projectPlanningConfirmationDigest(confirmedScope);
+    if (confirmedScope.length === 0 || confirmation.payload?.confirmationDigest !== digest) {
+      return '用户答复没有绑定可验证的规划变更范围；请通过 project ask 重新展示 confirmationScope';
+    }
+    const normalizedConfirmed = new Set(confirmedScope.map(normalizedProjectDecisionText));
+    const missing = requiredScope.find((entry) => !normalizedConfirmed.has(normalizedProjectDecisionText(entry)));
+    if (missing) return `用户确认未覆盖当前规划变更：${missing}`;
   }
   return null;
 }
@@ -1419,11 +1511,13 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
           technicalChoices: false,
           lowRiskRetries: false,
           routeAdjustments: false,
-          targetedTests: false,
+          targetedTests: item.contract.authority.targetedTests === true,
           internalThreads: false,
           continuousExecution: true,
-          permissionConfirm: false,
-          allowedCommandPrefixes: [],
+          permissionConfirm: item.contract.authority.permissionConfirm === true,
+          allowedCommandPrefixes: Array.isArray(item.contract.authority.allowedCommandPrefixes)
+            ? item.contract.authority.allowedCommandPrefixes.map((entry) => String(entry).trim().slice(0, 240)).filter(Boolean)
+            : [],
           authorizedDevices: [],
           authorizedEnvironments: [],
           authorizedOperations: [],
@@ -1477,6 +1571,10 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
     safeExit: normalizeProjectSafeExitState(session.safeExit),
+    reusableUserDecisions: (Array.isArray(session.reusableUserDecisions) ? session.reusableUserDecisions : [])
+      .map(normalizeProjectReusableUserDecision)
+      .filter((decision): decision is ProjectReusableUserDecision => !!decision)
+      .slice(-50),
     pendingSupervisorTransitions: compactProjectSupervisorTransitions((Array.isArray(session.pendingSupervisorTransitions)
       ? session.pendingSupervisorTransitions
       : [])

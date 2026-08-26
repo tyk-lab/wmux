@@ -3,6 +3,7 @@ import {
   buildProjectTaskExecutionEnvelope,
   buildProjectSupervisorBriefing,
   prepareProjectTaskDelivery,
+  projectTaskContractDisclosureError,
   projectTaskInstructionDisclosureError,
   projectPermissionAuthorizationError,
   projectProgressObligation,
@@ -15,6 +16,9 @@ import {
 import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   normalizeProjectManagerSession,
+  projectManagerQuestionSemanticFingerprint,
+  projectPlanningConfirmationDigest,
+  projectPlanningConfirmationError,
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
@@ -120,6 +124,18 @@ describe('project-manager engine', () => {
 
   it('requires project-level validation after all work completes', () => {
     expect(projectCompletionState(session([item('a', 'completed')]))).toBe('ready-for-validation');
+  });  it('keeps implicit targeted-test permission inside a single safe command', () => {
+    const contract = item('test-permission', 'planned').contract;
+    contract.authority.allowedCommandPrefixes = [];
+    expect(projectPermissionAuthorizationError(contract, 'npm test')).toBeNull();
+    expect(projectPermissionAuthorizationError(contract, 'npm test && powershell -EncodedCommand ZQB2AGkAbAA='))
+      .toContain('shell');
+    expect(projectPermissionAuthorizationError(contract, 'npm test; Remove-Item important.txt'))
+      .toContain('shell');
+    expect(projectPermissionAuthorizationError(contract, 'npm test | powershell -Command Get-Content important.txt'))
+      .toContain('shell');
+    expect(projectPermissionAuthorizationError(contract, 'npm test powershell -EncodedCommand ZQB2AGkAbAA='))
+      .toContain('解释器');
   });  it('keeps refine and pivot waiting states on deterministic internal gates', () => {
     const refine = session([item('stale-stage', 'planned')], 'waiting');
     refine.authorizationVersion = 2;
@@ -184,6 +200,50 @@ describe('project-manager engine', () => {
     expect(projectTaskInstructionDisclosureError(
       'Update the SupervisorPanel component and project manager dialog labels.',
     )).toBeNull();
+    expect(projectTaskInstructionDisclosureError('修改项目管理系统的对话框标签')).toBeNull();
+  });  it('rejects orchestration identities hidden in task contract fields', () => {
+    const contract = item('auth', 'planned').contract;
+    expect(projectTaskContractDisclosureError({
+      ...contract,
+      objective: '按项目 AI 决定完成任务并向监督 AI 汇报，工作项 ID=task-a',
+    })).toContain('任务合同 objective');
+    expect(projectTaskContractDisclosureError(contract)).toBeNull();
+  });  it('binds reusable decisions and planning confirmations to their visible semantic scope', () => {
+    const base = {
+      category: 'clarification' as const,
+      reasonCode: undefined,
+      question: '如何处理配置冲突？',
+      context: '当前配置存在冲突。',
+      options: [
+        { id: 'keep', label: '保留配置', description: '保持兼容。' },
+        { id: 'replace', label: '替换配置', description: '采用新配置。' },
+      ],
+      decisionScope: '配置冲突时是否保留兼容性设置',
+      confirmationScope: [] as string[],
+    };
+    expect(projectManagerQuestionSemanticFingerprint(base)).toBe(projectManagerQuestionSemanticFingerprint({
+      ...base,
+      question: '同类配置冲突应如何处理？',
+      context: '另一处配置发生相同冲突。',
+    }));
+    expect(projectManagerQuestionSemanticFingerprint(base)).not.toBe(projectManagerQuestionSemanticFingerprint({
+      ...base,
+      decisionScope: '是否删除历史项目数据',
+    }));
+
+    const project = session([]);
+    const scope = ['goal: 新的用户目标'];
+    project.events = [{
+      id: 'confirmed-plan', sessionId: project.id, ts: 2,
+      kind: 'user-clarification-answered', summary: '用户确认新目标',
+      payload: { confirmationScope: scope, confirmationDigest: projectPlanningConfirmationDigest(scope) },
+    }];
+    expect(projectPlanningConfirmationError(project, {
+      changesUserPlan: true, userConfirmationEventId: 'confirmed-plan', confirmationScope: scope,
+    })).toBeNull();
+    expect(projectPlanningConfirmationError(project, {
+      changesUserPlan: true, userConfirmationEventId: 'confirmed-plan', confirmationScope: ['goal: 未确认目标'],
+    })).toContain('未覆盖');
   });  it('injects the trusted contract while exposing only the executable action to guards', () => {
     const contract = item('auth', 'planned').contract;
     const envelope = buildProjectTaskExecutionEnvelope(contract);

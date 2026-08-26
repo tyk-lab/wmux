@@ -40,8 +40,18 @@ function normalizedCommand(value: string): string {
   return value.trim().toLowerCase().replace(/["'`]/gu, '').replace(/\s+/gu, ' ');
 }
 
+function unsafePermissionCommandReason(command: string): string | null {
+  if (/[\r\n;&|<>`]/u.test(command) || command.includes('$(')) {
+    return '权限命令包含 shell 链接、重定向或命令替换';
+  }
+  if (/\b(?:(?:powershell|pwsh)(?:\.exe)?\s+[^\r\n]{0,120}?-(?:e|enc|encodedcommand|command)|cmd(?:\.exe)?\s+\/c|(?:bash|sh|wsl(?:\.exe)?)\s+-c)\b/iu.test(command)) {
+    return '权限命令包含可绕过测试边界的解释器入口';
+  }
+  return null;
+}
+
 export function commandMatchesAuthorizedPrefix(command: string, prefixes: readonly string[]): boolean {
-  if (/[\r\n;&|<>`]/u.test(command) || command.includes('$(')) return false;
+  if (unsafePermissionCommandReason(command)) return false;
   const candidate = normalizedCommand(command);
   return prefixes.some((prefix) => {
     const allowed = normalizedCommand(prefix);
@@ -57,6 +67,8 @@ export function projectPermissionAuthorizationError(
   if (!contract.authority.permissionConfirm) {
     return '任务契约未授权监督 AI 自动确认权限';
   }
+  const unsafeReason = unsafePermissionCommandReason(command);
+  if (unsafeReason) return unsafeReason;
   if (isProjectTargetedTestCommand(command)) {
     if (!contract.authority.targetedTests) return '任务契约未授权监督 AI 运行测试';
     const prefixes = contract.authority.allowedCommandPrefixes || [];
@@ -96,7 +108,7 @@ export interface PreparedProjectTaskDelivery {
 }
 
 const PROJECT_ORCHESTRATION_DISCLOSURES = [
-  /项目\s*AI|项目管理(?:\s*AI)?|监督\s*AI|专属监督(?:\s*AI)?|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu,
+  /项目\s*AI|项目管理\s*AI|监督\s*AI|专属监督(?:\s*AI)?|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu,
   /\bproject\s+ai\b|\bproject\s+manager\s+ai\b|\b(?:dedicated|project)\s+supervisor(?:\s+ai)?\b|\bsupervisor\s+ai\b|\bcontrol\s+plane\b|\bauxiliary(?:\s+task)?\s+ai\b|\b(?:project|work\s*item)\s+id\b/iu,
   /\b(?:ask|notify|follow|wait\s+for|coordinate\s+with|escalate\s+to|report(?:\s+back)?\s+to)\s+(?:your\s+|the\s+)?(?:project\s+manager|supervisor)\b/iu,
   /\b(?:project\s+manager|supervisor)['’]s\s+(?:plan|instructions?|decision|approval)\b/iu,
@@ -110,6 +122,23 @@ export function projectTaskInstructionDisclosureError(instruction: string): stri
   return disclosure
     ? `任务 AI 指令不能暴露内部编排身份或路由信息：${disclosure}`
     : null;
+}
+
+export function projectTaskContractDisclosureError(
+  contract: Pick<ProjectSupervisorContract, 'objective' | 'description' | 'preconditions' | 'stopWhen' | 'validation'>,
+): string | null {
+  const fields: Array<[string, string]> = [
+    ['objective', contract.objective],
+    ['description', contract.description],
+    ...contract.preconditions.map((value) => ['preconditions', value] as [string, string]),
+    ...contract.stopWhen.map((value) => ['stopWhen', value] as [string, string]),
+    ...contract.validation.map((value) => ['validation', value] as [string, string]),
+  ];
+  for (const [field, value] of fields) {
+    const error = projectTaskInstructionDisclosureError(value);
+    if (error) return `任务合同 ${field} 不能进入任务 AI：${error}`;
+  }
+  return null;
 }
 
 /** Keep the persisted contract authoritative while exposing only the executable action to guards. */

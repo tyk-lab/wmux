@@ -11,6 +11,8 @@ import {
   projectManagerGoalChangeHasUserBasis,
   projectManagerQuestionAllowsReusableDecision,
   projectManagerQuestionDecisionKey,
+  projectManagerQuestionSemanticFingerprint,
+  projectPlanningConfirmationDigest,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
   projectRequirementsVersion,
@@ -700,12 +702,17 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const answer = action.answer.trim();
       if (!answer) return { ok: false, error: '用户答复不能为空' };
+      if (action.reuseForSimilar && !pending.decisionScope?.trim()) {
+        return { ok: false, error: '缺少用户可见的 decisionScope，不能授权自动复用答复' };
+      }
       if (action.reuseForSimilar && !projectManagerQuestionAllowsReusableDecision(pending)) {
         return { ok: false, error: '物理操作、凭据、权限授予、破坏性操作、生产操作和内部故障不能授权自动复用答复' };
       }
       const reusableDecision = action.reuseForSimilar ? {
         id: `reusable-decision-${uuid()}`,
         decisionKey: projectManagerQuestionDecisionKey(pending),
+        semanticFingerprint: projectManagerQuestionSemanticFingerprint(pending),
+        ...(pending.decisionScope ? { decisionScope: pending.decisionScope } : {}),
         category: pending.category || 'clarification' as const,
         ...(pending.reasonCode ? { reasonCode: pending.reasonCode } : {}),
         question: pending.question,
@@ -727,6 +734,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           reusableUserDecisions: [
             ...(session.reusableUserDecisions || []).filter((decision) => (
               decision.decisionKey !== reusableDecision.decisionKey
+              || decision.semanticFingerprint !== reusableDecision.semanticFingerprint
               || decision.requirementsVersion !== reusableDecision.requirementsVersion
               || decision.authorizationVersion !== reusableDecision.authorizationVersion
             )),
@@ -748,6 +756,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           category: pending.category,
           reuseForSimilar: !!reusableDecision,
           ...(reusableDecision ? { decisionKey: reusableDecision.decisionKey } : {}),
+          ...(pending.confirmationScope?.length ? {
+            confirmationScope: pending.confirmationScope,
+            confirmationDigest: projectPlanningConfirmationDigest(pending.confirmationScope),
+          } : {}),
         },
       };
     } else if (action.type === 'create-work-item') {

@@ -17,6 +17,8 @@ describe('project manager runtime startup protocol', () => {
       expect(input).toContain('禁止只在项目管理终端输出问题后等待');
       expect(input).toContain('recommendedOptionId');
       expect(input).toContain('下一轮结构化提问');
+      expect(input).toContain('decisionScope');
+      expect(input).toContain('confirmationScope');
       expect(input).toContain('category=manual-intervention');
       expect(input).toContain('wmux project status --project pm-test-project');
       expect(input).toContain('只能管理这一个项目');

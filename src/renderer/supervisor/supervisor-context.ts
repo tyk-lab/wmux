@@ -188,7 +188,6 @@ export function buildSupervisorRuntimeContext(
     && options.taskState !== 'working'
     && permissions.includes('same-route-next');
   const permissionConfirmationAvailable = reviewReady
-    && !projectManaged
     && options.permissionBlocked === true
     && lane.remoteSshControl !== true
     && permissions.includes('permission-confirm');

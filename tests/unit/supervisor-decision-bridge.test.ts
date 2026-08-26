@@ -2287,20 +2287,30 @@ describe('supervisor decision bridge', () => {
         { id: 'replace', label: '替换', description: '配置更简洁。' },
       ],
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('recommendedOptionId') });
+    await expect(request({
+      action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
+      question: '是否复用现有配置策略？', decisionKey: 'configuration-strategy',
+      options: [
+        { id: 'keep', label: '保留配置', description: '保持兼容性。' },
+        { id: 'replace', label: '采用新配置', description: '切换兼容策略。' },
+      ],
+      recommendedOptionId: 'keep',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('decisionScope') });
 
     await expect(request({
       action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
-      question: '是否允许覆盖现有配置？',
+      question: '是否继续采用现有兼容配置方案？',
       decisionKey: 'configuration-strategy',
-      context: '计划文件与当前配置存在冲突。',
+      decisionScope: '配置冲突时是否保留现有兼容性设置',
+      context: '计划文件提供了另一种配置方向。',
       options: [
         { id: 'keep', label: '保留现有配置', description: '采用兼容性修改。' },
-        { id: 'replace', label: '允许覆盖', description: '配置更简洁，但会替换现有设置。' },
+        { id: 'replace', label: '采用新配置', description: '配置更简洁，但兼容策略不同。' },
       ],
       recommendedOptionId: 'keep',
     })).resolves.toMatchObject({ ok: true, question: { recommendedOptionId: 'keep' } });
     expect(useStore.getState().projectManagers.find((project) => project.id === first.id)).toMatchObject({
-      status: 'waiting', pendingUserQuestion: { question: '是否允许覆盖现有配置？' },
+      status: 'waiting', pendingUserQuestion: { question: '是否继续采用现有兼容配置方案？' },
     });
     expect(useStore.getState().projectManagers.find((project) => project.id === second.id)?.status).toBe('waiting');
     expect(useStore.getState().projectManagerDialogOpen).toBe(false);
@@ -2317,9 +2327,10 @@ describe('supervisor decision bridge', () => {
     await expect(request({
       action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
       question: '同类配置冲突仍应如何处理？', decisionKey: 'configuration-strategy',
+      decisionScope: '配置冲突时是否保留现有兼容性设置',
       options: [
         { id: 'keep', label: '保留现有配置', description: '继续采用兼容性修改。' },
-        { id: 'replace', label: '允许覆盖', description: '替换现有设置。' },
+        { id: 'replace', label: '采用新配置', description: '采用不同的兼容策略。' },
       ],
       recommendedOptionId: 'keep',
     })).resolves.toMatchObject({
@@ -2333,7 +2344,7 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('没有待用户确认') });
     expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       type: 'user-clarification-requested',
-      payload: expect.objectContaining({ question: expect.objectContaining({ question: '是否允许覆盖现有配置？' }) }),
+      payload: expect.objectContaining({ question: expect.objectContaining({ question: '是否继续采用现有兼容配置方案？' }) }),
     }));
   });
 
@@ -7591,6 +7602,33 @@ describe('supervisor decision bridge', () => {
     agentState = { ...agentState, state: 'blocked', updatedAt: 99 };
     expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).toMatchObject({ ok: false });
     expect(writes).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a project supervisor to confirm a contract-authorized local permission prompt', async () => {
+    bindProjectLaneToWorkItem({ permissionConfirm: true, allowedCommandPrefixes: ['npm test'] });
+    screenText = 'Command: npm test\nContinue? [y/N]';
+    agentState = {
+      state: 'blocked', blockedReason: 'permission: npm test', blockedVersion: 1,
+      blockedRequestId: 'project-permission-1', updatedAt: 2,
+    };
+    const writeReliable = vi.fn(async (_surfaceId: string, data: string) => {
+      if (data === '\r') agentState = { ...agentState, state: 'working', updatedAt: 3 };
+      return true;
+    });
+    (globalThis.window as any).wmux.pty.writeReliable = writeReliable;
+
+    await expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).resolves.toMatchObject({
+      ok: true, autoAuthorized: true,
+    });
+  });
+
+  it('rejects project context recovery summaries that disclose orchestration identities', () => {
+    bindProjectLaneToWorkItem();
+    expect(decide({
+      outcome: 'rework', proposalKind: 'context-recovery',
+      reason: '任务 AI 连续遗忘当前成果', evidence: '连续两轮重复已经完成的工作',
+      contextSummary: '项目 AI 要求等待监督 AI 下一步，工作项 ID=task-a',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('污染任务 AI') });
   });
 
   it('confirms a permission response through the reliable queue and task-state observation', async () => {

@@ -86,8 +86,8 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
   ask: [
     'Usage: wmux project ask --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
-    'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","question":"...","context":"...","options":[{"id":"confirm-requirements","label":"确认需求","description":"..."},{"id":"revise-requirements","label":"补充调整","description":"..."}],"recommendedOptionId":"confirm-requirements"}',
-    'Use the same stable decisionKey only when the question has the same meaning and may reuse a user-authorized answer within the current requirements and authorization versions.',
+    'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","decisionScope":"用户可见的同类决定含义边界","confirmationScope":["goal: 精确目标或其他将落盘的规划变更"],"question":"...","context":"...","options":[{"id":"confirm-requirements","label":"确认需求","description":"..."},{"id":"revise-requirements","label":"补充调整","description":"..."}],"recommendedOptionId":"confirm-requirements"}',
+    'Reusable decisions require the same stable decisionKey and user-visible decisionScope. Planning changes must list their exact canonical confirmationScope and later submit the matching userConfirmationEventId.',
     'Manual-intervention JSON additionally requires workItemId, blocker, and reasonCode.',
     'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, internal-project-failure.',
   ].join('\n'),
