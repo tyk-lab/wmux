@@ -109,7 +109,9 @@ describe('project command help', () => {
     expect(resolveProjectCommandHelp(['project', 'alignment-confirm', '--help']))
       .toContain('userConfirmationEventId');
     expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
-      .toContain('internal-project-failure');
+      .toContain('task-input-conflict');
+    expect(resolveProjectCommandHelp(['project', 'ask', '--help']))
+      .not.toContain('internal-project-failure');
   });
 
   it('returns lightweight command-specific help for non-JSON commands', () => {

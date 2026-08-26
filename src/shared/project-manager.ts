@@ -3,7 +3,7 @@ import type { ProjectManagementAgentConfig } from './project-manager-terminal';
 export const MAX_PROJECT_PLAN_FILES = 3;
 export const MAX_PROJECT_PLAN_FILE_BYTES = 1024 * 1024;
 /** Bump whenever restored work must be re-contracted before current supervisors may execute it. */
-export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 9;
+export const CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION = 10;
 
 export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'completed' | 'stopped';
 
@@ -97,6 +97,7 @@ export type ProjectManagerEventKind =
   | 'project-safe-exit-requested'
   | 'project-safe-exit-failed'
   | 'project-safe-exit-completed'
+  | 'project-recovery-requested'
   | 'project-completed'
   | 'project-stopped'
   | 'manager-reply';
@@ -114,6 +115,8 @@ export interface ProjectManagerQuestionOption {
   id: string;
   label: string;
   description?: string;
+  /** Exact planning changes authorized only when this option is selected. */
+  confirmationScope?: string[];
 }
 
 export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
@@ -123,7 +126,7 @@ export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
   'business-choice',
   'destructive-action',
   'production-action',
-  'internal-project-failure',
+  'task-input-conflict',
 ] as const;
 
 export type ProjectManagerManualInterventionReasonCode =
@@ -286,6 +289,7 @@ export function projectManagerQuestionSemanticFingerprint(
       option.id,
       normalizedProjectDecisionText(option.label),
       ...(destructiveAuthorization ? [normalizedProjectDecisionText(option.description)] : []),
+      ...(option.confirmationScope || []).map((entry) => `confirmation:${normalizedProjectDecisionText(entry)}`),
     ].join(':')),
     ...(question.confirmationScope || []).map((entry) => `confirmation:${normalizedProjectDecisionText(entry)}`),
   ].join('|');
@@ -422,6 +426,17 @@ export interface ProjectSupervisorContract {
   stopWhen: string[];
   validation: string[];
   budget: ProjectExecutionBudget;
+}
+
+export function projectManagerQuestionConfirmationScope(
+  question: Pick<ProjectManagerUserQuestion, 'options' | 'confirmationScope'>,
+  optionId?: string,
+): string[] {
+  const selected = optionId
+    ? question.options.find((option) => option.id === optionId)
+    : undefined;
+  if (selected?.confirmationScope !== undefined) return [...selected.confirmationScope];
+  return [...(question.confirmationScope || [])];
 }
 
 export type ProjectTaskBatchCoverage = 'whole-item' | 'bounded-batch';
@@ -597,7 +612,7 @@ export interface ProjectWorkItem {
   /** Requirements and inherited-authorization versions accepted for this task contract. */
   requirementsVersion: number;
   authorizationVersion: number;
-  /** Current P9 contract semantics version. */
+  /** Current managed-project contract semantics version. */
   executionProtocolVersion: number;
   /** Project-AI decision made before dispatch so one task AI receives one focused outcome. */
   complexityAssessment: ProjectTaskComplexityAssessment;
@@ -1090,7 +1105,7 @@ export interface ProjectManagerSession {
   /** Latest requirements version explicitly accepted by the project manager through resume. */
   acceptedRequirementsVersion?: number;
   /** Persisted execution semantics version, independent from user requirement revisions. */
-  executionProtocolVersion?: number;
+  executionProtocolVersion: number;
   status: ProjectManagerSessionStatus;
   /** True only when the project was paused by the portfolio-level control. */
   pausedByPortfolio?: boolean;
@@ -1127,7 +1142,7 @@ export interface ProjectManagerSession {
   pendingUserQuestion?: ProjectManagerUserQuestion;
   /** User-authorized answers reusable only within the recorded requirement and authorization versions. */
   reusableUserDecisions?: ProjectReusableUserDecision[];
-  /** Project-specific runtime selection; absent legacy sessions inherit current defaults. */
+  /** Project-specific runtime selection. */
   agentConfig?: ProjectManagementAgentConfig;
   /** Provider quota/rate-limit issue waiting for a user-selected runtime replacement. */
   agentIssue?: ProjectAgentRuntimeIssue;
@@ -1519,7 +1534,9 @@ export function projectPlanningConfirmationError(
       return '用户答复没有绑定可验证的规划变更范围；请通过 project ask 重新展示 confirmationScope';
     }
     const normalizedConfirmed = new Set(confirmedScope.map(normalizedProjectDecisionText));
-    const missing = requiredScope.find((entry) => !normalizedConfirmed.has(normalizedProjectDecisionText(entry)));
+    const missing = requiredScope.find((entry) => (
+      !normalizedConfirmed.has(normalizedProjectDecisionText(entry))
+    ));
     if (missing) return `用户确认未覆盖当前规划变更：${missing}`;
   }
   return null;
@@ -1583,7 +1600,7 @@ export function compactProjectSupervisorTransitions(
   return compacted.reverse();
 }
 
-/** Normalize the current P9 governance state. Older protocols are rejected before this boundary. */
+/** Normalize the current governance state. Older protocols are rejected before this boundary. */
 function normalizeProjectGovernanceSessionState(session: ProjectManagerSession): ProjectManagerSession {
   return {
     ...session,
@@ -1617,7 +1634,7 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
   };
 }
 
-/** Normalize only the current P9 single-task-runtime model; older sessions are rejected during recovery. */
+/** Normalize only the current single-task-runtime model; older sessions are rejected during recovery. */
 export function normalizeProjectManagerSession(session: ProjectManagerSession): ProjectManagerSession {
   const requirementsVersion = projectRequirementsVersion(session);
   const authorizationVersion = projectAuthorizationVersion(session);
@@ -1733,6 +1750,7 @@ export type ProjectManagerAction =
     scopeSummary: string;
     acceptanceSummary: string;
     reason: string;
+    userConfirmationEventId?: string;
   }
   | {
     type: 'update-project-definition';
@@ -1746,7 +1764,13 @@ export type ProjectManagerAction =
     source: 'user' | 'manager';
     mode: 'refine' | 'pivot';
   }
-  | { type: 'set-project-subgoals'; subgoals: ProjectSubgoal[]; reason?: string; source: 'user' | 'manager' }
+  | {
+    type: 'set-project-subgoals';
+    subgoals: ProjectSubgoal[];
+    reason?: string;
+    source: 'user' | 'manager';
+    userConfirmationEventId?: string;
+  }
   | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
   | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
   | {

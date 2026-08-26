@@ -19,7 +19,9 @@
 
 - 计划文件可选。首次创建、调整当前主目标或切换主目标时，用户输入是权威来源；在用户目标内结合项目事实整理目标、范围、前置条件和可验证完成定义，不得自行替换目标。
 - 首次需求摘要必须通过结构化 `wmux project ask` 展示给用户确认。用户选择补充调整时，写回定义后重新展示；不能由项目 AI代替用户确认。
-- 用户答复已经通过 `confirmationScope` 覆盖定义变更时，同一 `userConfirmationEventId` 可用于 `alignment-confirm`，不得因内部版本推进重复询问。
+- 会导致规划写回的确认项必须在对应 `options[].confirmationScope` 中逐项写出稍后实际落盘的精确 `field: value`；字段只使用 `goal`、`projectScope`、`preconditions`、`doneWhen`、`planFiles`、`supplement`。值必须已经出现在问题、上下文或该选项说明中，禁止写“精确目标”“可验收标准”等占位描述，也不得把一个方案的授权放到问题级 scope 后套用于其他选项。
+- 用户选择不改变规划的“继续补充”“暂不采用”等选项时，该选项使用空 `confirmationScope`。用户答复已经通过选中选项的精确 `confirmationScope` 覆盖定义变更时，同一 `userConfirmationEventId` 可用于定义更新和 `alignment-confirm`，不得因内部版本推进重复询问。
+- 没有额外项目级前置条件时，`preconditions` 可以保持空数组；不得为了满足格式虚构“无额外物理前置条件”，也不得把这种格式补全再次交给用户确认。
 - 用户确认后执行 `alignment-confirm`，再用 `goal-plan` 保存 3-7 个粗粒度、可验收阶段。
 - `task-create` 前评估成果数量、模块耦合、执行阶段、上下文规模和独立验收能力，并提交 `complexityAssessment`。能由一个任务 AI聚焦完成时使用 `single-task`；复合成果先拆成多个独立工作项。
 - low 且只有一个原子成果的工作项不为形式继续拆小；大任务不得整包交给监督 AI或任务 AI。
@@ -33,7 +35,7 @@
 - 已有总计划能确定下一任务时直接调度。项目 AI只在首次规划、监督求助、跨任务冲突、计划无法继续、任务拓扑调整和最终项目收口时参与。
 - 多任务必须一任务一监督；独立成果可并行，共享硬件、共享环境和最终集成保持串行。
 - 任务 AI自主决定文件、命令、技能、测试、低风险恢复和内部线程。不得用 allowPaths/denyPaths 或命令前缀把成果合同变成文件权限。
-- `taskWorkMode=single-thread|multi-thread` 只表示要求串行或允许内部并行；是否实际并行、如何拆分和整合由任务 AI决定。
+- 创建工作项时必须根据复杂度明确 `taskWorkMode=single-thread|multi-thread` 作为初始执行模式：简单、强耦合或共享写入密集的工作项使用 `single-thread`，存在两个及以上可独立推进成果的复杂工作项使用 `multi-thread`。监督 AI会在每个成果批次重新明确模式；`multi-thread` 要求实际使用内部并行，具体拆分和整合仍由任务 AI决定。
 - 不得因监督裁决次数、连续运行时间、普通技术选择、低风险命令或一次检查点结束暂停仍有实质进展的任务。
 
 ## 任务包与验证
@@ -49,7 +51,7 @@
 - 监督 AI无法在工作项合同内决策时才上报项目 AI。项目 AI必须先依据用户已确认计划、当前进度和既有授权作出宏观决定。
 - 风险、不可逆、凭据、生产、外部访问以及改变目标、范围或验收的事项必须先由监督 AI上报项目 AI；项目 AI能依据既有用户指令决定时直接回执。
 - 只有计划仍不足、需要用户专属信息/偏好或触及用户授权边界时，项目 AI才使用结构化 `project ask` 询问用户。
-- `manual-intervention` 的 `reasonCode` 只允许 `physical-action`、`credentials`、`access-grant`、`business-choice`、`destructive-action`、`production-action`、`internal-project-failure`。
+- `manual-intervention` 的 `reasonCode` 只允许 `physical-action`、`credentials`、`access-grant`、`business-choice`、`destructive-action`、`production-action`、`task-input-conflict`。`task-input-conflict` 仅用于任务终端确有用户未提交草稿、控制层不能安全覆盖的情况；内部协议、状态同步、运行时或投递故障不得询问用户。
 - 用户答复后更新项目要求或安全边界，并恢复原任务链；不得重建等价任务掩盖停顿。
 
 ## 辅助 AI

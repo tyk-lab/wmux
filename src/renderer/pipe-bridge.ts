@@ -170,6 +170,7 @@ import {
   projectManagerEventNeedsUserAttention,
   projectManagerGoalChangeHasUserBasis,
   projectManagerQuestionAllowsReusableDecision,
+  projectManagerQuestionConfirmationScope,
   projectManagerQuestionDecisionKey,
   projectManagerQuestionSemanticFingerprint,
   projectPlanningConfirmationDigest,
@@ -208,6 +209,10 @@ import {
   type ProjectWorkItem,
 } from '../shared/project-manager';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
+import {
+  supervisorCompletionEvidenceRefs,
+  supervisorCompletionFileShapeError,
+} from '../shared/supervisor-completion';
 import {
   MAX_TASK_CHILD_THREADS,
   normalizeTaskChildThreadResponsibilities,
@@ -1437,10 +1442,7 @@ function supervisorDecisionInputSignature(params: any): string {
     diffSummary: params?.diffSummary,
     evidence: params?.evidence,
     contextSummary: params?.contextSummary,
-    completionStopWhen: params?.completionStopWhen,
-    completionValidation: params?.completionValidation,
     completionChecklist: params?.completionChecklist,
-    remainingWork: params?.remainingWork,
     fullSuite: params?.fullSuite === true,
     retry: params?.retry === true,
     retryKind: params?.retryKind,
@@ -5154,13 +5156,29 @@ function normalizeProjectManagerUserQuestion(
 ): { question?: ProjectManagerUserQuestion; error?: string } {
   const question = String(value?.question || '').trim().slice(0, 2000);
   const context = String(value?.context || '').trim().slice(0, 5000);
+  const category = value?.category === 'manual-intervention' ? 'manual-intervention' : 'clarification';
   if (!question) return { error: '用户澄清问题不能为空' };
   const rawOptions = Array.isArray(value?.options) ? value.options : [];
   if (rawOptions.length < 2 || rawOptions.length > 4) return { error: '用户澄清问题必须提供 2-4 个互斥选项' };
+  const normalizeScope = (input: unknown, label: string): { scope?: string[]; error?: string } => {
+    if (input === undefined) return { scope: undefined };
+    if (!Array.isArray(input)) return { error: `${label} 必须是字符串数组` };
+    const scope = input.slice(0, 20).map((entry) => String(entry || '').trim().slice(0, 1000));
+    if (scope.some((entry) => !entry)) return { error: `${label} 不能包含空变更项` };
+    return { scope };
+  };
+  const normalizedOptionScopes: Array<{ scope?: string[]; error?: string }> = rawOptions.map((option: any, index: number) => (
+    normalizeScope(option?.confirmationScope, `选项 ${index + 1} 的 confirmationScope`)
+  ));
+  const optionScopeError = normalizedOptionScopes.find((result) => result.error)?.error;
+  if (optionScopeError) return { error: optionScopeError };
   const options: ProjectManagerQuestionOption[] = rawOptions.map((option: any, index: number) => ({
     id: String(option?.id || `option-${index + 1}`).trim().slice(0, 80),
     label: String(option?.label || '').trim().slice(0, 300),
     description: String(option?.description || '').trim().slice(0, 1000) || undefined,
+    ...(normalizedOptionScopes[index].scope !== undefined
+      ? { confirmationScope: normalizedOptionScopes[index].scope }
+      : {}),
   }));
   if (options.some((option) => !option.id || !option.label) || new Set(options.map((option) => option.id)).size !== options.length) {
     return { error: '用户澄清选项必须具有唯一 id 和非空 label' };
@@ -5183,17 +5201,55 @@ function normalizeProjectManagerUserQuestion(
   if (rawDecisionKey && !decisionScope) {
     return { error: 'decisionScope 必须明确说明用户授权复用的同类决定含义' };
   }
-  if (value?.confirmationScope !== undefined && !Array.isArray(value.confirmationScope)) {
-    return { error: 'confirmationScope 必须是用户可见的规划变更字符串数组' };
+  const normalizedQuestionScope = normalizeScope(value?.confirmationScope, 'confirmationScope');
+  if (normalizedQuestionScope.error) return { error: normalizedQuestionScope.error };
+  const confirmationScope = normalizedQuestionScope.scope || [];
+  const planningFields = new Set(['goal', 'projectscope', 'preconditions', 'donewhen', 'planfiles', 'supplement']);
+  const specialManualScopes = new Set(['manualoperationauthorization', 'acceptance']);
+  const normalizedVisibleText = (text: string): string => (
+    text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  );
+  const scopeVisibilityError = (
+    scope: readonly string[],
+    visibleText: string,
+    label: string,
+  ): string | undefined => {
+    const normalizedVisible = normalizedVisibleText(visibleText);
+    for (const entry of scope) {
+      const separator = entry.indexOf(':');
+      if (separator <= 0) {
+        const special = normalizedVisibleText(entry);
+        if (category === 'manual-intervention' && specialManualScopes.has(special)) continue;
+        return `${label} 必须使用 goal|projectScope|preconditions|doneWhen|planFiles|supplement: <精确值>`;
+      }
+      const field = normalizedVisibleText(entry.slice(0, separator));
+      if (!planningFields.has(field)) return `${label} 包含不支持的规划字段：${entry.slice(0, separator).trim()}`;
+      const values = entry.slice(separator + 1).split(/[；;\n]/u)
+        .map(normalizedVisibleText)
+        .filter(Boolean);
+      if (values.length === 0 || values.some((candidate) => !normalizedVisible.includes(candidate))) {
+        return `${label} 必须逐项填写稍后实际写入且已在问题、上下文或该选项说明中展示的精确值：${entry}`;
+      }
+    }
+    return undefined;
+  };
+  if (confirmationScope.some((entry) => entry.includes(':'))) {
+    return { error: '规划变更 confirmationScope 必须放到具体 options[].confirmationScope，避免选择不同方案却获得相同写入授权' };
   }
-  const confirmationScope: string[] = Array.isArray(value?.confirmationScope)
-    ? value.confirmationScope.slice(0, 20).map((entry: unknown) => String(entry || '').trim().slice(0, 1000))
-    : [];
-  if (confirmationScope.some((entry) => !entry)) return { error: 'confirmationScope 不能包含空变更项' };
+  const questionScopeError = scopeVisibilityError(confirmationScope, [question, context].join('\n'), 'confirmationScope');
+  if (questionScopeError) return { error: questionScopeError };
+  for (const option of options) {
+    const optionError = scopeVisibilityError(
+      option.confirmationScope || [],
+      [question, context, option.label, option.description || ''].join('\n'),
+      `选项 ${option.label} 的 confirmationScope`,
+    );
+    if (optionError) return { error: optionError };
+  }
   return {
     question: {
       id: `pm-question-${uuid()}`,
-      category: value?.category === 'manual-intervention' ? 'manual-intervention' : 'clarification',
+      category,
       workItemId: String(value?.workItemId || '').trim().slice(0, 120) || undefined,
       blocker: String(value?.blocker || '').trim().slice(0, 4000) || undefined,
       reasonCode: PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES.includes(value?.reasonCode)
@@ -5459,17 +5515,26 @@ function projectAlignmentQuestionInput(session: ProjectManagerSession): Record<s
         {
           id: 'local-web',
           label: '本地网页系统',
-          description: '推荐方案：浏览器使用，首版覆盖核心数据管理、查询和主要业务流程；部署与自动化验证较简单，但暂不包含复杂多人权限和公网发布。',
+          description: '推荐方案。首版完成标准：本地网页可运行；核心数据管理、查询和主要业务流程可验证；基础异常处理有明确结果。暂不包含复杂多人权限和公网发布。',
+          confirmationScope: [
+            'doneWhen: 本地网页可运行；核心数据管理、查询和主要业务流程可验证；基础异常处理有明确结果',
+          ],
         },
         {
           id: 'desktop-app',
           label: '桌面单机应用',
-          description: '提供独立桌面窗口和本地数据存储，适合固定电脑离线使用；交互完整，但打包和跨平台验证成本更高。',
+          description: '首版完成标准：桌面单机应用可运行；核心数据管理与查询流程可验证；本地数据可保存并重新加载。适合固定电脑离线使用。',
+          confirmationScope: [
+            'doneWhen: 桌面单机应用可运行；核心数据管理与查询流程可验证；本地数据可保存并重新加载',
+          ],
         },
         {
           id: 'command-line',
           label: '命令行原型',
-          description: '先验证数据模型与核心业务逻辑，开发和测试最快；不提供图形界面，后续改成网页或桌面端需要补做交互层。',
+          description: '首版完成标准：命令行原型可运行；数据模型与核心业务逻辑可重复验证；输入错误有明确结果。不提供图形界面。',
+          confirmationScope: [
+            'doneWhen: 命令行原型可运行；数据模型与核心业务逻辑可重复验证；输入错误有明确结果',
+          ],
         },
       ],
       recommendedOptionId: 'local-web',
@@ -5483,17 +5548,26 @@ function projectAlignmentQuestionInput(session: ProjectManagerSession): Record<s
       {
         id: 'minimal-prototype',
         label: '最小可验证原型',
-        description: '推荐方案：先完成最关键的一条业务链和可重复测试，最快取得可验证结果；非核心功能留到后续迭代。',
+        description: '推荐方案。完成标准：最关键业务链可运行；结果可重复验证；非核心功能明确列为后续工作。',
+        confirmationScope: [
+          'doneWhen: 最关键业务链可运行；结果可重复验证；非核心功能明确列为后续工作',
+        ],
       },
       {
         id: 'standard-solution',
         label: '标准完整版本',
-        description: '一次覆盖常用功能、基础异常处理和使用说明；交付更完整，但需求确认、实现和验证时间更长。',
+        description: '完成标准：常用功能可运行；基础异常处理可验证；使用说明与实际行为一致。交付更完整，但实现和验证时间更长。',
+        confirmationScope: [
+          'doneWhen: 常用功能可运行；基础异常处理可验证；使用说明与实际行为一致',
+        ],
       },
       {
         id: 'plan-first',
         label: '先产出实施计划',
-        description: '暂不修改业务代码，先输出架构、任务拆分、风险和验收方案供确认；返工风险最低，但不会立即得到可运行成品。',
+        description: '完成标准：架构边界已说明；任务拆分和依赖明确；风险与验收方案可供后续确认。暂不修改业务代码。',
+        confirmationScope: [
+          'doneWhen: 架构边界已说明；任务拆分和依赖明确；风险与验收方案可供后续确认',
+        ],
       },
     ],
     recommendedOptionId: 'minimal-prototype',
@@ -5709,7 +5783,7 @@ function escalateProjectTaskInputDraft(
     category: 'manual-intervention',
     workItemId: workItem.id,
     blocker,
-    reasonCode: 'internal-project-failure',
+    reasonCode: 'task-input-conflict',
     question: `任务“${workItem.title}”的终端输入框存在未提交内容，执行链无法安全继续。请先查看任务终端并选择处理方式。`,
     context: [
       `任务终端：${lane.surfaceId}`,
@@ -5808,41 +5882,6 @@ async function reconcileRecoveredProjectQuestion(
   const current = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
   const question = current?.pendingUserQuestion;
   if (!current || !question) return current;
-
-  if (question.reasonCode === 'internal-project-failure') {
-    const updatedAt = Date.now();
-    const next: ProjectManagerSession = {
-      ...current,
-      status: ['active', 'paused', 'waiting'].includes(question.previousStatus)
-        ? question.previousStatus
-        : 'waiting',
-      pendingUserQuestion: undefined,
-      workItems: current.workItems.map((item) => ({
-        ...item,
-        ...(item.id === question.workItemId
-          && item.latestBlocker
-          && (!question.blocker || item.latestBlocker.includes(question.blocker))
-          ? { latestBlocker: undefined, updatedAt }
-          : {}),
-      })),
-      updatedAt,
-    };
-    replaceProjectManagerSession(next);
-    await appendRecordedProjectEvent(next, {
-      kind: 'user-clarification-invalidated',
-      workItemId: question.workItemId,
-      summary: '恢复运行链已使旧内部故障问题失效；控制层将依据当前环境重新检查，不再要求用户重复审批',
-      payload: {
-        questionId: question.id,
-        reasonCode: question.reasonCode,
-        reason: '旧问题绑定的项目 AI、监督 AI 和任务 AI 运行时已经失效，必须由新运行链重新判断',
-        recoverySource,
-        attentionRequired: false,
-        resolvedAttentionKinds: ['guard-triggered'],
-      },
-    });
-    return useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
-  }
 
   notifyProjectManagerUserQuestion(current, question);
   await appendRecordedProjectEvent(current, {
@@ -6620,7 +6659,7 @@ function handleManagedAgentHookEvent(event: any): void {
           .catch((error) => console.warn('[project-manager] pending agent switch failed', error));
         if (target.role === 'manager') {
           flushProjectManagerDeliveries();
-          void ensureProjectDeadlockUserIntervention(
+          void ensureProjectDeadlockRecovery(
             target.session.id,
             `项目 AI 回合以 ${lifecycle} 结束后仍无活动执行链`,
           ).catch((error) => console.warn('[project-manager] deadlock escalation failed', error));
@@ -6667,7 +6706,7 @@ function handleManagedAgentHookEvent(event: any): void {
         flushProjectManagerDeliveries();
         void processProjectAgentReconfiguration(target.session.id, surfaceId)
           .catch((error) => console.warn('[project-manager] pending agent switch failed', error));
-        void ensureProjectDeadlockUserIntervention(
+        void ensureProjectDeadlockRecovery(
           target.session.id,
           `项目 AI 回合以 ${lifecycle} 结束后仍无活动执行链`,
         ).catch((error) => console.warn('[project-manager] deadlock escalation failed', error));
@@ -6792,6 +6831,20 @@ function projectOwnedRuntimeSurfaceIds(projectId: string, seed: readonly string[
   return [...surfaceIds];
 }
 
+function projectOwnedSurfaceIds(projectId: string): string[] {
+  const surfaceIds = new Set<string>();
+  for (const workspace of useStore.getState().workspaces) {
+    for (const paneId of getAllPaneIds(workspace.splitTree)) {
+      for (const surface of findLeaf(workspace.splitTree, paneId)?.surfaces || []) {
+        if (surface.projectManagerProjectId === projectId || surface.projectSupervisorProjectId === projectId) {
+          surfaceIds.add(surface.id);
+        }
+      }
+    }
+  }
+  return [...surfaceIds];
+}
+
 function projectKnownRuntimeSurfaceIds(session: ProjectManagerSession): string[] {
   const lanes = useStore.getState().supervisor.lanes.filter((lane) => lane.projectManagerProjectId === session.id);
   return [...new Set([
@@ -6807,43 +6860,18 @@ function projectKnownRuntimeSurfaceIds(session: ProjectManagerSession): string[]
   ].filter((surfaceId): surfaceId is string => !!surfaceId))];
 }
 
-function teardownManagedProject(session: ProjectManagerSession): void {
+function teardownManagedProject(session: ProjectManagerSession, reason = '项目已删除并解除监督绑定'): void {
   const store = useStore.getState();
+  const ownedSurfaceIds = projectOwnedSurfaceIds(session.id);
   for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
     if (pendingProjectManagerDeliveries[index].sessionId === session.id) {
       pendingProjectManagerDeliveries.splice(index, 1);
     }
   }
   const lanes = store.supervisor.lanes.filter((lane) => lane.projectManagerProjectId === session.id);
-  const workerSurfaceIds = new Set<string>([
-    session.taskTerminalSurfaceId || '',
-    session.auxiliaryTaskTerminalSurfaceId || '',
-    ...session.workItems.map((item) => item.workerSurfaceId || ''),
-    ...lanes.map((lane) => lane.surfaceId),
-  ].filter(Boolean));
 
-  for (const lane of lanes) store.stopSupervisorLane(lane.id, '项目已删除并解除监督绑定');
-  closeStoppedSupervisorSurfaces(lanes);
-  const manager = projectManagerTerminal({ surfaceId: session.managerSurfaceId, projectId: session.id });
-  if (manager) store.closeSurface(manager.workspaceId, manager.paneId, manager.surfaceId);
-  for (const workspace of [...useStore.getState().workspaces]) {
-    const ownsProjectSupervisor = getAllPaneIds(workspace.splitTree).some((paneId) => (
-      findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => (
-        surface.projectSupervisorProjectId === session.id
-      ))
-    ));
-    const ownsProjectConsole = workspace.transientSupervisorWorkspace === true
-      && getAllPaneIds(workspace.splitTree).some((paneId) => (
-        findLeaf(workspace.splitTree, paneId)?.surfaces.some((surface) => (
-          surface.projectManagerProjectId === session.id
-        ))
-      ));
-    if (ownsProjectSupervisor || ownsProjectConsole) store.closeWorkspace(workspace.id);
-  }
-  for (const surfaceId of workerSurfaceIds) {
-    const terminal = remoteTerminalList().find((candidate) => candidate.surfaceId === surfaceId);
-    if (terminal) store.closeSurface(terminal.workspaceId, terminal.paneId, terminal.surfaceId);
-  }
+  for (const lane of lanes) store.stopSupervisorLane(lane.id, reason);
+  for (const surfaceId of ownedSurfaceIds) closeLiveSurfaceById(surfaceId as SurfaceId);
 
   const timer = projectProgressTimers.get(session.id);
   if (timer) globalThis.clearTimeout(timer);
@@ -6857,6 +6885,17 @@ function teardownManagedProject(session: ProjectManagerSession): void {
   const alignmentTimer = projectAlignmentTimers.get(session.id);
   if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
   projectAlignmentTimers.delete(session.id);
+}
+
+async function stopManagedProjectRuntime(session: ProjectManagerSession, reason: string): Promise<void> {
+  const surfaceIds = projectOwnedRuntimeSurfaceIds(session.id);
+  await Promise.all(surfaceIds.map(async (surfaceId) => {
+    if (!hasLiveSurface(surfaceId as SurfaceId)) return;
+    if (remoteTerminalActivity(surfaceId as SurfaceId, true).activityState === 'working') {
+      await writeProjectSupervisorControl(surfaceId as SurfaceId, '\x03');
+    }
+  }));
+  teardownManagedProject(session, reason);
 }
 
 export function redactProjectSafeExitExcerpt(value: string): string {
@@ -8232,23 +8271,34 @@ function handleProjectManagerDeliveryAcknowledgementTimeout(
 }
 
 function unresolvedProjectUserAnswer(session: ProjectManagerSession): ProjectManagerSession['events'][number] | undefined {
-  const resolutionKinds = new Set([
-    'project-resumed',
-    'project-paused',
-    'project-stopped',
-    'project-definition-updated',
-    'project-subgoals-updated',
-    'work-item-created',
-    'work-item-updated',
-    'user-work-item-intervention',
-    'supervisor-transition-acknowledged',
-    'supervisor-direction',
-    'user-clarification-requested',
-  ]);
+  const resolvesAnswer = (
+    answer: ProjectManagerSession['events'][number],
+    candidate: ProjectManagerSession['events'][number],
+  ): boolean => {
+    if (['project-resumed', 'project-paused', 'project-stopped'].includes(candidate.kind)) return true;
+    if (candidate.kind === 'user-clarification-requested') return true;
+    const answerQuestionId = String(answer.payload?.questionId || answer.correlationId || '').trim();
+    if (candidate.payload?.userConfirmationEventId === answer.id
+      || candidate.payload?.planningAnswerEventId === answer.id
+      || (!!answerQuestionId && candidate.payload?.sourceQuestionId === answerQuestionId)
+      || (!!answerQuestionId && candidate.payload?.questionId === answerQuestionId)) {
+      return true;
+    }
+    const workItemResolutionKinds = new Set([
+      'work-item-created',
+      'work-item-updated',
+      'user-work-item-intervention',
+      'supervisor-transition-acknowledged',
+      'supervisor-direction',
+    ]);
+    return !!answer.workItemId
+      && candidate.workItemId === answer.workItemId
+      && workItemResolutionKinds.has(candidate.kind);
+  };
   for (let index = session.events.length - 1; index >= 0; index -= 1) {
     const event = session.events[index];
     if (event.kind !== 'user-clarification-answered') continue;
-    return session.events.slice(index + 1).some((candidate) => resolutionKinds.has(candidate.kind))
+    return session.events.slice(index + 1).some((candidate) => resolvesAnswer(event, candidate))
       ? undefined
       : event;
   }
@@ -8385,274 +8435,22 @@ function projectInternalBlockedObligationContinuationText(
   ].filter(Boolean).join('\n');
 }
 
-function isObsoleteCompletedChainQuestion(session: ProjectManagerSession): boolean {
-  const question = session.pendingUserQuestion;
-  if (!question
-    || question.reasonCode !== 'internal-project-failure'
-    || question.previousStatus !== 'active') return false;
-  const wasCompletedChainMisclassification = question.blocker?.includes('当前主目标的工作项均已完成') === true
-    || [...session.events].reverse().some((event) => (
-      event.kind === 'guard-triggered'
-      && event.payload?.attentionRequired === true
-      && event.payload?.obligation === 'complete-goal'
-      && event.ts >= question.createdAt
-    ));
-  if (!wasCompletedChainMisclassification) return false;
-  return projectProgressObligation({
-    ...session,
-    status: 'active',
-    pendingUserQuestion: undefined,
-  })?.kind === 'plan-work';
-}
-
-async function recoverAuthorizedTechnicalRouteQuestion(
-  session: ProjectManagerSession,
-): Promise<ProjectManagerSession | undefined> {
-  const question = session.pendingUserQuestion;
-  const route = question ? projectAuthorizedTechnicalRoute(session, question) : undefined;
-  if (!question || !route) return undefined;
-  const next: ProjectManagerSession = {
-    ...session,
-    status: 'active',
-    pendingUserQuestion: undefined,
-    updatedAt: Date.now(),
-  };
-  replaceProjectManagerSession(next);
-  await appendRecordedProjectEvent(next, {
-    kind: 'user-clarification-invalidated',
-    workItemId: route.workItem.id,
-    summary: `推荐路线“${route.label}”已被当前主目标、工作项技术权限和既有授权覆盖；控制层撤销不必要的用户业务选择`,
-    payload: {
-      questionId: question.id,
-      reasonCode: question.reasonCode,
-      reason: 'authorized-technical-route-owned-by-project-ai',
-      recommendedOptionId: route.optionId,
-      attentionRequired: false,
-      resolvedAttentionKinds: ['guard-triggered'],
-    },
-  });
-  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || next;
-  queueProjectManagerDelivery([
-    '[控制层已撤销越权用户提问｜项目 AI 必须自主推进主目标]',
-    `项目：${session.id}；工作项：${route.workItem.id}`,
-    `已确认的技术路线：${route.label}${route.description ? ` · ${route.description}` : ''}`,
-    '该路线已被当前主目标、完成条件/监督注意事项、technicalChoices、routeAdjustments 和既有设备/环境授权覆盖，不是 business-choice。不得再次询问用户或仅保持暂停。',
-    '保留当前失败、安全停机、身份消费和遥测证据；对当前合同做真实收口，再由项目 AI 更新阶段计划/工作项合同并创建或续接主目标内的下一技术路线。不要让监督 AI 改写主目标，也不要绕过监督直接指挥任务 AI。',
-    '若需要修正项目 AI先前起草的过度绝对完成条件，只能做与用户原始主目标一致的条件式澄清，不得放宽性能门槛或把失败追认为通过。',
-    '只有新增设备/环境、扩大参数安全上限、改变接线/固件/控制环、放宽验收、生产/破坏性动作或真实用户偏好时才可重新 ask。',
-    `立即读取 wmux project status --project ${session.id}，完成 task-update/goal-plan/必要的同目标 update 后 dispatch 下一工作项，直到留下活动主目标责任者。`,
-  ].join('\n'), session.id, {
-    priority: true,
-    dedupeKey: `authorized-technical-route:${session.id}:${route.workItem.id}:${question.id}`,
-  });
-  return current;
-}
-
-async function recoverSupervisorOwnedPermissionQuestion(
-  session: ProjectManagerSession,
-): Promise<ProjectManagerSession | undefined> {
-  const question = session.pendingUserQuestion;
-  const permission = question ? projectSupervisorOwnedPermissionPrompt(session, question) : undefined;
-  if (!question || !permission) return undefined;
-  const next: ProjectManagerSession = {
-    ...session,
-    status: 'active',
-    pendingUserQuestion: undefined,
-    updatedAt: Date.now(),
-  };
-  replaceProjectManagerSession(next);
-  await appendRecordedProjectEvent(next, {
-    kind: 'user-clarification-invalidated',
-    workItemId: permission.workItem.id,
-    summary: '控制层撤销了应由监督 AI 处理的任务权限问题',
-    payload: {
-      questionId: question.id,
-      reasonCode: question.reasonCode,
-      reason: 'task-permission-owned-by-supervisor-ai',
-      attentionRequired: false,
-      resolvedAttentionKinds: ['guard-triggered'],
-    },
-  });
-  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || next;
-  queueProjectManagerDelivery([
-    '[控制层已撤销越权用户提问｜任务权限归监督链处理]',
-    `项目：${session.id}；工作项：${permission.workItem.id}`,
-    permission.contractChangeRequired
-      ? '当前合同尚未提供可用的 permissionConfirm 外壳。请判断该本地命令是否属于主目标内低风险动作；若是，更新合同为最小 allowedCommandPrefixes 并启用 permissionConfirm，再恢复同一监督链。'
-      : '当前合同已经提供 permissionConfirm 外壳。恢复同一监督链，由专属监督结合真实 blocked 状态、命令证据、范围、风险和重复确认护栏逐次处理。',
-    '项目 AI 不逐次批准任务 AI 命令，也不得把普通本地权限提示转交用户。只有新增外部访问、凭据、提权、生产/云端权限或更高风险授权时才可重新 ask。',
-    `处理后执行 wmux project status --project ${session.id}，确认工作项已恢复真实责任者。`,
-  ].join('\n'), session.id, {
-    priority: true,
-    dedupeKey: `supervisor-owned-permission:${session.id}:${permission.workItem.id}:${question.id}`,
-  });
-  return current;
-}
-
-function isCompletionRoutingCapabilityFailure(transition: ProjectSupervisorTransition): boolean {
-  const detail = [transition.summary, transition.contextSummary, transition.evidence]
-    .filter(Boolean)
-    .join('\n');
-  return /supervisor\.completion\.verify/iu.test(detail)
-    && /(?:未获授权|无权|缺少|missing|lacks?|denied|unauthori[sz]ed|forbidden|capability|权限|拒绝)/iu.test(detail);
-}
-
-function isCompletionRoutingFollowUpGuard(transition: ProjectSupervisorTransition): boolean {
-  const detail = [transition.summary, transition.contextSummary, transition.evidence]
-    .filter(Boolean)
-    .join('\n');
-  return transition.eventType === 'supervisor.execution-guard'
-    && /(?:没有产生新的代码、测试或错误证据|没有新代码、测试或错误证据|no[- ]progress)/iu.test(detail);
-}
-
-/** Repair persisted P10 sessions that were frozen solely by the missing completion-verifier capability. */
-async function recoverProjectCompletionRoutingConflict(
-  session: ProjectManagerSession,
-): Promise<ProjectManagerSession | undefined> {
-  if (session.status !== 'active' || session.pendingUserQuestion) return undefined;
-  const capabilityFailure = (session.pendingSupervisorTransitions || [])
-    .find(isCompletionRoutingCapabilityFailure);
-  if (!capabilityFailure?.workItemId) return undefined;
-  const workItem = session.workItems.find((candidate) => candidate.id === capabilityFailure.workItemId);
-  if (!workItem
-    || !['waiting-decision', 'paused', 'running', 'validating'].includes(workItem.status)) return undefined;
-  const store = useStore.getState();
-  const lane = store.supervisor.lanes.find((candidate) => (
-    candidate.id === capabilityFailure.laneId
-    && candidate.projectManagerProjectId === session.id
-    && candidate.projectWorkItemId === workItem.id
-    && supervisorLaneControlState(candidate) !== 'stopped'
-  ));
-  if (!lane) return undefined;
-  const obsoleteTransitions = (session.pendingSupervisorTransitions || []).filter((transition) => (
-    transition.laneId === lane.id
-    && transition.workItemId === workItem.id
-    && (isCompletionRoutingCapabilityFailure(transition) || isCompletionRoutingFollowUpGuard(transition))
-  ));
-  const obsoleteTransitionIds = new Set(obsoleteTransitions.map((transition) => transition.id));
-  if (obsoleteTransitionIds.size === 0) return undefined;
-
-  for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
-    const delivery = pendingProjectManagerDeliveries[index];
-    if (delivery.sessionId === session.id
-      && delivery.transitionId
-      && obsoleteTransitionIds.has(delivery.transitionId)) {
-      pendingProjectManagerDeliveries.splice(index, 1);
-    }
-  }
-  for (const approval of store.supervisor.pendingApprovals.filter((candidate) => candidate.laneId === lane.id)) {
-    store.cancelPending(approval.id, '完成核验 capability 路由已修复；撤销无效的项目 AI 代批请求');
-  }
-  const now = Date.now();
-  const next: ProjectManagerSession = {
-    ...session,
-    pendingSupervisorTransitions: (session.pendingSupervisorTransitions || [])
-      .filter((transition) => !obsoleteTransitionIds.has(transition.id)),
-    pendingManagerDeliveries: (session.pendingManagerDeliveries || []).filter((delivery) => (
-      !delivery.transitionId || !obsoleteTransitionIds.has(delivery.transitionId)
-    )),
-    workItems: session.workItems.map((candidate) => candidate.id === workItem.id ? {
-      ...candidate,
-      status: 'running',
-      latestBlocker: candidate.latestBlocker
-        && /(?:supervisor\.completion\.verify|没有产生新的代码、测试或错误证据|没有新代码、测试或错误证据)/iu.test(candidate.latestBlocker)
-        ? undefined
-        : candidate.latestBlocker,
-      updatedAt: now,
-    } : candidate),
-    updatedAt: now,
-  };
-  replaceProjectManagerSession(next);
-  resumeEligibleProjectSupervisorLanes(session.id, '完成核验 capability 路由已修复，继续同一监督收口链');
-  const resumedLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
-  useStore.getState().updateLane(resumedLane.id, {
-    awaitingReview: true,
-    awaitingStopCheck: false,
-    stopConfirmed: false,
-    autoDecisionLimitReached: false,
-    supervisorDecisionErrorGuard: undefined,
-    pendingSupervisorDeliveries: (resumedLane.pendingSupervisorDeliveries || [])
-      .filter((delivery) => delivery.kind !== 'owner-decision'),
-  });
-  await appendRecordedProjectEvent(next, {
-    kind: 'work-item-updated',
-    workItemId: workItem.id,
-    summary: '控制层已补齐监督完成核验 capability，并撤销由旧路由错误衍生的无进展交接',
-    payload: {
-      reason: 'supervisor-completion-verifier-capability-recovered',
-      laneId: lane.id,
-      resolvedTransitionIds: [...obsoleteTransitionIds],
-      attentionRequired: false,
-      resolvedAttentionKinds: ['guard-triggered'],
-    },
-  });
-  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || next;
-  const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || resumedLane;
-  queueSupervisorControlMessage(currentLane, [
-    '[完成核验 capability 路由已修复｜继续同一收口链]',
-    `项目：${session.id}；工作项：${workItem.id}`,
-    '你现在可以直接调用 supervisor.completion.verify。复用已经形成的实际证据文件，只提交一次当前 completion JSON；控制层会重新读取文件并核验哈希。',
-    '若本次只是核对既有证据且没有文件变更，请省略 --changed-files；不得填写 none 充当路径。完成裁决不要求再制造代码、测试或错误变化。',
-    '不要重复现状核对、既有测试、身份消费或设备操作。若结构化完成条件仍不满足，按真实剩余工作继续当前合同；不要交回项目 AI 代批监督 capability。',
-  ].join('\n'));
-  queueProjectManagerDelivery([
-    '[控制层已恢复完成核验链｜无需项目 AI 或用户审批]',
-    `项目：${session.id}；工作项：${workItem.id}`,
-    `已撤销 ${obsoleteTransitionIds.size} 条由旧 capability 路由和衍生无进展护栏产生的交接，并恢复同一专属监督。`,
-    '监督 AI 已收到重新提交结构化完成核验的指令。项目 AI 不得代批 supervisor.completion.verify，也不要新建同义决策；收到真实 stage-complete 后再处理阶段/主目标收口。',
-  ].join('\n'), session.id, {
-    priority: true,
-    dedupeKey: `completion-routing-recovered:${session.id}:${workItem.id}`,
-  });
-  scheduleProjectProgressCheck(current.id);
-  return current;
-}
-
-async function recoverObsoleteCompletedChainQuestion(
-  session: ProjectManagerSession,
-): Promise<ProjectManagerSession> {
-  const question = session.pendingUserQuestion;
-  if (!question || !isObsoleteCompletedChainQuestion(session)) return session;
-  const next: ProjectManagerSession = {
-    ...session,
-    status: 'active',
-    pendingUserQuestion: undefined,
-    updatedAt: Date.now(),
-  };
-  replaceProjectManagerSession(next);
-  await appendRecordedProjectEvent(next, {
-    kind: 'user-clarification-invalidated',
-    summary: '未完成阶段没有开放工作项，旧的“全部工作项已完成”人工故障判定已失效；控制层改为自动要求项目 AI 创建当前协议后继工作项',
-    payload: {
-      questionId: question.id,
-      reasonCode: question.reasonCode,
-      reason: 'active-goal-has-uncovered-subgoal',
-      attentionRequired: false,
-      resolvedAttentionKinds: ['guard-triggered'],
-    },
-  });
-  return useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || next;
-}
-
-async function ensureProjectDeadlockUserIntervention(
+async function ensureProjectDeadlockRecovery(
   sessionId: string,
   trigger: string,
-): Promise<ProjectManagerUserQuestion | undefined> {
-  if (projectDeadlockEscalations.has(sessionId)) return undefined;
+): Promise<boolean> {
+  if (projectDeadlockEscalations.has(sessionId)) return false;
   projectDeadlockEscalations.add(sessionId);
   try {
     const store = useStore.getState();
-    const storedSession = store.projectManagers.find((candidate) => candidate.id === sessionId);
-    const session = storedSession && isObsoleteCompletedChainQuestion(storedSession)
-      ? await recoverObsoleteCompletedChainQuestion(storedSession)
-      : storedSession;
+    const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
     if (!session
       || ['completed', 'stopped', 'paused'].includes(session.status)
       || session.pendingUserQuestion
       || session.agentIssue
       || (session.pendingManagerDeliveries || []).length > 0
       || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session.id)) {
-      return undefined;
+      return false;
     }
     const manager = projectManagerTerminal({ surfaceId: session.managerSurfaceId, projectId: session.id });
     const preserveStaleWorking = !trigger.startsWith(PROJECT_LIVENESS_WATCHDOG_TRIGGER);
@@ -8667,7 +8465,7 @@ async function ensureProjectDeadlockUserIntervention(
     // A durable continuation can safely wait in the manager outbox. Do not let
     // the manager's current turn hide a just-created paused/decision deadlock.
     if (managerActivity === 'working' && !managerTurnEnded && !urgentInternalObligation) {
-      return undefined;
+      return false;
     }
     const controlPlaneKnownIdleManager = (
       trigger.startsWith('控制层初始化时')
@@ -8684,28 +8482,25 @@ async function ensureProjectDeadlockUserIntervention(
     let evidenceSummary = '';
     let incidentReason = 'project-execution-deadlock';
     let obligationKind: string | undefined;
-    let question = `项目“${projectDisplayName(session)}”的执行链已全部停止，当前无法自动继续。请选择处理方式。`;
 
     if (exhaustedTransition) {
-      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return undefined;
+      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return false;
       workItem = exhaustedTransition.workItemId
         ? session.workItems.find((candidate) => candidate.id === exhaustedTransition.workItemId)
         : undefined;
       blocker = `项目 AI 连续收到监督交接但未提交处理回执：${exhaustedTransition.summary}`;
       evidenceSummary = `交接 ${exhaustedTransition.id} 已通知 ${exhaustedTransition.notificationCount} 次，仍未处理。`;
       incidentReason = 'project-transition-unhandled';
-      question = `项目“${projectDisplayName(session)}”的监督交接多次未被项目 AI处理。请选择恢复方式。`;
     } else if (unanswered) {
-      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return undefined;
+      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return false;
       workItem = unanswered.workItemId
         ? session.workItems.find((candidate) => candidate.id === unanswered.workItemId)
         : undefined;
       blocker = `项目 AI 已收到用户答复，但本回合结束时没有落实恢复、改线、暂停或停止决定：${unanswered.summary}`;
       evidenceSummary = `用户答复事件：${unanswered.id}`;
       incidentReason = 'project-user-answer-unhandled';
-      question = `项目“${projectDisplayName(session)}”没有落实你刚才的答复。请选择如何继续。`;
     } else if (waitingObligation) {
-      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return undefined;
+      if (!managerTurnEnded && !controlPlaneKnownIdleManager) return false;
       const projectLanes = store.supervisor.lanes.filter((lane) => (
         lane.projectManagerProjectId === session.id
         && supervisorLaneControlState(lane) !== 'stopped'
@@ -8718,7 +8513,7 @@ async function ensureProjectDeadlockUserIntervention(
             preserveStaleWorking,
           ).activityState === 'working')
       ));
-      if (executingRuntime) return undefined;
+      if (executingRuntime) return false;
       obligationKind = waitingObligation.kind;
       const continuationKey = projectWaitingGateContinuationKey(session, waitingObligation);
       const attempts = projectWaitingGateContinuationAttempts(session, continuationKey);
@@ -8744,14 +8539,13 @@ async function ensureProjectDeadlockUserIntervention(
           session.id,
           { priority: true, continuationKey },
         );
-        return undefined;
+        return true;
       }
       blocker = `项目 AI 已收到目标变更后的自动续作，但仍未完成内部门禁：${waitingObligation.summary}`;
       evidenceSummary = `续作义务 ${waitingObligation.kind} 已自动投递 ${attempts} 次，项目状态和版本仍未推进。`;
       incidentReason = 'project-waiting-gate-unhandled';
-      question = `项目“${projectDisplayName(session)}”没有完成目标变更后的内部恢复步骤。请选择恢复方式。`;
     } else {
-      if (session.status !== 'active' || (session.pendingSupervisorTransitions || []).length > 0) return undefined;
+      if (session.status !== 'active' || (session.pendingSupervisorTransitions || []).length > 0) return false;
       const projectLanes = store.supervisor.lanes.filter((lane) => (
         lane.projectManagerProjectId === session.id
         && supervisorLaneControlState(lane) !== 'stopped'
@@ -8764,7 +8558,7 @@ async function ensureProjectDeadlockUserIntervention(
             preserveStaleWorking,
           ).activityState === 'working')
       ));
-      if (executingRuntime) return undefined;
+      if (executingRuntime) return false;
       const oldestPendingSupervisorDelivery = projectLanes
         .flatMap((lane) => lane.pendingSupervisorDeliveries || [])
         .sort((left, right) => left.createdAt - right.createdAt)[0];
@@ -8776,11 +8570,11 @@ async function ensureProjectDeadlockUserIntervention(
             handoffDeadline,
             '专属监督控制消息超过确认宽限期后复核执行链',
           );
-          return undefined;
+          return false;
         }
       }
       const obligation = currentObligation;
-      if (!obligation) return undefined;
+      if (!obligation) return false;
       obligationKind = obligation.kind;
       const internallyRecoverableDeadlock = ['resume-paused', 'resolve-decision', 'recover-work']
         .includes(obligation.kind);
@@ -8821,7 +8615,7 @@ async function ensureProjectDeadlockUserIntervention(
             Date.now() + PROJECT_MANAGER_DELIVERY_ACK_TIMEOUT_MS + 5_000,
             `项目 AI 内部续作投递后仍未形成活动执行链：${obligation.kind}`,
           );
-          return undefined;
+          return true;
         }
         incidentReason = 'project-active-obligation-unhandled';
       }
@@ -8850,10 +8644,10 @@ async function ensureProjectDeadlockUserIntervention(
             session.id,
             { priority: true, continuationKey },
           );
-          return undefined;
+          return true;
         }
       }
-      if (!managerTurnEnded && !controlPlaneKnownIdleManager && !internallyRecoverableDeadlock) return undefined;
+      if (!managerTurnEnded && !controlPlaneKnownIdleManager && !internallyRecoverableDeadlock) return false;
       workItem = obligation.workItemId
         ? session.workItems.find((candidate) => candidate.id === obligation.workItemId)
         : session.workItems.find((candidate) => (
@@ -8864,67 +8658,114 @@ async function ensureProjectDeadlockUserIntervention(
       evidenceSummary = obligation.summary;
     }
 
-    const normalized = normalizeProjectManagerUserQuestion({
-      category: 'manual-intervention',
-      workItemId: workItem?.id,
-      blocker,
-      reasonCode: 'internal-project-failure',
-      question,
-      context: [
-        ...(workItem ? [`工作项：${workItem.title}（${workItem.id}）`] : []),
-        `异常：${blocker}`,
-        `检测依据：${evidenceSummary}`,
-        `触发位置：${trigger}`,
-        '控制层已停止继续自动投递，避免重复执行；需要用户选择恢复、保持暂停或停止当前工作。',
-      ].join('\n'),
-      options: [
-        {
-          id: 'retry-latest-protocol',
-          label: '按最新协议恢复',
-          description: '保留当前工作项和证据，由项目 AI 按最新协议重建同一监督链并重新核对状态。',
-        },
-        {
-          id: 'keep-paused',
-          label: '保持暂停',
-          description: '保留项目状态和上下文，不再自动恢复，等待后续人工重新处理。',
-        },
-        {
-          id: workItem ? 'stop-work-item' : 'stop-project',
-          label: workItem ? '停止该工作项' : '停止项目',
-          description: workItem
-            ? '终止当前工作项并保留审计记录，由项目 AI 重新评估剩余目标和替代路线。'
-            : '停止当前项目并保留审计记录，等待用户后续决定是否创建新目标。',
-        },
-      ],
-      recommendedOptionId: 'retry-latest-protocol',
-    }, session.status);
-    if (!normalized.question) return undefined;
-
-    const result = store.applyProjectManagerAction({
-      type: 'request-user-clarification',
-      question: normalized.question,
-    }, session.id);
-    if (!result.ok) return undefined;
-    for (const laneId of projectSupervisorLaneIds(session)) {
-      store.pauseSupervisorLane(laneId, '项目执行链异常，等待用户选择恢复方式');
+    const recoveryKey = [
+      'project-internal-recovery',
+      session.id,
+      workItem?.id || 'project',
+      incidentReason,
+      obligationKind || 'none',
+    ].join(':');
+    const recoveryPending = (session.pendingManagerDeliveries || []).some((delivery) => (
+      delivery.dedupeKey === recoveryKey && delivery.stage !== 'failed'
+    )) || pendingProjectManagerDeliveries.some((delivery) => (
+      delivery.sessionId === session.id
+      && delivery.dedupeKey === recoveryKey
+      && delivery.stage !== 'failed'
+    ));
+    if (recoveryPending) return true;
+    const recoveryAttempts = session.events.filter((event) => (
+      event.kind === 'project-recovery-requested'
+      && event.payload?.recoveryKey === recoveryKey
+    )).length;
+    if (recoveryAttempts >= 2) {
+      const paused = store.applyProjectManagerAction({
+        type: 'pause-project',
+        reason: `内部恢复连续失败：${blocker || evidenceSummary || incidentReason}`,
+        source: 'runtime',
+        attentionRequired: false,
+      }, session.id);
+      if (paused.ok) {
+        for (const laneId of projectSupervisorLaneIds(session)) {
+          store.pauseSupervisorLane(laneId, '项目内部恢复已达上限');
+        }
+        await appendRecordedProjectEvent(session, {
+          kind: 'guard-triggered',
+          workItemId: workItem?.id,
+          summary: '项目内部恢复连续失败，已安全暂停且未生成用户决策问题',
+          payload: {
+            decision: 'pause',
+            attentionRequired: false,
+            reason: 'project-internal-recovery-exhausted',
+            recoveryKey,
+            attempts: recoveryAttempts,
+            ...(obligationKind ? { obligation: obligationKind } : {}),
+          },
+        }, { persistSession: false });
+        await persistProjectManagerMutation(paused, session.id);
+      }
+      return true;
     }
-    const timer = projectProgressTimers.get(session.id);
-    if (timer) globalThis.clearTimeout(timer);
-    projectProgressTimers.delete(session.id);
-    store.appendProjectManagerEvent({
-      kind: 'guard-triggered',
+
+    const runtime = await ensureProjectManagerRuntime(session.id, { forceRestart: true });
+    if (!runtime.ok) {
+      const paused = store.applyProjectManagerAction({
+        type: 'pause-project',
+        reason: runtime.error || '项目 AI 运行时内部恢复失败',
+        source: 'runtime',
+        attentionRequired: false,
+      }, session.id);
+      if (paused.ok) {
+        for (const laneId of projectSupervisorLaneIds(session)) {
+          store.pauseSupervisorLane(laneId, '项目 AI 运行时内部恢复失败');
+        }
+        await appendRecordedProjectEvent(session, {
+          kind: 'guard-triggered',
+          workItemId: workItem?.id,
+          summary: '项目 AI 运行时内部恢复失败，已安全暂停全部项目执行通道',
+          payload: {
+            decision: 'pause',
+            attentionRequired: false,
+            reason: 'project-internal-runtime-recovery-failed',
+            recoveryKey,
+          },
+        }, { persistSession: false });
+        await persistProjectManagerMutation(paused, session.id);
+      }
+      return true;
+    }
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+    await appendRecordedProjectEvent(current, {
+      kind: 'project-recovery-requested',
       workItemId: workItem?.id,
-      summary: '项目执行链没有后续处理者，已升级为项目异常并请求用户介入',
+      summary: '控制层重建项目 AI 运行时并续接内部执行义务',
       payload: {
-        decision: 'pause',
-        attentionRequired: true,
+        recoveryKey,
+        attempt: recoveryAttempts + 1,
         reason: incidentReason,
+        attentionRequired: false,
         ...(obligationKind ? { obligation: obligationKind } : {}),
       },
-    }, session.id);
-    notifyProjectManagerUserQuestion(session, normalized.question);
-    await persistProjectManagerMutation(result, session.id);
-    return normalized.question;
+    });
+    queueProjectManagerDelivery([
+      '[控制层内部恢复｜不得询问用户]',
+      `项目：${session.id} · ${session.projectDir}`,
+      workItem ? `工作项：${workItem.id} · ${workItem.title}` : '',
+      `内部故障：${blocker || incidentReason}`,
+      evidenceSummary ? `检测依据：${evidenceSummary}` : '',
+      `触发位置：${trigger}`,
+      '先运行 wmux context 和 project status，按当前协议完成一个真实状态迁移：恢复或重建监督链、处理监督交接、落实已收到的用户答复、重绑当前工作项，或停止无效工作项并重规划。不得为内部故障创建用户问题。',
+      '只有业务取舍、用户独有信息/凭据、真实人工操作、新设备/参数/风险授权、破坏性或生产动作才可 project ask。',
+      `处理后再次运行 wmux project status --project ${session.id}，确认存在活动责任者或真实用户边界。`,
+    ].filter(Boolean).join('\n'), current.id, {
+      priority: true,
+      dedupeKey: recoveryKey,
+    });
+    scheduleProjectDeadlockCheck(
+      session.id,
+      Date.now() + PROJECT_MANAGER_DELIVERY_ACK_TIMEOUT_MS + 5_000,
+      `项目 AI 内部恢复后仍未形成活动执行链：${incidentReason}`,
+    );
+    return true;
   } finally {
     projectDeadlockEscalations.delete(sessionId);
   }
@@ -8964,7 +8805,7 @@ function scheduleProjectDeadlockCheck(sessionId: string, deadlineAt: number, tri
   const timer = globalThis.setTimeout(() => {
     projectDeadlockRetryTimers.delete(sessionId);
     if (generation !== projectManagerDeliveryGeneration) return;
-    void ensureProjectDeadlockUserIntervention(sessionId, trigger);
+    void ensureProjectDeadlockRecovery(sessionId, trigger);
   }, Math.max(0, deadlineAt - Date.now()));
   (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
   projectDeadlockRetryTimers.set(sessionId, timer);
@@ -8988,7 +8829,7 @@ export async function auditProjectLiveness(): Promise<void> {
   }
   flushProjectManagerDeliveries();
   await Promise.allSettled(activeSessions.map((session) => (
-    ensureProjectDeadlockUserIntervention(session.id, PROJECT_LIVENESS_WATCHDOG_TRIGGER)
+    ensureProjectDeadlockRecovery(session.id, PROJECT_LIVENESS_WATCHDOG_TRIGGER)
   )));
 }
 
@@ -9457,7 +9298,7 @@ async function ensureProjectManagerRuntime(sessionId: string, options: {
     useStore.getState().appendProjectManagerEvent({
       kind: 'recovery-restored',
       summary: safeExitContinuity
-        ? '已从安全退出检查点恢复当前 P9 项目事实；旧 AI 进程已失效，但证据、预算和下一动作继续有效'
+        ? '已从安全退出检查点恢复当前项目事实；旧 AI 进程已失效，但证据、预算和下一动作继续有效'
         : '已从持久记录恢复本项目；旧项目 AI、监督 AI 和任务 AI 会话均已失效',
       payload: { recoverySource: safeExitContinuity ? 'safe-exit-checkpoint' : 'application-restart' },
     }, current.id);
@@ -10105,9 +9946,6 @@ async function updateProjectDefinition(
   if (source === 'manager' && !projectManagerGoalChangeHasUserBasis(session, goal)) {
     return { ok: false, error: '当前主目标由用户提供；没有新的用户目标变更或澄清答复时，项目 AI 只能补全前置条件、完成条件和阶段计划，不能改写主目标' };
   }
-  if (preconditions.length === 0 && !userGoalDraft) {
-    return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
-  }
   if (doneWhen.length === 0 && !userGoalDraft) return { ok: false, error: '项目完成条件不能为空' };
   const unchanged = goal === session.goal
     && JSON.stringify(preconditions) === JSON.stringify(session.preconditions)
@@ -10213,16 +10051,18 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const answeredBy = params?.source === 'feishu' || params?.answeredBy === 'feishu' ? 'feishu' : 'desktop';
   const reuseForSimilar = params?.reuseForSimilar === true;
   if (
-    optionId === 'reset_terminal_binding'
+    optionId === 'draft-handled'
     && pending.category === 'manual-intervention'
-    && pending.reasonCode === 'internal-project-failure'
+    && pending.reasonCode === 'task-input-conflict'
+    && pending.workItemId
   ) {
-    const repair = repairStaleProjectTaskBinding(session.id, pending.workItemId, true);
-    if (repair.blockedSurfaceIds.length > 0) {
-      return {
-        ok: false,
-        error: `终端绑定仍对应存活或未结束的执行链，不能强制重置：${repair.blockedSurfaceIds.join('、')}`,
-      };
+    const lane = useStore.getState().supervisor.lanes.find((candidate) => (
+      candidate.projectManagerProjectId === session.id
+      && candidate.projectWorkItemId === pending.workItemId
+      && supervisorLaneControlState(candidate) !== 'stopped'
+    ));
+    if (lane && projectTaskInputDraftStillPending(lane)) {
+      return { ok: false, error: '任务终端输入框仍有未提交内容；请先提交或清空原草稿，再确认已处理' };
     }
   }
   const store = useStore.getState();
@@ -10235,27 +10075,142 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     reuseForSimilar,
   }, session.id);
   if (!result.ok) return result;
-  const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  let updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
   await persistProjectManagerMutation(result, session.id);
-  deliverProjectManagerMessage([
-    '[用户澄清答复]',
-    `项目：${session.id}`,
-    `问题 ID：${pending.id}`,
-    `问题：${pending.question}`,
-    `答复：${answer}`,
-    `渠道：${answeredBy === 'feishu' ? '飞书' : '桌面端'}`,
-    reuseForSimilar
-      ? '用户已授权：当前需求与授权版本内，decisionKey 相同的同类问题沿用本答复，由项目 AI 或监督 AI 自行决策，不再重复提问。'
-      : '',
-    `项目和监督仍保持等待。请先依据答复决定恢复、改线、继续等待或结束；只有选择继续时才执行 wmux project resume --project ${session.id}。不得扩张原项目范围。`,
-  ].join('\n'), false, session.id);
+  let choiceMessage = '';
+  const taskInputConflictChoice = pending.category === 'manual-intervention'
+    && pending.reasonCode === 'task-input-conflict';
+  if (taskInputConflictChoice && optionId === 'keep-paused' && updated) {
+    const paused = store.applyProjectManagerAction({
+      type: 'pause-project',
+      reason: '用户选择保持当前项目暂停',
+      source: 'system',
+      attentionRequired: false,
+    }, session.id);
+    if (paused.ok) {
+      for (const laneId of projectSupervisorLaneIds(updated)) {
+        store.pauseSupervisorLane(laneId, '用户选择保持项目暂停');
+      }
+      await persistProjectManagerMutation(paused, session.id);
+      updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+      choiceMessage = '项目已进入 paused，控制层不会继续自动恢复或重复询问。';
+    }
+  } else if (taskInputConflictChoice && optionId === 'stop-work-item' && pending.workItemId && updated) {
+    const workItem = updated.workItems.find((candidate) => candidate.id === pending.workItemId);
+    const targetLanes = useStore.getState().supervisor.lanes.filter((lane) => (
+      lane.projectManagerProjectId === session.id && lane.projectWorkItemId === pending.workItemId
+    ));
+    const workerSurfaceIds = new Set<string>(targetLanes.map((lane) => lane.surfaceId).filter(Boolean));
+    if (workItem?.workerSurfaceId) workerSurfaceIds.add(workItem.workerSurfaceId);
+    const intervened = store.applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: pending.workItemId,
+      intervention: 'close',
+      reason: '用户在项目异常恢复问题中选择停止该工作项',
+    }, session.id);
+    if (intervened.ok) {
+      closeStoppedSupervisorSurfaces(targetLanes);
+      for (const lane of targetLanes) store.stopSupervisorLane(lane.id, '用户选择停止当前工作项');
+      for (const surfaceId of workerSurfaceIds) closeLiveSurfaceById(surfaceId as SurfaceId);
+      await persistProjectManagerMutation(intervened, session.id);
+      updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+      queueProjectManagerDelivery([
+        '[用户已停止异常工作项｜项目 AI 重新规划剩余目标]',
+        `项目：${session.id}；工作项：${pending.workItemId}`,
+        '原工作项和监督/任务绑定已停止，不得以同一工作项 ID 恢复。立即读取 project status，重排依赖并为仍需完成的阶段建立新的聚焦工作项；只有主目标因此无法达成时才再次询问用户。',
+      ].join('\n'), session.id, { priority: true, dedupeKey: `user-stopped-work-item:${session.id}:${pending.workItemId}` });
+      choiceMessage = '该工作项及其监督/任务绑定已停止，项目 AI 将重新规划剩余目标。';
+    }
+  } else if (taskInputConflictChoice && optionId === 'draft-handled' && updated) {
+    const canResumeOriginalChain = pending.previousStatus === 'active'
+      && updated.status === 'waiting'
+      && updated.pausedByPortfolio !== true
+      && projectAcceptedRequirementsVersion(updated) === projectRequirementsVersion(updated)
+      && projectOrientationReady(updated)
+      && updated.progressSync?.status !== 'review-required';
+    if (canResumeOriginalChain) {
+      const resumed = store.applyProjectManagerAction({
+        type: 'resume-project',
+        reason: '用户已处理任务终端输入框，恢复原项目执行链',
+        source: 'project',
+      }, session.id);
+      if (resumed.ok) {
+        resumeEligibleProjectSupervisorLanes(session.id, '用户已处理任务终端输入框');
+        await persistProjectManagerMutation(resumed, session.id);
+        updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+        queueProjectManagerDelivery([
+          '[用户已处理任务终端草稿｜重新核对后恢复同一执行链]',
+          `项目：${session.id}；工作项：${pending.workItemId || '未绑定'}`,
+          '控制层已确认任务输入区不再被原草稿占用并恢复项目。读取 project status 和任务终端现状，只重投尚未确认接收的当前成果，不得重复已完成步骤。',
+        ].join('\n'), session.id, { priority: true, dedupeKey: `task-draft-handled:${session.id}:${pending.workItemId || pending.id}` });
+        choiceMessage = '任务终端草稿阻塞已解除，原执行链已恢复。';
+      }
+    } else {
+      await appendRecordedProjectEvent(updated, {
+        kind: 'project-recovery-requested',
+        workItemId: pending.workItemId,
+        summary: '任务终端草稿阻塞已解除，但项目存在更新后的暂停或治理门禁，保持当前状态',
+        payload: {
+          sourceQuestionId: pending.id,
+          action: 'draft-handled',
+          keptPaused: updated.status === 'paused' || updated.pausedByPortfolio === true,
+          attentionRequired: false,
+        },
+      });
+      updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || updated;
+      choiceMessage = updated.status === 'paused'
+        ? '任务终端草稿阻塞已解除；项目仍按后来施加的暂停决定保持暂停。'
+        : '任务终端草稿阻塞已解除；项目仍受需求、认知基线或进度门禁约束，未自动恢复。';
+    }
+  }
+  const handledTaskInputChoiceIds = new Set(['keep-paused', 'stop-work-item', 'draft-handled']);
+  if (taskInputConflictChoice && optionId && handledTaskInputChoiceIds.has(optionId) && !choiceMessage) {
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || updated || session;
+    await appendRecordedProjectEvent(current, {
+      kind: 'project-recovery-requested',
+      workItemId: pending.workItemId,
+      summary: `用户选择“${option?.label || optionId}”后的直接状态迁移未能完成，已转为项目 AI 内部恢复义务`,
+      payload: {
+        sourceQuestionId: pending.id,
+        action: optionId,
+        transitionDeferred: true,
+        attentionRequired: false,
+        resolvedAttentionKinds: ['guard-triggered'],
+      },
+    });
+    updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || current;
+    queueProjectManagerDelivery([
+      '[用户异常处理选择已记录｜不得重复询问]',
+      `项目：${session.id}；选择：${option?.label || optionId}`,
+      pending.workItemId ? `工作项：${pending.workItemId}` : '',
+      '直接状态迁移因当前状态已经变化而未完成。读取 project status，忠实执行用户选择或确认它已被等价的新状态满足；不得重新创建同一用户问题。',
+    ].filter(Boolean).join('\n'), session.id, {
+      priority: true,
+      dedupeKey: `deferred-user-recovery-choice:${session.id}:${pending.id}:${optionId}`,
+    });
+    choiceMessage = '用户选择已记录为项目内部恢复义务；控制层不会重复询问同一问题。';
+  }
+  if (!choiceMessage) {
+    deliverProjectManagerMessage([
+      '[用户澄清答复]',
+      `项目：${session.id}`,
+      `问题 ID：${pending.id}`,
+      `问题：${pending.question}`,
+      `答复：${answer}`,
+      `渠道：${answeredBy === 'feishu' ? '飞书' : '桌面端'}`,
+      reuseForSimilar
+        ? '用户已授权：当前需求与授权版本内，decisionKey 相同的同类问题沿用本答复，由项目 AI 或监督 AI 自行决策，不再重复提问。'
+        : '',
+      `项目和监督仍保持等待。请先依据答复决定恢复、改线、继续等待或结束；只有选择继续时才执行 wmux project resume --project ${session.id}。不得扩张原项目范围。`,
+    ].join('\n'), false, session.id);
+  }
   return {
     ok: true,
     event: result.event,
     session: updated,
-    message: reuseForSimilar
+    message: choiceMessage || (reuseForSimilar
       ? '用户答复已提交并授权同类问题沿用；项目仍暂停等待项目 AI 决策。'
-      : '用户答复已提交给项目管理 AI；项目仍暂停等待其决策。',
+      : '用户答复已提交给项目管理 AI；项目仍暂停等待其决策。'),
   };
 }
 
@@ -10342,101 +10297,6 @@ function saveProjectManagerSnapshot(sessionId?: string): void {
   if (!session) return;
   void (window as any).wmux?.projectManager?.saveSession?.(session)
     ?.catch?.((error: unknown) => console.warn('[project-manager] snapshot save failed', error));
-}
-
-function repairStaleProjectTaskBinding(
-  sessionId: string,
-  intendedWorkItemId?: string,
-  includeEndedBindings = false,
-): { repairedSurfaceIds: string[]; blockedSurfaceIds: string[] } {
-  const store = useStore.getState();
-  const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
-  if (!session) return { repairedSurfaceIds: [], blockedSurfaceIds: [] };
-  const intendedItem = intendedWorkItemId
-    ? session.workItems.find((candidate) => candidate.id === intendedWorkItemId)
-    : undefined;
-  const candidateSurfaceIds = new Set<string>([
-    session.taskTerminalSurfaceId || '',
-    intendedItem?.workerSurfaceId || '',
-    ...(includeEndedBindings
-      ? session.workItems
-          .filter((item) => ['completed', 'stopped', 'failed'].includes(item.status))
-          .map((item) => item.workerSurfaceId || '')
-      : []),
-  ].filter(Boolean));
-  const staleSurfaceIds = new Set<string>();
-  const blockedSurfaceIds = new Set<string>();
-  for (const surfaceId of candidateSurfaceIds) {
-    const liveTerminal = locateRemoteTaskTerminal(surfaceId).terminal;
-    const liveLane = store.supervisor.lanes.find((lane) => (
-      lane.projectManagerProjectId === session.id
-      && lane.surfaceId === surfaceId
-      && supervisorLaneControlState(lane) !== 'stopped'
-    ));
-    const unfinishedOtherOwner = session.workItems.some((item) => (
-      item.id !== intendedWorkItemId
-      && item.workerSurfaceId === surfaceId
-      && !['completed', 'stopped', 'failed'].includes(item.status)
-    ));
-    const otherOwnerWithLiveSupervisor = session.workItems.some((item) => (
-      item.id !== intendedWorkItemId
-      && item.workerSurfaceId === surfaceId
-      && !!item.supervisorLaneId
-      && store.supervisor.lanes.some((lane) => (
-        lane.id === item.supervisorLaneId && supervisorLaneControlState(lane) !== 'stopped'
-      ))
-    ));
-    if (liveTerminal || liveLane || unfinishedOtherOwner || otherOwnerWithLiveSupervisor) {
-      blockedSurfaceIds.add(surfaceId);
-    } else {
-      staleSurfaceIds.add(surfaceId);
-    }
-  }
-  if (staleSurfaceIds.size === 0) {
-    return { repairedSurfaceIds: [], blockedSurfaceIds: [...blockedSurfaceIds] };
-  }
-
-  const now = Date.now();
-  const activeLaneIds = new Set(store.supervisor.lanes.filter((lane) => (
-    lane.projectManagerProjectId === session.id && supervisorLaneControlState(lane) !== 'stopped'
-  )).map((lane) => lane.id));
-  const workItems = session.workItems.map((item) => {
-    if (!item.workerSurfaceId || !staleSurfaceIds.has(item.workerSurfaceId)) return item;
-    const keepCurrentSupervisor = item.id === intendedWorkItemId
-      && !!item.supervisorLaneId
-      && activeLaneIds.has(item.supervisorLaneId);
-    return {
-      ...item,
-      workerSurfaceId: undefined,
-      supervisorLaneId: keepCurrentSupervisor ? item.supervisorLaneId : undefined,
-      updatedAt: now,
-    };
-  });
-  const repairedSurfaceIds = [...staleSurfaceIds];
-  const event = {
-    id: `pm-event-${uuid()}`,
-    sessionId: session.id,
-    ts: now,
-    kind: 'supervisor-status' as const,
-    workItemId: intendedWorkItemId,
-    summary: `控制层已清理不存在的项目任务终端绑定：${repairedSurfaceIds.join('、')}`,
-    payload: {
-      action: 'repair-stale-task-binding',
-      repairedSurfaceIds,
-      intendedWorkItemId,
-    },
-  };
-  store.restoreProjectManager({
-    ...session,
-    taskTerminalSurfaceId: session.taskTerminalSurfaceId
-      && staleSurfaceIds.has(session.taskTerminalSurfaceId)
-      ? undefined
-      : session.taskTerminalSurfaceId,
-    workItems,
-    events: [...session.events, event].slice(-500),
-    updatedAt: now,
-  });
-  return { repairedSurfaceIds, blockedSurfaceIds: [...blockedSurfaceIds] };
 }
 
 async function resetProjectTaskContextInPlace(
@@ -11095,18 +10955,18 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }, session.id);
     saveProjectManagerSnapshot(session.id);
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-    const intervention = current?.status === 'active'
-      ? await ensureProjectDeadlockUserIntervention(
+    const recoveryQueued = current?.status === 'active'
+      ? await ensureProjectDeadlockRecovery(
           session.id,
           `项目 AI 已用 ${resolution} 回执监督交接 ${transition.id}`,
         )
       : undefined;
-    if (!intervention && current?.status === 'active') scheduleProjectProgressCheck(session.id);
+    if (!recoveryQueued && current?.status === 'active') scheduleProjectProgressCheck(session.id);
     return {
       ok: true,
       transitionId: transition.id,
       resolution,
-      ...(intervention ? { userInterventionRequired: true, question: intervention } : {}),
+      ...(recoveryQueued ? { internalRecoveryQueued: true } : {}),
     };
   }
   if (!callerSurfaceId || callerSurfaceId !== session.managerSurfaceId) {
@@ -11137,6 +10997,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         ))
       : undefined;
     if (reusableDecision) {
+      const confirmationScope = projectManagerQuestionConfirmationScope(
+        normalized.question,
+        reusableDecision.optionId,
+      );
       await appendRecordedProjectEvent(session, {
         kind: 'user-clarification-answered',
         workItemId: normalized.question.workItemId,
@@ -11150,9 +11014,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           autoReused: true,
           sourceDecisionId: reusableDecision.id,
           semanticFingerprint: reusableDecision.semanticFingerprint,
-          ...(normalized.question.confirmationScope?.length ? {
-            confirmationScope: normalized.question.confirmationScope,
-            confirmationDigest: projectPlanningConfirmationDigest(normalized.question.confirmationScope),
+          ...(confirmationScope.length ? {
+            confirmationScope,
+            confirmationDigest: projectPlanningConfirmationDigest(confirmationScope),
           } : {}),
         },
       });
@@ -11237,46 +11101,17 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
           : '这是任务 AI 的普通本地权限提示，当前合同已授权 permissionConfirm，应由专属监督结合真实阻塞状态、命令证据、范围、风险和重复确认护栏逐次处理，不能询问用户或由项目 AI 逐次批准。',
       };
     }
-    if (normalized.question.reasonCode === 'internal-project-failure') {
-      const projectLanes = store.supervisor.lanes.filter((lane) => (
-        lane.projectManagerProjectId === session.id
-        && supervisorLaneControlState(lane) !== 'stopped'
+    if (normalized.question.reasonCode === 'task-input-conflict') {
+      const workItemId = normalized.question.workItemId;
+      const lane = store.supervisor.lanes.find((candidate) => (
+        candidate.projectManagerProjectId === session.id
+        && candidate.projectWorkItemId === workItemId
+        && supervisorLaneControlState(candidate) !== 'stopped'
       ));
-      const activeExecution = projectLanes.some((lane) => (
-        remoteTerminalActivity(lane.surfaceId, true).activityState === 'working'
-        || (!!dedicatedSupervisorSurfaceId(lane)
-          && remoteTerminalActivity(dedicatedSupervisorSurfaceId(lane) as SurfaceId, true).activityState === 'working')
-      ));
-      const obligation = projectProgressObligation(session);
-      if (activeExecution
-        || !obligation
-        || !['resume-paused', 'resolve-decision'].includes(obligation.kind)
-        || obligation.workItemId !== normalized.question.workItemId) {
+      if (!lane || !projectTaskInputDraftStillPending(lane)) {
         return {
           ok: false,
-          error: 'internal-project-failure 仅用于控制层确认全部执行链停止且没有排队恢复动作的项目死等',
-        };
-      }
-      const continuationKey = projectWaitingGateContinuationKey(session, obligation);
-      const continuationAttempts = projectActiveObligationContinuationAttempts(session, continuationKey);
-      const continuationQueued = (session.pendingManagerDeliveries || []).some((delivery) => (
-        delivery.continuationKey === continuationKey && delivery.stage !== 'failed'
-      )) || pendingProjectManagerDeliveries.some((delivery) => (
-        delivery.sessionId === session.id
-        && delivery.continuationKey === continuationKey
-        && delivery.stage !== 'failed'
-      ));
-      if (continuationAttempts < MAX_PROJECT_ACTIVE_OBLIGATION_CONTINUATIONS || continuationQueued) {
-        await ensureProjectDeadlockUserIntervention(
-          session.id,
-          '项目 AI 请求升级内部故障前，控制层先投递一次有界主目标续作',
-        );
-        return {
-          ok: false,
-          internalRecoveryQueued: true,
-          error: continuationQueued
-            ? '当前内部恢复续作仍在等待项目 AI 消费；必须先落实恢复、改派或重规划，不能同时向用户升级同一故障'
-            : '该故障仍在项目 AI 与监督 AI 的既有权限内；控制层已排队一次有界内部续作。只有该续作被消费后仍无法建立真实责任者，才能升级用户处理',
+          error: 'task-input-conflict 仅用于控制层已确认任务终端存在用户未提交草稿的情况',
         };
       }
     }
@@ -11348,6 +11183,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       scopeSummary: String(assessment?.scopeSummary || ''),
       acceptanceSummary: String(assessment?.acceptanceSummary || ''),
       reason: String(assessment?.reason || ''),
+      userConfirmationEventId: confirmationEventId,
     }, session.id);
     if (!result.ok) return result;
     const timer = projectAlignmentTimers.get(session.id);
@@ -11390,6 +11226,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       subgoals: normalized.subgoals,
       reason: String(params?.reason || '').trim().slice(0, 2000),
       source: 'manager',
+      userConfirmationEventId: String(params?.userConfirmationEventId || '').trim() || undefined,
     }, session.id), session.id);
     const response = result.ok
       ? { ...result, message: '阶段计划已保存；处理完旧版本工作项后必须显式 resume，再继续创建或派发当前目标任务。' }
@@ -11469,7 +11306,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       || (params?.workItem || params)?.predecessorWorkItemId !== undefined
       || (params?.workItem || params)?.supersededByWorkItemId !== undefined
       || (params?.workItem || params)?.successionReason !== undefined) {
-      return { ok: false, error: '检测到已删除的旧项目协议字段；P9 工作项不能提供执行协议版本、前驱/后继关系、项目基线或监督阶段计划' };
+      return { ok: false, error: '检测到已删除的项目协议字段；当前工作项不能提供执行协议版本、前驱/后继关系、项目基线或监督阶段计划' };
     }
     const normalized = normalizeProjectWorkItemInput(params?.workItem || params, session.projectDir, undefined, session);
     if (!normalized.workItem) return { ok: false, error: normalized.error };
@@ -11566,7 +11403,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (item.requirementsVersion !== projectRequirementsVersion(session)
       || item.authorizationVersion !== projectAuthorizationVersion(session)
       || item.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION) {
-      return { ok: false, error: '工作项不是当前需求、授权或 P9 协议版本，必须重新创建后再派发' };
+      return { ok: false, error: '工作项不是当前需求、授权或执行协议版本，必须重新创建后再派发' };
     }
     if (!item.complexityAssessment) return { ok: false, error: '工作项缺少派发前复杂度评估' };
     if (item.complexityAssessment.decision !== 'single-task') {
@@ -11879,8 +11716,11 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       return { ok: false, error: '紧急停止只能由用户在专用项目管理对话中明确确认后执行' };
     }
     const result = store.applyProjectManagerAction({ type: 'stop-project', reason: String(params?.reason || '由项目管理 AI 停止'), emergency }, session.id);
-    for (const laneId of projectSupervisorLaneIds(session)) store.stopSupervisorLane(laneId, '项目管理会话已停止');
-    return persistProjectManagerMutation(result, session.id);
+    try {
+      return await persistProjectManagerMutation(result, session.id);
+    } finally {
+      if (result.ok) await stopManagedProjectRuntime(session, '项目管理会话已停止');
+    }
   }
   if (action === 'reply') {
     const message = String(params?.message || '').trim();
@@ -12027,21 +11867,11 @@ export function initPipeBridge(): void {
     queueMicrotask(() => {
       void (async () => {
         const pausedLaneReconciled = await recoverPausedWorkItemActiveLaneConflict(session);
-        const recoverySession = pausedLaneReconciled
-          || useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)
-          || session;
-        const completionRoutingRecovered = await recoverProjectCompletionRoutingConflict(recoverySession);
-        const supervisorPermissionRecovered = completionRoutingRecovered
-          ? undefined
-          : await recoverSupervisorOwnedPermissionQuestion(recoverySession);
-        const technicalRouteRecovered = completionRoutingRecovered || supervisorPermissionRecovered
-          ? undefined
-          : await recoverAuthorizedTechnicalRouteQuestion(recoverySession);
-        const current = completionRoutingRecovered || supervisorPermissionRecovered || technicalRouteRecovered || pausedLaneReconciled
+        const current = pausedLaneReconciled
           || useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)
           || session;
         await processProjectAgentReconfiguration(current.id);
-        await ensureProjectDeadlockUserIntervention(
+        await ensureProjectDeadlockRecovery(
           current.id,
           '控制层初始化时发现活动项目没有可继续的执行链',
         );
@@ -12935,9 +12765,6 @@ export function initPipeBridge(): void {
         return { ok: false, error: '已完成或停止的项目不能再修改前置条件' };
       }
       const preconditions = projectStringArray(params?.preconditions);
-      if (preconditions.length === 0) {
-        return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
-      }
       const quiesce = await quiesceProjectRuntimeLanes(
         session,
         '项目前置条件已更新，停止旧假设下的任务并等待重新核对',
@@ -13154,16 +12981,6 @@ export function initPipeBridge(): void {
       if (action === 'resume') {
         resumeEligibleProjectSupervisorLanes(session.id, '由飞书恢复项目管理会话');
       }
-      if (action === 'stop') {
-        if (params?.emergency === true) {
-          for (const item of session.workItems) {
-            if (item.workerSurfaceId && ['running', 'validating'].includes(item.status)) {
-              try { sendToSurface(item.workerSurfaceId, '\x03', false, 'project'); } catch { /* Already stopped. */ }
-            }
-          }
-        }
-        for (const laneId of projectSupervisorLaneIds(session)) store.stopSupervisorLane(laneId, '由飞书停止项目管理会话');
-      }
       if (action === 'pause' || action === 'stop') {
         const timer = projectProgressTimers.get(session.id);
         if (timer) globalThis.clearTimeout(timer);
@@ -13171,7 +12988,13 @@ export function initPipeBridge(): void {
       } else {
         scheduleProjectProgressCheck(session.id);
       }
-      await persistProjectManagerMutation(result, session.id);
+      try {
+        await persistProjectManagerMutation(result, session.id);
+      } finally {
+        if (action === 'stop' && result.ok) {
+          await stopManagedProjectRuntime(session, '由飞书停止项目管理会话');
+        }
+      }
       if (action === 'resume' && result.ok) {
         queueProjectManagerDelivery([
           '[用户已恢复项目｜立即继续执行链]',
@@ -14014,9 +13837,6 @@ export function initPipeBridge(): void {
       ? rawAuthorizationBoundary as 'within-current' | 'requires-expansion'
       : undefined;
     const experimentConditions = normalizeExperimentConditions(params?.experimentConditions);
-    const completionStopWhen = String(params?.completionStopWhen || '').trim().slice(0, 500);
-    const completionValidation = String(params?.completionValidation || '').trim().slice(0, 500);
-    const remainingWork = String(params?.remainingWork || '').trim().slice(0, 2000);
     const reviewId = String(params?.reviewId || '').trim().slice(0, 200);
     const progressEvidenceFingerprint = projectExecutionDirectionSignature([
       evidence,
@@ -14264,6 +14084,12 @@ export function initPipeBridge(): void {
       && outcome !== 'continue' && outcome !== 'rework') {
       return { ok: false, error: '--task-file 仅用于项目监督的 continue 或 rework 裁决' };
     }
+    if (projectManagedLane && projectTaskBatch && !requestedTaskWorkMode) {
+      return {
+        ok: false,
+        error: '项目监督每次派发成果批次都必须通过 --task-work-mode single-thread|multi-thread 明确本批执行模式',
+      };
+    }
     if (projectManagedLane && projectWorkItem
       && (outcome === 'continue' || outcome === 'rework') && !permissionResponse) {
       if (!projectTaskBatch) {
@@ -14477,6 +14303,19 @@ export function initPipeBridge(): void {
       : undefined;
     const currentProtocolCompletion = outcome === 'complete' && !!projectWorkItem;
     const currentOrdinaryCompletion = outcome === 'complete' && currentOrdinaryProtocol;
+    const completionShapeError = outcome === 'complete' && params?.completionChecklist !== undefined
+      ? supervisorCompletionFileShapeError(params.completionChecklist)
+      : null;
+    if (completionShapeError) return { ok: false, error: completionShapeError };
+    const declaredCompletionEvidenceRefs = supervisorCompletionEvidenceRefs(params?.completionChecklist);
+    if (currentProtocolCompletion
+      && params?.completionChecklist !== undefined
+      && declaredCompletionEvidenceRefs.length === 0) {
+      return {
+        ok: false,
+        error: '项目 --completion-file 必须在每个 stopWhen/validation 条件中使用 evidenceRefs 引用项目内实际证据文件；自然语言哈希或汇总说明不能替代受控文件核验',
+      };
+    }
     if (currentProtocolCompletion && (
       !completionEvidenceGrant
       || completionEvidenceGrant.expiresAt <= decisionAt
@@ -14750,7 +14589,7 @@ export function initPipeBridge(): void {
       if (!currentOrdinaryProtocol) {
         return {
           ok: false,
-          error: 'P9 项目监督不维护 selectedRoute、expectedPaths 或命令型阶段计划；只通过 --next 下达阶段成果和验收缺口。多任务拓扑由项目 AI 创建多个独立工作项决定',
+          error: '当前项目监督不维护 selectedRoute、expectedPaths 或命令型阶段计划；只通过 --next 下达阶段成果和验收缺口。多任务拓扑由项目 AI 创建多个独立工作项决定',
         };
       }
       if (outcome === 'needs-human' || permissionResponse) {
@@ -15481,10 +15320,7 @@ export function initPipeBridge(): void {
       } : {}),
       ...(completionResult ? { completion: completionResult } : {}),
       ...(outcome === 'complete' ? {
-        completionStopWhen,
-        completionValidation,
         completionFile,
-        remainingWork,
       } : {}),
       proactiveProjectFollowUp,
       requiresHuman: limitReached && outcome !== 'needs-human',
@@ -15602,7 +15438,9 @@ export function initPipeBridge(): void {
           evidence,
           contextSummary: [
             contextSummary || reason,
-            `阶段核对：stopWhen=${completionStopWhen}；validation=${completionValidation}；remainingWork=${remainingWork}`,
+            completionResult?.criteria?.length
+              ? `阶段核对：${completionResult.criteria.map((criterion) => `${criterion.criterion}=${criterion.result}`).join('；')}`
+              : '',
           ].filter(Boolean).join('\n'),
         });
         const taskTerminal = remoteSurfaceTerminalLocation(lane.surfaceId);

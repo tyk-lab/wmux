@@ -36,7 +36,7 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     '{',
     '  "mode": "refine|pivot",',
     '  "goal": "optional updated main goal",',
-    '  "preconditions": ["无额外物理前置条件"],',
+    '  "preconditions": [],',
     '  "supervisorNotes": ["optional supervisor constraint"],',
     '  "doneWhen": ["verifiable completion criterion"],',
     '  "reason": "why the project definition changed"',
@@ -86,10 +86,10 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
   ask: [
     'Usage: wmux project ask --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
-    'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","decisionScope":"用户可见的同类决定含义边界","confirmationScope":["goal: 精确目标或其他将落盘的规划变更"],"question":"...","context":"...","options":[{"id":"confirm-requirements","label":"确认需求","description":"..."},{"id":"revise-requirements","label":"补充调整","description":"..."}],"recommendedOptionId":"confirm-requirements"}',
-    'Reusable decisions require the same stable decisionKey and user-visible decisionScope. Planning changes must list their exact canonical confirmationScope and later submit the matching userConfirmationEventId.',
+    'Clarification JSON: {"category":"clarification","decisionKey":"requirements-confirmation","decisionScope":"用户可见的同类决定含义边界","question":"是否确认按 GUI 版本推进？","context":"完成定义见推荐方案。","options":[{"id":"confirm-requirements","label":"确认需求","description":"完成标准：GUI 可运行；数据可保存并重新加载。","confirmationScope":["doneWhen: GUI 可运行；数据可保存并重新加载"]},{"id":"revise-requirements","label":"补充调整","description":"继续补充目标、范围或验收。","confirmationScope":[]}],"recommendedOptionId":"confirm-requirements"}',
+    'Reusable decisions require the same stable decisionKey and user-visible decisionScope. Planning changes must put exact canonical field:value entries in each authorizing option confirmationScope; every value must be visible in that option. Later submit the matching userConfirmationEventId.',
     'Manual-intervention JSON additionally requires workItemId, blocker, and reasonCode.',
-    'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, internal-project-failure.',
+    'Valid reasonCode values: physical-action, credentials, access-grant, business-choice, destructive-action, production-action, task-input-conflict.',
   ].join('\n'),
   'auxiliary-dispatch': [
     'Usage: wmux project auxiliary-dispatch --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',

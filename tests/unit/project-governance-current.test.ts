@@ -34,7 +34,7 @@ const contract: ProjectSupervisorContract = {
   },
 };
 
-describe('project governance P9', () => {
+describe('current project governance', () => {
   it('requires a fresh user event before applying AI planning supplements', () => {
     const session = {
       events: [
@@ -78,7 +78,8 @@ describe('project governance P9', () => {
     expect(briefing).toContain('自行决定实现路线、必要的相邻修改、文件、命令、测试、技能和任务内部组织方式');
     expect(briefing).toContain('完成定义');
     expect(briefing).toContain('证据期望（如适用）');
-    expect(briefing).toContain('[并行能力] 允许内部并行');
+    expect(briefing).toContain('[执行模式] 多线程');
+    expect(briefing).toContain('本批成果使用主线程和必要的内部子线程或子代理并行处理');
     expect(briefing).not.toContain('允许范围：');
     expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
   });
@@ -91,8 +92,8 @@ describe('project governance P9', () => {
     expect(briefing).toContain('coverage=whole-item');
     expect(briefing).toContain('工作项合同内直接决定');
     expect(briefing).toContain('项目 AI 仍无法决定');
-    expect(briefing).toContain('--task-work-mode multi-thread 开放并行');
-    expect(briefing).toContain('用 single-thread 恢复串行');
+    expect(briefing).toContain('--task-work-mode single-thread|multi-thread 明确本批执行模式');
+    expect(briefing).toContain('multi-thread 要求本批实际使用内部并行');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {
@@ -105,7 +106,7 @@ describe('project governance P9', () => {
     expect(result.decision).toBe('allow');
   });
 
-  it('does not mention the removed baseline handshake in P9 briefings', () => {
+  it('does not mention the removed baseline handshake in current briefings', () => {
     const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract });
     expect(briefing).not.toMatch(/项目基线|baseline|selectedRoute|expectedPaths/iu);
   });

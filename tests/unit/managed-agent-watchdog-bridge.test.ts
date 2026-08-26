@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initPipeBridge } from '../../src/renderer/pipe-bridge';
 import { useStore } from '../../src/renderer/store';
-import type { ProjectManagerSession } from '../../src/shared/project-manager';
+import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+  type ProjectManagerSession,
+} from '../../src/shared/project-manager';
 
 function project(): ProjectManagerSession {
   return {
     id: 'pm-watchdog',
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     projectDir: 'E:\\repo',
     goal: '验证事件驱动活性恢复',
     preconditions: ['测试环境已准备'],

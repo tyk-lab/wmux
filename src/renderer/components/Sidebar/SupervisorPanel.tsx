@@ -1586,6 +1586,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   const planView = buildSupervisorPlanView({
                     source: 'project-ai',
                     task: item.title,
+                    projectTaskBatch: lane.projectTaskBatch,
                     latestDecision: lane.decisions?.[0],
                   });
                   const taskExecution = summarizeTaskExecution({

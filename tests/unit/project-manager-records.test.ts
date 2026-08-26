@@ -10,6 +10,7 @@ import {
   saveProjectManagerSession,
 } from '../../src/main/project-manager-records';
 import {
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   normalizeProjectManagerSession,
   type ProjectManagerSession,
@@ -30,6 +31,7 @@ afterEach(() => {
 function session(id: string, updatedAt: number): ProjectManagerSession {
   return {
     id,
+    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
     projectDir: 'E:\\repo',
     goal: '完成项目',
     preconditions: ['测试环境已准备'],
@@ -48,6 +50,16 @@ function recoveredSession(appData: string, sessionId: string): ProjectManagerSes
 }
 
 describe('project manager records', () => {
+  it('rejects saving an older execution protocol instead of migrating it', () => {
+    const appData = root();
+
+    expect(() => saveProjectManagerSession({
+      ...session('pm-old-protocol-save', 10),
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION - 1,
+    }, appData)).toThrow('invalid project manager execution protocol version');
+    expect(readActiveProjectManagerSessions(appData)).toEqual([]);
+  });
+
   it('persists a newly created project while completion conditions await AI alignment', () => {
     const appData = root();
     const now = 100;
@@ -167,12 +179,15 @@ describe('project manager records', () => {
     const pendingUserQuestion = {
       id: 'question-1',
       category: 'manual-intervention' as const,
-      reasonCode: 'internal-project-failure' as const,
+      reasonCode: 'task-input-conflict' as const,
       workItemId: 'wol_validation',
       blocker: '需要用户进入 BIOS 进行真机验收',
       question: '是否允许覆盖现有配置？',
       context: '目标与计划文件存在冲突。',
-      options: [{ id: 'keep', label: '保留现有配置' }, { id: 'replace', label: '允许覆盖' }],
+      options: [
+        { id: 'keep', label: '保留现有配置', confirmationScope: [] },
+        { id: 'replace', label: '允许覆盖', confirmationScope: ['doneWhen: 新配置覆盖后可验证'] },
+      ],
       recommendedOptionId: 'keep',
       previousStatus: 'active' as const,
       createdAt: 12,
@@ -241,7 +256,10 @@ describe('project manager records', () => {
       planFiles: [{ name: 'requirements.md', content: '# 需求' }],
       pendingUserQuestion: {
         id: 'question-1', previousStatus: 'active', category: 'manual-intervention',
-        reasonCode: 'internal-project-failure', workItemId: 'wol_validation',
+        reasonCode: 'task-input-conflict', workItemId: 'wol_validation',
+        options: expect.arrayContaining([
+          expect.objectContaining({ id: 'replace', confirmationScope: ['doneWhen: 新配置覆盖后可验证'] }),
+        ]),
       },
       requirementsVersion: 3,
       acceptedRequirementsVersion: 2,
@@ -276,6 +294,19 @@ describe('project manager records', () => {
         snapshotFingerprint: 'progress-fingerprint', reason: '软件恢复后复核现状',
       },
     });
+
+    expect(() => saveProjectManagerSession({
+      ...saved,
+      id: 'pm-invalid-option-scope',
+      projectDir: 'E:\\invalid-option-scope',
+      pendingUserQuestion: {
+        ...pendingUserQuestion,
+        options: [
+          { id: 'keep', label: '保留现有配置', confirmationScope: [] },
+          { id: 'replace', label: '允许覆盖', confirmationScope: [''] },
+        ],
+      },
+    }, appData)).toThrow('invalid project manager session payload');
   });  it('restores every active project across distinct directories', () => {
     const appData = root();
     saveProjectManagerSession({ ...session('pm-a', 50), projectDir: 'E:\\a' }, appData);
@@ -334,6 +365,26 @@ describe('project manager records', () => {
       session: { ...session('pm-bad', 100), workItems: [{}] },
     }), 'utf8');
     expect(recoveredSession(appData, 'pm-bad')).toBeUndefined();
+  });
+
+  it('does not restore projects from an earlier execution protocol', () => {
+    const appData = root();
+    const directory = path.join(appData, 'project-manager');
+    fs.mkdirSync(directory, { recursive: true });
+    const old = session('pm-old-protocol', 100);
+    fs.writeFileSync(path.join(directory, 'pm-old-protocol.json'), JSON.stringify({
+      version: 1,
+      session: {
+        ...old,
+        executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION - 1,
+        workItems: old.workItems.map((item) => ({
+          ...item,
+          executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION - 1,
+        })),
+      },
+    }), 'utf8');
+
+    expect(recoveredSession(appData, 'pm-old-protocol')).toBeUndefined();
   });
 
   it('rejects malformed reusable user decisions during recovery', () => {

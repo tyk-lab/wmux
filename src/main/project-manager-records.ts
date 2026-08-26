@@ -62,6 +62,12 @@ function isPlanFileSnapshot(value: unknown): boolean {
     && Number.isFinite(file.mtimeMs) && Number.isFinite(file.capturedAt);
 }
 
+function isConfirmationScope(value: unknown): boolean {
+  return Array.isArray(value)
+    && value.length <= 20
+    && value.every((entry) => typeof entry === 'string' && !!entry.trim() && entry.length <= 1000);
+}
+
 function isPendingUserQuestion(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const question = value as Record<string, unknown>;
@@ -72,15 +78,13 @@ function isPendingUserQuestion(value: unknown): boolean {
     && (question.blocker === undefined || typeof question.blocker === 'string')
     && (question.reasonCode === undefined || [
       'physical-action', 'credentials', 'access-grant', 'business-choice',
-      'destructive-action', 'production-action', 'internal-project-failure',
+      'destructive-action', 'production-action', 'task-input-conflict',
     ].includes(String(question.reasonCode)))
     && (question.decisionKey === undefined || (typeof question.decisionKey === 'string'
       && /^[\p{L}\p{N}][\p{L}\p{N}._:/-]{0,119}$/u.test(question.decisionKey)))
     && (question.decisionScope === undefined || (typeof question.decisionScope === 'string'
       && !!question.decisionScope.trim() && question.decisionScope.length <= 1000))
-    && (question.confirmationScope === undefined || (Array.isArray(question.confirmationScope)
-      && question.confirmationScope.length <= 20
-      && question.confirmationScope.every((entry) => typeof entry === 'string' && !!entry.trim() && entry.length <= 1000)))
+    && (question.confirmationScope === undefined || isConfirmationScope(question.confirmationScope))
     && typeof question.question === 'string'
     && typeof question.context === 'string'
     && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
@@ -90,7 +94,8 @@ function isPendingUserQuestion(value: unknown): boolean {
       if (!option || typeof option !== 'object') return false;
       const candidate = option as Record<string, unknown>;
       return typeof candidate.id === 'string' && typeof candidate.label === 'string'
-        && (candidate.description === undefined || typeof candidate.description === 'string');
+        && (candidate.description === undefined || typeof candidate.description === 'string')
+        && (candidate.confirmationScope === undefined || isConfirmationScope(candidate.confirmationScope));
     })
     && (question.recommendedOptionId === undefined || typeof question.recommendedOptionId === 'string');
 }
@@ -422,10 +427,10 @@ export function saveProjectManagerSession(
   session: ProjectManagerSession,
   appDataDir = getAppDataDir(),
 ): { path: string } {
-  const normalized = normalizeProjectManagerSession({
-    ...session,
-    executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
-  });
+  if (session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION) {
+    throw new Error('invalid project manager execution protocol version');
+  }
+  const normalized = normalizeProjectManagerSession(session);
   validateIdentity(normalized.id, normalized.projectDir);
   if (!isProjectManagerSession(normalized)) throw new Error('invalid project manager session payload');
   const duplicate = ['active', 'paused', 'waiting'].includes(normalized.status)

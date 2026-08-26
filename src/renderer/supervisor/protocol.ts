@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-export const SUPERVISOR_PROTOCOL_REVISION = '13';
+export const SUPERVISOR_PROTOCOL_REVISION = '15';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -619,14 +619,14 @@ export function buildSupervisorBriefing(
   const maxChildThreads = normalizeTaskMaxChildThreads(laneConfig.maxChildThreads);
   const taskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
   const taskWorkModeBlock = [
-    projectManaged ? '## 任务 AI 并行能力边界' : '## 任务 AI 执行自治',
+    projectManaged ? '## 任务 AI 执行模式' : '## 任务 AI 执行自治',
     projectManaged
-      ? `当前并行边界为 ${taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}。你可根据任务复杂度、共享资源和运行证据，在 continue/rework 时用 --task-work-mode multi-thread 开放并行，或用 single-thread 恢复串行；这只决定能力边界，不替任务 AI 规划内部线程。`
+      ? `工作项当前记录模式为 ${taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}。每次 continue/rework 都必须根据本批复杂度、独立成果和共享资源，用 --task-work-mode single-thread|multi-thread 明确本批执行模式；不得替任务 AI 规划内部线程。`
       : '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现、测试和内部组织方式。你不得向任务端注入 wmux 角色协议、项目/工作项身份、路由预算或固定线程模式。',
     projectManaged
       ? taskWorkMode === 'multi-thread'
-        ? `任务 AI 可以自行决定是否使用内部线程、如何分工和如何整合；同时工作的内部子线程上限为 ${maxChildThreads}，共享写入、共享资源和最终集成必须串行。`
-        : '当前成果要求串行推进，不开放内部并行执行。只有出现真实独立并行成果且没有共享资源冲突时才开放并行。'
+        ? `多线程批次要求任务 AI 实际使用内部并行；具体分工和整合由任务 AI 决定，同时工作的内部子线程上限为 ${maxChildThreads}，共享写入、共享资源和最终集成必须串行。`
+        : '单线程批次不得创建内部子线程或子代理，但不限制任务 AI 在同一轮内连续执行多步修改、命令、测试、修正和验证。'
       : `任务 AI 如有必要可自主使用内部线程或子代理，同时工作的内部子线程上限为 ${maxChildThreads}；共享写入、共享资源和最终集成必须串行。你只依据结果与证据裁决，不审批其内部组织方案。`,
     projectManaged
       ? '任务 AI 自主读取并遵循目标项目适用的 AGENTS、技能和仓库规范，自主选择实现与测试细节。不得向任务端注入 wmux 角色协议、项目/工作项身份或路由预算。'

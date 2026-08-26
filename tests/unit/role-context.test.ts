@@ -340,9 +340,13 @@ describe('unified managed AI role context', () => {
     });
     expect(taskDelivery).toContain('[成果任务]');
     expect(taskDelivery).toContain('读取并严格遵循当前目录层级适用的 AGENTS');
+    expect(taskDelivery).toContain('[执行模式] 单线程');
+    expect(taskDelivery).toContain('不限制在同一轮内连续完成多个必要步骤');
     expect(taskDelivery).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
     expect(taskDelivery).not.toMatch(/项目 AI|辅助任务 AI|内部规划|控制层/iu);
     expect(projectTaskInstructionDisclosureError('继续完成当前成果并返回验证证据')).toBeNull();
+    expect(projectTaskInstructionDisclosureError('任务 AI 继续完成当前成果')).toContain('不能暴露');
+    expect(projectTaskInstructionDisclosureError('The task AI should complete the outcome')).toContain('不能暴露');
     expect(projectTaskInstructionDisclosureError('根据项目 AI 和监督 AI 的安排继续')).toContain('不能暴露');
     expect(projectTaskInstructionDisclosureError('专属监督要求继续当前工作项')).toContain('不能暴露');
   });

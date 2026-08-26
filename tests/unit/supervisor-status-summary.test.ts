@@ -152,6 +152,76 @@ describe('supervisor status summary', () => {
     expect(view.steps).toHaveLength(1);
   });
 
+  it('uses the structured project batch instead of repeating the rendered task prompt', () => {
+    const renderedPrompt = '[成果任务]\n\n成果方向：形成 Windows GUI。\n\n完成定义：\n- 程序可运行';
+    const view = buildSupervisorPlanView({
+      source: 'project-ai',
+      task: '建立 GUI 基础',
+      projectTaskBatch: {
+        kind: 'task',
+        coverage: 'whole-item',
+        outcome: '形成可构建并启动的 Windows GUI 基础程序',
+        completionDefinition: ['程序可构建并运行'],
+        evidenceExpectations: ['返回构建与启动证据'],
+        unmetCompletionItems: [],
+        knownFacts: [],
+        constraints: ['使用现有项目依赖'],
+        nonGoals: ['不扩展完整业务功能'],
+      },
+      latestDecision: {
+        ts: 5,
+        task: '建立 GUI 基础',
+        outcome: 'continue',
+        reason: '',
+        next: renderedPrompt,
+      },
+    });
+
+    expect(view).toMatchObject({
+      sourceLabel: '项目 AI 工作项',
+      mode: 'direct',
+      modeLabel: '单成果批次执行',
+      route: '建立 GUI 基础',
+      nextInstruction: '形成可构建并启动的 Windows GUI 基础程序',
+      steps: [],
+    });
+    expect(JSON.stringify(view)).not.toContain(renderedPrompt);
+  });
+
+  it('does not let a retained project batch hide a newer human decision', () => {
+    const view = buildSupervisorPlanView({
+      source: 'project-ai',
+      task: '建立 GUI 基础',
+      projectTaskBatch: {
+        kind: 'task',
+        coverage: 'whole-item',
+        outcome: '旧的执行批次',
+        completionDefinition: ['程序可运行'],
+        evidenceExpectations: [],
+        unmetCompletionItems: [],
+        knownFacts: [],
+        constraints: [],
+        nonGoals: [],
+      },
+      latestDecision: {
+        ts: 6,
+        task: '建立 GUI 基础',
+        outcome: 'needs-human',
+        proposalKind: 'clarification',
+        reason: '需要用户选择目标界面风格',
+        next: '',
+      },
+    });
+
+    expect(view).toMatchObject({
+      mode: 'forming',
+      modeLabel: '等待需求对齐',
+      route: '需要用户选择目标界面风格',
+      nextInstruction: '等待用户集中答复后形成正式计划',
+      steps: [],
+    });
+  });
+
   it('shows the latest supervisor decision while a formal route is still forming', () => {
     expect(buildSupervisorPlanView({
       source: 'user',
@@ -204,6 +274,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('上级任务：{planView.sourceLabel}');
     expect(panelSource).toContain('监督 AI 当前规划');
     expect(panelSource).toContain('下一步给任务 AI');
+    expect(panelSource).toContain('projectTaskBatch: lane.projectTaskBatch');
     expect(panelSource).toContain('任务 AI 执行摘要：{taskExecution.label}');
     expect(panelSource).not.toContain('监督 AI 执行规划');
     expect(panelSource).toContain('visibleLanes.map((lane)');

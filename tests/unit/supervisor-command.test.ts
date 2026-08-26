@@ -51,9 +51,14 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--experiment-conditions <a;b;c>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('context-recovery');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('direction-needed');
-    expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-stop-when <1,2,...>');
-    expect(SUPERVISOR_DECIDE_USAGE).toContain('--remaining-work <none|text>');
+    expect(SUPERVISOR_DECIDE_USAGE).not.toContain('--completion-stop-when');
+    expect(SUPERVISOR_DECIDE_USAGE).not.toContain('--completion-validation');
+    expect(SUPERVISOR_DECIDE_USAGE).not.toContain('--remaining-work');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('"remainingWork": []');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('"stopWhen"');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('"evidenceRefs"');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('Only the JSON fields shown above are accepted');
   });
 
   it('reads and cleans a content-addressed evidence progress declaration', () => {
@@ -103,6 +108,35 @@ describe('supervisor decide command', () => {
     expect(input.fileReference).toBe('.wmux/tmp/completion.json');
     cleanupSupervisorCompletionInput(input, true);
     expect(fs.existsSync(draftPath)).toBe(false);
+  });
+
+  it('rejects unsupported completion fields before requesting an evidence token', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'unsupported-completion.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      remainingWork: [], stopWhen: [], validation: [], unsupportedField: true,
+    }), 'utf8');
+
+    expect(() => resolveSupervisorCompletionInput([
+      'supervisor', 'decide', '--completion-file', '.wmux/tmp/unsupported-completion.json',
+    ], project)).toThrow('root fields are only remainingWork, stopWhen, validation');
+    expect(fs.existsSync(draftPath)).toBe(true);
+  });
+
+  it('requires remainingWork to use the current array schema', () => {
+    const project = projectDir();
+    const tempDirectory = path.join(project, '.wmux', 'tmp');
+    const draftPath = path.join(tempDirectory, 'string-remaining-work.json');
+    fs.mkdirSync(tempDirectory, { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify({
+      remainingWork: 'none', stopWhen: [], validation: [],
+    }), 'utf8');
+
+    expect(() => resolveSupervisorCompletionInput([
+      'supervisor', 'decide', '--completion-file', '.wmux/tmp/string-remaining-work.json',
+    ], project)).toThrow('remainingWork must be a string array');
   });
 
   it('reads and cleans a structured supervisor stage plan from .wmux/tmp', () => {

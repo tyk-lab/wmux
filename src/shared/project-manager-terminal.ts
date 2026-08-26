@@ -112,7 +112,7 @@ export function normalizeProjectManagementAgentConfig(
   };
 }
 
-export const PROJECT_MANAGER_PROTOCOL_REVISION = '29';
+export const PROJECT_MANAGER_PROTOCOL_REVISION = '32';
 
 export function projectManagerEventEnvelope(projectId: string): string {
   return [

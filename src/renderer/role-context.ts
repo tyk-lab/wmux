@@ -10,7 +10,11 @@ import {
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../shared/project-manager';
-import { isCurrentProjectTaskBatch, projectWorkItemSubgoalDependencyError } from './project-manager/engine';
+import {
+  isCurrentProjectTaskBatch,
+  projectWorkItemSubgoalDependencyError,
+  renderProjectTaskWorkMode,
+} from './project-manager/engine';
 import { effectiveSupervisorLaneConfig } from './supervisor/protocol';
 import {
   supervisorLaneControlState,
@@ -486,9 +490,9 @@ export function buildTaskAiRuntimeContext(options: {
           ]
         : ['按当前任务目标工作；具体本地工具权限由底层 Agent 及其沙箱决定'],
       conditional: projectManaged
-        ? [workItem?.taskWorkMode === 'multi-thread'
-            ? '当前允许内部并行；是否使用、如何拆分和整合由你根据项目实际情况决定，内部子线程上限为 3，共享写入、共享资源和最终集成保持串行'
-            : '当前成果要求串行推进，不启用内部并行执行']
+        ? [renderProjectTaskWorkMode(workItem?.taskWorkMode === 'multi-thread'
+            ? 'multi-thread'
+            : 'single-thread')]
         : [],
       forbidden: [
         '越出当前任务目标或工作目录',

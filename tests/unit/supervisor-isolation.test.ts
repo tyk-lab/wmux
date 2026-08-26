@@ -44,6 +44,7 @@ import {
   effectiveSupervisorLaneConfig,
   effectiveSupervisorWorkScope,
   humanDecisionBoundary,
+  SUPERVISOR_PROTOCOL_REVISION,
   supervisorLaneBriefingChanged,
   supervisorTabTitle,
 } from '../../src/renderer/supervisor/protocol';
@@ -209,7 +210,7 @@ describe('supervisor isolation', () => {
 
     expect(text).toContain('worker-a');
     expect(text).toContain('[监督隔离域｜ordinary｜lane=lane-a｜target=worker-a]');
-    expect(text).toContain('[监督动态上下文｜protocol=13]');
+    expect(text).toContain(`[监督动态上下文｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`);
     expect(supervisorAgentsSource).toContain('只处理 `wmux context` 返回的当前 lane 和唯一任务终端');
     expect(supervisorAgentsSource).toContain('小任务不机械拆分');
     expect(supervisorAgentsSource).toContain('首次 `continue/rework` 使用 `--stage-plan-file`');

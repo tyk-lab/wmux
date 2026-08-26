@@ -99,6 +99,16 @@ export const TASK_VALIDATION_REPORTING_POLICY = [
   '返回验证失败或无法验证时，说明实际结果、已有证据、影响、尚未满足的完成定义、已知原因或未知项，以及后续验证或继续工作所需条件。允许返回失败或无法验证，不代表完成定义已经满足。',
 ].join('');
 
+export const PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY = '项目成果验收需要可复核的实际证据文件。执行构建、运行、测试或测量时，按当前项目已有规范将关键命令、退出状态、实际结果和必要环境写入项目内持久证据文件，并在返回中列出项目内相对路径；不得只在最终回复中列出哈希或概括结论。项目规则不允许写入或当前无法形成文件时，如实说明原因和未验证项。';
+
+export function renderProjectTaskWorkMode(
+  taskWorkMode: 'single-thread' | 'multi-thread',
+): string {
+  return taskWorkMode === 'multi-thread'
+    ? '[执行模式] 多线程：本批成果使用主线程和必要的内部子线程或子代理并行处理，同时运行的内部子线程或子代理不得超过 3 个。具体拆分、线程职责和整合方式根据项目事实自行决定；共享写入、共享资源和最终集成必须由主线程串行处理。若无法安全拆分，应停止并说明具体冲突。'
+    : '[执行模式] 单线程：本批成果由当前主线程串行执行，不创建内部子线程或子代理。单线程仅限制并发组织，不限制在同一轮内连续完成多个必要步骤、文件修改、命令、测试、修正和验证。';
+}
+
 export function isCurrentProjectTaskBatch(value: unknown): value is ProjectTaskBatch {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const raw = value as Record<string, unknown>;
@@ -242,16 +252,15 @@ export function renderProjectTaskBatch(
     '开始前读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范；若本任务与项目规范冲突，以项目规范为准。',
     '自行决定实现路线、必要的相邻修改、文件、命令、测试、技能和任务内部组织方式；本批不要求交付的内容不限制完成当前成果所必需的支持性工作。',
     `自行选择与风险相称的验证方式。${TASK_VALIDATION_REPORTING_POLICY}`,
-    taskWorkMode === 'multi-thread'
-      ? '[并行能力] 允许内部并行：是否使用、如何拆分和如何整合由你根据项目实际情况决定；同时工作的内部子线程不得超过 3 个，共享写入、共享资源和最终集成必须串行。'
-      : '[并行边界] 要求串行：当前成果按串行边界推进，不启用内部并行执行。',
+    PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY,
+    renderProjectTaskWorkMode(taskWorkMode),
     '达到完成定义，或遇到真实阻塞、约束冲突、授权边界时结束本轮；如实报告成果、实际修改、已有证据、未验证项、剩余工作和阻塞。',
   ].filter(Boolean).join('\n\n');
 }
 
 const PROJECT_ORCHESTRATION_DISCLOSURES = [
-  /项目\s*AI|项目管理\s*AI|监督\s*AI|专属监督(?:\s*AI)?|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu,
-  /\bproject\s+ai\b|\bproject\s+manager\s+ai\b|\b(?:dedicated|project)\s+supervisor(?:\s+ai)?\b|\bsupervisor\s+ai\b|\bcontrol\s+plane\b|\bauxiliary(?:\s+task)?\s+ai\b|\b(?:project|work\s*item)\s+id\b/iu,
+  /任务\s*AI|项目\s*AI|项目管理\s*AI|监督\s*AI|专属监督(?:\s*AI)?|辅助任务\s*AI|辅助\s*AI|项目\s*ID|工作项\s*ID|\blane\b|控制层/iu,
+  /\btask\s+ai\b|\bproject\s+ai\b|\bproject\s+manager\s+ai\b|\b(?:dedicated|project)\s+supervisor(?:\s+ai)?\b|\bsupervisor\s+ai\b|\bcontrol\s+plane\b|\bauxiliary(?:\s+task)?\s+ai\b|\b(?:project|work\s*item)\s+id\b/iu,
   /\b(?:ask|notify|follow|wait\s+for|coordinate\s+with|escalate\s+to|report(?:\s+back)?\s+to)\s+(?:your\s+|the\s+)?(?:project\s+manager|supervisor)\b/iu,
   /\b(?:project\s+manager|supervisor)['’]s\s+(?:plan|instructions?|decision|approval)\b/iu,
 ];
@@ -548,7 +557,7 @@ export function buildProjectSupervisorBriefing(options: {
   };
 }): string {
   return [
-    '[项目监督任务｜P9] ' + options.workItemId,
+    '[项目监督任务｜当前协议] ' + options.workItemId,
     options.executionIdentity ? buildProjectExecutionIdentityBlock(options.executionIdentity) : '',
     options.projectGoal ? '项目总目标：' + options.projectGoal : '',
     options.stage ? '当前任务成果：' + options.stage.outcome + '\n验收：' + options.stage.acceptance.join('；') : '',
@@ -560,8 +569,9 @@ export function buildProjectSupervisorBriefing(options: {
     '你先在当前工作项合同内直接决定 continue、rework 或 complete。只有需要改变总计划、跨任务协调、成果定义冲突或超出当前合同边界时，才使用 needs-human 上报项目 AI；由项目 AI 依据用户已确认计划决策，项目 AI 仍无法决定或涉及用户专属信息与授权时再向用户提问。禁止越级或把普通技术问题逐层上报。',
     '风险、不可逆、凭据、生产、外部访问及改变目标、范围或验收的事项必须先上报项目 AI，不得直接询问用户；项目 AI 能依据用户既有指令和授权决定时直接回执，只有仍无法决定时才继续询问用户。',
     '如果你认为用户的目标、范围、前置条件、验收或正式计划需要补充，禁止先按补充内容执行。使用 needs-human important + contract-change，一次提交待补充细节、影响、可选方案和推荐项；项目 AI 必须通过 project ask 取得用户确认并更新账本后才能重新派发。',
-    `任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现、测试与内部组织。当前并行边界为 ${options.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}；你可根据任务复杂度、共享资源和运行证据，通过 continue/rework 的 --task-work-mode multi-thread 开放并行或用 single-thread 恢复串行，但不得替任务 AI 规划具体线程分工。`,
-    'continue/rework 必须先把中性成果批次 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，再通过 --task-file 提交。字段只允许 kind、coverage、outcome、completionDefinition、evidenceExpectations、unmetCompletionItems、knownFacts、constraints、nonGoals；只有 outcome 和 completionDefinition 必填，其余字段没有真实内容时省略或传空数组。',
+    `任务 AI 自主遵循目标项目的 AGENTS、技能和规范，并自行决定实现、测试与内部组织。工作项初始执行模式为 ${options.taskWorkMode === 'multi-thread' ? '多线程' : '单线程'}；你必须根据当前批次复杂度、独立成果和共享资源，在每次 continue/rework 时用 --task-work-mode single-thread|multi-thread 明确本批执行模式，不得替任务 AI 规划具体线程分工。`,
+    'continue/rework 必须先把中性成果批次 JSON 写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，再通过 --task-file 提交，并通过 --task-work-mode 明确本批使用单线程还是多线程。字段只允许 kind、coverage、outcome、completionDefinition、evidenceExpectations、unmetCompletionItems、knownFacts、constraints、nonGoals；只有 outcome 和 completionDefinition 必填，其余字段没有真实内容时省略或传空数组。',
+    '简单、强耦合或共享写入密集的批次使用 single-thread；存在两个及以上可独立推进成果的复杂批次使用 multi-thread。multi-thread 要求本批实际使用内部并行；无法安全拆分时应改用 single-thread，不得把“允许并行”当作已满足执行要求。',
     'completionDefinition 只说明做到什么程度可以结束当前批次，不规定验证方法；evidenceExpectations 可选，只有用户明确要求、项目规则要求或风险确实需要特定证据时才填写。验证通过、失败或当前无法取得都必须如实返回；能在当前边界内形成新证据时由任务 AI 自主修正并重验，有效失败、条件不足或继续不会产生新证据时应停止空耗。允许返回失败或无法验证，不代表完成定义已经满足。',
     'unmetCompletionItems 只用于已有执行证据后的续作或返工，首次派遣禁止填写。项目 AI 已判定为 low 且成果原子的工作项可使用 coverage=whole-item 整项派发，不得为了形式而强拆；其他情况使用 coverage=bounded-batch，每批只有一个成果且最多包含 3 个完成定义。',
     '你只描述当前批次需要形成的结果、完成定义、必要证据期望、已确认事实和约束，不向任务端注入项目/工作项身份、监督协议、路由预算、指定文件、命令、技能或实现路线；任务端始终只按目标项目规则和技能自主工作。',

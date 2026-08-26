@@ -126,7 +126,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('supervisorLaunchIsolationError(launchCmd)');
     expect(projectManagerDialogSource).toContain('项目前置条件（可选，每行一项）');
     expect(projectManagerDialogSource).toContain('当前主目标完成条件（可选，每行一项）');
-    expect(projectManagerDialogSource).toContain("setPreconditions('无额外物理前置条件')");
+    expect(projectManagerDialogSource).toContain("setPreconditions('')");
+    expect(projectManagerDialogSource).toContain('留空即表示没有额外项目级前置条件');
     const startHandler = projectManagerDialogSource.match(
       /const start = async \(\) => \{[\s\S]*?^  \};/m,
     )?.[0] || '';

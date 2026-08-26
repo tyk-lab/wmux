@@ -3,6 +3,7 @@ import type {
   OrdinarySupervisorPlan,
   SupervisorLaneControlState,
 } from '../store/supervisor-slice';
+import type { ProjectTaskBatch } from '../../shared/project-manager';
 import { isAgentPromptReadyState } from '../agent-state-semantics';
 
 export interface SupervisorTaskAgentState {
@@ -39,10 +40,26 @@ export function buildSupervisorPlanView(options: {
   source: 'project-ai' | 'user';
   task: string;
   ordinaryPlan?: OrdinarySupervisorPlan;
+  projectTaskBatch?: ProjectTaskBatch;
   latestDecision?: SupervisorDecision;
 }): SupervisorPlanView {
   const ordinaryPlan = options.ordinaryPlan || options.latestDecision?.ordinaryPlan;
   const task = options.task.trim() || '当前任务';
+  const activeProjectTaskBatch = options.source === 'project-ai'
+    && (!options.latestDecision || ['continue', 'rework'].includes(options.latestDecision.outcome))
+    ? options.projectTaskBatch
+    : undefined;
+  if (activeProjectTaskBatch) {
+    return {
+      sourceLabel: '项目 AI 工作项',
+      mode: 'direct',
+      modeLabel: '单成果批次执行',
+      route: options.latestDecision?.reason.trim() || task,
+      nextInstruction: activeProjectTaskBatch.outcome,
+      steps: [],
+      completedSteps: 0,
+    };
+  }
   if (ordinaryPlan) {
     const steps = ordinaryPlan.milestones.map((milestone) => ({
       id: milestone.id,

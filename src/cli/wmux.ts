@@ -29,6 +29,7 @@ import {
   resolveProjectJsonInput,
 } from './project-command';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
+import { supervisorCompletionEvidenceRefs } from '../shared/supervisor-completion';
 import { requireSuccessfulContext } from './context-result';
 import { sendFileBridgeRequest } from './file-bridge';
 import { roleProtocolFingerprint } from '../shared/role-protocol';
@@ -252,15 +253,7 @@ async function cmdSupervisor(args: string[]): Promise<void> {
   if (completionInput.value && evidenceProgressInput.value) {
     throw new Error('--completion-file and --evidence-progress-file cannot be used together');
   }
-  const completionEvidenceRefs = completionInput.value
-    ? [...new Set(['stopWhen', 'validation'].flatMap((group) => (
-        Array.isArray(completionInput.value?.[group])
-          ? (completionInput.value![group] as any[]).flatMap((item) => (
-              Array.isArray(item?.evidenceRefs) ? item.evidenceRefs.map(String) : []
-            ))
-          : []
-      )))]
-    : [];
+  const completionEvidenceRefs = supervisorCompletionEvidenceRefs(completionInput.value);
   const completionVerification = completionInput.value && completionEvidenceRefs.length > 0
     ? await sendV2('supervisor.completion.verify', {
         surfaceId,
@@ -333,9 +326,6 @@ async function cmdSupervisor(args: string[]): Promise<void> {
     decisiveNextStep: getFlag(args, '--decisive-next-step') || '',
     authorizationBoundary: getFlag(args, '--authorization-boundary') || '',
     experimentConditions: getFlag(args, '--experiment-conditions') || '',
-    completionStopWhen: getFlag(args, '--completion-stop-when') || '',
-    completionValidation: getFlag(args, '--completion-validation') || '',
-    remainingWork: getFlag(args, '--remaining-work') || '',
     fullSuite: args.includes('--full-suite'),
     retry: args.includes('--retry'),
     retryKind: getFlag(args, '--retry-kind') || '',
@@ -1282,7 +1272,6 @@ Supervisor:  supervisor evidence, supervisor decide
                           [--execution-action <text> --command <text> --error <text> --workspace-version <hash>]
                           [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]
                           [--evidence <text> --context-summary <text>]
-                          [--completion-stop-when <1,2,...> --completion-validation <1,2,...> --remaining-work <none|text>]
                           [--full-suite --retry --retry-kind <task-failure|command-correction|evidence-closure|runtime-recovery>]
             (silent on success; surface defaults to $WMUX_SURFACE_ID)
 Project:    project update|alignment-confirm|orientation-confirm|goal-plan|status|logs|terminals|task-create|task-update|record|dispatch|progress-sync|transition-ack|inspect|ask|pause|resume|pause-all|resume-all|complete|stop|reply

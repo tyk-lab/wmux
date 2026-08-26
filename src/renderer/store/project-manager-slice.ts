@@ -12,6 +12,7 @@ import {
   projectManagerDestructiveDecisionScopeMatches,
   projectManagerQuestionAllowsReusableDecision,
   projectManagerQuestionDecisionKey,
+  projectManagerQuestionConfirmationScope,
   projectManagerQuestionReusableDecisionScope,
   projectManagerQuestionSemanticFingerprint,
   projectPlanningConfirmationDigest,
@@ -235,6 +236,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       set({ projectManager: null, projectManagers: [], selectedProjectManagerId: null });
       return;
     }
+    if (session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION) return;
     const normalized = normalizeProjectManagerSession(session);
     set((state) => {
       const directoryIdentity = projectDirectoryIdentity(normalized.projectDir);
@@ -263,6 +265,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
     const normalized: ProjectManagerSession[] = [];
     const liveDirectoryIndexes = new Map<string, number>();
     for (const rawSession of sessions) {
+      if (rawSession.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION) continue;
       const session = normalizeProjectManagerSession(rawSession);
       if (!isLiveProjectManagerSession(session)) {
         normalized.push(session);
@@ -356,7 +359,14 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       eventInput = {
         kind: 'requirements-alignment-confirmed',
         summary: reason,
-        payload: { goalUnderstanding, scopeSummary, acceptanceSummary },
+        payload: {
+          goalUnderstanding,
+          scopeSummary,
+          acceptanceSummary,
+          ...(action.userConfirmationEventId?.trim()
+            ? { userConfirmationEventId: action.userConfirmationEventId.trim() }
+            : {}),
+        },
       };
     } else if (action.type === 'update-project-definition') {
       const goal = action.goal.trim();
@@ -370,9 +380,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const userGoalDraft = action.source === 'user'
         && (action.mode === 'pivot' || goal !== session.goal);
-      if (preconditions.length === 0 && !userGoalDraft) {
-        return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
-      }
       if (doneWhen.length === 0 && !userGoalDraft) return { ok: false, error: '项目完成条件不能为空' };
       const previous = {
         goal: session.goal,
@@ -645,6 +652,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         summary: action.reason || `${action.source === 'user' ? '用户' : '项目 AI'}更新当前主目标的阶段计划`,
         payload: {
           goalId: activeGoal.id,
+          ...(action.userConfirmationEventId?.trim()
+            ? { userConfirmationEventId: action.userConfirmationEventId.trim() }
+            : {}),
           subgoals: action.subgoals.map(({ id, title, outcome, status, order, dependencies }) => ({
             id, title, outcome, status, order, dependencies,
           })),
@@ -652,9 +662,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       };
     } else if (action.type === 'update-project-preconditions') {
       const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
-      if (preconditions.length === 0) {
-        return { ok: false, error: '项目前置条件不能为空；没有额外条件时请明确填写“无额外物理前置条件”' };
-      }
       const nextRequirementsVersion = projectRequirementsVersion(session) + 1;
       const nextAuthorizationVersion = projectAuthorizationVersion(session) + 1;
       const activeGoal = activeProjectGoal(session);
@@ -732,6 +739,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const answer = action.answer.trim();
       if (!answer) return { ok: false, error: '用户答复不能为空' };
+      const confirmationScope = projectManagerQuestionConfirmationScope(pending, action.optionId);
       if (action.reuseForSimilar
         && pending.reasonCode === 'destructive-action'
         && !projectManagerDestructiveDecisionScopeMatches(
@@ -767,7 +775,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       // any supervisor or task terminal is allowed to continue.
       next = {
         ...session,
-        status: 'waiting',
+        status: session.status === 'paused' ? 'paused' : 'waiting',
         pendingUserQuestion: undefined,
         ...(reusableDecision ? {
           reusableUserDecisions: [
@@ -796,9 +804,9 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           reuseForSimilar: !!reusableDecision,
           ...(reusableDecision ? { decisionKey: reusableDecision.decisionKey } : {}),
           ...(reusableDecision ? { semanticFingerprint: reusableDecision.semanticFingerprint } : {}),
-          ...(pending.confirmationScope?.length ? {
-            confirmationScope: pending.confirmationScope,
-            confirmationDigest: projectPlanningConfirmationDigest(pending.confirmationScope),
+          ...(confirmationScope.length ? {
+            confirmationScope,
+            confirmationDigest: projectPlanningConfirmationDigest(confirmationScope),
           } : {}),
         },
       };
@@ -1067,7 +1075,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const incompleteSubgoal = (session.subgoals || []).find((subgoal) => (
         subgoal.goalId === activeGoal.id
-        && !subgoal.id.startsWith(`${session.id}-legacy-`)
         && !['achieved', 'obsolete'].includes(subgoal.status)
       ));
       if (incompleteSubgoal) {
@@ -1075,8 +1082,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       }
       const invalidSubgoalCompletion = (session.subgoals || []).flatMap((subgoal) => {
         if (subgoal.goalId !== activeGoal.id
-          || subgoal.status !== 'achieved'
-          || subgoal.id.startsWith(`${session.id}-legacy-`)) return [];
+          || subgoal.status !== 'achieved') return [];
         const completion = projectSubgoalCompletionResult(subgoal, session.workItems);
         const error = projectCompletionCriteriaError(
           subgoal.acceptance,

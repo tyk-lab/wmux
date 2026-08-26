@@ -13,6 +13,7 @@ import {
   projectWorkItemSubgoalDependencyError,
   readyProjectWorkItems,
   renderProjectTaskBatch,
+  PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY,
   TASK_VALIDATION_REPORTING_POLICY,
 } from '../../src/renderer/project-manager/engine';
 import {
@@ -203,6 +204,11 @@ describe('project-manager engine', () => {
     expect(delivery).toContain(`成果方向：${workItem.contract.objective}`);
     expect(delivery).toContain(`本批成果：${workItem.contract.objective}`);
     expect(delivery).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
+    expect(delivery).toContain(PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY);
+    expect(delivery).toContain('列出项目内相对路径');
+    expect(delivery).toContain('不得只在最终回复中列出哈希');
+    expect(delivery).toContain('[执行模式] 单线程');
+    expect(delivery).toContain('不限制在同一轮内连续完成多个必要步骤');
     expect(delivery).not.toMatch(/项目 AI|监督 AI|项目 ID|工作项 ID|\blane\b|控制层/iu);
 
     const smallWithSeveralChecks = {
@@ -251,8 +257,10 @@ describe('project-manager engine', () => {
       unmetCompletionItems: [],
     });
     const delivery = renderProjectTaskBatch(workItem.contract, focused.batch!, 'multi-thread');
-    expect(delivery).toContain('[并行能力] 允许内部并行');
-    expect(delivery).toContain('是否使用、如何拆分和如何整合由你');
+    expect(delivery).toContain('[执行模式] 多线程');
+    expect(delivery).toContain('本批成果使用主线程和必要的内部子线程或子代理并行处理');
+    expect(delivery).toContain('不得超过 3 个');
+    expect(delivery).toContain('具体拆分、线程职责和整合方式根据项目事实自行决定');
     expect(delivery).toContain('完成定义');
     expect(delivery).toContain(TASK_VALIDATION_REPORTING_POLICY);
     expect(delivery).toContain('可自主修正并重新验证');
@@ -261,7 +269,7 @@ describe('project-manager engine', () => {
     expect(delivery).toContain('本批不要求交付');
     expect(delivery).not.toContain('证据期望（如适用）');
     expect(delivery).not.toContain('本轮未通过项');
-    expect(delivery).not.toMatch(/必须使用.*线程|必须创建.*线程/iu);
+    expect(delivery).not.toMatch(/任务 AI|监督 AI|项目 AI|工作项|控制层/iu);
 
     const firstDispatchWithUnmet = normalizeProjectTaskBatch({
       kind: 'task', coverage: 'bounded-batch', outcome: '形成认证接口行为',
@@ -358,4 +366,5 @@ describe('project-manager engine', () => {
     expect(projectPlanningConfirmationError(project, {
       changesUserPlan: true, userConfirmationEventId: 'confirmed-plan', confirmationScope: ['goal: 未确认目标'],
     })).toContain('未覆盖');
+
   });});

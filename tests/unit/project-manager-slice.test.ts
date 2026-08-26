@@ -6,6 +6,7 @@ import {
 } from '../../src/renderer/store/project-manager-slice';
 import {
   compactProjectSupervisorTransitions,
+  CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   projectDirectoryIdentity,
   projectManagerEventNeedsUserAttention,
@@ -64,6 +65,36 @@ function verifiedCompletion(
 }
 
 describe('project-manager slice', () => {
+  it('uses an empty precondition list as the canonical no-extra-condition state', () => {
+    const projectStore = store();
+    const project = projectStore.getState().startProjectManager({
+      projectDir: 'E:\\empty-preconditions',
+      goal: '完成本地工具',
+      preconditions: [],
+      doneWhen: ['本地工具可运行'],
+    });
+
+    expect(projectStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition',
+      goal: project.goal,
+      preconditions: [],
+      supervisorNotes: [],
+      planFiles: [],
+      doneWhen: ['本地工具可运行并完成输入校验'],
+      reason: '补全可验证完成条件',
+      source: 'manager',
+      mode: 'refine',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(projectStore.getState().projectManager?.preconditions).toEqual([]);
+
+    expect(projectStore.getState().applyProjectManagerAction({
+      type: 'update-project-preconditions',
+      preconditions: [],
+      reason: '确认没有额外项目级前置条件',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(projectStore.getState().projectManager?.preconditions).toEqual([]);
+  });
+
   it('allows an internal recovery failure to suppress duplicate user alerts explicitly', () => {
     expect(projectManagerEventNeedsUserAttention({ kind: 'supervisor-runtime-failed' })).toBe(true);
     expect(projectManagerEventNeedsUserAttention({
@@ -135,7 +166,7 @@ describe('project-manager slice', () => {
     ]));
   });
 
-  it('deduplicates legacy restored projects by normalized directory', () => {
+  it('deduplicates restored projects by normalized directory', () => {
     const useStore = store();
     const first = useStore.getState().startProjectManager({
       projectDir: 'E:\\legacy-a', goal: '旧项目', doneWhen: ['旧项目完成'],
@@ -153,6 +184,21 @@ describe('project-manager slice', () => {
       id: second.id,
       projectDir: 'e:/repo/.',
     });
+  });
+
+  it('drops older execution protocols instead of normalizing them into the current store', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\old-protocol', goal: '旧协议项目', doneWhen: ['旧协议验收'],
+    });
+
+    useStore.getState().restoreProjectManagers([{
+      ...project,
+      executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION - 1,
+    }]);
+
+    expect(useStore.getState().projectManagers).toEqual([]);
+    expect(useStore.getState().projectManager).toBeNull();
   });
 
   it('retains stopped history while deduplicating only live restored projects', () => {
@@ -414,7 +460,8 @@ describe('project-manager slice', () => {
     });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-project-preconditions', preconditions: [],
-    })).toMatchObject({ ok: false, error: expect.stringContaining('不能为空') });
+    })).toMatchObject({ ok: true, event: { kind: 'project-preconditions-updated' } });
+    expect(useStore.getState().projectManager?.preconditions).toEqual([]);
   });
 
   it('refines the active main goal and pauses current-goal work for explicit rebinding', () => {
@@ -784,7 +831,7 @@ describe('project-manager slice', () => {
     });
     const goalId = project.activeGoalId || '';
     const stage = {
-      id: 'validation', goalId, title: '验收阶段', outcome: '目标得到验收', acceptance: ['目标验收'],
+      id: `${project.id}-legacy-validation`, goalId, title: '验收阶段', outcome: '目标得到验收', acceptance: ['目标验收'],
       dependencies: [], status: 'active' as const, order: 1, createdAt: 1, updatedAt: 1,
     };
     useStore.getState().applyProjectManagerAction({ type: 'set-project-subgoals', source: 'manager', subgoals: [stage] });

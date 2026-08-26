@@ -6,6 +6,7 @@ import {
   MAX_PROJECT_PLAN_FILES,
   projectDisplayName,
   projectManagerQuestionAllowsReusableDecision,
+  projectManagerQuestionConfirmationScope,
   projectManagerQuestionReusableDecisionScope,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
@@ -1171,6 +1172,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     }
   };
 
+  const visibleConfirmationScope = session?.pendingUserQuestion
+    ? projectManagerQuestionConfirmationScope(
+        session.pendingUserQuestion,
+        clarificationOptionId || session.pendingUserQuestion.recommendedOptionId,
+      )
+    : [];
+
   return (
     <div className={embedded ? 'project-manager-session-pane__frame' : 'confirm-dialog__overlay supervisor-dialog__overlay'} onMouseDown={(event) => {
       if (!embedded && event.target === event.currentTarget) closeDialog();
@@ -1353,10 +1361,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               {projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
                 <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{projectManagerQuestionReusableDecisionScope(session.pendingUserQuestion)}</div>
               )}
-              {!!session.pendingUserQuestion.confirmationScope?.length && (
+              {visibleConfirmationScope.length > 0 && (
                 <div className="supervisor-dialog__hint">
                   <strong>本次确认覆盖的规划变更：</strong>
-                  <ul>{session.pendingUserQuestion.confirmationScope.map((entry) => <li key={entry}>{entry}</li>)}</ul>
+                  <ul>{visibleConfirmationScope.map((entry) => <li key={entry}>{entry}</li>)}</ul>
                 </div>
               )}
               <label className="project-manager-dialog__reuse-decision">
@@ -1546,16 +1554,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               <div className="supervisor-dialog__hint">支持 Markdown、TXT、JSON、YAML；单个不超过 1 MB。快照只补充需求，不扩大任务终端对项目目录之外的访问权限。</div>
               <div className="project-manager-dialog__section-head">
                 <div className="supervisor-dialog__label">项目前置条件（可选，每行一项）</div>
-                <button type="button" className="confirm-dialog__btn" disabled={busy || preconditions.trim() === '无额外物理前置条件'} onClick={() => {
-                  setPreconditions('无额外物理前置条件');
+                <button type="button" className="confirm-dialog__btn" disabled={busy || !preconditions.trim()} onClick={() => {
+                  setPreconditions('');
                   setNotice('');
-                }}>无额外前置条件</button>
+                }}>清空（无额外条件）</button>
               </div>
               <textarea className="supervisor-dialog__textarea" rows={4} value={preconditions} onChange={(event) => {
                 setPreconditions(event.target.value);
                 setNotice('');
               }} placeholder={'树莓派已接通受控电源并可安全断电\n局域网访问权限已获得\n目标设备、接口和安全限值已经人工确认'} />
-              <div className="supervisor-dialog__hint">这里填写的内容视为当前需求版本中用户已确认的事实；其中明确写出的授权会持续有效。可留空让项目 AI 判断并起草；只有硬件、环境、权限或安全差异会实质改变方案时才会向你确认。</div>
+              <div className="supervisor-dialog__hint">这里填写的内容视为当前需求版本中用户已确认的事实；其中明确写出的授权会持续有效。留空即表示没有额外项目级前置条件；只有硬件、环境、权限或安全差异会实质改变方案时才会向你确认。</div>
               <div className="supervisor-dialog__label">监督 AI 注意事项（可选，每行一项）</div>
               <textarea className="supervisor-dialog__textarea" rows={3} value={supervisorNotes} onChange={(event) => {
                 setSupervisorNotes(event.target.value);

@@ -20,11 +20,11 @@
 - 小任务不机械拆分；只有存在真实阶段依赖、中间验证、风险边界或独立并行成果时才拆分。不得把大任务整包交给任务 AI。
 - 普通技术选择、低风险命令、测试策略、任务内部恢复和内部线程由任务 AI自主决定，监督 AI不逐次批准。
 - 任务包不得出现项目 AI、监督 AI、项目 ID、工作项 ID、lane、控制层或内部路由信息。
-- `single-thread` 表示要求串行，`multi-thread` 表示允许内部并行；是否实际并行、如何拆分和整合由任务 AI决定。共享写入、共享资源和最终集成保持串行。
+- 每个项目成果批次都必须通过 `--task-work-mode single-thread|multi-thread` 明确执行模式。简单、强耦合或共享写入密集的批次使用 `single-thread`；存在两个及以上可独立推进成果的复杂批次使用 `multi-thread`。`multi-thread` 要求实际使用内部并行，具体拆分和整合由任务 AI决定；共享写入、共享资源和最终集成保持串行。
 
 ## 项目模式任务包
 
-- 项目模式的 `continue` / `rework` 必须把 UTF-8 JSON 写入监督隔离目录 `.wmux/tmp/<唯一文件名>.json`，再通过 `--task-file` 提交。
+- 项目模式的 `continue` / `rework` 必须把 UTF-8 JSON 写入监督隔离目录 `.wmux/tmp/<唯一文件名>.json`，再通过 `--task-file` 提交，并通过 `--task-work-mode` 明确本批使用单线程还是多线程。
 - 字段只允许 `kind`、`coverage`、`outcome`、`completionDefinition`、`evidenceExpectations`、`unmetCompletionItems`、`knownFacts`、`constraints`、`nonGoals`；只有 `outcome` 和 `completionDefinition` 必填。
 - `evidenceExpectations` 只有用户、项目规则或风险确实需要特定证据时才填写。
 - 首次派遣不得填写 `unmetCompletionItems`；只有任务终端已有实际执行证据后的续作或返工才能列出本轮未通过项。
@@ -32,7 +32,6 @@
 - 项目监督不提交普通阶段计划。项目启用辅助 AI时，可用 `wmux project auxiliary-dispatch/status` 派发和查询获准杂务；辅助结果不得注入主任务 AI。
 
 ## 普通监督任务包
-
 - 用户配置的目标、计划文件和停止条件是唯一规划权威；旧终端对话只用于判断进度，不得替代或扩大用户规划。
 - 目标、范围、优先级、偏好或验收存在实质疑问时，先用 `needs-human --proposal-kind clarification` 集中提出关键问题，等待用户答复后再建立计划。
 - 首次 `continue/rework` 使用 `--stage-plan-file` 建立成果计划；以后只在成果状态或剩余工作变化时更新。
@@ -55,7 +54,9 @@
 - 每轮先读取事件指定的冻结证据；摘要截断、证据不足、验收不一致、返工或风险异常时使用 `wmux supervisor evidence --review-id <ID> --file`，随后用 `wmux read-screen --surface <任务终端> --lines 100` 核对实时状态。
 - 每轮只提交一次 `wmux supervisor decide`；成功后立即结束当前回合，不主动 sleep、轮询或重复裁决。
 - 终端本轮结束不等于完成。只有全部停止条件与验收要求形成可收敛结论且没有剩余工作时才能 complete。
-- complete 必须通过 `--completion-file` 逐项提交实际证据；未满足、未验证、不确定、未运行或存在 remainingWork 时不得 complete。
+- complete 必须通过 `--completion-file` 逐项提交实际证据；未满足、未验证、不确定、未运行或存在 remainingWork 时不得 complete。首次生成或格式报错时先运行 `wmux supervisor decide --help` 复制当前 JSON 示例，不得猜测字段。
+- completion JSON 根字段只能是 `remainingWork`、`stopWhen`、`validation`。`remainingWork` 必须是数组，无剩余工作时使用 `[]`；`stopWhen` 和 `validation` 必须按合同顺序逐项提交 `{index,status,result,method,evidence,evidenceRefs}`。项目模式每项 `evidenceRefs` 必须引用项目内的实际证据文件，CLI 会读取并计算内容哈希后签发一次性核验令牌。
+- completion JSON 只接受上述字段；禁止使用额外字段、`remainingWork: "none"`、纯编号列表或自然语言哈希汇总代替 `evidenceRefs`。
 - 缺少结构化交接时结合冻结证据、实际项目状态和规范报告补证，不得只相信任务 AI自报 changedFiles 或屏幕末尾。
 - 确定性规范违规必须阻断检查点，把违规事实、受影响范围和未通过项交回原任务 AI自主修正。
 
