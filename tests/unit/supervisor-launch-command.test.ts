@@ -17,6 +17,22 @@ describe('supervisor launch command', () => {
       .toBe("codex --model 'gpt-5.6-sol' --config model_reasoning_effort='high'");
   });
 
+  it('suppresses persistent history only when explicitly requested', () => {
+    expect(buildSupervisorLaunchCommand('codex', '', '', { suppressCodexHistory: true }))
+      .toBe("codex --config history.persistence='none'");
+    expect(buildSupervisorLaunchCommand('codex', ''))
+      .toBe('codex');
+  });
+
+  it('replaces a caller history override for a wmux-owned Codex runtime', () => {
+    expect(buildSupervisorLaunchCommand(
+      'codex --config model_reasoning_effort=high -c history.persistence=save-all',
+      '',
+      '',
+      { suppressCodexHistory: true },
+    )).toBe("codex --config model_reasoning_effort=high --config history.persistence='none'");
+  });
+
   it('keeps an explicitly configured reasoning effort unchanged', () => {
     expect(buildSupervisorLaunchCommand('codex -c model_reasoning_effort=medium', '', 'high'))
       .toBe('codex -c model_reasoning_effort=medium');
@@ -133,6 +149,7 @@ describe('supervisor launch command', () => {
     expect(command).toContain("try { codex --model 'gpt-5.6-terra'");
     expect(command).toContain('--sandbox workspace-write');
     expect(command).toContain('--ask-for-approval never');
+    expect(command).toContain("--config history.persistence='none'");
     expect(command).toContain('finally { exit $(if ($null -eq $LASTEXITCODE)');
   });
 

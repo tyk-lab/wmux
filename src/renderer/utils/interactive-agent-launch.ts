@@ -9,6 +9,11 @@ export interface InteractiveAgentLaunch {
   startupInput?: string;
 }
 
+export interface InteractiveAgentLaunchOptions {
+  /** Disable persistent Codex history only for an explicitly wmux-owned runtime. */
+  suppressCodexHistory?: boolean;
+}
+
 /** Wmux-owned Agent surfaces may reveal native startup prompts without exposing ordinary terminals. */
 export function surfaceAllowsManagedCodexHookTrust(
   surface: Pick<SurfaceRef, 'projectManagerProjectId' | 'projectManagerTerminal' | 'transientSupervisor'>,
@@ -41,8 +46,11 @@ export function buildInteractiveAgentLaunch(
   prompt: string,
   model = '',
   reasoningEffort = '',
+  options: InteractiveAgentLaunchOptions = {},
 ): InteractiveAgentLaunch {
-  const launchCommand = buildSupervisorLaunchCommand(agent, model, reasoningEffort);
+  const launchCommand = buildSupervisorLaunchCommand(agent, model, reasoningEffort, {
+    suppressCodexHistory: options.suppressCodexHistory,
+  });
   if (agent === 'kimi') {
     return {
       startupCommands: [`${launchCommand} ${AUTOMATED_KIMI_STARTUP_MARKER}`],

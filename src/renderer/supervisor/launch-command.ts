@@ -5,6 +5,8 @@ export type SupervisorLauncherKind = 'codex' | 'kimi' | 'grok' | 'pi' | 'other';
 export interface SupervisorLaunchOptions {
   /** Run a dedicated supervisor outside the managed project context. */
   isolateSupervisor?: boolean;
+  /** Keep wmux-owned Codex control-plane sessions out of persistent user history. */
+  suppressCodexHistory?: boolean;
   /** Legacy caller context; never exported into the isolated supervisor process. */
   projectDir?: string;
   /** Stable lane/surface identity used to prevent supervisor runtimes sharing context. */
@@ -95,6 +97,14 @@ function removeValueFlag(command: string, flags: string[]): string {
     new RegExp(`(^|\\s)(?:${escaped})(?:=|\\s+)(?:"[^"]*"|'[^']*'|\\S+)`, 'giu'),
     '$1',
   ).replace(/\s{2,}/gu, ' ').trim();
+}
+
+function suppressCodexHistory(command: string): string {
+  const withoutCallerOverride = command.replace(
+    /(^|\s)(?:--config|-c)(?:=|\s+)(?:"history\.persistence=[^"]*"|'history\.persistence=[^']*'|history\.persistence=(?:"[^"]*"|'[^']*'|\S+))/giu,
+    '$1',
+  ).replace(/\s{2,}/gu, ' ').trim();
+  return `${withoutCallerOverride} --config history.persistence=${quotePowerShellArgument('none')}`;
 }
 
 function enforceSupervisorReadOnlyMode(command: string, launcher: SupervisorLauncherKind): string {
@@ -218,6 +228,9 @@ export function buildSupervisorLaunchCommand(
   if (launcher === 'codex') {
     if (selectedEffort && !/\bmodel_reasoning_effort\b/i.test(command)) {
       configuredCommand = `${modelCommand} --config model_reasoning_effort=${quotePowerShellArgument(selectedEffort)}`;
+    }
+    if (options.suppressCodexHistory || options.isolateSupervisor) {
+      configuredCommand = suppressCodexHistory(configuredCommand);
     }
   }
   // Current Kimi Code releases do not expose a --thinking CLI option. Legacy

@@ -57,6 +57,22 @@ describe('interactive Agent launch', () => {
       .toMatch(/^grok -m 'grok-4\.6' --reasoning-effort 'medium' -- /);
   });
 
+  it('can suppress history for a managed Codex runtime without changing ordinary launches', () => {
+    const managed = buildInteractiveAgentLaunch(
+      'codex',
+      '启动项目 AI',
+      '',
+      '',
+      { suppressCodexHistory: true },
+    );
+    const ordinary = buildInteractiveAgentLaunch('codex', '启动普通任务');
+
+    expect(managed.startupCommands[0]).toMatch(
+      /^codex --config history\.persistence='none' -- \(ConvertFrom-Json /,
+    );
+    expect(ordinary.startupCommands[0]).not.toContain('history.persistence');
+  });
+
   it('never bypasses Codex Hook trust for automated runtimes', () => {
     const managedCodex = buildInteractiveAgentLaunch('codex', '启动项目 AI');
     const ordinaryCodex = buildInteractiveAgentLaunch('codex', '启动普通任务');

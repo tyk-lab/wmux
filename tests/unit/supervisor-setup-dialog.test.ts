@@ -107,6 +107,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('启用辅助 AI（只服务项目 AI 和监督 AI）');
     expect(projectManagerDialogSource).toContain('允许辅助 AI 维护受控文档、进度和用户授权的 Git 提交');
     expect(pipeBridgeSource).toContain('ensureProjectAuxiliaryRuntime');
+    expect(pipeBridgeSource).toContain('suppressCodexHistory: true');
     expect(pipeBridgeSource).toContain('projectRuntimeWorkspace: true');
     expect(pipeBridgeSource).toContain('transientSupervisorWorkspace: true');
     expect(pipeBridgeSource).toContain('waitForProjectSupervisorBriefing');

@@ -2042,7 +2042,9 @@ function createRemoteDirectTerminalTask(
     if (!controlWorkspace || !targetPaneId) return { ok: false, error: '无法创建项目调度控制层运行时。', message: '' };
     const placeholderSurfaceId = findLeaf(controlWorkspace.splitTree, targetPaneId)?.surfaces
       .find((surface) => surface.type === 'supervisor')?.id;
-    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort);
+    const launch = buildInteractiveAgentLaunch(agent, task, model, reasoningEffort, {
+      suppressCodexHistory: true,
+    });
     const surfaceId = store.addSurface(controlWorkspace.id, targetPaneId, 'terminal', {
       customTitle: PROJECT_MANAGER_TERMINAL_NAME,
       shell: 'pwsh.exe',
