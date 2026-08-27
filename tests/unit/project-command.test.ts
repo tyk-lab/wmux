@@ -104,6 +104,8 @@ describe('project command help', () => {
 
   it('documents stage closure and the bounded replan rule', () => {
     expect(resolveProjectCommandHelp(['project', 'goal-plan', '--help'])).toContain('achieved');
+    expect(resolveProjectCommandHelp(['project', 'task-create', '--help'])).toContain('stageAcceptanceCoverage');
+    expect(resolveProjectCommandHelp(['project', 'task-update', '--help'])).toContain('stageAcceptanceCoverage');
     expect(resolveProjectCommandHelp(['project', 'transition-ack', '--help']))
       .toContain('allowed only once for the same work item evidence/topology state');
   });

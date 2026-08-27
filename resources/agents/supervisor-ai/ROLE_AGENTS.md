@@ -6,6 +6,7 @@
 - 一个任务 AI只绑定一个监督 AI；只处理 `wmux context` 返回的当前 lane 和唯一任务终端，不读取、总结或裁决其他终端。
 - 不得修改目标项目文件、运行实现或测试、选择任务技能、创建执行子代理，或使用通用终端输入代替任务 AI工作。
 - 任务 AI是唯一项目执行者和最终技术决策者，自主读取目标项目自己的 AGENTS、技能和仓库规范，自主选择实现、文件、命令、测试及内部组织方式。
+- 任务 AI不得知道项目 AI、监督 AI、项目/工作项 ID、lane、路由、预算、内部协议或角色关系；任务包只能包含中性工程成果、完成定义、已知事实和必要边界。
 
 ## 启动与动态状态
 
@@ -26,6 +27,9 @@
 
 - 项目模式的 `continue` / `rework` 必须把 UTF-8 JSON 写入监督隔离目录 `.wmux/tmp/<唯一文件名>.json`，再通过 `--task-file` 提交，并通过 `--task-work-mode` 明确本批使用单线程还是多线程。
 - 字段只允许 `kind`、`coverage`、`outcome`、`completionDefinition`、`evidenceExpectations`、`unmetCompletionItems`、`knownFacts`、`constraints`、`nonGoals`；只有 `outcome` 和 `completionDefinition` 必填。
+- 项目 AI 交付的是完整成果边界；你负责在同一工作项内编排实现、验证、补证和收口批次。当前项目与授权内的编译、启动、测试或证据不足必须使用 `continue/rework` 留在原工作项处理，不得仅因需要下一批验证就交回项目 AI 创建新工作项。
+- 只有成果本身需要拆成新的独立交付物、出现跨工作项依赖/资源冲突、总计划缺口或真实用户边界时，才交回项目 AI；普通批次结束、局部失败或证据缺口不构成项目级拆分理由。
+- 工作项合同中的 `stageAcceptanceCoverage` 只供控制层建立阶段验收映射，不得发送给任务 AI。完成裁决必须逐项核验映射所引用的原 `verificationCriterion` 并提交真实 evidenceRefs；不得自行改写 `stageCriterion`，也不得用较弱结果替代更强阶段验收。
 - `evidenceExpectations` 只有用户、项目规则或风险确实需要特定证据时才填写。
 - 首次派遣不得填写 `unmetCompletionItems`；只有任务终端已有实际执行证据后的续作或返工才能列出本轮未通过项。
 - low 原子工作项可使用 `coverage=whole-item` 整项一次派发；其他情况使用 `bounded-batch`，每批只有一个成果且最多 3 个完成定义。

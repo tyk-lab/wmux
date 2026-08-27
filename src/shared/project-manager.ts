@@ -429,7 +429,14 @@ export interface ProjectSupervisorContract {
   authority: ProjectSupervisorAuthority;
   stopWhen: string[];
   validation: string[];
+  /** Explicit canonical stage-acceptance links; never inferred from similar wording. */
+  stageAcceptanceCoverage?: ProjectStageAcceptanceCoverage[];
   budget: ProjectExecutionBudget;
+}
+
+export interface ProjectStageAcceptanceCoverage {
+  stageCriterion: string;
+  verificationCriterion: string;
 }
 
 export function projectManagerQuestionConfirmationScope(
@@ -786,7 +793,12 @@ export function projectWorkItemDisplayTitle(
 ): string {
   const title = item.title.trim();
   const objective = item.contract.objective.trim();
-  return (!title || title === item.id ? objective : title) || item.id;
+  const source = (!title || title === item.id ? objective : title) || item.id;
+  const firstOutcomeClause = source.split(/[\r\n：:；;。，,]/u)[0]?.trim() || source;
+  const characters = Array.from(firstOutcomeClause);
+  return characters.length > 24
+    ? `${characters.slice(0, 24).join('')}…`
+    : firstOutcomeClause;
 }
 
 export type ProjectTaskComplexityLevel = 'low' | 'medium' | 'high';
@@ -942,6 +954,21 @@ export function projectCriterionIdentity(value: string): string {
   return value.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 }
 
+export function normalizeProjectStageAcceptanceCoverage(
+  value: unknown,
+): ProjectStageAcceptanceCoverage[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const candidate = entry as Record<string, unknown>;
+    const stageCriterion = String(candidate.stageCriterion || '').trim().slice(0, 4000);
+    const verificationCriterion = String(candidate.verificationCriterion || '').trim().slice(0, 4000);
+    return stageCriterion && verificationCriterion
+      ? [{ stageCriterion, verificationCriterion }]
+      : [];
+  });
+}
+
 export function projectCriterionRequiresRuntimeTest(value: string): boolean {
   return /(?:上机|实机|复测|实际运行|硬件测试|设备测试|执行.{0,20}(?:测试|验证)|(?:双向|重复一致性).{0,20}(?:测试|验证))/iu.test(value);
 }
@@ -1004,19 +1031,41 @@ export function projectCompletionCriteriaError(
 
 /** Read only the structured completion result produced by the current protocol. */
 export function projectWorkItemCompletionResult(item: ProjectWorkItem): ProjectCompletionResult | undefined {
-  return normalizeProjectCompletionResult(item.completion);
+  const completion = normalizeProjectCompletionResult(item.completion);
+  if (!completion) return undefined;
+  const coverage = normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage);
+  if (coverage.length === 0 || !completion.criteria?.length) return completion;
+  const criteria = new Map(completion.criteria.map((criterion) => (
+    [projectCriterionIdentity(criterion.criterion), criterion]
+  )));
+  for (const mapping of coverage) {
+    const source = criteria.get(projectCriterionIdentity(mapping.verificationCriterion));
+    if (!source) continue;
+    const stageIdentity = projectCriterionIdentity(mapping.stageCriterion);
+    const existing = criteria.get(stageIdentity);
+    criteria.set(stageIdentity, existing || {
+      ...source,
+      criterion: mapping.stageCriterion,
+    });
+  }
+  return { ...completion, criteria: [...criteria.values()].slice(0, 100) };
 }
 
 /** Aggregate a stage result from current-protocol structured work-item completions. */
 export function projectSubgoalCompletionResult(
-  subgoal: Pick<ProjectSubgoal, 'id' | 'status' | 'updatedAt' | 'completion'>,
+  subgoal: Pick<ProjectSubgoal, 'id' | 'goalId' | 'status' | 'updatedAt' | 'completion'>,
   workItems: readonly ProjectWorkItem[],
+  options: { requirementsVersion?: number; authorizationVersion?: number } = {},
 ): ProjectCompletionResult | undefined {
   const stored = normalizeProjectCompletionResult(subgoal.completion);
   if (stored) return stored;
   if (subgoal.status !== 'achieved') return undefined;
   const completedItems = workItems.filter((item) => (
-    item.subgoalId === subgoal.id && !!item.completion
+    item.goalId === subgoal.goalId
+    && item.subgoalId === subgoal.id
+    && (options.requirementsVersion === undefined || item.requirementsVersion === options.requirementsVersion)
+    && (options.authorizationVersion === undefined || item.authorizationVersion === options.authorizationVersion)
+    && !!item.completion
   ));
   const summaries = completedItems.map((item) => (
     projectWorkItemCompletionResult(item)?.summary
@@ -1793,6 +1842,9 @@ function normalizeProjectGovernanceSessionState(session: ProjectManagerSession):
       ...item,
       contract: {
         ...item.contract,
+        ...(normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage).length > 0
+          ? { stageAcceptanceCoverage: normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage) }
+          : { stageAcceptanceCoverage: undefined }),
         scope: {
           root: item.contract.scope.root,
           allowPaths: [],

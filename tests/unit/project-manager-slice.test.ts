@@ -975,6 +975,64 @@ describe('project-manager slice', () => {
     });
   });
 
+  it('lets a completed legacy work item close its stage only after a verified canonical mapping is added', () => {
+    const useStore = store();
+    const stageCriterion = 'C GUI 原型可编译并启动';
+    const verificationCriterion = '复核 C GUI 原型可编译并启动的既有证据';
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成 GUI 原型', doneWhen: [stageCriterion],
+    });
+    const goalId = project.activeGoalId || '';
+    const stage = {
+      id: 'foundation', goalId, title: '基础原型', outcome: '形成可运行原型',
+      acceptance: [stageCriterion], dependencies: [], status: 'planned' as const,
+      order: 1, createdAt: 1, updatedAt: 1,
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [stage],
+    })).toMatchObject({ ok: true });
+    const legacyItem = {
+      ...item('legacy-foundation'),
+      goalId,
+      subgoalId: stage.id,
+      contract: {
+        ...item('legacy-foundation').contract,
+        stopWhen: [verificationCriterion],
+        validation: [],
+      },
+    };
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: legacyItem });
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: legacyItem.id, patch: {
+        status: 'completed',
+        completion: verifiedCompletion([verificationCriterion], '构建退出码和启动窗口证据已哈希'),
+      },
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{ ...stage, status: 'achieved' }],
+    })).toMatchObject({ ok: false, error: expect.stringContaining('尚未核验') });
+
+    const completed = useStore.getState().projectManager!.workItems.find((entry) => entry.id === legacyItem.id)!;
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: legacyItem.id, patch: {
+        contract: {
+          ...completed.contract,
+          stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+        },
+      },
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager', subgoals: [{ ...stage, status: 'achieved' }],
+    })).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({
+      status: 'achieved',
+      completion: {
+        criteria: expect.arrayContaining([expect.objectContaining({ criterion: stageCriterion })]),
+      },
+    });
+  });
+
   it('pauses only the affected project for user clarification and accepts only the first answer', () => {
     const useStore = store();
     const first = useStore.getState().startProjectManager({ projectDir: 'E:\\repo-a', goal: '项目 A', doneWhen: ['A 完成'] });

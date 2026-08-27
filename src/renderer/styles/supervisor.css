@@ -997,6 +997,10 @@
   color: #8fc4ff;
 }
 
+.project-manager-dialog__work-items .project-manager-dialog__history-summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .project-manager-dialog__work-items dl {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);

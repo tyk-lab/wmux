@@ -106,6 +106,130 @@ describe('project-manager engine', () => {
     });
   });
 
+  it('separates missing stage mappings from a stage that is ready to close', () => {
+    const verificationCriterion = '复核 C GUI 原型可编译并启动的既有证据';
+    const stageCriterion = 'C GUI 原型可编译并启动';
+    const completed = {
+      ...item('foundation-result', 'completed'),
+      subgoalId: 'foundation',
+      completedAt: 10,
+      contract: {
+        ...item('foundation-result', 'completed').contract,
+        stopWhen: [verificationCriterion],
+        validation: [],
+      },
+      completion: {
+        summary: '阶段证据已复核', validation: [verificationCriterion], completedAt: 10,
+        criteria: [{
+          criterion: verificationCriterion,
+          status: 'satisfied' as const,
+          result: 'passed' as const,
+          method: 'evidence-review' as const,
+          evidence: '构建和启动记录均存在',
+          evidenceRefs: ['evidence/stage-1.md'],
+          evidenceArtifacts: [{
+            ref: 'evidence/stage-1.md', sizeBytes: 12, mtimeMs: 1, sha256: 'b'.repeat(64),
+          }],
+        }],
+      },
+    };
+    const next = { ...item('core-flow', 'planned'), subgoalId: 'core-flow' };
+    const project = session([completed, next]);
+    const goalId = project.activeGoalId!;
+    project.workItems = project.workItems.map((workItem) => ({ ...workItem, goalId }));
+    project.subgoals = [
+      {
+        id: 'foundation', goalId, title: '基础原型', outcome: '原型可运行',
+        acceptance: [stageCriterion], dependencies: [], status: 'planned', order: 1, createdAt: 1, updatedAt: 1,
+      },
+      {
+        id: 'core-flow', goalId, title: '核心流程', outcome: '核心流程可用',
+        acceptance: ['核心流程完成'], dependencies: ['foundation'], status: 'planned', order: 2, createdAt: 1, updatedAt: 1,
+      },
+    ];
+    project.workItems.splice(1, 0, {
+      ...project.workItems[0],
+      id: 'stopped-foundation-evidence',
+      status: 'stopped',
+      contract: {
+        ...project.workItems[0].contract,
+        stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+      },
+    });
+
+    expect(projectProgressObligation(project)).toMatchObject({
+      kind: 'map-stage-acceptance',
+      workItemId: 'foundation-result',
+      missingCriteria: [stageCriterion],
+    });
+
+    project.workItems[0] = {
+      ...project.workItems[0],
+      contract: {
+        ...project.workItems[0].contract,
+        stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+      },
+    };
+    const verifiedArtifacts = project.workItems[0].completion!.criteria![0].evidenceArtifacts;
+    project.workItems[0].completion!.criteria![0].evidenceArtifacts = undefined;
+    expect(projectProgressObligation(project)).toMatchObject({
+      kind: 'plan-work',
+      summary: expect.stringContaining('证据方法或结论不足'),
+    });
+    project.workItems[0].completion!.criteria![0].evidenceArtifacts = verifiedArtifacts;
+    expect(projectProgressObligation(project)).toMatchObject({
+      kind: 'close-stage',
+      workItemId: 'foundation-result',
+    });
+
+    project.subgoals[0] = { ...project.subgoals[0], status: 'achieved' };
+    expect(projectProgressObligation(project)).toMatchObject({ kind: 'dispatch-work', workItemId: 'core-flow' });
+  });
+
+  it('does not close a stage when a mapped criterion uses evidence weaker than the stage requires', () => {
+    const stageCriterion = '实际运行验证完成';
+    const verificationCriterion = '复核现有说明文档';
+    const completed = {
+      ...item('weak-evidence', 'completed'),
+      subgoalId: 'runtime-stage',
+      completedAt: 10,
+      contract: {
+        ...item('weak-evidence', 'completed').contract,
+        stopWhen: [verificationCriterion],
+        validation: [],
+        stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+      },
+      completion: {
+        summary: '只完成文档复核', validation: [verificationCriterion], completedAt: 10,
+        criteria: [{
+          criterion: verificationCriterion,
+          status: 'satisfied' as const,
+          result: 'passed' as const,
+          method: 'evidence-review' as const,
+          evidence: '说明文档存在',
+          evidenceRefs: ['evidence/readme.md'],
+          evidenceArtifacts: [{
+            ref: 'evidence/readme.md', sizeBytes: 12, mtimeMs: 1, sha256: 'f'.repeat(64),
+          }],
+        }],
+      },
+    };
+    const project = session([completed]);
+    const goalId = project.activeGoalId!;
+    project.workItems = project.workItems.map((workItem) => ({ ...workItem, goalId }));
+    project.subgoals = [{
+      id: 'runtime-stage', goalId, title: '运行验收', outcome: '运行结果形成',
+      acceptance: [stageCriterion], dependencies: [], status: 'planned',
+      order: 1, createdAt: 1, updatedAt: 1,
+    }];
+
+    expect(projectProgressObligation(project)).toMatchObject({
+      kind: 'plan-work',
+      workItemId: 'weak-evidence',
+      summary: expect.stringContaining('证据方法或结论不足'),
+    });
+  });
+
   it('normalizes only complete durable execution responsibility leases', () => {
     const normalized = normalizeProjectManagerSession({
       id: 'pm-responsibility', projectDir: 'E:\\repo', goal: '完成项目',

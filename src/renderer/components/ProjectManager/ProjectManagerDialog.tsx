@@ -449,6 +449,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       ? []
       : currentWorkItems.filter((item) => !['completed', 'stopped'].includes(item.status))
   ), [currentWorkItems, session]);
+  const archivedWorkItems = useMemo(() => currentWorkItems.filter((item) => (
+    ['completed', 'stopped'].includes(item.status)
+  )), [currentWorkItems]);
   const selectedInterventionWorkItem = useMemo(() => intervenableWorkItems.find((item) => (
     item.id === workItemInterventionId
   )) || null, [intervenableWorkItems, workItemInterventionId]);
@@ -1861,11 +1864,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     <div className="supervisor-dialog__group-title">项目 AI 工作项安排</div>
                     <div className="supervisor-dialog__hint">以下工作项由项目 AI 按阶段规划拆分；选择左侧圆点可进行用户干预，已结束的工作项只保留为审计记录。</div>
                   </div>
-                  <span className="project-manager-dialog__work-item-count">{currentWorkItems.length} 项</span>
+                  <span className="project-manager-dialog__work-item-count">{intervenableWorkItems.length} 项进行中{archivedWorkItems.length > 0 ? ` · ${archivedWorkItems.length} 项历史` : ''}</span>
                 </div>
                 <div className="project-manager-dialog__work-items project-manager-dialog__work-item-decisions">
                   {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
-                  {currentWorkItems.map((item) => {
+                  {currentWorkItems.length > 0 && intervenableWorkItems.length === 0 && <div className="supervisor-dialog__empty">当前没有开放成果；已结束工作项折叠保留为审计记录。</div>}
+                  {intervenableWorkItems.map((item) => {
                     const itemTitle = projectWorkItemDisplayTitle(item);
                     const itemLane = managedLanes.find((lane) => lane.id === item.supervisorLaneId);
                     const itemTransition = [...(session.pendingSupervisorTransitions || [])].reverse().find((transition) => (
@@ -1974,11 +1978,24 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       </details>
                     );
                   })}
+                  {archivedWorkItems.length > 0 && (
+                    <details>
+                      <summary className="project-manager-dialog__history-summary"><strong>历史工作项（{archivedWorkItems.length}）</strong><span>默认折叠</span></summary>
+                      <dl>
+                        {archivedWorkItems.map((item) => (
+                          <React.Fragment key={item.id}>
+                            <dt>{STATUS_LABELS[item.status] || item.status}</dt>
+                            <dd title={item.id}>{projectWorkItemDisplayTitle(item)}</dd>
+                          </React.Fragment>
+                        ))}
+                      </dl>
+                    </details>
+                  )}
                 </div>
                 {selectedInterventionWorkItem && (
                   <div className="project-manager-dialog__work-item-intervention" role="group" aria-label="干预选中的工作项">
                     <div className="project-manager-dialog__work-item-intervention-head">
-                      <div><strong>干预：{selectedInterventionWorkItem.title}</strong><span>只处理此工作项，不会暂停整个项目。</span></div>
+                      <div><strong>干预：{projectWorkItemDisplayTitle(selectedInterventionWorkItem)}</strong><span>只处理此工作项，不会暂停整个项目。</span></div>
                       <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
                         setWorkItemInterventionId('');
                         setWorkItemInterventionReason('');

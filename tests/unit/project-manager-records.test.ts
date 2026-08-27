@@ -255,6 +255,8 @@ describe('project manager records', () => {
     expect(recoveredSession(appData, saved.id)?.workItems[0].verificationLimitation).toMatchObject({
       kind: 'gui-automation-unavailable', missingEvidence: ['GUI 点击与输入结果'],
     });
+    expect(recoveredSession(appData, saved.id)?.workItems[0].contract.stageAcceptanceCoverage)
+      .toBeUndefined();
 
     saved.workItems[0].verificationDecision!.action = 'skip-verification';
     expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();

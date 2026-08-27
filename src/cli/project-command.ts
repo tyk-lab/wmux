@@ -71,15 +71,15 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     'Usage: wmux project task-create --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
     'JSON must include a project-AI complexity assessment made before dispatch:',
-    '{"id":"task-a","subgoalId":"stage-1","taskWorkMode":"single-thread|multi-thread","complexityAssessment":{"complexity":"low|medium|high","decision":"single-task|split-before-dispatch","signals":["..."],"rationale":"..."},"contract":{"objective":"...","stopWhen":["..."],"validation":["..."]}}',
+    '{"id":"task-a","title":"用户可识别成果","subgoalId":"stage-1","taskWorkMode":"single-thread|multi-thread","complexityAssessment":{"complexity":"low|medium|high","decision":"single-task|split-before-dispatch","signals":["..."],"rationale":"..."},"contract":{"objective":"...","stopWhen":["..."],"validation":["..."],"stageAcceptanceCoverage":[{"stageCriterion":"<stage acceptance exact text>","verificationCriterion":"<stopWhen or validation exact text>"}]}}',
     '',
-    '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead. `taskWorkMode` controls the unique task AI internal execution mode.',
+    '`split-before-dispatch` is a planning result, not an executable task; create focused child work items instead. `taskWorkMode` controls the unique task AI internal execution mode. stageAcceptanceCoverage is an explicit canonical mapping; wording similarity is never inferred.',
   ].join('\n'),
   'task-update': [
     'Usage: wmux project task-update --project <id> (--json <object> | --json-file <.wmux/tmp/file>)',
     '',
     'JSON object (partial update; omitted fields keep their current values):',
-    '{"workItemId":"task-a","status":"planned","contract":{"objective":"updated outcome"},"latestContextSummary":"...","latestEvidence":"...","latestBlocker":"..."}',
+    '{"workItemId":"task-a","status":"planned","contract":{"objective":"updated outcome","stageAcceptanceCoverage":[{"stageCriterion":"<stage acceptance exact text>","verificationCriterion":"<existing work-item criterion exact text>"}]},"latestContextSummary":"...","latestEvidence":"...","latestBlocker":"..."}',
     '`running` and `validating` are supervisor-owned execution states. Replanned work should use `planned`, then `dispatch`.',
   ].join('\n'),
   dispatch: [

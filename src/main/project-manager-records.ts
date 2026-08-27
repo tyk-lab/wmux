@@ -53,6 +53,16 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isProjectStageAcceptanceCoverage(value: unknown): boolean {
+  return Array.isArray(value)
+    && value.length <= 20
+    && value.every((entry) => (
+      !!entry && typeof entry === 'object'
+      && typeof (entry as Record<string, unknown>).stageCriterion === 'string'
+      && typeof (entry as Record<string, unknown>).verificationCriterion === 'string'
+    ));
+}
+
 function isPlanFileSnapshot(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const file = value as Record<string, unknown>;
@@ -321,6 +331,8 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
       && Number.isFinite(item.attempts) && Number.isFinite(item.updatedAt)
       && typeof contract?.objective === 'string' && typeof contract?.description === 'string'
       && isStringArray(contract?.preconditions) && isStringArray(contract?.stopWhen) && isStringArray(contract?.validation)
+      && (contract?.stageAcceptanceCoverage === undefined
+        || isProjectStageAcceptanceCoverage(contract.stageAcceptanceCoverage))
       && (contract?.supervisorNotes === undefined || isStringArray(contract.supervisorNotes))
       && typeof scope?.root === 'string' && path.isAbsolute(scope.root)
       && scope.root.toLowerCase() === String(session.projectDir).toLowerCase()

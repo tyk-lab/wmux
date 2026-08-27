@@ -38,6 +38,11 @@ describe('project manager runtime startup protocol', () => {
 
     expect(agents).toContain('首次需求摘要必须通过结构化 `wmux project ask`');
     expect(agents).toContain('任务 AI 是唯一项目执行者和最终技术决策者');
+    expect(agents).toContain('不得向它披露项目 AI、监督 AI、项目/工作项 ID、lane、路由、预算、内部协议或角色关系');
+    expect(agents).toContain('一个工作项对应一个可独立验收的完整成果');
+    expect(agents).toContain('不得为每条验收、每次监督交接或每次补证创建同义后继任务');
+    expect(agents).toContain('`task-create` 必须在 `contract.stageAcceptanceCoverage` 中显式提交');
+    expect(agents).toContain('只对原工作项执行 `task-update` 补充 `contract.stageAcceptanceCoverage`');
     expect(agents).toContain('监督 AI无法在工作项合同内决策时才上报项目 AI');
     expect(agents).toContain('验证通过、失败或当前无法取得都必须如实返回');
     expect(agents).toContain('辅助 AI默认关闭');

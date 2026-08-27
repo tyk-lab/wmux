@@ -217,6 +217,9 @@ describe('supervisor isolation', () => {
     expect(supervisorAgentsSource).toContain('首次 `continue/rework` 使用 `--stage-plan-file`');
     expect(supervisorAgentsSource).toContain('缺少 Win32/GUI/桌面自动化通道属于“验证能力受限”');
     expect(supervisorAgentsSource).toContain('不得重复原自动化路径、重复派发同义任务');
+    expect(supervisorAgentsSource).toContain('任务 AI不得知道项目 AI、监督 AI、项目/工作项 ID、lane、路由、预算、内部协议或角色关系');
+    expect(supervisorAgentsSource).toContain('编译、启动、测试或证据不足必须使用 `continue/rework` 留在原工作项处理');
+    expect(supervisorAgentsSource).toContain('`stageAcceptanceCoverage` 只供控制层建立阶段验收映射，不得发送给任务 AI');
     expect(text).toContain('不得读取或执行 .wmux/tmp/terminal-input/project/');
     expect(text).not.toContain('项目 pm-project');
     expect(text).not.toContain('worker-b');

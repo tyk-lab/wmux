@@ -3,8 +3,12 @@ import {
   activeProjectSubgoals,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
+  projectCompletionCriteriaError,
+  projectCriterionIdentity,
   projectOrientationReady,
   projectRequirementsVersion,
+  projectSubgoalCompletionResult,
+  projectWorkItemCompletionResult,
   projectWorkItemReady,
   type ProjectManagerSession,
   type ProjectSupervisorContract,
@@ -135,6 +139,22 @@ export function projectTaskImplementationDirectiveError(value: string): string |
   return implementationDirective
     ? '成果批次只能描述结果、完成定义、证据期望、事实和约束，不能指定文件、命令、技能或实现路线'
     : null;
+}
+
+export function projectWorkItemOutcomeTitleError(title: string, workItemId: string): string | null {
+  const normalized = title.trim();
+  const length = Array.from(normalized).length;
+  if (!normalized) return 'task-create 必须提供简短成果标题 title，不能用内部任务 ID 代替';
+  if (normalized === workItemId || /^task[-_:]/iu.test(normalized)) {
+    return '工作项 title 必须是用户可识别的成果名称，不能使用内部 task ID';
+  }
+  if (length < 2 || length > 24) {
+    return '工作项 title 必须为 2-24 个字符，只命名一个独立成果';
+  }
+  if (/[\r\n：:；;。，,]|[\\/]|`|--[a-z]|\.(?:md|json|ts|tsx|js|jsx|py|rs|go|java|cpp|h|exe)\b/iu.test(normalized)) {
+    return '工作项 title 只能写简短成果名称，不能包含路径、文件名、命令、步骤或完整合同正文';
+  }
+  return null;
 }
 
 export function normalizeProjectTaskBatch(
@@ -289,6 +309,7 @@ const PROJECT_ORCHESTRATION_DISCLOSURES = [
   /\btask\s+ai\b|\bproject\s+ai\b|\bproject\s+manager\s+ai\b|\b(?:dedicated|project)\s+supervisor(?:\s+ai)?\b|\bsupervisor\s+ai\b|\bcontrol\s+plane\b|\bauxiliary(?:\s+task)?\s+ai\b|\b(?:project|work\s*item)\s+id\b/iu,
   /\b(?:ask|notify|follow|wait\s+for|coordinate\s+with|escalate\s+to|report(?:\s+back)?\s+to)\s+(?:your\s+|the\s+)?(?:project\s+manager|supervisor)\b/iu,
   /\b(?:project\s+manager|supervisor)['’]s\s+(?:plan|instructions?|decision|approval)\b/iu,
+  /\b(?:projectId|workItemId|goalId|subgoalId|laneId|surfaceId|managerSurfaceId|supervisorSurfaceId|workerSurfaceId|assignmentVersion|requirementsVersion|authorizationVersion|executionProtocolVersion|protocolRevision|awaitingSupervisor|contractPending)\b/iu,
 ];
 
 export function projectTaskInstructionDisclosureError(instruction: string): string | null {
@@ -360,6 +381,8 @@ export type ProjectProgressObligationKind =
   | 'orient-project'
   | 'reconcile-stale-work'
   | 'plan-work'
+  | 'map-stage-acceptance'
+  | 'close-stage'
   | 'resume-project'
   | 'dispatch-work'
   | 'recover-work'
@@ -386,6 +409,7 @@ export interface ProjectProgressObligation {
   summary: string;
   workItemId?: string;
   transitionId?: string;
+  missingCriteria?: string[];
 }
 
 export function projectHasRunnableGoalPlan(session: ProjectManagerSession): boolean {
@@ -475,6 +499,64 @@ export function projectProgressObligation(
   const running = currentItems.find((item) => item.status === 'running');
   if (running) {
     return { kind: 'recover-work', workItemId: running.id, summary: `工作项 ${running.id} 仍标记运行中，但没有活动监督链，需要恢复或重建` };
+  }
+  const stageClosureState = activeProjectSubgoals(session).flatMap((subgoal) => {
+    if (['achieved', 'obsolete'].includes(subgoal.status)) return [];
+    const stageItems = currentItems.filter((item) => item.subgoalId === subgoal.id);
+    const completedItems = stageItems.filter((item) => item.status === 'completed');
+    const hasOpenStageItem = stageItems.some((item) => !['completed', 'stopped'].includes(item.status));
+    if (hasOpenStageItem || !completedItems.some((item) => (
+      (projectWorkItemCompletionResult(item)?.criteria?.length || 0) > 0
+    ))) return [];
+    const completion = projectSubgoalCompletionResult({
+      id: subgoal.id,
+      goalId: subgoal.goalId,
+      status: 'achieved',
+      updatedAt: subgoal.updatedAt,
+      completion: undefined,
+    }, completedItems, {
+      requirementsVersion: projectRequirementsVersion(session),
+      authorizationVersion: projectAuthorizationVersion(session),
+    });
+    const unsatisfiedCriteria = subgoal.acceptance.filter((criterion) => projectCompletionCriteriaError(
+      [criterion],
+      completion,
+      '阶段验收',
+      { allowExtra: true, requireArtifacts: true },
+    ));
+    const coveredCriteria = new Set((completion?.criteria || []).map((criterion) => (
+      projectCriterionIdentity(criterion.criterion)
+    )));
+    const missingCriteria = unsatisfiedCriteria.filter((criterion) => (
+      !coveredCriteria.has(projectCriterionIdentity(criterion))
+    ));
+    const invalidEvidenceCriteria = unsatisfiedCriteria.filter((criterion) => (
+      coveredCriteria.has(projectCriterionIdentity(criterion))
+    ));
+    const latest = [...completedItems].sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    return [{ subgoal, latest, missingCriteria, invalidEvidenceCriteria }];
+  })[0];
+  if (stageClosureState?.missingCriteria.length) {
+    return {
+      kind: 'map-stage-acceptance',
+      workItemId: stageClosureState.latest.id,
+      missingCriteria: stageClosureState.missingCriteria,
+      summary: `阶段 ${stageClosureState.subgoal.title}（${stageClosureState.subgoal.id}）已有完成证据，但缺少 canonical acceptance 映射：${stageClosureState.missingCriteria.join('；')}`,
+    };
+  }
+  if (stageClosureState?.invalidEvidenceCriteria.length) {
+    return {
+      kind: 'plan-work',
+      workItemId: stageClosureState.latest.id,
+      summary: `阶段 ${stageClosureState.subgoal.title}（${stageClosureState.subgoal.id}）已有 canonical 映射，但证据方法或结论不足以满足：${stageClosureState.invalidEvidenceCriteria.join('；')}`,
+    };
+  }
+  if (stageClosureState) {
+    return {
+      kind: 'close-stage',
+      workItemId: stageClosureState.latest.id,
+      summary: `阶段 ${stageClosureState.subgoal.title}（${stageClosureState.subgoal.id}）的 canonical acceptance 已由结构化证据覆盖，需要用 goal-plan 更新为 achieved`,
+    };
   }
   const ready = currentItems.find((item) => (
     !projectWorkItemSubgoalDependencyError(session, item)
@@ -624,6 +706,11 @@ export function buildProjectSupervisorBriefing(options: {
     '任务成果：' + options.contract.objective,
     options.contract.description ? '说明：' + options.contract.description : '',
     '停止与验收：' + [...options.contract.stopWhen, ...options.contract.validation].join('；'),
+    options.contract.stageAcceptanceCoverage?.length
+      ? '阶段验收映射：' + options.contract.stageAcceptanceCoverage.map((mapping) => (
+          `${mapping.stageCriterion} ← ${mapping.verificationCriterion}`
+        )).join('；')
+      : '阶段验收映射：缺失；不得完成派发，先交回项目 AI 补充 canonical coverage。',
     '你是常驻监督和结果裁决者，不是项目执行者。不得修改项目文件、运行实现或测试命令、选择任务技能、规定具体实现路线，或代替任务 AI 做普通技术决策。',
     '你和项目 AI 默认拥有用户已确认目标内低风险、可逆的技术选择、聚焦测试、重试、小范围路线调整和安全权限判断裁量权；显式合同限制仍可收紧该权力。',
     '你先在当前工作项合同内直接决定 continue、rework 或 complete。只有需要改变总计划、跨任务协调、成果定义冲突或超出当前合同边界时，才使用 needs-human 上报项目 AI；由项目 AI 依据用户已确认计划决策，项目 AI 仍无法决定或涉及用户专属信息与授权时再向用户提问。禁止越级或把普通技术问题逐层上报。',

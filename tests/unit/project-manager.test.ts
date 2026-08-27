@@ -3,6 +3,7 @@ import {
   DEFAULT_PROJECT_EXECUTION_BUDGET,
   MAX_PROJECT_EXECUTION_BUDGET,
   normalizeProjectExecutionBudget,
+  projectCompletionCriteriaError,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
   projectWorkItemDisplayTitle,
@@ -62,6 +63,15 @@ describe('project-manager domain', () => {
 
     const explicitTitle = { ...internalTitle, title: '阶段一原型验收' };
     expect(projectWorkItemDisplayTitle(explicitTitle)).toBe('阶段一原型验收');
+
+    const verboseLegacyTitle = {
+      ...internalTitle,
+      contract: {
+        ...internalTitle.contract,
+        objective: '仅核验并形成阶段一可编译并启动的当前协议证据，同时关联已有列表与忽略规则，不得重做实现',
+      },
+    };
+    expect(projectWorkItemDisplayTitle(verboseLegacyTitle)).toBe('仅核验并形成阶段一可编译并启动的当前协议证据');
   });
 
   it('only schedules work after every dependency completes', () => {
@@ -74,6 +84,7 @@ describe('project-manager domain', () => {
   it('does not derive completion from unstructured status text or evidence', () => {
     const completed = {
       ...workItem('unstructured-result', 'completed'),
+      goalId: 'goal-1',
       subgoalId: 'validation-stage',
       latestContextSummary: '任务自报已经完成',
       latestEvidence: '只有自然语言证据',
@@ -82,8 +93,117 @@ describe('project-manager domain', () => {
 
     expect(projectWorkItemCompletionResult(completed)).toBeUndefined();
     expect(projectSubgoalCompletionResult({
-      id: 'validation-stage', status: 'achieved', updatedAt: 21, completion: undefined,
+      id: 'validation-stage', goalId: 'goal-1', status: 'achieved', updatedAt: 21, completion: undefined,
     }, [completed])).toBeUndefined();
+  });
+
+  it('projects verified work-item evidence onto canonical stage acceptance only through an explicit mapping', () => {
+    const stageCriterion = 'C GUI 原型可编译并启动';
+    const verificationCriterion = '复核 C GUI 原型可编译并启动的既有证据';
+    const completion = {
+      summary: '既有证据复核完成',
+      validation: [verificationCriterion],
+      evidence: '构建与启动证据已核对',
+      criteria: [{
+        criterion: verificationCriterion,
+        status: 'satisfied' as const,
+        result: 'passed' as const,
+        method: 'evidence-review' as const,
+        evidence: '构建退出码和启动窗口均有记录',
+        evidenceRefs: ['evidence/stage-1.md'],
+        evidenceArtifacts: [{
+          ref: 'evidence/stage-1.md', sizeBytes: 12, mtimeMs: 1, sha256: 'a'.repeat(64),
+        }],
+      }],
+      completedAt: 20,
+    };
+    const legacy = {
+      ...workItem('stage-result', 'completed'),
+      goalId: 'goal-1',
+      subgoalId: 'foundation',
+      completedAt: 20,
+      completion,
+      contract: {
+        ...workItem('stage-result', 'completed').contract,
+        stopWhen: [verificationCriterion],
+        validation: [],
+      },
+    };
+    const legacyStageCompletion = projectSubgoalCompletionResult({
+      id: 'foundation', goalId: 'goal-1', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [legacy]);
+    expect(projectCompletionCriteriaError([stageCriterion], legacyStageCompletion, '阶段 acceptance', {
+      allowExtra: true, requireArtifacts: true,
+    })).toContain('尚未核验');
+
+    const mapped = {
+      ...legacy,
+      contract: {
+        ...legacy.contract,
+        stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+      },
+    };
+    expect(projectWorkItemCompletionResult(mapped)?.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({ criterion: stageCriterion, status: 'satisfied', result: 'passed' }),
+    ]));
+    const mappedStageCompletion = projectSubgoalCompletionResult({
+      id: 'foundation', goalId: 'goal-1', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [mapped]);
+    expect(projectCompletionCriteriaError([stageCriterion], mappedStageCompletion, '阶段 acceptance', {
+      allowExtra: true, requireArtifacts: true,
+    })).toBeNull();
+  });
+
+  it('does not aggregate stage evidence from another goal or requirements version with the same subgoal id', () => {
+    const makeCompleted = (
+      id: string,
+      goalId: string,
+      requirementsVersion: number,
+      stageCriterion: string,
+      verificationCriterion: string,
+    ): ProjectWorkItem => ({
+      ...workItem(id, 'completed'),
+      goalId,
+      subgoalId: 'shared-stage',
+      requirementsVersion,
+      authorizationVersion: 1,
+      completedAt: 20,
+      contract: {
+        ...workItem(id, 'completed').contract,
+        stopWhen: [verificationCriterion],
+        validation: [],
+        stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+      },
+      completion: {
+        summary: `${stageCriterion} 已核验`, validation: [verificationCriterion], completedAt: 20,
+        criteria: [{
+          criterion: verificationCriterion,
+          status: 'satisfied', result: 'passed', method: 'evidence-review',
+          evidence: `${stageCriterion} 的证据`,
+          evidenceRefs: [`evidence/${id}.md`],
+          evidenceArtifacts: [{
+            ref: `evidence/${id}.md`, sizeBytes: 12, mtimeMs: 1, sha256: 'e'.repeat(64),
+          }],
+        }],
+      },
+    });
+    const currentA = makeCompleted('current-a', 'goal-new', 2, '验收 A', '核验 A');
+    const oldGoalB = makeCompleted('old-goal-b', 'goal-old', 2, '验收 B', '核验 B');
+    const oldVersionB = makeCompleted('old-version-b', 'goal-new', 1, '验收 B', '核验 B');
+    const scoped = projectSubgoalCompletionResult({
+      id: 'shared-stage', goalId: 'goal-new', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [currentA, oldGoalB, oldVersionB], { requirementsVersion: 2, authorizationVersion: 1 });
+    expect(projectCompletionCriteriaError(['验收 A', '验收 B'], scoped, '阶段 acceptance', {
+      allowExtra: true, requireArtifacts: true,
+    })).toContain('验收 B');
+
+    const currentB = makeCompleted('current-b', 'goal-new', 2, '验收 B', '核验 B');
+    const complete = projectSubgoalCompletionResult({
+      id: 'shared-stage', goalId: 'goal-new', status: 'achieved', updatedAt: 21, completion: undefined,
+    }, [currentA, oldGoalB, oldVersionB, currentB], { requirementsVersion: 2, authorizationVersion: 1 });
+    expect(projectCompletionCriteriaError(['验收 A', '验收 B'], complete, '阶段 acceptance', {
+      allowExtra: true, requireArtifacts: true,
+    })).toBeNull();
   });
 });
 

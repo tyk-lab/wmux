@@ -621,7 +621,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
           ? {
               ...subgoal,
               completion: normalizeProjectCompletionResult(subgoal.completion)
-                || projectSubgoalCompletionResult(subgoal, session.workItems),
+                || projectSubgoalCompletionResult(subgoal, session.workItems, {
+                  requirementsVersion: projectRequirementsVersion(session),
+                  authorizationVersion: projectAuthorizationVersion(session),
+                }),
             }
           : { ...subgoal, completion: undefined };
         if (nextSubgoal.status === 'achieved' && previous?.status !== 'achieved') {
@@ -1181,7 +1184,10 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       const invalidSubgoalCompletion = (session.subgoals || []).flatMap((subgoal) => {
         if (subgoal.goalId !== activeGoal.id
           || subgoal.status !== 'achieved') return [];
-        const completion = projectSubgoalCompletionResult(subgoal, session.workItems);
+        const completion = projectSubgoalCompletionResult(subgoal, session.workItems, {
+          requirementsVersion: projectRequirementsVersion(session),
+          authorizationVersion: projectAuthorizationVersion(session),
+        });
         const error = projectCompletionCriteriaError(
           subgoal.acceptance,
           completion,

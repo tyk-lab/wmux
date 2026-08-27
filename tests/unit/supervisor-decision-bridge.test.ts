@@ -5008,6 +5008,10 @@ describe('supervisor decision bridge', () => {
         },
         stopWhen: ['形成测试成果'],
         validation: ['提供可验证证据'],
+        stageAcceptanceCoverage: [{
+          stageCriterion: current.subgoals?.[0]?.acceptance?.[0] || '主任务形成可验证成果',
+          verificationCriterion: '提供可验证证据',
+        }],
         budget: DEFAULT_PROJECT_EXECUTION_BUDGET,
       },
     };
@@ -6760,8 +6764,51 @@ describe('supervisor decision bridge', () => {
       contract: {
         ...template.contract,
         authority: { ...template.contract.authority, continuousExecution: true },
+        stageAcceptanceCoverage: [{
+          stageCriterion: '成果完成',
+          verificationCriterion: template.contract.validation[0],
+        }],
       },
     };
+
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        title: undefined,
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'low', decision: 'single-task',
+          signals: ['只有一个可独立验收成果'], rationale: '保持一个成果工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('简短成果标题'),
+    });
+
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        contract: {
+          ...workItem.contract,
+          objective: '必须修改 src/main.ts 并完成启动体验',
+        },
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'low', decision: 'single-task',
+          signals: ['只有一个可独立验收成果'], rationale: '保持一个成果工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能指定文件、命令、技能或实现路线'),
+    });
 
     await expect(request({
       action: 'task-create',
@@ -6771,6 +6818,48 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining('complexityAssessment'),
+    });
+    const { stageAcceptanceCoverage: _coverage, ...contractWithoutCoverage } = workItem.contract;
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        contract: contractWithoutCoverage,
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'low', decision: 'single-task',
+          signals: ['只有一个可独立验收成果'], rationale: '保持一个成果工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('stageAcceptanceCoverage'),
+    });
+    await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        id: 'task-noncanonical-coverage',
+        contract: {
+          ...workItem.contract,
+          stageAcceptanceCoverage: [{
+            stageCriterion: '成果 完成',
+            verificationCriterion: template.contract.validation[0],
+          }],
+        },
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'low', decision: 'single-task',
+          signals: ['只有一个可独立验收成果'], rationale: '保持一个成果工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('阶段 acceptance 不存在'),
     });
     await expect(request({
       action: 'task-create',
@@ -6846,6 +6935,26 @@ describe('supervisor decision bridge', () => {
       continuousExecution: true,
     });
     await expect(request({
+      action: 'task-create',
+      callerSurfaceId: current.managerSurfaceId,
+      projectId: current.id,
+      workItem: {
+        ...workItem,
+        id: 'task-c',
+        title: '同阶段重复成果',
+        taskWorkMode: 'single-thread',
+        complexityAssessment: {
+          complexity: 'low',
+          decision: 'single-task',
+          signals: ['仍是同一阶段成果'],
+          rationale: '尝试并列创建同阶段工作项',
+        },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已有开放成果工作项 task-b'),
+    });
+    await expect(request({
       action: 'task-update', callerSurfaceId: current.managerSurfaceId, projectId: current.id,
       workItemId: 'task-b', stopWhen: [...accepted.contract.stopWhen, '未来阶段验收'],
     })).resolves.toMatchObject({
@@ -6865,6 +6974,207 @@ describe('supervisor decision bridge', () => {
       projectId: current.id, workItemId: 'task-b',
     })).resolves.toMatchObject({
       ok: false, error: expect.stringContaining('合同包含其他未完成阶段'),
+    });
+  });
+
+  it('rechecks stage admission after the asynchronous progress scan', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-stage-admission-race' });
+    const managerSurfaceId = 'manager-stage-admission-race';
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    useStore.getState().updateLane('lane-a', { controlState: 'stopped' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const template = current.workItems[0];
+    const stageCriterion = '阶段成果完成';
+    useStore.getState().restoreProjectManager({
+      ...current,
+      activeWorkItemId: undefined,
+      subgoals: [{
+        id: 'race-stage', goalId, title: '竞态阶段', outcome: '形成唯一阶段成果',
+        acceptance: [stageCriterion], dependencies: [], status: 'active',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: [{ ...template, goalId, subgoalId: 'race-stage', status: 'stopped' }],
+    });
+    const candidate = {
+      id: 'task-candidate',
+      title: '唯一阶段成果',
+      subgoalId: 'race-stage',
+      status: 'planned',
+      dependencies: [],
+      taskWorkMode: 'single-thread',
+      complexityAssessment: {
+        complexity: 'low', decision: 'single-task',
+        signals: ['只有一个独立成果'], rationale: '保持单一成果工作项',
+      },
+      contract: {
+        ...template.contract,
+        stageAcceptanceCoverage: [{
+          stageCriterion,
+          verificationCriterion: template.contract.validation[0],
+        }],
+      },
+    };
+    (globalThis.window as any).wmux.projectManager.captureProgress.mockImplementationOnce(async () => {
+      const latest = useStore.getState().projectManagers.find((item) => item.id === project.id)!;
+      useStore.getState().restoreProjectManager({
+        ...latest,
+        workItems: [...latest.workItems, {
+          ...template,
+          id: 'task-race-winner',
+          goalId,
+          subgoalId: 'race-stage',
+          status: 'planned',
+        }],
+      });
+      return { ok: true, snapshot: progressSnapshot() };
+    });
+
+    await expect((globalThis.window as any).__wmux_projectManagerRequest({
+      action: 'task-create', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      workItem: candidate,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('已有开放成果工作项 task-race-winner'),
+    });
+  });
+
+  it('adds a verified canonical mapping to a completed legacy item and then closes its stage', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-stage-coverage-recovery' });
+    attachProjectManagerSurface(project.id, 'manager-stage-coverage-recovery');
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const verificationCriterion = '复核相关测试结果';
+    const stageCriterion = '相关测试通过';
+    useStore.getState().restoreProjectManager({
+      ...current,
+      repositoryBootstrapPending: false,
+      subgoals: [{
+        id: 'test_stage', goalId, title: '测试阶段', outcome: '形成测试结果',
+        acceptance: [stageCriterion], dependencies: [], status: 'planned',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: [{
+        ...current.workItems[0],
+        goalId,
+        subgoalId: 'test_stage',
+        taskWorkMode: 'single-thread',
+        status: 'completed',
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        completedAt: 10,
+        contract: {
+          ...current.workItems[0].contract,
+          stopWhen: [verificationCriterion],
+          validation: ['报告证据边界'],
+          stageAcceptanceCoverage: undefined,
+        },
+        completion: {
+          summary: '历史核验证据完整', validation: [verificationCriterion], completedAt: 10,
+          criteria: [{
+            criterion: verificationCriterion,
+            status: 'satisfied', result: 'passed', method: 'evidence-review',
+            evidence: '测试结果证据已核对',
+            evidenceRefs: ['evidence/result.json'],
+            evidenceArtifacts: [{
+              ref: 'evidence/result.json', sizeBytes: 12, mtimeMs: 1, sha256: 'c'.repeat(64),
+            }],
+          }],
+        },
+      }],
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: 'manager-stage-coverage-recovery',
+      projectId: project.id,
+      workItemId: current.workItems[0].id,
+      status: 'planned',
+      objective: '尝试改写历史成果',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('completed 历史工作项只能补充'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.workItems[0]).toMatchObject({
+      status: 'completed',
+      completion: expect.objectContaining({ summary: '历史核验证据完整' }),
+    });
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: 'manager-stage-coverage-recovery',
+      projectId: project.id,
+      workItemId: current.workItems[0].id,
+      stageAcceptanceCoverage: [],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('必须是非空'),
+    });
+    const achievedPlan = {
+      action: 'goal-plan',
+      callerSurfaceId: 'manager-stage-coverage-recovery',
+      projectId: project.id,
+      reason: '历史证据映射完成后关闭阶段',
+      subgoals: [{
+        id: 'test_stage', title: '测试阶段', outcome: '形成测试结果',
+        acceptance: [stageCriterion], dependencies: [], status: 'achieved',
+      }],
+    };
+    await expect(request(achievedPlan)).resolves.toMatchObject({
+      ok: false,
+      reasonCode: 'stage-closure-evidence-mapping-missing',
+      error: expect.stringContaining(stageCriterion),
+    });
+    const mappingResult = await request({
+      action: 'task-update',
+      callerSurfaceId: 'manager-stage-coverage-recovery',
+      projectId: project.id,
+      workItemId: current.workItems[0].id,
+      stageAcceptanceCoverage: [{ stageCriterion, verificationCriterion }],
+    });
+    expect(mappingResult.error).toBeUndefined();
+    expect(mappingResult).toMatchObject({ ok: true });
+    await expect(request(achievedPlan)).resolves.toMatchObject({ ok: true });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.subgoals.find((subgoal) => subgoal.id === 'test_stage')).toMatchObject({ status: 'achieved' });
+
+    const closed = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...closed,
+      workItems: closed.workItems.map((workItem) => workItem.id === current.workItems[0].id ? {
+        ...workItem,
+        stopWhenScopeVersion: undefined,
+        contract: {
+          ...workItem.contract,
+          stopWhen: [stageCriterion, verificationCriterion],
+          stageAcceptanceCoverage: undefined,
+        },
+        completion: {
+          ...workItem.completion!,
+          criteria: [...(workItem.completion?.criteria || []), {
+            criterion: stageCriterion,
+            status: 'satisfied', result: 'passed', method: 'evidence-review',
+            evidence: '旧合同把阶段验收原文当作停止条件',
+            evidenceRefs: ['evidence/result.json'],
+            evidenceArtifacts: [{
+              ref: 'evidence/result.json', sizeBytes: 12, mtimeMs: 1, sha256: 'c'.repeat(64),
+            }],
+          }],
+        },
+      } : workItem),
+    });
+    await expect(request({
+      action: 'task-update',
+      callerSurfaceId: 'manager-stage-coverage-recovery',
+      projectId: project.id,
+      workItemId: current.workItems[0].id,
+      stageAcceptanceCoverage: [{
+        stageCriterion,
+        verificationCriterion: stageCriterion,
+      }],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('工作项核验条目不存在'),
     });
   });
 
@@ -8647,6 +8957,90 @@ describe('supervisor decision bridge', () => {
       title: '项目执行异常，已安全暂停',
       text: expect.stringContaining('内部执行链连续未恢复'),
     }));
+  });
+
+  it('reports an exhausted stage-acceptance mapping continuation without pausing the project', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-stage-mapping-missing' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const stageCriterion = current.doneWhen[0];
+    const verificationCriterion = '复核相关测试结果';
+    const continuationKey = [
+      goalId,
+      current.requirementsVersion,
+      current.authorizationVersion,
+      current.orientation?.requestedAt || 0,
+      'map-stage-acceptance',
+      '',
+    ].join(':');
+    useStore.getState().restoreProjectManager({
+      ...current,
+      subgoals: [{
+        id: 'test_stage', goalId, title: '测试阶段', outcome: '形成测试结果',
+        acceptance: [stageCriterion], dependencies: [], status: 'planned',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: [{
+        ...current.workItems[0],
+        goalId,
+        subgoalId: 'test_stage',
+        taskWorkMode: 'single-thread',
+        status: 'completed',
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        completedAt: 10,
+        contract: {
+          ...current.workItems[0].contract,
+          stopWhen: [verificationCriterion],
+          validation: ['报告证据边界'],
+          stageAcceptanceCoverage: undefined,
+        },
+        completion: {
+          summary: '历史证据已复核', validation: [verificationCriterion], completedAt: 10,
+          criteria: [{
+            criterion: verificationCriterion,
+            status: 'satisfied', result: 'passed', method: 'evidence-review',
+            evidence: '历史测试结果已核对',
+            evidenceRefs: ['evidence/result.json'],
+            evidenceArtifacts: [{
+              ref: 'evidence/result.json', sizeBytes: 12, mtimeMs: 1, sha256: 'd'.repeat(64),
+            }],
+          }],
+        },
+      }],
+      events: [...current.events, {
+        id: 'mapping-continuation-consumed', sessionId: project.id, ts: 2,
+        kind: 'guard-triggered', summary: '阶段映射续作已投递一次',
+        payload: {
+          action: 'project-active-obligation-continuation', continuationKey,
+          attempt: 1, obligation: 'map-stage-acceptance', attentionRequired: false,
+        },
+      }],
+    });
+    useStore.getState().updateLane('lane-a', { controlState: 'stopped' });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+    });
+    expireProjectExecutionResponsibility(project.id, 'map-stage-acceptance', current.workItems[0].id);
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'guard-triggered',
+        payload: expect.objectContaining({
+          reason: 'stage-closure-evidence-mapping-missing',
+          attentionRequired: true,
+        }),
+      }),
+    ])));
+    const stalled = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+    expect(stalled).toMatchObject({ status: 'active' });
+    expect(stalled?.events.some((event) => event.payload?.reason === 'project-internal-recovery-exhausted'))
+      .toBe(false);
   });
 
   it('pauses every project lane when the internal manager runtime cannot be rebuilt', async () => {

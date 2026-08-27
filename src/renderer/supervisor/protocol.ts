@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-export const SUPERVISOR_PROTOCOL_REVISION = '19';
+export const SUPERVISOR_PROTOCOL_REVISION = '21';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';

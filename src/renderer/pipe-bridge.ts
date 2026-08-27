@@ -159,6 +159,7 @@ import {
   normalizeProjectManagerSession,
   normalizeProjectCompletionResult,
   normalizeProjectExecutionBudget,
+  normalizeProjectStageAcceptanceCoverage,
   normalizeProjectTaskComplexityAssessment,
   projectCompletionCriteriaError,
   projectCriterionIdentity,
@@ -240,6 +241,7 @@ import {
   projectTaskImplementationDirectiveError,
   projectTaskContractDisclosureError,
   projectTaskInstructionDisclosureError,
+  projectWorkItemOutcomeTitleError,
   projectContractViolation,
   projectArtifactCommandViolation,
   projectArtifactLocationViolation,
@@ -263,6 +265,13 @@ import {
 } from './project-manager/agent-defaults';
 import { projectAuxiliaryWritablePathAllowed } from './project-manager/auxiliary-policy';
 import { projectSupervisorLaneIds as scopedProjectSupervisorLaneIds } from './project-manager/lane-scope';
+import { shouldRestartProjectManagerRuntime } from './project-manager/runtime-recovery-policy';
+import {
+  buildProjectInternalRecoveryScopeKey,
+  projectInternalRecoveryAttempts,
+} from './project-manager/semantic-recovery-policy';
+import { projectTransitionResolutionError as projectTransitionPolicyError } from './project-manager/transition-policy';
+import { projectWorkItemCreationError } from './project-manager/work-item-admission-policy';
 import {
   beginManagedAgentTurn,
   evaluateManagedAgentDeadline,
@@ -279,6 +288,8 @@ import {
   type ManagedAgentWatchdogRuntime,
   type ManagedProjectAgentRole,
 } from './project-manager/liveness';
+
+export { projectInternalRecoveryAttempts } from './project-manager/semantic-recovery-policy';
 import {
   canDeliverProjectManagerMessage,
   compactProjectManagerPendingDeliveries,
@@ -4220,17 +4231,32 @@ function normalizeProjectSubgoalsInput(
         }
         completion = projectSubgoalCompletionResult({
           id,
+          goalId: activeGoal.id,
           status: 'achieved',
           updatedAt: now,
           completion: undefined,
-        }, session.workItems);
+        }, session.workItems, {
+          requirementsVersion: projectRequirementsVersion(session),
+          authorizationVersion: projectAuthorizationVersion(session),
+        });
         const completionError = projectCompletionCriteriaError(
           acceptance,
           completion,
           `阶段目标 ${id} 的 acceptance`,
           { allowExtra: true, requireArtifacts: true },
         );
-        if (completionError) return { error: completionError };
+        if (completionError) {
+          const completedWithCriteria = session.workItems.some((item) => (
+            item.subgoalId === id
+            && item.status === 'completed'
+            && (normalizeProjectCompletionResult(item.completion)?.criteria?.length || 0) > 0
+          ));
+          return {
+            error: completedWithCriteria
+              ? `stage-closure-evidence-mapping-missing：${completionError}`
+              : completionError,
+          };
+        }
       }
     }
     subgoals.push({
@@ -4289,12 +4315,19 @@ function normalizeProjectWorkItemInput(
 ): { workItem?: ProjectWorkItem; error?: string } {
   const id = String(raw?.id || previous?.id || '').trim();
   if (!PROJECT_WORK_ITEM_ID.test(id)) return { error: '任务 ID 仅允许 1-80 位字母、数字、下划线或短横线' };
+  const title = String(raw?.title ?? previous?.title ?? '').trim();
+  if (!previous || raw?.title !== undefined) {
+    const titleError = projectWorkItemOutcomeTitleError(title, id);
+    if (titleError) return { error: titleError };
+  }
   const contractRaw = raw?.contract || previous?.contract || {};
   const objective = String(contractRaw.objective || '').trim();
   const description = String(contractRaw.description || '').trim().slice(0, 4000);
   const contractPreconditions = projectStringArray(contractRaw.preconditions);
   const stopWhen = projectStringArray(contractRaw.stopWhen);
   const validation = projectStringArray(contractRaw.validation);
+  const rawStageAcceptanceCoverage = contractRaw.stageAcceptanceCoverage;
+  let stageAcceptanceCoverage = normalizeProjectStageAcceptanceCoverage(rawStageAcceptanceCoverage);
   if (!objective || stopWhen.length === 0 || validation.length === 0) {
     return { error: '任务必须包含 objective、stopWhen 和 validation' };
   }
@@ -4394,20 +4427,82 @@ function normalizeProjectWorkItemInput(
     const subgoal = availableSubgoals.find((candidate) => candidate.id === subgoalId);
     if (!subgoal) return { error: `任务只能重分配到当前主目标下的有效阶段：${subgoalId || '未指定'}` };
   }
-  const stageScopeError = projectWorkItemStageScopeError(session, subgoalId, [
-    ...stopWhen,
-    ...validation,
-  ]);
-  if (stageScopeError) return { error: stageScopeError };
+  const subgoal = activeProjectSubgoals(session).find((candidate) => candidate.id === subgoalId);
   const legacyGoalCriteria = new Set(activeProjectGoal(session).doneWhen.map(projectCriterionIdentity));
-  const legacyStageCriteria = new Set(activeProjectSubgoals(session)
-    .find((candidate) => candidate.id === subgoalId)?.acceptance
+  const legacyStageCriteria = new Set(subgoal?.acceptance
     .map(projectCriterionIdentity)
     .filter((criterion) => legacyGoalCriteria.has(criterion)) || []);
   const migratedStopWhen = previous && previous.stopWhenScopeVersion !== 1
     ? stopWhen.filter((criterion) => !legacyStageCriteria.has(projectCriterionIdentity(criterion)))
     : stopWhen;
   const scopedStopWhen = migratedStopWhen.length > 0 ? migratedStopWhen : stopWhen;
+  const stageScopeError = projectWorkItemStageScopeError(session, subgoalId, [
+    ...scopedStopWhen,
+    ...validation,
+  ]);
+  if (stageScopeError) return { error: stageScopeError };
+  if (!previous && stageAcceptanceCoverage.length === 0) {
+    return {
+      error: 'task-create 必须通过 contract.stageAcceptanceCoverage 显式声明本成果覆盖的阶段 acceptance，不能依靠相似文案推断',
+    };
+  }
+  if (rawStageAcceptanceCoverage !== undefined) {
+    if (!Array.isArray(rawStageAcceptanceCoverage)
+      || stageAcceptanceCoverage.length === 0
+      || stageAcceptanceCoverage.length !== rawStageAcceptanceCoverage.length) {
+      return { error: 'contract.stageAcceptanceCoverage 必须是非空 stageCriterion/verificationCriterion 对象数组' };
+    }
+    const stageCriteria = new Map((subgoal?.acceptance || []).map((criterion) => [criterion, criterion]));
+    const verificationCriteria = new Map([...scopedStopWhen, ...validation].map((criterion) => [criterion, criterion]));
+    const seenStageCriteria = new Set<string>();
+    const seenVerificationCriteria = new Set<string>();
+    for (const mapping of stageAcceptanceCoverage) {
+      if (!stageCriteria.has(mapping.stageCriterion)) {
+        return { error: `stage-closure-evidence-mapping-missing：阶段 acceptance 不存在：${mapping.stageCriterion}` };
+      }
+      if (!verificationCriteria.has(mapping.verificationCriterion)) {
+        return { error: `stage-closure-evidence-mapping-missing：工作项核验条目不存在：${mapping.verificationCriterion}` };
+      }
+      if (seenStageCriteria.has(mapping.stageCriterion)
+        || seenVerificationCriteria.has(mapping.verificationCriterion)) {
+        return { error: 'contract.stageAcceptanceCoverage 不能重复映射阶段 acceptance 或工作项核验条目' };
+      }
+      seenStageCriteria.add(mapping.stageCriterion);
+      seenVerificationCriteria.add(mapping.verificationCriterion);
+    }
+    stageAcceptanceCoverage = stageAcceptanceCoverage.map((mapping) => ({
+      stageCriterion: stageCriteria.get(mapping.stageCriterion)!,
+      verificationCriterion: verificationCriteria.get(mapping.verificationCriterion)!,
+    }));
+    if (previous?.status === 'completed') {
+      const previousCoverage = normalizeProjectStageAcceptanceCoverage(
+        previous.contract.stageAcceptanceCoverage,
+      );
+      const removedMapping = previousCoverage.find((existing) => !stageAcceptanceCoverage.some((mapping) => (
+        mapping.stageCriterion === existing.stageCriterion
+        && mapping.verificationCriterion === existing.verificationCriterion
+      )));
+      if (removedMapping) {
+        return {
+          error: `completed 历史工作项的阶段验收映射只能追加，不能删除或改写：${removedMapping.stageCriterion}`,
+        };
+      }
+      const completedCriteria = new Map((normalizeProjectCompletionResult(previous.completion)?.criteria || [])
+        .map((criterion) => [criterion.criterion, criterion]));
+      const missingCompletedCriterion = stageAcceptanceCoverage.find((mapping) => {
+        const criterion = completedCriteria.get(mapping.verificationCriterion);
+        return !criterion
+          || criterion.status !== 'satisfied'
+          || ['not-run', 'inconclusive'].includes(criterion.result)
+          || criterion.evidenceRefs.some((ref) => !criterion.evidenceArtifacts?.some((artifact) => artifact.ref === ref));
+      });
+      if (missingCompletedCriterion) {
+        return {
+          error: `stage-closure-evidence-mapping-missing：历史完成项缺少可映射且已哈希的核验证据：${missingCompletedCriterion.verificationCriterion}`,
+        };
+      }
+    }
+  }
   const taskContractDisclosureError = projectTaskContractDisclosureError({
     objective,
     description,
@@ -4416,6 +4511,15 @@ function normalizeProjectWorkItemInput(
     validation,
   });
   if (taskContractDisclosureError) return { error: taskContractDisclosureError };
+  const taskContractImplementationDirectiveError = projectTaskImplementationDirectiveError([
+    objective,
+    ...contractPreconditions,
+    ...scopedStopWhen,
+    ...validation,
+  ].join('\n'));
+  if (taskContractImplementationDirectiveError) {
+    return { error: `任务合同${taskContractImplementationDirectiveError}` };
+  }
   const rebindCurrentRequirements = raw?.rebindCurrentRequirements === true;
   const requirementsVersion = previous && !rebindCurrentRequirements
     ? previous.requirementsVersion
@@ -4434,7 +4538,7 @@ function normalizeProjectWorkItemInput(
       complexityAssessment: complexityAssessment!,
       taskWorkMode,
       contextReset: previous?.contextReset,
-      title: String(raw?.title || previous?.title || id).trim().slice(0, 200),
+      title: title || previous?.title || id,
       contract: {
         objective,
         description,
@@ -4463,8 +4567,9 @@ function normalizeProjectWorkItemInput(
           authorizedEnvironments: projectStringArray(contractRaw.authority?.authorizedEnvironments),
           authorizedOperations: projectStringArray(contractRaw.authority?.authorizedOperations),
         },
-          stopWhen: scopedStopWhen,
+        stopWhen: scopedStopWhen,
         validation,
+        ...(stageAcceptanceCoverage.length > 0 ? { stageAcceptanceCoverage } : {}),
         budget: normalizeProjectExecutionBudget(contractRaw.budget),
       },
       status: status as ProjectWorkItem['status'],
@@ -4502,6 +4607,9 @@ function projectWorkItemUpdateInput(raw: any, previous: ProjectWorkItem): any {
     ...(source.supervisorNotes !== undefined ? { supervisorNotes: source.supervisorNotes } : {}),
     ...(source.stopWhen !== undefined ? { stopWhen: source.stopWhen } : {}),
     ...(source.validation !== undefined ? { validation: source.validation } : {}),
+    ...(source.stageAcceptanceCoverage !== undefined
+      ? { stageAcceptanceCoverage: source.stageAcceptanceCoverage }
+      : {}),
   };
   return {
     ...source,
@@ -9294,66 +9402,20 @@ function projectTransitionResolutionError(
     && (!transition.workItemId || lane.projectWorkItemId === transition.workItemId)
     && supervisorLaneControlState(lane) === 'active'
   ));
-  if (resolution === 'continued') {
-    if (!activeLane || (item && item.status !== 'running')) {
-      return '交接回执声明已继续，但没有对应的活动监督链和 running 工作项';
-    }
-    return null;
-  }
-  if (resolution === 'recovered') {
-    const recoveredBinding = !!activeLane
-      && (!item || (
-        ['waiting-decision', 'running', 'validating'].includes(item.status)
-        && item.supervisorLaneId === activeLane.id
-        && item.workerSurfaceId === activeLane.surfaceId
-        && typeof item.assignmentVersion === 'number'
-        && activeLane.projectAssignmentVersion === item.assignmentVersion
-      ));
-    return recoveredBinding
-      ? null
-      : '交接回执声明已恢复，但没有对应的活动监督链和已确认任务绑定';
-  }
-  if (resolution === 'accepted') {
-    if (session.status !== 'completed'
-      && activeProjectGoal(session).status !== 'achieved'
-      && (!item || !['completed', 'stopped'].includes(item.status))) {
-      return '交接回执声明已验收，但工作项或当前主目标尚未进入完成状态';
-    }
-    return null;
-  }
-  if (resolution === 'paused') {
-    return session.status === 'paused' || item?.status === 'paused'
-      ? null
-      : '交接回执声明已暂停，但项目和工作项都没有进入 paused 状态';
-  }
-  if (resolution === 'escalated') {
-    return session.pendingUserQuestion
-      ? null
-      : '交接回执声明已升级用户处理，但当前没有持久化的结构化用户问题';
-  }
-  const replanEvents = new Set([
-    'work-item-created', 'work-item-updated', 'project-definition-updated',
-    'project-subgoals-updated', 'project-preconditions-updated', 'supervisor-direction',
-  ]);
-  const transitionEventIndex = session.events.findIndex((event) => (
-    event.kind === 'supervisor-transition' && event.payload?.transitionId === transition.id
-  ));
-  const eventsAfterTransition = transitionEventIndex >= 0
-    ? session.events.slice(transitionEventIndex + 1)
-    : session.events.filter((event) => event.ts >= transition.createdAt);
-  const stateChanged = eventsAfterTransition.some((event) => replanEvents.has(event.kind));
-  if (!stateChanged) {
-    return '交接回执声明已重规划，但交接创建后没有工作项、阶段、目标或任务方向变更';
-  }
-  const repeatedEvidenceReplan = !!transition.replanBaselineFingerprint && session.events.some((event) => (
-    event.kind === 'supervisor-transition-acknowledged'
-    && event.workItemId === transition.workItemId
-    && event.payload?.resolution === 'replanned'
-    && event.payload?.replanBaselineFingerprint === transition.replanBaselineFingerprint
-  ));
-  return repeatedEvidenceReplan
-    ? '同一工作项在相同证据与拓扑状态下已经重规划过一次；不能通过改写任务措辞再次派发。请暂停、升级真实用户前提、推进独立工作项，或等待新的代码、测试、错误或已核验证据'
-    : null;
+  return projectTransitionPolicyError({
+    transition,
+    resolution,
+    sessionStatus: session.status,
+    activeGoalAchieved: activeProjectGoal(session).status === 'achieved',
+    events: session.events,
+    workItem: item,
+    activeBinding: activeLane ? {
+      laneId: activeLane.id,
+      taskSurfaceId: activeLane.surfaceId,
+      assignmentVersion: activeLane.projectAssignmentVersion,
+    } : undefined,
+    userQuestionPending: !!session.pendingUserQuestion,
+  });
 }
 
 function queueProjectSupervisorRecovery(lane: SupervisorLane, detail: string): void {
@@ -9473,38 +9535,16 @@ function unresolvedProjectUserAnswer(session: ProjectManagerSession): ProjectMan
   return undefined;
 }
 
-export function projectInternalRecoveryAttempts(
-  events: ProjectManagerSession['events'],
-  recoveryKey: string,
-): number {
-  const recoveryResetAt = [...events].reverse().find((event) => (
-    (event.kind === 'user-clarification-invalidated'
-      && event.payload?.reason === 'runtime-recovery-auto-retry-on-restore')
-    || (event.kind === 'supervisor-transition-acknowledged'
-      && event.payload?.resolution === 'recovered')
-    || (event.kind === 'recovery-restored'
-      && event.payload?.recoverySource === 'active-assignment'
-      && event.payload?.phase === 'runtime-chain-ready')
-  ))?.ts || 0;
-  return events.filter((event) => (
-    event.kind === 'project-recovery-requested'
-    && (event.payload?.recoveryKey === recoveryKey
-      || event.payload?.recoveryScopeKey === recoveryKey)
-    && event.ts > recoveryResetAt
-  )).length;
-}
-
 export function projectInternalRecoveryScopeKey(
   session: ProjectManagerSession,
   workItemId?: string,
 ): string {
-  return [
-    'project-internal-recovery-scope',
-    `role-${PROJECT_MANAGER_PROTOCOL_REVISION}`,
-    session.id,
-    workItemId || 'project',
-    projectTransitionReplanBaselineFingerprint(session, workItemId),
-  ].join(':');
+  return buildProjectInternalRecoveryScopeKey({
+    protocolRevision: PROJECT_MANAGER_PROTOCOL_REVISION,
+    sessionId: session.id,
+    workItemId,
+    baselineFingerprint: projectTransitionReplanBaselineFingerprint(session, workItemId),
+  });
 }
 
 const PROJECT_WAITING_GATE_CONTINUATION_ACTION = 'project-waiting-gate-continuation';
@@ -9592,6 +9632,48 @@ function projectActiveObligationContinuationText(
   session: ProjectManagerSession,
   obligation: ProjectProgressObligation,
 ): string {
+  if (obligation.kind === 'map-stage-acceptance') {
+    const workItem = obligation.workItemId
+      ? session.workItems.find((candidate) => candidate.id === obligation.workItemId)
+      : undefined;
+    const completedStageItems = session.workItems.filter((candidate) => (
+      candidate.goalId === workItem?.goalId
+      && candidate.subgoalId === workItem?.subgoalId
+      && candidate.status === 'completed'
+      && (normalizeProjectCompletionResult(candidate.completion)?.criteria?.length || 0) > 0
+    ));
+    const availableCriteria = completedStageItems.map((candidate) => (
+      `- ${candidate.id}：${normalizeProjectCompletionResult(candidate.completion)?.criteria
+        ?.map((criterion) => criterion.criterion).join('；') || '没有可映射条目'}`
+    ));
+    return [
+      '[控制层续作｜阶段证据映射缺失｜禁止重复创建收口任务]',
+      `项目：${session.id} · ${session.projectDir}`,
+      `阶段内历史完成工作项：${completedStageItems.length} 项`,
+      `缺少 canonical acceptance：${(obligation.missingCriteria || []).join('；') || obligation.summary}`,
+      `可用核验条目：\n${availableCriteria.join('\n') || '没有可映射条目'}`,
+      '重新读取 project status。逐项确认现有核验条目和已哈希 evidenceArtifacts 是否真实覆盖对应阶段 acceptance；不得使用字符串相似度猜测，也不得把较弱结论映射为更强验收。',
+      '若存在真实一一对应，对实际持有该核验证据的原 completed 工作项分别执行 task-update，在各自 contract.stageAcceptanceCoverage 中补充 [{"stageCriterion":"<阶段 acceptance 原文>","verificationCriterion":"<该工作项现有完成核验条目原文>"}]；不得把不同工作项的证据挂到同一项，不得改写 completion、证据、状态或验收正文。',
+      `执行 wmux project task-update --project ${session.id} --json-file <file>；全部映射成功后再用 goal-plan 将已覆盖阶段更新为 achieved，并继续派发下一成果。`,
+      '如果不存在可证明的一一对应，保留具体缺失项并报告 stage-closure-evidence-mapping-missing；不得创建同义复核任务、不得重复实现、不得把该内部映射问题升级成用户业务决策。',
+    ].join('\n');
+  }
+  if (obligation.kind === 'close-stage') {
+    const workItem = obligation.workItemId
+      ? session.workItems.find((candidate) => candidate.id === obligation.workItemId)
+      : undefined;
+    const subgoal = activeProjectSubgoals(session).find((candidate) => (
+      candidate.id === workItem?.subgoalId
+    ));
+    return [
+      '[控制层续作｜阶段验收已覆盖｜只关闭阶段]',
+      `项目：${session.id} · ${session.projectDir}`,
+      `待关闭阶段：${subgoal?.id || workItem?.subgoalId || '未定位'} · ${subgoal?.title || '未定位'}`,
+      '该阶段 canonical acceptance 已由 completed 工作项的结构化证据覆盖。不得创建新工作项、不得重复验证或重做实现。',
+      `重新读取 project status，把现有阶段计划 JSON 写入项目 .wmux/tmp/，仅将 ${subgoal?.id || '<subgoalId>'} 更新为 achieved，执行 wmux project goal-plan --project ${session.id} --json-file <file>。`,
+      '成功后重新读取 project status，并继续派发下一项已满足阶段依赖的成果。',
+    ].join('\n');
+  }
   const unfinishedSubgoals = activeProjectSubgoals(session).filter((subgoal) => (
     !['achieved', 'obsolete'].includes(subgoal.status)
   ));
@@ -9600,7 +9682,7 @@ function projectActiveObligationContinuationText(
     : '当前目标尚未建立可执行阶段';
   const nextAction = unfinishedSubgoals.length > 0
     ? [
-        '已有阶段计划时不得因为历史工作项均为 completed 就提交目标完成，也不得重复覆盖 goal-plan；为最早可执行且没有开放工作项的未完成阶段创建一个绑定当前 goalId、subgoalId、需求版本、授权版本和当前协议的完整工作项。',
+        '已有阶段计划时，先聚合该阶段全部 completed 工作项的结构化 completion：若已覆盖阶段 acceptance，立即用 goal-plan 将阶段更新为 achieved；只有仍有未满足验收且没有开放工作项时，才创建一个绑定当前 goalId、subgoalId、需求版本、授权版本和当前协议、覆盖全部剩余验收的完整成果工作项。不得重复覆盖 goal-plan。',
         `将工作项 JSON 写入项目内 .wmux/tmp/ 后，执行 wmux project task-create --project ${session.id} --json-file <file>，成功后继续 dispatch。`,
       ]
     : [
@@ -9615,8 +9697,8 @@ function projectActiveObligationContinuationText(
     `未完成阶段：${stageSummary}`,
     '立即重新读取 project status。',
     ...nextAction,
-    '历史 completed 工作项只保留为审计证据，不能替代新协议下仍未满足的阶段验收。',
-    '如果现有证据已经覆盖部分结果，只在新工作项中保留仍需实际核验或收口的范围；不得重放已有一次性身份或无证据声称完成。完成创建和派发后再结束本回合。',
+    '历史 completed 工作项保留为阶段验收的结构化证据；证据已覆盖的 acceptance 不得再次创建实现、编译、测试或补证工作项。',
+    '确有剩余缺口时，把全部剩余验收合并进一个成果工作项，由监督 AI 在该工作项内编排实现、验证和证据收口批次；不得为每条验收、每次交接或每次补证创建同义后继任务。不得重放已有一次性身份或无证据声称完成。完成阶段更新，或完成唯一剩余成果的创建和派发后，再结束本回合。',
   ].join('\n');
 }
 
@@ -9856,7 +9938,8 @@ async function ensureProjectDeadlockRecovery(
         }
         incidentReason = 'project-active-obligation-unhandled';
       }
-      if (obligation.kind === 'plan-work' && (managerTurnEnded || controlPlaneKnownIdleManager)) {
+      if (['plan-work', 'map-stage-acceptance', 'close-stage'].includes(obligation.kind)
+        && (managerTurnEnded || controlPlaneKnownIdleManager)) {
         const continuationKey = projectWaitingGateContinuationKey(session, obligation);
         const attempts = projectActiveObligationContinuationAttempts(session, continuationKey);
         if (attempts < MAX_PROJECT_ACTIVE_OBLIGATION_CONTINUATIONS) {
@@ -9881,6 +9964,33 @@ async function ensureProjectDeadlockRecovery(
             session.id,
             { priority: true, continuationKey },
           );
+          return true;
+        }
+        if (obligation.kind === 'map-stage-acceptance') {
+          const alreadyReported = session.events.some((event) => (
+            event.kind === 'guard-triggered'
+            && event.payload?.reason === 'stage-closure-evidence-mapping-missing'
+            && event.payload?.continuationKey === continuationKey
+          ));
+          if (!alreadyReported) {
+            try {
+              await appendRecordedProjectEvent(session, {
+                kind: 'guard-triggered',
+                workItemId: obligation.workItemId,
+                summary: `阶段已有完成证据但验收映射仍缺失；保持项目状态并停止自动重试：${obligation.summary}`,
+                payload: {
+                  decision: 'wait',
+                  attentionRequired: true,
+                  reason: 'stage-closure-evidence-mapping-missing',
+                  continuationKey,
+                  obligation: obligation.kind,
+                  missingCriteria: obligation.missingCriteria || [],
+                },
+              });
+            } catch (error) {
+              console.warn('[project-manager] failed to persist stage coverage mapping alert', error);
+            }
+          }
           return true;
         }
       }
@@ -9947,13 +10057,22 @@ async function ensureProjectDeadlockRecovery(
     const managerRuntimeState = manager
       ? terminalRuntimeStatus(manager.surfaceId)?.state
       : undefined;
-    let managerRuntimeUnavailable = !manager
-      || managerRuntimeState === 'failed'
-      || managerRuntimeState === 'exited'
-      || !!nestedAgentShellFailureDetail(manager.surfaceId);
+    const managerShellFailure = manager
+      ? nestedAgentShellFailureDetail(manager.surfaceId)
+      : null;
+    let managerRuntimeUnavailable = shouldRestartProjectManagerRuntime({
+      managerPresent: !!manager,
+      runtimeState: managerRuntimeState,
+      shellFailure: !!managerShellFailure,
+    });
     if (!managerRuntimeUnavailable && manager && (window as any).wmux?.pty?.has) {
       try {
-        managerRuntimeUnavailable = !await (window as any).wmux.pty.has(manager.surfaceId);
+        managerRuntimeUnavailable = shouldRestartProjectManagerRuntime({
+          managerPresent: true,
+          runtimeState: managerRuntimeState,
+          shellFailure: !!managerShellFailure,
+          ptyPresent: await (window as any).wmux.pty.has(manager.surfaceId),
+        });
       } catch {
         // A transient probe failure is not proof that the runtime disappeared.
       }
@@ -13005,7 +13124,15 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
 
   if (action === 'goal-plan') {
     const normalized = normalizeProjectSubgoalsInput(params?.subgoals, session);
-    if (!normalized.subgoals) return { ok: false, error: normalized.error };
+    if (!normalized.subgoals) {
+      return {
+        ok: false,
+        error: normalized.error,
+        ...(normalized.error?.startsWith('stage-closure-evidence-mapping-missing')
+          ? { reasonCode: 'stage-closure-evidence-mapping-missing' }
+          : {}),
+      };
+    }
     const result = await persistProjectManagerMutation(store.applyProjectManagerAction({
       type: 'set-project-subgoals',
       subgoals: normalized.subgoals,
@@ -13085,6 +13212,8 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }
   }
   if (action === 'task-create') {
+    const currentSession = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === session.id) || session;
     if ((params?.workItem || params)?.baseline !== undefined
       || (params?.workItem || params)?.supervisorPlan !== undefined
       || (params?.workItem || params)?.executionProtocolVersion !== undefined
@@ -13095,8 +13224,15 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       || (params?.workItem || params)?.verificationDecision !== undefined) {
       return { ok: false, error: '检测到已删除或控制层专属字段；当前工作项不能提供执行协议版本、前驱/后继关系、项目基线、监督阶段计划或用户验证决策' };
     }
-    const normalized = normalizeProjectWorkItemInput(params?.workItem || params, session.projectDir, undefined, session);
+    const normalized = normalizeProjectWorkItemInput(
+      params?.workItem || params,
+      currentSession.projectDir,
+      undefined,
+      currentSession,
+    );
     if (!normalized.workItem) return { ok: false, error: normalized.error };
+    const creationError = projectWorkItemCreationError(currentSession, normalized.workItem);
+    if (creationError) return { ok: false, error: creationError };
     if (['validating', 'completed'].includes(normalized.workItem.status)) {
       return { ok: false, error: '新任务必须先经过监督执行，不能直接创建为验证中或已完成' };
     }
@@ -13117,6 +13253,48 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     const workItemId = String(source.workItemId || source.id || '').trim();
     const previous = session.workItems.find((candidate) => candidate.id === workItemId);
     if (!previous) return { ok: false, error: `任务不存在：${workItemId || '未指定'}` };
+    if (previous.status === 'completed') {
+      const allowedFields = new Set([
+        'action', 'callerSurfaceId', 'callerRole', 'roleCapability', 'projectId',
+        'workItemId', 'id', 'stageAcceptanceCoverage', 'contract',
+      ]);
+      const unexpectedField = Object.keys(source).find((field) => !allowedFields.has(field));
+      const contractPatch = source.contract && typeof source.contract === 'object'
+        ? source.contract as Record<string, unknown>
+        : {};
+      const unexpectedContractField = Object.keys(contractPatch)
+        .find((field) => field !== 'stageAcceptanceCoverage');
+      if (unexpectedField || unexpectedContractField) {
+        return {
+          ok: false,
+          error: `completed 历史工作项只能补充 contract.stageAcceptanceCoverage，不能改写状态、completion、证据或合同正文：${unexpectedField || `contract.${unexpectedContractField}`}`,
+        };
+      }
+      const coverageInput = source.stageAcceptanceCoverage ?? contractPatch.stageAcceptanceCoverage;
+      if (coverageInput === undefined) {
+        return { ok: false, error: 'completed 历史工作项更新必须提供 contract.stageAcceptanceCoverage' };
+      }
+      const normalized = normalizeProjectWorkItemInput(
+        projectWorkItemUpdateInput({ stageAcceptanceCoverage: coverageInput }, previous),
+        session.projectDir,
+        previous,
+        session,
+      );
+      if (!normalized.workItem) return { ok: false, error: normalized.error };
+      const result = await persistProjectManagerMutation(store.applyProjectManagerAction({
+        type: 'update-work-item',
+        workItemId: previous.id,
+        patch: {
+          contract: {
+            ...previous.contract,
+            stageAcceptanceCoverage: normalized.workItem.contract.stageAcceptanceCoverage,
+          },
+        },
+      }, session.id), session.id);
+      return result.ok
+        ? { ...result, message: '历史完成项的阶段验收映射已补充；状态、completion、证据和合同正文保持不变' }
+        : result;
+    }
     const controlOwnedFields = [
       'workerSurfaceId', 'supervisorLaneId', 'executionProtocolVersion', 'assignmentVersion',
       'attempts', 'decisionsUsed', 'totalDecisionsUsed', 'executionHistory', 'startedAt',
@@ -13194,6 +13372,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       return { ok: false, error: '工作项不是当前需求、授权或执行协议版本，必须重新创建后再派发' };
     }
     if (!item.complexityAssessment) return { ok: false, error: '工作项缺少派发前复杂度评估' };
+    if (normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage).length === 0) {
+      return {
+        ok: false,
+        error: 'stage-closure-evidence-mapping-missing：工作项缺少阶段验收映射；请先用 task-update 补充 contract.stageAcceptanceCoverage，禁止通过重复收口任务绕过',
+      };
+    }
     if (item.complexityAssessment.decision !== 'single-task') {
       return { ok: false, error: '该工作项必须先拆成更聚焦的顺序任务，不能直接派发' };
     }

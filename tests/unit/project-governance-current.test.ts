@@ -6,6 +6,8 @@ import {
 import {
   buildProjectSupervisorBriefing,
   projectRepositoryBootstrapRequired,
+  projectTaskInstructionDisclosureError,
+  projectWorkItemOutcomeTitleError,
   projectWorkItemHistoricallyDelivered,
   renderProjectRepositoryBootstrapTask,
   renderProjectTaskBatch,
@@ -26,6 +28,10 @@ const contract: ProjectSupervisorContract = {
   },
   stopWhen: ['成果完成'],
   validation: ['按项目规范验证'],
+  stageAcceptanceCoverage: [{
+    stageCriterion: '阶段成果已验收',
+    verificationCriterion: '按项目规范验证',
+  }],
   budget: {
     maxContinuousMinutes: 1,
     maxAggregateWorkerMinutes: 60,
@@ -85,6 +91,22 @@ describe('current project governance', () => {
     expect(briefing).toContain('本批成果使用主线程和必要的内部子线程或子代理并行处理');
     expect(briefing).not.toContain('允许范围：');
     expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
+    expect(briefing).not.toContain('阶段成果已验收');
+    expect(briefing).not.toContain('stageAcceptanceCoverage');
+    expect(projectTaskInstructionDisclosureError('assignmentVersion=3')).toContain('内部编排身份或路由信息');
+    expect(projectTaskInstructionDisclosureError('awaitingSupervisor=true')).toContain('内部编排身份或路由信息');
+    expect(projectTaskInstructionDisclosureError('goalId=goal-1')).toContain('内部编排身份或路由信息');
+    expect(projectTaskInstructionDisclosureError('executionProtocolVersion=4')).toContain('内部编排身份或路由信息');
+    expect(projectTaskInstructionDisclosureError('surfaceId=terminal-1')).toContain('内部编排身份或路由信息');
+    expect(projectTaskInstructionDisclosureError('形成用户可见的工程成果')).toBeNull();
+  });
+
+  it('requires a concise outcome title instead of an internal id or contract body', () => {
+    expect(projectWorkItemOutcomeTitleError('', 'task-auth')).toContain('必须提供');
+    expect(projectWorkItemOutcomeTitleError('task-auth', 'task-auth')).toContain('内部 task ID');
+    expect(projectWorkItemOutcomeTitleError('修改 src/auth.ts；运行 npm test', 'task-auth')).toContain('2-24 个字符');
+    expect(projectWorkItemOutcomeTitleError('认证闭环：修改登录入口', 'task-auth')).toContain('简短成果名称');
+    expect(projectWorkItemOutcomeTitleError('交付认证业务闭环', 'task-auth')).toBeNull();
   });
 
   it('prepares the repository only before a new or restored project task has started', () => {
@@ -158,6 +180,7 @@ describe('current project governance', () => {
     expect(briefing).toContain('项目 AI 仍无法决定');
     expect(briefing).toContain('--task-work-mode single-thread|multi-thread 明确本批执行模式');
     expect(briefing).toContain('multi-thread 要求本批实际使用内部并行');
+    expect(briefing).toContain('阶段成果已验收 ← 按项目规范验证');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {
