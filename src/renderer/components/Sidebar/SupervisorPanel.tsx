@@ -514,8 +514,26 @@ export default function SupervisorPanel({
         liveSurfaceIds,
         selectedCenterNeedsHuman,
       )
-    : 'stopped';
+    : ordinaryStatusSurfaces.length > 0
+      ? 'waiting'
+      : 'stopped';
   const selectedCenterAttention = selectedCenterVisualState === 'error';
+  const selectedCenterStatusLabel = selectedCenterAttention
+    ? '异常'
+    : selectedCenterNeedsHuman
+      ? '需人工处理'
+      : selectedCenterControlState === 'active'
+        ? '监督中'
+        : selectedCenterControlState === 'waiting'
+          ? '待续'
+          : selectedCenterControlState === 'paused'
+            ? '已暂停'
+            : selectedCenterControlState === 'stopped'
+              ? '已停止'
+              : statusLabel;
+  const activeOrdinaryCenterCount = ordinaryLanes.filter((lane) => (
+    supervisorLaneControlState(lane) !== 'stopped'
+  )).length;
 
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
   const visibleLogs = supervisor.log.filter((entry) => (
@@ -1835,21 +1853,7 @@ export default function SupervisorPanel({
           <button type="button" className="sup-panel__header" onClick={openSupervisorSession}>
             <span className="sup-panel__dot" />
             <span className="sup-panel__title">监督 AI 中心</span>
-            <span className="sup-panel__status">
-              {selectedCenterAttention
-                ? '异常'
-                : selectedCenterNeedsHuman
-                  ? '需人工处理'
-                  : selectedCenterControlState === 'active'
-                    ? '监督中'
-                    : selectedCenterControlState === 'waiting'
-                      ? '待续'
-                      : selectedCenterControlState === 'paused'
-                        ? '已暂停'
-                        : selectedCenterControlState === 'stopped'
-                          ? '已停止'
-                          : statusLabel}
-            </span>
+            <span className="sup-panel__status">{selectedCenterStatusLabel}</span>
             <span className="sup-panel__meta-right">
               {selectedCenterLane ? `当前：${selectedCenterLane.label}` : `${visibleChannelCount} 通道`}
             </span>
@@ -1893,21 +1897,46 @@ export default function SupervisorPanel({
           >
             <section className="supervisor-center-dialog" role="dialog" aria-modal="true" aria-label="监督 AI 中心">
               <header className="supervisor-center-dialog__header">
-                <div>
-                  <strong>监督 AI 中心</strong>
-                  <span>选择普通监督通道，查看状态或打开对应终端</span>
+                <div className="supervisor-center-dialog__header-row">
+                  <strong>普通监督 AI 中心</strong>
+                  <span className="supervisor-center-dialog__status" data-visual-state={selectedCenterVisualState}>
+                    {selectedCenterStatusLabel} · 普通监督 {activeOrdinaryCenterCount}
+                  </span>
                 </div>
-                <button type="button" onClick={() => setCenterOpen(false)} aria-label="关闭监督 AI 中心">×</button>
+                <span className="supervisor-center-dialog__subtitle" title={selectedCenterLane
+                  ? selectedCenterLane.currentTask || effectiveSupervisorLaneConfig(selectedCenterLane).taskGoal
+                  : undefined}>
+                  {selectedCenterLane
+                    ? `${selectedCenterLane.label} · ${selectedCenterLane.currentTask || effectiveSupervisorLaneConfig(selectedCenterLane).taskGoal || '等待任务上报'}`
+                    : '集中查看普通监督状态并打开对应终端'}
+                </span>
               </header>
               <div className="supervisor-center-dialog__body">
-                <SupervisorPanel
-                  expanded
-                  agentStates={agentStates}
-                  onRequestClose={() => setCenterOpen(false)}
-                  centerSelectedLaneId={selectedCenterLane?.id || null}
-                  onCenterLaneSelect={selectCenterLane}
-                />
+                <section className="supervisor-center-dialog__portfolio">
+                  <div className="supervisor-center-dialog__section-head">
+                    <strong>普通监督（{activeOrdinaryCenterCount} 个活动）</strong>
+                    <button
+                      type="button"
+                      className="confirm-dialog__btn"
+                      onClick={() => {
+                        setCenterOpen(false);
+                        openSupervisorSetup();
+                      }}
+                    >添加普通监督 AI</button>
+                  </div>
+                  <SupervisorPanel
+                    expanded
+                    agentStates={agentStates}
+                    onRequestClose={() => setCenterOpen(false)}
+                    centerSelectedLaneId={selectedCenterLane?.id || null}
+                    onCenterLaneSelect={selectCenterLane}
+                  />
+                </section>
               </div>
+              <footer className="supervisor-center-dialog__footer">
+                <span />
+                <button type="button" className="confirm-dialog__btn" onClick={() => setCenterOpen(false)}>关闭</button>
+              </footer>
             </section>
           </div>,
           document.body,

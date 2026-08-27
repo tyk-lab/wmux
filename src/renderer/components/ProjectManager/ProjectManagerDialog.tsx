@@ -534,6 +534,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
   const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
   const [workItemInterventionNotice, setWorkItemInterventionNotice] = useState('');
+  const [collapsedWorkItemIds, setCollapsedWorkItemIds] = useState<Set<string>>(() => new Set());
   const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('execution');
   const goalRef = useRef<HTMLTextAreaElement | null>(null);
   const creationFormRef = useRef<HTMLElement | null>(null);
@@ -675,6 +676,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setWorkItemIntervention('skip');
     setWorkItemInterventionReason('');
     setWorkItemInterventionNotice('');
+    setCollapsedWorkItemIds(new Set());
   }, [session?.activeGoalId, session?.id]);
 
   useEffect(() => {
@@ -2252,12 +2254,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         : itemStatus.workItemLabel;
                     const canIntervene = !['completed', 'stopped'].includes(session.status)
                       && !['completed', 'stopped'].includes(item.status);
+                    const itemCollapsed = collapsedWorkItemIds.has(item.id);
                     return (
                       <article
                         key={item.id}
                         className="project-manager-dialog__action-card"
                         data-selected={workItemInterventionId === item.id ? '1' : '0'}
                         data-attention={itemStatus.attention ? '1' : '0'}
+                        data-collapsed={itemCollapsed ? '1' : '0'}
                       >
                         <header>
                           <input
@@ -2274,11 +2278,24 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               setWorkItemInterventionNotice('');
                             }}
                           />
-                          <div><strong title={item.id}>{itemTitle}</strong><small>{item.contract.objective}</small></div>
-                          <span>{statusLabel}</span>
+                          <button
+                            type="button"
+                            className="project-manager-dialog__action-card-toggle"
+                            aria-expanded={!itemCollapsed}
+                            onClick={() => setCollapsedWorkItemIds((current) => {
+                              const next = new Set(current);
+                              if (next.has(item.id)) next.delete(item.id);
+                              else next.add(item.id);
+                              return next;
+                            })}
+                          >
+                            <div><strong title={item.id}>{itemTitle}</strong><small>{item.contract.objective}</small></div>
+                            <span>{statusLabel}</span>
+                          </button>
                         </header>
 
-                        <div className="project-manager-dialog__action-grid">
+                        {!itemCollapsed && <>
+                          <div className="project-manager-dialog__action-grid">
                           <div data-attention={itemStatus.attention ? '1' : '0'}>
                             <span>当前状态</span>
                             <strong>{itemStatus.supervisorLabel}</strong>
@@ -2302,18 +2319,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                                 : supervisorPlanView.modeLabel}</strong>
                             <small>{compactProjectAlertSummary(item.latestEvidence || item.latestContextSummary || '等待新的执行证据')}</small>
                           </div>
-                        </div>
-
-                        {(item.latestBlocker || currentVerificationLimitation) && (
-                          <div className="project-manager-dialog__action-alert" role="alert">
-                            <strong>{item.latestBlocker ? '当前阻塞' : '验证能力受限'}</strong>
-                            <span>{item.latestBlocker || currentVerificationLimitation?.detail}</span>
                           </div>
-                        )}
 
-                        <details className="project-manager-dialog__action-audit">
-                          <summary>查看合同、证据与历史</summary>
-                          <dl>
+                          {(item.latestBlocker || currentVerificationLimitation) && (
+                            <div className="project-manager-dialog__action-alert" role="alert">
+                              <strong>{item.latestBlocker ? '当前阻塞' : '验证能力受限'}</strong>
+                              <span>{item.latestBlocker || currentVerificationLimitation?.detail}</span>
+                            </div>
+                          )}
+
+                          <details className="project-manager-dialog__action-audit">
+                            <summary>查看合同、证据与历史</summary>
+                            <dl>
                             <dt>执行者</dt><dd>项目唯一任务 AI；当前并行边界为 {item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}，是否并行及内部具体分工由任务 AI 自主决定</dd>
                             <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
                             <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : supervisorPlanView.mode === 'direct' ? '当前采用单成果批次，不做机械拆分' : supervisorPlanView.modeLabel}</dd>
@@ -2342,8 +2359,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               {' · '}{new Date(item.verificationDecision.decidedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
                             </>}
                             <dt>决策历史</dt><dd>{decisions.length === 0 ? '暂无' : decisions.slice(-12).map((event) => `${event.kind}：${event.summary}`).join('\n')}</dd>
-                          </dl>
-                        </details>
+                            </dl>
+                          </details>
+                        </>}
                       </article>
                     );
                   })}

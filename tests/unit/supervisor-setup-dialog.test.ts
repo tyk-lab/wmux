@@ -481,6 +481,15 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('项目任务 AI 不在有效的项目执行会话中，不能创建独立监督工作区');
   });
 
+  it('allows each active project work item to collapse independently', () => {
+    expect(projectManagerDialogSource).toContain('collapsedWorkItemIds');
+    expect(projectManagerDialogSource).toContain('data-collapsed={itemCollapsed');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__action-card-toggle');
+    expect(projectManagerDialogSource).toContain('aria-expanded={!itemCollapsed}');
+    expect(projectManagerDialogSource).toContain('{!itemCollapsed && <>');
+    expect(supervisorCssSource).toContain(".project-manager-dialog__action-card-toggle[aria-expanded='false']::after");
+  });
+
   it('uses the sidebar AI button as the unified creation entry', () => {
     expect(sidebarSource).toContain('新建 AI 工作模式');
     expect(sidebarSource).toContain('添加项目');
@@ -536,6 +545,13 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('ensureOrdinarySupervisorStatusSurface');
     expect(pipeBridgeSource).toContain('ensureOrdinarySupervisorStatusSurface');
     expect(panelSource).toContain('监督 AI 中心');
+    expect(panelSource).toContain('添加普通监督 AI');
+    expect(panelSource).toContain('普通监督 AI 中心');
+    expect(panelSource).toContain('supervisor-center-dialog__portfolio');
+    expect(panelSource).toContain('supervisor-center-dialog__status');
+    expect(panelSource).toContain('supervisor-center-dialog__footer');
+    expect(panelSource).toMatch(/setCenterOpen\(false\);\s*openSupervisorSetup\(\);/);
+    expect(panelSource).toMatch(/ordinaryStatusSurfaces\.length > 0\s*\? 'waiting'\s*:\s*'stopped'/);
     expect(panelSource).toContain('打开监督状态');
     expect(panelSource).toContain('shouldShowOrdinarySupervisorCenter');
     expect(panelSource).toContain('软件重启后普通监督 AI 运行时不会自动重放');

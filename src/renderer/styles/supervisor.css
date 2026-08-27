@@ -1154,9 +1154,13 @@
   border-color: rgba(226, 170, 79, 0.4);
 }
 
+.project-manager-dialog__action-card[data-collapsed='1'] {
+  gap: 0;
+}
+
 .project-manager-dialog__action-card > header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 9px;
   align-items: center;
 }
@@ -1168,7 +1172,34 @@
   accent-color: #60a5fa;
 }
 
-.project-manager-dialog__action-card > header > div {
+.project-manager-dialog__action-card-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-manager-dialog__action-card-toggle::after {
+  content: '›';
+  color: var(--ui-text-muted);
+  font-size: 16px;
+  line-height: 1;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.project-manager-dialog__action-card-toggle[aria-expanded='false']::after {
+  transform: rotate(0deg);
+}
+
+.project-manager-dialog__action-card-toggle > div {
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -1189,13 +1220,19 @@
   white-space: nowrap;
 }
 
-.project-manager-dialog__action-card > header > span {
+.project-manager-dialog__action-card-toggle > span {
   padding: 3px 7px;
   border-radius: 999px;
   background: rgba(96, 165, 250, 0.12);
   color: #8fc4ff;
   font-size: 9px;
   font-weight: 650;
+}
+
+.project-manager-dialog__action-card-toggle:focus-visible {
+  outline: 1px solid rgba(96, 165, 250, 0.8);
+  outline-offset: 4px;
+  border-radius: 4px;
 }
 
 .project-manager-dialog__action-grid {
@@ -2781,15 +2818,16 @@
 
 .supervisor-center-dialog__overlay {
   z-index: 1200;
-  padding: 24px;
+  padding: 12px;
 }
 
 .supervisor-center-dialog {
   display: flex;
   flex-direction: column;
-  width: min(1120px, calc(100vw - 48px));
-  height: min(820px, calc(100vh - 48px));
+  width: min(1280px, calc(100vw - 24px));
+  height: min(860px, calc(100vh - 24px));
   min-height: 0;
+  max-height: calc(100vh - 24px);
   overflow: hidden;
   border: 1px solid rgba(var(--ui-overlay-rgb), 0.18);
   border-radius: 10px;
@@ -2798,54 +2836,113 @@
 }
 
 .supervisor-center-dialog__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 18px;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid rgba(var(--ui-overlay-rgb), 0.12);
 }
 
-.supervisor-center-dialog__header > div {
-  display: grid;
-  gap: 3px;
+.supervisor-center-dialog__header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .supervisor-center-dialog__header strong {
-  font-size: 16px;
+  font-size: 15px;
 }
 
-.supervisor-center-dialog__header span {
+.supervisor-center-dialog__subtitle {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
   color: rgba(var(--ui-overlay-rgb), 0.62);
-  font-size: 12px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.supervisor-center-dialog__header button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: inherit;
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
+.supervisor-center-dialog__status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb), 0.2);
+  border-radius: 999px;
+  background: rgba(var(--ui-overlay-rgb), 0.04);
+  color: var(--ui-text-muted);
+  font-size: 10px;
 }
 
-.supervisor-center-dialog__header button:hover {
-  background: rgba(var(--ui-overlay-rgb), 0.08);
+.supervisor-center-dialog__status[data-visual-state='active'] {
+  border-color: rgba(80, 200, 140, 0.58);
+  background: rgba(80, 200, 140, 0.09);
+  color: #86efac;
+}
+
+.supervisor-center-dialog__status[data-visual-state='waiting'],
+.supervisor-center-dialog__status[data-visual-state='paused'] {
+  border-color: rgba(217, 164, 65, 0.62);
+  background: rgba(217, 164, 65, 0.1);
+  color: #fcd34d;
+}
+
+.supervisor-center-dialog__status[data-visual-state='human'] {
+  border-color: rgba(167, 139, 250, 0.68);
+  background: rgba(109, 40, 217, 0.12);
+  color: #c4b5fd;
+}
+
+.supervisor-center-dialog__status[data-visual-state='error'] {
+  border-color: rgba(248, 113, 113, 0.68);
+  background: rgba(127, 29, 29, 0.14);
+  color: #fca5a5;
 }
 
 .supervisor-center-dialog__body {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 14px;
+  padding: 10px 16px 14px;
   overflow: auto;
 }
 
-.supervisor-center-dialog__body > .sup-panel {
+.supervisor-center-dialog__portfolio {
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb), 0.09);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.supervisor-center-dialog__section-head,
+.supervisor-center-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.supervisor-center-dialog__section-head strong {
+  font-size: 12px;
+}
+
+.supervisor-center-dialog__portfolio > .sup-panel {
   max-width: none;
-  margin: 0;
+  margin: 6px 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.supervisor-center-dialog__portfolio > .sup-panel > .sup-panel__header {
+  display: none;
+}
+
+.supervisor-center-dialog__portfolio > .sup-panel > .sup-panel__lanes {
+  padding: 0;
+  gap: 7px;
+}
+
+.supervisor-center-dialog__footer {
+  flex: 0 0 auto;
+  padding: 11px 10px 12px 18px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb), 0.08);
+  background: var(--ui-bg-1, #1e1e1e);
 }
 
 .sup-panel__center-lane {
