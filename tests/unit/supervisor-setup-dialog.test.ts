@@ -162,7 +162,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('<dt>核验概览</dt>');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__audit-details');
     expect(projectManagerDialogSource).toContain('<dt>完成验证</dt>');
-    expect(projectManagerDialogSource).toContain('<dt>完成时间</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>开始时间</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>结束时间</dt>');
     expect(projectManagerDialogSource).toContain('历史已取消阶段');
     expect(projectManagerDialogSource).toContain('主目标历史');
     const definitionUpdateHandler = projectManagerDialogSource.match(
@@ -239,9 +240,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('关闭此项');
     expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭的理由');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-decisions');
-    expect(projectManagerDialogSource).toContain('监督 AI 当前路线');
-    expect(projectManagerDialogSource).toContain('监督 AI 下一步');
-    expect(projectManagerDialogSource).toContain('监督执行进度');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__action-grid');
+    expect(projectManagerDialogSource).toContain('<span>监督正在做</span>');
+    expect(projectManagerDialogSource).toContain('<span>下一步</span>');
+    expect(projectManagerDialogSource).toContain('<span>当前进度</span>');
+    expect(projectManagerDialogSource).toContain('查看合同、证据与历史');
     expect(projectManagerDialogSource).toContain('buildSupervisorPlanView');
     expect(supervisorCssSource).toMatch(
       /\.project-manager-dialog__work-item-decisions\s*\{[\s\S]*?max-height:[\s\S]*?overflow-y:\s*auto;/,
@@ -329,7 +332,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(dialogSource).toContain('ordinaryPlanRequired: keepsCurrentContext ? prev?.ordinaryPlanRequired : true');
     expect(dialogSource).toContain('startOrdinarySupervisor()');
     expect(dialogSource).toContain('stopOrdinarySupervisor()');
-    expect(panelSource).toContain('普通监督的配置、暂停和停止操作均不会修改这里');
+    expect(panelSource).toContain('只接受当前项目 AI 的成果任务');
+    expect(panelSource).toContain('此处只展示当前项目的专属监督');
     expect(panelSource).toContain('isProjectManagedSupervisorLane(lane)');
     expect(panelSource).toContain('stopOrdinarySupervisor()');
     expect(panelSource).toContain('resetOrdinarySupervisorSession()');

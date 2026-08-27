@@ -1106,6 +1106,36 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('我现在去设置并测试（推荐）');
   });
 
+  it('将人工验收反馈渲染为可同时提交选项和结果文本的飞书表单', () => {
+    const cardObject = buildProjectClarificationCard('pm-gui', {
+      id: 'question-gui-feedback', category: 'manual-intervention', workItemId: 'gui-validation',
+      blocker: 'GUI 自动化不可用', reasonCode: 'verification-limited',
+      question: '请完成一次人工验收并反馈结果。',
+      context: '逐项记录 Edit、Save、Delete 和 Reload 的实际结果。',
+      options: [
+        { id: 'manual-verify-complete', label: '完成人工验收', description: '填写实际结果后提交。' },
+        { id: 'manual-verify-defer', label: '暂缓人工验收', description: '保持项目暂停。' },
+      ],
+      recommendedOptionId: 'manual-verify-complete',
+    }) as any;
+    const form = cardObject.body.elements.find((element: any) => (
+      element.name === 'wmux_project_clarification_form'
+    ));
+    const optionSelect = form.elements.find((element: any) => (
+      element.name === 'project_clarification_option'
+    ));
+    const resultInput = form.elements.find((element: any) => (
+      element.name === 'project_clarification_answer'
+    ));
+
+    expect(optionSelect.required).toBe(true);
+    expect(optionSelect.options.map((option: any) => option.value)).toEqual([
+      'manual-verify-complete', 'manual-verify-defer',
+    ]);
+    expect(resultInput.label.content).toBe('人工验收结果');
+    expect(JSON.stringify(form)).toContain('提交人工验收选择');
+  });
+
   it('按 Windows 路径大小写和尾部分隔符去重可选终端目录', () => {
     const cardObject = buildDirectTerminalTaskCard([
       { surfaceId: 'surf-a', label: '任务 A', workspace: '项目 A', cwd: 'E:\\repo\\', supervised: false },

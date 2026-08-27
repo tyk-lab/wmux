@@ -21,7 +21,7 @@
 
 - 计划文件可选。首次创建、调整当前主目标或切换主目标时，用户输入是权威来源；在用户目标内结合项目事实整理目标、范围、前置条件和可验证完成定义，不得自行替换目标。
 - 首次需求摘要必须通过结构化 `wmux project ask` 展示给用户确认。用户选择补充调整时，写回定义后重新展示；不能由项目 AI代替用户确认。
-- 会导致规划写回的确认项必须在对应 `options[].confirmationScope` 中逐项写出稍后实际落盘的精确 `field: value`；字段只使用 `goal`、`projectScope`、`preconditions`、`doneWhen`、`planFiles`、`supplement`。值必须已经出现在问题、上下文或该选项说明中，禁止写“精确目标”“可验收标准”等占位描述，也不得把一个方案的授权放到问题级 scope 后套用于其他选项。
+- 会导致规划写回的确认项必须在对应 `options[].confirmationScope` 中逐项写出稍后实际落盘的精确 `field: value`；字段只使用 `goal`、`projectScope`、`preconditions`、`doneWhen`、`userAcceptancePolicy`、`verificationPolicies`、`planFiles`、`supplement`。值必须已经出现在问题、上下文或该选项说明中，禁止写“精确目标”“可验收标准”等占位描述，也不得把一个方案的授权放到问题级 scope 后套用于其他选项。
 - 用户选择不改变规划的“继续补充”“暂不采用”等选项时，该选项使用空 `confirmationScope`。用户答复已经通过选中选项的精确 `confirmationScope` 覆盖定义变更时，同一 `userConfirmationEventId` 可用于定义更新和 `alignment-confirm`，不得因内部版本推进重复询问。
 - 没有额外项目级前置条件时，`preconditions` 可以保持空数组；不得为了满足格式虚构“无额外物理前置条件”，也不得把这种格式补全再次交给用户确认。
 - 用户确认后执行 `alignment-confirm`，再用 `goal-plan` 保存 3-7 个粗粒度、可验收阶段。
@@ -49,6 +49,9 @@
 
 ## 任务包与验证
 
+- 当前主目标的 `userAcceptancePolicy` 只允许 `always`、`on-gap`、`not-required`，未声明时使用 `on-gap`；每条 `doneWhen` 的 `verificationPolicies[].requirement` 只允许 `required`、`best-effort`、`not-applicable`，`riskClass` 只允许 `protected`、`standard`。未声明风险类别一律按 `protected + required`；只有用户明确确认 `riskClass=standard` 的普通成果才能改为 `best-effort` 或 `not-applicable`。`not-required` 只取消用户最终验收，不取消任务 AI/监督 AI 的证据责任；放宽后的条件仍须记录真实结果、未运行依据和项目内 evidenceRefs，不得写成自动验证通过。
+- 用户在项目运行中明确表示不再需要部分或全部验证时，使用 `wmux project update mode=refine` 写入新的用户验收策略和逐项验证策略；这属于需求版本变更，必须先中断旧运行、保留历史完成/失败/未验证记录，重新执行对齐、认知、阶段影响评估和任务重绑后再恢复。不得原地改写旧 completion，或让新策略追认旧失败为通过。
+- 安全、人身、急停、联锁、生产、线上、权限、认证、授权、加密、隐私、合规、泄漏、数据完整性、备份、恢复、不可逆或破坏性验收不得降级为 `best-effort` 或 `not-applicable`。用户只说“不需要我验收”时，应优先改 `userAcceptancePolicy`，不得推断所有技术验证也不需要。
 - 每个成果批次必须包含一个成果和可简短表达的完成定义；证据期望可选，不得为了格式强制指定测试或制造证据。
 - 验证通过、失败或当前无法取得都必须如实返回。能在当前边界内形成新证据时由任务 AI自主修正并重验；有效失败、条件不足或继续不会产生新证据时应停止空耗并报告事实、证据、影响、未满足项和后续条件。
 - GUI、实机或外部观察无法由内部可靠自动化取得时，先区分实现失败与观察能力缺口。最多安排一轮与失败路线明显不同的基础、逻辑、静态或替代验证；没有新证据时使用 `project ask` 发起一次 `category=manual-intervention`、`reasonCode=verification-limited` 的结构化问题。用户可选择人工验收、暂缓当前验证后继续、跳过当前验证并由后续新计划重新承接，或保持暂停；不得把缺少自动化通道改写成同义任务反复派发，用户观察也不得被伪装为控制层自动证据。

@@ -2559,6 +2559,52 @@ describe('飞书人工决策单聊路由', () => {
     expect(updateCard).toHaveBeenCalledTimes(1);
   });
 
+  it('飞书人工验收表单同时提交完成选项和实际结果', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-project');
+    const control = vi.fn(async () => ({ ok: true, message: '已记录人工验收结果' }));
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    service.onProjectManagerRecord({
+      sessionId: 'pm-gui', projectDir: 'E:\\repo', type: 'user-clarification-requested',
+      payload: {
+        question: {
+          id: 'question-gui-feedback', category: 'manual-intervention', reasonCode: 'verification-limited',
+          workItemId: 'gui-validation', blocker: 'GUI 自动化不可用',
+          question: '请完成一次人工验收并反馈结果。', context: '逐项记录实际结果。',
+          options: [
+            { id: 'manual-verify-complete', label: '完成人工验收', description: '填写结果后提交。' },
+            { id: 'manual-verify-defer', label: '暂缓人工验收', description: '保持项目暂停。' },
+          ],
+          recommendedOptionId: 'manual-verify-complete',
+        },
+      },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    handlers.cardAction({
+      chatId: 'oc-project', messageId: 'om-1', operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_form_project_clarification',
+        value: currentControlValue({
+          wmux_action: 'form_project_clarification',
+          projectId: 'pm-gui', questionId: 'question-gui-feedback',
+        }),
+      },
+      raw: { action: { form_value: {
+        project_clarification_option: 'manual-verify-complete',
+        project_clarification_answer: 'Edit 成功；Save 成功；Delete 失败：按钮无响应；Reload 未执行',
+      } } },
+    });
+
+    await vi.waitFor(() => expect(control).toHaveBeenCalledWith({
+      action: 'project-answer',
+      projectId: 'pm-gui',
+      questionId: 'question-gui-feedback',
+      optionId: 'manual-verify-complete',
+      answer: 'Edit 成功；Save 成功；Delete 失败：按钮无响应；Reload 未执行',
+    }, { openId: 'ou-allowed', source: 'card' }));
+  });
+
   it('项目模式的监督事件不经过飞书服务转发，也不发送普通飞书审计卡', async () => {
     vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project');
     const control = vi.fn(async () => ({ ok: true }));

@@ -9,6 +9,23 @@ export type ProjectManagerSessionStatus = 'active' | 'paused' | 'waiting' | 'com
 
 export type ProjectGoalStatus = 'transitioning' | 'active' | 'achieved' | 'superseded' | 'abandoned';
 
+export const PROJECT_USER_ACCEPTANCE_POLICIES = ['always', 'on-gap', 'not-required'] as const;
+export type ProjectUserAcceptancePolicy = typeof PROJECT_USER_ACCEPTANCE_POLICIES[number];
+export const PROJECT_USER_ACCEPTANCE_REQUIRED_ERROR = '当前目标要求用户最终验收；全部实现和验证门禁已经满足，等待用户确认最终效果';
+
+export const PROJECT_VERIFICATION_REQUIREMENTS = ['required', 'best-effort', 'not-applicable'] as const;
+export type ProjectVerificationRequirement = typeof PROJECT_VERIFICATION_REQUIREMENTS[number];
+export const PROJECT_VERIFICATION_RISK_CLASSES = ['protected', 'standard'] as const;
+export type ProjectVerificationRiskClass = typeof PROJECT_VERIFICATION_RISK_CLASSES[number];
+
+export interface ProjectCriterionVerificationPolicy {
+  criterion: string;
+  requirement: ProjectVerificationRequirement;
+  /** Missing legacy values are protected; relaxation requires explicit standard classification. */
+  riskClass?: ProjectVerificationRiskClass;
+  reason?: string;
+}
+
 export type ProjectSubgoalStatus = 'planned' | 'active' | 'blocked' | 'achieved' | 'obsolete';
 
 export type ProjectWorkItemStatus =
@@ -590,6 +607,10 @@ export interface ProjectGoalRevision {
   sequence: number;
   statement: string;
   doneWhen: string[];
+  /** User involvement at final closure. Missing legacy values default to on-gap. */
+  userAcceptancePolicy?: ProjectUserAcceptancePolicy;
+  /** Per-doneWhen verification requirements. Missing criteria default to required. */
+  verificationPolicies?: ProjectCriterionVerificationPolicy[];
   status: ProjectGoalStatus;
   requirementsVersion: number;
   supersedesGoalId?: string;
@@ -597,6 +618,69 @@ export interface ProjectGoalRevision {
   createdAt: number;
   activatedAt?: number;
   closedAt?: number;
+}
+
+export function normalizeProjectUserAcceptancePolicy(value: unknown): ProjectUserAcceptancePolicy {
+  return PROJECT_USER_ACCEPTANCE_POLICIES.includes(value as ProjectUserAcceptancePolicy)
+    ? value as ProjectUserAcceptancePolicy
+    : 'on-gap';
+}
+
+export function projectCriterionVerificationCannotBeRelaxed(value: string): boolean {
+  return /(?:安全|人身|急停|联锁|生产|线上|发布|部署|客户环境|客户数据|权限|认证|授权|凭据|密钥|加密|隐私|合规|泄漏|数据完整|备份|恢复|不可逆|破坏|\b(?:safety|security|human\s+(?:safety|injury)|emergency\s*stop|interlock|production|release|deploy(?:ment)?|live\s+environment|customer\s+environment|customer\s+data|online|permission|privilege|admin(?:istrator)?|authentication|authorization|credential|secret|access\s+control|encryption|privacy|compliance|leak(?:age)?|integrity|data\s+integrity|backup|restore|recovery|irreversible|destructive)\b)/iu.test(value);
+}
+
+export function normalizeProjectVerificationPolicies(
+  doneWhen: readonly string[],
+  value: unknown,
+): ProjectCriterionVerificationPolicy[] {
+  const entries = Array.isArray(value) ? value : [];
+  const byCriterion = new Map<string, ProjectCriterionVerificationPolicy>();
+  for (const entry of entries.slice(0, 100)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const candidate = entry as Record<string, unknown>;
+    const criterion = String(candidate.criterion || '').trim().slice(0, 4000);
+    const requirement = String(candidate.requirement || '') as ProjectVerificationRequirement;
+    const riskClass = PROJECT_VERIFICATION_RISK_CLASSES.includes(candidate.riskClass as ProjectVerificationRiskClass)
+      ? candidate.riskClass as ProjectVerificationRiskClass
+      : 'protected';
+    const reason = String(candidate.reason || '').trim().slice(0, 4000);
+    if (!criterion || !PROJECT_VERIFICATION_REQUIREMENTS.includes(requirement)) continue;
+    byCriterion.set(projectCriterionIdentity(criterion), {
+      criterion,
+      requirement,
+      riskClass,
+      ...(reason ? { reason } : {}),
+    });
+  }
+  return doneWhen.map((rawCriterion) => {
+    const criterion = rawCriterion.trim();
+    const configured = byCriterion.get(projectCriterionIdentity(criterion));
+    const riskClass = projectCriterionVerificationCannotBeRelaxed(criterion)
+      ? 'protected'
+      : configured?.riskClass || 'protected';
+    const requirement = riskClass === 'protected'
+      ? 'required'
+      : configured?.requirement || 'required';
+    return {
+      criterion,
+      requirement,
+      riskClass,
+      ...(configured?.reason ? { reason: configured.reason } : {}),
+    };
+  }).filter((entry) => !!entry.criterion);
+}
+
+export function projectGoalUserAcceptancePolicy(
+  goal: Pick<ProjectGoalRevision, 'userAcceptancePolicy'>,
+): ProjectUserAcceptancePolicy {
+  return normalizeProjectUserAcceptancePolicy(goal.userAcceptancePolicy);
+}
+
+export function projectGoalVerificationPolicies(
+  goal: Pick<ProjectGoalRevision, 'doneWhen' | 'verificationPolicies'>,
+): ProjectCriterionVerificationPolicy[] {
+  return normalizeProjectVerificationPolicies(goal.doneWhen, goal.verificationPolicies);
 }
 
 /** A coarse outcome planned by the project AI. It is not an executable terminal task. */
@@ -682,11 +766,16 @@ export function normalizeProjectVerificationDecision(
 
 export function projectFinalAcceptanceScope(session: ProjectManagerSession): string {
   const goal = activeProjectGoal(session);
+  const verificationPolicies = projectGoalVerificationPolicies(goal);
   return [
     `goalId=${goal.id}`,
     `requirementsVersion=${projectRequirementsVersion(session)}`,
     `authorizationVersion=${projectAuthorizationVersion(session)}`,
     `doneWhenDigest=${projectPlanningConfirmationDigest(goal.doneWhen)}`,
+    `userAcceptancePolicy=${projectGoalUserAcceptancePolicy(goal)}`,
+    `verificationPolicyDigest=${projectPlanningConfirmationDigest(verificationPolicies.map((policy) => (
+      `${policy.criterion}:${policy.requirement}:${policy.riskClass || 'protected'}:${policy.reason || ''}`
+    )))}`,
   ].join('; ');
 }
 
@@ -729,9 +818,7 @@ export function projectFinalAcceptanceEligibilityError(session: ProjectManagerSe
   if (knownFailure) {
     return `存在已知失败结论，必须先处理或由用户修改目标，不能直接接受为完成：${knownFailure.criterion}`;
   }
-  const safetyCriticalCriterion = goal.doneWhen.find((criterion) => (
-    /(?:安全|人身|急停|联锁|生产|线上|权限|认证|授权|加密|隐私|合规|泄漏|数据完整|备份|恢复|不可逆|破坏)/iu.test(criterion)
-  ));
+  const safetyCriticalCriterion = goal.doneWhen.find(projectCriterionVerificationCannotBeRelaxed);
   if (safetyCriticalCriterion) {
     return `安全、权限、生产或数据完整性验收不能用最终效果接受代替：${safetyCriticalCriterion}`;
   }
@@ -1024,6 +1111,57 @@ export function projectCompletionCriteriaError(
       !check.evidenceArtifacts?.some((artifact) => artifact.ref === ref)
     ))) {
       return `${label}的实际证据尚未由控制层读取并记录内容哈希：${entry.criterion}`;
+    }
+  }
+  return null;
+}
+
+/** Validate goal criteria while preserving explicit best-effort and not-applicable outcomes. */
+export function projectGoalCompletionCriteriaError(
+  goal: Pick<ProjectGoalRevision, 'doneWhen' | 'verificationPolicies'>,
+  completion: ProjectCompletionResult | undefined,
+  label = '主目标完成条件',
+  options: { allowExtra?: boolean; requireArtifacts?: boolean } = {},
+): string | null {
+  const policies = projectGoalVerificationPolicies(goal);
+  const checks = normalizeProjectCompletionResult(completion)?.criteria || [];
+  const expectedIdentities = new Set(policies.map((policy) => projectCriterionIdentity(policy.criterion)));
+  const seen = new Set<string>();
+  for (const check of checks) {
+    const identity = projectCriterionIdentity(check.criterion);
+    if (seen.has(identity)) return `${label}存在重复核验项：${check.criterion}`;
+    seen.add(identity);
+    if (!options.allowExtra && !expectedIdentities.has(identity)) {
+      return `${label}包含不属于当前合同的核验项：${check.criterion}`;
+    }
+  }
+  for (const policy of policies) {
+    if (policy.requirement === 'required') {
+      const error = projectCompletionCriteriaError([policy.criterion], completion, label, {
+        allowExtra: true,
+        requireArtifacts: options.requireArtifacts,
+      });
+      if (error) return error;
+      continue;
+    }
+    const identity = projectCriterionIdentity(policy.criterion);
+    const check = checks.find((candidate) => projectCriterionIdentity(candidate.criterion) === identity);
+    if (!check) return `${label}尚未记录${policy.requirement === 'best-effort' ? '尽力验证结果' : '不适用验证结论'}：${policy.criterion}`;
+    if (check.status === 'unsatisfied' || check.result === 'failed') {
+      return `${label}存在已知失败，不能用${policy.requirement === 'best-effort' ? '尽力验证' : '不适用验证'}覆盖：${policy.criterion}`;
+    }
+    if (policy.requirement === 'not-applicable'
+      && check.result === 'not-run'
+      && check.method !== 'evidence-review') {
+      return `${label}的不适用验证结论必须通过 evidence-review 记录依据：${policy.criterion}`;
+    }
+    if (!check.evidence.trim() || check.evidenceRefs.length === 0) {
+      return `${label}缺少实际交付或验证记录：${policy.criterion}`;
+    }
+    if (options.requireArtifacts && check.evidenceRefs.some((ref) => (
+      !check.evidenceArtifacts?.some((artifact) => artifact.ref === ref)
+    ))) {
+      return `${label}的实际证据尚未由控制层读取并记录内容哈希：${policy.criterion}`;
     }
   }
   return null;
@@ -1328,6 +1466,10 @@ export interface ProjectManagerSession {
   /** User-selected, size-limited text snapshots that supplement the stated requirements. */
   planFiles: ProjectPlanFileSnapshot[];
   doneWhen: string[];
+  /** Mirrors the active goal for older/session-level consumers. */
+  userAcceptancePolicy?: ProjectUserAcceptancePolicy;
+  /** Mirrors the active goal for older/session-level consumers. */
+  verificationPolicies?: ProjectCriterionVerificationPolicy[];
   /** Monotonic version of user-owned goals, prerequisites, plans, and completion criteria. */
   requirementsVersion?: number;
   /** Changes only when inherited project scope, prerequisites, or grants change. */
@@ -1690,6 +1832,11 @@ export function activeProjectGoal(session: ProjectManagerSession): ProjectGoalRe
     sequence: 1,
     statement: session.goal,
     doneWhen: session.doneWhen,
+    userAcceptancePolicy: normalizeProjectUserAcceptancePolicy(session.userAcceptancePolicy),
+    verificationPolicies: normalizeProjectVerificationPolicies(
+      session.doneWhen,
+      session.verificationPolicies,
+    ),
     status: session.status === 'completed' ? 'achieved' : 'active',
     requirementsVersion,
     createdAt: session.createdAt,
@@ -1882,6 +2029,11 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
         sequence: Math.max(1, Math.trunc(goal.sequence || index + 1)),
         statement: goal.statement.trim(),
         doneWhen: goal.doneWhen.map((item) => item.trim()).filter(Boolean),
+        userAcceptancePolicy: normalizeProjectUserAcceptancePolicy(goal.userAcceptancePolicy),
+        verificationPolicies: normalizeProjectVerificationPolicies(
+          goal.doneWhen,
+          goal.verificationPolicies,
+        ),
         requirementsVersion: Math.max(1, Math.trunc(goal.requirementsVersion || requirementsVersion)),
       }))
     : [activeProjectGoal(session)];
@@ -1907,6 +2059,11 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
       .map((item) => item.trim().slice(0, 4000))
       .filter(Boolean),
     doneWhen: activeGoal.doneWhen,
+    userAcceptancePolicy: normalizeProjectUserAcceptancePolicy(activeGoal.userAcceptancePolicy),
+    verificationPolicies: normalizeProjectVerificationPolicies(
+      activeGoal.doneWhen,
+      activeGoal.verificationPolicies,
+    ),
     requirementsVersion,
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
@@ -2039,6 +2196,8 @@ export type ProjectManagerAction =
     supervisorNotes?: string[];
     planFiles: ProjectPlanFileSnapshot[];
     doneWhen: string[];
+    userAcceptancePolicy?: ProjectUserAcceptancePolicy;
+    verificationPolicies?: ProjectCriterionVerificationPolicy[];
     reason?: string;
     userConfirmationEventId?: string;
     source: 'user' | 'manager';
@@ -2053,6 +2212,12 @@ export type ProjectManagerAction =
   }
   | { type: 'update-project-preconditions'; preconditions: string[]; reason?: string }
   | { type: 'request-user-clarification'; question: ProjectManagerUserQuestion }
+  | {
+      type: 'refine-user-clarification';
+      questionId: string;
+      question: ProjectManagerUserQuestion;
+      selectedOptionId: string;
+    }
   | {
       type: 'answer-user-clarification';
       questionId: string;

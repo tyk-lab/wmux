@@ -4,15 +4,22 @@ import {
   activeProjectGoal,
   activeProjectSubgoals,
   MAX_PROJECT_PLAN_FILES,
+  normalizeProjectVerificationPolicies,
   projectDisplayName,
   projectManagerQuestionAllowsReusableDecision,
   projectManagerQuestionConfirmationScope,
   projectManagerQuestionReusableDecisionScope,
+  projectGoalUserAcceptancePolicy,
+  projectGoalVerificationPolicies,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
   projectWorkItemDisplayTitle,
   type ProjectCompletionResult,
+  type ProjectCriterionVerificationPolicy,
   type ProjectPlanFileSnapshot,
+  type ProjectUserAcceptancePolicy,
+  type ProjectVerificationRequirement,
+  type ProjectVerificationRiskClass,
   type ProjectWorkItem,
 } from '../../../shared/project-manager';
 import {
@@ -139,12 +146,40 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
   'project-goal-completed': '当前主目标已完成',
 };
 
+const USER_ACCEPTANCE_POLICY_LABELS: Record<ProjectUserAcceptancePolicy, string> = {
+  always: '始终由用户最终验收',
+  'on-gap': '仅有验证缺口时询问用户',
+  'not-required': '无需用户最终验收',
+};
+
+const VERIFICATION_REQUIREMENT_LABELS: Record<ProjectVerificationRequirement, string> = {
+  required: '必须形成可收敛验证',
+  'best-effort': '尽力验证并如实记录',
+  'not-applicable': '不适用验证，仅保留交付依据',
+};
+
+const VERIFICATION_RISK_CLASS_LABELS: Record<ProjectVerificationRiskClass, string> = {
+  protected: '保护性条件（始终必验）',
+  standard: '普通成果（可调整验证）',
+};
+
+function verificationRequirementSummary(
+  policies: readonly ProjectCriterionVerificationPolicy[],
+): ProjectVerificationRequirement | 'mixed' {
+  const requirements = new Set(policies.map((policy) => policy.requirement));
+  return requirements.size <= 1
+    ? policies[0]?.requirement || 'required'
+    : 'mixed';
+}
+
 function ProjectCompletionDetails({
   completion,
   evidenceFallback,
+  startedAt,
 }: {
   completion: ProjectCompletionResult;
   evidenceFallback?: string;
+  startedAt?: number;
 }) {
   const hasCriteria = !!completion.criteria?.length;
   return <>
@@ -161,8 +196,18 @@ function ProjectCompletionDetails({
       <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
       <dt>完成证据</dt><dd>{completion.evidence || evidenceFallback || '结果摘要已记录'}</dd>
     </>}
-    <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+    <dt>开始时间</dt><dd>{typeof startedAt === 'number' && Number.isFinite(startedAt)
+      ? new Date(startedAt).toLocaleString('zh-CN', { hour12: false })
+      : '旧记录未记录'}</dd>
+    <dt>结束时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
   </>;
+}
+
+function projectStageStartedAt(items: ProjectWorkItem[]): number | undefined {
+  const workItemStarts = items.map((item) => item.startedAt).filter((value): value is number => (
+    Number.isFinite(value)
+  ));
+  return workItemStarts.length > 0 ? Math.min(...workItemStarts) : undefined;
 }
 
 function ProjectStageWorkItems({ items }: { items: ProjectWorkItem[] }) {
@@ -441,6 +486,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [preconditionsDraft, setPreconditionsDraft] = useState('');
   const [supervisorNotesDraft, setSupervisorNotesDraft] = useState('');
   const [doneWhen, setDoneWhen] = useState('');
+  const [userAcceptancePolicy, setUserAcceptancePolicy] = useState<ProjectUserAcceptancePolicy>('on-gap');
+  const [verificationRequirement, setVerificationRequirement] = useState<ProjectVerificationRequirement | 'mixed'>('required');
+  const [verificationPoliciesDraft, setVerificationPoliciesDraft] = useState<ProjectCriterionVerificationPolicy[]>([]);
+  const [definitionUserAcceptancePolicy, setDefinitionUserAcceptancePolicy] = useState<ProjectUserAcceptancePolicy>('on-gap');
+  const [definitionVerificationRequirement, setDefinitionVerificationRequirement] = useState<ProjectVerificationRequirement | 'mixed'>('required');
+  const [definitionVerificationPoliciesDraft, setDefinitionVerificationPoliciesDraft] = useState<ProjectCriterionVerificationPolicy[]>([]);
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -533,6 +584,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     session.preconditions,
     session.supervisorNotes,
     session.doneWhen,
+    session.userAcceptancePolicy,
+    session.verificationPolicies,
     session.planFiles.map((file) => [file.path, file.sizeBytes, file.mtimeMs, file.capturedAt]),
   ]) : '';
   const waitingForManagerReply = conversation.some((event) => (
@@ -641,6 +694,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setPreconditionsDraft((session?.preconditions || []).join('\n'));
     setSupervisorNotesDraft((session?.supervisorNotes || []).join('\n'));
     setDefinitionDoneWhenDraft((session?.doneWhen || []).join('\n'));
+    const activeGoal = session ? activeProjectGoal(session) : undefined;
+    setDefinitionUserAcceptancePolicy(activeGoal ? projectGoalUserAcceptancePolicy(activeGoal) : 'on-gap');
+    const activeVerificationPolicies = activeGoal ? projectGoalVerificationPolicies(activeGoal) : [];
+    setDefinitionVerificationPoliciesDraft(activeVerificationPolicies);
+    setDefinitionVerificationRequirement(verificationRequirementSummary(activeVerificationPolicies));
     setDefinitionPlanFiles(session?.planFiles || []);
     setDefinitionPlanFilePath('');
     setGoalChangeMode('refine');
@@ -883,6 +941,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     const projectPreconditions = conditionLines(preconditions);
     const projectSupervisorNotes = conditionLines(supervisorNotes);
     const conditions = conditionLines(doneWhen);
+    const creationVerificationPolicies = normalizeProjectVerificationPolicies(conditions, [
+      ...conditions.map((criterion) => ({
+        criterion,
+        requirement: verificationRequirement === 'mixed' ? 'required' as const : verificationRequirement,
+      })),
+      ...verificationPoliciesDraft,
+    ]);
     if (creationMode === 'terminal' && !contextTerminal) {
       setNotice('请选择一个包含当前 Agent 对话的已有终端。');
       return;
@@ -909,6 +974,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         supervisorNotes: projectSupervisorNotes,
         planFiles,
         doneWhen: conditions,
+        userAcceptancePolicy,
+        verificationPolicies: creationVerificationPolicies,
       });
       setCreating(false);
       setCreationMode('direct');
@@ -921,6 +988,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setPlanFiles([]);
       setPlanFilePath('');
       setDoneWhen('');
+      setUserAcceptancePolicy('on-gap');
+      setVerificationRequirement('required');
+      setVerificationPoliciesDraft([]);
       setProjectDir('');
       const projectId = String(result.session?.id || '');
       if (projectId) enterProjectConsole(projectId);
@@ -1060,6 +1130,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     const goalChanged = goalChangeMode === 'pivot' || definitionGoalDraft.trim() !== session.goal;
     const unchangedGoalCriteria = projectDoneWhen.join('\n') === session.doneWhen.join('\n');
     const submittedDoneWhen = goalChanged && unchangedGoalCriteria ? [] : projectDoneWhen;
+    const submittedVerificationPolicies = normalizeProjectVerificationPolicies(submittedDoneWhen, [
+      ...submittedDoneWhen.map((criterion) => ({
+        criterion,
+        requirement: definitionVerificationRequirement === 'mixed'
+          ? 'required' as const
+          : definitionVerificationRequirement,
+      })),
+      ...definitionVerificationPoliciesDraft,
+    ]);
     if (!definitionGoalDraft.trim()) {
       setNotice('请填写新的当前主目标。前置条件和完成条件可以留空，由项目 AI 补全。');
       return;
@@ -1080,6 +1159,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         supervisorNotes: projectSupervisorNotes,
         planFiles: definitionPlanFiles,
         doneWhen: submittedDoneWhen,
+        userAcceptancePolicy: definitionUserAcceptancePolicy,
+        verificationPolicies: submittedVerificationPolicies,
         mode: goalChangeMode,
         reason: goalChangeMode === 'pivot'
           ? '用户在稳定项目内切换新的主目标'
@@ -1100,6 +1181,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setPreconditionsDraft(session.preconditions.join('\n'));
     setSupervisorNotesDraft((session.supervisorNotes || []).join('\n'));
     setDefinitionDoneWhenDraft(session.doneWhen.join('\n'));
+    setDefinitionUserAcceptancePolicy(projectGoalUserAcceptancePolicy(activeProjectGoal(session)));
+    const currentVerificationPolicies = projectGoalVerificationPolicies(activeProjectGoal(session));
+    setDefinitionVerificationPoliciesDraft(currentVerificationPolicies);
+    setDefinitionVerificationRequirement(verificationRequirementSummary(currentVerificationPolicies));
     setDefinitionPlanFiles(session.planFiles || []);
     setDefinitionPlanFilePath('');
     setGoalChangeMode('refine');
@@ -1237,12 +1322,33 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const awaitingRecovery = !embedded
     && recoveryStatus !== 'done'
     && (recoveryMode === 'runtime' || sessions.length === 0);
+  const creationPolicyCriteria = conditionLines(doneWhen);
+  const effectiveCreationVerificationPolicies = normalizeProjectVerificationPolicies(creationPolicyCriteria, [
+    ...creationPolicyCriteria.map((criterion) => ({
+      criterion,
+      requirement: verificationRequirement === 'mixed' ? 'required' as const : verificationRequirement,
+    })),
+    ...verificationPoliciesDraft,
+  ]);
+  const definitionPolicyCriteria = conditionLines(definitionDoneWhenDraft);
+  const effectiveDefinitionVerificationPolicies = normalizeProjectVerificationPolicies(definitionPolicyCriteria, [
+    ...definitionPolicyCriteria.map((criterion) => ({
+      criterion,
+      requirement: definitionVerificationRequirement === 'mixed'
+        ? 'required' as const
+        : definitionVerificationRequirement,
+    })),
+    ...definitionVerificationPoliciesDraft,
+  ]);
   const projectDefinitionChanged = !!session && (
     goalChangeMode === 'pivot'
     || definitionGoalDraft.trim() !== session.goal
     || conditionLines(preconditionsDraft).join('\n') !== session.preconditions.join('\n')
     || conditionLines(supervisorNotesDraft).join('\n') !== (session.supervisorNotes || []).join('\n')
     || conditionLines(definitionDoneWhenDraft).join('\n') !== session.doneWhen.join('\n')
+    || definitionUserAcceptancePolicy !== projectGoalUserAcceptancePolicy(activeProjectGoal(session))
+    || JSON.stringify(effectiveDefinitionVerificationPolicies)
+      !== JSON.stringify(projectGoalVerificationPolicies(activeProjectGoal(session)))
     || JSON.stringify(definitionPlanFiles) !== JSON.stringify(session.planFiles || [])
   );
   const projectDefinitionDraftDirty = projectDefinitionChanged || !!definitionPlanFilePath.trim();
@@ -1285,6 +1391,17 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         clarificationOptionId || session.pendingUserQuestion.recommendedOptionId,
       )
     : [];
+  const manualVerificationFeedbackQuestion = !!session?.pendingUserQuestion
+    && session.pendingUserQuestion.reasonCode === 'verification-limited'
+    && session.pendingUserQuestion.options.some((option) => option.id === 'manual-verify-complete')
+    && session.pendingUserQuestion.options.some((option) => option.id === 'manual-verify-defer');
+  const manualVerificationCompletionSelected = manualVerificationFeedbackQuestion
+    && clarificationOptionId === 'manual-verify-complete';
+  const manualVerificationDeferredSelected = manualVerificationFeedbackQuestion
+    && clarificationOptionId === 'manual-verify-defer';
+  const clarificationSubmitDisabled = busy
+    || (!clarificationOptionId && !clarificationAnswer.trim())
+    || (manualVerificationCompletionSelected && !clarificationAnswer.trim());
 
   return (
     <div className={embedded ? 'project-manager-session-pane__frame' : 'confirm-dialog__overlay supervisor-dialog__overlay'} onMouseDown={(event) => {
@@ -1454,14 +1571,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           {session?.pendingUserQuestion && !creating && (
             <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
               <div className="supervisor-dialog__group-title">{
-                session.pendingUserQuestion.reasonCode === 'verification-limited'
-                  ? '项目验证受限，需要你选择'
+                manualVerificationFeedbackQuestion
+                  ? '人工验收等待，需要你反馈'
+                  : session.pendingUserQuestion.reasonCode === 'verification-limited'
+                    ? '项目验证受限，需要你选择'
                   : session.pendingUserQuestion.category === 'manual-intervention'
                     ? '项目阻塞，需要你指示'
                     : '项目管理 AI 邀请你对齐需求'
               }</div>
               <div className="project-manager-dialog__clarification-question">{session.pendingUserQuestion.question}</div>
-              {session.pendingUserQuestion.context && <div className="supervisor-dialog__hint">{session.pendingUserQuestion.context}</div>}
+              {session.pendingUserQuestion.context && <div className={manualVerificationFeedbackQuestion
+                ? 'supervisor-dialog__hint project-manager-dialog__manual-verification-guide'
+                : 'supervisor-dialog__hint'}>{session.pendingUserQuestion.context}</div>}
               <div className="project-manager-dialog__clarification-options">
                 {session.pendingUserQuestion.options.map((option) => (
                   <label key={option.id} data-selected={clarificationOptionId === option.id ? '1' : '0'}>
@@ -1470,7 +1591,17 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   </label>
                 ))}
               </div>
-              <textarea className="supervisor-dialog__textarea" rows={3} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="可补充说明，或不选上述选项直接填写自定义答复" />
+              <textarea
+                className="supervisor-dialog__textarea"
+                rows={manualVerificationFeedbackQuestion ? 5 : 3}
+                value={clarificationAnswer}
+                onChange={(event) => setClarificationAnswer(event.target.value)}
+                placeholder={manualVerificationFeedbackQuestion
+                  ? manualVerificationDeferredSelected
+                    ? '可选：说明暂缓原因或预计何时进行人工验收'
+                    : '请逐项填写实际结果，例如：Edit 成功；修改后 Save 成功；Delete 失败（现象：…）；重启后读取成功'
+                  : '可补充说明，或不选上述选项直接填写自定义答复'}
+              />
               {projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
                 <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{projectManagerQuestionReusableDecisionScope(session.pendingUserQuestion)}</div>
               )}
@@ -1492,8 +1623,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
               {!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
                 <div className="supervisor-dialog__hint">凭据、生产操作、内部故障、验证暂缓及未结构化限定的删除不能自动沿用；每次跳过验证都必须由用户明确确认。</div>
               )}
-              <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy || (!clarificationOptionId && !clarificationAnswer.trim())} onClick={() => void answerClarification()}>{busy ? '正在提交…' : '确认并交给项目管理 AI'}</button>
-              <div className="supervisor-dialog__hint">该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。</div>
+              <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={clarificationSubmitDisabled} onClick={() => void answerClarification()}>{busy
+                ? '正在提交…'
+                : manualVerificationCompletionSelected
+                  ? '提交人工验收结果'
+                  : manualVerificationDeferredSelected
+                    ? '确认暂缓并保持暂停'
+                    : clarificationOptionId === 'manual-verify'
+                      ? '进入人工验收步骤'
+                      : '确认并交给项目管理 AI'}</button>
+              <div className="supervisor-dialog__hint">{manualVerificationFeedbackQuestion
+                ? '提交实际结果或确认暂缓前，项目、监督 AI 和任务 AI 均保持等待，不会重新执行自动 GUI 验证。'
+                : '该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。'}</div>
             </section>
           )}
 
@@ -1691,6 +1832,69 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 setNotice('');
               }} placeholder={'相关功能实现并验证\n关键测试通过\n高风险或未验证项已明确报告'} />
               <div className="supervisor-dialog__hint">可留空让项目 AI 起草可验证的完成条件；只有不同合理标准会实质改变范围或验收时才会向你确认。阶段目标、执行任务、技术路线与普通重试由项目 AI 和专属监督自主决策。</div>
+              <div className="supervisor-dialog__label">用户最终验收策略</div>
+              <select className="supervisor-dialog__input" value={userAcceptancePolicy} onChange={(event) => {
+                setUserAcceptancePolicy(event.target.value as ProjectUserAcceptancePolicy);
+                setNotice('');
+              }}>
+                {Object.entries(USER_ACCEPTANCE_POLICY_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              <div className="supervisor-dialog__label">完成条件验证要求</div>
+              <select className="supervisor-dialog__input" value={verificationRequirement} onChange={(event) => {
+                const requirement = event.target.value as ProjectVerificationRequirement;
+                setVerificationRequirement(requirement);
+                setVerificationPoliciesDraft(effectiveCreationVerificationPolicies.map((policy) => ({
+                  ...policy,
+                  requirement: policy.riskClass === 'standard' ? requirement : 'required',
+                  reason: requirement === 'required' ? undefined : '用户在创建项目时明确选择该验证要求',
+                })));
+                setNotice('');
+              }}>
+                {verificationRequirement === 'mixed' && <option value="mixed">逐项策略不同</option>}
+                {Object.entries(VERIFICATION_REQUIREMENT_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              {effectiveCreationVerificationPolicies.length > 0 && <div className="project-manager-dialog__verification-policies">
+                {effectiveCreationVerificationPolicies.map((policy) => <label key={policy.criterion}>
+                  <span>{policy.criterion}</span>
+                  <div>
+                    <select className="supervisor-dialog__input" value={policy.riskClass || 'protected'} onChange={(event) => {
+                      const riskClass = event.target.value as ProjectVerificationRiskClass;
+                      const nextPolicies = effectiveCreationVerificationPolicies.map((entry) => (
+                        entry.criterion === policy.criterion
+                          ? { ...entry, riskClass, requirement: riskClass === 'protected' ? 'required' : entry.requirement }
+                          : entry
+                      ));
+                      setVerificationPoliciesDraft(nextPolicies);
+                      setVerificationRequirement(verificationRequirementSummary(nextPolicies));
+                      setNotice('');
+                    }}>
+                      {Object.entries(VERIFICATION_RISK_CLASS_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                    <select className="supervisor-dialog__input" value={policy.requirement} onChange={(event) => {
+                      const requirement = event.target.value as ProjectVerificationRequirement;
+                      const nextPolicies = effectiveCreationVerificationPolicies.map((entry) => (
+                        entry.criterion === policy.criterion
+                          ? { ...entry, requirement, reason: requirement === 'required' ? undefined : '用户为该完成条件单独选择验证要求' }
+                          : entry
+                      ));
+                      setVerificationPoliciesDraft(nextPolicies);
+                      setVerificationRequirement(verificationRequirementSummary(nextPolicies));
+                      setNotice('');
+                    }}>
+                      {Object.entries(VERIFICATION_REQUIREMENT_LABELS).map(([value, label]) => (
+                        <option key={value} value={value} disabled={value !== 'required' && policy.riskClass !== 'standard'}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </label>)}
+              </div>}
+              <div className="supervisor-dialog__hint">“无需用户最终验收”不等于没有证据；尽力验证或不适用验证仍须记录真实交付依据，且不能放宽安全、权限、生产、隐私、恢复和数据完整性条件。</div>
             </section> : !session ? <section className="supervisor-dialog__group">
               <div className="supervisor-dialog__group-title">项目记录已不可用</div>
               <div className="supervisor-dialog__hint">该项目可能已被删除或关闭。请关闭当前控制台，并从项目中心重新选择项目。</div>
@@ -1772,6 +1976,69 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   setConstraintNotice('');
                 }} placeholder={'相关功能实现并验证\n关键测试通过\n未验证条件已经明确报告'} />
                 <div className="supervisor-dialog__hint">修改或切换主目标时，未调整的旧完成条件不会自动套用到新目标；可留空让项目 AI 起草具体、可验证的条件。</div>
+                <div className="supervisor-dialog__label">用户最终验收策略</div>
+                <select className="supervisor-dialog__input" value={definitionUserAcceptancePolicy} onChange={(event) => {
+                  setDefinitionUserAcceptancePolicy(event.target.value as ProjectUserAcceptancePolicy);
+                  setConstraintNotice('');
+                }}>
+                  {Object.entries(USER_ACCEPTANCE_POLICY_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+                <div className="supervisor-dialog__label">完成条件验证要求</div>
+                <select className="supervisor-dialog__input" value={definitionVerificationRequirement} onChange={(event) => {
+                  const requirement = event.target.value as ProjectVerificationRequirement;
+                  setDefinitionVerificationRequirement(requirement);
+                  setDefinitionVerificationPoliciesDraft(effectiveDefinitionVerificationPolicies.map((policy) => ({
+                    ...policy,
+                    requirement: policy.riskClass === 'standard' ? requirement : 'required',
+                    reason: requirement === 'required' ? undefined : '用户在项目运行中明确切换验证要求',
+                  })));
+                  setConstraintNotice('');
+                }}>
+                  {definitionVerificationRequirement === 'mixed' && <option value="mixed">逐项策略不同（保持现状）</option>}
+                  {Object.entries(VERIFICATION_REQUIREMENT_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+                {effectiveDefinitionVerificationPolicies.length > 0 && <div className="project-manager-dialog__verification-policies">
+                  {effectiveDefinitionVerificationPolicies.map((policy) => <label key={policy.criterion}>
+                    <span>{policy.criterion}</span>
+                    <div>
+                      <select className="supervisor-dialog__input" value={policy.riskClass || 'protected'} onChange={(event) => {
+                        const riskClass = event.target.value as ProjectVerificationRiskClass;
+                        const nextPolicies = effectiveDefinitionVerificationPolicies.map((entry) => (
+                          entry.criterion === policy.criterion
+                            ? { ...entry, riskClass, requirement: riskClass === 'protected' ? 'required' : entry.requirement }
+                            : entry
+                        ));
+                        setDefinitionVerificationPoliciesDraft(nextPolicies);
+                        setDefinitionVerificationRequirement(verificationRequirementSummary(nextPolicies));
+                        setConstraintNotice('');
+                      }}>
+                        {Object.entries(VERIFICATION_RISK_CLASS_LABELS).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                      <select className="supervisor-dialog__input" value={policy.requirement} onChange={(event) => {
+                        const requirement = event.target.value as ProjectVerificationRequirement;
+                        const nextPolicies = effectiveDefinitionVerificationPolicies.map((entry) => (
+                          entry.criterion === policy.criterion
+                            ? { ...entry, requirement, reason: requirement === 'required' ? undefined : '用户为该完成条件单独切换验证要求' }
+                            : entry
+                        ));
+                        setDefinitionVerificationPoliciesDraft(nextPolicies);
+                        setDefinitionVerificationRequirement(verificationRequirementSummary(nextPolicies));
+                        setConstraintNotice('');
+                      }}>
+                        {Object.entries(VERIFICATION_REQUIREMENT_LABELS).map(([value, label]) => (
+                          <option key={value} value={value} disabled={value !== 'required' && policy.riskClass !== 'standard'}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </label>)}
+                </div>}
+                <div className="supervisor-dialog__hint">运行中切换会生成新的需求版本，先暂停旧执行链并要求项目 AI 评估、重排或重绑；历史验证结果和已知失败不会被改写。</div>
                 <div className="supervisor-dialog__label supervisor-dialog__label--required">本次变更类型</div>
                 <div className="project-manager-dialog__clarification-options">
                   <label data-selected={goalChangeMode === 'refine' ? '1' : '0'}>
@@ -1792,10 +2059,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div className="project-manager-dialog__work-items">
                   {currentSubgoals.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未提交阶段计划，当前主目标不能启动新的监督任务。</div>}
                   {currentSubgoals.map((subgoal) => {
-                    const completion = projectSubgoalCompletionResult(subgoal, currentWorkItems);
+                    const stageWorkItems = currentWorkItems.filter((item) => item.subgoalId === subgoal.id);
+                    const completion = projectSubgoalCompletionResult(subgoal, stageWorkItems);
                     const stageStatus = summarizeProjectSubgoalStatus({
                       status: subgoal.status,
-                      workItemStatuses: currentWorkItems.filter((item) => item.subgoalId === subgoal.id).map((item) => item.status),
+                      workItemStatuses: stageWorkItems.map((item) => item.status),
                     });
                     return (
                       <details key={subgoal.id} open={subgoal.status === 'active' || stageStatus.attention}>
@@ -1806,7 +2074,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0
                             ? subgoal.dependencies.map((dependency) => currentSubgoalLabels.get(dependency) || dependency).join('、')
                             : '无'}</dd>
-                          {completion && <ProjectCompletionDetails completion={completion} />}
+                          {completion && <ProjectCompletionDetails
+                            completion={completion}
+                            startedAt={projectStageStartedAt(stageWorkItems)}
+                          />}
                         </dl>
                       </details>
                     );
@@ -1835,6 +2106,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       <summary><strong>G{goalEntry.sequence} · {goalEntry.statement}</strong><span>{STATUS_LABELS[goalEntry.status] || goalEntry.status}</span></summary>
                       <dl>
                         <dt>完成条件</dt><dd>{goalEntry.doneWhen.join('\n')}</dd>
+                        <dt>用户最终验收</dt><dd>{USER_ACCEPTANCE_POLICY_LABELS[projectGoalUserAcceptancePolicy(goalEntry)]}</dd>
+                        <dt>逐项验证要求</dt><dd>{projectGoalVerificationPolicies(goalEntry).map((policy) => (
+                          `${policy.criterion}：${VERIFICATION_RISK_CLASS_LABELS[policy.riskClass || 'protected']} · ${VERIFICATION_REQUIREMENT_LABELS[policy.requirement]}`
+                        )).join('\n')}</dd>
                         <dt>需求版本</dt><dd>v{goalEntry.requirementsVersion}</dd>
                         {goalEntry.changeReason && <><dt>切换说明</dt><dd>{goalEntry.changeReason}</dd></>}
                       </dl>
@@ -1863,20 +2138,21 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>新前置条件</dt><dd>{lines(next?.preconditions)}</dd>
                           <dt>新监督注意事项</dt><dd>{lines(next?.supervisorNotes)}</dd>
                           <dt>新完成条件</dt><dd>{lines(next?.doneWhen)}</dd>
+                          <dt>新用户验收策略</dt><dd>{String(next?.userAcceptancePolicy || 'on-gap')}</dd>
+                          <dt>新验证策略</dt><dd>{Array.isArray(next?.verificationPolicies)
+                            ? next.verificationPolicies.map((policy) => {
+                                const entry = policy as Record<string, unknown>;
+                                return `${String(entry.criterion || '')}：${String(entry.requirement || '')}`;
+                              }).join('\n')
+                            : '默认全部 required'}</dd>
                         </dl>
                       </details>
                     );
                   })}
                 </div>
               </section>}
-              {activeView === 'execution' && <section className="supervisor-dialog__group">
-                <div className="project-manager-dialog__section-head">
-                  <div>
-                    <div className="supervisor-dialog__group-title">项目 AI 当前目标规划</div>
-                    <div className="supervisor-dialog__hint">这里展示项目 AI 维护的阶段成果与依赖；每个监督 AI 的具体执行路线请在对应监督通道中查看。</div>
-                  </div>
-                  <span className="project-manager-dialog__work-item-count">{currentSubgoals.length} 个阶段</span>
-                </div>
+              {activeView === 'execution' && <details className="supervisor-dialog__advanced project-manager-dialog__execution-audit">
+                <summary>阶段规划与验收 <span>{currentSubgoals.length} 个阶段 · 按需查看</span></summary>
                 <div className="project-manager-dialog__work-items">
                   {currentSubgoals.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未提交当前目标的阶段规划。</div>}
                   {currentSubgoals.map((subgoal) => {
@@ -1896,13 +2172,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             ? subgoal.dependencies.map((dependency) => currentSubgoalLabels.get(dependency) || dependency).join('、')
                             : '无'}</dd>
                           <dt>工作项安排</dt><dd><ProjectStageWorkItems items={stageWorkItems} /></dd>
-                          {completion && <ProjectCompletionDetails completion={completion} />}
+                          {completion && <ProjectCompletionDetails
+                            completion={completion}
+                            startedAt={projectStageStartedAt(stageWorkItems)}
+                          />}
                         </dl>
                       </details>
                     );
                   })}
                 </div>
-              </section>}
+              </details>}
               {activeView === 'execution' && <section className="supervisor-dialog__group">
                 <div className="project-manager-dialog__section-head">
                   <div>
@@ -1968,8 +2247,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     const canIntervene = !['completed', 'stopped'].includes(session.status)
                       && !['completed', 'stopped'].includes(item.status);
                     return (
-                      <details key={item.id} data-selected={workItemInterventionId === item.id ? '1' : '0'}>
-                        <summary>
+                      <article
+                        key={item.id}
+                        className="project-manager-dialog__action-card"
+                        data-selected={workItemInterventionId === item.id ? '1' : '0'}
+                        data-attention={itemStatus.attention ? '1' : '0'}
+                      >
+                        <header>
                           <input
                             type="radio"
                             name={`work-item-intervention-${session.id}`}
@@ -1983,38 +2267,77 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               setWorkItemInterventionNotice('');
                             }}
                           />
-                          <strong title={item.id}>{itemTitle}</strong><span>{statusLabel}</span>
-                        </summary>
-                        <dl>
-                          <dt>执行者</dt><dd>项目唯一任务 AI；当前并行边界为 {item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}，是否并行及内部具体分工由任务 AI 自主决定</dd>
-                          <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
-                          <dt>监督 AI 当前路线</dt><dd>{supervisorPlanView.route}</dd>
-                          <dt>监督 AI 下一步</dt><dd>{supervisorPlanView.nextInstruction}</dd>
-                          <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : supervisorPlanView.mode === 'direct' ? '当前采用单成果批次，不做机械拆分' : supervisorPlanView.modeLabel}</dd>
-                          <dt>监督通道状态</dt><dd>{itemStatus.supervisorLabel}：{itemStatus.detail}</dd>
-                          <dt>执行护栏</dt><dd>真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}；同类失败上限 {item.contract.budget.maxIdenticalFailures}；连续无进展上限 {item.contract.budget.maxNoProgressRounds}</dd>
-                          <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
-                          {itemCompletion && <ProjectCompletionDetails completion={itemCompletion} evidenceFallback={item.latestEvidence} />}
-                          <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
-                          <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
-                          <dt>阻塞原因</dt><dd>{item.latestBlocker || '无'}</dd>
-                          {currentVerificationLimitation && <>
-                            <dt>验证能力限制</dt>
-                            <dd>{currentVerificationLimitation.detail}
-                            {'\n'}尚缺证据：{currentVerificationLimitation.missingEvidence.join('；')}</dd>
-                          </>}
-                          {item.verificationDecision && <>
-                            <dt>用户验证决策</dt>
-                            <dd>{item.verificationDecision.action === 'defer-verification'
-                              ? '已明确授权暂缓当前验证；未验证项保留，不能据此完成阶段或项目'
-                              : item.verificationDecision.action === 'skip-verification'
-                                ? '已跳过当前验证工作项；未验证项由后续新计划重新承接，不能据此完成阶段或项目'
-                                : '已授权一轮不同路线的替代验证；失败后不得重复原路线或同义验证'}
-                            {' · '}{new Date(item.verificationDecision.decidedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
-                          </>}
-                          <dt>决策历史</dt><dd>{decisions.length === 0 ? '暂无' : decisions.slice(-12).map((event) => `${event.kind}：${event.summary}`).join('\n')}</dd>
-                        </dl>
-                      </details>
+                          <div><strong title={item.id}>{itemTitle}</strong><small>{item.contract.objective}</small></div>
+                          <span>{statusLabel}</span>
+                        </header>
+
+                        <div className="project-manager-dialog__action-grid">
+                          <div data-attention={itemStatus.attention ? '1' : '0'}>
+                            <span>当前状态</span>
+                            <strong>{itemStatus.supervisorLabel}</strong>
+                            <small>{itemStatus.detail}</small>
+                          </div>
+                          <div>
+                            <span>监督正在做</span>
+                            <strong>{supervisorPlanView.route}</strong>
+                            <small>{supervisorPlanView.modeLabel}</small>
+                          </div>
+                          <div>
+                            <span>下一步</span>
+                            <strong>{supervisorPlanView.nextInstruction}</strong>
+                          </div>
+                          <div>
+                            <span>当前进度</span>
+                            <strong>{supervisorPlanView.steps.length > 0
+                              ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length} 个执行项已完成`
+                              : supervisorPlanView.mode === 'direct'
+                                ? '单成果批次持续推进'
+                                : supervisorPlanView.modeLabel}</strong>
+                            <small>{compactProjectAlertSummary(item.latestEvidence || item.latestContextSummary || '等待新的执行证据')}</small>
+                          </div>
+                        </div>
+
+                        {(item.latestBlocker || currentVerificationLimitation) && (
+                          <div className="project-manager-dialog__action-alert" role="alert">
+                            <strong>{item.latestBlocker ? '当前阻塞' : '验证能力受限'}</strong>
+                            <span>{item.latestBlocker || currentVerificationLimitation?.detail}</span>
+                          </div>
+                        )}
+
+                        <details className="project-manager-dialog__action-audit">
+                          <summary>查看合同、证据与历史</summary>
+                          <dl>
+                            <dt>执行者</dt><dd>项目唯一任务 AI；当前并行边界为 {item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}，是否并行及内部具体分工由任务 AI 自主决定</dd>
+                            <dt>监督方式</dt><dd>{supervisorPlanView.modeLabel}</dd>
+                            <dt>监督执行进度</dt><dd>{supervisorPlanView.steps.length > 0 ? `${supervisorPlanView.completedSteps}/${supervisorPlanView.steps.length}：${supervisorPlanView.steps.map((step) => `${step.title}（${STATUS_LABELS[step.status] || step.status}）`).join('；')}` : supervisorPlanView.mode === 'direct' ? '当前采用单成果批次，不做机械拆分' : supervisorPlanView.modeLabel}</dd>
+                            <dt>执行护栏</dt><dd>真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}；同类失败上限 {item.contract.budget.maxIdenticalFailures}；连续无进展上限 {item.contract.budget.maxNoProgressRounds}</dd>
+                            <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
+                            {itemCompletion && <ProjectCompletionDetails
+                              completion={itemCompletion}
+                              evidenceFallback={item.latestEvidence}
+                              startedAt={item.startedAt}
+                            />}
+                            <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
+                            <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
+                            <dt>阻塞原因</dt><dd>{item.latestBlocker || '无'}</dd>
+                            {currentVerificationLimitation && <>
+                              <dt>验证能力限制</dt>
+                              <dd>{currentVerificationLimitation.detail}
+                              {'\n'}尚缺证据：{currentVerificationLimitation.missingEvidence.join('；')}</dd>
+                            </>}
+                            {item.verificationDecision && <>
+                              <dt>用户验证决策</dt>
+                              <dd>{item.verificationDecision.action === 'defer-verification'
+                                ? '已明确授权暂缓当前验证；未验证项保留，不能据此完成阶段或项目'
+                                : item.verificationDecision.action === 'skip-verification'
+                                  ? '已跳过当前验证工作项；未验证项由后续新计划重新承接，不能据此完成阶段或项目'
+                                  : '已授权一轮不同路线的替代验证；失败后不得重复原路线或同义验证'}
+                              {' · '}{new Date(item.verificationDecision.decidedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+                            </>}
+                            <dt>决策历史</dt><dd>{decisions.length === 0 ? '暂无' : decisions.slice(-12).map((event) => `${event.kind}：${event.summary}`).join('\n')}</dd>
+                          </dl>
+                        </details>
+                      </article>
                     );
                   })}
                   {archivedWorkItems.length > 0 && (
@@ -2151,7 +2474,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   <button type="button" className="confirm-dialog__btn project-manager-dialog__composer-send" disabled={busy || !message.trim()} onClick={() => void sendMessage()}>发送给项目 AI</button>
                 </div>
               </section>}
-              {activeView === 'execution' && <details className="supervisor-dialog__advanced project-manager-dialog__logs" open>
+              {activeView === 'execution' && <details className="supervisor-dialog__advanced project-manager-dialog__logs">
                 <summary>查看当前项目 AI 处理日志（{session.events.length}）</summary>
                 <div className="project-manager-dialog__event-list">
                   {session.events.length === 0 && <div className="supervisor-dialog__empty">暂无处理记录。</div>}

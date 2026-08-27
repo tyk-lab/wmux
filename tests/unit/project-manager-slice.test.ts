@@ -1079,6 +1079,57 @@ describe('project-manager slice', () => {
     }, first.id)).toMatchObject({ ok: false, error: expect.stringContaining('已经处理') });
   });
 
+  it('atomically refines a verification choice into a durable manual-feedback question', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\manual-verify', goal: '验证 GUI', doneWhen: ['GUI 已验收'],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: item('gui-check'),
+    }, project.id);
+    const original = {
+      id: 'verification-choice', category: 'manual-intervention' as const,
+      workItemId: 'gui-check', blocker: 'GUI 自动化不可用', reasonCode: 'verification-limited' as const,
+      question: '如何继续验证？', context: '自动验证无法取得证据。',
+      options: [{ id: 'manual-verify', label: '人工验收' }, { id: 'keep-paused', label: '保持暂停' }],
+      recommendedOptionId: 'manual-verify', previousStatus: 'active' as const, createdAt: 1,
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification', question: original,
+    }, project.id);
+    const refined = {
+      ...original,
+      id: 'manual-feedback',
+      question: '请完成一次人工验收并反馈结果。',
+      options: [
+        { id: 'manual-verify-complete', label: '完成人工验收' },
+        { id: 'manual-verify-defer', label: '暂缓人工验收' },
+      ],
+      recommendedOptionId: 'manual-verify-complete',
+      previousStatus: 'waiting' as const,
+      createdAt: 2,
+    };
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'refine-user-clarification', questionId: original.id,
+      question: refined, selectedOptionId: 'manual-verify',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'user-clarification-requested',
+        payload: {
+          refinedFromQuestionId: original.id,
+          selectedOptionId: 'manual-verify',
+        },
+      },
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: { id: 'manual-feedback', recommendedOptionId: 'manual-verify-complete' },
+      workItems: [expect.objectContaining({ id: 'gui-check', status: 'waiting-decision' })],
+    });
+  });
+
   it('rejects execution records from a superseded main goal', () => {
     const useStore = store();
     const session = useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '旧目标', doneWhen: ['旧目标完成'] });

@@ -986,6 +986,7 @@ export interface FeishuProjectManagerView {
 interface FeishuProjectClarification {
   id: string;
   category?: 'clarification' | 'manual-intervention';
+  reasonCode?: string;
   workItemId?: string;
   blocker?: string;
   question: string;
@@ -1086,6 +1087,62 @@ export function buildProjectClarificationCard(
   question: FeishuProjectClarification,
 ): object {
   const manualIntervention = question.category === 'manual-intervention';
+  const manualVerificationFeedback = question.reasonCode === 'verification-limited'
+    && question.options.some((option) => option.id === 'manual-verify-complete')
+    && question.options.some((option) => option.id === 'manual-verify-defer');
+  const responseElements = manualVerificationFeedback ? [
+    { tag: 'markdown', content: '**选择人工验收结果并填写反馈**' },
+    {
+      tag: 'select_static',
+      element_id: 'project_clarification_option',
+      name: 'project_clarification_option',
+      required: true,
+      placeholder: { tag: 'plain_text', content: '选择完成人工验收或暂缓人工验收' },
+      options: question.options.map((option) => ({
+        text: {
+          tag: 'plain_text',
+          content: `${option.label}${option.id === question.recommendedOptionId ? '（推荐）' : ''}`,
+        },
+        value: option.id,
+      })),
+    },
+    ...question.options.filter((option) => option.description).map((option) => ({
+      tag: 'div',
+      text: { tag: 'plain_text', content: `${option.label}：${option.description}` },
+    })),
+    {
+      tag: 'input', element_id: 'project_clarification_answer', name: 'project_clarification_answer',
+      input_type: 'multiline_text', rows: 5, max_length: 1000,
+      label: { tag: 'plain_text', content: '人工验收结果' },
+      placeholder: { tag: 'plain_text', content: '选择“完成人工验收”时，必须逐项填写成功、失败或未执行及实际现象。' },
+    },
+    formButton('wmux_form_project_clarification', '提交人工验收选择', 'primary', {
+      wmux_action: 'form_project_clarification', projectId, questionId: question.id,
+    }),
+  ] : [
+    { tag: 'markdown', content: '**选择一个答复**' },
+    ...responsiveButtonRows(question.options.map((option) => cardButton({
+      wmux_action: 'project_clarification_option',
+      projectId,
+      questionId: question.id,
+      optionId: option.id,
+      answer: option.label,
+    }, `${option.label}${option.id === question.recommendedOptionId ? '（推荐）' : ''}`, option.id === question.recommendedOptionId ? 'primary' : 'default'))),
+    ...question.options.filter((option) => option.description).map((option) => ({
+      tag: 'div',
+      text: { tag: 'plain_text', content: `${option.label}：${option.description}` },
+    })),
+    { tag: 'hr' },
+    {
+      tag: 'input', element_id: 'project_clarification_answer', name: 'project_clarification_answer',
+      input_type: 'multiline_text', rows: 4, max_length: 1000,
+      label: { tag: 'plain_text', content: '自定义答复（可选）' },
+      placeholder: { tag: 'plain_text', content: '不选上述选项时，可直接填写你的决定和必要边界。' },
+    },
+    formButton('wmux_form_project_clarification', '提交自定义答复', 'primary', {
+      wmux_action: 'form_project_clarification', projectId, questionId: question.id,
+    }),
+  ];
   return buildFormCard(
     manualIntervention ? 'wmux · 项目阻塞，需要你的指示' : 'wmux · 项目需求需要与你对齐',
     'orange',
@@ -1099,30 +1156,7 @@ export function buildProjectClarificationCard(
       question.context ? question.context.slice(0, 1800) : '',
     ].filter(Boolean).join('\n\n'),
     'wmux_project_clarification_form',
-    [
-      { tag: 'markdown', content: '**选择一个答复**' },
-      ...responsiveButtonRows(question.options.map((option) => cardButton({
-        wmux_action: 'project_clarification_option',
-        projectId,
-        questionId: question.id,
-        optionId: option.id,
-        answer: option.label,
-      }, `${option.label}${option.id === question.recommendedOptionId ? '（推荐）' : ''}`, option.id === question.recommendedOptionId ? 'primary' : 'default'))),
-      ...question.options.filter((option) => option.description).map((option) => ({
-        tag: 'div',
-        text: { tag: 'plain_text', content: `${option.label}：${option.description}` },
-      })),
-      { tag: 'hr' },
-      {
-        tag: 'input', element_id: 'project_clarification_answer', name: 'project_clarification_answer',
-        input_type: 'multiline_text', rows: 4, max_length: 1000,
-        label: { tag: 'plain_text', content: '自定义答复（可选）' },
-        placeholder: { tag: 'plain_text', content: '不选上述选项时，可直接填写你的决定和必要边界。' },
-      },
-      formButton('wmux_form_project_clarification', '提交自定义答复', 'primary', {
-        wmux_action: 'form_project_clarification', projectId, questionId: question.id,
-      }),
-    ],
+    responseElements,
   );
 }
 
@@ -3300,10 +3334,14 @@ export class FeishuSupervisorService {
     }
     const form = this.cardFormValues(event);
     if (value.wmux_action === 'project_clarification_option' || value.wmux_action === 'form_project_clarification') {
+      const formOptionId = value.wmux_action === 'form_project_clarification'
+        ? String(form.project_clarification_option || '').trim()
+        : '';
+      const optionId = String(value.optionId || formOptionId).trim();
       const answer = value.wmux_action === 'project_clarification_option'
         ? String(value.answer || '').trim()
         : String(form.project_clarification_answer || '').trim();
-      if (!answer || !value.questionId) {
+      if ((!answer && !optionId) || !value.questionId) {
         await this.sendText('请选择一个选项，或填写自定义答复后再提交。', event.chatId);
         return false;
       }
@@ -3311,11 +3349,13 @@ export class FeishuSupervisorService {
         action: 'project-answer',
         projectId: value.projectId || undefined,
         questionId: value.questionId,
-        optionId: value.optionId,
+        optionId: optionId || undefined,
         answer,
       }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
       if (!failedResult(result)) {
-        await this.resolveProjectClarification(value.questionId, answer);
+        const resolvedAnswer = answer
+          || (optionId === 'manual-verify-defer' ? '暂缓人工验收' : optionId);
+        await this.resolveProjectClarification(value.questionId, resolvedAnswer);
       } else {
         await this.sendText(summary(result), event.chatId);
       }

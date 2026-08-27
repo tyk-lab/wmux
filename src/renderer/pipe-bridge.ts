@@ -154,20 +154,29 @@ import {
   MAX_PROJECT_PLAN_FILE_BYTES,
   MAX_PROJECT_PLAN_FILES,
   PROJECT_RETRY_KINDS,
+  PROJECT_USER_ACCEPTANCE_POLICIES,
+  PROJECT_USER_ACCEPTANCE_REQUIRED_ERROR,
+  PROJECT_VERIFICATION_REQUIREMENTS,
+  PROJECT_VERIFICATION_RISK_CLASSES,
   PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES,
   PROJECT_ORIENTATION_DISPOSITIONS,
   diffProjectProgressSnapshots,
   normalizeProjectManagerSession,
+  normalizeProjectUserAcceptancePolicy,
+  normalizeProjectVerificationPolicies,
   normalizeProjectCompletionResult,
   normalizeProjectExecutionBudget,
   normalizeProjectStageAcceptanceCoverage,
   normalizeProjectTaskComplexityAssessment,
   projectCompletionCriteriaError,
   projectCriterionIdentity,
+  projectCriterionVerificationCannotBeRelaxed,
   projectCriterionRequiresPassingResult,
   projectCriterionRequiresRuntimeTest,
   projectFinalAcceptanceEligibilityError,
   projectFinalAcceptanceScope,
+  projectGoalUserAcceptancePolicy,
+  projectGoalVerificationPolicies,
   projectAuthorizationVersion,
   projectDisplayName,
   projectManagerDestructiveDecisionScopeMatches,
@@ -205,6 +214,7 @@ import {
   type ProjectExecutionRecord,
   type ProjectExecutionResponsibility,
   type ProjectCompletionResult,
+  type ProjectCriterionVerificationPolicy,
   type ProjectCriterionVerification,
   type ProjectEvidenceArtifact,
   type ProjectPlanFileSnapshot,
@@ -212,6 +222,7 @@ import {
   type ProjectSupervisorContract,
   type ProjectTaskBatch,
   type ProjectVerificationLimitation,
+  type ProjectUserAcceptancePolicy,
   type ProjectRetryKind,
   type ProjectWorkItem,
 } from '../shared/project-manager';
@@ -270,6 +281,10 @@ import {
 import { projectAuxiliaryWritablePathAllowed } from './project-manager/auxiliary-policy';
 import { projectSupervisorLaneIds as scopedProjectSupervisorLaneIds } from './project-manager/lane-scope';
 import { shouldRestartProjectManagerRuntime } from './project-manager/runtime-recovery-policy';
+import {
+  classifyProjectWatchdogScenario,
+  projectWatchdogMayInterveneForRole,
+} from './project-manager/watchdog-policy';
 import {
   buildProjectInternalRecoveryScopeKey,
   projectGoalClosurePauseWasMisclassified,
@@ -4132,6 +4147,53 @@ function normalizeOrdinaryTaskDispatch(raw: unknown): { dispatch?: OrdinaryTaskD
   };
 }
 
+function projectVerificationPoliciesInput(
+  value: unknown,
+  doneWhen: readonly string[],
+  fallback?: readonly ProjectCriterionVerificationPolicy[],
+): { policies?: ProjectCriterionVerificationPolicy[]; error?: string } {
+  if (value === undefined) {
+    return { policies: normalizeProjectVerificationPolicies(doneWhen, fallback) };
+  }
+  if (!Array.isArray(value)) return { error: 'verificationPolicies 必须是数组' };
+  const criteriaByIdentity = new Map(doneWhen.map((criterion) => [projectCriterionIdentity(criterion), criterion]));
+  const seen = new Set<string>();
+  const parsed: ProjectCriterionVerificationPolicy[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { error: 'verificationPolicies 每项必须是对象' };
+    }
+    const candidate = entry as Record<string, unknown>;
+    const unknownFields = Object.keys(candidate).filter((field) => !['criterion', 'requirement', 'riskClass', 'reason'].includes(field));
+    if (unknownFields.length > 0) {
+      return { error: `verificationPolicies 包含未授权字段：${unknownFields.join('、')}` };
+    }
+    const criterionInput = String(candidate.criterion || '').trim();
+    const identity = projectCriterionIdentity(criterionInput);
+    const criterion = criteriaByIdentity.get(identity);
+    const requirement = String(candidate.requirement || '') as ProjectCriterionVerificationPolicy['requirement'];
+    const riskClass = String(candidate.riskClass || 'protected') as NonNullable<ProjectCriterionVerificationPolicy['riskClass']>;
+    if (!criterion) return { error: `verificationPolicies 引用了不存在的完成条件：${criterionInput || '（空）'}` };
+    if (seen.has(identity)) return { error: `verificationPolicies 重复配置完成条件：${criterion}` };
+    if (!PROJECT_VERIFICATION_REQUIREMENTS.includes(requirement)) {
+      return { error: `verificationPolicies.requirement 无效：${String(candidate.requirement || '')}` };
+    }
+    if (!PROJECT_VERIFICATION_RISK_CLASSES.includes(riskClass)) {
+      return { error: `verificationPolicies.riskClass 无效：${String(candidate.riskClass || '')}` };
+    }
+    if (requirement !== 'required' && riskClass !== 'standard') {
+      return { error: `完成条件只有显式分类为 riskClass=standard 后才能降低验证要求：${criterion}` };
+    }
+    if (riskClass === 'standard' && projectCriterionVerificationCannotBeRelaxed(criterion)) {
+      return { error: `安全、权限、生产或数据完整性验收不能降级：${criterion}` };
+    }
+    seen.add(identity);
+    const reason = String(candidate.reason || '').trim().slice(0, 4000);
+    parsed.push({ criterion, requirement, riskClass, ...(reason ? { reason } : {}) });
+  }
+  return { policies: normalizeProjectVerificationPolicies(doneWhen, parsed) };
+}
+
 function renderOrdinaryTaskDispatch(dispatch: OrdinaryTaskDispatch): string {
   const verificationLabels: Record<NonNullable<OrdinaryTaskDispatch['verification']>['feasibility'], string> = {
     direct: '可直接验证',
@@ -4925,6 +4987,20 @@ function projectPlanningActionConfirmationError(
     : params?.definition || params || {};
   const supplements = projectStringArray(input?.planningSupplements ?? input?.supplements);
   let changesUserPlan = false;
+  const inputDoneWhen = updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'doneWhen')
+    ? projectStringArray(input.doneWhen)
+    : session.doneWhen;
+  const verificationInput = updatesDefinition
+    ? projectVerificationPoliciesInput(
+        input.verificationPolicies,
+        inputDoneWhen,
+        projectGoalVerificationPolicies(activeProjectGoal(session)),
+      )
+    : {};
+  if (verificationInput.error) return verificationInput.error;
+  const nextUserAcceptancePolicy = updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'userAcceptancePolicy')
+    ? normalizeProjectUserAcceptancePolicy(input.userAcceptancePolicy)
+    : projectGoalUserAcceptancePolicy(activeProjectGoal(session));
   if (updatesDefinition) {
     const owns = (field: string) => Object.prototype.hasOwnProperty.call(input, field);
     changesUserPlan = (owns('goal') && String(input.goal || '').trim() !== session.goal.trim())
@@ -4933,6 +5009,10 @@ function projectPlanningActionConfirmationError(
         && JSON.stringify(projectStringArray(input.preconditions)) !== JSON.stringify(session.preconditions))
       || (owns('doneWhen')
         && JSON.stringify(projectStringArray(input.doneWhen)) !== JSON.stringify(session.doneWhen))
+      || (owns('userAcceptancePolicy')
+        && nextUserAcceptancePolicy !== projectGoalUserAcceptancePolicy(activeProjectGoal(session)))
+      || (owns('verificationPolicies')
+        && JSON.stringify(verificationInput.policies) !== JSON.stringify(projectGoalVerificationPolicies(activeProjectGoal(session))))
       || owns('planFiles');
   }
   if (!['update', 'update-definition', 'goal-plan', 'task-create', 'task-update'].includes(action)) return null;
@@ -4949,6 +5029,12 @@ function projectPlanningActionConfirmationError(
     ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'doneWhen')
       && JSON.stringify(projectStringArray(input.doneWhen)) !== JSON.stringify(session.doneWhen)
       ? [`doneWhen: ${projectStringArray(input.doneWhen).join('；') || '（空）'}`] : []),
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'userAcceptancePolicy')
+      && nextUserAcceptancePolicy !== projectGoalUserAcceptancePolicy(activeProjectGoal(session))
+      ? [`userAcceptancePolicy: ${nextUserAcceptancePolicy}`] : []),
+    ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'verificationPolicies')
+      && JSON.stringify(verificationInput.policies) !== JSON.stringify(projectGoalVerificationPolicies(activeProjectGoal(session)))
+      ? [`verificationPolicies: ${(verificationInput.policies || []).map((policy) => `${policy.criterion}=${policy.riskClass || 'protected'}/${policy.requirement}${policy.reason ? `（${policy.reason}）` : ''}`).join('；')}`] : []),
     ...(updatesDefinition && Object.prototype.hasOwnProperty.call(input, 'planFiles')
       ? [`planFiles: ${(Array.isArray(input.planFiles) ? input.planFiles : []).map((file: any) => String(file?.path || file?.name || '')).filter(Boolean).join('；') || '（空）'}`] : []),
     ...supplements.map((supplement) => `supplement: ${supplement}`),
@@ -5835,7 +5921,10 @@ function normalizeProjectManagerUserQuestion(
   const normalizedQuestionScope = normalizeScope(value?.confirmationScope, 'confirmationScope');
   if (normalizedQuestionScope.error) return { error: normalizedQuestionScope.error };
   const confirmationScope = normalizedQuestionScope.scope || [];
-  const planningFields = new Set(['goal', 'projectscope', 'preconditions', 'donewhen', 'planfiles', 'supplement']);
+  const planningFields = new Set([
+    'goal', 'projectscope', 'preconditions', 'donewhen',
+    'useracceptancepolicy', 'verificationpolicies', 'planfiles', 'supplement',
+  ]);
   const specialManualScopes = new Set(['manualoperationauthorization', 'acceptance', 'finalacceptance']);
   const normalizedVisibleText = (text: string): string => (
     text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -5851,7 +5940,7 @@ function normalizeProjectManagerUserQuestion(
       if (separator <= 0) {
         const special = normalizedVisibleText(entry);
         if (category === 'manual-intervention' && specialManualScopes.has(special)) continue;
-        return `${label} 必须使用 goal|projectScope|preconditions|doneWhen|planFiles|supplement: <精确值>`;
+        return `${label} 必须使用 goal|projectScope|preconditions|doneWhen|userAcceptancePolicy|verificationPolicies|planFiles|supplement: <精确值>`;
       }
       const field = normalizedVisibleText(entry.slice(0, separator));
       if (!planningFields.has(field)) return `${label} 包含不支持的规划字段：${entry.slice(0, separator).trim()}`;
@@ -6100,7 +6189,9 @@ function projectRequirementConfirmationCoversCurrentDefinition(
   if (explicitlyLinked) return true;
   const previous = latestDefinition?.payload?.previous as Record<string, unknown> | undefined;
   const next = latestDefinition?.payload?.next as Record<string, unknown> | undefined;
-  const changesUserPlan = !previous || !next || ['goal', 'preconditions', 'planFiles', 'doneWhen'].some((key) => (
+  const changesUserPlan = !previous || !next || [
+    'goal', 'preconditions', 'planFiles', 'doneWhen', 'userAcceptancePolicy', 'verificationPolicies',
+  ].some((key) => (
     JSON.stringify(previous[key] ?? null) !== JSON.stringify(next[key] ?? null)
   ));
   return latestDefinitionIndex > confirmationIndex
@@ -6654,8 +6745,9 @@ async function requestProjectPauseUserDecision(
 
 function projectFinalAcceptanceQuestion(
   session: ProjectManagerSession,
+  mode: 'required' | 'gap' = 'gap',
 ): ProjectManagerUserQuestion | undefined {
-  if (projectFinalAcceptanceEligibilityError(session)) return undefined;
+  if (mode === 'gap' && projectFinalAcceptanceEligibilityError(session)) return undefined;
   const goal = activeProjectGoal(session);
   const requirementsVersion = projectRequirementsVersion(session);
   const authorizationVersion = projectAuthorizationVersion(session);
@@ -6673,15 +6765,23 @@ function projectFinalAcceptanceQuestion(
     category: 'manual-intervention',
     reasonCode: 'final-acceptance',
     decisionScope: projectFinalAcceptanceScope(session),
-    blocker: '项目实现工作已经全部结束，但中途仍有长期缺少证据、暂缓或跳过的验证项。',
-    question: '项目实现工作已全部完成，但仍保留中途暂缓、跳过或长期无法完成的验证项。你是否接受当前效果并完成本次主目标？',
+    blocker: mode === 'required'
+      ? '项目实现与验证门禁已经满足，当前目标策略要求用户进行最终验收。'
+      : '项目实现工作已经全部结束，但中途仍有长期缺少证据、暂缓或跳过的验证项。',
+    question: mode === 'required'
+      ? '项目实现与验证已经完成。你是否确认最终效果并完成本次主目标？'
+      : '项目实现工作已全部完成，但仍保留中途暂缓、跳过或长期无法完成的验证项。你是否接受当前效果并完成本次主目标？',
     context: [
       `当前主目标：${goal.statement}`,
-      '实现状态：除验证能力缺口外，当前版本没有未完成、运行中或已知失败的实现工作。',
-      `尚未由普通验证闭合的目标条件：${goal.doneWhen.join('；')}`,
-      `未闭合验证：${gaps.map((item) => `${item.title}：${item.latestBlocker || item.verificationLimitation?.detail || '验证未完成'}`).join('；')}`,
-      '接受只表示用户认可当前最终效果；不会把缺失验证伪装成自动测试通过。已知失败、安全问题、未完成实现或没有任何成果时不能使用此路径。',
-    ].join('\n'),
+      mode === 'required'
+        ? '实现状态：全部当前版本工作项、阶段和目标完成条件已经通过控制层门禁；本次询问只执行用户要求的最终验收。'
+        : '实现状态：除验证能力缺口外，当前版本没有未完成、运行中或已知失败的实现工作。',
+      mode === 'required' ? '' : `尚未由普通验证闭合的目标条件：${goal.doneWhen.join('；')}`,
+      mode === 'required' ? '' : `未闭合验证：${gaps.map((item) => `${item.title}：${item.latestBlocker || item.verificationLimitation?.detail || '验证未完成'}`).join('；')}`,
+      mode === 'required'
+        ? '确认只代表最终效果验收，不会替代或改写已经形成的验证证据。'
+        : '接受只表示用户认可当前最终效果；不会把缺失验证伪装成自动测试通过。已知失败、安全问题、未完成实现或没有任何成果时不能使用此路径。',
+    ].filter(Boolean).join('\n'),
     options: [
       {
         id: 'accept-current-result',
@@ -6691,8 +6791,10 @@ function projectFinalAcceptanceQuestion(
       },
       {
         id: 'continue-validation',
-        label: '继续补充验证',
-        description: '不接受当前收口，继续为未验证项建立补验工作。',
+        label: mode === 'required' ? '暂不完成项目' : '继续补充验证',
+        description: mode === 'required'
+          ? '保留当前成果和验证记录，项目保持等待，稍后再决定是否最终验收。'
+          : '不接受当前收口，继续为未验证项建立补验工作。',
         confirmationScope: [],
       },
     ],
@@ -6703,9 +6805,10 @@ function projectFinalAcceptanceQuestion(
 
 async function requestProjectFinalAcceptance(
   session: ProjectManagerSession,
+  mode: 'required' | 'gap' = 'gap',
 ): Promise<ProjectManagerUserQuestion | undefined> {
   if (session.pendingUserQuestion) return session.pendingUserQuestion;
-  const question = projectFinalAcceptanceQuestion(session);
+  const question = projectFinalAcceptanceQuestion(session, mode);
   if (!question) return undefined;
   const store = useStore.getState();
   const result = store.applyProjectManagerAction({
@@ -7610,6 +7713,14 @@ async function forceRecoverManagedAgent(
   target: ManagedProjectAgentTarget,
   runtime: ManagedAgentWatchdogRuntime,
 ): Promise<void> {
+  reconcileProjectExecutionResponsibility(target.session.id);
+  const currentSession = useStore.getState().projectManagers
+    .find((candidate) => candidate.id === target.session.id);
+  const disposition = currentSession ? classifyProjectWatchdogScenario(currentSession, {
+    hasPendingManagerDelivery: (currentSession.pendingManagerDeliveries || []).length > 0
+      || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === currentSession.id),
+  }) : undefined;
+  if (!disposition || !projectWatchdogMayInterveneForRole(disposition, target.role)) return;
   const recoveryKey = managedProjectRuntimeRecoveryKey({
     projectId: target.session.id,
     role: target.role,
@@ -7779,6 +7890,17 @@ function armManagedAgentWatchdog(surfaceId: string): void {
     const current = managedAgentWatchdogs.get(surfaceId);
     const target = managedProjectAgentTarget(surfaceId);
     if (!current || current.generation !== generation || !target) {
+      clearManagedAgentWatchdog(surfaceId);
+      return;
+    }
+    reconcileProjectExecutionResponsibility(target.session.id);
+    const currentSession = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === target.session.id);
+    const disposition = currentSession ? classifyProjectWatchdogScenario(currentSession, {
+      hasPendingManagerDelivery: (currentSession.pendingManagerDeliveries || []).length > 0
+        || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === currentSession.id),
+    }) : undefined;
+    if (!disposition || !projectWatchdogMayInterveneForRole(disposition, target.role)) {
       clearManagedAgentWatchdog(surfaceId);
       return;
     }
@@ -9784,14 +9906,12 @@ async function ensureProjectDeadlockRecovery(
     reconcileProjectExecutionResponsibility(sessionId);
     const store = useStore.getState();
     const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
-    if (!session
-      || ['completed', 'stopped', 'paused'].includes(session.status)
-      || session.pendingUserQuestion
-      || session.agentIssue
-      || (session.pendingManagerDeliveries || []).length > 0
-      || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session.id)) {
-      return false;
-    }
+    if (!session) return false;
+    const watchdogDisposition = classifyProjectWatchdogScenario(session, {
+      hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
+        || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session.id),
+    });
+    if (!watchdogDisposition.inspectDeadlock) return false;
     const manager = projectManagerTerminal({ surfaceId: session.managerSurfaceId, projectId: session.id });
     const preserveStaleWorking = !trigger.startsWith(PROJECT_LIVENESS_WATCHDOG_TRIGGER);
     const managerActivity = manager
@@ -10278,9 +10398,19 @@ export async function auditProjectLiveness(): Promise<void> {
   // Delivery readiness and Agent lifecycle events can both be lost. The
   // control plane must therefore make progress without waiting for an Agent
   // to emit the next event.
+  const candidateSessions = useStore.getState().projectManagers
+    .filter((session) => ['active', 'waiting'].includes(session.status));
+  candidateSessions.forEach((session) => reconcileProjectExecutionResponsibility(session.id));
   const activeSessions = useStore.getState().projectManagers
     .filter((session) => ['active', 'waiting'].includes(session.status));
+  const deadlockCandidates: ProjectManagerSession[] = [];
   for (const session of activeSessions) {
+    const disposition = classifyProjectWatchdogScenario(session, {
+      hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
+        || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session.id),
+    });
+    if (disposition.inspectDeadlock) deadlockCandidates.push(session);
+    if (!disposition.recoverManagerRuntime) continue;
     if (projectManagerTerminal({ surfaceId: session.managerSurfaceId, projectId: session.id })) continue;
     (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
       projectId: session.id,
@@ -10291,7 +10421,7 @@ export async function auditProjectLiveness(): Promise<void> {
     });
   }
   flushProjectManagerDeliveries();
-  await Promise.allSettled(activeSessions.map((session) => (
+  await Promise.allSettled(deadlockCandidates.map((session) => (
     ensureProjectDeadlockRecovery(session.id, PROJECT_LIVENESS_WATCHDOG_TRIGGER)
   )));
 }
@@ -11761,6 +11891,21 @@ async function updateProjectDefinition(
   const doneWhen = params?.doneWhen === undefined
     ? userGoalDraft ? [] : session.doneWhen
     : projectStringArray(params.doneWhen);
+  if (params?.userAcceptancePolicy !== undefined
+    && !PROJECT_USER_ACCEPTANCE_POLICIES.includes(String(params.userAcceptancePolicy) as ProjectUserAcceptancePolicy)) {
+    return { ok: false, error: 'userAcceptancePolicy 必须是 always、on-gap 或 not-required' };
+  }
+  const activeGoal = activeProjectGoal(session);
+  const userAcceptancePolicy = params?.userAcceptancePolicy === undefined
+    ? mode === 'pivot' ? 'on-gap' : projectGoalUserAcceptancePolicy(activeGoal)
+    : normalizeProjectUserAcceptancePolicy(params.userAcceptancePolicy);
+  const verificationInput = projectVerificationPoliciesInput(
+    params?.verificationPolicies,
+    doneWhen,
+    mode === 'pivot' ? [] : projectGoalVerificationPolicies(activeGoal),
+  );
+  if (!verificationInput.policies) return { ok: false, error: verificationInput.error || '验证策略无效' };
+  const verificationPolicies = verificationInput.policies;
   const planFiles = params?.planFiles === undefined
     ? session.planFiles
     : projectPlanFileSnapshots(params.planFiles);
@@ -11778,6 +11923,8 @@ async function updateProjectDefinition(
     && JSON.stringify(preconditions) === JSON.stringify(session.preconditions)
     && JSON.stringify(supervisorNotes) === JSON.stringify(session.supervisorNotes || [])
     && JSON.stringify(doneWhen) === JSON.stringify(session.doneWhen)
+    && userAcceptancePolicy === projectGoalUserAcceptancePolicy(activeGoal)
+    && JSON.stringify(verificationPolicies) === JSON.stringify(projectGoalVerificationPolicies(activeGoal))
     && JSON.stringify(planFiles) === JSON.stringify(session.planFiles);
   if (unchanged && mode === 'refine') return { ok: false, error: '当前主目标和需求没有发生变化' };
 
@@ -11798,6 +11945,8 @@ async function updateProjectDefinition(
     supervisorNotes,
     planFiles,
     doneWhen,
+    userAcceptancePolicy,
+    verificationPolicies,
     reason,
     ...(userConfirmationEventId ? { userConfirmationEventId } : {}),
     source,
@@ -11835,6 +11984,8 @@ async function updateProjectDefinition(
       `新前置条件：${preconditions.length > 0 ? preconditions.join('；') : '未填写；由项目 AI 判断并起草，存在实质歧义时再询问用户'}`,
       `监督注意事项：${supervisorNotes.length > 0 ? supervisorNotes.join('；') : '无'}`,
       `新完成条件：${doneWhen.length > 0 ? doneWhen.join('；') : '未填写；由项目 AI 起草具体、可验证的完成条件'}`,
+      `用户最终验收策略：${userAcceptancePolicy}`,
+      `逐项验证策略：${verificationPolicies.map((policy) => `${policy.criterion}=${policy.riskClass || 'protected'}/${policy.requirement}`).join('；') || '无'}`,
       `计划文件：${planFiles.length > 0 ? planFiles.map((file) => file.name).join('、') : '无'}`,
       `用户说明：${reason}`,
       preconditions.length === 0 || doneWhen.length === 0
@@ -11861,6 +12012,55 @@ async function updateProjectDefinition(
   };
 }
 
+function manualVerificationFeedbackQuestion(
+  session: ProjectManagerSession,
+  pending: ProjectManagerUserQuestion,
+): { question?: ProjectManagerUserQuestion; error?: string } {
+  const workItem = pending.workItemId
+    ? session.workItems.find((item) => item.id === pending.workItemId)
+    : undefined;
+  const limitation = workItem ? currentProjectVerificationLimitation(session, workItem) : undefined;
+  const missingEvidence = limitation?.missingEvidence.length
+    ? limitation.missingEvidence.slice(0, 6)
+    : [pending.blocker || workItem?.latestBlocker || '当前 GUI 核心交互仍缺少人工验收结果'];
+  const affectedAcceptance = limitation?.affectedAcceptance.slice(0, 8) || [];
+  return normalizeProjectManagerUserQuestion({
+    category: 'manual-intervention',
+    workItemId: pending.workItemId,
+    blocker: pending.blocker || workItem?.latestBlocker,
+    reasonCode: 'verification-limited',
+    question: [
+      '请在项目 GUI 中完成一次人工验收并反馈结果。',
+      `需要核验：${missingEvidence.join('；')}`,
+    ].join(' '),
+    context: [
+      `当前任务：${workItem?.title || pending.workItemId || '当前验证工作项'}`,
+      workItem?.latestContextSummary ? `当前进展：${workItem.latestContextSummary}` : '',
+      workItem?.latestEvidence ? `已有证据：${workItem.latestEvidence}` : '',
+      affectedAcceptance.length > 0 ? `受影响验收：${affectedAcceptance.join('；')}` : '',
+      '人工验收操作说明：',
+      '1. 启动或保持当前 GUI，先确认窗口、已有数据和初始状态与预期一致。',
+      '2. 按“需要核验”逐项执行真实操作；涉及编辑时记录修改前后值，涉及删除时确认界面与数据状态都已移除。',
+      '3. 涉及保存、Reload 或重启时，完成操作后重新加载或重新启动，并核对最终持久化结果。',
+      '4. 在补充框逐项填写“成功 / 失败 / 未执行”，失败时附实际现象；不要只填写“已验证”或选项名称。',
+      '提交人工结果前项目、监督 AI 和任务 AI 都保持等待，不会重新执行自动 GUI 验证。',
+    ].filter(Boolean).join('\n'),
+    options: [
+      {
+        id: 'manual-verify-complete',
+        label: '完成人工验收',
+        description: '完成上述操作后，在补充框逐项填写实际成功项、失败项或异常现象；项目 AI 只依据你提交的结果继续判断。',
+      },
+      {
+        id: 'manual-verify-defer',
+        label: '暂缓人工验收',
+        description: '保留所有未验证项，当前阶段不判定完成；项目保持暂停，后续再由用户安排人工验收。',
+      },
+    ],
+    recommendedOptionId: 'manual-verify-complete',
+  }, 'waiting');
+}
+
 async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const session = projectSessionForParams(params);
   const pending = session?.pendingUserQuestion;
@@ -11871,17 +12071,42 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const option = optionId ? pending.options.find((candidate) => candidate.id === optionId) : undefined;
   if (optionId && !option) return { ok: false, error: '所选答复选项不存在' };
   const detail = String(params?.answer || '').trim().slice(0, 5000);
+  const optionLabelOnly = !!option && (!detail || detail === option.label);
+  const answeredBy = params?.source === 'feishu' || params?.answeredBy === 'feishu' ? 'feishu' : 'desktop';
   if (pending.category === 'manual-intervention'
     && pending.reasonCode === 'verification-limited'
-    && optionId === 'manual-verify'
-    && !detail) {
-    return { ok: false, error: '选择人工验收后，请在补充框填写实际测试结果、失败项或异常现象' };
+    && optionId === 'manual-verify') {
+    const followUp = manualVerificationFeedbackQuestion(session, pending);
+    if (!followUp.question) {
+      return { ok: false, error: followUp.error || '无法生成人工验收反馈问题' };
+    }
+    const refined = useStore.getState().applyProjectManagerAction({
+      type: 'refine-user-clarification',
+      questionId: pending.id,
+      question: followUp.question,
+      selectedOptionId: optionId,
+    }, session.id);
+    if (!refined.ok) return refined;
+    await persistProjectManagerMutation(refined, session.id);
+    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+    return {
+      ok: true,
+      event: refined.event,
+      session: updated,
+      question: followUp.question,
+      message: '项目已进入人工验收等待；提交实际结果或选择暂缓前，不会恢复监督或任务 AI。',
+    };
+  }
+  if (pending.category === 'manual-intervention'
+    && pending.reasonCode === 'verification-limited'
+    && optionId === 'manual-verify-complete'
+    && optionLabelOnly) {
+    return { ok: false, error: '确认完成人工验收前，请在补充框逐项填写实际成功项、失败项或异常现象' };
   }
   const answer = option
     ? detail && detail !== option.label ? `${option.label}：${detail}` : option.label
     : detail;
   if (!answer) return { ok: false, error: '请选择一个选项或填写答复' };
-  const answeredBy = params?.source === 'feishu' || params?.answeredBy === 'feishu' ? 'feishu' : 'desktop';
   const reuseForSimilar = params?.reuseForSimilar === true;
   if (
     optionId === 'draft-handled'
@@ -11909,6 +12134,20 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   }, session.id);
   if (!result.ok) return result;
   let updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  const manualVerificationDeferredBeforePersist = pending.category === 'manual-intervention'
+    && pending.reasonCode === 'verification-limited'
+    && optionId === 'manual-verify-defer';
+  if (manualVerificationDeferredBeforePersist && updated) {
+    for (const laneId of projectSupervisorLaneIds(updated)) {
+      store.pauseSupervisorLane(laneId, '用户选择暂缓人工验收');
+    }
+    const progressTimer = projectProgressTimers.get(session.id);
+    if (progressTimer) globalThis.clearTimeout(progressTimer);
+    projectProgressTimers.delete(session.id);
+    const deadlockTimer = projectDeadlockRetryTimers.get(session.id);
+    if (deadlockTimer) globalThis.clearTimeout(deadlockTimer);
+    projectDeadlockRetryTimers.delete(session.id);
+  }
   await persistProjectManagerMutation(result, session.id);
   let choiceMessage = '';
   const taskInputConflictChoice = pending.category === 'manual-intervention'
@@ -11917,24 +12156,37 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     && pending.reasonCode === 'runtime-recovery';
   const verificationLimitedChoice = pending.category === 'manual-intervention'
     && pending.reasonCode === 'verification-limited'
-    && ['manual-verify', 'alternative-validation', 'defer-verification', 'skip-verification', 'keep-paused'].includes(optionId || '');
+    && [
+      'manual-verify',
+      'manual-verify-complete',
+      'manual-verify-defer',
+      'alternative-validation',
+      'defer-verification',
+      'skip-verification',
+      'keep-paused',
+    ].includes(optionId || '');
   const finalAcceptanceChoice = pending.category === 'manual-intervention'
     && pending.reasonCode === 'final-acceptance';
   if ((taskInputConflictChoice || runtimeRecoveryChoice || verificationLimitedChoice)
-    && optionId === 'keep-paused' && updated) {
-    const paused = store.applyProjectManagerAction({
-      type: 'pause-project',
-      reason: '用户选择保持当前项目暂停',
-      source: 'system',
-      attentionRequired: false,
-    }, session.id);
-    if (paused.ok) {
-      for (const laneId of projectSupervisorLaneIds(updated)) {
-        store.pauseSupervisorLane(laneId, '用户选择保持项目暂停');
+    && ['keep-paused', 'manual-verify-defer'].includes(optionId || '') && updated) {
+    const manualVerificationDeferred = optionId === 'manual-verify-defer';
+    if (manualVerificationDeferred && updated.status === 'paused') {
+      choiceMessage = '人工验收已暂缓，项目保持 paused；控制层不会恢复监督或任务 AI。';
+    } else {
+      const paused = store.applyProjectManagerAction({
+        type: 'pause-project',
+        reason: '用户选择保持当前项目暂停',
+        source: 'system',
+        attentionRequired: false,
+      }, session.id);
+      if (paused.ok) {
+        for (const laneId of projectSupervisorLaneIds(updated)) {
+          store.pauseSupervisorLane(laneId, '用户选择保持项目暂停');
+        }
+        await persistProjectManagerMutation(paused, session.id);
+        updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+        choiceMessage = '项目已进入 paused，控制层不会继续自动恢复或重复询问。';
       }
-      await persistProjectManagerMutation(paused, session.id);
-      updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-      choiceMessage = '项目已进入 paused，控制层不会继续自动恢复或重复询问。';
     }
   } else if ((taskInputConflictChoice || runtimeRecoveryChoice)
     && optionId === 'stop-work-item' && pending.workItemId && updated) {
@@ -12044,24 +12296,52 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     });
     choiceMessage = '已跳过当前验证工作项并保留验收缺口；项目常驻任务与监督运行时已保留，项目 AI 将继续其他成果并在后续新计划中补验。';
   } else if (finalAcceptanceChoice && optionId === 'accept-current-result' && updated) {
+    const requiresFinalUserAcceptance = projectGoalUserAcceptancePolicy(activeProjectGoal(updated)) === 'always';
     queueProjectManagerDelivery([
-      '[用户最终接受当前效果｜允许带验证缺口完成主目标]',
+      requiresFinalUserAcceptance
+        ? '[用户完成最终验收｜允许完成主目标]'
+        : '[用户最终接受当前效果｜允许带验证缺口完成主目标]',
       `项目：${session.id}；用户答复事件：${result.event?.id || '缺失'}`,
       `用户答复：${answer}`,
-      '用户只接受当前最终效果；不得把缺失验证改写成自动测试通过，也不得覆盖已知失败、安全问题或未完成实现。',
-      `立即将完成 JSON 写入项目 .wmux/tmp/，执行 wmux project complete --project ${session.id} --json-file <file>；JSON 必须包含 userAcceptanceEventId="${result.event?.id || ''}"，可省略原本无法形成的逐项自动验证声明。`,
+      requiresFinalUserAcceptance
+        ? '用户已经完成当前策略要求的最终验收；仍须保持既有实现与验证证据不变。'
+        : '用户只接受当前最终效果；不得把缺失验证改写成自动测试通过，也不得覆盖已知失败、安全问题或未完成实现。',
+      requiresFinalUserAcceptance
+        ? `立即沿用已经通过门禁的完整完成 JSON，并加入 userAcceptanceEventId="${result.event?.id || ''}"，再次执行 wmux project complete --project ${session.id} --json-file <file>；不得省略或改写既有逐项验证声明。`
+        : `立即将完成 JSON 写入项目 .wmux/tmp/，执行 wmux project complete --project ${session.id} --json-file <file>；JSON 必须包含 userAcceptanceEventId="${result.event?.id || ''}"，可省略原本无法形成的逐项自动验证声明。`,
     ].join('\n'), session.id, {
       priority: true,
       dedupeKey: `user-final-acceptance:${session.id}:${result.event?.id || pending.id}`,
     });
-    choiceMessage = '已记录你对当前最终效果的接受；项目 AI 可保留验证缺口并完成当前主目标。';
+    choiceMessage = requiresFinalUserAcceptance
+      ? '已记录用户最终验收；项目 AI 可以提交当前主目标完成。'
+      : '已记录你对当前最终效果的接受；项目 AI 可保留验证缺口并完成当前主目标。';
   } else if (finalAcceptanceChoice && optionId === 'continue-validation' && updated) {
+    const requiresFinalUserAcceptance = projectGoalUserAcceptancePolicy(activeProjectGoal(updated)) === 'always';
+    if (requiresFinalUserAcceptance) {
+      const paused = store.applyProjectManagerAction({
+        type: 'pause-project',
+        reason: '用户暂不进行当前主目标的最终验收',
+        source: 'system',
+        attentionRequired: false,
+      }, session.id);
+      if (paused.ok) {
+        await persistProjectManagerMutation(paused, session.id);
+        updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || updated;
+      }
+    }
     queueProjectManagerDelivery([
-      '[用户要求继续补验｜不得以当前效果直接完成]',
+      requiresFinalUserAcceptance
+        ? '[用户暂不进行最终验收｜项目保持等待]'
+        : '[用户要求继续补验｜不得以当前效果直接完成]',
       `项目：${session.id}`,
-      '保留当前成果和全部验证缺口，读取 project status，为未验证项恢复或创建聚焦补验工作项；不得重复已经确认不可用的同一验证路线。',
+      requiresFinalUserAcceptance
+        ? '保留全部实现与验证证据，不得重复派发已经完成的工作；项目保持等待，直到用户再次决定是否最终验收。'
+        : '保留当前成果和全部验证缺口，读取 project status，为未验证项恢复或创建聚焦补验工作项；不得重复已经确认不可用的同一验证路线。',
     ].join('\n'), session.id, { priority: true, dedupeKey: `user-continue-validation:${session.id}:${pending.id}` });
-    choiceMessage = '已保留当前成果并要求继续补验；项目尚未完成。';
+    choiceMessage = requiresFinalUserAcceptance
+      ? '已保留当前成果和验证记录；项目等待用户以后进行最终验收。'
+      : '已保留当前成果并要求继续补验；项目尚未完成。';
   } else if (taskInputConflictChoice && optionId === 'draft-handled' && updated) {
     const canResumeOriginalChain = pending.previousStatus === 'active'
       && updated.status === 'waiting'
@@ -13778,15 +14058,25 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       completion,
       ...(userAcceptanceEventId ? { userAcceptanceEventId } : {}),
     }, session.id);
+    const acceptancePolicy = projectGoalUserAcceptancePolicy(activeGoal);
+    const requiredAcceptanceReady = acceptancePolicy === 'always'
+      && completionResult.error === PROJECT_USER_ACCEPTANCE_REQUIRED_ERROR;
+    const gapAcceptanceReady = acceptancePolicy === 'on-gap'
+      && !projectFinalAcceptanceEligibilityError(session);
     if (!completionResult.ok && !userAcceptanceEventId
-      && !projectFinalAcceptanceEligibilityError(session)) {
-      const question = await requestProjectFinalAcceptance(session);
+      && (requiredAcceptanceReady || gapAcceptanceReady)) {
+      const question = await requestProjectFinalAcceptance(
+        session,
+        requiredAcceptanceReady ? 'required' : 'gap',
+      );
       if (question) {
         return {
           ok: true,
           userActionRequired: true,
           question,
-          message: '项目实现工作已经全部结束，但仍有中途暂缓、跳过或长期缺失的验证；已进入最终完成确认。',
+          message: requiredAcceptanceReady
+            ? '项目实现与验证门禁已经满足；按当前策略进入用户最终验收。'
+            : '项目实现工作已经全部结束，但仍有中途暂缓、跳过或长期缺失的验证；已进入最终完成确认。',
         };
       }
     }
@@ -13848,7 +14138,7 @@ export function initPipeBridge(): void {
 
   w.__wmux_queueProjectManagerRuntimeRecovery = (params: any) => {
     const projectId = String(params?.projectId || '').trim();
-    const session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
+    let session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
     if (!session || ['completed', 'stopped'].includes(session.status)) return false;
     if (params?.role === 'supervisor' || params?.role === 'task') {
       const laneId = String(params?.laneId || '').trim();
@@ -13874,20 +14164,35 @@ export function initPipeBridge(): void {
       return true;
     }
     if (params?.role === 'manager') {
+      if (params?.watchdogRecovery === true) {
+        reconcileProjectExecutionResponsibility(projectId);
+        session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
+        if (!session || !classifyProjectWatchdogScenario(session, {
+          hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
+            || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session?.id),
+        }).recoverManagerRuntime) return false;
+      }
       if (projectManagerRuntimeRecoveries.has(projectId)) return true;
       projectManagerRuntimeRecoveries.add(projectId);
       void (async () => {
+        const recoverySession = useStore.getState().projectManagers
+          .find((candidate) => candidate.id === projectId);
+        if (!recoverySession || (params?.watchdogRecovery === true
+          && !classifyProjectWatchdogScenario(recoverySession, {
+            hasPendingManagerDelivery: (recoverySession.pendingManagerDeliveries || []).length > 0
+              || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === recoverySession.id),
+          }).recoverManagerRuntime)) return;
         queueProjectManagerDelivery([
           '[项目 AI 故障恢复上下文｜新会话优先读取]',
-          `项目：${session.id} · ${session.projectDir}`,
+          `项目：${recoverySession.id} · ${recoverySession.projectDir}`,
           `故障原因：${String(params?.detail || '原项目 AI 已退出')}`,
-          `当前状态：${session.status}`,
+          `当前状态：${recoverySession.status}`,
           '控制层正在重建全新的项目 AI 会话；不得将原 PowerShell 终端当作 Agent 继续投递。',
-          `新会话收到本消息后，先运行 wmux project status --project ${session.id} 读取持久状态和最近事件；核对故障影响后，再决定恢复原监督链或重建监督与任务 AI。`,
-          session.status === 'paused'
+          `新会话收到本消息后，先运行 wmux project status --project ${recoverySession.id} 读取持久状态和最近事件；核对故障影响后，再决定恢复原监督链或重建监督与任务 AI。`,
+          recoverySession.status === 'paused'
             ? '项目在故障处理完成前保持暂停，不要绕过持久化项目状态盲目继续。'
             : '现有监督链按持久状态继续；核对完成前不要新增、改派或绕过监督链直接投递任务。',
-        ].join('\n'), session.id, { priority: true });
+        ].join('\n'), recoverySession.id, { priority: true });
         const runtime = await ensureProjectManagerRuntime(projectId, { forceRestart: true });
         if (!runtime.ok) {
           console.warn('[project-manager] failed to rebuild exited manager runtime', runtime.error);
@@ -14470,6 +14775,13 @@ export function initPipeBridge(): void {
         .slice(0, 20).map((note) => note.slice(0, 4000));
       const planFiles = projectPlanFileSnapshots(params?.planFiles);
       const doneWhen = projectStringArray(params?.doneWhen);
+      if (params?.userAcceptancePolicy !== undefined
+        && !PROJECT_USER_ACCEPTANCE_POLICIES.includes(String(params.userAcceptancePolicy) as ProjectUserAcceptancePolicy)) {
+        return { ok: false, error: 'userAcceptancePolicy 必须是 always、on-gap 或 not-required' };
+      }
+      const userAcceptancePolicy = normalizeProjectUserAcceptancePolicy(params?.userAcceptancePolicy);
+      const verificationInput = projectVerificationPoliciesInput(params?.verificationPolicies, doneWhen);
+      if (!verificationInput.policies) return { ok: false, error: verificationInput.error || '验证策略无效' };
       const sourceTerminalId = String(params?.sourceTerminalId || '').trim();
       let sourceTerminalContext: {
         surfaceId: string;
@@ -14524,6 +14836,8 @@ export function initPipeBridge(): void {
       if (projectManagerRecoveryChoice === 'pending') projectManagerRecoveryChoice = 'skip';
       const session = store.startProjectManager({
         projectDir, projectName, projectScope, goal, preconditions, supervisorNotes, planFiles, doneWhen,
+        userAcceptancePolicy,
+        verificationPolicies: verificationInput.policies,
         agentConfig: normalizeProjectManagementAgentConfig(store.workspacePrefs.projectManagementAgents),
       });
       if (sourceTerminalContext) {

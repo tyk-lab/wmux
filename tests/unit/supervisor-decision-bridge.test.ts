@@ -3528,23 +3528,97 @@ describe('supervisor decision bridge', () => {
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
     await expect(remote({
       action: 'answer-question', projectId: project.id,
-      questionId: pending?.id, optionId: 'manual-verify', source: 'desktop',
+      questionId: pending?.id, optionId: 'manual-verify',
+      answer: '人工验收并反馈', source: 'desktop',
     })).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining('填写实际测试结果'),
+      ok: true,
+      session: {
+        status: 'waiting',
+        pendingUserQuestion: {
+          reasonCode: 'verification-limited',
+          recommendedOptionId: 'manual-verify-complete',
+          options: [
+            expect.objectContaining({ id: 'manual-verify-complete' }),
+            expect.objectContaining({ id: 'manual-verify-defer' }),
+          ],
+        },
+      },
+      message: expect.stringContaining('不会恢复监督或任务 AI'),
     });
-    expect(useStore.getState().projectManagers
-      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion?.id).toBe(pending?.id);
+    const manualFeedback = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    expect(manualFeedback?.id).not.toBe(pending?.id);
+    expect(manualFeedback?.context).toContain('人工验收操作说明');
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events
+      .some((event) => event.kind === 'project-resumed')).toBe(false);
 
     await expect(remote({
       action: 'answer-question', projectId: project.id,
-      questionId: pending?.id, optionId: 'manual-verify',
+      questionId: manualFeedback?.id, optionId: 'manual-verify-complete', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('逐项填写实际成功项'),
+    });
+    await expect(remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: manualFeedback?.id, optionId: 'manual-verify-complete',
       answer: '已手动打开主窗口并完成新增、保存和重新加载，均正常。', source: 'desktop',
     })).resolves.toMatchObject({
       ok: true,
       session: { status: 'waiting', pendingUserQuestion: undefined },
       message: expect.stringContaining('已提交给项目管理 AI'),
     });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events
+      .some((event) => event.kind === 'project-resumed')).toBe(false);
+  });
+
+  it('keeps the project paused when manual verification is deferred', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-manual-verification-deferred' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 Win32 GUI 自动化通道不可用，无法取得核心交互验收证据',
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const initialQuestion = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    await remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: initialQuestion?.id, optionId: 'manual-verify', source: 'desktop',
+    });
+    const feedbackQuestion = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+
+    const projectManagerApi = (globalThis.window as any).wmux.projectManager;
+    const saveCallCount = projectManagerApi.saveSession.mock.calls.length;
+    let finishPersist!: (value: { ok: true }) => void;
+    projectManagerApi.saveSession.mockImplementationOnce(() => new Promise((resolve) => {
+      finishPersist = resolve;
+    }));
+    const deferredPromise = remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: feedbackQuestion?.id, optionId: 'manual-verify-defer', source: 'desktop',
+    });
+    await vi.waitFor(() => expect(projectManagerApi.saveSession).toHaveBeenCalledTimes(saveCallCount + 1));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ status: 'paused', pendingUserQuestion: undefined });
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.projectManagerProjectId === project.id))
+      .toMatchObject({ controlState: 'paused' });
+    finishPersist({ ok: true });
+    const deferred = await deferredPromise;
+    expect(deferred).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('不会恢复监督或任务 AI'),
+    });
+    expect(deferred.session).toMatchObject({ status: 'paused', pendingUserQuestion: undefined });
+    expect(deferred.session.workItems[0]).toMatchObject({
+      verificationDecision: { action: 'defer-verification' },
+      latestBlocker: expect.stringContaining('暂缓人工验收'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events
+      .some((event) => event.kind === 'project-resumed')).toBe(false);
   });
 
   it('does not mistake a build verification failure for limited GUI automation', async () => {
@@ -8849,6 +8923,58 @@ describe('supervisor decision bridge', () => {
       role: 'manager',
       watchdogRecovery: true,
     }));
+  });
+
+  it('does not rebuild a missing manager while manual verification belongs to the user', async () => {
+    initPipeBridge();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-user-owned-manual-verification' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'waiting',
+      pendingUserQuestion: {
+        id: 'manual-verification-feedback',
+        category: 'manual-intervention',
+        reasonCode: 'verification-limited',
+        workItemId: 'task-a',
+        question: '请完成人工验收并反馈实际结果',
+        context: '提交结果前由用户持有下一步责任',
+        options: [{ id: 'manual-verify-complete', label: '完成人工验收' }],
+        previousStatus: 'active',
+        createdAt: Date.now(),
+      },
+    });
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
+      projectId: project.id,
+      role: 'manager',
+      watchdogRecovery: true,
+      detail: '模拟迟到的看门狗恢复请求',
+    })).toBe(false);
+    const queueRuntimeRecovery = vi.fn(() => true);
+    (globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery = queueRuntimeRecovery;
+
+    await auditProjectLiveness();
+
+    expect(queueRuntimeRecovery).not.toHaveBeenCalled();
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ status: 'waiting', pendingUserQuestion: { id: 'manual-verification-feedback' } });
+  });
+
+  it('does not rebuild the manager while the task AI is the active execution owner', async () => {
+    initPipeBridge();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-task-owned-execution' });
+    const queueRuntimeRecovery = vi.fn(() => true);
+    (globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery = queueRuntimeRecovery;
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      'worker-a': { state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() },
+      'supervisor-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() },
+    });
+
+    await auditProjectLiveness();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.executionResponsibility).toMatchObject({ owner: 'task-ai', action: 'execute-work-item' });
+    expect(queueRuntimeRecovery).not.toHaveBeenCalled();
   });
 
   it('requeues a restored waiting-decision project that lost its manager delivery', async () => {

@@ -747,6 +747,17 @@
   line-height: 1.5;
 }
 
+.project-manager-dialog__manual-verification-guide {
+  max-height: min(34vh, 300px);
+  padding: 9px 10px;
+  overflow-y: auto;
+  border-left: 3px solid rgba(255, 166, 77, 0.64);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.14);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .project-manager-dialog__clarification-options label {
   display: flex;
   align-items: flex-start;
@@ -1057,7 +1068,7 @@
 }
 
 .project-manager-dialog__work-item-decisions {
-  max-height: min(36vh, 330px);
+  max-height: min(52vh, 520px);
   padding-right: 4px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1067,6 +1078,171 @@
 .project-manager-dialog__work-item-decisions details[data-selected='1'] {
   border-color: rgba(96, 165, 250, 0.72);
   background: rgba(59, 130, 246, 0.11);
+}
+
+.project-manager-dialog__action-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.project-manager-dialog__action-card[data-selected='1'] {
+  border-color: rgba(96, 165, 250, 0.72);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.project-manager-dialog__action-card[data-attention='1'] {
+  border-color: rgba(226, 170, 79, 0.4);
+}
+
+.project-manager-dialog__action-card > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+
+.project-manager-dialog__action-card > header input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #60a5fa;
+}
+
+.project-manager-dialog__action-card > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.project-manager-dialog__action-card > header strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__action-card > header small {
+  overflow: hidden;
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-manager-dialog__action-card > header > span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.12);
+  color: #8fc4ff;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.project-manager-dialog__action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.project-manager-dialog__action-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.07);
+  border-radius: 6px;
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.025);
+}
+
+.project-manager-dialog__action-grid > div[data-attention='1'] {
+  border-color: rgba(226, 170, 79, 0.35);
+  background: rgba(226, 170, 79, 0.06);
+}
+
+.project-manager-dialog__action-grid span {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
+.project-manager-dialog__action-grid strong {
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.project-manager-dialog__action-grid small {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.project-manager-dialog__action-alert {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border-left: 3px solid #e2aa4f;
+  border-radius: 5px;
+  background: rgba(226, 170, 79, 0.08);
+}
+
+.project-manager-dialog__action-alert strong {
+  color: #f2c977;
+  font-size: 10px;
+}
+
+.project-manager-dialog__action-alert span {
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.project-manager-dialog__action-audit {
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.project-manager-dialog__work-items .project-manager-dialog__action-audit > summary {
+  display: block;
+  padding: 7px 0 0;
+  color: #8fc4ff;
+  font-size: 10px;
+  font-weight: 550;
+}
+
+.project-manager-dialog__execution-audit {
+  margin-top: 0;
+}
+
+.project-manager-dialog__verification-policies {
+  display: grid;
+  gap: 6px;
+}
+
+.project-manager-dialog__verification-policies > label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.65fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 6px;
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.025);
+}
+
+.project-manager-dialog__verification-policies span {
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.project-manager-dialog__verification-policies > label > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .project-manager-dialog__work-item-count {
@@ -2319,6 +2495,18 @@
     grid-template-columns: 1fr;
   }
 
+  .project-manager-dialog__action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .project-manager-dialog__verification-policies > label {
+    grid-template-columns: 1fr;
+  }
+
+  .project-manager-dialog__verification-policies > label > div {
+    grid-template-columns: 1fr;
+  }
+
   .project-manager-dialog__directory-row {
     align-items: stretch;
     flex-direction: column;
@@ -3508,6 +3696,200 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sup-panel__managed-lane-overview {
+  display: grid;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.sup-panel__project-scope-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 8px 7px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.sup-panel__project-scope-summary > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sup-panel__project-scope-summary strong {
+  font-size: 11px;
+}
+
+.sup-panel__project-scope-summary span {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
+.sup-panel__project-scope-summary button {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.12);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.sup-panel__managed-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sup-panel__managed-action-grid article {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 5px;
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.025);
+}
+
+.sup-panel__managed-action-grid article[data-attention='1'] {
+  border-color: rgba(226, 170, 79, 0.38);
+  background: rgba(226, 170, 79, 0.06);
+}
+
+.sup-panel__managed-action-grid span,
+.sup-panel__managed-lane-decision header span {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
+.sup-panel__managed-action-grid strong {
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sup-panel__managed-action-grid small {
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.sup-panel__managed-lane-attention {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border-left: 3px solid #e2aa4f;
+  border-radius: 5px;
+  background: rgba(226, 170, 79, 0.08);
+}
+
+.sup-panel__managed-lane-attention strong {
+  color: #f2c977;
+  font-size: 10px;
+}
+
+.sup-panel__managed-lane-attention span {
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sup-panel__managed-lane-pending {
+  padding: 6px 8px;
+  border: 1px solid rgba(226, 170, 79, 0.3);
+  border-radius: 5px;
+  background: rgba(226, 170, 79, 0.08);
+  color: #f2c977;
+  font-size: 9px;
+}
+
+.sup-panel__managed-lane-decision {
+  padding: 7px 8px;
+  border-left: 3px solid rgba(96, 165, 250, 0.58);
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.07);
+}
+
+.sup-panel__managed-lane-decision header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sup-panel__managed-lane-decision header strong {
+  color: #b9dcff;
+  font-size: 10px;
+}
+
+.sup-panel__managed-lane-decision p {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sup-panel__managed-lane-audit {
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.sup-panel__managed-lane-audit summary {
+  padding-top: 7px;
+  color: #8fc4ff;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.sup-panel__managed-lane-audit dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 7px 0 0;
+  padding: 8px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.14);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.sup-panel__managed-lane-audit dt {
+  color: var(--ui-text-muted);
+}
+
+.sup-panel__managed-lane-audit dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.supervisor-session-pane .sup-panel__managed-action-grid span,
+.supervisor-session-pane .sup-panel__managed-action-grid small,
+.supervisor-session-pane .sup-panel__managed-lane-decision header span {
+  font-size: 11px;
+}
+
+.supervisor-session-pane .sup-panel__managed-action-grid strong,
+.supervisor-session-pane .sup-panel__managed-lane-decision header strong {
+  font-size: 13px;
+}
+
+.supervisor-session-pane .sup-panel__managed-lane-decision p {
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .sup-panel__managed-action-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .sup-panel__decisions {

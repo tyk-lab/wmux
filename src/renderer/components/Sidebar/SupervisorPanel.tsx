@@ -58,7 +58,7 @@ import {
 import { announceSupervisorWaitingForDirection } from '../../supervisor/waiting-notification';
 import { createLeaf, findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, SurfaceRef, WorkspaceId } from '../../../shared/types';
-import { projectWorkItemCompletionResult, projectWorkItemDisplayTitle } from '../../../shared/project-manager';
+import { projectWorkItemCompletionResult } from '../../../shared/project-manager';
 import type { SupervisedTerminalSnapshot } from '../../../shared/supervisor-recovery';
 import {
   normalizeTaskChildThreadResponsibilities,
@@ -1543,140 +1543,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
             </section>
           )}
           {scopedProjectId && (
-            <div className="sup-panel__freedom">
-              项目专属监督：{visibleLanes.length} 个通道只接受当前项目管理 AI 的任务契约；普通监督的配置、暂停和停止操作均不会修改这里。
-            </div>
-          )}
-          {scopedProjectId && scopedProject && (
-            <section className="sup-panel__project-plan" aria-label="当前项目监督执行路线">
-              <div className="sup-panel__project-plan-heading">
-                <div>
-                  <strong>监督通道执行路线</strong>
-                  <span>{visibleLanes.length} 个监督通道 · 工作项由项目 AI 下发，具体路线由各监督 AI 维护</span>
-                </div>
-                <button type="button" onClick={() => {
-                  openProjectManagerConsole(scopedProjectId);
-                }}>打开项目管理</button>
+            <section className="sup-panel__project-scope-summary" aria-label="项目监督范围">
+              <div>
+                <strong>当前项目监督</strong>
+                <span>{visibleLanes.length} 个通道 · 只接受当前项目 AI 的成果任务</span>
               </div>
-              <div className="sup-panel__project-plan-list">
-                {visibleLanes.length === 0 && (
-                  <div className="sup-panel__project-plan-empty">当前没有正在运行或保留的项目监督通道。</div>
-                )}
-                {visibleLanes.map((lane) => {
-                  const item = scopedProjectWorkItems.find((candidate) => candidate.id === lane.projectWorkItemId);
-                  const laneState = supervisorLaneControlState(lane);
-                  if (!item) {
-                    return (
-                      <article key={lane.id} data-status={laneState} data-active="1">
-                        <div className="sup-panel__project-plan-row">
-                          <span className="sup-panel__project-plan-dot" />
-                          <strong title={lane.label}>{lane.label}</strong>
-                          <em>等待项目工作项</em>
-                        </div>
-                        <div className="sup-panel__project-plan-progress">监督通道正在恢复与项目工作项的绑定。</div>
-                      </article>
-                    );
-                  }
-                  const pendingTransition = [...(scopedProject.pendingSupervisorTransitions || [])].reverse().find((transition) => (
-                    transition.workItemId === item.id || transition.laneId === lane.id
-                  ));
-                  const supervisorAssignmentPending = isProjectSupervisorAssignmentPending({
-                    workItemStatus: item.status,
-                    workItemLaneId: item.supervisorLaneId,
-                    workItemAssignmentVersion: item.assignmentVersion,
-                    laneId: lane.id,
-                    laneAssignmentVersion: lane.projectAssignmentVersion,
-                    laneControlState: laneState,
-                    laneAwaitingReview: lane.awaitingReview,
-                    taskContractPending: lane.projectTaskContractPending,
-                    latestBlocker: item.latestBlocker,
-                  });
-                  const managedStatus = summarizeProjectManagedStatus({
-                    workItemStatus: item.status,
-                    laneControlState: laneState,
-                    pendingTransition,
-                    latestBlocker: item.latestBlocker,
-                    supervisorAssignmentPending,
-                  });
-                  const itemTitle = projectWorkItemDisplayTitle(item);
-                  const planView = buildSupervisorPlanView({
-                    source: 'project-ai',
-                    task: itemTitle,
-                    projectTaskBatch: lane.projectTaskBatch,
-                    latestDecision: lane.decisions?.[0],
-                    pendingTransition,
-                    workItemStatus: item.status,
-                    latestBlocker: item.latestBlocker,
-                    supervisorAssignmentPending,
-                  });
-                  const taskExecution = summarizeTaskExecution({
-                    controlState: laneState,
-                    currentTask: lane.currentTask || itemTitle,
-                    awaitingReview: lane.awaitingReview,
-                    stopConfirmed: lane.stopConfirmed,
-                  }, visibleAgentStates[lane.surfaceId]);
-                  const completion = projectWorkItemCompletionResult(item);
-                  return (
-                    <article key={lane.id} data-status={item.status} data-active="1">
-                      <div className="sup-panel__project-plan-row">
-                        <span className="sup-panel__project-plan-dot" />
-                        <strong title={item.id}>{itemTitle}</strong>
-                        <em>{managedStatus.workItemLabel}</em>
-                      </div>
-                      <div className="sup-panel__project-plan-meta">
-                        <span>上级任务：{planView.sourceLabel}</span>
-                        <span>任务终端：{item.workerSurfaceId ? `…${item.workerSurfaceId.slice(-12)}` : '等待创建'}</span>
-                        <span>监督：{managedStatus.supervisorLabel}</span>
-                        <span>唯一任务 AI · 内部组织自治</span>
-                      </div>
-                      {!completion && managedStatus.attention && (
-                        <div className="sup-panel__project-attention" role="alert" title={managedStatus.detail}>
-                          <span className="sup-panel__project-attention-icon">!</span>
-                          <div className="sup-panel__project-attention-copy">
-                            <div><strong>{managedStatus.workItemLabel}</strong><em>{managedStatus.supervisorLabel}</em></div>
-                            <p>{compactProjectAlertSummary(managedStatus.detail)}</p>
-                          </div>
-                          <button type="button" onClick={() => openProjectManagerConsole(scopedProjectId)}>在项目管理中处理</button>
-                        </div>
-                      )}
-                      {completion ? <>
-                        <div className="sup-panel__project-plan-route"><strong>监督 AI 完成结果</strong><span>{item.status === 'completed' ? '项目 AI 已验收' : '等待项目 AI 验收'}</span></div>
-                        <div className="sup-panel__project-plan-detail"><strong>完成结果</strong><span>{completion.summary}</span></div>
-                        <div className="sup-panel__project-plan-detail"><strong>完成验证</strong><span>{completion.validation.join('；') || '监督已确认停止条件'}</span></div>
-                        <div className="sup-panel__project-plan-detail"><strong>完成证据</strong><span>{completion.evidence || item.latestEvidence || '结果摘要已记录'}</span></div>
-                        {!!completion.criteria?.length && <div className="sup-panel__project-plan-detail"><strong>逐项核验</strong><span>{formatProjectCompletionCriteria(completion)}</span></div>}
-                        <div className="sup-panel__project-plan-progress">完成时间：{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</div>
-                      </> : <>
-                        <div className="sup-panel__project-plan-route"><strong>监督 AI 当前规划</strong><span>{planView.modeLabel}</span></div>
-                        <div className="sup-panel__project-plan-detail"><strong>当前路线</strong><span>{planView.route}</span></div>
-                        <div className="sup-panel__project-plan-detail"><strong>下一步给任务 AI</strong><span>{planView.nextInstruction}</span></div>
-                        {planView.steps.length > 0 && <ol className="sup-panel__project-plan-milestones">
-                          {planView.steps.map((milestone) => (
-                            <li key={milestone.id} data-status={milestone.status}>
-                              <span>{PROJECT_SUPERVISOR_MILESTONE_STATUS_LABELS[milestone.status] || milestone.status}</span>
-                              <strong>{milestone.title}</strong>
-                              <p>{milestone.outcome}</p>
-                              {milestone.evidence && <small>证据：{milestone.evidence}</small>}
-                            </li>
-                          ))}
-                        </ol>}
-                        <div className="sup-panel__project-plan-progress">
-                          任务终端活动：{taskExecution.label} · {item.latestEvidence || item.latestContextSummary || taskExecution.detail}
-                        </div>
-                        {(item.latestBlocker || item.latestEvidence || item.latestContextSummary) && (
-                          <div className="sup-panel__project-plan-latest" data-blocked={item.latestBlocker ? '1' : '0'}>
-                            {item.latestBlocker
-                              ? `阻塞：${item.latestBlocker}`
-                              : item.latestEvidence
-                                ? `最近证据：${item.latestEvidence}`
-                                : `上下文：${item.latestContextSummary}`}
-                          </div>
-                        )}
-                      </>}
-                    </article>
-                  );
-                })}
-              </div>
+              <button type="button" onClick={() => openProjectManagerConsole(scopedProjectId)}>打开项目管理</button>
             </section>
           )}
           {!scopedProjectId && ordinaryLanes.length > 0 && (
@@ -1708,6 +1580,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 ? []
                 : activeStandingUserDecisions(lane, laneConfig.planRevision || 1);
               const laneTaskWorkMode = normalizeTaskWorkMode(laneConfig.taskWorkMode);
+              const laneTaskWorkModeLabel = laneTaskWorkMode === 'multi-thread'
+                ? `多线程工程（主线程 + ${normalizeTaskChildThreadResponsibilities(laneConfig.childThreadResponsibilities).length} 个子线程）`
+                : laneTaskWorkMode === 'adaptive'
+                  ? `自适应线程（最多 ${normalizeTaskMaxChildThreads(laneConfig.maxChildThreads)} 个内部子线程）`
+                  : '单线程工作';
               const lanePermissions = effectiveSupervisorAutonomyPermissions(supervisor, lane);
               const laneAutonomous = effectiveSupervisorAutonomous(supervisor, lane);
               const laneForbiddenActions = effectiveSupervisorForbiddenActions(supervisor, lane);
@@ -1750,6 +1627,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     latestBlocker: managedWorkItem.latestBlocker,
                     supervisorAssignmentPending,
                   })
+                : undefined;
+              const managedCompletion = managedWorkItem
+                ? projectWorkItemCompletionResult(managedWorkItem)
                 : undefined;
               const completion = !laneProjectManaged
                 && latestDecision?.outcome === 'complete'
@@ -1978,71 +1858,85 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     </>
                   )}
                   {laneProjectManaged && <>
-                  <div className="sup-panel__lane-detail">
-                    {lane.workspaceTitle ? `${lane.workspaceTitle} · ` : ''}
-                    {lane.surfaceId.slice(0, 14)}…
-                    {managedStatus
-                      ? ` · ${managedStatus.detail}`
-                      : laneControlState === 'waiting'
-                      ? ' · 已达停止条件，等待下一步方向'
-                      : lane.stopConfirmed
-                        ? ' · 已达停止条件'
-                      : lane.awaitingStopCheck
-                        ? ' · 待核对停止条件'
-                        : ' · 监控中'}
-                  </div>
-                  {!!lane.pendingSupervisorDeliveries?.length && (
-                    <div className="sup-panel__lane-supervisor">
-                      监督通知待投递: {lane.pendingSupervisorDeliveries.length}
+                  <section className="sup-panel__managed-lane-overview" aria-label={`${lane.label} 的项目监督信息`}>
+                    <div className="sup-panel__managed-action-grid">
+                      <article>
+                        <span>{managedCompletion ? '当前结果' : '当前成果'}</span>
+                        <strong>{managedCompletion?.summary || lane.currentTask || laneConfig.taskGoal || '等待任务上报'}</strong>
+                        <small>{managedCompletion
+                          ? `完成于 ${new Date(managedCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}`
+                          : laneConfig.taskDescription || '成果合同已由项目 AI 下发'}</small>
+                      </article>
+                      <article data-attention={managedStatus?.attention ? '1' : '0'}>
+                        <span>任务 AI 状态</span>
+                        <strong>{executionStatus.label}</strong>
+                        <small>{executionStatus.detail}</small>
+                      </article>
+                      <article>
+                        <span>监督正在做</span>
+                        <strong>{planView.route}</strong>
+                        <small>{planView.modeLabel}</small>
+                      </article>
+                      <article>
+                        <span>下一步</span>
+                        <strong>{planView.nextInstruction}</strong>
+                        <small>{managedStatus?.detail || '监督依据任务终端证据继续判断'}</small>
+                      </article>
                     </div>
-                  )}
-                  <div className="sup-panel__lane-task" title={lane.currentTask || '等待任务上报'}>
-                    任务: {lane.currentTask || '等待任务上报'}
-                  </div>
-                  {laneConfig.taskGoal && (
-                    <div className="sup-panel__lane-task" title={laneConfig.taskGoal}>
-                      目标: {laneConfig.taskGoal}
-                    </div>
-                  )}
-                  <div className="sup-panel__lane-task">
-                    工作模式: {laneTaskWorkMode === 'multi-thread'
-                      ? `多线程工程（主线程 + ${normalizeTaskChildThreadResponsibilities(laneConfig.childThreadResponsibilities).length} 个子线程）`
-                      : laneTaskWorkMode === 'adaptive'
-                        ? `自适应线程（最多 ${normalizeTaskMaxChildThreads(laneConfig.maxChildThreads)} 个内部子线程）`
-                        : '单线程工作'}
-                  </div>
-                  <div className="sup-panel__lane-task" title={laneConfig.stopWhen}>
-                    停止({stopWhenKindLabel(laneConfig.stopWhenKind)}): {laneConfig.stopWhen}
-                  </div>
-                  {laneConfig.waitForNextDirection && (
-                    <div className="sup-panel__lane-task">
-                      完成后: 待续，等待下一步方向
-                    </div>
-                  )}
-                  {laneConfig.taskDescription && (
-                    <div className="sup-panel__lane-task" title={laneConfig.taskDescription}>
-                      停止补充: {laneConfig.taskDescription}
-                    </div>
-                  )}
-                  {laneConfig.preconditions && (
-                    <div className="sup-panel__lane-task" title={laneConfig.preconditions}>
-                      前置条件: {laneConfig.preconditions}
-                    </div>
-                  )}
-                  {planFileName && (
-                    <div className="sup-panel__lane-task" title={laneConfig.planFilePath}>
-                      计划: {planFileName}
-                    </div>
-                  )}
-                  <div className="sup-panel__lane-supervisor">
-                    专属监督: {dedicatedSupervisorSurfaceId(lane) ? '已连接' : '未启动'}
-                    {lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}
-                  </div>
-                  <div className="sup-panel__lane-supervisor">
-                    权限: {laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length}
-                    {' · '}范围: {WORK_SCOPE_LABELS[laneWorkScope]}
-                    {lanePolicyOverridden ? '（终端专用）' : '（普通会话默认）'}
-                  </div>
+
+                    {(managedWorkItem?.latestBlocker || managedStatus?.attention) && (
+                      <div className="sup-panel__managed-lane-attention" role="alert">
+                        <strong>{managedStatus?.workItemLabel || '需要处理'}</strong>
+                        <span>{compactProjectAlertSummary(managedWorkItem?.latestBlocker || managedStatus?.detail || '当前工作项需要处理')}</span>
+                      </div>
+                    )}
+
+                    {!!lane.pendingSupervisorDeliveries?.length && (
+                      <div className="sup-panel__managed-lane-pending" role="status">
+                        待投递监督通知：{lane.pendingSupervisorDeliveries.length} 条
+                      </div>
+                    )}
+
+                    {(lane.decisions || []).length > 0 && (() => {
+                      const decision = lane.decisions![0];
+                      const decisionKindLabels: Record<string, string> = {
+                        'route-adjustment': '小范围路线调整',
+                        'route-change': '路线变更',
+                        important: '重要建议',
+                      };
+                      const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
+                      return <div className="sup-panel__managed-lane-decision">
+                        <header>
+                          <span>{managedStatus?.attention ? '最近历史裁决' : '最新裁决'}</span>
+                          <strong>{decision.outcome}{decisionKind ? ` · ${decisionKind}` : ''}</strong>
+                        </header>
+                        <p>{compactProjectAlertSummary(decision.reason
+                          || decision.taskDispatch?.outcome
+                          || decision.next
+                          || `依据当前终端证据完成 ${decision.outcome} 判定`)}</p>
+                      </div>;
+                    })()}
+
+                    <details className="sup-panel__managed-lane-audit">
+                      <summary>查看合同、权限与运行标识</summary>
+                      <dl>
+                        <dt>项目 / 任务终端</dt><dd>{lane.workspaceTitle || '当前项目'} · {lane.surfaceId}</dd>
+                        <dt>成果目标</dt><dd>{laneConfig.taskGoal || '未配置'}</dd>
+                        <dt>工作方式</dt><dd>{laneTaskWorkModeLabel}</dd>
+                        <dt>完成后</dt><dd>{laneConfig.waitForNextDirection ? '待续，等待下一步方向' : '结束监督'}</dd>
+                        <dt>停止条件</dt><dd>{stopWhenKindLabel(laneConfig.stopWhenKind)} · {laneConfig.stopWhen || '未配置'}</dd>
+                        <dt>监督连接</dt><dd>{dedicatedSupervisorSurfaceId(lane) ? '已连接' : '未启动'}{lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}</dd>
+                        <dt>权限与范围</dt><dd>{laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length} · {WORK_SCOPE_LABELS[laneWorkScope]}{lanePolicyOverridden ? '（终端专用）' : '（普通会话默认）'}</dd>
+                        {managedCompletion && <>
+                          <dt>完成验证</dt><dd>{managedCompletion.validation.join('；') || '监督已确认停止条件'}</dd>
+                          <dt>完成证据</dt><dd>{managedCompletion.evidence || managedWorkItem?.latestEvidence || '结果摘要已记录'}</dd>
+                          {!!managedCompletion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(managedCompletion)}</dd></>}
+                        </>}
+                        {laneConfig.preconditions && <><dt>前置条件</dt><dd>{laneConfig.preconditions}</dd></>}
+                        {planFileName && <><dt>计划文件</dt><dd title={laneConfig.planFilePath}>{planFileName}</dd></>}
+                      </dl>
+                    </details>
+                  </section>
                   </>}
                   {!laneProjectManaged && (
                     <details className="sup-panel__lane-config">
@@ -2069,23 +1963,6 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       已恢复审计: {lane.restoredFromSessionId}
                     </div>
                   )}
-                  {laneProjectManaged && (lane.decisions || []).length > 0 && (() => {
-                    const decision = lane.decisions![0];
-                    const decisionKindLabels: Record<string, string> = {
-                      'route-adjustment': ' · 小范围路线调整',
-                      'route-change': ' · 路线变更',
-                      important: ' · 重要建议',
-                    };
-                    const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
-                    return (
-                      <div className="sup-panel__lane-decision" title={decision.reason || decision.next}>
-                        {managedStatus?.attention ? '最近历史裁决' : '最新裁决'}：{decision.outcome}{decisionKind} · {decision.reason
-                          || decision.taskDispatch?.outcome
-                          || decision.next
-                          || `依据当前终端证据完成 ${decision.outcome} 判定`}
-                      </div>
-                    );
-                  })()}
                   <div className="sup-panel__lane-actions">
                     {!laneProjectManaged && laneControlState === 'active' && (
                       <button type="button" onClick={() => pauseLane(lane)} disabled={!supervisor.active}>
