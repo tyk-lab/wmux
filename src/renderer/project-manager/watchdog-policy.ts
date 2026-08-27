@@ -84,15 +84,6 @@ export function classifyProjectWatchdogScenario(
       inspectDeadlock: false,
     };
   }
-  if (options.hasPendingManagerDelivery) {
-    return {
-      scenario: 'manager-delivery',
-      owner: 'project-ai',
-      recoverManagerRuntime: true,
-      inspectDeadlock: false,
-    };
-  }
-
   const owner = session.executionResponsibility?.owner;
   if (owner === 'task-ai') {
     return { scenario: 'task-execution', owner, recoverManagerRuntime: false, inspectDeadlock: false };
@@ -102,6 +93,14 @@ export function classifyProjectWatchdogScenario(
       scenario: 'supervisor-execution',
       owner,
       recoverManagerRuntime: false,
+      inspectDeadlock: false,
+    };
+  }
+  if (options.hasPendingManagerDelivery) {
+    return {
+      scenario: 'manager-delivery',
+      owner: 'project-ai',
+      recoverManagerRuntime: true,
       inspectDeadlock: false,
     };
   }

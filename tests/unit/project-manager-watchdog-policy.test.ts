@@ -41,6 +41,14 @@ describe('project manager watchdog policy', () => {
         kind: 'provider-limit', role: 'manager', detail: '等待用户选择运行时', createdAt: 1,
       },
     }), 'runtime-choice'],
+    ['completed goal wait', session({
+      status: 'waiting',
+      activeGoalId: 'goal-1',
+      goals: [{
+        id: 'goal-1', sequence: 1, statement: '完成项目', doneWhen: ['结果可验收'],
+        status: 'achieved', requirementsVersion: 1, createdAt: 1, closedAt: 2,
+      }],
+    }), 'completed-goal-wait'],
     ['passive wait', session({ status: 'waiting' }), 'passive-wait'],
   ] as const)('keeps %s outside automatic recovery', (_label, project, scenario) => {
     expect(classifyProjectWatchdogScenario(project)).toEqual(expect.objectContaining({
@@ -112,6 +120,26 @@ describe('project manager watchdog policy', () => {
     expect(classifyProjectWatchdogScenario(session(), { hasPendingManagerDelivery: true })).toMatchObject({
       scenario: 'manager-delivery',
       recoverManagerRuntime: true,
+      inspectDeadlock: false,
+    });
+  });
+
+  it('does not let a manager delivery steal ownership from active task execution', () => {
+    const project = session({
+      executionResponsibility: {
+        id: 'task-ai',
+        owner: 'task-ai',
+        action: 'execute-work-item',
+        state: 'working',
+        assignedAt: 1,
+        lastProgressAt: 1,
+        attempt: 0,
+        incidentKey: 'task-ai',
+      },
+    });
+    expect(classifyProjectWatchdogScenario(project, { hasPendingManagerDelivery: true })).toMatchObject({
+      scenario: 'task-execution',
+      recoverManagerRuntime: false,
       inspectDeadlock: false,
     });
   });

@@ -8963,12 +8963,14 @@ describe('supervisor decision bridge', () => {
   it('does not rebuild the manager while the task AI is the active execution owner', async () => {
     initPipeBridge();
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-task-owned-execution' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({ ...current, activeWorkItemId: 'task-a' });
     const queueRuntimeRecovery = vi.fn(() => true);
     (globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery = queueRuntimeRecovery;
-    (globalThis.window as any).__wmux_getAgentStates = () => ({
-      'worker-a': { state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() },
-      'supervisor-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() },
-    });
+    agentState = { state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() };
+    expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
+      .toMatchObject({ projectManagerProjectId: project.id, projectWorkItemId: 'task-a', controlState: 'active' });
+    expect((globalThis.window as any).__wmux_getAgentStates()['worker-a']).toMatchObject({ state: 'working' });
 
     await auditProjectLiveness();
 
