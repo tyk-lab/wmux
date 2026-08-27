@@ -1140,7 +1140,7 @@ export const createProjectManagerSlice: StateCreator<
       ) {
         return {
           ok: false,
-          error: '该工作项已收到用户暂缓或跳过验证的裁决，不能由 AI 改变状态或重绑版本；后续补验必须创建新的工作项',
+          error: '该工作项已收到用户暂缓或跳过验证的裁决，不能由 AI 改变状态或重绑版本；暂缓项必须由用户恢复原工作项，跳过项不得创建同义补验',
         };
       }
       if (
@@ -1217,8 +1217,17 @@ export const createProjectManagerSlice: StateCreator<
         || action.intervention === 'skip-verification'
         ? action.intervention
         : undefined;
+      const resumesVerification = action.intervention === 'resume-verification';
       const verificationIntervention = !!verificationAction;
       const verificationLimitation = projectWorkItemCurrentVerificationLimitation(session, existing);
+      if (resumesVerification && (
+        existing.status !== 'paused'
+        || existing.verificationDecision?.action !== 'defer-verification'
+        || existing.verificationDecision.requirementsVersion !== projectRequirementsVersion(session)
+        || existing.verificationDecision.authorizationVersion !== projectAuthorizationVersion(session)
+      )) {
+        return { ok: false, error: '只能恢复当前需求和授权版本中由用户明确暂缓的原验证工作项' };
+      }
       if (verificationIntervention && !verificationLimitation) {
         return { ok: false, error: '只有当前版本已记录验证能力限制的工作项才能暂缓或跳过验证' };
       }
@@ -1235,12 +1244,23 @@ export const createProjectManagerSlice: StateCreator<
           ? '关闭'
           : action.intervention === 'defer-verification'
             ? '暂缓验证'
+            : action.intervention === 'resume-verification'
+              ? '恢复验证'
             : '跳过当前验证';
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        status: action.intervention === 'defer-verification' ? 'paused' : 'stopped',
-        supervisorLaneId: undefined,
-        workerSurfaceId: undefined,
+        ...(resumesVerification ? {
+          status: 'planned' as const,
+          verificationDecision: undefined,
+          verificationLimitation: undefined,
+          latestBlocker: undefined,
+          supervisorLaneId: undefined,
+          workerSurfaceId: undefined,
+        } : {
+          status: action.intervention === 'defer-verification' ? 'paused' as const : 'stopped' as const,
+          supervisorLaneId: undefined,
+          workerSurfaceId: undefined,
+        }),
         ...(verificationIntervention ? {
           verificationDecision: {
             action: verificationAction!,
@@ -1258,7 +1278,9 @@ export const createProjectManagerSlice: StateCreator<
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
-      next = releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId);
+      next = resumesVerification
+        ? updated
+        : releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId);
       if (verificationAction === 'skip-verification'
         && existing.subgoalId
         && projectSubgoalClosedByVerificationWaiver(next, existing.subgoalId)) {
@@ -1278,10 +1300,14 @@ export const createProjectManagerSlice: StateCreator<
           reason: reason || undefined,
           title: existing.title,
           previousStatus: existing.status,
-          ...(verificationIntervention ? {
+          ...(verificationIntervention || resumesVerification ? {
             verificationDecision: action.intervention,
             affectedAcceptance: verificationLimitation?.affectedAcceptance || [],
-            stageDisposition: action.intervention === 'skip-verification' ? 'waived' : 'keep-incomplete',
+            stageDisposition: action.intervention === 'skip-verification'
+              ? 'waived'
+              : action.intervention === 'resume-verification'
+                ? 'resume-current'
+                : 'keep-incomplete',
           } : {}),
         },
       };

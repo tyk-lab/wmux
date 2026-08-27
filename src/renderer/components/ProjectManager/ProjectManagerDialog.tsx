@@ -2387,10 +2387,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             onClick={(event) => {
                               event.stopPropagation();
                               setWorkItemInterventionId(item.id);
-                              setWorkItemIntervention(currentVerificationLimitation ? 'defer-verification' : 'skip');
+                              setWorkItemIntervention(item.verificationDecision?.action === 'defer-verification'
+                                ? 'resume-verification'
+                                : currentVerificationLimitation ? 'defer-verification' : 'skip');
                               setWorkItemInterventionNotice('');
                             }}
-                          >{currentVerificationLimitation ? '处理验证' : '干预此项'}</button>
+                          >{currentVerificationLimitation || item.verificationDecision?.action === 'defer-verification'
+                            ? '处理验证'
+                            : '干预此项'}</button>
                           <button
                             type="button"
                             className="project-manager-dialog__action-card-toggle"
@@ -2503,11 +2507,17 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       }}>取消选择</button>
                     </div>
                     <div className="project-manager-dialog__work-item-actions">
-                      {projectWorkItemCurrentVerificationLimitation(session, selectedInterventionWorkItem) && <>
-                        <label data-selected={workItemIntervention === 'defer-verification' ? '1' : '0'}>
-                          <input type="radio" name="work-item-intervention-action" value="defer-verification" checked={workItemIntervention === 'defer-verification'} disabled={busy} onChange={() => setWorkItemIntervention('defer-verification')} />
-                          <span><strong>暂缓当前验证</strong><small>暂停本验证工作项并保留阶段验收缺口；后续补验须创建新的聚焦验证工作项。</small></span>
-                        </label>
+                      {(projectWorkItemCurrentVerificationLimitation(session, selectedInterventionWorkItem)
+                        || selectedInterventionWorkItem.verificationDecision?.action === 'defer-verification') && <>
+                        {selectedInterventionWorkItem.verificationDecision?.action === 'defer-verification'
+                          ? <label data-selected={workItemIntervention === 'resume-verification' ? '1' : '0'}>
+                              <input type="radio" name="work-item-intervention-action" value="resume-verification" checked={workItemIntervention === 'resume-verification'} disabled={busy} onChange={() => setWorkItemIntervention('resume-verification')} />
+                              <span><strong>恢复原工作项验证</strong><small>继续使用原成果工作项，由同一监督链安排补验、返工和收口；不会创建新的验证任务。</small></span>
+                            </label>
+                          : <label data-selected={workItemIntervention === 'defer-verification' ? '1' : '0'}>
+                              <input type="radio" name="work-item-intervention-action" value="defer-verification" checked={workItemIntervention === 'defer-verification'} disabled={busy} onChange={() => setWorkItemIntervention('defer-verification')} />
+                              <span><strong>暂缓当前验证</strong><small>暂停原成果工作项并保留阶段验收缺口；条件具备后由用户恢复同一工作项。</small></span>
+                            </label>}
                         {!selectedVerificationWaiverError ? <label data-selected={workItemIntervention === 'skip-verification' ? '1' : '0'}>
                           <input type="radio" name="work-item-intervention-action" value="skip-verification" checked={workItemIntervention === 'skip-verification'} disabled={busy} onChange={() => setWorkItemIntervention('skip-verification')} />
                           <span><strong>跳过验证（不要求补验）</strong><small>用户明确不关心当前普通验证；停止验证工作项并解除符合条件的阶段依赖，但不伪造验证通过。</small></span>
@@ -2532,11 +2542,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       placeholder={workItemIntervention.endsWith('-verification')
                         ? workItemIntervention === 'skip-verification'
                           ? '可选：说明不关心当前普通验证的原因或其他处理意见'
-                          : '可选：说明暂缓当前验证的原因、已知限制和后续补验条件'
+                          : workItemIntervention === 'resume-verification'
+                            ? '可选：说明验证条件已经具备、希望采用的观察方式或其他意见'
+                            : '可选：说明暂缓当前验证的原因、已知限制和后续补验条件'
                         : '可选：说明跳过或关闭整个工作项的理由、已知事实，供项目 AI 重排时采用'}
                     />
                     <div className="project-manager-dialog__work-item-intervention-submit">
-                      <span>{workItemIntervention === 'defer-verification'
+                      <span>{workItemIntervention === 'resume-verification'
+                        ? '恢复原成果工作项；验证和补证继续由其监督链编排。'
+                        : workItemIntervention === 'defer-verification'
                         ? '只暂缓当前验证工作项；阶段验收保持未完成。'
                         : workItemIntervention === 'skip-verification'
                           ? '普通验证将记录为用户豁免；不安排同义补验，也不会伪造通过。'
@@ -2544,7 +2558,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             ? '整个工作项会停止，后续依赖交由项目 AI 评估。'
                             : '整个工作项及其专属监督/任务 AI 会停止。'}</span>
                       <button type="button" className="confirm-dialog__btn project-manager-dialog__apply-btn" disabled={busy} onClick={() => void interveneWorkItem()}>
-                        {busy ? '正在提交…' : workItemIntervention === 'defer-verification'
+                        {busy ? '正在提交…' : workItemIntervention === 'resume-verification'
+                          ? '确认恢复原工作项验证'
+                          : workItemIntervention === 'defer-verification'
                           ? '确认暂缓验证'
                           : workItemIntervention === 'skip-verification'
                             ? '确认跳过验证且不补验'

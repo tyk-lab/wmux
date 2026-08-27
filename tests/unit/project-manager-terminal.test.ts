@@ -27,6 +27,7 @@ describe('project manager runtime startup protocol', () => {
     expect(agents).toContain('同一证据与拓扑状态下最多回执一次 `replanned`');
     expect(agents).toContain('`reasonCode=verification-limited`');
     expect(agents).toContain('明确豁免当前普通验证且不再补验');
+    expect(agents).toContain('条件具备后必须由用户恢复原工作项');
     expect(agents).toContain('当前验证工作项进入 `stopped`');
     expect(agents).toContain('跳过剩余普通验证并接受完成');
     expect(agents).toContain('`update-definition mode=refine`');

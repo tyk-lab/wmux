@@ -531,7 +531,6 @@ export function projectProgressObligation(
   const activeGoalItems = session.workItems.filter((item) => (
     item.goalId === activeGoal.id
     && item.status !== 'stopped'
-    && !projectWorkItemVerificationIntervened(item)
   ));
   const currentItems = activeGoalItems.filter((item) => (
     item.requirementsVersion === projectRequirementsVersion(session)
@@ -640,6 +639,11 @@ export function projectProgressObligation(
   ));
   if (paused) {
     return { kind: 'resume-paused', workItemId: paused.id, summary: `工作项 ${paused.id} 已暂缓；需要恢复、改派独立工作或向用户升级真实阻塞` };
+  }
+  const unfinishedItems = currentItems.filter((item) => item.status !== 'completed');
+  if (unfinishedItems.length > 0
+    && unfinishedItems.every((item) => projectWorkItemVerificationDeferred(session, item))) {
+    return null;
   }
   if (currentItems.every((item) => item.status === 'completed')) {
     const uncoveredSubgoal = activeProjectSubgoals(session).find((subgoal) => (

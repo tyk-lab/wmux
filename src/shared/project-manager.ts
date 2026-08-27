@@ -751,6 +751,7 @@ export type ProjectWorkItemIntervention =
   | 'skip'
   | 'close'
   | 'defer-verification'
+  | 'resume-verification'
   | 'skip-verification';
 
 export function projectWorkItemCurrentVerificationLimitation(

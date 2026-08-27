@@ -648,6 +648,18 @@ describe('project-manager slice', () => {
     expect(answered.workItems.find((workItem) => workItem.id === 'stage-2')?.supervisorLaneId).toBeUndefined();
     expect(answered.workItems.find((workItem) => workItem.id === 'stage-2')?.workerSurfaceId).toBeUndefined();
     expect(answered.workItems.find((workItem) => workItem.id === 'stage-3')).toMatchObject({ status: 'planned' });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'stage-2',
+      intervention: 'resume-verification',
+      reason: '用户已准备好人工验证环境',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { payload: { intervention: 'resume-verification', stageDisposition: 'resume-current' } },
+    });
+    expect(useStore.getState().projectManager?.workItems.find((workItem) => workItem.id === 'stage-2'))
+      .toMatchObject({ status: 'planned', verificationDecision: undefined, verificationLimitation: undefined });
   });
 
   it('repairs a persisted deferred-verification active binding when the project resumes', () => {

@@ -5724,7 +5724,7 @@ async function acknowledgeProjectOrientation(
     if (projectWorkItemVerificationIntervened(item) && review.disposition !== 'pause') {
       return {
         ok: false,
-        error: `工作项 ${item.id} 已有用户暂缓验证裁决，只能保留 pause；后续补验必须创建新的工作项`,
+        error: `工作项 ${item.id} 已有用户验证裁决，只能保留 pause；暂缓项须等待用户恢复原工作项，跳过项不得创建同义补验`,
       };
     }
     if (item.status === 'completed' && review.disposition !== 'retain-completed') {
@@ -6878,6 +6878,8 @@ function projectFinalAcceptanceQuestion(
         && item.verificationDecision?.requirementsVersion === requirementsVersion
         && item.verificationDecision.authorizationVersion === authorizationVersion))
   ));
+  const hasDeferredGap = gaps.some((item) => item.verificationDecision?.action === 'defer-verification');
+  const hasSkippedGap = gaps.some((item) => item.verificationDecision?.action === 'skip-verification');
   const normalized = normalizeProjectManagerUserQuestion({
     category: 'manual-intervention',
     reasonCode: 'final-acceptance',
@@ -6910,10 +6912,16 @@ function projectFinalAcceptanceQuestion(
       },
       {
         id: 'continue-validation',
-        label: mode === 'required' ? '暂不完成项目' : '继续补充验证',
+        label: mode === 'required'
+          ? '暂不完成项目'
+          : hasDeferredGap || hasSkippedGap ? '处理剩余验证决定' : '继续补充验证',
         description: mode === 'required'
           ? '保留当前成果和验证记录，项目保持等待，稍后再决定是否最终验收。'
-          : '不接受当前收口，继续为未验证项建立补验工作。',
+          : hasSkippedGap
+            ? '保持项目未完成；已跳过的验证不会自动恢复，如要改变决定须先正式调整验收策略。'
+            : hasDeferredGap
+              ? '保持项目未完成；请在项目中心恢复原工作项验证，不创建新的补验任务。'
+              : '不接受当前收口，由原成果工作项继续处理尚未裁决的验证缺口。',
         confirmationScope: [],
       },
     ],
@@ -12893,7 +12901,7 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       '[用户明确授权暂缓验证｜继续后续工作]',
       `项目：${session.id}${pending.workItemId ? `；工作项：${pending.workItemId}` : ''}`,
       `未验证原因：${pending.blocker || pending.context || pending.question}`,
-      '用户只授权暂缓当前验证环节。不得把未验证项标记 satisfied、不得将对应阶段标记 achieved，也不得据此完成主目标；停止恢复或重派同一验证工作项，保留缺口并创建下一个不同成果的工作项。最终完成前仍需补验，或由用户另行调整验收要求。',
+      '用户只授权暂缓当前验证环节。不得把未验证项标记 satisfied、不得将对应阶段标记 achieved，也不得据此完成主目标；原成果工作项保持 paused，不能创建同阶段验证、补证或收口后继。可以先推进不依赖该缺口的其他独立成果；条件具备后必须由用户恢复原工作项，或由用户另行调整验收要求。',
     ].join('\n'), session.id, {
       priority: true,
       dedupeKey: `user-deferred-verification:${session.id}:${pending.id}`,
@@ -12952,7 +12960,27 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       ? '已记录用户最终验收；项目 AI 可以提交当前主目标完成。'
       : '已记录你对当前最终效果的接受；项目 AI 可保留验证缺口并完成当前主目标。';
   } else if (finalAcceptanceChoice && optionId === 'continue-validation' && updated) {
-    const requiresFinalUserAcceptance = projectGoalUserAcceptancePolicy(activeProjectGoal(updated)) === 'always';
+    const currentGoal = activeProjectGoal(updated);
+    const requiresFinalUserAcceptance = projectGoalUserAcceptancePolicy(currentGoal) === 'always';
+    const requirementsVersion = projectRequirementsVersion(updated);
+    const authorizationVersion = projectAuthorizationVersion(updated);
+    const currentGapItems = updated.workItems.filter((item) => (
+      item.goalId === currentGoal.id
+      && item.requirementsVersion === requirementsVersion
+      && item.authorizationVersion === authorizationVersion
+      && ((['defer-verification', 'skip-verification'].includes(item.verificationDecision?.action || '')
+        && item.verificationDecision?.requirementsVersion === requirementsVersion
+        && item.verificationDecision.authorizationVersion === authorizationVersion)
+        || (item.verificationLimitation?.requirementsVersion === requirementsVersion
+          && item.verificationLimitation.authorizationVersion === authorizationVersion))
+    ));
+    const deferredGapItems = currentGapItems.filter((item) => (
+      item.verificationDecision?.action === 'defer-verification'
+    ));
+    const skippedGapItems = currentGapItems.filter((item) => (
+      item.verificationDecision?.action === 'skip-verification'
+    ));
+    const undecidedGapItems = currentGapItems.filter((item) => !item.verificationDecision);
     if (requiresFinalUserAcceptance) {
       const paused = store.applyProjectManagerAction({
         type: 'pause-project',
@@ -12972,11 +13000,26 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       `项目：${session.id}`,
       requiresFinalUserAcceptance
         ? '保留全部实现与验证证据，不得重复派发已经完成的工作；项目保持等待，直到用户再次决定是否最终验收。'
-        : '保留当前成果和全部验证缺口，读取 project status，为未验证项恢复或创建聚焦补验工作项；不得重复已经确认不可用的同一验证路线。',
+        : [
+            '保留当前成果和全部验证缺口；不得创建聚焦补验后继，也不得重复已经确认不可用的同一验证路线。',
+            deferredGapItems.length > 0
+              ? `以下暂缓项只能由用户在项目中心选择“恢复原工作项验证”，项目 AI 不得自行恢复或派发：${deferredGapItems.map((item) => item.title).join('；')}`
+              : '',
+            skippedGapItems.length > 0
+              ? `以下跳过项继续保持豁免且不得补验；如用户改变决定，必须先正式调整验收策略或主目标：${skippedGapItems.map((item) => item.title).join('；')}`
+              : '',
+            undecidedGapItems.length > 0
+              ? `以下尚未形成用户裁决的缺口留在原成果工作项，由其监督链继续处理：${undecidedGapItems.map((item) => item.title).join('；')}`
+              : '',
+          ].filter(Boolean).join('\n'),
     ].join('\n'), session.id, { priority: true, dedupeKey: `user-continue-validation:${session.id}:${pending.id}` });
     choiceMessage = requiresFinalUserAcceptance
       ? '已保留当前成果和验证记录；项目等待用户以后进行最终验收。'
-      : '已保留当前成果并要求继续补验；项目尚未完成。';
+      : skippedGapItems.length > 0
+        ? '已保持项目未完成；已跳过的验证不会自动恢复，如要改变决定请先正式调整验收策略。'
+        : deferredGapItems.length > 0
+          ? '已保持项目未完成；请在项目中心对暂缓项选择“恢复原工作项验证”。'
+          : '已保留当前成果，由原成果工作项继续处理未裁决的验证缺口。';
   } else if (taskInputConflictChoice && optionId === 'draft-handled' && updated) {
     const canResumeOriginalChain = pending.previousStatus === 'active'
       && updated.status === 'waiting'
@@ -14378,7 +14421,9 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (projectWorkItemVerificationIntervened(item)) {
       return {
         ok: false,
-        error: '该工作项的当前验证已由用户暂缓或跳过，禁止恢复或重派原工作项；如需补验，请创建新的聚焦验证工作项',
+        error: item.verificationDecision?.action === 'defer-verification'
+          ? '该工作项的当前验证已由用户暂缓；必须先由用户恢复原工作项验证，不能创建或派发同义补验任务'
+          : '该工作项的当前普通验证已由用户跳过；禁止恢复原工作项或创建同义补验任务',
       };
     }
     if (session.activeWorkItemId && session.activeWorkItemId !== item.id) {
@@ -15810,11 +15855,12 @@ export function initPipeBridge(): void {
       const intervention = String(params?.intervention || '').trim() as ProjectWorkItemIntervention;
       const reason = String(params?.reason || '').trim().slice(0, 1200);
       if (!workItemId) return { ok: false, error: '必须选择要干预的工作项' };
-      if (!['skip', 'close', 'defer-verification', 'skip-verification'].includes(intervention)) {
-        return { ok: false, error: '工作项干预方式必须是暂缓验证、跳过当前验证、跳过整个工作项或关闭整个工作项' };
+      if (!['skip', 'close', 'defer-verification', 'resume-verification', 'skip-verification'].includes(intervention)) {
+        return { ok: false, error: '工作项干预方式必须是暂缓验证、恢复原验证、跳过当前验证、跳过整个工作项或关闭整个工作项' };
       }
       const workItem = session.workItems.find((item) => item.id === workItemId);
       if (!workItem) return { ok: false, error: `任务不存在：${workItemId}` };
+      const resumesVerification = intervention === 'resume-verification';
       const verificationIntervention = intervention === 'defer-verification'
         || intervention === 'skip-verification';
       const verificationLimitation = currentProjectVerificationLimitation(session, workItem);
@@ -15852,11 +15898,13 @@ export function initPipeBridge(): void {
       releaseProjectWorkItemAssignmentForReuse(
         updatedSession,
         workItemId,
-        verificationIntervention
-          ? intervention === 'skip-verification'
-            ? `用户豁免工作项 ${workItem.title} 的当前普通验证；符合条件的阶段不再阻塞依赖，旧 assignment 已解除`
-            : `用户暂缓工作项 ${workItem.title} 的当前验证；所属阶段保持未完成，旧 assignment 已解除`
-          : `用户${intervention === 'skip' ? '跳过' : '关闭'}整个工作项 ${workItem.title}；旧 assignment 已解除，项目运行时保留`,
+        resumesVerification
+          ? `用户恢复工作项 ${workItem.title} 的原验证链；清理可能残留的旧 assignment 后等待重新派发`
+          : verificationIntervention
+            ? intervention === 'skip-verification'
+              ? `用户豁免工作项 ${workItem.title} 的当前普通验证；符合条件的阶段不再阻塞依赖，旧 assignment 已解除`
+              : `用户暂缓工作项 ${workItem.title} 的当前验证；所属阶段保持未完成，旧 assignment 已解除`
+            : `用户${intervention === 'skip' ? '跳过' : '关闭'}整个工作项 ${workItem.title}；旧 assignment 已解除，项目运行时保留`,
       );
 
       await persistProjectManagerMutation(result, session.id);
@@ -15867,6 +15915,8 @@ export function initPipeBridge(): void {
           ? '关闭整个工作项'
           : intervention === 'defer-verification'
             ? '暂缓当前验证'
+            : intervention === 'resume-verification'
+              ? '恢复原工作项验证'
             : '跳过当前验证';
       deliverProjectManagerMessage([
         `[用户干预工作项｜${interventionLabel}]`,
@@ -15874,14 +15924,20 @@ export function initPipeBridge(): void {
         `当前主目标：${session.goal}`,
         `工作项：${workItem.id} · ${workItem.title}`,
         `用户理由：${reason || '未填写；仅按用户选择的干预方式处理'}`,
-        verificationIntervention
+        resumesVerification
+          ? '控制层已清除原工作项的暂缓裁决和过期验证能力限制，并将同一成果工作项恢复为待派发；没有创建新的项目级工作项。'
+          : verificationIntervention
           ? intervention === 'skip-verification'
             ? '控制层已停止该验证工作项并解除旧 assignment；普通验证被记录为用户豁免，不代表测试通过，真实失败与保护性验收仍保留。'
             : '控制层已暂停该验证工作项并解除旧 assignment；所属阶段仍保持未完成，原验收条件和缺口完整保留，其他工作项没有被全局暂停。'
           : '控制层已把整个工作项标记为停止并解除旧 assignment；项目常驻监督与任务 AI 保留供后续工作项复用，其他工作项没有被全局暂停。',
         '',
-        intervention === 'defer-verification'
-          ? '只暂缓当前验证路线。不得恢复或重派同一受限验证工作项，不得把阶段标记 achieved；可以先推进不依赖该验证的其他成果，条件具备后必须创建新的聚焦验证工作项补验，或由用户正式修改验收要求。'
+        intervention === 'resume-verification'
+          ? updatedSession.status === 'active'
+            ? `用户已明确恢复原成果工作项。不得执行 task-create；请对工作项 ${workItem.id} 执行 dispatch，由原监督链继续安排验证、补证、返工和收口批次。`
+            : `用户已明确恢复原成果工作项，但项目仍为 ${updatedSession.status}。不得执行 task-create；等待用户恢复项目后，再对工作项 ${workItem.id} 执行 dispatch。`
+          : intervention === 'defer-verification'
+          ? '只暂缓当前验证路线。用户恢复前不得恢复或重派同一受限验证工作项，不得把阶段标记 achieved，也不得创建同阶段验证、补证或收口后继；可以先推进不依赖该验证的其他独立成果，条件具备后等待用户恢复原工作项，或由用户正式修改验收要求。'
           : intervention === 'skip-verification'
             ? '用户已明确不要求当前普通验证。不得恢复原工作项、创建同义补验或把缺口写成 satisfied；控制层允许满足豁免条件的阶段解除依赖并继续后续成果。'
             : intervention === 'skip'
@@ -15889,15 +15945,24 @@ export function initPipeBridge(): void {
           : '“关闭”表示用户明确从当前计划中移除该工作项。未经用户新的明确指示，不得恢复原工作项或以等价工作项绕过此决定；请自主重排受影响的依赖项。若关闭后主目标无法达成，携带事实、影响和推荐方案向用户提案。',
         `处理完后请使用 wmux project reply --project ${session.id} --message "<已如何调整计划的摘要>"，把结果写回当前项目会话。`,
       ].join('\n'), runtime.created === true, session.id);
+      if (resumesVerification && updatedSession.status === 'active') {
+        scheduleProjectProgressCheck(session.id);
+      }
       return {
         ...result,
         message: runtime.ok
-          ? verificationIntervention
+          ? resumesVerification
+            ? updatedSession.status === 'active'
+              ? `已恢复“${workItem.title}”的原工作项验证，并通知项目 AI 续接同一监督链。`
+              : `已恢复“${workItem.title}”的原工作项验证；项目仍处于${updatedSession.status === 'paused' ? '暂停' : '等待'}状态，请再恢复项目以续接同一监督链。`
+            : verificationIntervention
             ? intervention === 'skip-verification'
               ? `已豁免“${workItem.title}”的当前普通验证；不会安排同义补验，符合条件的阶段依赖已解除，并已通知项目 AI 继续后续计划。`
               : `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成，并通知项目 AI 重排后续计划。`
             : `已${interventionLabel}“${workItem.title}”，并通知项目 AI 重排后续计划。`
-          : verificationIntervention
+          : resumesVerification
+            ? `已恢复“${workItem.title}”的原工作项验证；项目 AI 当前不可用，续接通知已持久排队并会自动重试。`
+            : verificationIntervention
             ? intervention === 'skip-verification'
               ? `已豁免“${workItem.title}”的当前普通验证且不会安排同义补验；项目 AI 当前不可用，通知已持久排队并会自动重试。`
               : `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`

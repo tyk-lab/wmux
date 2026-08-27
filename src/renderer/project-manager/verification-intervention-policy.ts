@@ -161,8 +161,8 @@ export function projectWorkItemVerificationDeferred(
 }
 
 /**
- * User-settled verification decisions remain immutable history. Deferred work
- * may be represented by a successor; a current standard-risk skip is an audited
+ * User-settled verification decisions remain immutable until the user explicitly
+ * resumes the same deferred work item. A current standard-risk skip is an audited
  * waiver and is not rebound or silently converted into passing evidence.
  */
 export function projectWorkItemRequiresVersionReconciliation(

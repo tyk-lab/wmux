@@ -6,8 +6,6 @@ import {
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
-import { projectWorkItemVerificationIntervened } from './verification-intervention-policy';
-
 const CLOSED_WORK_ITEM_STATUSES = new Set(['completed', 'stopped']);
 
 /** Keep one stage outcome open and require a successor to cover every remaining acceptance item. */
@@ -17,11 +15,12 @@ export function projectWorkItemCreationError(
 ): string | null {
   const settledDependency = candidate.dependencies.find((dependencyId) => (
     session.workItems.some((item) => (
-      item.id === dependencyId && projectWorkItemVerificationIntervened(item)
+      item.id === dependencyId
+      && ['defer-verification', 'skip-verification'].includes(item.verificationDecision?.action || '')
     ))
   ));
   if (settledDependency) {
-    return `新工作项不能依赖已由用户暂缓或跳过验证的旧工作项 ${settledDependency}；请继承其原始前置依赖，并用新工作项承接剩余验收`;
+    return `新工作项不能依赖已由用户暂缓或跳过验证的旧工作项 ${settledDependency}；请继承其原始前置依赖。暂缓验证必须恢复原成果工作项，跳过验证不得创建同义补验`;
   }
   const subgoal = (session.subgoals || []).find((item) => (
     item.id === candidate.subgoalId && item.goalId === candidate.goalId
@@ -33,7 +32,6 @@ export function projectWorkItemCreationError(
     && item.goalId === candidate.goalId
     && item.subgoalId === candidate.subgoalId
     && !CLOSED_WORK_ITEM_STATUSES.has(item.status)
-    && !projectWorkItemVerificationIntervened(item)
   ));
   if (openItem) {
     return `阶段“${subgoal.title}”已有开放成果工作项 ${openItem.id}（${openItem.status}）；必须先完成、停止或更新该工作项，不能创建同阶段并行或同义后继任务`;
@@ -72,7 +70,20 @@ export function projectWorkItemCreationError(
     candidate.contract.stageAcceptanceCoverage,
   ).map((mapping) => projectCriterionIdentity(mapping.stageCriterion)));
   const uncovered = remaining.find((entry) => !candidateCoverage.has(entry.identity));
-  return uncovered
-    ? `阶段“${subgoal.title}”已有历史成果；新工作项必须一次覆盖全部剩余验收，当前缺少：${uncovered.criterion}`
-    : null;
+  if (uncovered) {
+    return `阶段“${subgoal.title}”已有历史成果；新工作项必须一次覆盖全部剩余验收，当前缺少：${uncovered.criterion}`;
+  }
+  const previouslyOwnedCriterion = remaining.find((entry) => session.workItems.some((item) => (
+    item.id !== candidate.id
+    && item.goalId === candidate.goalId
+    && item.subgoalId === candidate.subgoalId
+    && item.verificationDecision?.action === 'skip-verification'
+    && normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage)
+      .some((mapping) => projectCriterionIdentity(mapping.stageCriterion) === entry.identity)
+    && candidateCoverage.has(entry.identity)
+  )));
+  if (previouslyOwnedCriterion) {
+    return `阶段“${subgoal.title}”的验收“${previouslyOwnedCriterion.criterion}”已由历史成果工作项承接；验证、补证、构建、测试、返工或验收收口必须留在原成果的监督链内，不能创建同义后继任务`;
+  }
+  return null;
 }

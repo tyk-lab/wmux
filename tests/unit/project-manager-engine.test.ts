@@ -108,6 +108,30 @@ describe('project-manager engine', () => {
     });
   });
 
+  it('waits on the original work item after the user defers verification', () => {
+    const deferred = item('deferred-verification', 'paused');
+    deferred.verificationDecision = {
+      action: 'defer-verification',
+      questionId: 'verification-choice',
+      reason: '等待用户准备验证环境',
+      answeredBy: 'desktop',
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      decidedAt: 2,
+    };
+    const project = session([deferred]);
+    project.workItems = project.workItems.map((workItem) => ({
+      ...workItem,
+      goalId: project.activeGoalId,
+    }));
+
+    expect(projectProgressObligation(project)).toBeNull();
+
+    const unresolved = item('unresolved-dependency', 'waiting-dependencies', ['missing-work']);
+    project.workItems.push({ ...unresolved, goalId: project.activeGoalId });
+    expect(projectProgressObligation(project)).toMatchObject({ kind: 'resolve-dependencies' });
+  });
+
   it('separates missing stage mappings from a stage that is ready to close', () => {
     const verificationCriterion = '复核 C GUI 原型可编译并启动的既有证据';
     const stageCriterion = 'C GUI 原型可编译并启动';

@@ -247,6 +247,7 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('messageDrafts');
     expect(projectManagerDialogSource).toContain("action: 'intervene-work-item'");
     expect(projectManagerDialogSource).toContain('暂缓当前验证');
+    expect(projectManagerDialogSource).toContain('恢复原工作项验证');
     expect(projectManagerDialogSource).toContain('跳过验证（不要求补验）');
     expect(projectManagerDialogSource).toContain('处理验证');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-intervention-trigger');

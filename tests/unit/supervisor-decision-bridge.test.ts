@@ -1567,14 +1567,29 @@ describe('supervisor decision bridge', () => {
     expect(managerNotifications).toContain('不得恢复原工作项');
   });
 
-  it('does not redispatch a verification work item after the user defers it', async () => {
+  it('reopens the original work item only after the user resumes deferred verification', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-deferred-verification-redispatch' });
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId || '';
     useStore.getState().restoreProjectManager({
       ...current,
+      subgoals: [{
+        id: 'gui-stage', goalId, title: 'GUI 用户管理', outcome: 'CRUD 可用',
+        acceptance: ['GUI CRUD 可复核'], dependencies: [], status: 'active',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
       workItems: current.workItems.map((item) => ({
         ...item,
+        goalId,
+        subgoalId: 'gui-stage',
         status: 'waiting-decision' as const,
+        contract: {
+          ...item.contract,
+          stageAcceptanceCoverage: [{
+            stageCriterion: 'GUI CRUD 可复核',
+            verificationCriterion: item.contract.validation[0],
+          }],
+        },
         verificationLimitation: {
           kind: 'gui-automation-unavailable' as const,
           detail: '当前环境无法执行可靠的 GUI 自动化',
@@ -1604,40 +1619,31 @@ describe('supervisor decision bridge', () => {
       workItemId: 'task-a',
     })).resolves.toMatchObject({
       ok: false,
-      error: expect.stringContaining('禁止恢复或重派原工作项'),
+      error: expect.stringContaining('必须先由用户恢复原工作项验证'),
     });
 
-    useStore.getState().restoreProjectManager({
-      ...deferred,
-      requirementsVersion: 2,
-      authorizationVersion: 2,
-      acceptedRequirementsVersion: 2,
-      status: 'active',
-      goals: (deferred.goals || []).map((goal) => (
-        goal.id === deferred.activeGoalId ? { ...goal, requirementsVersion: 2 } : goal
-      )),
-      orientation: deferred.orientation ? {
-        ...deferred.orientation,
-        status: 'ready',
-        requirementsVersion: 2,
-        authorizationVersion: 2,
-      } : deferred.orientation,
-      workItems: deferred.workItems.map((item) => ({
-        ...item,
-        status: 'paused' as const,
-        requirementsVersion: 2,
-        authorizationVersion: 2,
-      })),
-    });
-    await expect((globalThis.window as any).__wmux_projectManagerRequest({
-      action: 'supervisor-assign',
-      callerSurfaceId: deferred.managerSurfaceId,
+    await expect(remote({
+      action: 'intervene-work-item',
       projectId: project.id,
       workItemId: 'task-a',
+      intervention: 'resume-verification',
+      reason: '用户已准备好人工验证环境',
     })).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining('禁止恢复或重派原工作项'),
+      ok: true,
+      message: expect.stringContaining('原工作项验证'),
     });
+    const resumed = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(resumed.workItems.find((item) => item.id === 'task-a')).toMatchObject({
+      status: 'planned',
+      verificationDecision: undefined,
+      verificationLimitation: undefined,
+    });
+    const managerNotifications = JSON.stringify([
+      ...writes.mock.calls,
+      ...(resumed.pendingManagerDeliveries || []).map((delivery) => delivery.text),
+    ]);
+    expect(managerNotifications).toContain('不得执行 task-create');
+    expect(managerNotifications).toContain('执行 dispatch');
   });
 
   it('ignores a persisted old-version verification deferral when the user resumes the project', async () => {
@@ -4675,10 +4681,19 @@ describe('supervisor decision bridge', () => {
     })).resolves.toMatchObject({ ok: true, question: { reasonCode: 'final-acceptance' } });
     const reconsideration = useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
-    await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
+    const continueAfterSkip = await (globalThis.window as any).__wmux_projectManagerRemoteControl({
       action: 'answer-question', projectId: project.id, questionId: reconsideration?.id,
       optionId: 'continue-validation', source: 'desktop',
-    })).resolves.toMatchObject({ ok: true, message: expect.stringContaining('继续补验') });
+    });
+    expect(continueAfterSkip).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('正式调整验收策略'),
+    });
+    const afterContinueSkip = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)!;
+    expect(afterContinueSkip.workItems.find((item) => item.id === 'skipped-final-validation'))
+      .toMatchObject({ status: 'stopped', verificationDecision: { action: 'skip-verification' } });
+    expect(afterContinueSkip.workItems).toHaveLength(2);
     await expect(request({
       action: 'complete', callerSurfaceId: managerSurfaceId, projectId: project.id,
       userAcceptanceEventId: accepted.event.id,
@@ -4723,6 +4738,81 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
       ?.workItems.every((item) => ['completed', 'stopped'].includes(item.status))).toBe(true);
     expect(useStore.getState().supervisor.lanes.some((lane) => lane.projectManagerProjectId === project.id)).toBe(false);
+  });
+
+  it('requires the user to resume the original item after declining final acceptance with a deferred gap', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-final-deferred-validation' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const template = current.workItems[0];
+    const goalCriterion = current.doneWhen[0];
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'active',
+      acceptedRequirementsVersion: current.requirementsVersion,
+      activeWorkItemId: undefined,
+      subgoals: [{
+        id: 'implemented-stage', goalId: current.activeGoalId!, title: '已有成果', outcome: '形成可用效果',
+        acceptance: ['已有成果形成'], dependencies: [], status: 'achieved', order: 1,
+        createdAt: 1, updatedAt: 2,
+      }, {
+        id: 'validation-stage', goalId: current.activeGoalId!, title: '最终验证', outcome: '验证最终效果',
+        acceptance: [goalCriterion], dependencies: ['implemented-stage'], status: 'active', order: 2,
+        createdAt: 1, updatedAt: 2,
+      }],
+      workItems: [{
+        ...template,
+        id: 'implemented-result', title: '已有可交付成果', subgoalId: 'implemented-stage',
+        status: 'completed', supervisorLaneId: undefined, workerSurfaceId: undefined,
+        completion: {
+          summary: '已有可交付成果已经形成', validation: ['已有成果形成'],
+          evidence: '项目内已有可运行成果', completedAt: 2,
+        },
+      }, {
+        ...template,
+        id: 'deferred-final-validation', title: '暂缓的最终验证', subgoalId: 'validation-stage',
+        status: 'paused', supervisorLaneId: undefined, workerSurfaceId: undefined,
+        latestBlocker: '等待用户准备人工验证环境。', completion: undefined,
+        verificationDecision: {
+          action: 'defer-verification', questionId: 'defer-final-validation',
+          reason: '等待人工验证环境', answeredBy: 'desktop',
+          requirementsVersion: current.requirementsVersion,
+          authorizationVersion: current.authorizationVersion,
+          decidedAt: 3,
+        },
+      }],
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const completionAttempt = await request({
+      action: 'complete', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      evidence: '已有成果，但最终验证暂缓。', criteria: [],
+    });
+    expect(completionAttempt).toMatchObject({
+      ok: true,
+      question: {
+        reasonCode: 'final-acceptance',
+        options: expect.arrayContaining([expect.objectContaining({
+          id: 'continue-validation',
+          label: '处理剩余验证决定',
+          description: expect.stringContaining('恢复原工作项验证'),
+        })]),
+      },
+    });
+    const pending = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    const continued = await (globalThis.window as any).__wmux_projectManagerRemoteControl({
+      action: 'answer-question', projectId: project.id, questionId: pending?.id,
+      optionId: 'continue-validation', source: 'desktop',
+    });
+    expect(continued).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('恢复原工作项验证'),
+    });
+    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(updated.workItems.find((item) => item.id === 'deferred-final-validation'))
+      .toMatchObject({ status: 'paused', verificationDecision: { action: 'defer-verification' } });
+    expect(updated.workItems).toHaveLength(2);
   });
 
   it('offers only one alternative verification round for the same work item', async () => {

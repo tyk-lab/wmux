@@ -295,7 +295,7 @@ describe('project manager control-plane policies', () => {
       .toContain('当前缺少：验收 A');
   });
 
-  it('keeps user-settled verification gaps out of version reconciliation and successor admission gates', () => {
+  it('keeps user-settled verification gaps out of version reconciliation and blocks successor admission', () => {
     const project = pausedCompletedProject();
     project.requirementsVersion = 2;
     project.authorizationVersion = 2;
@@ -325,11 +325,23 @@ describe('project manager control-plane policies', () => {
       order: 1, createdAt: 1, updatedAt: 1,
     }];
     const successor = workItem({ id: 'focused-verification' });
-    expect(projectWorkItemCreationError({ subgoals, workItems: [deferred] }, successor)).toBeNull();
+    expect(projectWorkItemCreationError({ subgoals, workItems: [deferred] }, successor))
+      .toContain('已有开放成果工作项');
     expect(projectWorkItemCreationError({ subgoals, workItems: [deferred] }, {
       ...successor,
       dependencies: [deferred.id],
     })).toContain('不能依赖已由用户暂缓或跳过验证的旧工作项');
+
+    const waived = {
+      ...deferred,
+      status: 'stopped' as const,
+      verificationDecision: {
+        ...deferred.verificationDecision!,
+        action: 'skip-verification' as const,
+      },
+    };
+    expect(projectWorkItemCreationError({ subgoals, workItems: [waived] }, successor))
+      .toContain('必须留在原成果的监督链内');
   });
 
   it('allows an audited standard verification waiver but rejects protected criteria and real failures', () => {
