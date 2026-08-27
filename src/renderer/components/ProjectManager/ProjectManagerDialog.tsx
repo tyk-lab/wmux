@@ -37,6 +37,10 @@ import {
   summarizeProjectCompletionCriteria,
 } from '../../project-manager/completion-display';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
+import {
+  projectCenterStatusLabel,
+  projectCenterVisualState,
+} from '../../project-manager/center-status';
 import { useStore } from '../../store';
 import { supervisorLaneControlState, type SupervisorLane } from '../../store/supervisor-slice';
 import { modelOptionsFor } from '../../supervisor/model-catalog';
@@ -1301,6 +1305,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     ? supervisor.lanes.filter((lane) => lane.projectManagerProjectId === session.id)
     : [];
   const activeManagedLanes = managedLanes.filter((lane) => supervisorLaneControlState(lane) !== 'stopped');
+  const centerVisualState = session ? projectCenterVisualState(session) : 'stopped';
   const awaitingProjectAiCount = currentWorkItems.filter((item) => {
     if (item.status !== 'waiting-decision') return false;
     const lane = managedLanes.find((candidate) => candidate.id === item.supervisorLaneId);
@@ -1415,8 +1420,15 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
           <div className="project-manager-dialog__header-row">
             <div className="supervisor-dialog__title">{embedded ? '项目管理' : '项目 AI 中心'}</div>
             {session && !creating && (
-              <span className="project-manager-dialog__header-status" data-status={session.status}>
-                {projectActivityLabel(session, managedLanes)} · 专属监督 {activeManagedLanes.length}
+              <span
+                className="project-manager-dialog__header-status"
+                data-status={session.status}
+                data-visual-state={!embedded ? centerVisualState : undefined}
+              >
+                {(embedded
+                  ? projectActivityLabel(session, managedLanes)
+                  : projectCenterStatusLabel(session, projectActivityLabel(session, managedLanes)))}
+                {' · '}专属监督 {activeManagedLanes.length}
               </span>
             )}
           </div>
@@ -1571,7 +1583,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             </section>
           )}
 
-          {session?.pendingUserQuestion && !creating && (
+          {embedded && session?.pendingUserQuestion && !creating && (
             <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
               <div className="supervisor-dialog__group-title">{
                 manualVerificationFeedbackQuestion
@@ -1641,26 +1653,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
             </section>
           )}
 
-          {!embedded && !awaitingRecovery && <details className="supervisor-dialog__advanced project-manager-dialog__agent-config">
-            <summary>项目模式 Agent 配置 <span>项目 AI / 专属监督 / 任务终端</span></summary>
-            <div className="project-manager-dialog__section-head">
-              <div>
-                <div className="supervisor-dialog__hint">仅作用于项目模式：每个项目的项目 AI、监督 AI、任务 AI 三层分别选择 Agent、模型和思考程度。</div>
-              </div>
-              <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void saveAgentConfig()}>保存配置</button>
-            </div>
-            <ProjectAgentConfigFields value={agentDraft} onChange={(next) => {
-              setAgentDraft(next);
-              setConfigNotice('');
-            }} />
-            {agentDraft.manager.agent === 'codex' && (
-              <div className="supervisor-dialog__hint" role="note">
-                项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核时，wmux 会立即切换到对应终端，由你在 Codex 原生页面确认；wmux 不会自动选择或确认 Hook。
-              </div>
-            )}
-            {configNotice && <div className="supervisor-dialog__notice" data-kind="success" role="status">{configNotice}</div>}
-          </details>}
-
           <div
             className="project-manager-dialog__workspace"
             data-console={embedded && session && !creating && !awaitingRecovery ? '1' : '0'}
@@ -1684,8 +1676,21 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 >{creating ? '取消添加' : '添加项目'}</button>
               </div>
               <div className="project-manager-dialog__project-list">
-                {sessions.map((candidate) => (
-                  <article key={candidate.id} data-selected={candidate.id === session?.id ? '1' : '0'}>
+                {sessions.map((candidate) => {
+                  const candidateLanes = supervisor.lanes.filter((lane) => (
+                    lane.projectManagerProjectId === candidate.id
+                    && supervisorLaneControlState(lane) !== 'stopped'
+                  ));
+                  const visualState = projectCenterVisualState(candidate);
+                  const statusLabel = projectCenterStatusLabel(
+                    candidate,
+                    projectActivityLabel(candidate, candidateLanes),
+                  );
+                  return <article
+                    key={candidate.id}
+                    data-selected={candidate.id === session?.id ? '1' : '0'}
+                    data-visual-state={visualState}
+                  >
                     <button type="button" className="project-manager-dialog__project-select" onClick={() => {
                       selectProjectManager(candidate.id);
                       setCreating(false);
@@ -1694,15 +1699,13 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       <strong>{projectDisplayName(candidate)}</strong>
                       <span>G{activeProjectGoal(candidate).sequence} · {candidate.goal}</span>
                       <span>{candidate.projectDir}</span>
-                      <em>{projectActivityLabel(candidate, supervisor.lanes.filter((lane) => (
-                        lane.projectManagerProjectId === candidate.id
-                      )))}</em>
+                      <em>{statusLabel} · 专属监督 {candidateLanes.length}</em>
                     </button>
                     <button type="button" className="confirm-dialog__btn project-manager-dialog__project-open" onClick={() => {
                       enterProjectConsole(candidate.id);
                     }}>打开控制台</button>
-                  </article>
-                ))}
+                  </article>;
+                })}
               </div>
               <div className="project-manager-dialog__portfolio-actions">
                 {canPausePortfolio && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void controlPortfolio('pause-all-projects')}>全部暂停</button>}

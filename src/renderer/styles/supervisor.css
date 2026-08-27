@@ -378,6 +378,37 @@
   font-size: 10px;
 }
 
+.project-manager-dialog__header-status[data-visual-state='active'] {
+  border-color: rgba(80, 200, 140, 0.58);
+  background: rgba(80, 200, 140, 0.09);
+  color: #86efac;
+}
+
+.project-manager-dialog__header-status[data-visual-state='waiting'],
+.project-manager-dialog__header-status[data-visual-state='paused'] {
+  border-color: rgba(217, 164, 65, 0.62);
+  background: rgba(217, 164, 65, 0.1);
+  color: #fcd34d;
+}
+
+.project-manager-dialog__header-status[data-visual-state='human'] {
+  border-color: rgba(167, 139, 250, 0.68);
+  background: rgba(109, 40, 217, 0.12);
+  color: #c4b5fd;
+}
+
+.project-manager-dialog__header-status[data-visual-state='error'] {
+  border-color: rgba(248, 113, 113, 0.68);
+  background: rgba(127, 29, 29, 0.14);
+  color: #fca5a5;
+}
+
+.project-manager-dialog__header-status[data-visual-state='stopped'] {
+  border-color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.2);
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.04);
+  color: var(--ui-text-muted);
+}
+
 .project-manager-dialog__inspector-alert[data-kind='completion'] {
   border-color: rgba(52, 211, 153, 0.42);
   background: rgba(6, 78, 59, 0.18);
@@ -961,8 +992,33 @@
 }
 
 .project-manager-dialog__project-list article[data-selected='1'] {
-  border-color: rgba(80, 160, 255, 0.65);
-  background: rgba(80, 160, 255, 0.12);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.72);
+}
+
+.project-manager-dialog__project-list article[data-visual-state='active'] {
+  border-color: rgba(80, 200, 140, 0.58);
+  background: rgba(80, 200, 140, 0.09);
+}
+
+.project-manager-dialog__project-list article[data-visual-state='waiting'],
+.project-manager-dialog__project-list article[data-visual-state='paused'] {
+  border-color: rgba(217, 164, 65, 0.62);
+  background: rgba(217, 164, 65, 0.1);
+}
+
+.project-manager-dialog__project-list article[data-visual-state='human'] {
+  border-color: rgba(167, 139, 250, 0.68);
+  background: rgba(109, 40, 217, 0.12);
+}
+
+.project-manager-dialog__project-list article[data-visual-state='error'] {
+  border-color: rgba(248, 113, 113, 0.68);
+  background: rgba(127, 29, 29, 0.14);
+}
+
+.project-manager-dialog__project-list article[data-visual-state='stopped'] {
+  border-color: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.2);
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.04);
 }
 
 .project-manager-dialog__project-open {

@@ -97,13 +97,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("form.scrollIntoView({ block: 'start' })");
     expect(projectManagerDialogSource).toContain("?.focus({ preventScroll: true })");
     expect(projectManagerDialogSource).not.toContain("setCreating(dialogView === 'create' || sessions.length === 0)");
-    expect(projectManagerDialogSource).toContain("{session?.pendingUserQuestion && !creating && (");
-    expect(projectManagerDialogSource).not.toContain("{embedded && session?.pendingUserQuestion && !creating && (");
+    expect(projectManagerDialogSource).toContain("{embedded && session?.pendingUserQuestion && !creating && (");
     expect(projectManagerDialogSource).toContain('项目管理模式 Agent 配置');
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('不读取“AI 监督模式”的默认设置');
-    expect(projectManagerDialogSource).toContain('分别选择 Agent、模型和思考程度');
-    expect(projectManagerDialogSource).toContain('项目 AI、专属监督 AI 或任务 AI 首次出现 Codex Hook 审核');
     expect(projectManagerDialogSource).toContain('启用辅助 AI（只服务项目 AI 和监督 AI）');
     expect(projectManagerDialogSource).toContain('允许辅助 AI 维护受控文档、进度和用户授权的 Git 提交');
     expect(pipeBridgeSource).toContain('ensureProjectAuxiliaryRuntime');
@@ -117,8 +114,6 @@ describe('supervisor setup dialog feedback', () => {
     expect(pipeBridgeSource).toContain('用户尚未授权辅助 AI 更新项目进度、相关文档或提交受控变更');
     expect(pipeBridgeSource).toContain('交互只限接收单项杂务并向原请求方回报');
     expect(pipeBridgeSource).toContain('该结果只提供给项目 AI/监督 AI；主任务 AI 未收到此消息。');
-    expect(projectManagerDialogSource).toContain('立即切换到对应终端');
-    expect(projectManagerDialogSource).toContain('不会自动选择或确认 Hook');
     expect(projectManagerDialogSource).toContain("selection.agent === 'codex' ? '推理程度' : 'Thinking'");
     expect(projectManagerDialogSource).toContain('使用 Grok 默认 Thinking');
     expect(projectManagerDialogSource).not.toContain('disabled={selection.agent === \'grok\'}');
@@ -466,6 +461,9 @@ describe('supervisor setup dialog feedback', () => {
   it('separates the project center from an embedded project management surface', () => {
     expect(projectManagerDialogSource).toContain('embeddedProjectId?: string');
     expect(projectManagerDialogSource).toContain("embedded ? '项目管理' : '项目 AI 中心'");
+    expect(projectManagerDialogSource).toContain('projectCenterVisualState(candidate)');
+    expect(projectManagerDialogSource).toContain('data-visual-state={visualState}');
+    expect(projectManagerDialogSource).not.toContain('{!embedded && !awaitingRecovery && <details className="supervisor-dialog__advanced project-manager-dialog__agent-config">');
     expect(projectManagerDialogSource).toContain("enterProjectConsole(candidate.id)");
     expect(projectManagerDialogSource).toContain("data-console={embedded && session");
     expect(projectManagerDialogSource).toContain('if (projectId) enterProjectConsole(projectId)');
