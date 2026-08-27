@@ -1,4 +1,10 @@
-import type { ProjectManagerSession } from '../../shared/project-manager';
+import {
+  activeProjectGoal,
+  activeProjectSubgoals,
+  projectAuthorizationVersion,
+  projectRequirementsVersion,
+  type ProjectManagerSession,
+} from '../../shared/project-manager';
 
 export interface ProjectInternalRecoveryScopeInput {
   protocolRevision: string;
@@ -42,4 +48,53 @@ export function projectInternalRecoveryAttempts(
     && (event.payload?.recoveryKey === recoveryKey
       || event.payload?.recoveryScopeKey === recoveryKey)
   )).length;
+}
+
+/**
+ * Detect sessions paused by the pre-fix watchdog after every current result and
+ * stage had already closed. Only the persisted complete-goal recovery signature
+ * qualifies; user, portfolio, runtime, and unfinished-work pauses stay intact.
+ */
+export function projectGoalClosurePauseWasMisclassified(
+  session: ProjectManagerSession,
+): boolean {
+  if (session.status !== 'paused'
+    || session.pausedByPortfolio
+    || session.pendingUserQuestion
+    || session.agentIssue) return false;
+  const goal = activeProjectGoal(session);
+  if (goal.status !== 'active') return false;
+  const goalItems = session.workItems.filter((item) => (
+    item.goalId === goal.id
+    && item.status !== 'stopped'
+  ));
+  if (goalItems.some((item) => item.status !== 'completed')) return false;
+  const currentItems = goalItems.filter((item) => (
+    item.requirementsVersion === projectRequirementsVersion(session)
+    && item.authorizationVersion === projectAuthorizationVersion(session)
+  ));
+  if (currentItems.length === 0) return false;
+  const subgoals = activeProjectSubgoals(session);
+  if (subgoals.length === 0 || subgoals.some((subgoal) => (
+    !['achieved', 'obsolete'].includes(subgoal.status)
+  ))) return false;
+  const reversedEvents = [...session.events].reverse();
+  const latestStall = reversedEvents.find((event) => event.kind === 'project-execution-stalled');
+  const latestExhaustion = reversedEvents.find((event) => (
+    event.kind === 'guard-triggered'
+    && event.payload?.reason === 'project-internal-recovery-exhausted'
+  ));
+  const latestPause = reversedEvents.find((event) => event.kind === 'project-paused');
+  const latestStatusTransition = reversedEvents.find((event) => (
+    event.kind === 'project-paused'
+    || event.kind === 'project-resumed'
+    || event.kind === 'recovery-restored'
+  ));
+  const stallKey = String(latestStall?.payload?.incidentKey || latestStall?.payload?.recoveryKey || '');
+  return latestStall?.payload?.automaticPause === true
+    && stallKey.endsWith(':complete-goal')
+    && latestExhaustion?.payload?.obligation === 'complete-goal'
+    && latestExhaustion?.payload?.recoveryKey === stallKey
+    && latestPause?.payload?.source === 'runtime'
+    && latestStatusTransition?.id === latestPause.id;
 }

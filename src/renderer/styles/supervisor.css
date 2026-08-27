@@ -378,6 +378,15 @@
   font-size: 10px;
 }
 
+.project-manager-dialog__inspector-alert[data-kind='completion'] {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: rgba(6, 78, 59, 0.18);
+}
+
+.project-manager-dialog__inspector-alert[data-kind='completion'] span {
+  color: #6ee7b7;
+}
+
 .project-manager-dialog__safe-exit {
   display: grid;
   gap: 4px;
@@ -1019,6 +1028,34 @@
   white-space: pre-wrap;
 }
 
+.project-manager-dialog__audit-details {
+  min-width: 0;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.1);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.project-manager-dialog__work-items .project-manager-dialog__audit-details > summary {
+  display: block;
+  padding: 6px 8px;
+  color: #8fc4ff;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.project-manager-dialog__audit-details > pre {
+  max-height: min(30vh, 260px);
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .project-manager-dialog__work-item-decisions {
   max-height: min(36vh, 330px);
   padding-right: 4px;
@@ -1156,6 +1193,20 @@
 .project-manager-dialog__alert small {
   color: var(--ui-text-muted);
   font-size: 9px;
+}
+
+.project-manager-dialog__alert[data-kind='completion'] {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: linear-gradient(90deg, rgba(6, 78, 59, 0.25), rgba(6, 78, 59, 0.08));
+}
+
+.project-manager-dialog__alert[data-kind='completion'] .project-manager-dialog__alert-icon {
+  background: #10b981;
+}
+
+.project-manager-dialog__alert[data-kind='completion'] strong,
+.project-manager-dialog__alert[data-kind='completion'] .project-manager-dialog__alert-details summary {
+  color: #a7f3d0;
 }
 
 .project-manager-dialog__alert-details {
@@ -2451,6 +2502,26 @@
   background: rgba(127, 29, 29, 0.3);
 }
 
+.project-manager-panel__alert[data-kind='completion'] {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: linear-gradient(135deg, rgba(6, 78, 59, 0.26), rgba(5, 46, 42, 0.12));
+  box-shadow: inset 3px 0 0 rgba(52, 211, 153, 0.72);
+}
+
+.project-manager-panel__alert[data-kind='completion'] span {
+  color: #6ee7b7;
+}
+
+.project-manager-panel__alert[data-kind='completion'] strong {
+  color: #d1fae5;
+  font-weight: 600;
+}
+
+.project-manager-panel__alert[data-kind='completion']:hover {
+  border-color: rgba(52, 211, 153, 0.66);
+  background: linear-gradient(135deg, rgba(6, 95, 70, 0.34), rgba(5, 46, 42, 0.18));
+}
+
 .sup-panel__compact-actions button,
 .sup-panel__lane-actions button {
   font-size: 11px;
@@ -3595,6 +3666,14 @@
 
 .sup-panel__decision-option-copy > span {
   opacity: 0.78;
+}
+
+.sup-panel__decision-option-recommended {
+  margin-left: 6px;
+  color: rgb(105, 180, 255);
+  font-size: 0.82em;
+  font-style: normal;
+  font-weight: 600;
 }
 
 .sup-panel__proposal-edit {

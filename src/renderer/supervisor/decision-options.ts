@@ -2,6 +2,7 @@ import type { SupervisorDecisionOption } from '../../shared/supervisor-decision-
 
 export {
   supervisorDecisionOptions,
+  supervisorRecommendedOptionValue,
   type SupervisorDecisionOption,
 } from '../../shared/supervisor-decision-options';
 

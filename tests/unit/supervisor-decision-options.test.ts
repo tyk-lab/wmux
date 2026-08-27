@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAdoptedPlanBriefing,
   supervisorDecisionOptions,
+  supervisorRecommendedOptionValue,
 } from '../../src/renderer/supervisor/decision-options';
 
 describe('supervisor decision options', () => {
@@ -156,6 +157,18 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('[持续用户决策]');
     expect(briefing).toContain('语义相近、范围与风险等级不变的问题');
     expect(briefing).toContain('出现实质不同的问题、新的高风险');
+  });
+
+  it('resolves an explicit recommendation to exactly one offered option', () => {
+    const options = supervisorDecisionOptions(
+      '方案 A：保持当前路线并补充验证；方案 B：切换到备选实现',
+      '推荐方案 A',
+    );
+
+    expect(supervisorRecommendedOptionValue(options, '推荐方案 A：改动和风险更小')).toBe('方案 A');
+    expect(supervisorRecommendedOptionValue(options, '建议切换到备选实现')).toBe('方案 B');
+    expect(supervisorRecommendedOptionValue(options, '方案 A 或方案 B 均可')).toBeUndefined();
+    expect(supervisorRecommendedOptionValue(options, '请用户自行判断')).toBeUndefined();
   });
 
   it('lets the AI supervisor decide from user guidance when no plan is selected', () => {

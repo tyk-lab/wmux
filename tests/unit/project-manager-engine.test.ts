@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildProjectSupervisorAssignment,
   buildProjectSupervisorBriefing,
   isCurrentProjectTaskBatch,
   normalizeProjectTaskBatch,
@@ -7,6 +8,7 @@ import {
   projectTaskInstructionDisclosureError,
   projectPermissionAuthorizationError,
   projectProgressObligation,
+  projectEffectiveWorkItemPreconditions,
   projectContractViolation,
   projectCompletionState,
   projectDependencyError,
@@ -409,7 +411,50 @@ describe('project-manager engine', () => {
 
     pivot.goals = pivot.goals.map((goal) => goal.id === pivot.activeGoalId ? { ...goal, status: 'achieved' as const } : goal);
     expect(projectProgressObligation(pivot)).toBeNull();
-  });  it('allows a low atomic work item to remain one whole neutral batch', () => {
+  });
+
+  it('builds one canonical supervisor assignment and reuses its effective preconditions for tasks', () => {
+    const project = session([item('auth', 'planned')]);
+    const workItem = project.workItems[0];
+    workItem.title = '认证成果';
+    workItem.subgoalId = 'auth-stage';
+    workItem.contract = {
+      ...workItem.contract,
+      description: '覆盖正常与异常认证行为',
+      preconditions: ['认证测试环境可用'],
+      stageAcceptanceCoverage: [{
+        stageCriterion: '认证行为可验收',
+        verificationCriterion: 'npm test -- auth',
+      }],
+    };
+    project.subgoals = [{
+      id: 'auth-stage', goalId: workItem.goalId!, title: '认证阶段', outcome: '形成认证能力',
+      acceptance: ['认证行为可验收'], dependencies: [], status: 'active',
+      order: 1, createdAt: 1, updatedAt: 1,
+    }];
+
+    const assignment = buildProjectSupervisorAssignment(project, workItem);
+    expect(assignment.effectivePreconditions).toEqual(['环境已准备', '认证测试环境可用']);
+    expect(assignment.stageAcceptanceCoverage).toEqual([{
+      stageCriterion: '认证行为可验收', verificationCriterion: 'npm test -- auth',
+    }]);
+    const supervisorBriefing = buildProjectSupervisorBriefing(assignment);
+    expect(supervisorBriefing).toContain('阶段验收：认证行为可验收');
+    expect(supervisorBriefing).toContain('认证行为可验收 ← npm test -- auth');
+
+    const taskBriefing = renderProjectTaskBatch(workItem.contract, {
+      kind: 'task', coverage: 'bounded-batch', outcome: '形成认证行为',
+      completionDefinition: ['认证行为形成'], evidenceExpectations: [],
+      unmetCompletionItems: [], knownFacts: [], constraints: [], nonGoals: [],
+    }, 'single-thread', {
+      effectivePreconditions: projectEffectiveWorkItemPreconditions(project, workItem),
+    });
+    expect(taskBriefing).toContain('成果说明：覆盖正常与异常认证行为');
+    expect(taskBriefing).toContain('- 环境已准备');
+    expect(taskBriefing).toContain('- 认证测试环境可用');
+  });
+
+  it('allows a low atomic work item to remain one whole neutral batch', () => {
     const workItem = {
       ...item('auth', 'planned'),
       complexityAssessment: {
@@ -437,6 +482,7 @@ describe('project-manager engine', () => {
     expect(delivery).toContain(`本批成果：${workItem.contract.objective}`);
     expect(delivery).toContain('读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范');
     expect(delivery).toContain(PROJECT_TASK_EVIDENCE_ARTIFACT_POLICY);
+    expect(delivery).toContain('验证要求（必须核对并如实报告成功、失败或无法取得）');
     expect(delivery).toContain('列出项目内相对路径');
     expect(delivery).toContain('不得只在最终回复中列出哈希');
     expect(delivery).toContain('[执行模式] 单线程');
@@ -456,8 +502,16 @@ describe('project-manager engine', () => {
       completionDefinition: [...smallWithSeveralChecks.contract.stopWhen],
       evidenceExpectations: [], unmetCompletionItems: [],
       knownFacts: [], constraints: [], nonGoals: [],
+    }, smallWithSeveralChecks).error).toContain('全部 validation');
+    expect(normalizeProjectTaskBatch({
+      kind: 'task', coverage: 'whole-item', outcome: smallWithSeveralChecks.contract.objective,
+      completionDefinition: [...smallWithSeveralChecks.contract.stopWhen],
+      evidenceExpectations: [...smallWithSeveralChecks.contract.validation],
+      unmetCompletionItems: [], knownFacts: [], constraints: [], nonGoals: [],
     }, smallWithSeveralChecks).batch?.coverage).toBe('whole-item');
-  });  it('requires a bounded batch for larger work and keeps each batch focused', () => {
+  });
+
+  it('requires a bounded batch for larger work and keeps each batch focused', () => {
     const workItem = {
       ...item('auth', 'planned'),
       complexityAssessment: {

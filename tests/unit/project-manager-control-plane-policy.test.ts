@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { shouldRestartProjectManagerRuntime } from '../../src/renderer/project-manager/runtime-recovery-policy';
 import {
   buildProjectInternalRecoveryScopeKey,
+  projectGoalClosurePauseWasMisclassified,
   projectInternalRecoveryAttempts,
 } from '../../src/renderer/project-manager/semantic-recovery-policy';
 import { projectTransitionResolutionError } from '../../src/renderer/project-manager/transition-policy';
 import { projectWorkItemCreationError } from '../../src/renderer/project-manager/work-item-admission-policy';
-import type {
-  ProjectManagerEvent,
-  ProjectSupervisorTransition,
-  ProjectWorkItem,
+import {
+  normalizeProjectManagerSession,
+  type ProjectManagerEvent,
+  type ProjectManagerSession,
+  type ProjectSupervisorTransition,
+  type ProjectWorkItem,
 } from '../../src/shared/project-manager';
 
 function workItem(overrides: Partial<ProjectWorkItem> = {}): ProjectWorkItem {
@@ -81,6 +84,41 @@ const transition: ProjectSupervisorTransition = {
   notificationCount: 1,
 };
 
+function pausedCompletedProject(): ProjectManagerSession {
+  const project = normalizeProjectManagerSession({
+    id: 'project-a', projectDir: 'C:/project', goal: '完成项目',
+    preconditions: [], planFiles: [], doneWhen: ['成果已验收'], status: 'paused',
+    requirementsVersion: 1, authorizationVersion: 1, acceptedRequirementsVersion: 1,
+    executionProtocolVersion: 10, workItems: [], events: [], createdAt: 1, updatedAt: 1,
+  });
+  const goalId = project.activeGoalId!;
+  project.workItems = [workItem({
+    id: 'validated-result', goalId, subgoalId: 'validated-stage', status: 'completed',
+  })];
+  project.subgoals = [{
+    id: 'validated-stage', goalId, title: '已验收阶段', outcome: '形成已验收成果',
+    acceptance: [project.doneWhen[0]], dependencies: [], status: 'achieved',
+    order: 1, createdAt: 1, updatedAt: 10,
+  }];
+  const incidentKey = `project-internal-recovery:role-41:${project.id}:project:project-execution-deadlock:complete-goal`;
+  project.events = [{
+    id: 'legacy-goal-closure-exhausted', sessionId: project.id, ts: 9,
+    kind: 'guard-triggered', summary: '旧版目标收口恢复已耗尽',
+    payload: {
+      reason: 'project-internal-recovery-exhausted', obligation: 'complete-goal', recoveryKey: incidentKey,
+    },
+  }, {
+    id: 'legacy-goal-closure-pause', sessionId: project.id, ts: 10,
+    kind: 'project-paused', summary: '旧版控制层自动暂停目标收口',
+    payload: { source: 'runtime', attentionRequired: false },
+  }, {
+    id: 'legacy-goal-closure-stall', sessionId: project.id, ts: 11,
+    kind: 'project-execution-stalled', summary: '旧版控制层误判目标收口为执行停滞',
+    payload: { incidentKey, automaticPause: true },
+  }];
+  return project;
+}
+
 describe('project manager control-plane policies', () => {
   it('restarts only an unavailable manager runtime', () => {
     expect(shouldRestartProjectManagerRuntime({
@@ -121,6 +159,25 @@ describe('project manager control-plane policies', () => {
       { ...events[1], id: 'retry-after-reset', ts: 2 },
     ];
     expect(projectInternalRecoveryAttempts(resetAndRetryAtSameTimestamp, scope)).toBe(1);
+  });
+
+  it('reclassifies only the persisted legacy complete-goal deadlock pause', () => {
+    const project = pausedCompletedProject();
+
+    expect(projectGoalClosurePauseWasMisclassified(project)).toBe(true);
+    expect(projectGoalClosurePauseWasMisclassified({
+      ...project,
+      workItems: project.workItems.map((item) => ({ ...item, status: 'paused' })),
+    })).toBe(false);
+    expect(projectGoalClosurePauseWasMisclassified({ ...project, events: [] })).toBe(false);
+    expect(projectGoalClosurePauseWasMisclassified({
+      ...project,
+      events: [...project.events, {
+        id: 'later-user-pause', sessionId: project.id, ts: 12,
+        kind: 'project-paused', summary: '用户后来明确保持暂停',
+        payload: { source: 'user' },
+      }],
+    })).toBe(false);
   });
 
   it('accepts recovered only for a matching active assignment', () => {

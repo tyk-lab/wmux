@@ -22,6 +22,7 @@ import {
   projectAuthorizationVersion,
   projectRequirementsVersion,
   projectSubgoalCompletionResult,
+  projectWorkItemCompletionResult,
   requiredProjectOrientation,
   type ProjectManagerAction,
   type ProjectCompletionResult,
@@ -1119,8 +1120,13 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       );
       if (goalCriteriaError && !finalAccepted) return { ok: false, error: goalCriteriaError };
       const supervisorCriteriaByIdentity = new Map<string, NonNullable<ProjectCompletionResult['criteria']>[number]>();
+      // Work-item completions may carry an explicit stageAcceptanceCoverage
+      // mapping. Goal closure must consume that canonicalized view; reading the
+      // raw completion here would discard a mapping already accepted while the
+      // stage was closed and make a legitimately achieved goal impossible to
+      // complete.
       for (const criterion of required.flatMap((item) => (
-        normalizeProjectCompletionResult(item.completion)?.criteria || []
+        projectWorkItemCompletionResult(item)?.criteria || []
       ))) {
         const identity = projectCriterionIdentity(criterion.criterion);
         const previous = supervisorCriteriaByIdentity.get(identity);

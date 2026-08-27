@@ -414,6 +414,8 @@ export interface PendingApproval {
   impact?: string;
   alternatives?: string;
   task?: string;
+  currentState?: string;
+  recommendedOption?: string;
   createdAt: number;
 }
 

@@ -158,7 +158,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('当前主目标的阶段计划');
     expect(projectManagerDialogSource).toContain("subgoal.status !== 'obsolete'");
     expect(projectManagerDialogSource).toContain('projectSubgoalCompletionResult(subgoal');
-    expect(projectManagerDialogSource).toContain('<dt>完成结果</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>验收结论</dt>');
+    expect(projectManagerDialogSource).toContain('<dt>核验概览</dt>');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__audit-details');
     expect(projectManagerDialogSource).toContain('<dt>完成验证</dt>');
     expect(projectManagerDialogSource).toContain('<dt>完成时间</dt>');
     expect(projectManagerDialogSource).toContain('历史已取消阶段');
@@ -361,9 +363,10 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('proposalGuidance');
     expect(panelSource).toContain('补充给 AI 监督的信息（可选）');
     expect(panelSource).toContain('没有可选方案时，也可以只提交这段信息');
-    expect(panelSource).toContain("(!selectedOption && !userGuidance.trim())");
+    expect(panelSource).toContain("(!selectedOption && !recommendedOption && !userGuidance.trim())");
     expect(panelSource).toMatch(/isClarification\s*\? '提交对齐答复'/);
-    expect(panelSource).toContain("selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'");
+    expect(panelSource).toContain("? '采用 AI 推荐方案'");
+    expect(panelSource).toContain(": '提交补充给 AI 判断'");
   });
 
   it('separates supervision setup into focused steps and terminal details', () => {

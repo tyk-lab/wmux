@@ -32,3 +32,35 @@ export function formatProjectCompletionCriteria(completion: ProjectCompletionRes
     ].join('\n');
   }).join('\n\n');
 }
+
+export function summarizeProjectCompletionCriteria(completion: ProjectCompletionResult): string {
+  const criteria = completion.criteria || [];
+  if (criteria.length === 0) return '无结构化逐项核验记录';
+  const count = (field: 'status' | 'result', value: string): number => (
+    criteria.filter((criterion) => criterion[field] === value).length
+  );
+  const statusParts = [
+    ['满足', count('status', 'satisfied')],
+    ['未满足', count('status', 'unsatisfied')],
+    ['未核验', count('status', 'unverified')],
+  ].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${value} ${label}`);
+  const resultParts = [
+    ['通过', count('result', 'passed')],
+    ['明确失败', count('result', 'failed')],
+    ['无结论', count('result', 'inconclusive')],
+    ['未执行', count('result', 'not-run')],
+  ].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${value} ${label}`);
+  return `完成定义：${statusParts.join('，')}；验证结果：${resultParts.join('，')}`;
+}
+
+export function formatProjectCompletionAuditDetails(
+  completion: ProjectCompletionResult,
+  evidenceFallback?: string,
+): string {
+  const evidence = completion.evidence?.trim() || evidenceFallback?.trim();
+  return [
+    completion.validation.length > 0 ? `完成验证：\n${completion.validation.join('\n')}` : '',
+    evidence ? `阶段证据摘要：\n${evidence}` : '',
+    completion.criteria?.length ? `逐项核验与实际证据：\n${formatProjectCompletionCriteria(completion)}` : '',
+  ].filter(Boolean).join('\n\n');
+}

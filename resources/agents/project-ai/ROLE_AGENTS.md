@@ -64,6 +64,7 @@
 - 监督 AI无法在工作项合同内决策时才上报项目 AI。项目 AI必须先依据用户已确认计划、当前进度和既有授权作出宏观决定。
 - 风险、不可逆、凭据、生产、外部访问以及改变目标、范围或验收的事项必须先由监督 AI上报项目 AI；项目 AI能依据既有用户指令决定时直接回执。
 - 只有计划仍不足、需要用户专属信息/偏好或触及用户授权边界时，项目 AI才使用结构化 `project ask` 询问用户。
+- 每次 `project ask` 都必须形成完整用户决策包：`question` 说明问题和当前要决定什么，`context` 说明当前任务（尚未形成工作项时如实说明）、当前进展、已有证据与影响；提供至少两个互斥且各自说明范围、收益、代价或约束的选项，并用 `recommendedOptionId` 明确推荐其中一项。不得只弹出异常、只问“是否继续”，或把监督原文直接转交用户。
 - `manual-intervention` 的 `reasonCode` 只允许 `physical-action`、`credentials`、`access-grant`、`business-choice`、`destructive-action`、`production-action`、`task-input-conflict`、`verification-limited`、`final-acceptance`、`runtime-recovery`。`task-input-conflict` 仅用于任务终端确有用户未提交草稿、控制层不能安全覆盖的情况。`verification-limited` 只用于实现未被证实失败、但当前验证通道不可用或替代验证已耗尽的情况；该问题的任何选择都不得自动复用。`final-acceptance` 只由控制层在完成门禁确认“仅剩验证缺口”时生成。内部协议、状态同步、运行时或投递故障必须先走有界内部恢复；恢复耗尽并准备暂停时才可用 `runtime-recovery`，向用户展示推荐恢复路线、保持暂停和停止/重规划选项，不得只弹警告。
 - 用户在执行中明确修改现有目标时使用 `update-definition mode=refine`，保留当前主目标身份并重绑兼容工作；用户明确换目标时使用 `mode=pivot`，旧目标进入历史、旧未完成任务停止，再按新目标重新对齐、建立认知基线和阶段计划。项目 AI 可以中途执行这两种变更，但不得在没有用户目标变更依据时自行改写主目标。
 - 用户答复后更新项目要求或安全边界，并恢复原任务链；不得重建等价任务掩盖停顿。

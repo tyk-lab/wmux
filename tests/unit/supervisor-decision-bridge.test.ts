@@ -1904,6 +1904,14 @@ describe('supervisor decision bridge', () => {
       title: 'AI 监督',
     }));
     const approval = useStore.getState().supervisor.pendingApprovals[0];
+    expect(approval).toMatchObject({
+      reason: expect.any(String),
+      impact: expect.any(String),
+      alternatives: expect.stringContaining('方案 B'),
+      text: '保留接口并补齐适配层',
+      currentState: expect.any(String),
+      recommendedOption: '方案 A',
+    });
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
 
     expect(remoteControl({
@@ -1911,11 +1919,38 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({
       ok: true,
       recommendation: '保留接口并补齐适配层',
+      recommendedOption: '方案 A',
       terminalScreen: '核心结论：类型检查通过，仍有 1 项测试失败。',
     });
     expect(remoteControl({
       action: 'decision-context', approvalId: approval.id, terminal: 'other-worker', lines: 40,
     })).toMatchObject({ ok: false, error: expect.stringContaining('不匹配') });
+  });
+
+  it('rejects an ordinary user decision without two options and a recommendation', () => {
+    const rawDecide = (globalThis.window as any).__wmux_supervisorDecide;
+    expect(rawDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'needs-human', proposalKind: 'important',
+      reason: '需要用户决定后续验证路线',
+      impact: '当前验证能力不足，继续原路线不会形成新证据',
+      alternatives: '只保留当前路线',
+      next: '推荐保留当前路线',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('至少两个可解析的互斥方案'),
+    });
+    expect(rawDecide({
+      surfaceId: 'worker-a', supervisorSurfaceId: 'supervisor-a',
+      outcome: 'needs-human', proposalKind: 'important',
+      reason: '需要用户决定后续验证路线',
+      impact: '两条路线的成本和证据强度不同',
+      alternatives: '方案 A：改用人工验证；方案 B：保留暂停状态',
+      next: '两种方案都可以，请用户自行判断',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('必须无歧义地指向'),
+    });
   });
 
   it('records public decision context separately from private options', async () => {
@@ -2820,6 +2855,15 @@ describe('supervisor decision bridge', () => {
       ],
       recommendedOptionId: 'keep',
     })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('decisionScope') });
+    await expect(request({
+      action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
+      question: '是否复用现有配置策略？',
+      options: [
+        { id: 'keep', label: '保留配置', description: '保持兼容性。' },
+        { id: 'replace', label: '采用新配置', description: '切换兼容策略。' },
+      ],
+      recommendedOptionId: 'keep',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('必须提供 context') });
 
     await expect(request({
       action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
@@ -2852,6 +2896,7 @@ describe('supervisor decision bridge', () => {
       action: 'user-question', callerSurfaceId: first.managerSurfaceId, projectId: first.id,
       question: '同类配置冲突仍应如何处理？', decisionKey: 'configuration-strategy',
       decisionScope: '配置冲突时是否保留现有兼容性设置',
+      context: '当前仍在处理兼容配置工作；已有用户决定可复用，需确认本次问题是否处于同一语义范围。',
       options: [
         { id: 'keep', label: '保留现有配置', description: '继续采用兼容性修改，暂不包含复杂多人权限和公网发布。' },
         { id: 'replace', label: '采用新配置', description: '采用不同的兼容策略。' },
@@ -3472,6 +3517,9 @@ describe('supervisor decision bridge', () => {
         context: expect.stringContaining('不代表实现失败'),
       },
     });
+    expect(pending?.context).toContain('当前工作项：');
+    expect(pending?.context).toContain('当前要做什么：决定是改用不同验证方式');
+    expect(pending?.options.every((option) => !!option.description)).toBe(true);
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
       title: '项目需要你的处理',
       text: expect.stringContaining('GUI 自动化'),
@@ -4989,7 +5037,7 @@ describe('supervisor decision bridge', () => {
       executionHistory: [],
       contract: {
         objective: '完成监督首次派发测试成果',
-        description: '',
+        description: '覆盖正常结果、失败结果和无法验证时的诚实报告',
         preconditions: ['测试环境可用'],
         scope: {
           root: current.projectDir,
@@ -5113,7 +5161,26 @@ describe('supervisor decision bridge', () => {
     const firstDispatchInstruction = queuedControlText(assignedLane.id);
     expect(firstDispatchInstruction).toContain('--task-file <文件>');
     expect(firstDispatchInstruction).toContain('.wmux/tmp/<唯一文件名>.json');
+    expect(firstDispatchInstruction).toContain('阶段验收映射：');
+    expect(firstDispatchInstruction).toContain('主任务形成可验证成果 ← 提供可验证证据');
+    expect(firstDispatchInstruction).toContain('有效前置条件：测试环境可用');
+    expect(firstDispatchInstruction).toContain('超出工作项时上报项目 AI');
+    expect(firstDispatchInstruction).toContain('只有仍无法决定');
     expect(firstDispatchInstruction).not.toContain('--next "完成当前合同成果');
+    expect((globalThis.window as any).__wmux_roleContext({
+      callerSurfaceId: assignedLane.supervisorSurfaceId,
+    })).toMatchObject({
+      role: 'project-supervisor',
+      assignment: {
+        taskDescription: '覆盖正常结果、失败结果和无法验证时的诚实报告',
+        effectivePreconditions: ['测试环境可用'],
+        validation: ['提供可验证证据'],
+        stageAcceptanceCoverage: [{
+          stageCriterion: '主任务形成可验证成果',
+          verificationCriterion: '提供可验证证据',
+        }],
+      },
+    });
 
     consumeQueuedControlMessage(assignedLane.id);
     const runtimeWorkspace = useStore.getState().workspaces.find((workspace) => (
@@ -5217,6 +5284,8 @@ describe('supervisor decision bridge', () => {
       .map(([, data]) => String(data))
       .join('');
     expect(taskPayload).toContain('[成果任务]');
+    expect(taskPayload).toContain('成果说明：覆盖正常结果、失败结果和无法验证时的诚实报告');
+    expect(taskPayload).toContain('验证能力缺失或结果无法收敛时，不得自行跳过验收');
     expect(taskPayload).not.toMatch(/项目 AI|监督 AI|辅助 AI|项目 ID|工作项 ID|\blane\b|控制层/iu);
     expect(useStore.getState().projectManagers.find((project) => project.id === projectId)?.workItems[0])
       .toMatchObject({ status: 'running', startedAt: expect.any(Number) });
@@ -5436,8 +5505,17 @@ describe('supervisor decision bridge', () => {
       && !currentLane.projectManagerProjectId
       && currentLane.ordinaryProtocolVersion === ORDINARY_SUPERVISION_PROTOCOL_VERSION
       && String(params.outcome || 'continue') === 'complete';
-    const needsHumanWithoutRecommendation = params.proposalKind === 'clarification'
-      || params.proposalKind === 'direction-needed';
+    const needsHumanWithoutRecommendation = params.proposalKind === 'clarification';
+    const recommendation = String(params.next || '保持现状并等待用户确认');
+    const rawAlternatives = String(params.alternatives
+      || (/\n\s*\d+[.)、]/u.test(String(params.next || ''))
+        ? params.next
+        : '保持现状并等待用户决定'));
+    const hasStructuredAlternatives = /方案\s*B|(?:^|\n)\s*2[.)、]/iu.test(rawAlternatives);
+    const structuredAlternatives = hasStructuredAlternatives
+      ? rawAlternatives
+      : `方案 A：${recommendation}；方案 B：${rawAlternatives === recommendation ? '保持暂停并等待后续决定' : rawAlternatives}`;
+    const structuredRecommendation = String(params.next || `推荐方案 A：${recommendation}`);
     const hasPlan = currentLane?.decisions?.some((decision) => !!decision.ordinaryPlan);
     return (globalThis.window as any).__wmux_supervisorDecide({
       surfaceId: 'worker-a',
@@ -5448,10 +5526,9 @@ describe('supervisor decision bridge', () => {
       ...(needsHuman ? {
         reason: String(params.reason || '需要用户决定当前边界'),
         impact: String(params.impact || '该决定只能由用户确认'),
-        alternatives: String(params.alternatives
-          || (/\n\s*\d+[.)、]/u.test(String(params.next || '')) ? params.next : '保持现状')),
+        alternatives: structuredAlternatives,
         ...(!needsHumanWithoutRecommendation
-          ? { next: String(params.next || '推荐方案 A：保持现状并等待用户确认') }
+          ? { next: structuredRecommendation }
           : {}),
       } : {}),
       ...(ordinaryComplete && params.completionFile === undefined ? {
@@ -9043,6 +9120,70 @@ describe('supervisor decision bridge', () => {
       .toBe(false);
   });
 
+  it('keeps an exhausted goal-closure continuation active instead of reporting an execution stall', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-goal-closure-pending' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const continuationKey = [
+      goalId,
+      current.requirementsVersion,
+      current.authorizationVersion,
+      current.orientation?.requestedAt || 0,
+      'complete-goal',
+      '',
+    ].join(':');
+    useStore.getState().restoreProjectManager({
+      ...current,
+      subgoals: [{
+        id: 'completed-stage', goalId, title: '已完成阶段', outcome: '形成已验收成果',
+        acceptance: [current.doneWhen[0]], dependencies: [], status: 'achieved',
+        order: 1, createdAt: 1, updatedAt: 10,
+      }],
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        goalId,
+        subgoalId: 'completed-stage',
+        status: 'completed' as const,
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        completedAt: 10,
+      })),
+      events: [...current.events, {
+        id: 'goal-closure-continuation-consumed', sessionId: project.id, ts: 2,
+        kind: 'guard-triggered', summary: '目标收口续作已投递一次',
+        payload: {
+          action: 'project-active-obligation-continuation', continuationKey,
+          attempt: 1, obligation: 'complete-goal', attentionRequired: false,
+        },
+      }],
+    });
+    useStore.getState().updateLane('lane-a', { controlState: 'stopped' });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+    });
+    expireProjectExecutionResponsibility(project.id, 'complete-goal');
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'guard-triggered',
+        payload: expect.objectContaining({
+          reason: 'project-goal-closure-pending',
+          obligation: 'complete-goal',
+        }),
+      }),
+    ])));
+    const pending = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+    expect(pending).toMatchObject({ status: 'active' });
+    expect(pending?.events.some((event) => event.kind === 'project-execution-stalled')).toBe(false);
+    expect(pending?.events.some((event) => event.payload?.reason === 'project-internal-recovery-exhausted'))
+      .toBe(false);
+  });
+
   it('pauses every project lane when the internal manager runtime cannot be rebuilt', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-internal-runtime-recovery-failed' });
     const managerSurfaceId = `manager-${project.id}`;
@@ -10873,7 +11014,7 @@ describe('supervisor decision bridge', () => {
 
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user' }))
       .toMatchObject({ ok: true, message: '已采用 AI 监督当前方案；AI 监督将整理后发送到任务终端。' });
-    expect(queuedOwnerDecision()?.text).toContain('[用户选择] 按现有方案完成实现并运行测试');
+    expect(queuedOwnerDecision()?.text).toContain('[用户选择] 方案 A：按现有方案完成实现并运行测试');
     expect(queuedOwnerDecision()?.text).not.toContain('[AI 原建议] 按现有方案完成实现并运行测试');
     expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
     expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
@@ -10901,7 +11042,7 @@ describe('supervisor decision bridge', () => {
       message: '已将用户决策信息交给 AI 监督；AI 监督将整理后发送到任务终端。',
     });
     expect(queuedOwnerDecision()?.text).toContain('[用户补充信息] 保持现有 API，先补充回归测试');
-    expect(queuedOwnerDecision()?.text).toContain('[用户选择] 推荐方案 A：保持现状并等待用户确认');
+    expect(queuedOwnerDecision()?.text).toContain('[用户选择] 方案 A：保持现状并等待用户确认');
     expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
     expect(writes).not.toHaveBeenCalledWith('worker-a', expect.any(String));
   });
@@ -10945,7 +11086,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
   });
 
-  it('accepts only a current AI-provided option for AI-assisted decisions', () => {
+  it('accepts the recommendation or a current AI-provided option for AI-assisted decisions', () => {
     expect(decide({
       outcome: 'needs-human',
       proposalKind: 'important',
@@ -10955,11 +11096,6 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true });
     const approval = useStore.getState().supervisor.pendingApprovals[0];
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
-
-    expect(remoteControl({
-      action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user',
-    })).toMatchObject({ ok: false, error: expect.stringContaining('请先选择其中一个方案') });
-    expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
 
     expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'reject', actor: 'ou-user' }))
       .toMatchObject({ ok: false, error: expect.stringContaining('无效的人工决策') });
@@ -10979,6 +11115,39 @@ describe('supervisor decision bridge', () => {
     expect(queuedOwnerDecision()?.text).toContain('[用户选择] 方案 A');
     expect(writes).not.toHaveBeenCalledWith('supervisor-a', expect.any(String));
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(0);
+  });
+
+  it('requires an explicit selection when a multi-option approval has no resolvable recommendation', () => {
+    expect(decide({
+      outcome: 'needs-human',
+      proposalKind: 'important',
+      next: '推荐方案 B：改用新框架',
+      reason: '需要用户选择调整方向',
+      alternatives: '方案 A：保留现有框架；方案 B：改用新框架',
+    })).toMatchObject({ ok: true });
+    const original = useStore.getState().supervisor.pendingApprovals[0];
+    useStore.getState().enqueueApproval({
+      laneId: original.laneId,
+      surfaceId: original.surfaceId,
+      laneLabel: original.laneLabel,
+      text: '请用户自行判断',
+      source: original.source,
+      proposalKind: original.proposalKind,
+      reason: original.reason,
+      impact: original.impact,
+      alternatives: original.alternatives,
+      task: original.task,
+      currentState: original.currentState,
+    });
+    const approval = useStore.getState().supervisor.pendingApprovals[0];
+    const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
+
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve', actor: 'ou-user',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('没有可识别的推荐项') });
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'approve', selection: '方案 A', actor: 'ou-user',
+    })).toMatchObject({ ok: true });
   });
 
   it('uses user guidance instead of an AI option when the user selects none', () => {

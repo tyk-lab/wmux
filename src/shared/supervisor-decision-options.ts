@@ -164,3 +164,42 @@ export function supervisorDecisionOptions(
     detail: recommendation.trim() || 'AI 未提供具体下一步，请选择后由 AI 监督结合终端状态整理。',
   }];
 }
+
+function normalizedDecisionText(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/** Resolve an explicit recommendation to exactly one of the offered choices. */
+export function supervisorRecommendedOptionValue(
+  options: SupervisorDecisionOption[],
+  recommendation: string,
+): string | undefined {
+  const normalizedRecommendation = normalizedDecisionText(recommendation);
+  if (!normalizedRecommendation || options.length < 2) return undefined;
+
+  const annotatedMatches = options.filter((option) => (
+    /(?:^|[（(\s])(?:推荐|首选|建议|recommended|preferred)(?:[）)\s:：]|$)/iu.test(option.detail)
+  ));
+  if (annotatedMatches.length === 1) return annotatedMatches[0].value;
+  if (annotatedMatches.length > 1) return undefined;
+
+  const labelMatches = options.filter((option) => {
+    const value = normalizedDecisionText(option.value);
+    const title = normalizedDecisionText(option.title);
+    return (value && normalizedRecommendation.includes(value))
+      || (title && normalizedRecommendation.includes(title));
+  });
+  if (labelMatches.length === 1) return labelMatches[0].value;
+  if (labelMatches.length > 1) return undefined;
+
+  const recommendationCore = normalizedDecisionText(
+    recommendation.replace(/^\s*(?:AI\s*)?(?:推荐|建议|首选|优先|采用|选择)\s*/iu, ''),
+  );
+  const detailMatches = options.filter((option) => {
+    const detail = normalizedDecisionText(option.detail);
+    return recommendationCore.length >= 4
+      && detail.length >= 4
+      && (recommendationCore.includes(detail) || detail.includes(recommendationCore));
+  });
+  return detailMatches.length === 1 ? detailMatches[0].value : undefined;
+}

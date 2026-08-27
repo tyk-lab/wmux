@@ -44,6 +44,8 @@ describe('project manager runtime startup protocol', () => {
     expect(agents).toContain('`task-create` 必须在 `contract.stageAcceptanceCoverage` 中显式提交');
     expect(agents).toContain('只对原工作项执行 `task-update` 补充 `contract.stageAcceptanceCoverage`');
     expect(agents).toContain('监督 AI无法在工作项合同内决策时才上报项目 AI');
+    expect(agents).toContain('每次 `project ask` 都必须形成完整用户决策包');
+    expect(agents).toContain('`recommendedOptionId` 明确推荐其中一项');
     expect(agents).toContain('验证通过、失败或当前无法取得都必须如实返回');
     expect(agents).toContain('辅助 AI默认关闭');
   });

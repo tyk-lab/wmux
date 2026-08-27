@@ -147,6 +147,7 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
     const next = payloadText(payload, 'next');
     const impact = payloadText(payload, 'impact');
     const alternatives = payloadText(payload, 'alternatives');
+    const currentState = payloadText(payload, 'currentState');
     const taskDispatch = payloadObject(payload, 'taskDispatch');
     const taskOutcome = taskDispatch ? payloadText(taskDispatch, 'outcome') : '';
     const constraints = stringArray(taskDispatch?.constraints);
@@ -177,6 +178,7 @@ function decisionEventMarkdown(event: AuditEvent): string | null {
       `> **判断结果：${markdownText(outcomeLabel)}** · ${at}`,
       '',
       `- 判断依据：${markdownText(decisionBasis)}`,
+      currentState ? `- 当前进展：${markdownText(currentState)}` : '',
       impact ? `- 影响：${markdownText(impact)}` : '',
       alternatives ? `- 备选：${markdownText(alternatives)}` : '',
       taskOutcome ? `- 下发成果：${markdownText(taskOutcome)}` : '',

@@ -11,6 +11,7 @@ import {
   projectWorkItemHistoricallyDelivered,
   renderProjectRepositoryBootstrapTask,
   renderProjectTaskBatch,
+  type ProjectSupervisorAssignment,
 } from '../../src/renderer/project-manager/engine';
 import { evaluateProjectExecutionGuard } from '../../src/renderer/project-manager/anti-loop';
 
@@ -41,6 +42,23 @@ const contract: ProjectSupervisorContract = {
     maxSameTestRuns: 2,
     maxFullSuiteRunsPerVersion: 1,
   },
+};
+
+const supervisorAssignment: ProjectSupervisorAssignment = {
+  projectGoal: '交付当前用户目标',
+  stage: {
+    id: 'stage-a', title: '阶段成果', outcome: '形成阶段成果', acceptance: ['阶段成果已验收'],
+  },
+  workItemId: 'task-a',
+  title: '可验收成果',
+  objective: contract.objective,
+  description: '保留用户确认的成果语义',
+  effectivePreconditions: ['项目环境已准备', '测试环境可用'],
+  supervisorNotes: ['异常结果必须如实上报'],
+  stopWhen: [...contract.stopWhen],
+  validation: [...contract.validation],
+  stageAcceptanceCoverage: [...(contract.stageAcceptanceCoverage || [])],
+  taskWorkMode: 'single-thread',
 };
 
 describe('current project governance', () => {
@@ -171,16 +189,17 @@ describe('current project governance', () => {
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {
-    const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract, taskWorkMode: 'single-thread' });
-    expect(briefing).toContain('常驻监督和结果裁决者，不是项目执行者');
-    expect(briefing).toContain('不向任务端注入项目/工作项身份');
-    expect(briefing).toContain('--task-file');
-    expect(briefing).toContain('coverage=whole-item');
-    expect(briefing).toContain('工作项合同内直接决定');
-    expect(briefing).toContain('项目 AI 仍无法决定');
-    expect(briefing).toContain('--task-work-mode single-thread|multi-thread 明确本批执行模式');
-    expect(briefing).toContain('multi-thread 要求本批实际使用内部并行');
+    const briefing = buildProjectSupervisorBriefing(supervisorAssignment);
+    expect(briefing).toContain('项目目标：交付当前用户目标');
+    expect(briefing).toContain('阶段成果：形成阶段成果');
+    expect(briefing).toContain('有效前置条件：项目环境已准备；测试环境可用');
+    expect(briefing).toContain('验证要求：按项目规范验证');
     expect(briefing).toContain('阶段成果已验收 ← 按项目规范验证');
+    expect(briefing).toContain('验收结果允许成功、失败或当前无法取得');
+    expect(briefing).toContain('超出工作项时上报项目 AI');
+    expect(briefing).toContain('项目 AI 必须先依据总计划、当前进度和既有授权决策');
+    expect(briefing).toContain('只有仍无法决定');
+    expect(briefing).not.toContain('--task-file');
   });
 
   it('does not interrupt progressing work at a decision or time window', () => {
@@ -194,7 +213,7 @@ describe('current project governance', () => {
   });
 
   it('does not mention the removed baseline handshake in current briefings', () => {
-    const briefing = buildProjectSupervisorBriefing({ workItemId: 'task-a', contract });
+    const briefing = buildProjectSupervisorBriefing(supervisorAssignment);
     expect(briefing).not.toMatch(/项目基线|baseline|selectedRoute|expectedPaths/iu);
   });
 });

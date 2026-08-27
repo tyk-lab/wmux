@@ -47,6 +47,7 @@ export default function ProjectManagerPanel() {
       : []
   ))[0];
   const activeAlert = activeProjectManagerAttentionEvent(session.events) || null;
+  const goalCompletionNotice = activeAlert?.kind === 'project-goal-completed';
 
   const control = async (action: 'pause' | 'resume') => {
     if (controlBusy) return;
@@ -80,7 +81,7 @@ export default function ProjectManagerPanel() {
       <button type="button" className="sup-panel__header" onClick={openProjectManagerDialog}>
         <span className="sup-panel__dot" />
         <span className="sup-panel__title">项目中心</span>
-        <span className="sup-panel__status">{activeProjects} 个项目 · {session.pendingUserQuestion ? '等待用户处理' : activeAlert ? '需要处理' : currentGoal.status === 'achieved' ? '等待下一主目标' : session.progressSync?.status === 'review-required' ? '同步新进度' : session.orientation?.status !== 'ready' ? '复核项目现状' : session.pendingSupervisorTransitions?.length ? '处理监督交接' : active ? '运行中' : paused ? '已暂停' : session.status}</span>
+        <span className="sup-panel__status">{activeProjects} 个项目 · {session.pendingUserQuestion ? '等待用户处理' : goalCompletionNotice ? '等待下一主目标' : activeAlert ? '需要处理' : currentGoal.status === 'achieved' ? '等待下一主目标' : session.progressSync?.status === 'review-required' ? '同步新进度' : session.orientation?.status !== 'ready' ? '复核项目现状' : session.pendingSupervisorTransitions?.length ? '处理监督交接' : active ? '运行中' : paused ? '已暂停' : session.status}</span>
       </button>
       <div className="sup-panel__goal" title={`${projectDisplayName(session)} · ${session.goal}`}>
         {projectDisplayName(session)} · G{currentGoal.sequence} {session.goal}
@@ -89,9 +90,16 @@ export default function ProjectManagerPanel() {
         当前目标任务 {completed}/{currentWorkItems.length} · 专属监督 {projectLanes.length}{waiting > 0 ? ` · ${waiting} 待决` : ''}
       </div>
       {activeAlert && (
-        <button type="button" className="project-manager-panel__alert" onClick={() => openProjectManagerConsole(session.id)}>
-          <span>项目告警</span>
-          <strong>{activeAlert.summary}</strong>
+        <button
+          type="button"
+          className="project-manager-panel__alert"
+          data-kind={goalCompletionNotice ? 'completion' : 'alert'}
+          onClick={goalCompletionNotice ? openProjectManagerDialog : () => openProjectManagerConsole(session.id)}
+        >
+          <span>{goalCompletionNotice ? '✓ 目标已完成' : '项目告警'}</span>
+          <strong>{goalCompletionNotice
+            ? `G${currentGoal.sequence} 已完成 · 查看结果并设置下一目标`
+            : activeAlert.summary}</strong>
         </button>
       )}
       {controlMessage && <div className="sup-panel__freedom project-manager-panel__message" role="status" title={controlMessage}>{controlMessage}</div>}

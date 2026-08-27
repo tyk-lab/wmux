@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-export const SUPERVISOR_PROTOCOL_REVISION = '21';
+export const SUPERVISOR_PROTOCOL_REVISION = '22';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -367,7 +367,9 @@ export function humanDecisionBoundary(
       ? '只有需要改变任务契约、跨任务协调、项目级路线调整、硬执行预算或重试耗尽，或涉及不可逆、高影响及用户专属信息/授权时，才通过 needs-human 提交项目状态通知；控制层不会创建普通 pendingApproval。项目内取舍由项目 AI 决定，只有改变用户目标、对外结果、验收、范围、真实偏好或新增外部访问/风险授权时才继续询问用户。'
       : '只有重大任务方向/范围变化、不可逆或高影响操作（安全、关键数据、生产、发布或对外提交）、需求/业务取舍，或缺少用户独有信息、凭据或授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
-    '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human + external-blocker 上报一次，由项目 AI 请求用户选择人工验收、暂缓验证、跳过当前验证并后续重排，或保持暂停，不得重复原路径或同义返工。',
+    projectManaged
+      ? '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human + external-blocker 上报一次，由项目 AI 先决策；项目 AI 仍无法决定时再请求用户选择人工验收、改用其他验证、暂缓、跳过并后续重排或保持暂停，不得重复原路径或同义返工。'
+      : '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human 向用户提交问题、当前进展、影响、互斥方案和推荐项，可供选择人工验收、改用其他验证、暂缓或保持暂停；不得重复原路径或同义返工。',
     projectManaged
       ? '你的首要执行义务是推进当前工作项对主目标的贡献：合同内技术路线、现状复核、证据整理、低风险重试和已有授权内的后续验证由你主动完成；不得把内部微步骤退回项目 AI。你不能改写主目标、扩大工作项合同、伪造阶段证据或新增硬件/风险授权。'
       : '',
@@ -375,8 +377,8 @@ export function humanDecisionBoundary(
       ? '只读核验形成决定性结论时，把 conclusion=confirmed-success|confirmed-not-executed|inconclusive 和项目相对 evidenceRefs 写入 .wmux/tmp/ JSON，并通过 --evidence-progress-file 随裁决提交；控制层实际读取并哈希工件，同一集合只计一次进展。执行前旧锚点与更新后的完整 run 按时间顺序解释，不得让回卷滚屏否定较新的落盘证据。一次核验后立即推进账本或最新执行项，不建立重复调解窗口。若一次核验仍无法决定且合同内实测成本最低，使用新身份完成最小安全门禁后的受控实测；禁止复跑已消费身份或已安全闭环的成功 run。'
       : '',
     projectManaged
-      ? '提交项目状态通知时使用 needs-human，并附 --proposal-kind route-change 或 important 及真实的 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted。--reason 写事实，--impact 写为何超出任务契约，方案写入 --alternatives；成功后通知进入 pendingSupervisorTransitions，由项目 AI 决策并回执。'
-      : '使用 needs-human 时附 --proposal-kind route-change 或 important；待续恢复后仅当用户的新方向仍不足以形成可执行下一步时，改用 --proposal-kind direction-needed。--reason 只写清需要用户决定或补充什么，--impact 写清为什么必须由用户决定，具体方案统一写入 --alternatives；推荐项通过 needs-human 的 --next 提交，该字段只承载用户决策推荐，不向任务终端派发。只有确属用户偏好/授权的多个方案才等待用户选择；多个方案的 --alternatives 必须按“方案 A：...；方案 B：...”格式列出，供单聊决策卡生成选择框。',
+      ? '提交项目状态通知时使用 needs-human，并附 --proposal-kind route-change 或 important 及真实的 --escalation-boundary contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted。--reason 写问题与当前待决事项，--impact 写当前进展、影响及为何超出任务契约，互斥方案写入 --alternatives，推荐路线写入 --next；成功后通知进入 pendingSupervisorTransitions，由项目 AI 先决策并回执。'
+      : '使用 needs-human 时附 --proposal-kind route-change 或 important；待续恢复后仅当用户的新方向仍不足以形成可执行下一步时，改用 --proposal-kind direction-needed。--reason 写问题与当前要用户决定什么，--impact 写当前进展、影响及为什么必须由用户决定，至少两个互斥方案写入 --alternatives；推荐项必须通过 needs-human 的 --next 提交，该字段只承载用户决策推荐，不向任务终端派发。只有确属用户偏好/授权的多个方案才等待用户选择；多个方案的 --alternatives 必须按“方案 A：...；方案 B：...”格式列出，供单聊决策卡生成选择框。',
     projectManaged
       ? '项目管理 AI 未处理该上级决策前，工作终端会暂停；不要绕过控制层直接发送建议。'
       : '用户未在监督会话中批准前，工作终端会暂停；不要自行发送该建议。',

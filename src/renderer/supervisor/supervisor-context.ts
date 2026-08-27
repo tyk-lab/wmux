@@ -11,6 +11,7 @@ import {
   type SupervisorLane,
   type SupervisorSession,
 } from '../store/supervisor-slice';
+import type { ProjectSupervisorAssignment } from '../project-manager/engine';
 import { detectSupervisorLauncher } from './launch-command';
 
 export interface SupervisorProjectContext {
@@ -25,6 +26,7 @@ export interface SupervisorProjectContext {
   workItemStatus?: string;
   bindingCurrent?: boolean;
   dependencyError?: string;
+  assignment?: ProjectSupervisorAssignment;
 }
 
 export interface SupervisorConditionalCommand {
@@ -63,12 +65,19 @@ export interface SupervisorRuntimeContext {
     forbiddenActions: SupervisorForbiddenAction[];
   };
   assignment: {
+    projectGoal?: string;
+    stage?: ProjectSupervisorAssignment['stage'];
+    workItemTitle?: string;
     objective: string;
     currentTask: string;
     taskDescription: string;
     preconditions: string;
+    effectivePreconditions: string[];
     supervisorNotes: string;
     stopWhen: string;
+    stopWhenItems: string[];
+    validation: string[];
+    stageAcceptanceCoverage: ProjectSupervisorAssignment['stageAcceptanceCoverage'];
     stopWhenKind: 'concrete' | 'direction';
     waitForNextDirection: boolean;
     planFilePath: string;
@@ -193,6 +202,7 @@ export function buildSupervisorRuntimeContext(
   const autoDecisionsUsed = Math.max(0, lane.autoDecisionsUsed || 0);
   const maxAutoDecisions = session.maxAutoDecisions;
   const project = options.project;
+  const projectAssignment = project?.assignment;
   const autonomous = typeof lane.autonomousOverride === 'boolean'
     ? lane.autonomousOverride
     : session.autonomous === true;
@@ -282,12 +292,23 @@ export function buildSupervisorRuntimeContext(
       forbiddenActions: effectiveForbiddenActions(session, lane),
     },
     assignment: {
-      objective: lane.config?.taskGoal?.trim() || '',
+      ...(projectAssignment?.projectGoal ? { projectGoal: projectAssignment.projectGoal } : {}),
+      ...(projectAssignment?.stage ? { stage: projectAssignment.stage } : {}),
+      ...(projectAssignment?.title ? { workItemTitle: projectAssignment.title } : {}),
+      objective: projectAssignment?.objective || lane.config?.taskGoal?.trim() || '',
       currentTask: lane.currentTask?.trim() || '',
-      taskDescription: lane.config?.taskDescription?.trim() || '',
-      preconditions: lane.config?.preconditions?.trim() || '',
-      supervisorNotes: lane.config?.supervisorNotes?.trim() || '',
+      taskDescription: projectAssignment?.description || lane.config?.taskDescription?.trim() || '',
+      preconditions: projectAssignment?.effectivePreconditions.join('；')
+        || lane.config?.preconditions?.trim()
+        || '',
+      effectivePreconditions: [...(projectAssignment?.effectivePreconditions || [])],
+      supervisorNotes: projectAssignment?.supervisorNotes.join('；')
+        || lane.config?.supervisorNotes?.trim()
+        || '',
       stopWhen: lane.config?.stopWhen?.trim() || '',
+      stopWhenItems: [...(projectAssignment?.stopWhen || [])],
+      validation: [...(projectAssignment?.validation || [])],
+      stageAcceptanceCoverage: [...(projectAssignment?.stageAcceptanceCoverage || [])],
       stopWhenKind: lane.config?.stopWhenKind === 'direction' ? 'direction' : 'concrete',
       waitForNextDirection: lane.config?.waitForNextDirection === true,
       planFilePath: lane.config?.planFilePath?.trim() || '',

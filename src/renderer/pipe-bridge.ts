@@ -62,6 +62,7 @@ import {
 import {
   SUPERVISOR_NO_DECISION_OPTION,
   supervisorDecisionOptions,
+  supervisorRecommendedOptionValue,
 } from '../shared/supervisor-decision-options';
 import {
   compactSupervisorEvidenceSummary,
@@ -235,6 +236,8 @@ import {
   projectRetryKindEvidenceError,
 } from './project-manager/anti-loop';
 import {
+  buildProjectSupervisorAssignment,
+  buildProjectSupervisorBriefing,
   isCurrentProjectTaskBatch,
   isProjectTargetedTestCommand,
   normalizeProjectTaskBatch,
@@ -250,6 +253,7 @@ import {
   projectPermissionAuthorizationError,
   projectHasRunnableGoalPlan,
   projectProgressObligation,
+  projectEffectiveWorkItemPreconditions,
   renderProjectRepositoryBootstrapTask,
   renderProjectTaskBatch,
   TASK_VALIDATION_REPORTING_POLICY,
@@ -268,6 +272,7 @@ import { projectSupervisorLaneIds as scopedProjectSupervisorLaneIds } from './pr
 import { shouldRestartProjectManagerRuntime } from './project-manager/runtime-recovery-policy';
 import {
   buildProjectInternalRecoveryScopeKey,
+  projectGoalClosurePauseWasMisclassified,
   projectInternalRecoveryAttempts,
 } from './project-manager/semantic-recovery-policy';
 import { projectTransitionResolutionError as projectTransitionPolicyError } from './project-manager/transition-policy';
@@ -3059,9 +3064,17 @@ function decideRemoteSupervisor(
   const offeredOptions = new Set(parsedOptions.length >= 2
     ? parsedOptions.map((option) => option.value)
     : []);
+  const recommendedOptionValue = approval.recommendedOption
+    || supervisorRecommendedOptionValue(parsedOptions, approval.text);
+  const recommendedOption = parsedOptions.find((option) => option.value === recommendedOptionValue);
   const requiresOptionSelection = decision === 'approve' && !clarification;
-  if (requiresOptionSelection && offeredOptions.size >= 2 && !selectedOption && !selectedNone) {
-    return { ok: false, error: 'AI 监督提供了多个方案，请先选择其中一个方案。', message: '' };
+  // “采用 AI 推荐”本身就是明确选择；只有用户改选其他方案时才要求 option value。
+  if (requiresOptionSelection
+    && offeredOptions.size >= 2
+    && !selectedOption
+    && !selectedNone
+    && !recommendedOption) {
+    return { ok: false, error: 'AI 监督提供了多个方案但没有可识别的推荐项，请先选择其中一个方案。', message: '' };
   }
   if (requiresOptionSelection && selectedNone && !decisionInput) {
     return { ok: false, error: '选择“无”时，请填写用户决策或补充信息。', message: '' };
@@ -3070,8 +3083,15 @@ function decideRemoteSupervisor(
     return { ok: false, error: '所选方案不属于 AI 监督当前提供的备选项，请刷新决策卡后重试。', message: '' };
   }
   if (decision === 'approve' || decision === 'direct') {
+    const adoptedRecommendation = decision === 'approve'
+      && !selectedNone
+      && !!recommendedOption
+      && (!selectedOption || selectedOption === recommendedOption.value);
     const chosenPlan = decision === 'approve'
-      ? selectedNone ? '' : selectedOption || approval.text.trim()
+      ? selectedNone
+        ? ''
+        : selectedOption
+          || (recommendedOption ? `${recommendedOption.value}：${recommendedOption.detail}` : approval.text.trim())
       : '';
     const originalSuggestion = approval.text.trim();
     const briefing = [
@@ -3084,7 +3104,7 @@ function decideRemoteSupervisor(
           : '[人工决定] 用户已选择采用 AI 监督提出的方案。',
       chosenPlan ? `[${decisionOwnerLabel}选择] ${chosenPlan}` : '',
       decisionInput ? `[${decisionOwnerLabel}补充信息] ${decisionInput}` : '',
-      originalSuggestion && originalSuggestion !== chosenPlan
+      originalSuggestion && originalSuggestion !== chosenPlan && !adoptedRecommendation
         ? `[AI 原建议] ${originalSuggestion}`
         : '',
       approval.reason?.trim() ? `[原判断依据] ${approval.reason.trim()}` : '',
@@ -5638,12 +5658,26 @@ async function acknowledgeProjectOrientation(
       phase: 'application-closed-before-safe-exit-completed',
     },
   } : undefined;
+  const restoreMisclassifiedGoalClosure = projectGoalClosurePauseWasMisclassified(normalized);
+  const goalClosureRecoveryEvent = restoreMisclassifiedGoalClosure ? {
+    id: uuid(),
+    sessionId: normalized.id,
+    ts: now,
+    kind: 'recovery-restored' as const,
+    summary: '已恢复被旧版通用死锁逻辑误暂停的目标收口，继续执行目标级验收',
+    payload: {
+      recoverySource: 'goal-closure-state-migration',
+      resolvedAttentionKinds: ['guard-triggered', 'project-execution-stalled', 'project-paused'],
+    },
+  } : undefined;
   const recoveryEvents = [
     ...normalized.events,
     ...(interruptedSafeExitEvent ? [interruptedSafeExitEvent] : []),
+    ...(goalClosureRecoveryEvent ? [goalClosureRecoveryEvent] : []),
   ].slice(-500);
   const restored: ProjectManagerSession = {
     ...normalized,
+    status: restoreMisclassifiedGoalClosure ? 'active' : normalized.status,
     preconditions: projectStringArray(normalized.preconditions),
     planFiles: Array.isArray(normalized.planFiles) ? normalized.planFiles : [],
     requirementsVersion: projectRequirementsVersion(normalized),
@@ -5842,6 +5876,9 @@ function normalizeProjectManagerUserQuestion(
       `选项 ${option.label} 的 confirmationScope`,
     );
     if (optionError) return { error: optionError };
+  }
+  if (!context) {
+    return { error: '用户决策包必须提供 context，说明当前任务、进展、已有证据和影响' };
   }
   return {
     question: {
@@ -6513,6 +6550,8 @@ function projectPauseUserQuestion(
     context: [
       `当前原因：${reason}`,
       workItem ? `当前工作项：${workItem.title}` : '',
+      workItem?.latestContextSummary ? `当前进展：${workItem.latestContextSummary}` : '',
+      workItem?.latestEvidence ? `已有证据：${workItem.latestEvidence}` : '',
       verificationLimitation ? `验证能力限制：${verificationLimitation.detail}` : '',
       verificationLimitation?.missingEvidence.length
         ? `尚缺证据：${verificationLimitation.missingEvidence.join('；')}`
@@ -6522,6 +6561,9 @@ function projectPauseUserQuestion(
           ? '这属于验证能力受限，不代表实现失败。不同的替代验证已经尝试过一次，不能再派发同义验证；请选择人工验收、暂缓后补、跳过并后续重排或保持暂停。'
           : '这属于验证能力受限，不代表实现失败。可先安排一轮不同路线的替代验证，也可以人工验收、暂缓后补，或跳过当前工作项并由后续新计划重新承接；未验证项不会被写成通过。'
         : '推荐保留现有成果与证据，按最新角色协议重建监督绑定；控制层不会回退或重复派发旧任务。',
+      verificationLimited
+        ? '当前要做什么：决定是改用不同验证方式、人工验收、暂缓后补、跳过并后续重排，还是保持暂停。'
+        : '当前要做什么：决定是按最新协议恢复、保持暂停，还是停止当前工作项并重新规划。',
     ].filter(Boolean).join('\n'),
     options: verificationLimited ? verificationOptions : [
       {
@@ -9632,6 +9674,17 @@ function projectActiveObligationContinuationText(
   session: ProjectManagerSession,
   obligation: ProjectProgressObligation,
 ): string {
+  if (obligation.kind === 'complete-goal') {
+    return [
+      '[控制层续作｜主目标成果已完成｜只做目标收口]',
+      `项目：${session.id} · ${session.projectDir}`,
+      `当前主目标：${activeProjectGoal(session).id} · ${session.goal}`,
+      `目标完成条件：${activeProjectGoal(session).doneWhen.join('；')}`,
+      '当前版本工作项和阶段均已完成。不得创建新工作项、重复实现、重复测试或重新规划。',
+      '重新读取 project status，聚合当前版本 completed 工作项经 stageAcceptanceCoverage 映射后的监督证据；把目标级完成 JSON 写入项目 .wmux/tmp/，其中 criteria 必须逐项使用目标 doneWhen 原文，并只引用已由监督核验且带内容哈希的 evidenceRefs。',
+      `执行 wmux project complete --project ${session.id} --json-file <file>。命令返回 ok=false 时运行 wmux project complete --help，按错误修正同一份目标级声明后重试；不得用只读 status 代替完成状态迁移。`,
+    ].join('\n');
+  }
   if (obligation.kind === 'map-stage-acceptance') {
     const workItem = obligation.workItemId
       ? session.workItems.find((candidate) => candidate.id === obligation.workItemId)
@@ -9938,7 +9991,7 @@ async function ensureProjectDeadlockRecovery(
         }
         incidentReason = 'project-active-obligation-unhandled';
       }
-      if (['plan-work', 'map-stage-acceptance', 'close-stage'].includes(obligation.kind)
+      if (['plan-work', 'map-stage-acceptance', 'close-stage', 'complete-goal'].includes(obligation.kind)
         && (managerTurnEnded || controlPlaneKnownIdleManager)) {
         const continuationKey = projectWaitingGateContinuationKey(session, obligation);
         const attempts = projectActiveObligationContinuationAttempts(session, continuationKey);
@@ -9946,7 +9999,9 @@ async function ensureProjectDeadlockRecovery(
           try {
             await appendRecordedProjectEvent(session, {
               kind: 'guard-triggered',
-              summary: `活动目标仍有未完成阶段，控制层自动要求项目 AI 建立当前协议工作项：${obligation.summary}`,
+              summary: obligation.kind === 'complete-goal'
+                ? `主目标成果已经完成，控制层自动要求项目 AI 执行目标级验收收口：${obligation.summary}`
+                : `活动目标仍有未完成阶段，控制层自动要求项目 AI 建立当前协议工作项：${obligation.summary}`,
               payload: {
                 decision: 'continue',
                 attentionRequired: false,
@@ -9989,6 +10044,31 @@ async function ensureProjectDeadlockRecovery(
               });
             } catch (error) {
               console.warn('[project-manager] failed to persist stage coverage mapping alert', error);
+            }
+          }
+          return true;
+        }
+        if (obligation.kind === 'complete-goal') {
+          const alreadyReported = session.events.some((event) => (
+            event.kind === 'guard-triggered'
+            && event.payload?.reason === 'project-goal-closure-pending'
+            && event.payload?.continuationKey === continuationKey
+          ));
+          if (!alreadyReported) {
+            try {
+              await appendRecordedProjectEvent(session, {
+                kind: 'guard-triggered',
+                summary: `主目标成果已经完成，但项目 AI 尚未提交可通过门禁的目标级完成声明：${obligation.summary}`,
+                payload: {
+                  decision: 'wait',
+                  attentionRequired: true,
+                  reason: 'project-goal-closure-pending',
+                  continuationKey,
+                  obligation: obligation.kind,
+                },
+              });
+            } catch (error) {
+              console.warn('[project-manager] failed to persist goal closure pending alert', error);
             }
           }
           return true;
@@ -10830,14 +10910,17 @@ async function ensureProjectSupervisorRuntimeNow(sessionId: string, options: {
   }
 
   const defaults = projectSupervisorDefaults(effectiveProjectAgentConfig(session));
+  const activeAssignment = activeItem
+    ? buildProjectSupervisorAssignment(session, activeItem)
+    : undefined;
   const started = startRemoteSupervisor({
     action: 'start',
     terminals: [taskTerminal.surfaceId],
-    taskGoal: activeItem?.contract.objective || session.goal,
-    taskDescription: activeItem?.contract.description
+    taskGoal: activeAssignment?.objective || session.goal,
+    taskDescription: activeAssignment?.description
       || '监督当前项目唯一任务 AI；没有活动工作项时保持空闲，等待项目 AI 交付工作项。',
-    preconditions: (activeItem?.contract.preconditions || session.preconditions).join('；'),
-    supervisorNotes: (activeItem?.contract.supervisorNotes || session.supervisorNotes || []).join('；'),
+    preconditions: (activeAssignment?.effectivePreconditions || session.preconditions).join('；'),
+    supervisorNotes: (activeAssignment?.supervisorNotes || session.supervisorNotes || []).join('；'),
     stopWhen: activeItem
       ? [...activeItem.contract.stopWhen, ...activeItem.contract.validation].join('；')
       : session.doneWhen.join('；') || '当前派发工作项的验收条件全部满足',
@@ -12326,6 +12409,7 @@ async function resetProjectTaskContextInPlace(
     item.contract,
     recoveryBatch,
     item.taskWorkMode || 'single-thread',
+    { effectivePreconditions: projectEffectiveWorkItemPreconditions(session, item) },
   );
   try {
     let recoveryAcknowledgement: ReturnType<typeof beginTaskPromptAcknowledgement> | undefined;
@@ -13435,6 +13519,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }
     const assignmentVersion = (item.assignmentVersion || 0) + 1;
     const historicallyDelivered = projectWorkItemHistoricallyDelivered(item);
+    const supervisorAssignment = buildProjectSupervisorAssignment(session, item);
     store.updateSurface(taskTerminal.workspaceId, taskTerminal.paneId, taskTerminal.surfaceId, {
       projectManagerProjectId: session.id,
       projectManagerWorkItemId: item.id,
@@ -13453,10 +13538,10 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
       autoDecisionLimitReached: false,
       config: {
         ...effectiveSupervisorLaneConfig(lane),
-        taskGoal: item.contract.objective,
-        taskDescription: item.contract.description || '',
-        preconditions: item.contract.preconditions.join('；'),
-        supervisorNotes: (item.contract.supervisorNotes || []).join('；'),
+        taskGoal: supervisorAssignment.objective,
+        taskDescription: supervisorAssignment.description,
+        preconditions: supervisorAssignment.effectivePreconditions.join('；'),
+        supervisorNotes: supervisorAssignment.supervisorNotes.join('；'),
         stopWhen: [...item.contract.stopWhen, ...item.contract.validation].join('；'),
         stopWhenKind: 'concrete',
         waitForNextDirection: true,
@@ -13522,11 +13607,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         ? '[角色链硬边界] 历史事件表明主任务 AI 已收到过该合同。禁止自动重发完整主任务；先读取主任务当前状态与证据。证据不足但所需检查仍在当前项目和授权内时，不得 needs-human，也不得要求项目 AI 重建同一 assignment；应提交 coverage=bounded-batch、带明确 evidenceExpectations 的 diagnostic/rework 批次，让任务 AI 只补最小证据缺口。只有真实外部条件、用户信息或高风险授权缺失时才 needs-human。'
         : '[角色链硬边界] 主任务 AI 尚未收到当前成果合同。项目 AI 无权写入主任务；只有你提交首次 continue 后，控制层才会发送中性成果包。',
       '你不是执行者，禁止创建或修改实现文件、编写代码、编译、运行实现/测试，禁止在监督隔离目录复制实现。',
-      `工作项：${item.id} · ${item.title}`,
-      `成果：${item.contract.objective}`,
-      item.contract.description ? `说明：${item.contract.description}` : '',
-      item.contract.preconditions.length > 0 ? `前置条件：${item.contract.preconditions.join('；')}` : '',
-      `验收：${[...item.contract.stopWhen, ...item.contract.validation].join('；')}`,
+      buildProjectSupervisorBriefing(supervisorAssignment),
       `当前并行边界：${item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}。如任务复杂度、共享资源或运行证据变化，可在 continue/rework 时用 --task-work-mode multi-thread 开放并行或用 single-thread 恢复串行；任务 AI 自行决定是否并行和内部如何分工。`,
       historicallyDelivered
         ? '先运行 wmux context 并只读核对主任务终端；不得把恢复动作当成首次派发。'
@@ -15505,6 +15586,7 @@ export function initPipeBridge(): void {
               && !projectWorkItemSubgoalDependencyError(project, workItem)
               && projectSupervisorLaneOwnsWorkItem(lane, workItem),
             dependencyError: projectWorkItemSubgoalDependencyError(project, workItem) || undefined,
+            assignment: buildProjectSupervisorAssignment(project, workItem),
           } : {}),
         },
       } : {}),
@@ -16103,6 +16185,9 @@ export function initPipeBridge(): void {
         requestedTaskWorkMode || projectWorkItem.taskWorkMode || 'single-thread',
         {
           initializeRepository: projectRepositoryBootstrapRequired(projectSession),
+          effectivePreconditions: projectSession
+            ? projectEffectiveWorkItemPreconditions(projectSession, projectWorkItem)
+            : projectWorkItem.contract.preconditions,
         },
       );
     }
@@ -16583,13 +16668,30 @@ export function initPipeBridge(): void {
     if (!isSupervisorNextAllowed(outcome, next)) {
       return { ok: false, error: '只有 continue、rework 可以携带成果任务；needs-human 的 --next 仅用于用户决策推荐' };
     }
+    let ordinaryRecommendedOption: string | undefined;
     if (currentOrdinaryProtocol && outcome === 'needs-human') {
-      const recommendationOptional = proposalKind === 'clarification' || proposalKind === 'direction-needed';
+      const recommendationOptional = proposalKind === 'clarification';
       if (!reason || !impact || !alternatives || (!recommendationOptional && !next)) {
         return {
           ok: false,
           error: '普通监督升级用户必须提供事实化 reason、影响 impact、互斥 alternatives；非澄清升级还必须用 --next 给出推荐项',
         };
+      }
+      if (proposalKind !== 'clarification') {
+        const decisionOptions = supervisorDecisionOptions(alternatives, next);
+        if (decisionOptions.length < 2) {
+          return {
+            ok: false,
+            error: '普通监督升级用户时 alternatives 必须提供至少两个可解析的互斥方案，并用 --next 明确推荐其中一项',
+          };
+        }
+        ordinaryRecommendedOption = supervisorRecommendedOptionValue(decisionOptions, next);
+        if (!ordinaryRecommendedOption) {
+          return {
+            ok: false,
+            error: '普通监督升级用户时 --next 必须无歧义地指向 alternatives 中的一个推荐项（例如“推荐方案 A：……”）',
+          };
+        }
       }
       const escalationText = `${reason}\n${impact}\n${alternatives}\n${next}`;
       const immediateUserBoundary = proposalKind === 'clarification'
@@ -17384,6 +17486,13 @@ export function initPipeBridge(): void {
       || (currentOrdinaryProtocol
         ? lane.decisions?.find((decision) => decision.ordinaryPlan)?.ordinaryPlan
         : undefined);
+    const userDecisionCurrentState = outcome === 'needs-human'
+      ? [contextSummary, diffSummary, executionError, evidence, testResult, lane.currentTask]
+          .map((value) => String(value || '').trim())
+          .find(Boolean)
+          ?.slice(0, 4_000)
+          || '当前任务已暂停在用户决策边界，尚无额外进展摘要'
+      : undefined;
     const autoDecisionsUsed = nextSupervisorDecisionCount(lane.autoDecisionsUsed, permissionResponse);
     const limitReached = !autonomous && !permissionResponse && reachesAutoDecisionLimit(lane, session.maxAutoDecisions);
     appendSupervisorRecord(session, lane, 'supervisor.decision', {
@@ -17393,6 +17502,8 @@ export function initPipeBridge(): void {
       proposalKind,
       impact,
       alternatives,
+      ...(userDecisionCurrentState ? { currentState: userDecisionCurrentState } : {}),
+      ...(ordinaryRecommendedOption ? { recommendedOption: ordinaryRecommendedOption } : {}),
       escalationBoundary,
       ...(ordinaryDecisionPlan ? { ordinaryPlan: ordinaryDecisionPlan } : {}),
       ...(ordinaryTaskDispatch ? { taskDispatch: ordinaryTaskDispatch } : {}),
@@ -17991,6 +18102,8 @@ export function initPipeBridge(): void {
         impact,
         alternatives,
         task: lane.currentTask || '（任务未上报）',
+        currentState: userDecisionCurrentState,
+        recommendedOption: ordinaryRecommendedOption,
       };
       store.enqueueApproval(approval);
       const pending = useStore.getState().supervisor.pendingApprovals.find((item) => item.laneId === lane.id);
@@ -18829,6 +18942,7 @@ export function initPipeBridge(): void {
       return {
         ok: true,
         recommendation: approval.text || '',
+        recommendedOption: approval.recommendedOption || '',
         terminalScreen: coreInformation,
       };
     }

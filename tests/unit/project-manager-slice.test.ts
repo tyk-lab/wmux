@@ -1189,6 +1189,44 @@ describe('project-manager slice', () => {
     });
   });
 
+  it('reuses canonical stage acceptance coverage when closing the main goal', () => {
+    const useStore = store();
+    const goalCriterion = '核心业务链可运行；结果可重复验证；非核心功能已列为后续工作';
+    const verificationCriterion = '提供核心业务链重复运行和后续边界的可复核证据';
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '交付可重复验证的核心业务链', doneWhen: [goalCriterion],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: {
+        ...item('validated-core-flow'),
+        goalId: project.activeGoalId,
+      },
+    });
+    const currentItem = useStore.getState().projectManager!.workItems[0];
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: currentItem.id, patch: {
+        status: 'completed',
+        latestEvidence: '核心业务链重复运行结果与后续边界已有证据',
+        contract: {
+          ...currentItem.contract,
+          stageAcceptanceCoverage: [{
+            stageCriterion: goalCriterion,
+            verificationCriterion,
+          }],
+        },
+        completion: verifiedCompletion([verificationCriterion], '核心业务链重复运行结果一致'),
+      },
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '执行目标级收口', acceptRequirementsVersion: true,
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '目标完成条件已由阶段证据覆盖',
+      completion: verifiedCompletion([goalCriterion], '目标级综合验收通过'),
+    })).toMatchObject({ ok: true, event: { kind: 'project-goal-completed' } });
+  });
+
   it('allows a conclusive failed runtime result to complete an evaluation criterion', () => {
     const useStore = store();
     const criterion = '执行并评估候选实机测试';

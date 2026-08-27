@@ -40,7 +40,51 @@ describe('supervisor runtime context', () => {  it('keeps project decisions avai
     });
 
     expect(context.commands.decisionOutcomes).toEqual(['continue', 'rework', 'complete', 'needs-human']);
-  });  it('includes the active review id in every advertised decision command', () => {
+  });
+
+  it('returns the canonical project assignment after a supervisor runtime refresh', () => {
+    const session = createDefaultSupervisorSession();
+    session.active = true;
+    const context = buildSupervisorRuntimeContext(session, lane({
+      projectManagerProjectId: 'project-a',
+      projectWorkItemId: 'work-a',
+    }), {
+      taskState: 'idle',
+      project: {
+        projectId: 'project-a', goalId: 'goal-a', workItemId: 'work-a', bindingCurrent: true,
+        assignment: {
+          projectGoal: '交付用户目标',
+          stage: {
+            id: 'stage-a', title: '验收阶段', outcome: '形成可验收成果',
+            acceptance: ['真实交互可验证'],
+          },
+          workItemId: 'work-a', title: '交互成果', objective: '形成交互成果',
+          description: '覆盖正常与异常路径',
+          effectivePreconditions: ['测试环境可用', '真实设备操作需用户授权'],
+          supervisorNotes: ['验证失败也要如实上报'],
+          stopWhen: ['成果形成'], validation: ['真实交互已验证'],
+          stageAcceptanceCoverage: [{
+            stageCriterion: '真实交互可验证', verificationCriterion: '真实交互已验证',
+          }],
+          taskWorkMode: 'single-thread',
+        },
+      },
+    });
+
+    expect(context.assignment).toMatchObject({
+      projectGoal: '交付用户目标',
+      workItemTitle: '交互成果',
+      taskDescription: '覆盖正常与异常路径',
+      effectivePreconditions: ['测试环境可用', '真实设备操作需用户授权'],
+      stopWhenItems: ['成果形成'],
+      validation: ['真实交互已验证'],
+      stageAcceptanceCoverage: [{
+        stageCriterion: '真实交互可验证', verificationCriterion: '真实交互已验证',
+      }],
+    });
+  });
+
+  it('includes the active review id in every advertised decision command', () => {
     const session = createDefaultSupervisorSession();
     session.active = true;
     const context = buildSupervisorRuntimeContext(session, lane({

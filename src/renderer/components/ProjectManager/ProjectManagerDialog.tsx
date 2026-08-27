@@ -11,7 +11,9 @@ import {
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
   projectWorkItemDisplayTitle,
+  type ProjectCompletionResult,
   type ProjectPlanFileSnapshot,
+  type ProjectWorkItem,
 } from '../../../shared/project-manager';
 import {
   DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
@@ -21,7 +23,10 @@ import {
 } from '../../../shared/project-manager-terminal';
 import type { SplitNode } from '../../../shared/types';
 import { projectDefinitionLines as conditionLines } from '../../project-manager/definition-lines';
-import { formatProjectCompletionCriteria } from '../../project-manager/completion-display';
+import {
+  formatProjectCompletionAuditDetails,
+  summarizeProjectCompletionCriteria,
+} from '../../project-manager/completion-display';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
 import { useStore } from '../../store';
 import { supervisorLaneControlState, type SupervisorLane } from '../../store/supervisor-slice';
@@ -133,6 +138,51 @@ const PROJECT_ALERT_LABELS: Record<string, string> = {
   'project-paused': '项目已暂停，需要处理',
   'project-goal-completed': '当前主目标已完成',
 };
+
+function ProjectCompletionDetails({
+  completion,
+  evidenceFallback,
+}: {
+  completion: ProjectCompletionResult;
+  evidenceFallback?: string;
+}) {
+  const hasCriteria = !!completion.criteria?.length;
+  return <>
+    <dt>验收结论</dt><dd>{completion.summary}</dd>
+    {hasCriteria ? <>
+      <dt>核验概览</dt><dd>{summarizeProjectCompletionCriteria(completion)}</dd>
+      <dt>核验详情</dt><dd>
+        <details className="project-manager-dialog__audit-details">
+          <summary>查看 {completion.criteria!.length} 项逐项核验与证据</summary>
+          <pre>{formatProjectCompletionAuditDetails(completion, evidenceFallback)}</pre>
+        </details>
+      </dd>
+    </> : <>
+      <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
+      <dt>完成证据</dt><dd>{completion.evidence || evidenceFallback || '结果摘要已记录'}</dd>
+    </>}
+    <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
+  </>;
+}
+
+function ProjectStageWorkItems({ items }: { items: ProjectWorkItem[] }) {
+  if (items.length === 0) return <>尚未拆分工作项</>;
+  const completed = items.filter((item) => item.status === 'completed').length;
+  const unfinished = items.filter((item) => !['completed', 'stopped'].includes(item.status)).length;
+  const stopped = items.filter((item) => item.status === 'stopped').length;
+  const summary = [
+    `${items.length} 项`,
+    completed > 0 ? `${completed} 已完成` : '',
+    unfinished > 0 ? `${unfinished} 未结束` : '',
+    stopped > 0 ? `${stopped} 已停止` : '',
+  ].filter(Boolean).join(' · ');
+  return <details className="project-manager-dialog__audit-details">
+    <summary>{summary} · 查看列表</summary>
+    <pre>{items.map((item) => (
+      `${projectWorkItemDisplayTitle(item)}（${STATUS_LABELS[item.status] || item.status}）`
+    )).join('\n')}</pre>
+  </details>;
+}
 
 function projectActivityLabel(session: {
   status: string;
@@ -459,6 +509,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const currentSubgoals = useMemo(() => (
     allCurrentSubgoals.filter((subgoal) => subgoal.status !== 'obsolete')
   ), [allCurrentSubgoals]);
+  const currentSubgoalLabels = useMemo(() => new Map(allCurrentSubgoals.map((subgoal) => (
+    [subgoal.id, `S${subgoal.order} · ${subgoal.title}`]
+  ))), [allCurrentSubgoals]);
   const obsoleteSubgoals = useMemo(() => (
     allCurrentSubgoals.filter((subgoal) => subgoal.status === 'obsolete')
   ), [allCurrentSubgoals]);
@@ -1650,8 +1703,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div><span>待项目 AI 处理</span><strong>{awaitingProjectAiCount}</strong></div>
               </section>}
               {activeAlert && (
-                <section className="project-manager-dialog__alert" role="alert">
-                  <div className="project-manager-dialog__alert-icon">!</div>
+                <section className="project-manager-dialog__alert" data-kind={goalCompletionAlert ? 'completion' : 'alert'} role={goalCompletionAlert ? 'status' : 'alert'}>
+                  <div className="project-manager-dialog__alert-icon">{goalCompletionAlert ? '✓' : '!'}</div>
                   <div>
                     <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
                     <p>{activeAlertSummary}</p>
@@ -1750,14 +1803,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         <dl>
                           <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
                           <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
-                          <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
-                          {completion && <>
-                            <dt>完成结果</dt><dd>{completion.summary}</dd>
-                            <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
-                            <dt>完成证据</dt><dd>{completion.evidence || '结果摘要已记录'}</dd>
-                            {!!completion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(completion)}</dd></>}
-                            <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
-                          </>}
+                          <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0
+                            ? subgoal.dependencies.map((dependency) => currentSubgoalLabels.get(dependency) || dependency).join('、')
+                            : '无'}</dd>
+                          {completion && <ProjectCompletionDetails completion={completion} />}
                         </dl>
                       </details>
                     );
@@ -1843,15 +1892,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         <dl>
                           <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
                           <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
-                          <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
-                          <dt>工作项安排</dt><dd>{stageWorkItems.length > 0 ? stageWorkItems.map((item) => `${projectWorkItemDisplayTitle(item)}（${STATUS_LABELS[item.status] || item.status}）`).join('\n') : '尚未拆分工作项'}</dd>
-                          {completion && <>
-                            <dt>完成结果</dt><dd>{completion.summary}</dd>
-                            <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
-                            <dt>完成证据</dt><dd>{completion.evidence || '结果摘要已记录'}</dd>
-                            {!!completion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(completion)}</dd></>}
-                            <dt>完成时间</dt><dd>{new Date(completion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
-                          </>}
+                          <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0
+                            ? subgoal.dependencies.map((dependency) => currentSubgoalLabels.get(dependency) || dependency).join('、')
+                            : '无'}</dd>
+                          <dt>工作项安排</dt><dd><ProjectStageWorkItems items={stageWorkItems} /></dd>
+                          {completion && <ProjectCompletionDetails completion={completion} />}
                         </dl>
                       </details>
                     );
@@ -1949,13 +1994,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>监督通道状态</dt><dd>{itemStatus.supervisorLabel}：{itemStatus.detail}</dd>
                           <dt>执行护栏</dt><dd>真实任务失败重试 {item.attempts}/{item.contract.budget.maxTaskRetries}；同类失败上限 {item.contract.budget.maxIdenticalFailures}；连续无进展上限 {item.contract.budget.maxNoProgressRounds}</dd>
                           <dt>阶段监督注意事项</dt><dd>{item.contract.supervisorNotes?.join('\n') || '沿用项目级注意事项'}</dd>
-                          {itemCompletion && <>
-                            <dt>完成结果</dt><dd>{itemCompletion.summary}</dd>
-                            <dt>完成验证</dt><dd>{itemCompletion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
-                            <dt>完成证据</dt><dd>{itemCompletion.evidence || item.latestEvidence || '结果摘要已记录'}</dd>
-                            {!!itemCompletion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(itemCompletion)}</dd></>}
-                            <dt>完成时间</dt><dd>{new Date(itemCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
-                          </>}
+                          {itemCompletion && <ProjectCompletionDetails completion={itemCompletion} evidenceFallback={item.latestEvidence} />}
                           <dt>执行证据</dt><dd>{item.latestEvidence || '暂无'}</dd>
                           <dt>上下文总结</dt><dd>{item.latestContextSummary || '暂无'}</dd>
                           <dt>阻塞原因</dt><dd>{item.latestBlocker || '无'}</dd>
@@ -2172,7 +2211,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 </section>
               )}
               {activeAlert && (
-                <button type="button" className="project-manager-dialog__inspector-alert" onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : agentLimitAlert ? 'agents' : 'execution')}>
+                <button type="button" className="project-manager-dialog__inspector-alert" data-kind={goalCompletionAlert ? 'completion' : 'alert'} onClick={() => setActiveView(goalCompletionAlert ? 'requirements' : agentLimitAlert ? 'agents' : 'execution')}>
                   <span>{goalCompletionAlert ? '等待下一目标' : '需要处理'}</span>
                   <strong>{PROJECT_ALERT_LABELS[activeAlert.kind] || '项目运行告警'}</strong>
                 </button>

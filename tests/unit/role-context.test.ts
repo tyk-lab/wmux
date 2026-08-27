@@ -40,7 +40,7 @@ function workItem(partial: Partial<ProjectWorkItem> = {}): ProjectWorkItem {
     executionHistory: [],
     contract: {
       objective: '完成认证实现',
-      description: '',
+      description: '实现并验证认证接口',
       preconditions: ['测试环境已准备'],
       scope: {
         root: 'E:\\repo',
@@ -201,6 +201,7 @@ describe('unified managed AI role context', () => {
     expect(context.identity).toEqual({ taskSurfaceId: 'task-a' });
     expect(context.state).toEqual({ task: 'unknown' });
     expect(context.contract.objective).toBe('形成认证接口行为');
+    expect(context.contract.description).toBe('实现并验证认证接口');
     expect(context.contract.validation).toEqual(['接口结果可复核']);
     expect(context.contract.stopWhen).toEqual(['成果形成并完成验证']);
     expect(context.actions.available).toContain('读取并遵循当前目录适用的 AGENTS、技能和项目规范');

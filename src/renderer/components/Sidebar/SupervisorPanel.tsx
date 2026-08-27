@@ -38,6 +38,7 @@ import {
 import {
   buildAdoptedPlanBriefing,
   supervisorDecisionOptions,
+  supervisorRecommendedOptionValue,
 } from '../../supervisor/decision-options';
 import {
   buildSupervisorPlanView,
@@ -464,7 +465,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       if (isHumanProposal) {
         const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
         const choices = supervisorDecisionOptions(item.alternatives, item.text);
-        const selected = choices.find((choice) => choice.value === proposalSelections[id]);
+        const recommendedOption = item.recommendedOption
+          || supervisorRecommendedOptionValue(choices, item.text);
+        const selected = choices.find((choice) => (
+          choice.value === (proposalSelections[id] || recommendedOption)
+        ));
         const userGuidance = proposalGuidance[id]?.trim() || '';
         if (
           !lane
@@ -523,8 +528,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         return next;
       });
       if (isHumanProposal && lane) {
-        const selected = supervisorDecisionOptions(item.alternatives, item.text)
-          .find((choice) => choice.value === proposalSelections[id]);
+        const choices = supervisorDecisionOptions(item.alternatives, item.text);
+        const recommendedOption = item.recommendedOption
+          || supervisorRecommendedOptionValue(choices, item.text);
+        const selected = choices.find((choice) => (
+          choice.value === (proposalSelections[id] || recommendedOption)
+        ));
         const userGuidance = proposalGuidance[id]?.trim() || '';
         const standingDecisionSubject = [item.reason, item.impact, item.alternatives, item.text]
           .filter(Boolean).join('\n').slice(0, 4000);
@@ -2197,6 +2206,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 const decisionOptions = a.proposalKind && !isClarification
                   ? supervisorDecisionOptions(a.alternatives, a.text)
                   : [];
+                const recommendedOption = a.recommendedOption
+                  || supervisorRecommendedOptionValue(decisionOptions, a.text);
                 const selectedOption = proposalSelections[a.id] || '';
                 const userGuidance = proposalGuidance[a.id] || '';
                 const directDecision = proposalEdits[a.id] || '';
@@ -2213,11 +2224,15 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                         <h4>{isClarification ? '需要集中确认的问题' : '决策背景'}</h4>
                         <div className="sup-panel__decision-overview">
                           <div className="sup-panel__decision-fact sup-panel__decision-fact--task">
-                            <span>当前任务目标</span>
+                            <span>当前任务</span>
                             <div>{a.task || '任务终端暂未上报明确目标'}</div>
                           </div>
                           <div className="sup-panel__decision-fact">
-                            <span>{isClarification ? '对齐问题' : '需要你决定'}</span>
+                            <span>当前进展 / 状态</span>
+                            <div>{a.currentState || '尚无额外进展摘要，请结合当前任务和问题说明判断'}</div>
+                          </div>
+                          <div className="sup-panel__decision-fact">
+                            <span>{isClarification ? '对齐问题' : '问题 / 当前要决定什么'}</span>
                             <div>{a.reason || 'AI 监督请求你确认下一步路线'}</div>
                           </div>
                           <div className="sup-panel__decision-fact">
@@ -2255,7 +2270,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                                 disabled={!supervisor.active || laneControlState === 'stopped'}
                               />
                               <span className="sup-panel__decision-option-copy">
-                                <strong>{option.title}</strong>
+                                <strong>
+                                  {option.title}
+                                  {option.value === recommendedOption && <em className="sup-panel__decision-option-recommended">推荐</em>}
+                                </strong>
                                 <span>{option.detail}</span>
                               </span>
                             </label>
@@ -2329,14 +2347,18 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                           onClick={() => onApprove(a.id)}
                           disabled={
                             !supervisor.active
-                            || laneControlState !== 'active'
-                            || !supervisorSurfaceId
-                            || (!selectedOption && !userGuidance.trim())
+                             || laneControlState !== 'active'
+                             || !supervisorSurfaceId
+                             || (!selectedOption && !recommendedOption && !userGuidance.trim())
                           }
                         >
                           {isClarification
                             ? '提交对齐答复'
-                            : selectedOption ? '采用所选 AI 方案' : '提交补充给 AI 判断'}
+                            : selectedOption
+                              ? '采用所选 AI 方案'
+                              : recommendedOption
+                                ? '采用 AI 推荐方案'
+                                : '提交补充给 AI 判断'}
                         </button>
                       </div>
 

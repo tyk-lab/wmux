@@ -102,6 +102,7 @@ export interface TaskAiRuntimeContext {
   };
   contract: {
     objective: string;
+    description?: string;
     projectRoot?: string;
     executionAuthority: 'full-project' | 'task-scoped';
     preconditions: string[];
@@ -467,6 +468,7 @@ export function buildTaskAiRuntimeContext(options: {
       objective: projectManaged
         ? projectTaskBatch?.outcome || lane?.currentTask || contract?.objective || ''
         : contract?.objective || config?.taskGoal || lane?.currentTask || '',
+      ...(contract?.description ? { description: contract.description } : {}),
       ...(contract?.scope.root ? { projectRoot: contract.scope.root } : {}),
       executionAuthority: projectManaged ? 'full-project' : 'task-scoped',
       preconditions: [...new Set([
