@@ -21,9 +21,15 @@ Use TypeScript with the existing two-space indentation, semicolons, and single q
 
 Add a focused `tests/unit/<feature>.test.ts` test for new state transitions, parsers, or notification behavior. Use descriptive Vitest cases such as `it('suppresses turn notifications while supervision is active', ...)`. Run the narrow test during development, then `npm test`, `npm run typecheck`, and `npm run lint` for changed TypeScript paths.
 
-## Project Management Control Plane
+## Managed AI Control Plane
 
 `src/renderer/project-manager/` owns persisted project and work-item state. `src/renderer/pipe-bridge.ts` owns manager delivery, supervisor-transition routing, execution-window replanning, and liveness recovery. Keep control-plane state changes covered by focused `tests/unit/project-manager-*.test.ts` and `tests/unit/supervisor-decision-bridge.test.ts` cases. Dynamic local handoff state belongs in `.project-plans/PROGRESS.md`, not in this file.
+
+`resources/agents/project-ai/ROLE_AGENTS.md` and `resources/agents/supervisor-ai/ROLE_AGENTS.md` are application-owned stable role sources. `src/main/role-runtime-instructions.ts` deploys them as `AGENTS.md` into isolated managed-role runtimes; project IDs, work items, evidence, authorization, budgets, and current progress must remain in control-plane state rather than these files.
+
+The project AI plans goals, topology, dependencies, and macro decisions; the supervisor AI dispatches outcome-oriented batches and reviews evidence. The task AI is the only project executor and final technical decision-maker: it follows the target project's own instructions and skills, and must not receive internal role identities, project/lane IDs, routing state, or managed-role protocol text.
+
+Project and supervisor runtimes must call `wmux context` and then `wmux role-ready` before managed actions. Keep `role.ready` bound to a live per-surface capability in `src/main/pipe-server.ts`. When either role source changes, bump the corresponding revision in `src/shared/project-manager-terminal.ts` or `src/renderer/supervisor/protocol.ts`, and update packaging, runtime-deployment, isolation, and decision-bridge tests.
 
 ## Commit & Pull Request Guidelines
 
