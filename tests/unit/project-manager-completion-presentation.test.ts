@@ -24,6 +24,16 @@ describe('project goal completion presentation', () => {
     expect(sidebarSource).toContain('查看结果并设置下一目标');
   });
 
+  it('makes sidebar controls explicitly target the selected project in a multi-project center', () => {
+    expect(sidebarSource).toContain('活动项目 {activeProjects} · 当前项目：');
+    expect(sidebarSource).toContain('当前项目：{projectDisplayName(session)}');
+    expect(sidebarSource).toContain('打开当前项目');
+    expect(sidebarSource).toContain('打开当前项目监督');
+    expect(sidebarSource).toContain('ensureProjectSupervisorStatusSurface(session.id, true)');
+    expect(sidebarSource).toContain('暂停当前项目');
+    expect(sidebarSource).toContain('恢复当前项目');
+  });
+
   it('keeps completion attention actionable while using success semantics throughout the dialog', () => {
     expect(dialogSource).toContain("data-kind={goalCompletionAlert ? 'completion' : 'alert'}");
     expect(dialogSource).toContain("role={goalCompletionAlert ? 'status' : 'alert'}");

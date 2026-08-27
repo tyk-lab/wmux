@@ -427,6 +427,11 @@ describe('supervisor status summary', () => {
   it('shows one action-first project supervisor card without a duplicate route overview', () => {
     expect(panelSource).toContain('const scopedProjectWorkItems');
     expect(panelSource).toContain('className="sup-panel__project-scope-summary"');
+    expect(panelSource).toContain('className="sup-panel__managed-compact-summary"');
+    expect(panelSource).toContain('className="sup-panel__managed-status-line"');
+    expect(panelSource).toContain('className="sup-panel__managed-summary-row"');
+    expect(panelSource).toContain('className="sup-panel__managed-lane-details"');
+    expect(panelSource).toContain('查看成果、监督与合同详情');
     expect(panelSource).toContain('className="sup-panel__managed-action-grid"');
     expect(panelSource).toContain("managedCompletion ? '当前结果' : '当前成果'");
     expect(panelSource).toContain('<span>任务 AI 状态</span>');
@@ -445,6 +450,12 @@ describe('supervisor status summary', () => {
     expect(panelSource).not.toContain('className="sup-panel__project-plan"');
     expect(panelSource).toContain('打开项目管理');
     expect(panelSource).toContain('{!scopedProjectId && visibleLogs.length > 0 && (');
+    expect(supervisorCssSource).toMatch(
+      /\.sup-panel__managed-summary-row strong\s*\{[\s\S]*?-webkit-line-clamp:\s*2;/,
+    );
+    expect(supervisorCssSource).toMatch(
+      /\.sup-panel__managed-lane-details-body\s*\{[\s\S]*?max-height:\s*min\(52vh, 520px\);[\s\S]*?overflow-y:\s*auto;/,
+    );
   });
 
   it('shows the current route and recent planning trail for ordinary supervision', () => {

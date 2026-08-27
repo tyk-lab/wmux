@@ -3704,6 +3704,81 @@
   margin-top: 7px;
 }
 
+.sup-panel__managed-compact-summary {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+  border-radius: 6px;
+  background: rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.025);
+}
+
+.sup-panel__managed-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.sup-panel__managed-status-line span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(93, 202, 138, 0.1);
+  color: #8de1b0;
+  font-size: 9px;
+}
+
+.sup-panel__managed-status-line span[data-attention='1'] {
+  background: rgba(226, 170, 79, 0.13);
+  color: #f2c977;
+}
+
+.sup-panel__managed-summary-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.sup-panel__managed-summary-row span {
+  padding-top: 1px;
+  color: var(--ui-text-muted);
+  font-size: 9px;
+}
+
+.sup-panel__managed-summary-row strong {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.sup-panel__managed-lane-details {
+  border-top: 1px solid rgba(var(--ui-overlay-rgb, 255, 255, 255), 0.08);
+}
+
+.sup-panel__managed-lane-details > summary {
+  padding-top: 7px;
+  color: #8fc4ff;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.sup-panel__managed-lane-details-body {
+  display: grid;
+  gap: 8px;
+  max-height: min(52vh, 520px);
+  margin-top: 7px;
+  padding-right: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .sup-panel__project-scope-summary {
   display: flex;
   align-items: center;
@@ -3884,6 +3959,15 @@
 
 .supervisor-session-pane .sup-panel__managed-lane-decision p {
   font-size: 12px;
+}
+
+.supervisor-session-pane .sup-panel__managed-status-line span,
+.supervisor-session-pane .sup-panel__managed-summary-row span {
+  font-size: 11px;
+}
+
+.supervisor-session-pane .sup-panel__managed-summary-row strong {
+  font-size: 13px;
 }
 
 @media (max-width: 720px) {

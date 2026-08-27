@@ -95,6 +95,10 @@ import {
 } from '../../supervisor/recovery-request';
 import { queueOrdinarySupervisorControlDelivery } from '../../supervisor/ordinary-control-delivery';
 import {
+  ordinarySupervisorRuntimeNeedsRestore,
+  ordinarySupervisorRuntimeRestorePatch,
+} from '../../supervisor/ordinary-runtime-recovery';
+import {
   activeStandingUserDecisions,
   standingUserDecisionFingerprint,
   upsertStandingUserDecision,
@@ -163,6 +167,7 @@ function terminalSnapshotConsistency(lane: SupervisorLane): string {
 }
 
 const snapshotSaveInFlightLaneIds = new Set<string>();
+const runtimeRestoreInFlightLaneIds = new Set<string>();
 
 function taskAgentExecutableFromLabel(value: unknown): string | null {
   const label = String(value || '').toLowerCase();
@@ -228,6 +233,8 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
   const [snapshotActionLaneId, setSnapshotActionLaneId] = useState<string | null>(null);
   const [snapshotDeleteLaneId, setSnapshotDeleteLaneId] = useState<string | null>(null);
   const [snapshotNotices, setSnapshotNotices] = useState<Record<string, string>>({});
+  const [runtimeRestoreLaneId, setRuntimeRestoreLaneId] = useState<string | null>(null);
+  const [runtimeRestoreNotices, setRuntimeRestoreNotices] = useState<Record<string, string>>({});
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
@@ -322,14 +329,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       stopConfirmed: lane.stopConfirmed,
     }, visibleAgentStates[lane.surfaceId]).label === '执行中'
   )).length;
-  const ordinaryAttentionLaneCount = new Set(ordinaryBoundLanes.filter((lane) => (
+  const ordinaryAttentionLaneIds = new Set(ordinaryBoundLanes.filter((lane) => (
     supervisorLaneControlState(lane) === 'waiting'
     || supervisorLaneControlState(lane) === 'paused'
     || (visibleAgentStates[lane.surfaceId]?.state === 'blocked'
       && !isAwaitingNextPromptState(visibleAgentStates[lane.surfaceId]))
     || !!lane.supervisorProblem
-  )).map((lane) => lane.id)).size;
-  const ordinaryAttentionCount = ordinaryAttentionLaneCount + pendingCount;
+  )).map((lane) => lane.id));
   const supervisorLauncher = detectSupervisorLauncher(supervisor.supervisorLaunchCmd);
   const supervisorLauncherName = supervisorLauncherDisplayName(supervisorLauncher);
   const supervisorThinkingLabel = supervisorLauncher === 'codex' ? '推理程度' : 'Thinking';
@@ -347,18 +353,12 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
       for (const surface of pane?.surfaces || []) liveSurfaceIds.add(surface.id);
     }
   }
-  const missingDedicatedSupervisor = supervisor.lanes.some(
-    (lane) => {
-      const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
-        return !isProjectManagedSupervisorLane(lane)
-          && supervisorLaneControlState(lane) !== 'stopped'
-          && (
-            !supervisorSurfaceId
-            || !liveSurfaceIds.has(supervisorSurfaceId)
-            || lane.supervisorProblem?.kind === 'runtime-failed'
-          );
-    },
-  );
+  const missingOrdinarySupervisorLanes = ordinaryLanes.filter((lane) => (
+    ordinarySupervisorRuntimeNeedsRestore(lane, liveSurfaceIds)
+  ));
+  const missingDedicatedSupervisor = missingOrdinarySupervisorLanes.length > 0;
+  for (const lane of missingOrdinarySupervisorLanes) ordinaryAttentionLaneIds.add(lane.id);
+  const ordinaryAttentionCount = ordinaryAttentionLaneIds.size + pendingCount;
   let statusLabel = '已停止';
   if (enabled.length > 0 || waiting.length > 0) {
     statusLabel = enabled.length === 0 && waiting.length > 0
@@ -368,6 +368,9 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
         : '运行中';
   }
   else if (visiblePaused.length > 0) statusLabel = '已暂停';
+  if (missingDedicatedSupervisor) {
+    statusLabel = `${statusLabel} · ${missingOrdinarySupervisorLanes.length} 监督终端待恢复`;
+  }
 
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
   const visibleLogs = supervisor.log.filter((entry) => (
@@ -735,11 +738,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     }
   };
 
-  const resumePausedSession = () => {
+  const resumePausedSession = async () => {
     if (ordinaryPaused.length === 0) return;
     if (missingDedicatedSupervisor) {
-      openSupervisorSetup();
-      return;
+      if (!await restoreMissingSupervisorRuntimes()) return;
     }
 
     const pendingLaneIds = new Set(supervisor.pendingApprovals.map((item) => item.laneId));
@@ -817,18 +819,207 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'pause' });
   };
 
-  const resumeLane = (lane: SupervisorLane) => {
+  const restoreSupervisorRuntime = async (lane: SupervisorLane): Promise<boolean> => {
+    if (isProjectManagedSupervisorLane(lane) || runtimeRestoreInFlightLaneIds.has(lane.id)) return false;
+    const latestLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id);
+    if (!latestLane || supervisorLaneControlState(latestLane) === 'stopped') return false;
+    const existingSupervisorSurfaceId = dedicatedSupervisorSurfaceId(latestLane);
+    const currentLiveSurfaceIds = new Set(useStore.getState().workspaces.flatMap((workspace) => (
+      getAllPaneIds(workspace.splitTree).flatMap((candidatePaneId) => (
+        findLeaf(workspace.splitTree, candidatePaneId)?.surfaces.map((surface) => surface.id) || []
+      ))
+    )));
+    if (!ordinarySupervisorRuntimeNeedsRestore(latestLane, currentLiveSurfaceIds)) {
+      return !!existingSupervisorSurfaceId && focusSurface(existingSupervisorSurfaceId);
+    }
+
+    const taskLocation = locateSurface(latestLane.surfaceId);
+    if (!taskLocation) {
+      const detail = '绑定的任务终端已缺失，无法只恢复监督终端；请先恢复任务终端或使用恢复档案。';
+      appendSupervisorLog(latestLane.id, '监督终端恢复失败', detail);
+      setRuntimeRestoreNotices((current) => ({ ...current, [latestLane.id]: detail }));
+      return false;
+    }
+    const configuredLaunchCommand = latestLane.supervisorLaunchCmdOverride
+      || useStore.getState().supervisor.supervisorLaunchCmd;
+    if (!configuredLaunchCommand.trim()) {
+      const detail = '未配置监督 AI 启动命令，请先在监督配置中选择可用 Agent。';
+      appendSupervisorLog(latestLane.id, '监督终端恢复失败', detail);
+      setRuntimeRestoreNotices((current) => ({ ...current, [latestLane.id]: detail }));
+      return false;
+    }
+    const currentSession = useStore.getState().supervisor;
+    const launchCommand = buildSupervisorLaunchCommand(
+      configuredLaunchCommand,
+      latestLane.supervisorModelOverride ?? currentSession.supervisorModel,
+      latestLane.supervisorReasoningEffortOverride ?? currentSession.supervisorReasoningEffort,
+      { isolateSupervisor: true, projectDir: latestLane.projectDir, isolationKey: latestLane.id },
+    );
+    const binding = {
+      laneId: latestLane.id,
+      managementSessionId: latestLane.managementSessionId,
+      taskSurfaceId: latestLane.surfaceId,
+    };
+    runtimeRestoreInFlightLaneIds.add(latestLane.id);
+    setRuntimeRestoreLaneId(latestLane.id);
+    setRuntimeRestoreNotices((current) => ({ ...current, [latestLane.id]: '正在恢复监督终端…' }));
+    let newSupervisorSurfaceId: SurfaceId | null = null;
+    let restoredRuntimeReady = false;
+    try {
+      newSupervisorSurfaceId = addSurface(
+        taskLocation.workspace.id,
+        taskLocation.paneId,
+        'terminal',
+        {
+          customTitle: supervisorTabTitle(latestLane.label),
+          shell: 'pwsh.exe',
+          cwd: latestLane.projectDir,
+          startupCommands: [launchCommand],
+          transientSupervisor: true,
+          supervisorRuntimeIsolationKey: latestLane.id,
+        },
+      );
+      if (!newSupervisorSurfaceId) throw new Error('无法在任务终端所在窗格创建监督终端');
+      useStore.getState().updateLane(
+        latestLane.id,
+        ordinarySupervisorRuntimeRestorePatch(latestLane, newSupervisorSurfaceId),
+      );
+
+      const ready = await waitForTerminalRuntimeReady(newSupervisorSurfaceId);
+      const screen = readTerminalScreen(newSupervisorSurfaceId, 80).text || '';
+      const reboundLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === binding.laneId);
+      const bindingChanged = !reboundLane
+        || reboundLane.managementSessionId !== binding.managementSessionId
+        || reboundLane.surfaceId !== binding.taskSurfaceId
+        || reboundLane.supervisorSurfaceId !== newSupervisorSurfaceId
+        || supervisorLaneControlState(reboundLane) === 'stopped';
+      if (bindingChanged) {
+        const createdLocation = locateSurface(newSupervisorSurfaceId);
+        if (createdLocation) closeSurface(createdLocation.workspace.id, createdLocation.paneId, newSupervisorSurfaceId);
+        newSupervisorSurfaceId = null;
+        throw new Error('恢复期间监督通道绑定已变化，已取消旧恢复结果');
+      }
+      if (!ready.ok || !interactiveAgentInputReady(screen)) {
+        const detail = ready.error
+          || interactiveAgentShellPromptFailureDetail(screen)
+          || '新监督终端未进入可接收任务的 Agent 输入界面';
+        markTerminalRuntimeFailed(newSupervisorSurfaceId, detail);
+        const store = useStore.getState();
+        store.updateLane(reboundLane.id, {
+          supervisorProblem: { kind: 'runtime-failed', detail, detectedAt: Date.now() },
+        });
+        if (supervisorLaneControlState(reboundLane) === 'active') {
+          store.pauseSupervisorLane(reboundLane.id, detail);
+        }
+        store.appendSupervisorLog(reboundLane.id, '监督终端恢复失败', detail);
+        setRuntimeRestoreNotices((current) => ({ ...current, [reboundLane.id]: `恢复失败：${detail}` }));
+        return false;
+      }
+      restoredRuntimeReady = true;
+
+      const store = useStore.getState();
+      let restoredLane = store.supervisor.lanes.find((candidate) => candidate.id === reboundLane.id)!;
+      if (restoredLane.supervisorProblem?.kind === 'runtime-failed') {
+        store.updateLane(restoredLane.id, { supervisorProblem: undefined });
+        restoredLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === reboundLane.id)!;
+      }
+      const taskStates = (window as any).__wmux_getAgentStates?.() || {};
+      queueOrdinarySupervisorControlDelivery(
+        restoredLane.id,
+        [
+          '[监督终端恢复｜继续原监督通道]',
+          '本次只替换已关闭或失效的监督运行时；原管理会话、任务、裁决、待复核项和控制状态继续有效。',
+          buildSupervisorBriefing(useStore.getState().supervisor, {
+            lane: restoredLane,
+            state: String(taskStates[restoredLane.surfaceId]?.state || 'unknown'),
+          }),
+        ].join('\n'),
+      );
+      appendSupervisorRecord(useStore.getState().supervisor, restoredLane, 'supervisor.runtime-restored', {
+        previousSurfaceId: existingSupervisorSurfaceId,
+        supervisorSurfaceId: newSupervisorSurfaceId,
+        managementSessionId: restoredLane.managementSessionId,
+        controlState: supervisorLaneControlState(restoredLane),
+      });
+      store.appendSupervisorLog(
+        restoredLane.id,
+        '监督终端已恢复',
+        `已保留原监督通道和${supervisorLaneControlState(restoredLane) === 'active' ? '运行中' : '当前'}状态`,
+      );
+      if (existingSupervisorSurfaceId && existingSupervisorSurfaceId !== newSupervisorSurfaceId) {
+        const previousLocation = locateSurface(existingSupervisorSurfaceId);
+        if (previousLocation) {
+          closeSurface(previousLocation.workspace.id, previousLocation.paneId, existingSupervisorSurfaceId);
+        }
+      }
+      focusSurface(newSupervisorSurfaceId);
+      setRuntimeRestoreNotices((current) => ({
+        ...current,
+        [restoredLane.id]: '监督终端已恢复；原任务、裁决、待复核项和控制状态均已保留。',
+      }));
+      return true;
+    } catch (error) {
+      const detail = String((error as Error)?.message || error);
+      if (newSupervisorSurfaceId) {
+        const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === latestLane.id);
+        if (currentLane?.supervisorSurfaceId !== newSupervisorSurfaceId) {
+          const createdLocation = locateSurface(newSupervisorSurfaceId);
+          if (createdLocation) closeSurface(createdLocation.workspace.id, createdLocation.paneId, newSupervisorSurfaceId);
+        } else if (!restoredRuntimeReady) {
+          markTerminalRuntimeFailed(newSupervisorSurfaceId, detail);
+          useStore.getState().updateLane(currentLane.id, {
+            supervisorProblem: { kind: 'runtime-failed', detail, detectedAt: Date.now() },
+          });
+          if (supervisorLaneControlState(currentLane) === 'active') {
+            useStore.getState().pauseSupervisorLane(currentLane.id, detail);
+          }
+        }
+      }
+      appendSupervisorLog(
+        latestLane.id,
+        restoredRuntimeReady ? '监督终端恢复说明投递失败' : '监督终端恢复失败',
+        detail,
+      );
+      setRuntimeRestoreNotices((current) => ({
+        ...current,
+        [latestLane.id]: restoredRuntimeReady
+          ? `监督终端已恢复，但恢复说明投递失败：${detail}`
+          : `恢复失败：${detail}`,
+      }));
+      return false;
+    } finally {
+      runtimeRestoreInFlightLaneIds.delete(latestLane.id);
+      setRuntimeRestoreLaneId(null);
+    }
+  };
+
+  const restoreMissingSupervisorRuntimes = async (): Promise<boolean> => {
+    const targets = useStore.getState().supervisor.lanes.filter((candidate) => (
+      !isProjectManagedSupervisorLane(candidate)
+      && ordinarySupervisorRuntimeNeedsRestore(candidate, new Set(useStore.getState().workspaces.flatMap((workspace) => (
+        getAllPaneIds(workspace.splitTree).flatMap((candidatePaneId) => (
+          findLeaf(workspace.splitTree, candidatePaneId)?.surfaces.map((surface) => surface.id) || []
+        ))
+      ))))
+    ));
+    for (const target of targets) {
+      if (!await restoreSupervisorRuntime(target)) return false;
+    }
+    return targets.length > 0;
+  };
+
+  const resumeLane = async (lane: SupervisorLane) => {
     if (isProjectManagedSupervisorLane(lane)) return;
     const supervisorSurfaceId = dedicatedSupervisorSurfaceId(lane);
     if (!supervisorSurfaceId
       || !liveSurfaceIds.has(supervisorSurfaceId)
       || lane.supervisorProblem?.kind === 'runtime-failed') {
-      openSupervisorSetup();
-      return;
+      if (!await restoreSupervisorRuntime(lane)) return;
     }
-    const retriesWatchdog = lane.supervisorProblem?.kind === 'unreported-decision';
-    const clearsTaskStall = lane.supervisorProblem?.kind === 'task-stalled';
-    resumeSupervisorLane(lane.id, `用户继续 ${lane.label}；其他监督通道状态不变`);
+    const currentLane = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === lane.id) || lane;
+    const retriesWatchdog = currentLane.supervisorProblem?.kind === 'unreported-decision';
+    const clearsTaskStall = currentLane.supervisorProblem?.kind === 'task-stalled';
+    resumeSupervisorLane(currentLane.id, `用户继续 ${currentLane.label}；其他监督通道状态不变`);
     if (retriesWatchdog) {
       updateLane(lane.id, {
         reviewWatchdogState: 'retrying',
@@ -839,12 +1030,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
     } else if (clearsTaskStall) {
       updateLane(lane.id, { supervisorProblem: undefined });
     }
-    appendSupervisorRecord(supervisor, lane, 'supervisor.lane-control', { action: 'resume' });
-    if (supervisor.active && !supervisor.pendingApprovals.some((item) => item.laneId === lane.id)) {
+    appendSupervisorRecord(useStore.getState().supervisor, currentLane, 'supervisor.lane-control', { action: 'resume' });
+    if (useStore.getState().supervisor.active
+      && !useStore.getState().supervisor.pendingApprovals.some((item) => item.laneId === currentLane.id)) {
       queueOrdinarySupervisorControlDelivery(
-        lane.id,
+        currentLane.id,
         retriesWatchdog
-          ? buildUnacknowledgedSupervisorIdlePrompt(lane)
+          ? buildUnacknowledgedSupervisorIdlePrompt(currentLane)
           : clearsTaskStall
             ? '[通道继续] 用户已处理任务 AI 长回合异常。先 read-screen 核对原任务终端和工作树，只根据当前证据返工；不要重建任务终端或盲目重放旧命令。\n'
           : '[通道继续] 用户已恢复此监督通道。保持原任务和模型上下文，先 read-screen 获取最新证据，再继续监督。\n',
@@ -1473,9 +1665,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           {ordinaryRetained && (
             <button type="button" onClick={() => stopOrdinarySupervisor()}>停止普通监督</button>
           )}
-          {ordinaryPaused.length > 0 && (
-            <button type="button" className="sup-panel__btn-primary" onClick={resumePausedSession}>
-              {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
+          {missingDedicatedSupervisor && (
+            <button
+              type="button"
+              className="sup-panel__btn-primary"
+              onClick={() => void restoreMissingSupervisorRuntimes()}
+              disabled={runtimeRestoreLaneId !== null}
+            >
+              {runtimeRestoreLaneId ? '恢复中…' : `恢复缺失监督终端${missingOrdinarySupervisorLanes.length > 1 ? ` (${missingOrdinarySupervisorLanes.length})` : ''}`}
+            </button>
+          )}
+          {ordinaryPaused.length > 0 && !missingDedicatedSupervisor && (
+            <button type="button" className="sup-panel__btn-primary" onClick={() => void resumePausedSession()}>
+              继续监督
             </button>
           )}
           {!ordinaryRetained && ordinaryLanes.length > 0 && !missingDedicatedSupervisor && (
@@ -1520,7 +1722,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
           {ordinaryPaused.length > 0 && (
             <div className="sup-panel__paused-notice">
               {missingDedicatedSupervisor
-                ? '会话已暂停，但专属监督终端已缺失；请停止后重新配置。'
+                ? '专属监督终端已缺失；可按通道恢复终端，原任务、裁决、待复核项和暂停状态不会被清空。'
                 : '会话已暂停；任务上下文、监督终端和待决项均已保留。点击“继续监督”即可恢复。'}
             </div>
           )}
@@ -1665,6 +1867,13 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 latestBlocker: managedWorkItem?.latestBlocker,
                 supervisorAssignmentPending,
               });
+              const managedOutcome = managedCompletion?.summary
+                || lane.currentTask
+                || laneConfig.taskGoal
+                || '等待任务上报';
+              const managedOutcomeDetail = managedCompletion
+                ? `完成于 ${new Date(managedCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}`
+                : laneConfig.taskDescription || '成果合同已由项目 AI 下发';
               const laneStatusLabel = managedStatus?.supervisorLabel || (laneControlState === 'waiting'
                 ? '待续'
                 : lane.stopConfirmed
@@ -1859,29 +2068,19 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   )}
                   {laneProjectManaged && <>
                   <section className="sup-panel__managed-lane-overview" aria-label={`${lane.label} 的项目监督信息`}>
-                    <div className="sup-panel__managed-action-grid">
-                      <article>
+                    <div className="sup-panel__managed-compact-summary">
+                      <div className="sup-panel__managed-status-line">
+                        <span data-attention={managedStatus?.attention ? '1' : '0'}>任务 AI · {executionStatus.label}</span>
+                        <span>监督 · {planView.modeLabel}</span>
+                      </div>
+                      <div className="sup-panel__managed-summary-row" title={managedOutcome}>
                         <span>{managedCompletion ? '当前结果' : '当前成果'}</span>
-                        <strong>{managedCompletion?.summary || lane.currentTask || laneConfig.taskGoal || '等待任务上报'}</strong>
-                        <small>{managedCompletion
-                          ? `完成于 ${new Date(managedCompletion.completedAt).toLocaleString('zh-CN', { hour12: false })}`
-                          : laneConfig.taskDescription || '成果合同已由项目 AI 下发'}</small>
-                      </article>
-                      <article data-attention={managedStatus?.attention ? '1' : '0'}>
-                        <span>任务 AI 状态</span>
-                        <strong>{executionStatus.label}</strong>
-                        <small>{executionStatus.detail}</small>
-                      </article>
-                      <article>
-                        <span>监督正在做</span>
-                        <strong>{planView.route}</strong>
-                        <small>{planView.modeLabel}</small>
-                      </article>
-                      <article>
+                        <strong>{managedOutcome}</strong>
+                      </div>
+                      <div className="sup-panel__managed-summary-row" title={planView.nextInstruction}>
                         <span>下一步</span>
                         <strong>{planView.nextInstruction}</strong>
-                        <small>{managedStatus?.detail || '监督依据任务终端证据继续判断'}</small>
-                      </article>
+                      </div>
                     </div>
 
                     {(managedWorkItem?.latestBlocker || managedStatus?.attention) && (
@@ -1897,44 +2096,66 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       </div>
                     )}
 
-                    {(lane.decisions || []).length > 0 && (() => {
-                      const decision = lane.decisions![0];
-                      const decisionKindLabels: Record<string, string> = {
-                        'route-adjustment': '小范围路线调整',
-                        'route-change': '路线变更',
-                        important: '重要建议',
-                      };
-                      const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
-                      return <div className="sup-panel__managed-lane-decision">
-                        <header>
-                          <span>{managedStatus?.attention ? '最近历史裁决' : '最新裁决'}</span>
-                          <strong>{decision.outcome}{decisionKind ? ` · ${decisionKind}` : ''}</strong>
-                        </header>
-                        <p>{compactProjectAlertSummary(decision.reason
-                          || decision.taskDispatch?.outcome
-                          || decision.next
-                          || `依据当前终端证据完成 ${decision.outcome} 判定`)}</p>
-                      </div>;
-                    })()}
+                    <details className="sup-panel__managed-lane-details">
+                      <summary>查看成果、监督与合同详情</summary>
+                      <div className="sup-panel__managed-lane-details-body">
+                        <div className="sup-panel__managed-action-grid">
+                          <article>
+                            <span>成果说明</span>
+                            <strong>{managedOutcomeDetail}</strong>
+                          </article>
+                          <article data-attention={managedStatus?.attention ? '1' : '0'}>
+                            <span>任务 AI 状态</span>
+                            <strong>{executionStatus.label}</strong>
+                            <small>{executionStatus.detail}</small>
+                          </article>
+                          <article>
+                            <span>监督正在做</span>
+                            <strong>{planView.route}</strong>
+                            <small>{managedStatus?.detail || '监督依据任务终端证据继续判断'}</small>
+                          </article>
+                        </div>
 
-                    <details className="sup-panel__managed-lane-audit">
-                      <summary>查看合同、权限与运行标识</summary>
-                      <dl>
-                        <dt>项目 / 任务终端</dt><dd>{lane.workspaceTitle || '当前项目'} · {lane.surfaceId}</dd>
-                        <dt>成果目标</dt><dd>{laneConfig.taskGoal || '未配置'}</dd>
-                        <dt>工作方式</dt><dd>{laneTaskWorkModeLabel}</dd>
-                        <dt>完成后</dt><dd>{laneConfig.waitForNextDirection ? '待续，等待下一步方向' : '结束监督'}</dd>
-                        <dt>停止条件</dt><dd>{stopWhenKindLabel(laneConfig.stopWhenKind)} · {laneConfig.stopWhen || '未配置'}</dd>
-                        <dt>监督连接</dt><dd>{dedicatedSupervisorSurfaceId(lane) ? '已连接' : '未启动'}{lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}</dd>
-                        <dt>权限与范围</dt><dd>{laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length} · {WORK_SCOPE_LABELS[laneWorkScope]}{lanePolicyOverridden ? '（终端专用）' : '（普通会话默认）'}</dd>
-                        {managedCompletion && <>
-                          <dt>完成验证</dt><dd>{managedCompletion.validation.join('；') || '监督已确认停止条件'}</dd>
-                          <dt>完成证据</dt><dd>{managedCompletion.evidence || managedWorkItem?.latestEvidence || '结果摘要已记录'}</dd>
-                          {!!managedCompletion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(managedCompletion)}</dd></>}
-                        </>}
-                        {laneConfig.preconditions && <><dt>前置条件</dt><dd>{laneConfig.preconditions}</dd></>}
-                        {planFileName && <><dt>计划文件</dt><dd title={laneConfig.planFilePath}>{planFileName}</dd></>}
-                      </dl>
+                        {(lane.decisions || []).length > 0 && (() => {
+                          const decision = lane.decisions![0];
+                          const decisionKindLabels: Record<string, string> = {
+                            'route-adjustment': '小范围路线调整',
+                            'route-change': '路线变更',
+                            important: '重要建议',
+                          };
+                          const decisionKind = decision.proposalKind ? decisionKindLabels[decision.proposalKind] : '';
+                          return <div className="sup-panel__managed-lane-decision">
+                            <header>
+                              <span>{managedStatus?.attention ? '最近历史裁决' : '最新裁决'}</span>
+                              <strong>{decision.outcome}{decisionKind ? ` · ${decisionKind}` : ''}</strong>
+                            </header>
+                            <p>{compactProjectAlertSummary(decision.reason
+                              || decision.taskDispatch?.outcome
+                              || decision.next
+                              || `依据当前终端证据完成 ${decision.outcome} 判定`)}</p>
+                          </div>;
+                        })()}
+
+                        <details className="sup-panel__managed-lane-audit">
+                          <summary>查看合同、权限与运行标识</summary>
+                          <dl>
+                            <dt>项目 / 任务终端</dt><dd>{lane.workspaceTitle || '当前项目'} · {lane.surfaceId}</dd>
+                            <dt>成果目标</dt><dd>{laneConfig.taskGoal || '未配置'}</dd>
+                            <dt>工作方式</dt><dd>{laneTaskWorkModeLabel}</dd>
+                            <dt>完成后</dt><dd>{laneConfig.waitForNextDirection ? '待续，等待下一步方向' : '结束监督'}</dd>
+                            <dt>停止条件</dt><dd>{stopWhenKindLabel(laneConfig.stopWhenKind)} · {laneConfig.stopWhen || '未配置'}</dd>
+                            <dt>监督连接</dt><dd>{dedicatedSupervisorSurfaceId(lane) ? '已连接' : '未启动'}{lane.managementSessionId ? ` · 会话 ${lane.managementSessionId.slice(-8)}` : ''}</dd>
+                            <dt>权限与范围</dt><dd>{laneAutonomous ? '全自动' : '有限自主'} · 允许 {lanePermissions.length}/{SUPERVISOR_AUTONOMY_PERMISSION_VALUES.length} · 禁止 {laneForbiddenActions.length} · {WORK_SCOPE_LABELS[laneWorkScope]}{lanePolicyOverridden ? '（终端专用）' : '（普通会话默认）'}</dd>
+                            {managedCompletion && <>
+                              <dt>完成验证</dt><dd>{managedCompletion.validation.join('；') || '监督已确认停止条件'}</dd>
+                              <dt>完成证据</dt><dd>{managedCompletion.evidence || managedWorkItem?.latestEvidence || '结果摘要已记录'}</dd>
+                              {!!managedCompletion.criteria?.length && <><dt>逐项核验</dt><dd>{formatProjectCompletionCriteria(managedCompletion)}</dd></>}
+                            </>}
+                            {laneConfig.preconditions && <><dt>前置条件</dt><dd>{laneConfig.preconditions}</dd></>}
+                            {planFileName && <><dt>计划文件</dt><dd title={laneConfig.planFilePath}>{planFileName}</dd></>}
+                          </dl>
+                        </details>
+                      </div>
                     </details>
                   </section>
                   </>}
@@ -1964,13 +2185,23 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     </div>
                   )}
                   <div className="sup-panel__lane-actions">
+                    {!laneProjectManaged && ordinarySupervisorRuntimeNeedsRestore(lane, liveSurfaceIds) && laneControlState !== 'stopped' && (
+                      <button
+                        type="button"
+                        className="sup-panel__btn-primary"
+                        onClick={() => void restoreSupervisorRuntime(lane)}
+                        disabled={runtimeRestoreLaneId !== null}
+                      >
+                        {runtimeRestoreLaneId === lane.id ? '恢复中…' : '恢复此监督终端'}
+                      </button>
+                    )}
                     {!laneProjectManaged && laneControlState === 'active' && (
                       <button type="button" onClick={() => pauseLane(lane)} disabled={!supervisor.active}>
                         暂停此监督
                       </button>
                     )}
                     {!laneProjectManaged && laneControlState === 'paused' && (
-                      <button type="button" onClick={() => resumeLane(lane)} disabled={!supervisor.active}>
+                      <button type="button" onClick={() => void resumeLane(lane)} disabled={!supervisor.active || runtimeRestoreLaneId !== null}>
                         继续此监督
                       </button>
                     )}
@@ -2013,6 +2244,11 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                       {loadingRecordLaneId === lane.id ? '读取记录…' : '查看/刷新记录'}
                     </button>
                   </div>
+                  {runtimeRestoreNotices[lane.id] && (
+                    <div className="sup-panel__lane-supervisor" role="status">
+                      {runtimeRestoreNotices[lane.id]}
+                    </div>
+                  )}
                   {!laneProjectManaged && snapshotDeleteLaneId === lane.id && (
                     <div className="sup-panel__approval-actions" role="alertdialog" aria-label={`确认删除 ${lane.label} 的恢复档案`}>
                       <span>删除后不能再从该快照恢复，审计记录仍保留。</span>
@@ -2347,13 +2583,23 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                 停止普通监督
               </button>
             )}
-            {ordinaryPaused.length > 0 && (
+            {missingDedicatedSupervisor && (
               <button
                 type="button"
                 className="sup-panel__btn-primary"
-                onClick={resumePausedSession}
+                onClick={() => void restoreMissingSupervisorRuntimes()}
+                disabled={runtimeRestoreLaneId !== null}
               >
-                {missingDedicatedSupervisor ? '专属 AI 已缺失' : '继续监督'}
+                {runtimeRestoreLaneId ? '恢复中…' : `恢复缺失监督终端${missingOrdinarySupervisorLanes.length > 1 ? ` (${missingOrdinarySupervisorLanes.length})` : ''}`}
+              </button>
+            )}
+            {ordinaryPaused.length > 0 && !missingDedicatedSupervisor && (
+              <button
+                type="button"
+                className="sup-panel__btn-primary"
+                onClick={() => void resumePausedSession()}
+              >
+                继续监督
               </button>
             )}
             {!ordinaryRetained && ordinaryLanes.length > 0 && !missingDedicatedSupervisor && (
