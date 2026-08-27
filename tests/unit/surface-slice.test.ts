@@ -54,6 +54,27 @@ describe('surface-slice', () => {
     });
   });
 
+  describe('reopenClosedSurface', () => {
+    it('preserves ordinary supervision status ownership', () => {
+      const taskSurfaceId = currentLeaf().surfaces[0].id;
+      const statusId = useStore.getState().addSurface(workspaceId, paneId, 'supervisor', {
+        customTitle: '普通 AI 监督',
+        ordinarySupervisorLaneId: 'lane-a',
+        ordinarySupervisorTaskSurfaceId: taskSurfaceId,
+      })!;
+
+      useStore.getState().closeSurface(workspaceId, paneId, statusId);
+      const reopenedId = useStore.getState().reopenClosedSurface(workspaceId, paneId)!;
+
+      expect(currentLeaf().surfaces.find((surface) => surface.id === reopenedId)).toMatchObject({
+        type: 'supervisor',
+        customTitle: '普通 AI 监督',
+        ordinarySupervisorLaneId: 'lane-a',
+        ordinarySupervisorTaskSurfaceId: taskSurfaceId,
+      });
+    });
+  });
+
   describe('SSH surface teardown', () => {
     it('disconnects SFTP when the SSH terminal tab is closed', () => {
       const disconnect = vi.fn().mockResolvedValue({ ok: true });

@@ -1274,6 +1274,8 @@ export default function SupervisorSetupDialog() {
         const statusSurface = ensureOrdinarySupervisorStatusSurface(
           targetLocation.workspaceId,
           targetLocation.paneId,
+          lane.id,
+          lane.surfaceId,
         );
         if (statusSurface?.created) {
           createdSurfaces.push({ surfaceId: statusSurface.surfaceId, ...targetLocation });

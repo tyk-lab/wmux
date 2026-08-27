@@ -114,6 +114,10 @@ export interface SurfaceRef {
   supervisorRuntimeIsolationKey?: string;
   /** Project-owned supervisor UI/runtime. Kept separate from project task-terminal ownership. */
   projectSupervisorProjectId?: string;
+  /** Ordinary-supervision status page ownership; keeps task status separate from the global center. */
+  ordinarySupervisorLaneId?: string;
+  /** Task terminal paired with this ordinary-supervision status page. */
+  ordinarySupervisorTaskSurfaceId?: SurfaceId;
   /** Dedicated project-manager terminal; authorization is based on this marker rather than its title. */
   projectManagerTerminal?: boolean;
   /** Singleton user-records terminal created from the Feishu special-terminal entrypoint. */

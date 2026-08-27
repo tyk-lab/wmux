@@ -2537,12 +2537,18 @@ function startRemoteSupervisor(
     paneId: PaneId;
   }> = [];
   const lanes: SupervisorLane[] = candidates.map((candidate) => {
+    const laneId = `lane-${uuid()}`;
     const pairedWorkspace = projectManagedStart
       ? supervisorWorkspace
       : store.workspaces.find((workspace) => workspace.id === candidate.workspaceId);
     const pairedPaneId = projectManagedStart ? targetPaneId : candidate.paneId;
     if (!projectManagedStart && pairedWorkspace && pairedPaneId) {
-      const statusSurface = ensureOrdinarySupervisorStatusSurface(pairedWorkspace.id, pairedPaneId);
+      const statusSurface = ensureOrdinarySupervisorStatusSurface(
+        pairedWorkspace.id,
+        pairedPaneId,
+        laneId,
+        candidate.surfaceId,
+      );
       if (statusSurface?.created) {
         createdOrdinaryStatusSurfaces.push({
           surfaceId: statusSurface.surfaceId,
@@ -2577,7 +2583,7 @@ function startRemoteSupervisor(
     if (supervisorSurfaceId) markTerminalRuntimeStarting(supervisorSurfaceId);
     if (supervisorSurfaceId) managedRoleProtocolReady.delete(supervisorSurfaceId);
     const lane = clearSupervisorLaneContext({
-      id: `lane-${uuid()}`,
+      id: laneId,
       projectWorkItemId: params.projectWorkItemId,
       projectManagerProjectId: params.projectManagerProjectId,
       ...(projectManagedStart ? {

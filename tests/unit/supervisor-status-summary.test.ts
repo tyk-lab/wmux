@@ -419,7 +419,8 @@ describe('supervisor status summary', () => {
     expect(panelSource).toContain('<span>任务 AI 执行摘要</span>');
     expect(panelSource).toContain('className="sup-panel__session-config"');
     expect(panelSource).toContain('className="sup-panel__lane-config"');
-    expect(panelSource).toContain('const visibleChannelCount = scopedProjectId ? enabled.length : visibleBoundLanes.length;');
+    expect(panelSource).toContain('const visibleChannelCount = scopedProjectId');
+    expect(panelSource).toContain('Math.max(visibleBoundLanes.length, ordinaryStatusSurfaces.length)');
     expect(panelSource).toContain('{visibleChannelCount} 通道');
     expect(panelSource).toMatch(/\{!laneProjectManaged && \(\s*<>\s*<div className="sup-panel__lane-status-grid"/);
   });
@@ -449,7 +450,7 @@ describe('supervisor status summary', () => {
     expect(panelSource).not.toContain('监督通道执行路线');
     expect(panelSource).not.toContain('className="sup-panel__project-plan"');
     expect(panelSource).toContain('打开项目管理');
-    expect(panelSource).toContain('{!scopedProjectId && visibleLogs.length > 0 && (');
+    expect(panelSource).toContain('{!scopedProjectId && !ordinaryCenterMode && visibleLogs.length > 0 && (');
     expect(supervisorCssSource).toMatch(
       /\.sup-panel__managed-summary-row strong\s*\{[\s\S]*?-webkit-line-clamp:\s*2;/,
     );

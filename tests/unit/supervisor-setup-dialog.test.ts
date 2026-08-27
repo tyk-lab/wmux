@@ -342,8 +342,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toContain('isProjectManagedSupervisorLane(lane)');
     expect(panelSource).toContain('stopOrdinarySupervisor()');
     expect(panelSource).toContain('resetOrdinarySupervisorSession()');
-    expect(panelSource).toContain("surface.type === 'supervisor' && surface.projectSupervisorProjectId");
-    expect(panelSource).toContain("scopedProjectId ? '监督 AI' : 'AI 监督'");
+    expect(panelSource).toContain('const scopedProjectId = panelSurface?.projectSupervisorProjectId');
+    expect(panelSource).toContain("scopedOrdinaryLaneId ? '普通 AI 监督' : '监督 AI 中心'");
     expect(panelSource).toContain('const visiblePendingApprovals = scopedProjectId');
     expect(panelSource).toContain("entry.scope === 'ordinary'");
     expect(panelSource).toContain("entry.scope === 'project'");
@@ -490,6 +490,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(sidebarSource).toContain('openProjectManagerCreationDialog()');
     expect(sidebarSource).toContain('openSupervisorSetup()');
     expect(panelSource).not.toContain('>配置普通监督</button>');
+    expect(sidebarSource).toContain('sidebar__control-centers');
+    expect(sidebarSource.indexOf('<SupervisorPanel agentStates={agentStates} />'))
+      .toBeLessThan(sidebarSource.indexOf('<ProjectManagerPanel />'));
   });
 
   it('configures task-terminal work mode with one to three child threads', () => {
@@ -524,16 +527,62 @@ describe('supervisor setup dialog feedback', () => {
   });
 
   it('pairs each ordinary supervisor with its task terminal and exposes snapshot controls', () => {
+    const compactCenterSource = panelSource.slice(
+      panelSource.indexOf('if (!expanded) {'),
+      panelSource.indexOf('{centerOpen && createPortal'),
+    );
     expect(dialogSource).toContain('const targetLocation = terminalLocations.get(lane.surfaceId)');
     expect(dialogSource).toContain("addSurface(targetLocation.workspaceId, targetLocation.paneId, 'terminal'");
     expect(panelSource).toContain('保存恢复档案');
-    expect(panelSource).toContain('保存监督进度');
-    expect(panelSource).toContain('刷新监督进度');
     expect(panelSource).toContain('openOrdinarySupervisorStatusForTask');
-    expect(panelSource).toContain('ensureOrdinarySupervisorStatusSurface');
     expect(dialogSource).toContain('ensureOrdinarySupervisorStatusSurface');
-    expect(panelSource).toContain('监督状态');
-    expect(panelSource).toContain('任务终端');
+    expect(pipeBridgeSource).toContain('ensureOrdinarySupervisorStatusSurface');
+    expect(panelSource).toContain('监督 AI 中心');
+    expect(panelSource).toContain('打开监督状态');
+    expect(panelSource).toContain('shouldShowOrdinarySupervisorCenter');
+    expect(panelSource).toContain('软件重启后普通监督 AI 运行时不会自动重放');
+    expect(panelSource).toContain('恢复或重新配置监督');
+    expect(panelSource).toContain('selectedCenterLaneId');
+    expect(panelSource).toContain('expandedCenterLaneIds');
+    expect(panelSource).toContain('newlyAddedLaneIds');
+    expect(panelSource).toContain('supervisor.lanes.filter((lane) => !isProjectManagedSupervisorLane(lane)).map((lane) => lane.id)');
+    expect(panelSource).toContain('centerSelectedLaneId?: string | null');
+    expect(panelSource).toContain('onCenterLaneSelect?: (laneId: string) => void');
+    expect(panelSource).toContain('centerSelectedLaneId={selectedCenterLane?.id || null}');
+    expect(panelSource).toContain('onCenterLaneSelect={selectCenterLane}');
+    expect(panelSource).toContain('selectCenterLane(lane.id)');
+    expect(panelSource).toContain('selectedCenterVisualState');
+    expect(panelSource).toContain('ordinaryCenterVisualState');
+    expect(panelSource).toContain('selectedCenterNeedsHuman');
+    expect(panelSource).toContain("? '需人工处理'");
+    expect(panelSource).toContain('data-center-state={selectedCenterVisualState}');
+    expect(panelSource).toContain('data-visual-state={centerLaneVisualState}');
+    expect(panelSource).toContain("data-attention={centerLaneVisualState === 'error' ? '1' : '0'}");
+    expect(panelSource).toContain("data-needs-human={laneNeedsHuman ? '1' : '0'}");
+    expect(panelSource).not.toContain('className="sup-panel__center-current"');
+    expect(panelSource).toContain('if (ordinaryCenterMode && !laneProjectManaged)');
+    expect(panelSource).toContain('aria-pressed={centerLaneSelected}');
+    expect(panelSource).toContain("ordinaryCenterMode ? null : <div className=\"sup-panel__actions\"");
+    expect(panelSource).not.toContain('<button type="button" onClick={pauseActiveSession}>全部暂停</button>');
+    expect(panelSource).not.toContain('onClick={() => void resumePausedSession()}');
+    expect(supervisorCssSource).not.toContain('.sup-panel__center-current');
+    expect(supervisorCssSource).toContain(".sup-panel__center-lane[data-selected='1']");
+    expect(supervisorCssSource).toContain(".sup-panel--compact[data-center-state='error']");
+    expect(supervisorCssSource).toContain(".sup-panel--compact[data-center-state='human']");
+    expect(supervisorCssSource).toContain(".sup-panel__center-lane[data-visual-state='active']");
+    expect(supervisorCssSource).toContain(".sup-panel__center-lane[data-visual-state='waiting']");
+    expect(supervisorCssSource).toContain(".sup-panel__center-lane[data-visual-state='human']");
+    expect(supervisorCssSource).toContain(".sup-panel__center-lane[data-visual-state='error']");
+    expect(compactCenterSource.match(/打开任务终端/g)).toHaveLength(1);
+    expect(compactCenterSource.match(/打开监督状态/g)).toHaveLength(1);
+    expect(compactCenterSource.match(/打开监督终端/g)).toHaveLength(1);
+    expect(compactCenterSource).not.toContain('暂停此监督');
+    expect(compactCenterSource).not.toContain('继续此监督');
+    expect(compactCenterSource).not.toContain('停止此监督');
+    expect(panelSource).toContain('打开任务终端');
+    expect(panelSource).toContain('打开监督终端');
+    expect(panelSource).not.toContain('恢复缺失监督终端');
+    expect(panelSource).not.toContain('恢复此监督终端');
     expect(surfaceTabBarSource).toContain("? '监督中'");
     expect(surfaceTabBarSource).toContain("? '监督暂停'");
     expect(surfaceTabBarSource).toContain("'监督待续'");
@@ -565,7 +614,8 @@ describe('supervisor setup dialog feedback', () => {
 
   it('collapses lanes that have reached their stop condition and lets users expand them', () => {
     expect(panelSource).toContain('const laneDetailsCollapsed = lane.stopConfirmed && !stoppedLaneExpanded;');
-    expect(panelSource).toContain('const laneStatusLabel = managedStatus?.supervisorLabel || (laneControlState');
+    expect(panelSource).toContain('const laneStatusLabel = managedStatus?.supervisorLabel || (laneNeedsHuman');
+    expect(panelSource).toContain("? '需人工处理'");
     expect(panelSource).toMatch(/laneControlState === 'waiting'[\s\S]+lane\.stopConfirmed[\s\S]+\? '已达停止条件'/);
     expect(panelSource).toContain('aria-expanded={stoppedLaneExpanded}');
     expect(panelSource).toContain("title={stoppedLaneExpanded ? '折叠监督详情' : '展开监督详情'}");

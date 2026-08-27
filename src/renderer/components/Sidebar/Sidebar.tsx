@@ -286,17 +286,19 @@ export default function Sidebar({
         )}
       </div>
 
-      <ErrorBoundary label="orchestration" silent>
-        <OrchestrationPanel />
-      </ErrorBoundary>
+      <div className="sidebar__control-centers">
+        <ErrorBoundary label="orchestration" silent>
+          <OrchestrationPanel />
+        </ErrorBoundary>
 
-      <ErrorBoundary label="project-manager" silent>
-        <ProjectManagerPanel />
-      </ErrorBoundary>
+        <ErrorBoundary label="supervisor" silent>
+          <SupervisorPanel agentStates={agentStates} />
+        </ErrorBoundary>
 
-      <ErrorBoundary label="supervisor" silent>
-        <SupervisorPanel agentStates={agentStates} />
-      </ErrorBoundary>
+        <ErrorBoundary label="project-manager" silent>
+          <ProjectManagerPanel />
+        </ErrorBoundary>
+      </div>
 
       <div className="sidebar__list" onDragLeave={handleListDragLeave}>
         {workspaces.map((ws) => (

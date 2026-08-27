@@ -74,6 +74,14 @@
   border-color: rgba(var(--ui-overlay-rgb), 0.15);
 }
 
+.sidebar__control-centers {
+  flex-shrink: 0;
+  max-height: min(52%, 560px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+
 .sidebar__ai-menu {
   position: absolute;
   z-index: 30;

@@ -321,7 +321,7 @@ export default function PaneWrapper({
           )}
           {surface.type === 'diff' && <DiffPane surfaceId={surface.id} cwd={workspace?.cwd} />}
           {surface.type === 'supervisor' && (
-            <SupervisorSessionPane workspaceId={workspaceId} paneId={paneId} />
+            <SupervisorSessionPane workspaceId={workspaceId} paneId={paneId} surfaceId={surface.id} />
           )}
           {surface.type === 'project-manager' && surface.projectManagerProjectId && (
             <ProjectManagerSessionPane projectId={surface.projectManagerProjectId} />

@@ -2621,6 +2621,39 @@
   overflow: visible;
 }
 
+.sup-panel--compact[data-center-state='stopped'] {
+  border-color: rgba(var(--ui-overlay-rgb), 0.14);
+  background: rgba(var(--ui-overlay-rgb), 0.025);
+}
+
+.sup-panel--compact[data-center-state='error'] {
+  border-color: rgba(248, 113, 113, 0.58);
+  background: rgba(127, 29, 29, 0.12);
+}
+
+.sup-panel--compact[data-center-state='error'] .sup-panel__dot {
+  background: #f87171;
+  box-shadow: 0 0 7px rgba(248, 113, 113, 0.62);
+}
+
+.sup-panel--compact[data-center-state='error'] .sup-panel__status {
+  color: #fca5a5;
+}
+
+.sup-panel--compact[data-center-state='human'] {
+  border-color: rgba(167, 139, 250, 0.58);
+  background: rgba(109, 40, 217, 0.1);
+}
+
+.sup-panel--compact[data-center-state='human'] .sup-panel__dot {
+  background: #a78bfa;
+  box-shadow: 0 0 7px rgba(167, 139, 250, 0.62);
+}
+
+.sup-panel--compact[data-center-state='human'] .sup-panel__status {
+  color: #c4b5fd;
+}
+
 .sup-panel--empty {
   max-width: 640px;
 }
@@ -2688,6 +2721,155 @@
 .project-manager-panel__alert:hover {
   border-color: rgba(248, 113, 113, 0.64);
   background: rgba(127, 29, 29, 0.3);
+}
+
+.supervisor-center-dialog__overlay {
+  z-index: 1200;
+  padding: 24px;
+}
+
+.supervisor-center-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, calc(100vw - 48px));
+  height: min(820px, calc(100vh - 48px));
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(var(--ui-overlay-rgb), 0.18);
+  border-radius: 10px;
+  background: var(--color-bg, #181818);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+.supervisor-center-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(var(--ui-overlay-rgb), 0.12);
+}
+
+.supervisor-center-dialog__header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.supervisor-center-dialog__header strong {
+  font-size: 16px;
+}
+
+.supervisor-center-dialog__header span {
+  color: rgba(var(--ui-overlay-rgb), 0.62);
+  font-size: 12px;
+}
+
+.supervisor-center-dialog__header button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.supervisor-center-dialog__header button:hover {
+  background: rgba(var(--ui-overlay-rgb), 0.08);
+}
+
+.supervisor-center-dialog__body {
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+}
+
+.supervisor-center-dialog__body > .sup-panel {
+  max-width: none;
+  margin: 0;
+}
+
+.sup-panel__center-lane {
+  overflow: hidden;
+  border: 1px solid rgba(var(--ui-overlay-rgb), 0.1);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.13);
+}
+
+.sup-panel__center-lane[data-visual-state='active'] {
+  border-color: rgba(80, 200, 140, 0.58);
+  background: rgba(80, 200, 140, 0.09);
+}
+
+.sup-panel__center-lane[data-visual-state='waiting'],
+.sup-panel__center-lane[data-visual-state='paused'] {
+  border-color: rgba(217, 164, 65, 0.62);
+  background: rgba(217, 164, 65, 0.1);
+}
+
+.sup-panel__center-lane[data-visual-state='stopped'] {
+  border-color: rgba(var(--ui-overlay-rgb), 0.2);
+  background: rgba(var(--ui-overlay-rgb), 0.04);
+}
+
+.sup-panel__center-lane[data-visual-state='human'] {
+  border-color: rgba(167, 139, 250, 0.68);
+  background: rgba(109, 40, 217, 0.12);
+}
+
+.sup-panel__center-lane[data-visual-state='error'] {
+  border-color: rgba(248, 113, 113, 0.68);
+  background: rgba(127, 29, 29, 0.14);
+}
+
+.sup-panel__center-lane[data-selected='1'] {
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.72);
+}
+
+.sup-panel__center-lane-select {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.sup-panel__center-lane-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
+  border-top: 1px solid rgba(var(--ui-overlay-rgb), 0.08);
+}
+
+.sup-panel__center-lane-info {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding-top: 9px;
+}
+
+.sup-panel__center-lane-info > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.sup-panel__center-lane-info span {
+  color: rgba(var(--ui-overlay-rgb), 0.58);
+  font-size: 10px;
+}
+
+.sup-panel__center-lane-info strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-manager-panel__alert[data-kind='completion'] {
@@ -2899,6 +3081,25 @@
   gap: 4px 10px;
   color: var(--ui-text-muted);
   font-size: 9px;
+}
+
+.sup-panel__header--static {
+  cursor: default;
+}
+
+.sup-panel__restored-statuses {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 164, 65, 0.3);
+  border-radius: 7px;
+  background: rgba(217, 164, 65, 0.06);
+}
+
+.sup-panel__restored-statuses > span {
+  color: rgba(var(--ui-overlay-rgb), 0.66);
+  font-size: 11px;
 }
 
 .project-manager-panel__message {
@@ -3265,6 +3466,11 @@
 .sup-panel__lane-status-pill[data-state='waiting'] {
   background: rgba(226, 170, 79, 0.13);
   color: #f2c977;
+}
+
+.sup-panel__lane-status-pill[data-state='needs-human'] {
+  background: rgba(167, 139, 250, 0.15);
+  color: #c4b5fd;
 }
 
 .sup-panel__lane-status-pill[data-state='stopped'] {

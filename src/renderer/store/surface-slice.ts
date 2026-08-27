@@ -27,6 +27,8 @@ export interface SurfaceSlice {
       transientSupervisor?: boolean;
       supervisorRuntimeIsolationKey?: string;
       projectSupervisorProjectId?: string;
+      ordinarySupervisorLaneId?: string;
+      ordinarySupervisorTaskSurfaceId?: SurfaceId;
       projectManagerTerminal?: boolean;
       userRecordsTerminal?: boolean;
       projectManagerProjectId?: string;
@@ -189,6 +191,8 @@ interface ClosedSurface {
   startupCommands?: string[];
   startupInput?: string;
   transientSupervisor?: boolean;
+  ordinarySupervisorLaneId?: string;
+  ordinarySupervisorTaskSurfaceId?: SurfaceId;
   projectManagerTerminal?: boolean;
   projectManagerProjectId?: string;
   projectAuxiliaryTask?: boolean;
@@ -245,6 +249,8 @@ function pushClosedSurface(surface: SurfaceRef): void {
     startupCommands: surface.startupCommands,
     startupInput: surface.startupInput,
     transientSupervisor: surface.transientSupervisor,
+    ordinarySupervisorLaneId: surface.ordinarySupervisorLaneId,
+    ordinarySupervisorTaskSurfaceId: surface.ordinarySupervisorTaskSurfaceId,
     projectManagerTerminal: surface.projectManagerTerminal,
     projectManagerProjectId: surface.projectManagerProjectId,
     projectAuxiliaryTask: surface.projectAuxiliaryTask,
@@ -282,6 +288,8 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(options?.transientSupervisor ? { transientSupervisor: true } : {}),
       ...(options?.supervisorRuntimeIsolationKey ? { supervisorRuntimeIsolationKey: options.supervisorRuntimeIsolationKey } : {}),
       ...(options?.projectSupervisorProjectId ? { projectSupervisorProjectId: options.projectSupervisorProjectId } : {}),
+      ...(options?.ordinarySupervisorLaneId ? { ordinarySupervisorLaneId: options.ordinarySupervisorLaneId } : {}),
+      ...(options?.ordinarySupervisorTaskSurfaceId ? { ordinarySupervisorTaskSurfaceId: options.ordinarySupervisorTaskSurfaceId } : {}),
       ...(options?.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(options?.userRecordsTerminal ? { userRecordsTerminal: true } : {}),
       ...(options?.projectManagerProjectId ? { projectManagerProjectId: options.projectManagerProjectId } : {}),
@@ -574,6 +582,8 @@ export const createSurfaceSlice: StateCreator<SliceState, [], [], SurfaceSlice> 
       ...(restored.startupCommands ? { startupCommands: restored.startupCommands } : {}),
       ...(restored.startupInput ? { startupInput: restored.startupInput } : {}),
       ...(restored.transientSupervisor ? { transientSupervisor: true } : {}),
+      ...(restored.ordinarySupervisorLaneId ? { ordinarySupervisorLaneId: restored.ordinarySupervisorLaneId } : {}),
+      ...(restored.ordinarySupervisorTaskSurfaceId ? { ordinarySupervisorTaskSurfaceId: restored.ordinarySupervisorTaskSurfaceId } : {}),
       ...(restored.projectManagerTerminal ? { projectManagerTerminal: true } : {}),
       ...(restored.projectManagerProjectId ? { projectManagerProjectId: restored.projectManagerProjectId } : {}),
       ...(restored.projectAuxiliaryTask ? { projectAuxiliaryTask: true } : {}),
