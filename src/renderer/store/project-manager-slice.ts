@@ -1030,7 +1030,6 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = {
         ...session,
         status: 'active',
-        repositoryBootstrapPending: true,
         goals: (session.goals || []).map((goal) => goal.id === activeGoal.id && goal.status === 'transitioning'
           ? { ...goal, status: 'active' as const, activatedAt: now }
           : goal),

@@ -218,7 +218,7 @@ function notifyProjectManagerRuntimeFailure(
         projectTaskRotationSummary: undefined,
         projectTaskRotationRequestedAt: undefined,
       });
-      if (lane.projectWorkItemId) {
+      if (lane.projectWorkItemId && lane.projectRuntimeHandover?.state !== 'candidate') {
         state.applyProjectManagerAction({
           type: 'update-work-item',
           workItemId: lane.projectWorkItemId,

@@ -219,6 +219,15 @@ export interface SupervisorLaneConfig {
 
 export interface SupervisorLane {
   id: string;
+  /** Monotonic runtime generation; only a committed generation may dispatch decisions. */
+  projectRuntimeGeneration?: number;
+  /** Temporary two-phase replacement candidate. The replaced lane remains authoritative until commit. */
+  projectRuntimeHandover?: {
+    state: 'candidate';
+    replacesLaneId: string;
+    previousSupervisorSurfaceId?: SurfaceId;
+    startedAt: number;
+  };
   /** Stable identity for this terminal's management/audit conversation. */
   managementSessionId?: string;
   /** Project-management work item that owns this lane, when centrally orchestrated. */

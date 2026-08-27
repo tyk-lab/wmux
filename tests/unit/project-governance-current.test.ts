@@ -6,6 +6,8 @@ import {
 import {
   buildProjectSupervisorBriefing,
   projectRepositoryBootstrapRequired,
+  projectWorkItemHistoricallyDelivered,
+  renderProjectRepositoryBootstrapTask,
   renderProjectTaskBatch,
 } from '../../src/renderer/project-manager/engine';
 import { evaluateProjectExecutionGuard } from '../../src/renderer/project-manager/anti-loop';
@@ -106,7 +108,11 @@ describe('current project governance', () => {
     });
     const laterBriefing = renderProjectTaskBatch(contract, batch);
 
-    expect(initialOrRestoredBriefing).toContain('[仓库基础治理｜仅新建或恢复后的首个任务包]');
+    const independentBootstrap = renderProjectRepositoryBootstrapTask();
+
+    expect(initialOrRestoredBriefing).toContain('[仓库基础治理｜仅新建或恢复后执行一次]');
+    expect(independentBootstrap).toContain('这是独立的仓库前置任务');
+    expect(independentBootstrap).toContain('不继续或重复任何历史业务任务');
     expect(initialOrRestoredBriefing).toContain('先检查项目根目录是否已有 AGENTS.md');
     expect(initialOrRestoredBriefing).toContain('若已存在，保持原文件不变');
     expect(initialOrRestoredBriefing).toContain('若不存在，基于仓库内可验证事实创建精简的基础 AGENTS.md');
@@ -118,7 +124,28 @@ describe('current project governance', () => {
     expect(initialOrRestoredBriefing).toContain('不修改 Git 全局配置或全局忽略文件');
     expect(initialOrRestoredBriefing).toContain('不忽略已跟踪源码、正式配置、示例配置、AGENTS.md 或项目证据');
     expect(initialOrRestoredBriefing).toContain('项目后续出现新的稳定边界时再按需细化');
+    expect(independentBootstrap).toContain('完成后如实报告 AGENTS.md、Git 仓库和忽略规则');
     expect(laterBriefing).not.toContain('[仓库基础治理');
+  });
+
+  it('recognizes a delivered work item after runtime recovery clears startedAt', () => {
+    expect(projectWorkItemHistoricallyDelivered({ startedAt: 1, executionHistory: [] })).toBe(true);
+    expect(projectWorkItemHistoricallyDelivered({
+      startedAt: undefined,
+      executionHistory: [{
+        ts: 1,
+        actionSignature: 'action', commandSignature: 'command', errorSignature: '',
+        progressSignature: 'progress', workspaceVersion: 'workspace', consumedDecision: true,
+      }],
+    })).toBe(true);
+    expect(projectWorkItemHistoricallyDelivered({
+      startedAt: undefined,
+      executionHistory: [{
+        ts: 1,
+        actionSignature: 'action', commandSignature: 'command', errorSignature: '',
+        progressSignature: 'progress', workspaceVersion: 'workspace', consumedDecision: false,
+      }],
+    })).toBe(false);
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {
