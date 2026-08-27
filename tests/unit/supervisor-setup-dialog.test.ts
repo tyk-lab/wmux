@@ -140,6 +140,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('确认生效');
     expect(projectManagerDialogSource).toContain('Agent 配置');
     expect(projectManagerDialogSource).toContain('重新配置并恢复');
+    expect(projectManagerDialogSource).toContain('安全重置运行链');
+    expect(projectManagerDialogSource).toContain("action: 'emergency-reset'");
+    expect(projectManagerDialogSource).toContain('项目目录、代码、完成证据和历史记录都会保留');
+    expect(projectManagerDialogSource.lastIndexOf('useEffect('))
+      .toBeLessThan(projectManagerDialogSource.indexOf('if (!open) return null'));
     expect(projectManagerDialogSource).toContain('同时保存为以后新建项目的默认配置');
     expect(projectManagerDialogSource).toContain("action: 'configure-agents'");
     expect(projectManagerDialogSource).toContain('disabled={busy || !projectDefinitionChanged}');
@@ -224,7 +229,15 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('pendingUserQuestion');
     expect(projectManagerDialogSource).toContain('项目阻塞，需要你指示');
     expect(projectManagerDialogSource).toContain('项目验证受限，需要你选择');
-    expect(projectManagerDialogSource).toContain('项目管理 AI 邀请你对齐需求');
+    expect(projectManagerDialogSource).toContain('项目 AI 需要你确认');
+    expect(projectManagerDialogSource).toContain('确认项目方向后继续推进');
+    expect(projectManagerDialogSource).toContain('查看当前项目定义与背景');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__clarification-impact');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__clarification-advanced');
+    expect(projectManagerDialogSource).toContain('确认当前定义并继续');
+    expect(projectManagerDialogSource).toContain('提交调整并重新确认');
+    expect(projectManagerDialogSource).toContain('clarificationSupplementRef');
+    expect(projectManagerDialogSource).toContain('clarificationSupplementRef.current.open = true');
     expect(projectManagerDialogSource).toContain("action: 'answer-question'");
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'start', behavior: 'smooth' })");
     expect(projectManagerDialogSource).toContain('当前项目：{session.goal}。');
@@ -235,6 +248,9 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain("action: 'intervene-work-item'");
     expect(projectManagerDialogSource).toContain('暂缓当前验证');
     expect(projectManagerDialogSource).toContain('跳过当前验证并后续补验');
+    expect(projectManagerDialogSource).toContain('处理验证');
+    expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-intervention-trigger');
+    expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'nearest' })");
     expect(projectManagerDialogSource).toContain('不跳过或完成所属阶段');
     expect(projectManagerDialogSource).toContain('跳过整个工作项');
     expect(projectManagerDialogSource).toContain('关闭整个工作项');
@@ -483,6 +499,10 @@ describe('supervisor setup dialog feedback', () => {
 
   it('allows each active project work item to collapse independently', () => {
     expect(projectManagerDialogSource).toContain('collapsedWorkItemIds');
+    expect(projectManagerDialogSource).toContain('initialCollapsedWorkItemIds');
+    expect(projectManagerDialogSource).toContain('knownCollapsibleWorkItemIdsRef');
+    expect(projectManagerDialogSource).toContain('newlyAddedIds');
+    expect(projectManagerDialogSource).toContain('if (scopeChanged) return currentIds');
     expect(projectManagerDialogSource).toContain('data-collapsed={itemCollapsed');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__action-card-toggle');
     expect(projectManagerDialogSource).toContain('aria-expanded={!itemCollapsed}');

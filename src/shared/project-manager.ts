@@ -100,8 +100,11 @@ export type ProjectManagerEventKind =
   | 'user-clarification-restored'
   | 'user-clarification-answered'
   | 'user-clarification-invalidated'
+  | 'user-choice-transition-started'
+  | 'user-choice-transition-completed'
   | 'requirements-alignment-required'
   | 'requirements-alignment-confirmed'
+  | 'acceptance-policy-updated'
   | 'project-definition-updated'
   | 'project-subgoals-updated'
   | 'project-goal-completed'
@@ -110,6 +113,7 @@ export type ProjectManagerEventKind =
   | 'supervisor-decision'
   | 'guard-triggered'
   | 'project-execution-stalled'
+  | 'project-runtime-reset'
   | 'project-paused'
   | 'project-resumed'
   | 'project-safe-exit-requested'
@@ -151,7 +155,7 @@ export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
 ] as const;
 
 export type ProjectManagerManualInterventionReasonCode =
-  typeof PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES[number];
+  typeof PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES[number] | 'recovery-fallback';
 
 export interface ProjectManagerUserQuestion {
   id: string;
@@ -1328,6 +1332,7 @@ export function projectManagerResolvedAttentionKinds(
     resolvedKinds.add('guard-triggered');
     resolvedKinds.add('project-execution-stalled');
     resolvedKinds.add('project-goal-completed');
+    resolvedKinds.add('project-runtime-reset');
   } else if (event.kind === 'project-goal-completion-invalidated') {
     resolvedKinds.add('project-goal-completed');
   } else if (event.kind === 'manager-runtime-restarted') {
@@ -2230,6 +2235,12 @@ export type ProjectManagerAction =
     userConfirmationEventId?: string;
   }
   | {
+    type: 'update-project-acceptance-policy';
+    userAcceptancePolicy: ProjectUserAcceptancePolicy;
+    verificationPolicies: ProjectCriterionVerificationPolicy[];
+    reason?: string;
+  }
+  | {
     type: 'update-project-definition';
     goal: string;
     preconditions: string[];
@@ -2289,6 +2300,7 @@ export type ProjectManagerAction =
     /** Project-AI pauses caused by a material blocker must be surfaced to the user. */
     attentionRequired?: boolean;
   }
+  | { type: 'reset-project-runtime'; reason: string }
   | {
     type: 'resume-project';
     reason: string;

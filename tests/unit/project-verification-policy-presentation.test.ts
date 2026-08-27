@@ -26,7 +26,8 @@ describe('project verification policy presentation', () => {
     expect(dialogSource).toContain('用户为该完成条件单独切换验证要求');
     expect(dialogSource).toContain('保护性条件（始终必验）');
     expect(dialogSource).toContain('普通成果（可调整验证）');
-    expect(dialogSource).toContain('运行中切换会生成新的需求版本');
+    expect(dialogSource).toContain('仅调整同一完成条件的验收/验证策略会立即生效');
+    expect(dialogSource).toContain('其他运行中变更仍会生成新的需求版本');
     expect(dialogSource).toContain('历史验证结果和已知失败不会被改写');
   });
 

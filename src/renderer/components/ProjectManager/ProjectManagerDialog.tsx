@@ -140,6 +140,7 @@ const PROJECT_AGENT_ROLE_LABELS = {
 const PROJECT_ALERT_LABELS: Record<string, string> = {
   'manager-runtime-failed': '项目管理 AI 运行时故障',
   'project-execution-stalled': '项目执行链异常',
+  'project-runtime-reset': '项目运行链已安全重置',
   'supervisor-runtime-failed': '项目专属监督故障',
   'task-runtime-failed': '任务终端 AI 故障',
   'project-agent-limit-detected': '项目 Agent 额度或速率受限',
@@ -534,18 +535,32 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
   const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
   const [workItemInterventionNotice, setWorkItemInterventionNotice] = useState('');
-  const [collapsedWorkItemIds, setCollapsedWorkItemIds] = useState<Set<string>>(() => new Set());
+  const initialCollapsedWorkItemIds = (session?.workItems || []).filter((item) => (
+    (!session?.activeGoalId || !item.goalId || item.goalId === session.activeGoalId)
+    && !['completed', 'stopped'].includes(item.status)
+  )).map((item) => item.id);
+  const [collapsedWorkItemIds, setCollapsedWorkItemIds] = useState<Set<string>>(
+    () => new Set(initialCollapsedWorkItemIds),
+  );
+  const collapsedWorkItemScopeRef = useRef(`${session?.id || ''}:${session?.activeGoalId || ''}`);
+  const knownCollapsibleWorkItemIdsRef = useRef(new Set(initialCollapsedWorkItemIds));
   const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('execution');
   const goalRef = useRef<HTMLTextAreaElement | null>(null);
   const creationFormRef = useRef<HTMLElement | null>(null);
   const recoveryDeleteCancelRef = useRef<HTMLButtonElement | null>(null);
   const clarificationRef = useRef<HTMLElement | null>(null);
+  const clarificationSupplementRef = useRef<HTMLDetailsElement | null>(null);
   const conversationRef = useRef<HTMLDivElement | null>(null);
+  const workItemInterventionRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!workItemInterventionId) return;
+    workItemInterventionRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [workItemInterventionId]);
   const conversation = useMemo(() => session?.events.filter((event) => (
     event.kind === 'user-message' || event.kind === 'manager-reply'
   )).slice(-50) || [], [session?.events]);
   const definitionUpdates = useMemo(() => session?.events.filter((event) => (
-    event.kind === 'project-definition-updated'
+    event.kind === 'project-definition-updated' || event.kind === 'acceptance-policy-updated'
   )).slice(-20).reverse() || [], [session?.events]);
   const currentGoal = useMemo(() => session ? activeProjectGoal(session) : null, [session]);
   const currentWorkItems = useMemo(() => session?.workItems.filter((item) => (
@@ -556,6 +571,24 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       ? []
       : currentWorkItems.filter((item) => !['completed', 'stopped'].includes(item.status))
   ), [currentWorkItems, session]);
+  const workItemCollapseScope = `${session?.id || ''}:${session?.activeGoalId || ''}`;
+  useEffect(() => {
+    const currentIds = new Set(intervenableWorkItems.map((item) => item.id));
+    const scopeChanged = collapsedWorkItemScopeRef.current !== workItemCollapseScope;
+    const newlyAddedIds = [...currentIds].filter((itemId) => (
+      !knownCollapsibleWorkItemIdsRef.current.has(itemId)
+    ));
+    collapsedWorkItemScopeRef.current = workItemCollapseScope;
+    knownCollapsibleWorkItemIdsRef.current = currentIds;
+    setCollapsedWorkItemIds((current) => {
+      if (scopeChanged) return currentIds;
+      const next = new Set([...current].filter((itemId) => currentIds.has(itemId)));
+      for (const itemId of newlyAddedIds) next.add(itemId);
+      return next.size === current.size && [...next].every((itemId) => current.has(itemId))
+        ? current
+        : next;
+    });
+  }, [intervenableWorkItems, workItemCollapseScope]);
   const archivedWorkItems = useMemo(() => currentWorkItems.filter((item) => (
     ['completed', 'stopped'].includes(item.status)
   )), [currentWorkItems]);
@@ -676,7 +709,6 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setWorkItemIntervention('skip');
     setWorkItemInterventionReason('');
     setWorkItemInterventionNotice('');
-    setCollapsedWorkItemIds(new Set());
   }, [session?.activeGoalId, session?.id]);
 
   useEffect(() => {
@@ -716,6 +748,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     setClarificationOptionId('');
     setClarificationAnswer('');
     setReuseSimilarDecision(false);
+    if (clarificationSupplementRef.current) clarificationSupplementRef.current.open = false;
     if (!open || !session?.pendingUserQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => {
       clarificationRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -723,6 +756,18 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, session?.pendingUserQuestion?.id]);
+
+  useEffect(() => {
+    const pending = session?.pendingUserQuestion;
+    const manualFeedback = !!pending
+      && pending.reasonCode === 'verification-limited'
+      && pending.options.some((option) => option.id === 'manual-verify-complete')
+      && pending.options.some((option) => option.id === 'manual-verify-defer');
+    const selectedOption = pending?.options.find((option) => option.id === clarificationOptionId);
+    const needsRevision = selectedOption?.id === 'revise-requirements';
+    if (!manualFeedback && !needsRevision) return;
+    if (clarificationSupplementRef.current) clarificationSupplementRef.current.open = true;
+  }, [clarificationOptionId, session?.pendingUserQuestion]);
 
   useEffect(() => {
     if (!open || activeView !== 'conversation' || conversation.length === 0) return undefined;
@@ -1395,6 +1440,27 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     }
   };
 
+  const emergencyResetRuntime = async () => {
+    if (!session || busy) return;
+    if (!window.confirm(
+      `将关闭“${projectDisplayName(session)}”当前全部项目 AI、监督 AI 和任务 AI 运行时，并清除异常绑定。项目目录、代码、完成证据和历史记录都会保留，未完成工作项转为暂停。是否继续？`,
+    )) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await invoke({
+        action: 'emergency-reset',
+        projectId: session.id,
+        reason: '用户从项目中心执行最终兜底：控制层安全重置运行链',
+      });
+      setConfigNotice(result.message || '项目运行链已安全重置，项目保持暂停。');
+    } catch (error) {
+      setNotice(String((error as Error)?.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const visibleConfirmationScope = session?.pendingUserQuestion
     ? projectManagerQuestionConfirmationScope(
         session.pendingUserQuestion,
@@ -1409,6 +1475,28 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     && clarificationOptionId === 'manual-verify-complete';
   const manualVerificationDeferredSelected = manualVerificationFeedbackQuestion
     && clarificationOptionId === 'manual-verify-defer';
+  const selectedClarificationOption = session?.pendingUserQuestion?.options.find((option) => (
+    option.id === clarificationOptionId
+  ));
+  const clarificationNeedsRevision = selectedClarificationOption?.id === 'revise-requirements';
+  const clarificationIsDestructive = !!selectedClarificationOption
+    && ['destructive-action', 'production-action'].includes(session?.pendingUserQuestion?.reasonCode || '')
+    && /(?:确认|执行|删除|清理|生产)/u.test(selectedClarificationOption.label);
+  const clarificationActionLabel = busy
+    ? '正在提交…'
+    : manualVerificationCompletionSelected
+      ? '提交人工验收结果'
+      : manualVerificationDeferredSelected
+        ? '确认暂缓并保持暂停'
+        : clarificationOptionId === 'manual-verify'
+          ? '进入人工验收步骤'
+          : selectedClarificationOption?.id === 'confirm-requirements'
+            ? '确认当前定义并继续'
+            : clarificationNeedsRevision
+              ? '提交调整并重新确认'
+              : selectedClarificationOption
+                ? `确认选择：${selectedClarificationOption.label}`
+                : '提交自定义答复';
   const clarificationSubmitDisabled = busy
     || (!clarificationOptionId && !clarificationAnswer.trim())
     || (manualVerificationCompletionSelected && !clarificationAnswer.trim());
@@ -1587,19 +1675,27 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
           {embedded && session?.pendingUserQuestion && !creating && (
             <section ref={clarificationRef} tabIndex={-1} className="supervisor-dialog__group project-manager-dialog__clarification" role="alertdialog" aria-label={session.pendingUserQuestion.category === 'manual-intervention' ? '项目管理 AI 需要用户指示' : '项目管理 AI 与用户对齐需求'}>
-              <div className="supervisor-dialog__group-title">{
-                manualVerificationFeedbackQuestion
-                  ? '人工验收等待，需要你反馈'
-                  : session.pendingUserQuestion.reasonCode === 'verification-limited'
-                    ? '项目验证受限，需要你选择'
-                  : session.pendingUserQuestion.category === 'manual-intervention'
-                    ? '项目阻塞，需要你指示'
-                    : '项目管理 AI 邀请你对齐需求'
-              }</div>
+              <header className="project-manager-dialog__clarification-header">
+                <div>
+                  <span>项目 AI 需要你确认</span>
+                  <strong>{manualVerificationFeedbackQuestion
+                    ? '人工验收等待，需要你反馈'
+                    : session.pendingUserQuestion.reasonCode === 'verification-limited'
+                      ? '项目验证受限，需要你选择'
+                      : session.pendingUserQuestion.category === 'manual-intervention'
+                        ? '项目阻塞，需要你指示'
+                        : '确认项目方向后继续推进'}</strong>
+                </div>
+                <em>项目已暂停等待</em>
+              </header>
               <div className="project-manager-dialog__clarification-question">{session.pendingUserQuestion.question}</div>
-              {session.pendingUserQuestion.context && <div className={manualVerificationFeedbackQuestion
-                ? 'supervisor-dialog__hint project-manager-dialog__manual-verification-guide'
-                : 'supervisor-dialog__hint'}>{session.pendingUserQuestion.context}</div>}
+              {session.pendingUserQuestion.context && (manualVerificationFeedbackQuestion
+                ? <div className="supervisor-dialog__hint project-manager-dialog__manual-verification-guide">{session.pendingUserQuestion.context}</div>
+                : <details className="project-manager-dialog__clarification-context">
+                    <summary>查看当前项目定义与背景</summary>
+                    <div>{session.pendingUserQuestion.context}</div>
+                  </details>)}
+              <div className="project-manager-dialog__clarification-prompt">请选择一项</div>
               <div className="project-manager-dialog__clarification-options">
                 {session.pendingUserQuestion.options.map((option) => (
                   <label key={option.id} data-selected={clarificationOptionId === option.id ? '1' : '0'}>
@@ -1608,50 +1704,62 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   </label>
                 ))}
               </div>
-              <textarea
-                className="supervisor-dialog__textarea"
-                rows={manualVerificationFeedbackQuestion ? 5 : 3}
-                value={clarificationAnswer}
-                onChange={(event) => setClarificationAnswer(event.target.value)}
-                placeholder={manualVerificationFeedbackQuestion
-                  ? manualVerificationDeferredSelected
-                    ? '可选：说明暂缓原因或预计何时进行人工验收'
-                    : '请逐项填写实际结果，例如：Edit 成功；修改后 Save 成功；Delete 失败（现象：…）；重启后读取成功'
-                  : '可补充说明，或不选上述选项直接填写自定义答复'}
-              />
-              {projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
-                <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{projectManagerQuestionReusableDecisionScope(session.pendingUserQuestion)}</div>
-              )}
-              {visibleConfirmationScope.length > 0 && (
-                <div className="supervisor-dialog__hint">
-                  <strong>本次确认覆盖的规划变更：</strong>
-                  <ul>{visibleConfirmationScope.map((entry) => <li key={entry}>{entry}</li>)}</ul>
-                </div>
-              )}
-              <label className="project-manager-dialog__reuse-decision">
-                <input
-                  type="checkbox"
-                  checked={reuseSimilarDecision}
-                  disabled={!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion)}
-                  onChange={(event) => setReuseSimilarDecision(event.target.checked)}
+              <details
+                ref={clarificationSupplementRef}
+                className="project-manager-dialog__clarification-supplement"
+              >
+                <summary>{clarificationNeedsRevision ? '填写需要调整的内容' : '补充说明或自定义答复（可选）'}</summary>
+                <textarea
+                  className="supervisor-dialog__textarea"
+                  rows={manualVerificationFeedbackQuestion ? 5 : 3}
+                  value={clarificationAnswer}
+                  onChange={(event) => setClarificationAnswer(event.target.value)}
+                  placeholder={manualVerificationFeedbackQuestion
+                    ? manualVerificationDeferredSelected
+                      ? '可选：说明暂缓原因或预计何时进行人工验收'
+                      : '请逐项填写实际结果，例如：Edit 成功；修改后 Save 成功；Delete 失败（现象：…）；重启后读取成功'
+                    : clarificationNeedsRevision
+                      ? '请说明需要修改的目标、范围、前置条件、完成标准或验证要求'
+                      : '可补充背景、限制或偏好；也可以不选上述选项直接填写自定义答复'}
                 />
-                <span>以后遇到同类问题，沿用本次决定，由项目 AI / 监督 AI 自行处理，不再重复询问</span>
-              </label>
-              {!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
-                <div className="supervisor-dialog__hint">凭据、生产操作、内部故障、验证暂缓及未结构化限定的删除不能自动沿用；每次跳过验证都必须由用户明确确认。</div>
-              )}
-              <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={clarificationSubmitDisabled} onClick={() => void answerClarification()}>{busy
-                ? '正在提交…'
-                : manualVerificationCompletionSelected
-                  ? '提交人工验收结果'
-                  : manualVerificationDeferredSelected
-                    ? '确认暂缓并保持暂停'
-                    : clarificationOptionId === 'manual-verify'
-                      ? '进入人工验收步骤'
-                      : '确认并交给项目管理 AI'}</button>
-              <div className="supervisor-dialog__hint">{manualVerificationFeedbackQuestion
-                ? '提交实际结果或确认暂缓前，项目、监督 AI 和任务 AI 均保持等待，不会重新执行自动 GUI 验证。'
-                : '该项目在收到答复前保持等待；其他项目继续运行。桌面或飞书任一端先回答即生效；若仍有关键歧义，项目管理 AI 会在同一项目对话中继续下一轮确认。'}</div>
+              </details>
+              <section className="project-manager-dialog__clarification-impact">
+                <strong>本次确认后</strong>
+                {visibleConfirmationScope.length > 0
+                  ? <ul>{visibleConfirmationScope.map((entry) => <li key={entry}>{entry}</li>)}</ul>
+                  : selectedClarificationOption?.id === 'confirm-requirements'
+                    ? <p>不会修改项目定义，只确认按当前目标、范围和验收要求继续。</p>
+                    : <p>项目 AI 将依据你的选择更新后续安排；未明确授权的范围不会自动扩大。</p>}
+              </section>
+              <details className="project-manager-dialog__clarification-advanced">
+                <summary>高级选项</summary>
+                {projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
+                  <div className="supervisor-dialog__hint"><strong>同类决定复用范围：</strong>{projectManagerQuestionReusableDecisionScope(session.pendingUserQuestion)}</div>
+                )}
+                <label className="project-manager-dialog__reuse-decision">
+                  <input
+                    type="checkbox"
+                    checked={reuseSimilarDecision}
+                    disabled={!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion)}
+                    onChange={(event) => setReuseSimilarDecision(event.target.checked)}
+                  />
+                  <span>以后遇到同类问题，沿用本次决定，由项目 AI / 监督 AI 自行处理，不再重复询问</span>
+                </label>
+                {!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion) && (
+                  <div className="supervisor-dialog__hint">此类决定不能自动复用，每次都需要你明确确认。</div>
+                )}
+              </details>
+              <footer className="project-manager-dialog__clarification-actions">
+                <span>{manualVerificationFeedbackQuestion
+                  ? '提交前，项目、监督 AI 和任务 AI 均保持等待，不会重新执行自动 GUI 验证。'
+                  : '该项目等待你的答复；其他项目不受影响。'}</span>
+                <button
+                  type="button"
+                  className={`confirm-dialog__btn project-manager-dialog__clarification-submit${clarificationIsDestructive ? ' confirm-dialog__btn--danger' : ''}`}
+                  disabled={clarificationSubmitDisabled}
+                  onClick={() => void answerClarification()}
+                >{clarificationActionLabel}</button>
+              </footer>
             </section>
           )}
 
@@ -2046,7 +2154,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     </div>
                   </label>)}
                 </div>}
-                <div className="supervisor-dialog__hint">运行中切换会生成新的需求版本，先暂停旧执行链并要求项目 AI 评估、重排或重绑；历史验证结果和已知失败不会被改写。</div>
+                <div className="supervisor-dialog__hint">项目已暂停且执行链静止时，仅调整同一完成条件的验收/验证策略会立即生效，不触发重规划；其他运行中变更仍会生成新的需求版本并先安全暂停。历史验证结果和已知失败不会被改写。</div>
                 <div className="supervisor-dialog__label supervisor-dialog__label--required">本次变更类型</div>
                 <div className="project-manager-dialog__clarification-options">
                   <label data-selected={goalChangeMode === 'refine' ? '1' : '0'}>
@@ -2132,7 +2240,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   {definitionUpdates.map((event) => {
                     const previous = event.payload?.previous as Record<string, unknown> | undefined;
                     const next = event.payload?.next as Record<string, unknown> | undefined;
-                    const mode = event.payload?.mode === 'pivot' ? '切换新的主目标' : '调整当前主目标';
+                    const mode = event.kind === 'acceptance-policy-updated'
+                      ? '即时调整验收策略'
+                      : event.payload?.mode === 'pivot' ? '切换新的主目标' : '调整当前主目标';
                     const lines = (value: unknown) => Array.isArray(value)
                       ? value.map((item) => String(item)).join('\n')
                       : '无';
@@ -2264,20 +2374,20 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         data-collapsed={itemCollapsed ? '1' : '0'}
                       >
                         <header>
-                          <input
-                            type="radio"
-                            name={`work-item-intervention-${session.id}`}
-                            checked={workItemInterventionId === item.id}
+                          <button
+                            type="button"
+                            className="project-manager-dialog__work-item-intervention-trigger"
+                            data-selected={workItemInterventionId === item.id ? '1' : '0'}
                             disabled={busy || !canIntervene}
                             aria-label={`选择工作项：${itemTitle}`}
-                            title={canIntervene ? '选择此工作项进行干预' : '该工作项已经结束'}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={() => {
+                            title={canIntervene ? '打开此工作项的处理选项' : '该工作项已经结束'}
+                            onClick={(event) => {
+                              event.stopPropagation();
                               setWorkItemInterventionId(item.id);
                               setWorkItemIntervention(currentVerificationLimitation ? 'defer-verification' : 'skip');
                               setWorkItemInterventionNotice('');
                             }}
-                          />
+                          >{currentVerificationLimitation ? '处理验证' : '干预此项'}</button>
                           <button
                             type="button"
                             className="project-manager-dialog__action-card-toggle"
@@ -2380,7 +2490,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   )}
                 </div>
                 {selectedInterventionWorkItem && (
-                  <div className="project-manager-dialog__work-item-intervention" role="group" aria-label="干预选中的工作项">
+                  <div ref={workItemInterventionRef} className="project-manager-dialog__work-item-intervention" role="group" aria-label="干预选中的工作项">
                     <div className="project-manager-dialog__work-item-intervention-head">
                       <div><strong>干预：{projectWorkItemDisplayTitle(selectedInterventionWorkItem)}</strong><span>只处理此工作项，不会暂停整个项目。</span></div>
                       <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => {
@@ -2590,11 +2700,17 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 {session.status === 'active' && <button type="button" className="confirm-dialog__btn" disabled={busy} onClick={() => void control('pause')}>暂停项目</button>}
                 {(session.status === 'paused' || session.status === 'waiting')
                   && currentGoal?.status !== 'achieved'
+                  && !session.pendingUserQuestion
                   && session.safeExit?.status !== 'blocked'
                   && session.safeExit?.status !== 'saving'
                   && <button type="button" className="confirm-dialog__btn" disabled={busy || session.safeExit?.status === 'restoring'} onClick={() => void control('resume')}>
                     {session.safeExit?.status === 'saved' ? '恢复已保存项目' : session.safeExit?.status === 'restoring' ? '正在恢复…' : '恢复项目'}
                   </button>}
+                {(session.status === 'paused' || session.status === 'waiting') && (
+                  <button type="button" className="confirm-dialog__btn confirm-dialog__btn--danger" disabled={busy} onClick={() => void emergencyResetRuntime()}>
+                    安全重置运行链
+                  </button>
+                )}
                 {!['completed', 'stopped'].includes(session.status) && !['saved', 'restoring'].includes(session.safeExit?.status || '') && (
                   <button type="button" className="confirm-dialog__btn project-manager-dialog__safe-exit-btn" disabled={busy} onClick={() => void saveProgressAndExit()}>
                     {busy && session.safeExit?.status === 'saving'

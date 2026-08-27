@@ -1245,6 +1245,8 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         const innerAgentExit = innerAgentExitHandled || startupFailure
           ? null
           : interactiveAgentExitDetail(startupAgent, startupInputOutput);
+        // The outer PTY can survive a native Agent crash. interactiveAgentExitDetail
+        // therefore also checks for a final shell prompt after runtime readiness.
         const runtimeFailure = startupFailure || innerAgentExit;
         if (runtimeFailure) {
           innerAgentExitHandled = true;

@@ -72,6 +72,24 @@ describe('interactive Agent runtime detection', () => {
     expect(interactiveAgentShellPromptFailureDetail('OpenAI Codex\nmodel: gpt-5.6-terra')).toBeNull();
   });
 
+  it('detects a ready Agent that crashes back to PowerShell with a partial echoed fragment', () => {
+    const crashed = [
+      'OpenAI Codex',
+      'memory allocation of 4191520 bytes failed',
+      'PS C:\\Users\\tester\\Desktop\\project> 件夹',
+    ].join('\r\n');
+
+    expect(interactiveAgentShellPromptFailureDetail(crashed)).toContain('外层 Shell 提示符');
+    expect(interactiveAgentExitDetail('codex', crashed)).toContain('Codex Agent 已退出');
+    expect(interactiveAgentExitDetail('codex', [
+      '示例：PS C:\\project> npm test',
+      '› Ask Codex to do anything',
+      'gpt-5.6-terra medium · C:\\project',
+    ].join('\n'))).toBeNull();
+    expect(interactiveAgentExitDetail('codex', 'OpenAI Codex\nPS C:\\project> npm test')).toBeNull();
+    expect(interactiveAgentExitDetail('codex', 'OpenAI Codex\nPS C:\\project>')).toBeNull();
+  });
+
   it('requires recognizable Agent input chrome instead of generic shell output', () => {
     expect(interactiveAgentInputReady('PS C:\\runtime>')).toBe(false);
     expect(interactiveAgentInputReady('PowerShell 7.5\nCopyright Microsoft Corporation')).toBe(false);

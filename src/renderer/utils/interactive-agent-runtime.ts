@@ -5,6 +5,7 @@ const ANSI_ESCAPE = new RegExp(
   'gu',
 );
 const CODEX_EXIT_FOOTER = /Token usage:[\s\S]{0,2000}To continue this session,\s*run\s+codex resume\s+[0-9a-f-]{20,}/iu;
+const NATIVE_AGENT_EXIT_PATTERN = /(?:memory allocation of \d+ bytes failed|fatal runtime error|thread ['"].{0,120}['"] panicked|panicked at\b)/iu;
 const INTERACTIVE_AGENT_SCREEN_PATTERNS = [
   /\bOpenAI Codex\b/iu,
   /(?:^|\n)\s*gpt-[\w.-]+\b[\s\S]{0,1200}(?:directory:|permissions:|Ask Codex)/iu,
@@ -90,12 +91,19 @@ export function interactiveAgentStartupFailureDetail(output: string): string | n
 export function interactiveAgentShellPromptFailureDetail(output: string): string | null {
   const plain = plainTerminalOutput(output);
   const lastLine = lastNonEmptyTerminalLine(output);
-  const powerShellPrompt = /^PS\s+[A-Za-z]:[\\/].*>\s*$/u.test(lastLine);
-  const cmdPrompt = /^[A-Za-z]:[\\/].*>\s*$/u.test(lastLine);
+  // A native crash can leave a partially echoed command/path fragment after
+  // the prompt on the same line. Require a native-failure diagnostic for that
+  // relaxed form so a normal Agent answer such as `PS C:\\repo> npm test` is
+  // not mistaken for an exit during the TUI redraw window.
+  const nativeFailure = NATIVE_AGENT_EXIT_PATTERN.test(plain);
+  const powerShellPrompt = /^PS\s+[A-Za-z]:[\\/].*>\s*$/u.test(lastLine)
+    || (nativeFailure && /^PS\s+[A-Za-z]:[\\/].*>[^\r\n]{1,200}$/u.test(lastLine));
+  const cmdPrompt = /^[A-Za-z]:[\\/].*>\s*$/u.test(lastLine)
+    || (nativeFailure && /^[A-Za-z]:[\\/].*>[^\r\n]{1,200}$/u.test(lastLine));
   const posixPrompt = /^[^\s@]+@[^:\s]+:[^\n]*[$#]\s*$/u.test(lastLine);
   const protocolPastedIntoShell = /(?:^|\n)(?:PS\s+[A-Za-z]:[\\/][^\n>]*>|[A-Za-z]:[\\/][^\n>]*>|[^\s@]+@[^:\s]+:[^\n]*[$#])\s*(?:e>\s*)?(?:\[(?:目标任务终端|项目事件|普通监督终端上下文启动)|#\s*项目监督\s*AI)/u.test(plain);
   if (!powerShellPrompt && !cmdPrompt && !posixPrompt && !protocolPastedIntoShell) return null;
-  return 'Agent 启动失败：检测到外层 Shell 提示符，交互式 Agent 未保持运行';
+  return '检测到外层 Shell 提示符，交互式 Agent 已退出或未保持运行';
 }
 
 /** Require recognizable current Agent chrome before the first natural-language prompt. */
@@ -138,7 +146,13 @@ export function interactiveAgentExitDetail(
   agent: AutomatedInteractiveAgent | undefined,
   output: string,
 ): string | null {
+  if (!agent) return null;
+  const plain = plainTerminalOutput(output);
+  if (interactiveAgentShellPromptFailureDetail(output)
+    && (NATIVE_AGENT_EXIT_PATTERN.test(plain) || (agent === 'codex' && CODEX_EXIT_FOOTER.test(plain)))) {
+    return `${agent === 'codex' ? 'Codex' : agent} Agent 已退出，外层终端仍处于运行状态`;
+  }
   if (agent !== 'codex') return null;
-  if (!CODEX_EXIT_FOOTER.test(plainTerminalOutput(output))) return null;
+  if (!CODEX_EXIT_FOOTER.test(plain)) return null;
   return 'Codex Agent 已退出，外层终端仍处于运行状态';
 }

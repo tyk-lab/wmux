@@ -428,6 +428,70 @@ export const createProjectManagerSlice: StateCreator<
             : {}),
         },
       };
+    } else if (action.type === 'update-project-acceptance-policy') {
+      if (session.status !== 'paused') {
+        return { ok: false, error: '只有已暂停且执行链静止的项目才能即时调整验收策略' };
+      }
+      const activeGoal = activeProjectGoal(session);
+      if (['achieved', 'superseded', 'abandoned'].includes(activeGoal.status)) {
+        return { ok: false, error: '已结束的主目标不能再调整验收策略，请切换新的主目标' };
+      }
+      const expectedCriteria = new Set(activeGoal.doneWhen.map(projectCriterionIdentity));
+      const requestedCriteria = action.verificationPolicies.map((policy) => projectCriterionIdentity(policy.criterion));
+      if (requestedCriteria.length !== expectedCriteria.size
+        || new Set(requestedCriteria).size !== requestedCriteria.length
+        || requestedCriteria.some((criterion) => !expectedCriteria.has(criterion))) {
+        return { ok: false, error: '即时验收策略更新只能逐项调整当前完成条件，不能新增、删除或改写验收条件' };
+      }
+      const unsafeRelaxation = action.verificationPolicies.find((policy) => (
+        policy.requirement !== 'required'
+        && (policy.riskClass !== 'standard'
+          || projectCriterionVerificationCannotBeRelaxed(policy.criterion))
+      ));
+      if (unsafeRelaxation) {
+        return { ok: false, error: `只有显式分类为普通成果且不涉及安全、权限、生产或数据完整性的完成条件才能降低验证要求：${unsafeRelaxation.criterion}` };
+      }
+      const userAcceptancePolicy = normalizeProjectUserAcceptancePolicy(action.userAcceptancePolicy);
+      const verificationPolicies = normalizeProjectVerificationPolicies(
+        activeGoal.doneWhen,
+        action.verificationPolicies,
+      );
+      if (userAcceptancePolicy === projectGoalUserAcceptancePolicy(activeGoal)
+        && JSON.stringify(verificationPolicies) === JSON.stringify(projectGoalVerificationPolicies(activeGoal))) {
+        return { ok: false, error: '当前验收策略没有发生变化' };
+      }
+      const previous = {
+        userAcceptancePolicy: projectGoalUserAcceptancePolicy(activeGoal),
+        verificationPolicies: projectGoalVerificationPolicies(activeGoal),
+      };
+      const goals = (session.goals || []).map((entry) => entry.id === activeGoal.id ? {
+        ...entry,
+        userAcceptancePolicy,
+        verificationPolicies,
+      } : entry);
+      const supersededQuestionId = session.pendingUserQuestion?.reasonCode === 'final-acceptance'
+        ? session.pendingUserQuestion.id
+        : undefined;
+      next = {
+        ...session,
+        goals,
+        userAcceptancePolicy,
+        verificationPolicies,
+        pendingUserQuestion: supersededQuestionId ? undefined : session.pendingUserQuestion,
+      };
+      eventInput = {
+        kind: 'acceptance-policy-updated',
+        summary: action.reason || '用户在项目暂停期间调整验收策略，已由控制层即时应用',
+        payload: {
+          source: 'user',
+          requirementsVersion: projectRequirementsVersion(session),
+          authorizationVersion: projectAuthorizationVersion(session),
+          resolvedAttentionKinds: ['requirements-quiesce-failed'],
+          supersededQuestionId,
+          previous,
+          next: { userAcceptancePolicy, verificationPolicies },
+        },
+      };
     } else if (action.type === 'update-project-definition') {
       const goal = action.goal.trim();
       const preconditions = action.preconditions.map((item) => item.trim()).filter(Boolean);
@@ -939,6 +1003,9 @@ export const createProjectManagerSlice: StateCreator<
               },
             } : {}),
             ...(verificationAction === 'defer-verification' ? {
+              status: 'paused' as const,
+              supervisorLaneId: undefined,
+              workerSurfaceId: undefined,
               latestBlocker: action.optionId === 'manual-verify-defer'
                 ? '用户已暂缓人工验收并要求项目保持暂停；该验收项仍未验证，不能据此完成阶段或项目。'
                 : '用户已明确授权暂缓当前验证并继续后续工作；该验收项仍未验证，不能据此完成阶段或项目。',
@@ -971,7 +1038,8 @@ export const createProjectManagerSlice: StateCreator<
           ].slice(-50),
           } : {}),
       };
-      next = verificationAction === 'skip-verification' && pending.workItemId
+      next = ['defer-verification', 'skip-verification'].includes(verificationAction || '')
+        && pending.workItemId
         ? releaseProjectTaskTerminalBinding(
             answeredSession,
             pending.workItemId,
@@ -1195,6 +1263,57 @@ export const createProjectManagerSlice: StateCreator<
           ? `记录未生效的监督尝试：${action.workItemId}`
           : `记录监督决策：${action.workItemId}`,
       };
+    } else if (action.type === 'reset-project-runtime') {
+      if (!['paused', 'waiting'].includes(session.status)) {
+        return { ok: false, error: '控制层安全重置只能用于已经暂停或等待处理的项目' };
+      }
+      next = {
+        ...session,
+        status: 'paused',
+        pausedByPortfolio: false,
+        activeWorkItemId: undefined,
+        managerSurfaceId: undefined,
+        taskTerminalSurfaceId: undefined,
+        auxiliaryTaskTerminalSurfaceId: undefined,
+        auxiliaryTask: undefined,
+        pendingUserQuestion: undefined,
+        pendingManagerDeliveries: [],
+        executionResponsibility: undefined,
+        agentIssue: undefined,
+        agentReconfiguration: undefined,
+        safeExit: undefined,
+        recoveryState: 'ready',
+        workItems: session.workItems.map((item) => (
+          ['completed', 'stopped'].includes(item.status)
+            ? item
+            : {
+                ...item,
+                status: 'paused' as const,
+                supervisorLaneId: undefined,
+                workerSurfaceId: undefined,
+                latestBlocker: action.reason || '项目运行链已由控制层安全重置，等待用户恢复后重新绑定',
+                updatedAt: now,
+              }
+        )),
+      };
+      eventInput = {
+        kind: 'project-runtime-reset',
+        summary: action.reason || '项目运行链已由控制层安全重置',
+        payload: {
+          controlPlaneFallback: true,
+          preservedWorkItems: session.workItems.length,
+          resolvedAttentionKinds: [
+            'guard-triggered',
+            'project-execution-stalled',
+            'manager-runtime-failed',
+            'supervisor-runtime-failed',
+            'task-runtime-failed',
+            'manager-delivery-failed',
+            'requirements-quiesce-failed',
+          ],
+          attentionRequired: true,
+        },
+      };
     } else if (action.type === 'pause-project') {
       next = { ...session, status: 'paused', pausedByPortfolio: action.source === 'portfolio' };
       eventInput = {
@@ -1207,9 +1326,24 @@ export const createProjectManagerSlice: StateCreator<
       };
     } else if (action.type === 'resume-project') {
       const activeGoal = activeProjectGoal(session);
+      const intervenedActiveWorkItem = session.workItems.find((item) => (
+        item.id === session.activeWorkItemId && projectWorkItemVerificationIntervened(item)
+      ));
       next = {
         ...session,
         status: 'active',
+        activeWorkItemId: intervenedActiveWorkItem ? undefined : session.activeWorkItemId,
+        workItems: intervenedActiveWorkItem
+          ? session.workItems.map((item) => item.id === intervenedActiveWorkItem.id ? {
+              ...item,
+              status: item.verificationDecision?.action === 'skip-verification'
+                ? 'stopped' as const
+                : 'paused' as const,
+              supervisorLaneId: undefined,
+              workerSurfaceId: undefined,
+              updatedAt: now,
+            } : item)
+          : session.workItems,
         goals: (session.goals || []).map((goal) => goal.id === activeGoal.id && goal.status === 'transitioning'
           ? { ...goal, status: 'active' as const, activatedAt: now }
           : goal),
@@ -1221,7 +1355,17 @@ export const createProjectManagerSlice: StateCreator<
           ? { acceptedRequirementsVersion: projectRequirementsVersion(session) }
           : {}),
       };
-      eventInput = { kind: 'project-resumed', summary: action.reason || '项目已恢复' };
+      eventInput = {
+        kind: 'project-resumed',
+        summary: action.reason || '项目已恢复',
+        ...(intervenedActiveWorkItem ? {
+          workItemId: intervenedActiveWorkItem.id,
+          payload: {
+            releasedVerificationWorkItemId: intervenedActiveWorkItem.id,
+            reason: '恢复时释放已收到用户验证干预裁决的旧活动工作项',
+          },
+        } : {}),
+      };
     } else if (action.type === 'complete-current-goal') {
       const activeGoal = activeProjectGoal(session);
       const goalCompletion = normalizeProjectCompletionResult(action.completion);
@@ -1443,7 +1587,15 @@ export const createProjectManagerSlice: StateCreator<
       const stopKind = action.emergency === true
         ? 'safety-stop'
         : action.stopKind || 'planned-close';
-      next = { ...session, status: 'stopped' };
+      next = {
+        ...session,
+        status: 'stopped',
+        activeWorkItemId: undefined,
+        pendingUserQuestion: undefined,
+        pendingManagerDeliveries: [],
+        pendingSupervisorTransitions: [],
+        executionResponsibility: undefined,
+      };
       eventInput = {
         kind: 'project-stopped',
         summary: action.reason || '项目已停止',

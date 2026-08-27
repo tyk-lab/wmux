@@ -5,6 +5,7 @@ import {
   type ProjectManagerSlice,
 } from '../../src/renderer/store/project-manager-slice';
 import {
+  activeProjectManagerAttentionEvent,
   compactProjectSupervisorTransitions,
   CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
   DEFAULT_PROJECT_EXECUTION_BUDGET,
@@ -458,6 +459,120 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: false, error: expect.stringContaining('验证能力限制') });
   });
 
+  it('releases the active work item when a verification-limited question is deferred', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\verification-question-defer',
+      goal: '交付 GUI 用户管理',
+      doneWhen: ['GUI CRUD 可复核'],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('stage-2'),
+        status: 'waiting-decision',
+        supervisorLaneId: 'lane-stage-2',
+        workerSurfaceId: 'worker-stage-2',
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable',
+          detail: 'GUI 自动化无法取得决定性证据',
+          missingEvidence: ['Edit、Delete、Reload 实际结果'],
+          affectedAcceptance: ['GUI CRUD 可复核'],
+          requirementsVersion: 1,
+          authorizationVersion: 1,
+          detectedAt: 2,
+        },
+      },
+    }, project.id);
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: item('stage-3'),
+    }, project.id);
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      activeWorkItemId: 'stage-2',
+    });
+    const question = {
+      id: 'verification-question', category: 'manual-intervention' as const,
+      workItemId: 'stage-2', blocker: 'GUI 自动化受限', reasonCode: 'verification-limited' as const,
+      question: '如何处理当前验证？', context: '阶段仍未验收。',
+      options: [
+        { id: 'defer-verification', label: '暂缓验证并继续' },
+        { id: 'skip-verification', label: '跳过当前验证' },
+      ],
+      recommendedOptionId: 'defer-verification', previousStatus: 'active' as const, createdAt: 3,
+    };
+    useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification', question,
+    }, project.id);
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification',
+      questionId: question.id,
+      answer: '暂缓验证并继续',
+      optionId: 'defer-verification',
+      answeredBy: 'desktop',
+    }, project.id)).toMatchObject({ ok: true });
+    const answered = useStore.getState().projectManager!;
+    expect(answered).toMatchObject({ status: 'waiting' });
+    expect(answered.activeWorkItemId).toBeUndefined();
+    expect(answered.workItems.find((workItem) => workItem.id === 'stage-2')).toMatchObject({
+      status: 'paused',
+      verificationDecision: expect.objectContaining({ action: 'defer-verification' }),
+    });
+    expect(answered.workItems.find((workItem) => workItem.id === 'stage-2')?.supervisorLaneId).toBeUndefined();
+    expect(answered.workItems.find((workItem) => workItem.id === 'stage-2')?.workerSurfaceId).toBeUndefined();
+    expect(answered.workItems.find((workItem) => workItem.id === 'stage-3')).toMatchObject({ status: 'planned' });
+  });
+
+  it('repairs a persisted deferred-verification active binding when the project resumes', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\verification-resume-repair',
+      goal: '继续独立后续成果',
+      doneWhen: ['后续成果完成'],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('stale-verification'),
+        status: 'waiting-decision',
+        supervisorLaneId: 'lane-stale',
+        workerSurfaceId: 'worker-stale',
+        verificationDecision: {
+          action: 'defer-verification',
+          questionId: 'old-question',
+          reason: '用户已暂缓验证',
+          answeredBy: 'desktop',
+          requirementsVersion: 1,
+          authorizationVersion: 1,
+          decidedAt: 2,
+        },
+      },
+    }, project.id);
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      status: 'paused',
+      activeWorkItemId: 'stale-verification',
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '用户恢复项目',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { payload: { releasedVerificationWorkItemId: 'stale-verification' } },
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'active',
+      activeWorkItemId: undefined,
+      workItems: [expect.objectContaining({
+        id: 'stale-verification',
+        status: 'paused',
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+      })],
+    });
+  });
+
   it('keeps a deferred verification work item immutable across verification policy versions', () => {
     const useStore = store();
     const project = useStore.getState().startProjectManager({
@@ -516,6 +631,132 @@ describe('project-manager slice', () => {
       ok: false,
       error: expect.stringContaining('不能由 AI 改变状态'),
     });
+  });
+
+  it('updates only acceptance policy in place while a project is paused', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\paused-acceptance-policy',
+      goal: '交付桌面工具',
+      doneWhen: ['普通 CRUD 行为与设计一致'],
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'pause-project',
+      reason: '用户暂停后调整验收策略',
+    }, project.id)).toMatchObject({ ok: true });
+    const requirementsVersion = useStore.getState().projectManager?.requirementsVersion;
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-acceptance-policy',
+      userAcceptancePolicy: 'not-required',
+      verificationPolicies: [{
+        criterion: '普通 CRUD 行为与设计一致',
+        riskClass: 'standard',
+        requirement: 'not-applicable',
+        reason: '用户明确不要求额外验证',
+      }],
+      reason: '仅调整验收策略',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { kind: 'acceptance-policy-updated' },
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'paused',
+      requirementsVersion,
+      userAcceptancePolicy: 'not-required',
+      verificationPolicies: [{
+        criterion: '普通 CRUD 行为与设计一致',
+        riskClass: 'standard',
+        requirement: 'not-applicable',
+      }],
+    });
+  });
+
+  it('does not let the paused acceptance-policy path relax a protected condition', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\protected-acceptance-policy',
+      goal: '安全发布',
+      doneWhen: ['生产数据完整性验证通过'],
+    });
+    useStore.getState().applyProjectManagerAction({ type: 'pause-project', reason: '暂停' }, project.id);
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-acceptance-policy',
+      userAcceptancePolicy: 'on-gap',
+      verificationPolicies: [{
+        criterion: '生产数据完整性验证通过',
+        riskClass: 'standard',
+        requirement: 'not-applicable',
+      }],
+    }, project.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('降低验证要求'),
+    });
+  });
+
+  it('resets only project runtime bindings while preserving work items and evidence', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\runtime-reset',
+      goal: '完成项目',
+      doneWhen: ['功能完成'],
+    });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('running-before-reset'),
+        status: 'running',
+        supervisorLaneId: 'lane-reset',
+        workerSurfaceId: 'worker-reset',
+        latestEvidence: '已完成的数据层证据',
+      },
+    }, project.id);
+    const current = useStore.getState().projectManager!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'waiting',
+      activeWorkItemId: 'running-before-reset',
+      managerSurfaceId: 'manager-reset',
+      taskTerminalSurfaceId: 'worker-reset',
+      pendingUserQuestion: {
+        id: 'stale-question', question: '旧问题', context: '旧上下文', options: [],
+        previousStatus: 'active', createdAt: 1,
+      },
+      executionResponsibility: {
+        id: 'responsibility-reset', owner: 'project-ai', action: 'recover', state: 'queued',
+        assignedAt: 1, lastProgressAt: 1, attempt: 1, incidentKey: 'reset',
+      },
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'reset-project-runtime',
+      reason: '用户执行最终兜底',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { kind: 'project-runtime-reset' },
+    });
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'paused',
+      activeWorkItemId: undefined,
+      managerSurfaceId: undefined,
+      taskTerminalSurfaceId: undefined,
+      pendingUserQuestion: undefined,
+      executionResponsibility: undefined,
+      workItems: [expect.objectContaining({
+        id: 'running-before-reset',
+        status: 'paused',
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        latestEvidence: '已完成的数据层证据',
+      })],
+    });
+    expect(activeProjectManagerAttentionEvent(useStore.getState().projectManager!.events)?.kind)
+      .toBe('project-runtime-reset');
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '用户确认重建新运行链', source: 'project',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(activeProjectManagerAttentionEvent(useStore.getState().projectManager!.events)).toBeUndefined();
   });
 
   it('clears a rejected completion report when the work item returns to execution', () => {

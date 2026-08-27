@@ -143,6 +143,10 @@ import {
   canStartManagedProjectRuntimeRecovery,
   managedProjectRuntimeRecoveryKey,
 } from './project-manager/runtime-recovery';
+import {
+  interruptedUserChoiceTransition,
+  projectUserChoiceReplayMayRepeatSideEffect,
+} from './project-manager/user-choice-recovery';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
 import {
   fireDesktopNotification,
@@ -5159,6 +5163,14 @@ function releaseProjectWorkItemAssignmentForReuse(
   return retained;
 }
 
+function projectVerificationIntervenedActiveWorkItem(
+  session: ProjectManagerSession,
+): ProjectWorkItem | undefined {
+  return session.workItems.find((item) => (
+    item.id === session.activeWorkItemId && projectWorkItemVerificationIntervened(item)
+  ));
+}
+
 function resumeEligibleProjectSupervisorLanes(sessionId: string, reason: string): void {
   const state = useStore.getState();
   const session = state.projectManagers.find((candidate) => candidate.id === sessionId);
@@ -5887,6 +5899,7 @@ function projectPlanFileSnapshots(value: unknown): ProjectPlanFileSnapshot[] {
 function normalizeProjectManagerUserQuestion(
   value: any,
   previousStatus: ProjectManagerSession['status'],
+  normalizationOptions: { allowRecoveryFallback?: boolean } = {},
 ): { question?: ProjectManagerUserQuestion; error?: string } {
   const question = String(value?.question || '').trim().slice(0, 2000);
   const context = String(value?.context || '').trim().slice(0, 5000);
@@ -5996,8 +6009,9 @@ function normalizeProjectManagerUserQuestion(
       workItemId: String(value?.workItemId || '').trim().slice(0, 120) || undefined,
       blocker: String(value?.blocker || '').trim().slice(0, 4000) || undefined,
       reasonCode: PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES.includes(value?.reasonCode)
-        ? value.reasonCode
-        : undefined,
+        || (normalizationOptions.allowRecoveryFallback === true && value?.reasonCode === 'recovery-fallback')
+          ? value.reasonCode
+          : undefined,
       ...(rawDecisionKey ? { decisionKey: rawDecisionKey } : {}),
       ...(decisionScope ? { decisionScope } : {}),
       ...(confirmationScope.length ? { confirmationScope } : {}),
@@ -6609,13 +6623,39 @@ function projectTaskBatchRepeatsUnavailableVerification(batch: ProjectTaskBatch)
 function projectPauseUserQuestion(
   session: ProjectManagerSession,
   reason: string,
-  options: { forceRuntimeRecovery?: boolean } = {},
+  options: {
+    forceRuntimeRecovery?: boolean;
+    runtimeRole?: 'manager' | 'supervisor' | 'task';
+  } = {},
 ): ProjectManagerUserQuestion | undefined {
   const workItem = projectPauseWorkItem(session);
   const verificationLimitation = options.forceRuntimeRecovery
     ? undefined
     : projectVerificationLimitationForPause(session, workItem, reason);
   const verificationLimited = !!verificationLimitation;
+  const runtimeRecoveryOption = options.runtimeRole === 'task'
+    ? {
+        id: 'rebuild-task-runtime',
+        label: '重建任务 AI',
+        description: '推荐：保留当前成果与合同，关闭故障任务终端并建立新的任务 AI，再重建对应监督绑定。',
+      }
+    : options.runtimeRole === 'supervisor'
+      ? {
+          id: 'rebuild-supervisor-runtime',
+          label: '重建专属监督 AI',
+          description: '推荐：保留当前任务与证据，重建专属监督 AI 后继续当前工作项。',
+        }
+      : options.runtimeRole === 'manager'
+        ? {
+            id: 'rebuild-manager-runtime',
+            label: '重建项目 AI',
+            description: '推荐：保留持久项目状态，重建项目 AI 后核对并继续。',
+          }
+        : {
+            id: 'recover-latest-protocol',
+            label: '按最新协议恢复',
+            description: '推荐：保留现有成果与证据，由项目 AI 重建监督绑定并从当前工作项继续。',
+          };
   const alternativeAttempted = verificationLimited
     && workItem?.verificationDecision?.action === 'alternative-validation'
     && workItem.verificationDecision.requirementsVersion === projectRequirementsVersion(session)
@@ -6674,11 +6714,7 @@ function projectPauseUserQuestion(
         : '当前要做什么：决定是按最新协议恢复、保持暂停，还是停止当前工作项并重新规划。',
     ].filter(Boolean).join('\n'),
     options: verificationLimited ? verificationOptions : [
-      {
-        id: 'recover-latest-protocol',
-        label: '按最新协议恢复',
-        description: '推荐：保留现有成果与证据，由项目 AI 重建监督绑定并从当前工作项继续。',
-      },
+      runtimeRecoveryOption,
       {
         id: 'keep-paused',
         label: '保持暂停',
@@ -6692,7 +6728,7 @@ function projectPauseUserQuestion(
     ],
     recommendedOptionId: verificationLimited
       ? alternativeAttempted ? 'manual-verify' : 'alternative-validation'
-      : 'recover-latest-protocol',
+      : runtimeRecoveryOption.id,
   }, session.status);
   return normalized.question;
 }
@@ -6700,7 +6736,10 @@ function projectPauseUserQuestion(
 async function requestProjectPauseUserDecision(
   sessionId: string,
   reason: string,
-  options: { forceRuntimeRecovery?: boolean } = {},
+  options: {
+    forceRuntimeRecovery?: boolean;
+    runtimeRole?: 'manager' | 'supervisor' | 'task';
+  } = {},
 ): Promise<{ ok: boolean; error?: string; question?: ProjectManagerUserQuestion }> {
   const store = useStore.getState();
   const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
@@ -6904,6 +6943,16 @@ async function reportProjectRuntimeFailureForUserDecision(
     `项目运行时自动重建失败：${summary}`,
     `runtime-failure:${session.id}:${workItemId || 'project'}:${kind}`,
     workItemId,
+  );
+  const runtimeRole = kind === 'task-runtime-failed'
+    ? 'task'
+    : kind === 'supervisor-runtime-failed'
+      ? 'supervisor'
+      : 'manager';
+  await requestProjectPauseUserDecision(
+    session.id,
+    `项目运行时自动重建失败：${summary}`,
+    { forceRuntimeRecovery: true, runtimeRole },
   );
 }
 
@@ -7856,12 +7905,12 @@ async function forceRecoverManagedAgent(
     }
     if (!result?.ok) {
       managedAgentRecoveryFailures.add(recoveryKey);
-      await appendRecordedProjectEvent(current, {
-        kind: target.role === 'task' ? 'task-runtime-failed' : 'supervisor-runtime-failed',
-        workItemId: target.lane.projectWorkItemId,
-        summary: `${roleLabel}自动重建失败：${String(result?.error || '未知错误')}`,
-        payload: { role: target.role, recoveryKey, attentionRequired: true },
-      });
+      await reportProjectRuntimeFailureForUserDecision(
+        current.id,
+        target.role === 'task' ? 'task-runtime-failed' : 'supervisor-runtime-failed',
+        `${roleLabel}自动重建失败：${String(result?.error || '未知错误')}`,
+        target.lane.projectWorkItemId,
+      );
       queueProjectManagerDelivery([
         '[项目运行链自动重建失败]',
         `项目：${current.id}；任务：${target.lane.projectWorkItemId}`,
@@ -7878,16 +7927,16 @@ async function forceRecoverManagedAgent(
       surfaceId: runtime.surfaceId,
       reason,
     });
-    await appendRecordedProjectEvent(target.session, {
-      kind: target.role === 'manager'
+    await reportProjectRuntimeFailureForUserDecision(
+      target.session.id,
+      target.role === 'manager'
         ? 'manager-runtime-failed'
         : target.role === 'task'
           ? 'task-runtime-failed'
           : 'supervisor-runtime-failed',
-      workItemId: target.lane?.projectWorkItemId,
-      summary: `${target.role} 自动重建异常：${reason}`,
-      payload: { role: target.role, recoveryKey, attentionRequired: true },
-    });
+      `${target.role} 自动重建异常：${reason}`,
+      target.lane?.projectWorkItemId,
+    );
     queueProjectManagerDelivery([
       '[项目运行链自动重建异常]',
       `项目：${target.session.id}${target.lane?.projectWorkItemId ? `；任务：${target.lane.projectWorkItemId}` : ''}`,
@@ -8277,13 +8326,14 @@ function teardownManagedProject(session: ProjectManagerSession, reason = '项目
 }
 
 async function stopManagedProjectRuntime(session: ProjectManagerSession, reason: string): Promise<void> {
-  const surfaceIds = projectOwnedRuntimeSurfaceIds(session.id);
+  const surfaceIds = projectOwnedRuntimeSurfaceIds(session.id, projectKnownRuntimeSurfaceIds(session));
   await Promise.all(surfaceIds.map(async (surfaceId) => {
     if (!hasLiveSurface(surfaceId as SurfaceId)) return;
     if (remoteTerminalActivity(surfaceId as SurfaceId, true).activityState === 'working') {
       await writeProjectSupervisorControl(surfaceId as SurfaceId, '\x03');
     }
   }));
+  for (const surfaceId of surfaceIds) closeLiveSurfaceById(surfaceId as SurfaceId);
   teardownManagedProject(session, reason);
 }
 
@@ -10471,13 +10521,15 @@ type ProjectTaskRuntimeEnsureResult = {
   repositoryBootstrapDispatched?: boolean;
 };
 
-function ensureProjectTaskRuntime(sessionId: string): Promise<ProjectTaskRuntimeEnsureResult> {
+function ensureProjectTaskRuntime(sessionId: string, options: {
+  forceRestart?: boolean;
+} = {}): Promise<ProjectTaskRuntimeEnsureResult> {
   return runProjectRuntimeEnsure(
     projectTaskRuntimeEnsureRuns,
     sessionId,
-    0,
+    options.forceRestart === true ? PROJECT_RUNTIME_FORCE_RESTART_INTENT : 0,
     async () => {
-      const runtime = await ensureProjectTaskRuntimeNow(sessionId);
+      const runtime = await ensureProjectTaskRuntimeNow(sessionId, options);
       if (!runtime.ok || !runtime.terminal || runtime.repositoryBootstrapDispatched) return runtime;
       const bootstrap = await deliverProjectRepositoryBootstrap(sessionId, runtime.terminal);
       return bootstrap.ok
@@ -10556,7 +10608,9 @@ async function deliverProjectRepositoryBootstrap(
   return { ok: true, dispatched: true };
 }
 
-async function ensureProjectTaskRuntimeNow(sessionId: string): Promise<ProjectTaskRuntimeEnsureResult> {
+async function ensureProjectTaskRuntimeNow(sessionId: string, options: {
+  forceRestart?: boolean;
+} = {}): Promise<ProjectTaskRuntimeEnsureResult> {
   const session = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
   if (!session) return { ok: false, error: '项目中心没有找到对应项目' };
   const projectTaskTerminals = remoteProjectTerminalList().filter((terminal) => (
@@ -10571,7 +10625,7 @@ async function ensureProjectTaskRuntimeNow(sessionId: string): Promise<ProjectTa
   if (existing) {
     const failure = nestedAgentShellFailureDetail(existing.surfaceId);
     const runtime = terminalRuntimeStatus(existing.surfaceId)?.state;
-    if (!failure && runtime !== 'failed' && runtime !== 'exited') {
+    if (!options.forceRestart && !failure && runtime !== 'failed' && runtime !== 'exited') {
       if (session.taskTerminalSurfaceId !== existing.surfaceId) {
         const updated = { ...session, taskTerminalSurfaceId: existing.surfaceId, updatedAt: Date.now() };
         replaceProjectManagerSession(updated);
@@ -11826,7 +11880,7 @@ async function appendRecordedProjectEvent(
     payload?: Record<string, unknown>;
   },
   options: { persistSession?: boolean } = {},
-): Promise<void> {
+): Promise<ProjectManagerEvent | undefined> {
   const created = useStore.getState().appendProjectManagerEvent(event, session.id);
   const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
   if (created && projectManagerEventNeedsUserAttention(created)) {
@@ -11838,6 +11892,7 @@ async function appendRecordedProjectEvent(
   if (created) {
     await persistProjectManagerEventRecord(session, created, { payloadWins: true });
   }
+  return created || undefined;
 }
 
 async function quiesceProjectRuntimeLanes(
@@ -11938,6 +11993,28 @@ async function quiesceProjectRuntimeLanes(
   return { confirmed, failed };
 }
 
+function pausedProjectRuntimeIsQuiescent(session: ProjectManagerSession): boolean {
+  if (session.status !== 'paused') return false;
+  if (session.auxiliaryTask?.status === 'running') return false;
+  const lanes = useStore.getState().supervisor.lanes.filter((lane) => (
+    lane.projectManagerProjectId === session.id && supervisorLaneControlState(lane) !== 'stopped'
+  ));
+  if (lanes.some((lane) => supervisorLaneControlState(lane) === 'active')) return false;
+  const agentStates = (window as any).__wmux_getAgentStates?.() || {};
+  const surfaceIds = new Set<string>([
+    session.managerSurfaceId,
+    session.taskTerminalSurfaceId,
+    session.auxiliaryTaskTerminalSurfaceId,
+    ...lanes.flatMap((lane) => [lane.surfaceId, lane.supervisorSurfaceId]),
+  ].filter(Boolean) as string[]);
+  return [...surfaceIds].every((surfaceId) => {
+    if (Number(agentStates[surfaceId]?.runDepth || 0) > 0) return false;
+    if (remoteTerminalActivity(surfaceId as SurfaceId).activityState === 'working') return false;
+    const buffer = surfaceTerminalRegistry.get(surfaceId as SurfaceId)?.buffer.active;
+    return !buffer || !hasPendingTerminalInput(buffer);
+  });
+}
+
 async function updateProjectDefinition(
   session: ProjectManagerSession,
   params: any,
@@ -12000,6 +12077,39 @@ async function updateProjectDefinition(
     && JSON.stringify(verificationPolicies) === JSON.stringify(projectGoalVerificationPolicies(activeGoal))
     && JSON.stringify(planFiles) === JSON.stringify(session.planFiles);
   if (unchanged && mode === 'refine') return { ok: false, error: '当前主目标和需求没有发生变化' };
+
+  const pureAcceptancePolicyChange = mode === 'refine'
+    && goal === session.goal
+    && JSON.stringify(preconditions) === JSON.stringify(session.preconditions)
+    && JSON.stringify(supervisorNotes) === JSON.stringify(session.supervisorNotes || [])
+    && JSON.stringify(doneWhen) === JSON.stringify(session.doneWhen)
+    && JSON.stringify(planFiles) === JSON.stringify(session.planFiles)
+    && (userAcceptancePolicy !== projectGoalUserAcceptancePolicy(activeGoal)
+      || JSON.stringify(verificationPolicies) !== JSON.stringify(projectGoalVerificationPolicies(activeGoal)));
+
+  if (source === 'user' && pureAcceptancePolicyChange && session.status === 'paused') {
+    if (!pausedProjectRuntimeIsQuiescent(session)) {
+      return {
+        ok: false,
+        error: '项目虽已暂停，但仍有项目 AI、监督 AI、任务 AI 或辅助任务 AI 未静止；请先等待其结束或执行安全重置运行链，再调整验收策略',
+      };
+    }
+    const result = useStore.getState().applyProjectManagerAction({
+      type: 'update-project-acceptance-policy',
+      userAcceptancePolicy,
+      verificationPolicies,
+      reason: String(params?.reason || '').trim().slice(0, 2000)
+        || '用户在项目暂停期间调整验收策略',
+    }, session.id);
+    if (!result.ok) return result;
+    await persistProjectManagerMutation(result, session.id);
+    return {
+      ok: true,
+      event: result.event,
+      session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+      message: '验收策略已立即生效；项目仍保持暂停，历史结果未改写，恢复后将按新策略继续。',
+    };
+  }
 
   const reason = String(params?.reason || '').trim().slice(0, 2000)
     || `${source === 'user' ? '用户通过项目配置' : '项目 AI 根据用户对话'}${mode === 'pivot' ? '切换新的主目标' : '调整当前主目标'}`;
@@ -12134,6 +12244,110 @@ function manualVerificationFeedbackQuestion(
   }, 'waiting');
 }
 
+async function reconcileInterruptedUserChoice(
+  sessionId: string,
+): Promise<ProjectManagerUserQuestion | undefined> {
+  const store = useStore.getState();
+  const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
+  if (!session || session.pendingUserQuestion || ['completed', 'stopped'].includes(session.status)) return undefined;
+  const interrupted = interruptedUserChoiceTransition(session);
+  if (!interrupted) return undefined;
+  const originalOption = interrupted.optionId
+    ? interrupted.question.options.find((option) => option.id === interrupted.optionId)
+    : undefined;
+  const replayMayRepeatSideEffect = projectUserChoiceReplayMayRepeatSideEffect(interrupted.question);
+  const choiceVersionStale = (interrupted.requirementsVersion !== undefined
+    && interrupted.requirementsVersion !== projectRequirementsVersion(session))
+    || (interrupted.authorizationVersion !== undefined
+      && interrupted.authorizationVersion !== projectAuthorizationVersion(session))
+    || (!!interrupted.goalId && interrupted.goalId !== activeProjectGoal(session).id);
+  const normalized = normalizeProjectManagerUserQuestion({
+    category: 'manual-intervention',
+    workItemId: interrupted.question.workItemId,
+    blocker: '软件在用户选择完成持久化后、控制层动作完成前退出',
+    reasonCode: 'recovery-fallback',
+    decisionKey: `interrupted-user-choice:${interrupted.transitionId}`,
+    decisionScope: `project=${session.id}; transition=${interrupted.transitionId}`,
+    question: '检测到上次用户选择尚未完成，请选择恢复方式。',
+    context: [
+      `原问题：${interrupted.question.question}`,
+      `原选择：${originalOption?.label || interrupted.optionId || interrupted.answer}`,
+      interrupted.question.workItemId ? `工作项：${interrupted.question.workItemId}` : '',
+      '项目已保持等待，控制层不会自动重放可能包含副作用的旧操作。',
+      replayMayRepeatSideEffect
+        ? '重要：原选择可能涉及实机、生产、凭据、访问授权或删除，当前无法证明副作用是否已经执行；推荐保持暂停并先人工核对，不要盲目重试。'
+        : '',
+      choiceVersionStale
+        ? '原选择所属的目标、需求或授权版本已经变化，禁止重试旧选择；请保持暂停、执行控制层安全重置或安全停止项目。'
+        : '',
+      '“控制层安全重置”不删除项目、代码或历史证据，只关闭旧 AI 运行链并把未完成工作项转为暂停。',
+    ].filter(Boolean).join('\n'),
+    options: [
+      ...(!choiceVersionStale && !replayMayRepeatSideEffect ? [{
+        id: 'retry-recorded-choice',
+        label: '重试原选择',
+        description: '推荐：按已经持久化的原选项重新执行；控制层会继续使用相同问题和工作项。',
+      }] : []),
+      {
+        id: 'control-plane-reset',
+        label: '控制层安全重置',
+        description: '关闭全部旧 AI 运行时并清除异常绑定，保留项目、代码、证据和历史记录，项目保持暂停。',
+      },
+      {
+        id: 'keep-paused',
+        label: '保持暂停',
+        description: '放弃继续执行该选择，保留所有当前状态，稍后再处理。',
+      },
+      {
+        id: 'stop-project',
+        label: '安全停止项目',
+        description: '停止项目及全部 AI 运行时，保留持久记录，不删除项目目录或代码。',
+      },
+    ],
+    recommendedOptionId: replayMayRepeatSideEffect || choiceVersionStale
+      ? 'keep-paused'
+      : 'retry-recorded-choice',
+  }, session.status, { allowRecoveryFallback: true });
+  if (!normalized.question) return undefined;
+  const result = store.applyProjectManagerAction({
+    type: 'request-user-clarification',
+    question: normalized.question,
+  }, session.id);
+  if (!result.ok) return undefined;
+  for (const laneId of projectSupervisorLaneIds(session)) {
+    store.pauseSupervisorLane(laneId, '检测到中断的用户选择事务，等待用户决定恢复方式');
+  }
+  await persistProjectManagerMutation(result, session.id);
+  notifyProjectManagerUserQuestion(session, normalized.question);
+  return normalized.question;
+}
+
+async function resetProjectRuntimeFromControlPlane(
+  sessionId: string,
+  reason: string,
+): Promise<{ ok: boolean; error?: string; session?: ProjectManagerSession }> {
+  const store = useStore.getState();
+  const session = store.projectManagers.find((candidate) => candidate.id === sessionId);
+  if (!session || !['paused', 'waiting'].includes(session.status)) {
+    return { ok: false, error: '只有已经暂停或等待处理的项目可以执行控制层安全重置' };
+  }
+  const result = store.applyProjectManagerAction({
+    type: 'reset-project-runtime',
+    reason,
+  }, session.id);
+  if (!result.ok) return result;
+  await persistProjectManagerMutation(result, session.id);
+  try {
+    await stopManagedProjectRuntime(session, '用户执行控制层安全重置');
+  } catch (error) {
+    console.warn('[project-manager] control-plane reset runtime teardown failed', error);
+  }
+  return {
+    ok: true,
+    session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+  };
+}
+
 async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const session = projectSessionForParams(params);
   const pending = session?.pendingUserQuestion;
@@ -12180,7 +12394,124 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     ? detail && detail !== option.label ? `${option.label}：${detail}` : option.label
     : detail;
   if (!answer) return { ok: false, error: '请选择一个选项或填写答复' };
+  if (pending.category === 'manual-intervention' && pending.reasonCode === 'recovery-fallback') {
+    const transitionId = pending.decisionKey?.startsWith('interrupted-user-choice:')
+      ? pending.decisionKey.slice('interrupted-user-choice:'.length)
+      : '';
+    const interrupted = interruptedUserChoiceTransition(session);
+    if (!transitionId || interrupted?.transitionId !== transitionId) {
+      return { ok: false, error: '中断的用户选择记录已变化，请刷新项目状态' };
+    }
+    if (optionId === 'retry-recorded-choice') {
+      await appendRecordedProjectEvent(session, {
+        kind: 'user-clarification-invalidated',
+        workItemId: pending.workItemId,
+        summary: '用户选择重试软件退出前已记录的原操作，恢复问卷已被原问题替代',
+        payload: { questionId: pending.id, reason: 'retry-interrupted-user-choice', attentionRequired: false },
+      });
+      const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+      const restored = {
+        ...current,
+        status: 'waiting' as const,
+        pendingUserQuestion: interrupted.question,
+        updatedAt: Date.now(),
+      };
+      replaceProjectManagerSession(restored);
+      await (window as any).wmux?.projectManager?.saveSession?.(restored);
+      return answerProjectManagerUserQuestion({
+        projectId: session.id,
+        questionId: interrupted.question.id,
+        optionId: interrupted.optionId,
+        answer: interrupted.answerInput,
+        source: interrupted.answeredBy,
+        retryOfTransitionId: interrupted.transitionId,
+      });
+    }
+    if (optionId === 'control-plane-reset') {
+      const reset = await resetProjectRuntimeFromControlPlane(
+        session.id,
+        '软件退出中断用户选择后，用户执行控制层安全重置；项目数据与证据均保留',
+      );
+      if (!reset.ok) return reset;
+      await appendRecordedProjectEvent(reset.session || session, {
+        kind: 'user-choice-transition-completed',
+        workItemId: interrupted.question.workItemId,
+        summary: '中断的用户选择已由控制层安全重置收敛',
+        payload: { transitionId, outcome: 'control-plane-reset', attentionRequired: false },
+      });
+      return { ok: true, session: reset.session, message: '旧 AI 运行链已安全重置；项目、代码、证据和历史记录均已保留，项目保持暂停。' };
+    }
+    if (optionId === 'stop-project') {
+      const store = useStore.getState();
+      const stopped = store.applyProjectManagerAction({
+        type: 'stop-project',
+        reason: '软件退出中断用户选择后，用户选择安全停止项目',
+        stopKind: 'user-request',
+      }, session.id);
+      if (!stopped.ok) return stopped;
+      await persistProjectManagerMutation(stopped, session.id);
+      await stopManagedProjectRuntime(session, '用户通过最终兜底安全停止项目');
+      const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+      await appendRecordedProjectEvent(current, {
+        kind: 'user-choice-transition-completed',
+        workItemId: interrupted.question.workItemId,
+        summary: '中断的用户选择已通过安全停止项目收敛',
+        payload: { transitionId, outcome: 'stop-project', attentionRequired: false },
+      });
+      return { ok: true, session: current, message: '项目及全部 AI 运行时已安全停止；项目目录、代码和持久记录未删除。' };
+    }
+    if (optionId === 'keep-paused') {
+      const store = useStore.getState();
+      const paused = store.applyProjectManagerAction({
+        type: 'pause-project',
+        reason: '用户放弃继续执行软件退出前的中断选择并保持暂停',
+        source: 'system',
+        attentionRequired: false,
+      }, session.id);
+      if (!paused.ok) return paused;
+      await persistProjectManagerMutation(paused, session.id);
+      const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+      replaceProjectManagerSession({ ...current, pendingUserQuestion: undefined, updatedAt: Date.now() });
+      for (const laneId of projectSupervisorLaneIds(session)) {
+        store.pauseSupervisorLane(laneId, '用户通过最终兜底选择保持暂停');
+      }
+      await (window as any).wmux?.projectManager?.saveSession?.(
+        useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+      );
+      await appendRecordedProjectEvent(current, {
+        kind: 'user-choice-transition-completed',
+        workItemId: interrupted.question.workItemId,
+        summary: '中断的用户选择已由用户明确放弃，项目保持暂停',
+        payload: { transitionId, outcome: 'keep-paused', attentionRequired: false },
+      });
+      return {
+        ok: true,
+        session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+        message: '已放弃重放原选择，项目保持暂停；后续仍可使用控制层安全重置。',
+      };
+    }
+    return { ok: false, error: '请选择一种中断恢复方式' };
+  }
   const reuseForSimilar = params?.reuseForSimilar === true;
+  if (reuseForSimilar
+    && pending.reasonCode === 'destructive-action'
+    && !projectManagerDestructiveDecisionScopeMatches(
+      pending.decisionScope,
+      session.id,
+      pending.workItemId,
+    )) {
+    return { ok: false, error: '删除复用授权的 project/workItem 必须与当前项目和当前工作项完全一致' };
+  }
+  if (reuseForSimilar && !projectManagerQuestionAllowsReusableDecision(pending)) {
+    return {
+      ok: false,
+      error: '当前问题不能授权自动复用；仅普通需求选择、明确范围的上机/访问授权和结构化单条测试记录清理可以复用，显式 decisionKey 必须同时提供 decisionScope',
+    };
+  }
+  const releasesVerificationWorkItem = pending.category === 'manual-intervention'
+    && pending.reasonCode === 'verification-limited'
+    && !!pending.workItemId
+    && ['defer-verification', 'skip-verification', 'manual-verify-defer'].includes(optionId || '');
   if (
     optionId === 'draft-handled'
     && pending.category === 'manual-intervention'
@@ -12196,6 +12527,45 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       return { ok: false, error: '任务终端输入框仍有未提交内容；请先提交或清空原草稿，再确认已处理' };
     }
   }
+  if (releasesVerificationWorkItem && pending.workItemId) {
+    const quiesce = await quiesceProjectRuntimeLanes(
+      session,
+      `用户${optionId === 'skip-verification' ? '跳过' : '暂缓'}当前验证，冻结旧验证执行链`,
+      pending.workItemId,
+    );
+    if (quiesce.failed.length > 0) {
+      return {
+        ok: false,
+        error: `已暂停旧监督通道，但未能确认任务 AI 停止（${quiesce.failed.join('、')}）；用户验证决定尚未写入，请先处理异常终端后重试`,
+      };
+    }
+  }
+  const transitionSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+  const previousInterruptedTransition = interruptedUserChoiceTransition(transitionSession);
+  const retryOfTransitionId = String(params?.retryOfTransitionId || '').trim()
+    || (previousInterruptedTransition?.question.id === pending.id
+      ? previousInterruptedTransition.transitionId
+      : '');
+  const transitionStarted = await appendRecordedProjectEvent(
+    transitionSession,
+    {
+      kind: 'user-choice-transition-started',
+      workItemId: pending.workItemId,
+      summary: `开始执行用户选择：${option?.label || answer}`,
+      payload: {
+        question: pending,
+        optionId,
+        answer,
+        answerInput: detail,
+        answeredBy,
+        requirementsVersion: projectRequirementsVersion(transitionSession),
+        authorizationVersion: projectAuthorizationVersion(transitionSession),
+        goalId: activeProjectGoal(transitionSession).id,
+        retryOfTransitionId: retryOfTransitionId || undefined,
+        attentionRequired: false,
+      },
+    },
+  );
   const store = useStore.getState();
   const result = store.applyProjectManagerAction({
     type: 'answer-user-clarification',
@@ -12207,6 +12577,13 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   }, session.id);
   if (!result.ok) return result;
   let updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
+  const retainedVerificationLanes = releasesVerificationWorkItem && pending.workItemId && updated
+    ? releaseProjectWorkItemAssignmentForReuse(
+        updated,
+        pending.workItemId,
+        `用户${optionId === 'skip-verification' ? '跳过' : '暂缓'}当前验证；旧 assignment 已解除，所属阶段保持未完成`,
+      )
+    : [];
   const manualVerificationDeferredBeforePersist = pending.category === 'manual-intervention'
     && pending.reasonCode === 'verification-limited'
     && optionId === 'manual-verify-defer';
@@ -12223,6 +12600,7 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   }
   await persistProjectManagerMutation(result, session.id);
   let choiceMessage = '';
+  let choiceTransitionFailure = '';
   const taskInputConflictChoice = pending.category === 'manual-intervention'
     && pending.reasonCode === 'task-input-conflict';
   const runtimeRecoveryChoice = pending.category === 'manual-intervention'
@@ -12287,31 +12665,71 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
         '原工作项和监督/任务绑定已停止，不得以同一工作项 ID 恢复。立即读取 project status，重排依赖并为仍需完成的阶段建立新的聚焦工作项；只有主目标因此无法达成时才再次询问用户。',
       ].join('\n'), session.id, { priority: true, dedupeKey: `user-stopped-work-item:${session.id}:${pending.workItemId}` });
       choiceMessage = '该工作项及其监督/任务绑定已停止，项目 AI 将重新规划剩余目标。';
+    } else {
+      const currentItem = useStore.getState().projectManagers
+        .find((candidate) => candidate.id === session.id)?.workItems
+        .find((candidate) => candidate.id === pending.workItemId);
+      if (currentItem?.status === 'stopped') {
+        choiceMessage = '该工作项已经停止；控制层保留现状并等待项目 AI 重排剩余目标。';
+      } else {
+        choiceTransitionFailure = intervened.error || '控制层未能停止用户指定的异常工作项';
+      }
     }
-  } else if (runtimeRecoveryChoice && optionId === 'recover-latest-protocol' && updated) {
-    const runtimePromise = ensureProjectManagerRuntime(session.id, { forceRestart: true });
+  } else if (runtimeRecoveryChoice && [
+    'recover-latest-protocol',
+    'rebuild-manager-runtime',
+    'rebuild-supervisor-runtime',
+    'rebuild-task-runtime',
+  ].includes(optionId || '') && updated) {
+    const recoveryRole = optionId === 'rebuild-task-runtime'
+      ? 'task'
+      : optionId === 'rebuild-supervisor-runtime'
+        ? 'supervisor'
+        : 'manager';
+    let runtimePromise: Promise<{ ok: boolean; error?: string }>;
+    if (recoveryRole === 'task') {
+      runtimePromise = ensureProjectTaskRuntime(session.id, { forceRestart: true }).then((taskRuntime) => (
+        taskRuntime.ok
+          ? ensureProjectSupervisorRuntime(session.id, { forceRestart: true })
+          : taskRuntime
+      ));
+    } else if (recoveryRole === 'supervisor') {
+      runtimePromise = ensureProjectTaskRuntime(session.id).then((taskRuntime) => (
+        taskRuntime.ok
+          ? ensureProjectSupervisorRuntime(session.id, { forceRestart: true })
+          : taskRuntime
+      ));
+    } else {
+      runtimePromise = ensureProjectManagerRuntime(session.id, { forceRestart: true });
+    }
     queueProjectManagerDelivery([
       '[用户已选择按最新协议恢复｜先核对再继续]',
       `项目：${session.id}${pending.workItemId ? `；工作项：${pending.workItemId}` : ''}`,
       `原异常：${pending.blocker || pending.context || pending.question}`,
-      '项目 AI 运行时将由控制层重建。立即读取 project status 和当前证据，重建必要监督绑定；只有确认当前工作项仍有效时才显式恢复，不得重复已完成工作或回退旧协议。',
+      `控制层正在重建${recoveryRole === 'task' ? '任务 AI 和对应监督绑定' : recoveryRole === 'supervisor' ? '专属监督 AI' : '项目 AI'}。重建成功后读取 project status 和当前证据；只有确认当前工作项仍有效时才显式恢复，不得重复已完成工作或回退旧协议。`,
     ].join('\n'), session.id, {
       priority: true,
       dedupeKey: `user-runtime-recovery:${session.id}:${pending.id}`,
     });
     const runtime = await runtimePromise;
     if (!runtime.ok) {
-      const reason = runtime.error || '项目 AI 运行时仍无法按最新协议重建';
+      const reason = runtime.error || `${recoveryRole} 运行时仍无法按最新协议重建`;
       await reportProjectRuntimeFailureForUserDecision(
         session.id,
-        'manager-runtime-failed',
+        recoveryRole === 'task'
+          ? 'task-runtime-failed'
+          : recoveryRole === 'supervisor'
+            ? 'supervisor-runtime-failed'
+            : 'manager-runtime-failed',
         reason,
         pending.workItemId,
       );
       updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || updated;
-      choiceMessage = '项目 AI 运行时再次重建失败，已保留当前成果并重新显示处理选项。';
+      choiceMessage = '所选 AI 运行时再次重建失败，已保留当前成果并重新显示处理选项。';
     } else {
-      choiceMessage = '项目 AI 运行时已重建，恢复指令已持久排队；项目保持等待，待项目 AI 核对后继续。';
+      choiceMessage = recoveryRole === 'manager'
+        ? '项目 AI 运行时已重建，恢复指令已持久排队；项目保持等待，待项目 AI 核对后继续。'
+        : '所选 AI 运行时已重建，恢复指令已持久排队；项目保持暂停或等待，待项目 AI 核对后再继续。';
     }
   } else if (verificationLimitedChoice && optionId === 'alternative-validation' && updated) {
     queueProjectManagerDelivery([
@@ -12338,11 +12756,6 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   } else if (verificationLimitedChoice && optionId === 'skip-verification'
     && pending.workItemId && updated) {
     const skippedWorkItem = session.workItems.find((candidate) => candidate.id === pending.workItemId);
-    const retainedLanes = releaseProjectWorkItemAssignmentForReuse(
-      updated,
-      pending.workItemId,
-      '用户选择跳过当前验证工作项；旧 assignment 已解除，项目任务 AI 与监督 AI 保留供后续工作项复用',
-    );
     await appendRecordedProjectEvent(updated, {
       kind: 'user-work-item-intervention',
       workItemId: pending.workItemId,
@@ -12352,8 +12765,8 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
         reason: '用户选择跳过当前验证工作项，后续由新计划重新承接未验证项',
         previousStatus: skippedWorkItem?.status,
         title: skippedWorkItem?.title,
-        retainedLaneIds: retainedLanes.map((lane) => lane.id),
-        runtimeRetained: retainedLanes.length > 0,
+        retainedLaneIds: retainedVerificationLanes.map((lane) => lane.id),
+        runtimeRetained: retainedVerificationLanes.length > 0,
         attentionRequired: false,
       },
     });
@@ -12484,6 +12897,19 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     });
     choiceMessage = '用户选择已记录为项目内部恢复义务；控制层不会重复询问同一问题。';
   }
+  if (choiceTransitionFailure) {
+    const fallback = await reconcileInterruptedUserChoice(session.id);
+    return {
+      ok: true,
+      event: result.event,
+      session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
+      question: fallback,
+      userActionRequired: !!fallback,
+      message: fallback
+        ? `用户选择已持久化，但直接状态迁移失败：${choiceTransitionFailure}。已显示控制层兜底选项。`
+        : `用户选择已持久化，但直接状态迁移失败：${choiceTransitionFailure}。项目保持等待，可使用安全重置运行链。`,
+    };
+  }
   if (!choiceMessage) {
     deliverProjectManagerMessage([
       '[用户澄清答复]',
@@ -12497,6 +12923,21 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
         : '',
       `项目和监督仍保持等待。请先依据答复决定恢复、改线、继续等待或结束；只有选择继续时才执行 wmux project resume --project ${session.id}。不得扩张原项目范围。`,
     ].join('\n'), false, session.id);
+  }
+  if (transitionStarted) {
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || updated || session;
+    await appendRecordedProjectEvent(current, {
+      kind: 'user-choice-transition-completed',
+      workItemId: pending.workItemId,
+      summary: `用户选择已完成控制层处理：${option?.label || answer}`,
+      payload: {
+        transitionId: transitionStarted.id,
+        optionId,
+        outcome: choiceMessage || 'delivered-to-project-manager',
+        attentionRequired: false,
+      },
+    });
+    updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || current;
   }
   return {
     ok: true,
@@ -14100,11 +14541,20 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
         error: `任务 ${staleTask.id} 仍绑定旧需求或授权版本；请先用 task-update 显式重绑（rebindCurrentRequirements=true）或停止该任务`,
       };
     }
+    const intervenedActiveWorkItem = projectVerificationIntervenedActiveWorkItem(current);
     const result = store.applyProjectManagerAction({
       type: 'resume-project',
       reason: String(params?.reason || '由项目管理 AI 恢复'),
       acceptRequirementsVersion: true,
     }, session.id);
+    if (result.ok && intervenedActiveWorkItem) {
+      const resumed = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || current;
+      releaseProjectWorkItemAssignmentForReuse(
+        resumed,
+        intervenedActiveWorkItem.id,
+        '恢复项目时释放已收到用户验证干预裁决的旧 assignment，允许后续独立工作项接管执行槽位',
+      );
+    }
     for (const recoveryKey of [...managedAgentRecoveryFailures]) {
       if (recoveryKey.startsWith(`${session.id}:`)) managedAgentRecoveryFailures.delete(recoveryKey);
     }
@@ -14361,12 +14811,17 @@ export function initPipeBridge(): void {
     scheduleProjectProgressCheck(session.id);
     queueMicrotask(() => {
       void (async () => {
-        if (['runtime-recovery', 'verification-limited'].includes(
-          session.pendingUserQuestion?.reasonCode || '',
-        )) {
-          await reconcileRecoveredProjectQuestion(session.id, 'application-restart');
-        } else if (unresolvedPause) {
-          await requestProjectPauseUserDecision(session.id, unresolvedPause.summary);
+        const interruptedQuestion = await reconcileInterruptedUserChoice(session.id);
+        const afterInterruptedChoice = useStore.getState().projectManagers
+          .find((candidate) => candidate.id === session.id) || session;
+        if (!interruptedQuestion) {
+          if (['runtime-recovery', 'verification-limited'].includes(
+            afterInterruptedChoice.pendingUserQuestion?.reasonCode || '',
+          )) {
+            await reconcileRecoveredProjectQuestion(session.id, 'application-restart');
+          } else if (unresolvedPause) {
+            await requestProjectPauseUserDecision(session.id, unresolvedPause.summary);
+          }
         }
         const afterQuestionRecovery = useStore.getState().projectManagers
           .find((candidate) => candidate.id === session.id) || session;
@@ -14575,13 +15030,16 @@ export function initPipeBridge(): void {
                 console.warn('[project-manager] restored succession audit append failed', error);
               }
             }
-            const unresolvedPause = unresolvedProjectPauseForUserDecision(
-              useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session,
-            );
+            const interruptedQuestion = await reconcileInterruptedUserChoice(session.id);
+            const unresolvedPause = interruptedQuestion
+              ? undefined
+              : unresolvedProjectPauseForUserDecision(
+                  useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session,
+                );
             const pauseQuestionCreated = unresolvedPause
               ? (await requestProjectPauseUserDecision(session.id, unresolvedPause.summary)).ok
               : false;
-            if (!pauseQuestionCreated) {
+            if (!interruptedQuestion && !pauseQuestionCreated) {
               await reconcileRecoveredProjectQuestion(session.id, 'application-restart');
             }
             const currentSituation = currentSituations.get(session.id);
@@ -14614,6 +15072,8 @@ export function initPipeBridge(): void {
           }
           const failures: string[] = [];
           for (const session of recoveredSessions) {
+            const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+            if (current.pendingUserQuestion?.reasonCode === 'recovery-fallback') continue;
             const taskRuntime = await ensureProjectTaskRuntime(session.id);
             const auxiliaryRuntime = taskRuntime.ok
               ? await ensureProjectAuxiliaryRuntime(session.id)
@@ -15357,6 +15817,18 @@ export function initPipeBridge(): void {
           : '项目前置条件已更新；项目 AI 与监督 AI 通知均已持久排队，等待对应 Agent 空闲后确认。',
       };
     }
+    if (action === 'emergency-reset') {
+      const result = await resetProjectRuntimeFromControlPlane(
+        session.id,
+        String(params?.reason || '用户从项目中心执行最终兜底：控制层安全重置运行链'),
+      );
+      return result.ok
+        ? {
+            ...result,
+            message: '旧项目 AI、监督 AI 和任务 AI 运行链已关闭；项目、代码、证据和历史记录均已保留，项目保持暂停。',
+          }
+        : result;
+    }
     if (action === 'pause' || action === 'resume' || action === 'stop') {
       const reason = String(params?.reason || `由飞书${action}`).trim();
       if (action === 'resume'
@@ -15498,6 +15970,9 @@ export function initPipeBridge(): void {
           return { ok: false, error: `任务 ${staleTask.id} 尚未由项目 AI 重绑当前需求和授权版本，不能直接恢复` };
         }
       }
+      const intervenedActiveWorkItem = action === 'resume'
+        ? projectVerificationIntervenedActiveWorkItem(session)
+        : undefined;
       const result = action === 'pause'
         ? store.applyProjectManagerAction({ type: 'pause-project', reason }, session.id)
         : action === 'resume'
@@ -15512,6 +15987,14 @@ export function initPipeBridge(): void {
         for (const laneId of projectSupervisorLaneIds(session)) store.pauseSupervisorLane(laneId, '由飞书暂停项目管理会话');
       }
       if (action === 'resume') {
+        if (result.ok && intervenedActiveWorkItem) {
+          const resumed = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
+          releaseProjectWorkItemAssignmentForReuse(
+            resumed,
+            intervenedActiveWorkItem.id,
+            '用户恢复项目时释放已收到验证干预裁决的旧 assignment，允许后续独立工作项接管执行槽位',
+          );
+        }
         resumeEligibleProjectSupervisorLanes(session.id, '由飞书恢复项目管理会话');
       }
       if (action === 'pause' || action === 'stop') {
@@ -17525,6 +18008,22 @@ export function initPipeBridge(): void {
       return { ok: false, error: '工作终端仍在阻塞；请明确回答技术问题、确认低风险权限，或使用 needs-human' };
     } else if (next && outcome !== 'needs-human') {
       if (projectManagedLane && (!agentState?.state || agentState.state === 'unknown')) {
+        const taskShellFailure = nestedAgentShellFailureDetail(lane.surfaceId);
+        if (taskShellFailure && projectSession) {
+          markTerminalRuntimeFailed(lane.surfaceId, taskShellFailure);
+          (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
+            projectId: projectSession.id,
+            workItemId: lane.projectWorkItemId,
+            laneId: lane.id,
+            surfaceId: lane.surfaceId,
+            role: 'task',
+            detail: taskShellFailure,
+          });
+          return {
+            ok: false,
+            error: `任务 AI 运行时已退出，控制层正在重建：${taskShellFailure}`,
+          };
+        }
         return {
           ok: false,
           error: '项目任务终端尚未产生可信 Agent 生命周期，禁止投递首条任务契约；请等待冷启动任务的 UserPromptSubmit/Stop hook 后重新读取状态，不要盲目重发',

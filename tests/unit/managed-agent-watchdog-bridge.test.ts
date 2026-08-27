@@ -203,12 +203,15 @@ describe('managed agent watchdog bridge', () => {
       title: '项目执行异常，已安全暂停',
     }));
     expect(useStore.getState().projectManager).toMatchObject({
-      status: 'paused',
+      status: 'waiting',
       events: expect.arrayContaining([expect.objectContaining({
         kind: 'project-execution-stalled',
         payload: expect.objectContaining({ automaticPause: true }),
       })]),
     });
-    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toMatchObject({
+      reasonCode: 'runtime-recovery',
+      recommendedOptionId: 'rebuild-manager-runtime',
+    });
   });
 });
