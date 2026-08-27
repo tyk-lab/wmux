@@ -94,7 +94,7 @@ export default function ProjectManagerPanel() {
           <strong>{activeAlert.summary}</strong>
         </button>
       )}
-      {controlMessage && <div className="sup-panel__freedom" role="status">{controlMessage}</div>}
+      {controlMessage && <div className="sup-panel__freedom project-manager-panel__message" role="status" title={controlMessage}>{controlMessage}</div>}
       <div className="sup-panel__compact-actions">
         <button type="button" onClick={() => openProjectManagerConsole(session.id)}>打开控制台</button>
         {projectSupervisorView && (

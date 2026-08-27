@@ -2638,6 +2638,14 @@
   font-size: 9px;
 }
 
+.project-manager-panel__message {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .sup-panel__project-attention {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

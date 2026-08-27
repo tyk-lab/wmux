@@ -10,6 +10,7 @@ import {
   projectManagerQuestionReusableDecisionScope,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
+  projectWorkItemDisplayTitle,
   type ProjectPlanFileSnapshot,
 } from '../../../shared/project-manager';
 import {
@@ -1840,7 +1841,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <dt>预期成果</dt><dd>{subgoal.outcome}</dd>
                           <dt>验收依据</dt><dd>{subgoal.acceptance.join('\n')}</dd>
                           <dt>依赖阶段</dt><dd>{subgoal.dependencies.length > 0 ? subgoal.dependencies.join('、') : '无'}</dd>
-                          <dt>工作项安排</dt><dd>{stageWorkItems.length > 0 ? stageWorkItems.map((item) => `${item.title}（${STATUS_LABELS[item.status] || item.status}）`).join('\n') : '尚未拆分工作项'}</dd>
+                          <dt>工作项安排</dt><dd>{stageWorkItems.length > 0 ? stageWorkItems.map((item) => `${projectWorkItemDisplayTitle(item)}（${STATUS_LABELS[item.status] || item.status}）`).join('\n') : '尚未拆分工作项'}</dd>
                           {completion && <>
                             <dt>完成结果</dt><dd>{completion.summary}</dd>
                             <dt>完成验证</dt><dd>{completion.validation.join('\n') || '监督已确认全部验收条件'}</dd>
@@ -1865,6 +1866,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <div className="project-manager-dialog__work-items project-manager-dialog__work-item-decisions">
                   {currentWorkItems.length === 0 && <div className="supervisor-dialog__empty">项目 AI 尚未为当前主目标拆分工作项。</div>}
                   {currentWorkItems.map((item) => {
+                    const itemTitle = projectWorkItemDisplayTitle(item);
                     const itemLane = managedLanes.find((lane) => lane.id === item.supervisorLaneId);
                     const itemTransition = [...(session.pendingSupervisorTransitions || [])].reverse().find((transition) => (
                       transition.workItemId === item.id || transition.laneId === item.supervisorLaneId
@@ -1890,7 +1892,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     });
                     const supervisorPlanView = buildSupervisorPlanView({
                       source: 'project-ai',
-                      task: item.title,
+                      task: itemTitle,
                       projectTaskBatch: itemLane?.projectTaskBatch,
                       latestDecision: itemLane?.decisions?.[0],
                       pendingTransition: itemTransition,
@@ -1924,7 +1926,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             name={`work-item-intervention-${session.id}`}
                             checked={workItemInterventionId === item.id}
                             disabled={busy || !canIntervene}
-                            aria-label={`选择工作项：${item.title}`}
+                            aria-label={`选择工作项：${itemTitle}`}
                             title={canIntervene ? '选择此工作项进行干预' : '该工作项已经结束'}
                             onClick={(event) => event.stopPropagation()}
                             onChange={() => {
@@ -1932,7 +1934,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               setWorkItemInterventionNotice('');
                             }}
                           />
-                          <strong>{item.title}</strong><span>{statusLabel}</span>
+                          <strong title={item.id}>{itemTitle}</strong><span>{statusLabel}</span>
                         </summary>
                         <dl>
                           <dt>执行者</dt><dd>项目唯一任务 AI；当前并行边界为 {item.taskWorkMode === 'multi-thread' ? '允许内部并行' : '要求串行'}，是否并行及内部具体分工由任务 AI 自主决定</dd>

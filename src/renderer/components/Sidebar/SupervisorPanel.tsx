@@ -57,7 +57,7 @@ import {
 import { announceSupervisorWaitingForDirection } from '../../supervisor/waiting-notification';
 import { createLeaf, findLeaf, getAllPaneIds } from '../../store/split-utils';
 import type { PaneId, SurfaceId, SurfaceRef, WorkspaceId } from '../../../shared/types';
-import { projectWorkItemCompletionResult } from '../../../shared/project-manager';
+import { projectWorkItemCompletionResult, projectWorkItemDisplayTitle } from '../../../shared/project-manager';
 import type { SupervisedTerminalSnapshot } from '../../../shared/supervisor-recovery';
 import {
   normalizeTaskChildThreadResponsibilities,
@@ -1589,9 +1589,10 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     latestBlocker: item.latestBlocker,
                     supervisorAssignmentPending,
                   });
+                  const itemTitle = projectWorkItemDisplayTitle(item);
                   const planView = buildSupervisorPlanView({
                     source: 'project-ai',
-                    task: item.title,
+                    task: itemTitle,
                     projectTaskBatch: lane.projectTaskBatch,
                     latestDecision: lane.decisions?.[0],
                     pendingTransition,
@@ -1601,7 +1602,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                   });
                   const taskExecution = summarizeTaskExecution({
                     controlState: laneState,
-                    currentTask: lane.currentTask || item.title,
+                    currentTask: lane.currentTask || itemTitle,
                     awaitingReview: lane.awaitingReview,
                     stopConfirmed: lane.stopConfirmed,
                   }, visibleAgentStates[lane.surfaceId]);
@@ -1610,7 +1611,7 @@ export default function SupervisorPanel({ expanded = false, workspaceId, paneId,
                     <article key={lane.id} data-status={item.status} data-active="1">
                       <div className="sup-panel__project-plan-row">
                         <span className="sup-panel__project-plan-dot" />
-                        <strong title={item.title}>{item.title}</strong>
+                        <strong title={item.id}>{itemTitle}</strong>
                         <em>{managedStatus.workItemLabel}</em>
                       </div>
                       <div className="sup-panel__project-plan-meta">

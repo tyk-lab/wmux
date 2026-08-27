@@ -5,6 +5,7 @@ import {
   normalizeProjectExecutionBudget,
   projectSubgoalCompletionResult,
   projectWorkItemCompletionResult,
+  projectWorkItemDisplayTitle,
   projectWorkItemReady,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
@@ -54,6 +55,15 @@ function workItem(id: string, status: ProjectWorkItem['status'], dependencies: s
 }
 
 describe('project-manager domain', () => {
+  it('uses the Chinese objective when the stored title is only the internal task id', () => {
+    const internalTitle = workItem('task-stage-1-foundation-r3', 'planned');
+    internalTitle.contract.objective = '核验阶段一原型并形成可复核证据';
+    expect(projectWorkItemDisplayTitle(internalTitle)).toBe('核验阶段一原型并形成可复核证据');
+
+    const explicitTitle = { ...internalTitle, title: '阶段一原型验收' };
+    expect(projectWorkItemDisplayTitle(explicitTitle)).toBe('阶段一原型验收');
+  });
+
   it('only schedules work after every dependency completes', () => {
     const dependency = workItem('base', 'running');
     const target = workItem('ui', 'waiting-dependencies', ['base']);

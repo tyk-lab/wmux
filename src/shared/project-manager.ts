@@ -781,6 +781,14 @@ export interface ProjectWorkItem {
   latestBlocker?: string;
 }
 
+export function projectWorkItemDisplayTitle(
+  item: Pick<ProjectWorkItem, 'id' | 'title' | 'contract'>,
+): string {
+  const title = item.title.trim();
+  const objective = item.contract.objective.trim();
+  return (!title || title === item.id ? objective : title) || item.id;
+}
+
 export type ProjectTaskComplexityLevel = 'low' | 'medium' | 'high';
 export type ProjectTaskSplitDecision = 'single-task' | 'split-before-dispatch';
 
