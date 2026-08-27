@@ -7658,6 +7658,7 @@ function queueInterruptedAgentRecovery(
   target: ManagedProjectAgentTarget,
   runtime: ManagedAgentWatchdogRuntime,
 ): void {
+  if (!managedProjectWatchdogAllows(target)) return;
   const recoveryId = `watchdog-${runtime.surfaceId}-${runtime.generation}`;
   const source = runtime.sourceTask ? `\n原回合摘要：${runtime.sourceTask}` : '';
   if (target.role === 'manager') {
@@ -7709,10 +7710,7 @@ function queueInterruptedAgentRecovery(
   signalSupervisorDeliveryReady();
 }
 
-async function forceRecoverManagedAgent(
-  target: ManagedProjectAgentTarget,
-  runtime: ManagedAgentWatchdogRuntime,
-): Promise<void> {
+function managedProjectWatchdogAllows(target: ManagedProjectAgentTarget): boolean {
   reconcileProjectExecutionResponsibility(target.session.id);
   const currentSession = useStore.getState().projectManagers
     .find((candidate) => candidate.id === target.session.id);
@@ -7720,7 +7718,14 @@ async function forceRecoverManagedAgent(
     hasPendingManagerDelivery: (currentSession.pendingManagerDeliveries || []).length > 0
       || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === currentSession.id),
   }) : undefined;
-  if (!disposition || !projectWatchdogMayInterveneForRole(disposition, target.role)) return;
+  return !!disposition && projectWatchdogMayInterveneForRole(disposition, target.role);
+}
+
+async function forceRecoverManagedAgent(
+  target: ManagedProjectAgentTarget,
+  runtime: ManagedAgentWatchdogRuntime,
+): Promise<void> {
+  if (!managedProjectWatchdogAllows(target)) return;
   const recoveryKey = managedProjectRuntimeRecoveryKey({
     projectId: target.session.id,
     role: target.role,
@@ -7893,14 +7898,7 @@ function armManagedAgentWatchdog(surfaceId: string): void {
       clearManagedAgentWatchdog(surfaceId);
       return;
     }
-    reconcileProjectExecutionResponsibility(target.session.id);
-    const currentSession = useStore.getState().projectManagers
-      .find((candidate) => candidate.id === target.session.id);
-    const disposition = currentSession ? classifyProjectWatchdogScenario(currentSession, {
-      hasPendingManagerDelivery: (currentSession.pendingManagerDeliveries || []).length > 0
-        || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === currentSession.id),
-    }) : undefined;
-    if (!disposition || !projectWatchdogMayInterveneForRole(disposition, target.role)) {
+    if (!managedProjectWatchdogAllows(target)) {
       clearManagedAgentWatchdog(surfaceId);
       return;
     }
@@ -10279,7 +10277,11 @@ async function ensureProjectDeadlockRecovery(
     }
     let runtimeRestarted = false;
     if (managerRuntimeUnavailable) {
-      const runtime = await ensureProjectManagerRuntime(session.id, { forceRestart: true });
+      const runtime = await ensureProjectManagerRuntime(session.id, {
+        forceRestart: true,
+        automaticRecovery: true,
+      });
+      if (runtime.cancelled) return false;
       if (!runtime.ok) {
         for (const laneId of projectSupervisorLaneIds(session)) {
           store.pauseSupervisorLane(laneId, '项目 AI 运行时内部恢复失败');
@@ -11107,11 +11109,22 @@ type ProjectManagerRuntimeEnsureResult = {
   error?: string;
   manager?: RemoteTaskTerminalLocation;
   created?: boolean;
+  cancelled?: boolean;
 };
+
+function projectManagerAutomaticRecoveryAllowed(sessionId: string): boolean {
+  reconcileProjectExecutionResponsibility(sessionId);
+  const session = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
+  return !!session && classifyProjectWatchdogScenario(session, {
+    hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
+      || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session.id),
+  }).recoverManagerRuntime;
+}
 
 function ensureProjectManagerRuntime(sessionId: string, options: {
   forceRestart?: boolean;
   recoveredAfterRestart?: boolean;
+  automaticRecovery?: boolean;
 } = {}): Promise<ProjectManagerRuntimeEnsureResult> {
   const result = runProjectRuntimeEnsure(
     projectManagerRuntimeEnsureRuns,
@@ -11127,7 +11140,17 @@ function ensureProjectManagerRuntime(sessionId: string, options: {
 async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
   forceRestart?: boolean;
   recoveredAfterRestart?: boolean;
+  automaticRecovery?: boolean;
 } = {}): Promise<ProjectManagerRuntimeEnsureResult> {
+  const automaticRecoveryAllowed = (): boolean => (
+    options.automaticRecovery !== true || projectManagerAutomaticRecoveryAllowed(sessionId)
+  );
+  const cancelled = (): ProjectManagerRuntimeEnsureResult => ({
+    ok: false,
+    cancelled: true,
+    error: '项目状态已切换，控制层已取消自动恢复项目 AI 运行时',
+  });
+  if (!automaticRecoveryAllowed()) return cancelled();
   const initialSession = useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId);
   if (!initialSession) return { ok: false, error: '项目中心没有找到对应项目' };
   const safeExitContinuity = projectSafeExitContinuityVerified(initialSession);
@@ -11158,14 +11181,17 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
   ));
   if ((!previousManager || replaceRuntime) && !options.recoveredAfterRestart && !activeExecution) {
     await scanProjectProgressForReview(sessionId, '项目 AI 运行时重建前检查项目现状');
+    if (!automaticRecoveryAllowed()) return cancelled();
   }
   if (replaceRuntime) {
     await (window as any).wmux?.projectManager?.saveSession?.(
       useStore.getState().projectManagers.find((candidate) => candidate.id === sessionId) || initialSession,
     );
+    if (!automaticRecoveryAllowed()) return cancelled();
   }
   const roleRuntime = await (window as any).wmux?.projectManager?.ensureRuntime?.();
   if (!roleRuntime?.ok) return { ok: false, error: roleRuntime?.error || '无法准备项目 AI AGENTS.md' };
+  if (!automaticRecoveryAllowed()) return cancelled();
   const runtimeDir = String(roleRuntime.runtimeDir || '').trim();
   if (!normalizeAbsolutePath(runtimeDir)) return { ok: false, error: '项目管理 AI 运行目录无效' };
   const launched = createRemoteDirectTerminalTask({
@@ -11194,6 +11220,12 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
       useStore.getState().closeSurface(manager.workspaceId, manager.paneId, manager.surfaceId);
     }
     return { ok: false, error: `项目管理 AI 运行时未就绪：${managerFailure}` };
+  }
+  if (!automaticRecoveryAllowed()) {
+    if (!previousManager || previousManager.surfaceId !== manager.surfaceId) {
+      useStore.getState().closeSurface(manager.workspaceId, manager.paneId, manager.surfaceId);
+    }
+    return cancelled();
   }
   for (const previous of previousManagers) {
     if (previous.surfaceId === manager.surfaceId) continue;
@@ -14152,6 +14184,7 @@ export function initPipeBridge(): void {
       ) || '').trim();
       const target = surfaceId ? managedProjectAgentTarget(surfaceId) : undefined;
       if (!target || target.lane?.id !== lane?.id) return false;
+      if (!managedProjectWatchdogAllows(target)) return false;
       const runtime = clearManagedAgentWatchdog(surfaceId) || beginManagedAgentTurn({
         surfaceId,
         role: params.role,
@@ -14164,24 +14197,21 @@ export function initPipeBridge(): void {
       return true;
     }
     if (params?.role === 'manager') {
-      if (params?.watchdogRecovery === true) {
-        reconcileProjectExecutionResponsibility(projectId);
-        session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
-        if (!session || !classifyProjectWatchdogScenario(session, {
-          hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
-            || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session?.id),
-        }).recoverManagerRuntime) return false;
-      }
+      reconcileProjectExecutionResponsibility(projectId);
+      session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId);
+      if (!session || !classifyProjectWatchdogScenario(session, {
+        hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0
+          || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === session?.id),
+      }).recoverManagerRuntime) return false;
       if (projectManagerRuntimeRecoveries.has(projectId)) return true;
       projectManagerRuntimeRecoveries.add(projectId);
       void (async () => {
         const recoverySession = useStore.getState().projectManagers
           .find((candidate) => candidate.id === projectId);
-        if (!recoverySession || (params?.watchdogRecovery === true
-          && !classifyProjectWatchdogScenario(recoverySession, {
-            hasPendingManagerDelivery: (recoverySession.pendingManagerDeliveries || []).length > 0
-              || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === recoverySession.id),
-          }).recoverManagerRuntime)) return;
+        if (!recoverySession || !classifyProjectWatchdogScenario(recoverySession, {
+          hasPendingManagerDelivery: (recoverySession.pendingManagerDeliveries || []).length > 0
+            || pendingProjectManagerDeliveries.some((delivery) => delivery.sessionId === recoverySession.id),
+        }).recoverManagerRuntime) return;
         queueProjectManagerDelivery([
           '[项目 AI 故障恢复上下文｜新会话优先读取]',
           `项目：${recoverySession.id} · ${recoverySession.projectDir}`,
@@ -14193,8 +14223,12 @@ export function initPipeBridge(): void {
             ? '项目在故障处理完成前保持暂停，不要绕过持久化项目状态盲目继续。'
             : '现有监督链按持久状态继续；核对完成前不要新增、改派或绕过监督链直接投递任务。',
         ].join('\n'), recoverySession.id, { priority: true });
-        const runtime = await ensureProjectManagerRuntime(projectId, { forceRestart: true });
+        const runtime = await ensureProjectManagerRuntime(projectId, {
+          forceRestart: true,
+          automaticRecovery: true,
+        });
         if (!runtime.ok) {
+          if (runtime.cancelled) return;
           console.warn('[project-manager] failed to rebuild exited manager runtime', runtime.error);
           await reportProjectRuntimeFailureForUserDecision(
             session.id,

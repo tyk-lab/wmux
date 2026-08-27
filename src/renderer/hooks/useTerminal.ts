@@ -9,6 +9,10 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { useStore } from '../store';
 import { openSurfaceById } from '../project-manager/console-surface';
+import {
+  classifyProjectWatchdogScenario,
+  projectWatchdogMayInterveneForRole,
+} from '../project-manager/watchdog-policy';
 import { isProjectManagedSupervisorLane } from '../store/supervisor-slice';
 import { notifyOrdinaryTaskRuntimeFailure } from '../supervisor/user-input-precedence';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
@@ -202,17 +206,26 @@ function notifyProjectManagerRuntimeFailure(
     : lane?.projectManagerProjectId
       ? state.projectManagers.filter((candidate) => candidate.id === lane.projectManagerProjectId)
       : [];
-  const autoRecoverProjectLane = !!lane?.projectManagerProjectId
-    && (role === 'supervisor' || role === 'task')
-    && !projectManagedStartupFailure;
   for (const session of projectSessions) {
+    const watchdogDisposition = classifyProjectWatchdogScenario(session, {
+      hasPendingManagerDelivery: (session.pendingManagerDeliveries || []).length > 0,
+    });
+    const autoRecoverProjectLane = !!lane?.projectManagerProjectId
+      && (role === 'supervisor' || role === 'task')
+      && !projectManagedStartupFailure
+      && projectWatchdogMayInterveneForRole(watchdogDisposition, role);
+    const autoRecoverProjectManager = role === 'manager'
+      && recoverManagerRuntime
+      && !projectManagedStartupFailure
+      && watchdogDisposition.recoverManagerRuntime;
+    const preserveProjectState = autoRecoverProjectLane || role === 'manager';
     const kind = role === 'manager'
       ? 'manager-runtime-failed'
       : role === 'supervisor'
         ? 'supervisor-runtime-failed'
         : 'task-runtime-failed';
     if (lane) {
-      if (!autoRecoverProjectLane && !projectManagedStartupFailure) state.pauseSupervisorLane(lane.id, text);
+      if (!preserveProjectState && !projectManagedStartupFailure) state.pauseSupervisorLane(lane.id, text);
       state.updateLane(lane.id, {
         projectTaskRotationPending: false,
         projectTaskRotationSummary: undefined,
@@ -231,7 +244,7 @@ function notifyProjectManagerRuntimeFailure(
           },
         }, session.id);
       }
-    } else if (!projectManagedStartupFailure) {
+    } else if (!preserveProjectState && !projectManagedStartupFailure) {
       for (const projectLane of state.supervisor.lanes.filter((candidate) => (
         candidate.projectManagerProjectId === session.id
       ))) {
@@ -239,7 +252,7 @@ function notifyProjectManagerRuntimeFailure(
       }
     }
     const currentSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
-    if (!autoRecoverProjectLane && !projectManagedStartupFailure
+    if (!preserveProjectState && !projectManagedStartupFailure
       && currentSession && currentSession.status !== 'paused') {
       state.applyProjectManagerAction({ type: 'pause-project', reason: text }, session.id);
     }
@@ -256,7 +269,7 @@ function notifyProjectManagerRuntimeFailure(
         surfaceId,
         detail,
         laneId: lane?.id,
-        ...(autoRecoverProjectLane ? { attentionRequired: false } : {}),
+        ...(preserveProjectState ? { attentionRequired: false } : {}),
       },
     }, session.id);
     const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
@@ -292,7 +305,7 @@ function notifyProjectManagerRuntimeFailure(
         });
       }
     }
-    if ((role === 'manager' && recoverManagerRuntime) || role === 'supervisor' || role === 'task') {
+    if (autoRecoverProjectManager || role === 'supervisor' || role === 'task') {
       (window as any).__wmux_queueProjectManagerRuntimeRecovery?.({
         projectId: session.id,
         workItemId: lane?.projectWorkItemId,

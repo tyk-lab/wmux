@@ -8950,6 +8950,19 @@ describe('supervisor decision bridge', () => {
       watchdogRecovery: true,
       detail: '模拟迟到的看门狗恢复请求',
     })).toBe(false);
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
+      projectId: project.id,
+      role: 'manager',
+      detail: '模拟项目 AI 真实退出后的自动恢复请求',
+    })).toBe(false);
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
+      projectId: project.id,
+      workItemId: 'task-a',
+      laneId: 'lane-a',
+      surfaceId: 'worker-a',
+      role: 'task',
+      detail: '模拟任务 AI 退出后的自动恢复请求',
+    })).toBe(false);
     const queueRuntimeRecovery = vi.fn(() => true);
     (globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery = queueRuntimeRecovery;
 
@@ -8958,6 +8971,51 @@ describe('supervisor decision bridge', () => {
     expect(queueRuntimeRecovery).not.toHaveBeenCalled();
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
       .toMatchObject({ status: 'waiting', pendingUserQuestion: { id: 'manual-verification-feedback' } });
+  });
+
+  it('cancels an in-flight automatic manager rebuild when the user takes ownership', async () => {
+    initPipeBridge();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-manager-recovery-admission-race' });
+    let releaseRuntime!: (value: { ok: true; runtimeDir: string }) => void;
+    const ensureRuntime = (globalThis.window as any).wmux.projectManager.ensureRuntime;
+    ensureRuntime.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseRuntime = resolve;
+    }));
+
+    expect((globalThis.window as any).__wmux_queueProjectManagerRuntimeRecovery({
+      projectId: project.id,
+      role: 'manager',
+      detail: '模拟项目 AI 退出',
+    })).toBe(true);
+    await vi.waitFor(() => expect(ensureRuntime).toHaveBeenCalledTimes(1));
+
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'waiting',
+      pendingUserQuestion: {
+        id: 'manual-verification-during-recovery',
+        category: 'manual-intervention',
+        reasonCode: 'verification-limited',
+        workItemId: 'task-a',
+        question: '请由用户完成人工验收',
+        context: '运行时准备完成前已经转入用户等待',
+        options: [{ id: 'manual-verify-complete', label: '完成人工验收' }],
+        previousStatus: 'active',
+        createdAt: Date.now(),
+      },
+    });
+    releaseRuntime({ ok: true, runtimeDir: 'E:\\wmux-data\\project-manager\\runtime' });
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+        status: 'waiting',
+        pendingUserQuestion: { id: 'manual-verification-during-recovery' },
+      }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.managerSurfaceId).toBeUndefined();
+    expect(useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
+    )).some((surface) => surface.projectManagerProjectId === project.id && surface.projectManagerTerminal)).toBe(false);
   });
 
   it('does not rebuild the manager while the task AI is the active execution owner', async () => {
@@ -8977,6 +9035,44 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
       ?.executionResponsibility).toMatchObject({ owner: 'task-ai', action: 'execute-work-item' });
     expect(queueRuntimeRecovery).not.toHaveBeenCalled();
+  });
+
+  it('drops a delayed interrupted-turn recovery after ownership moves to the user', async () => {
+    vi.useFakeTimers();
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-delayed-interrupt-user-wait' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({ ...current, activeWorkItemId: 'task-a' });
+    agentState = { state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() };
+    (globalThis.window as any).__wmux_noteManagedAgentHook({
+      surfaceId: 'worker-a', event: 'UserPromptSubmit', task: '执行长期项目任务',
+    });
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(writes).toHaveBeenCalledWith('worker-a', '\x1b');
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(writes).toHaveBeenCalledWith('worker-a', '\x03');
+
+    const question = {
+      id: 'manual-verification-after-interrupt',
+      category: 'manual-intervention' as const,
+      reasonCode: 'verification-limited' as const,
+      workItemId: 'task-a',
+      question: '请由用户完成人工验收',
+      context: '迟到的任务停止事件不得重新派发恢复指令',
+      options: [{ id: 'manual-verify-complete', label: '完成人工验收' }],
+      previousStatus: 'active' as const,
+      createdAt: Date.now(),
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification', question,
+    }, project.id)).toMatchObject({ ok: true });
+    (globalThis.window as any).__wmux_noteManagedAgentHook({ surfaceId: 'worker-a', event: 'Stop' });
+    await Promise.resolve();
+
+    const laneAfterStop = useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a');
+    expect(laneAfterStop?.pendingSupervisorDeliveries || [])
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'task-interrupted' })]));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ status: 'waiting', pendingUserQuestion: { id: question.id } });
   });
 
   it('requeues a restored waiting-decision project that lost its manager delivery', async () => {
