@@ -5,7 +5,11 @@ import { loadSettings } from './settings-store';
 import type { SupervisorRecord } from './supervisor-records';
 import type { ProjectManagerRecord } from './project-manager-records';
 import { getAppDataDir } from '../shared/instance';
-import { projectManagerEventNeedsUserAttention } from '../shared/project-manager';
+import {
+  projectManagerEventNeedsUserAttention,
+  projectManagerEventResolvesAllAttention,
+  projectManagerResolvedAttentionKinds,
+} from '../shared/project-manager';
 import {
   SUPERVISOR_NO_DECISION_OPTION,
   supervisorDecisionOptions,
@@ -1165,6 +1169,10 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
     && String(record.payload?.action || '').startsWith('watchdog-rebuild-');
   const goalCompleted = record.type === 'project-goal-completed';
   const projectStopped = record.type === 'project-stopped';
+  const stopKind = String(record.payload?.stopKind || '').trim();
+  const plannedStop = projectStopped && stopKind === 'planned-close';
+  const userStop = projectStopped && stopKind === 'user-request';
+  const abnormalStop = projectStopped && !plannedStop && !userStop;
   const terminalState = goalCompleted || projectStopped;
   const role = goalCompleted
     ? '当前主目标'
@@ -1194,7 +1202,9 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
   const suggestion = goalCompleted
     ? '打开项目工作台核对完成证据，并设置或确认下一主目标；新目标建立前保持等待。'
     : projectStopped
-      ? '打开项目工作台查看停止原因和保留记录，再决定是否创建新目标或新项目。'
+      ? abnormalStop
+        ? '打开项目工作台查看停止原因和保留记录，确认风险已经解除后再决定是否重新启动。'
+        : '项目已经按明确指令正常停止；可打开项目工作台查看保留记录，之后按需创建新目标或新项目。'
       : record.type === 'manager-runtime-failed'
     ? '在 wmux 中重建项目管理 AI 运行时；恢复后会使用结构化项目记录继续。'
     : record.type === 'project-paused'
@@ -1217,16 +1227,20 @@ export function buildProjectRuntimeAlertCard(record: ProjectManagerRecord): obje
     : projectStopped
       ? 'wmux · 项目已停止'
       : 'wmux · 项目需要处理';
-  const headerTemplate = goalCompleted ? 'green' : projectStopped ? 'orange' : 'red';
+  const headerTemplate = goalCompleted || plannedStop ? 'green' : userStop ? 'blue' : 'red';
   const lead = goalCompleted
     ? `✅ **当前主目标已经完成**\n项目：\`${record.sessionId}\`\n状态：**等待下一主目标**`
     : projectStopped
-      ? `🟠 **项目已停止运行**\n项目：\`${record.sessionId}\`\n状态：**等待人工查看**`
+      ? abnormalStop
+        ? `🔴 **项目因异常或安全原因停止**\n项目：\`${record.sessionId}\`\n状态：**需要人工查看**`
+        : `✅ **项目已正常停止运行**\n项目：\`${record.sessionId}\`\n状态：**运行记录已保留**`
       : `🔴 **项目自动推进需要处理**\n项目：\`${record.sessionId}\`\n异常环节：**${role}**`;
   const footer = goalCompleted
     ? '请在专属项目工作台设置下一主目标。'
     : projectStopped
-      ? '请在专属项目工作台决定后续处理。'
+      ? abnormalStop
+        ? '请在专属项目工作台确认停止原因和后续处理。'
+        : '这是正常终态，无需排障。'
       : '该异常不会由普通 AI 监督接管；请在专属项目工作台处理。';
   return {
     schema: '2.0',
@@ -2904,6 +2918,13 @@ export class FeishuSupervisorService {
   }>();
   private readonly projectQuestionCards = new Map<string, { messageId: string; chatId: string; resolving?: boolean }>();
   private readonly projectQuestionResolutions = new Map<string, string>();
+  private readonly projectAlertCards = new Map<string, {
+    messageId: string;
+    chatId: string;
+    kind: string;
+    ts: number;
+  }>();
+  private readonly projectAlertResolutionWatermarks = new Map<string, number>();
   /** Configured decision DM, falling back to the most recent allowlisted DM. */
   private decisionChatId: string | undefined = this.config?.decisionChatId;
   private readonly pendingDecisionMessages: PendingDecisionMessage[] = [];
@@ -3045,14 +3066,20 @@ export class FeishuSupervisorService {
 
   onProjectManagerRecord(record: ProjectManagerRecord): void {
     if (!this.channel) return;
-    if (projectManagerEventNeedsUserAttention({ kind: record.type, payload: record.payload })) {
+    const needsAttention = projectManagerEventNeedsUserAttention({ kind: record.type, payload: record.payload });
+    const resolvesAttention = projectManagerEventResolvesAllAttention({ kind: record.type })
+      || projectManagerResolvedAttentionKinds({ kind: record.type, payload: record.payload }).length > 0;
+    if (needsAttention || resolvesAttention) {
       const targetChatId = this.config?.projectManagerChatId || this.decisionChatId;
-      if (targetChatId) {
-        void this.enqueueDecisionOperation(async () => {
-          await this.sendControlCard(buildProjectRuntimeAlertCard(record), targetChatId);
-        });
-      }
-      return;
+      void this.enqueueDecisionOperation(async () => {
+        if (resolvesAttention) await this.resolveProjectAlertCards(record);
+        if (needsAttention && targetChatId) {
+          await this.upsertProjectAlertCard(record, targetChatId, {
+            allowAtResolutionWatermark: projectManagerEventResolvesAllAttention({ kind: record.type }),
+          });
+        }
+      });
+      if (needsAttention) return;
     }
     if (record.type === 'user-clarification-requested' || record.type === 'user-clarification-restored') {
       const question = record.payload?.question;
@@ -4481,6 +4508,79 @@ export class FeishuSupervisorService {
       console.warn('[feishu] send control card failed', err);
       await this.sendText('控制卡片发送失败，请稍后发送“帮助”重试。', chatId);
       return null;
+    }
+  }
+
+  private async upsertProjectAlertCard(
+    record: ProjectManagerRecord,
+    chatId: string,
+    options: { allowAtResolutionWatermark?: boolean } = {},
+  ): Promise<void> {
+    if (!this.channel) return;
+    const key = `${record.sessionId}:${record.type}`;
+    const recordTs = Number(record.ts) || Date.now();
+    const resolvedAt = Math.max(
+      this.projectAlertResolutionWatermarks.get(key) || 0,
+      this.projectAlertResolutionWatermarks.get(`${record.sessionId}:*`) || 0,
+    );
+    if (resolvedAt > recordTs
+      || (resolvedAt === recordTs && options.allowAtResolutionWatermark !== true)) return;
+    const existing = this.projectAlertCards.get(key);
+    if (existing) {
+      if (existing.ts > recordTs) return;
+      try {
+        await this.channel.updateCard(existing.messageId, buildProjectRuntimeAlertCard(record));
+        this.projectAlertCards.set(key, { ...existing, ts: recordTs });
+        return;
+      } catch (error) {
+        console.warn('[feishu] update project alert card failed; sending a replacement', error);
+        this.projectAlertCards.delete(key);
+      }
+    }
+    const messageId = await this.sendControlCard(buildProjectRuntimeAlertCard(record), chatId);
+    if (!messageId) return;
+    this.projectAlertCards.set(key, { messageId, chatId, kind: record.type, ts: recordTs });
+    if (this.projectAlertCards.size > 100) {
+      this.projectAlertCards.delete(this.projectAlertCards.keys().next().value as string);
+    }
+  }
+
+  private async resolveProjectAlertCards(record: ProjectManagerRecord): Promise<void> {
+    if (!this.channel) return;
+    const resolvedKinds = new Set(projectManagerResolvedAttentionKinds({
+      kind: record.type,
+      payload: record.payload,
+    }));
+    const resolvesAll = projectManagerEventResolvesAllAttention({ kind: record.type });
+    const recordTs = Number(record.ts) || Date.now();
+    const resolutionKeys = resolvesAll
+      ? [`${record.sessionId}:*`]
+      : [...resolvedKinds].map((kind) => `${record.sessionId}:${kind}`);
+    for (const key of resolutionKeys) {
+      const previous = this.projectAlertResolutionWatermarks.get(key) || 0;
+      if (recordTs > previous) this.projectAlertResolutionWatermarks.set(key, recordTs);
+    }
+    while (this.projectAlertResolutionWatermarks.size > 500) {
+      this.projectAlertResolutionWatermarks.delete(
+        this.projectAlertResolutionWatermarks.keys().next().value as string,
+      );
+    }
+    const cards = [...this.projectAlertCards.entries()].filter(([, card]) => (
+      card.ts <= recordTs && (resolvesAll || resolvedKinds.has(card.kind))
+    ));
+    for (const [key, card] of cards) {
+      if (!key.startsWith(`${record.sessionId}:`)) continue;
+      try {
+        await this.channel.updateCard(card.messageId, buildSupervisorResultCard(
+          'wmux 项目告警：状态已恢复',
+          `项目 ${record.sessionId} 的“${card.kind}”告警已由 ${record.type} 解除；旧告警不再需要处理。`,
+          true,
+        ));
+        this.projectAlertCards.delete(key);
+      } catch (error) {
+        console.warn('[feishu] resolve project alert card failed', error);
+        await this.sendText(`项目 ${record.sessionId} 的告警已恢复，但旧告警卡更新失败；请以项目工作台当前状态为准。`, card.chatId);
+      }
     }
   }
 

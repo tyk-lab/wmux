@@ -11,6 +11,7 @@ import { supportedAgentLauncherExecutable } from './launch-command';
 import { taskTerminalRuntimeKind } from './task-runtime-readiness';
 import { terminalRuntimeStatus } from '../terminal-runtime-lifecycle';
 import { effectiveSupervisorLaneConfig } from './protocol';
+import { notificationDedupeKey } from '../notification-policy';
 
 /** Resolve human-gated proposals when the user acts directly in the worker terminal. */
 export function resolvePendingApprovalsForManualTask(
@@ -115,6 +116,7 @@ export function resumeWaitingLaneFromSupervisorInput(
     lastBlockedResponseVersion: undefined,
     lastBlockedResponseId: undefined,
   });
+  store.resolveNotification(notificationDedupeKey('supervisor', lane.id, 'waiting-for-direction'));
   appendSupervisorRecord(session, lane, 'supervisor.waiting-resumed', { source });
   store.appendSupervisorLog(
     lane.id,

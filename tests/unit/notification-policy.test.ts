@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   notificationTaskbarAttention,
   notificationMetadata,
+  projectManagerAttentionSeverity,
   shouldFlashTaskbar,
   shouldNotifySupervisorUser,
 } from '../../src/renderer/notification-policy';
@@ -58,5 +59,18 @@ describe('notification responsibility policy', () => {
     expect(notificationTaskbarAttention('success')).toBe('brief');
     expect(notificationTaskbarAttention('attention')).toBe('persistent');
     expect(notificationTaskbarAttention('error')).toBe('persistent');
+  });
+
+  it('distinguishes normal project stops from abnormal stops', () => {
+    expect(projectManagerAttentionSeverity({
+      kind: 'project-stopped', payload: { stopKind: 'planned-close' },
+    })).toBe('success');
+    expect(projectManagerAttentionSeverity({
+      kind: 'project-stopped', payload: { stopKind: 'user-request' },
+    })).toBe('info');
+    expect(projectManagerAttentionSeverity({
+      kind: 'project-stopped', payload: { stopKind: 'safety-stop' },
+    })).toBe('error');
+    expect(projectManagerAttentionSeverity({ kind: 'manager-runtime-failed' })).toBe('error');
   });
 });

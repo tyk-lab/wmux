@@ -24,6 +24,8 @@ import {
   projectManagerQuestionConfirmationScope,
   projectManagerQuestionReusableDecisionScope,
   projectManagerQuestionSemanticFingerprint,
+  projectManagerEventResolvesAllAttention,
+  projectManagerResolvedAttentionKinds,
   projectPlanningConfirmationDigest,
   projectAcceptedRequirementsVersion,
   projectAuthorizationVersion,
@@ -41,6 +43,8 @@ import {
   type ProjectUserAcceptancePolicy,
 } from '../../shared/project-manager';
 import { projectDependencyError } from '../project-manager/engine';
+import { notificationDedupeKey } from '../notification-policy';
+import type { NotificationSlice } from './notification-slice';
 import type { ProjectManagementAgentConfig } from '../../shared/project-manager-terminal';
 
 const MAX_PROJECT_EVENTS = 500;
@@ -167,7 +171,34 @@ function projectSubgoalDependencyError(subgoals: readonly ProjectSubgoal[]): str
   return subgoals.some((subgoal) => visit(subgoal.id)) ? '阶段目标依赖不能形成循环' : null;
 }
 
-export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set, get) => ({
+function resolveProjectManagerNotifications(
+  state: Partial<Pick<NotificationSlice, 'notifications' | 'resolveNotification'>>,
+  sessionId: string,
+  event: ProjectManagerEvent,
+): void {
+  const resolveNotification = state.resolveNotification;
+  if (typeof resolveNotification !== 'function') return;
+  if (projectManagerEventResolvesAllAttention(event)) {
+    for (const notification of state.notifications || []) {
+      if (notification.owner === 'project'
+        && notification.projectId === sessionId
+        && notification.dedupeKey) {
+        resolveNotification(notification.dedupeKey);
+      }
+    }
+    return;
+  }
+  projectManagerResolvedAttentionKinds(event).forEach((kind) => resolveNotification(
+    notificationDedupeKey('project', sessionId, kind),
+  ));
+}
+
+export const createProjectManagerSlice: StateCreator<
+  ProjectManagerSlice & Partial<Pick<NotificationSlice, 'notifications' | 'resolveNotification'>>,
+  [],
+  [],
+  ProjectManagerSlice
+> = (set, get) => ({
   projectManager: null,
   projectManagers: [],
   selectedProjectManagerId: null,
@@ -342,6 +373,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       projectManagers: upsertProjectManagerSession(current.projectManagers, updated),
       ...(current.projectManager?.id === updated.id ? { projectManager: updated } : {}),
     }));
+    resolveProjectManagerNotifications(get(), session.id, created);
     return created;
   },
   applyProjectManagerAction(action, sessionId) {
@@ -1357,11 +1389,18 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
         },
       };
     } else if (action.type === 'stop-project') {
+      const stopKind = action.emergency === true
+        ? 'safety-stop'
+        : action.stopKind || 'planned-close';
       next = { ...session, status: 'stopped' };
       eventInput = {
         kind: 'project-stopped',
         summary: action.reason || '项目已停止',
-        payload: { emergency: action.emergency === true, attentionRequired: true },
+        payload: {
+          emergency: action.emergency === true,
+          stopKind,
+          attentionRequired: true,
+        },
       };
     } else {
       eventInput = { kind: 'manager-reply', summary: action.message, correlationId: action.correlationId };
@@ -1372,6 +1411,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       projectManagers: upsertProjectManagerSession(current.projectManagers, updated),
       ...(current.projectManager?.id === updated.id ? { projectManager: updated } : {}),
     }));
+    resolveProjectManagerNotifications(get(), session.id, event);
     return { ok: true, event };
   },
 });

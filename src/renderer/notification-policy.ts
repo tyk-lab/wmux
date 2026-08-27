@@ -4,6 +4,7 @@ import type {
   NotificationOwner,
   NotificationSeverity,
 } from '../shared/types';
+import type { ProjectManagerEvent } from '../shared/project-manager';
 
 type NotificationMetadata = Pick<
   NotificationInfo,
@@ -72,6 +73,20 @@ export function notificationTaskbarAttention(
   severity: NotificationSeverity | undefined,
 ): TaskbarAttentionLevel {
   return severity === 'attention' || severity === 'error' ? 'persistent' : 'brief';
+}
+
+export function projectManagerAttentionSeverity(
+  event: Pick<ProjectManagerEvent, 'kind' | 'payload'> | {
+    kind: string;
+    payload?: Record<string, unknown>;
+  },
+): NotificationSeverity {
+  if (event.kind === 'project-goal-completed') return 'success';
+  if (event.kind !== 'project-stopped') return 'error';
+  const stopKind = String(event.payload?.stopKind || '').trim();
+  if (stopKind === 'planned-close') return 'success';
+  if (stopKind === 'user-request') return 'info';
+  return 'error';
 }
 
 /** Toast delivery never flashes directly; the notification-center controller owns taskbar attention. */

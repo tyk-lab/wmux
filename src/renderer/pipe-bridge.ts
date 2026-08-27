@@ -144,7 +144,12 @@ import {
   managedProjectRuntimeRecoveryKey,
 } from './project-manager/runtime-recovery';
 import { openProjectManagerAttentionSurface } from './project-manager/console-surface';
-import { fireDesktopNotification, notificationDedupeKey, notificationMetadata } from './notification-policy';
+import {
+  fireDesktopNotification,
+  notificationDedupeKey,
+  notificationMetadata,
+  projectManagerAttentionSeverity,
+} from './notification-policy';
 import { announceSupervisorWaitingForDirection } from './supervisor/waiting-notification';
 import {
   activeProjectManagerAttentionEvent,
@@ -3323,7 +3328,7 @@ function finalizeProjectRuntimeRecoveryAfterAssignment(
     safeExit: current.safeExit?.status === 'restoring' ? undefined : current.safeExit,
     updatedAt: now,
   });
-  store.appendProjectManagerEvent({
+  const restoredEvent = store.appendProjectManagerEvent({
     kind: 'recovery-restored',
     workItemId: item.id,
     summary: '项目运行链已恢复并重新建立有效的项目 AI、监督 AI 与任务 AI 责任绑定',
@@ -3338,7 +3343,12 @@ function finalizeProjectRuntimeRecoveryAfterAssignment(
     },
   }, current.id);
   saveProjectManagerSnapshot(current.id);
-  return useStore.getState().projectManagers.find((candidate) => candidate.id === current.id);
+  const restored = useStore.getState().projectManagers.find((candidate) => candidate.id === current.id);
+  if (restoredEvent) {
+    void persistProjectManagerEventRecord(restored || current, restoredEvent)
+      .catch((error) => console.warn('[project-manager] failed to record restored runtime chain', error));
+  }
+  return restored;
 }
 
 const PROJECT_RESPONSIBILITY_DEADLINE_MS = 2 * 60_000;
@@ -6424,6 +6434,8 @@ function notifyProjectManagerAttention(
           : '项目运行异常';
   const text = event.kind === 'project-goal-completed'
     ? `项目“${projectDisplayName(current)}”的${event.summary}`
+    : event.kind === 'project-stopped'
+      ? `项目“${projectDisplayName(current)}”已停止：${event.summary}`
     : `项目“${projectDisplayName(current)}”需要处理：${event.summary}`;
   if (workspaceId) {
     store.addNotification({
@@ -6435,7 +6447,7 @@ function notifyProjectManagerAttention(
         owner: 'project',
         entityId: current.id,
         kind: event.kind,
-        severity: event.kind === 'project-goal-completed' ? 'success' : 'error',
+        severity: projectManagerAttentionSeverity(event),
         projectId: current.id,
         sourceLabel: projectDisplayName(current),
       }),
@@ -9026,12 +9038,16 @@ function acknowledgeProjectManagerDelivery(surfaceId: string, acknowledgement = 
     useStore.getState().resolveNotification(
       notificationDedupeKey('project', session.id, 'manager-delivery-failed'),
     );
-    useStore.getState().appendProjectManagerEvent({
+    const restoredEvent = useStore.getState().appendProjectManagerEvent({
       kind: 'manager-delivery-restored',
       summary: '项目管理 AI 已确认接收积压消息',
       payload: { deliveryId: delivery.id, attempts: delivery.attempts, acknowledgement },
     }, session.id);
     saveProjectManagerSnapshot(session.id);
+    if (restoredEvent) {
+      void persistProjectManagerEventRecord(session, restoredEvent)
+        .catch((error) => console.warn('[project-manager] failed to record restored delivery', error));
+    }
   }
   reconcileProjectExecutionResponsibility(session.id);
 }
@@ -11266,7 +11282,7 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
     }
   }
   if (previousManager && previousManager.surfaceId !== manager.surfaceId) {
-    useStore.getState().appendProjectManagerEvent({
+    const restartedEvent = useStore.getState().appendProjectManagerEvent({
       kind: 'manager-runtime-restarted',
       summary: `本项目的项目 AI 已按配置安全换代为 ${selection.agent}${selection.model ? ` / ${selection.model}` : ''}，并恢复结构化项目上下文`,
       payload: {
@@ -11280,6 +11296,7 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
       await (window as any).wmux?.projectManager?.saveSession?.(
         useStore.getState().projectManagers.find((candidate) => candidate.id === initialSession.id),
       );
+      if (restartedEvent) await persistProjectManagerEventRecord(initialSession, restartedEvent);
     } catch (error) {
       console.warn('[project-manager] failed to persist runtime-restart audit event', error);
     }
@@ -11287,7 +11304,7 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
   let current = useStore.getState().projectManagers.find((candidate) => candidate.id === initialSession.id)!;
   hydrateProjectManagerDeliveries([current]);
   if (options.recoveredAfterRestart) {
-    useStore.getState().appendProjectManagerEvent({
+    const recoveryEvent = useStore.getState().appendProjectManagerEvent({
       kind: 'recovery-restored',
       summary: safeExitContinuity
         ? '已从安全退出检查点恢复当前项目事实；旧 AI 进程已失效，但证据、预算和下一动作继续有效'
@@ -11310,6 +11327,10 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
     }
     current = useStore.getState().projectManagers.find((candidate) => candidate.id === initialSession.id)!;
     await (window as any).wmux?.projectManager?.saveSession?.(current);
+    if (recoveryEvent) {
+      await persistProjectManagerEventRecord(current, recoveryEvent)
+        .catch((error) => console.warn('[project-manager] failed to record restored project runtime', error));
+    }
     const recoverableWorkItems = current.workItems.filter((item) => item.status !== 'stopped');
     const recoverySituation = [...current.events].reverse().find((event) => (
       event.kind === 'user-message'
@@ -11375,6 +11396,32 @@ function deliverProjectManagerMessage(text: string, runtimeCreated: boolean, ses
   window.setTimeout(() => queueProjectManagerDelivery(text, sessionId), SUPERVISOR_TUI_READY_DELAY_MS);
 }
 
+async function persistProjectManagerEventRecord(
+  session: ProjectManagerSession,
+  event: {
+    kind: string;
+    summary: string;
+    correlationId?: string;
+    payload?: Record<string, unknown>;
+    ts?: number;
+  },
+  options: { payloadWins?: boolean } = {},
+): Promise<void> {
+  await (window as any).wmux?.projectManager?.appendRecord?.({
+    sessionId: session.id,
+    projectDir: session.projectDir,
+    type: event.kind,
+    ts: event.ts,
+    payload: options.payloadWins
+      ? { message: event.summary, ...(event.payload || {}) }
+      : {
+          ...(event.payload || {}),
+          message: event.summary,
+          correlationId: event.correlationId,
+        },
+  });
+}
+
 async function persistProjectManagerMutation<T extends { event?: { kind: string; summary: string; correlationId?: string; payload?: Record<string, unknown> } }>(
   result: T,
   sessionId?: string,
@@ -11390,16 +11437,7 @@ async function persistProjectManagerMutation<T extends { event?: { kind: string;
   const api = (window as any).wmux?.projectManager;
   await api?.saveSession?.(session);
   if (result.event) {
-    await api?.appendRecord?.({
-      sessionId: session.id,
-      projectDir: session.projectDir,
-      type: result.event.kind,
-      payload: {
-        ...(result.event.payload || {}),
-        message: result.event.summary,
-        correlationId: result.event.correlationId,
-      },
-    });
+    await persistProjectManagerEventRecord(session, result.event);
   }
   const current = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
   if (current?.status === 'active') scheduleProjectProgressCheck(current.id);
@@ -11793,12 +11831,7 @@ async function appendRecordedProjectEvent(
     await (window as any).wmux?.projectManager?.saveSession?.(updated);
   }
   if (created) {
-    await (window as any).wmux?.projectManager?.appendRecord?.({
-      sessionId: session.id,
-      projectDir: session.projectDir,
-      type: created.kind,
-      payload: { message: created.summary, ...(created.payload || {}) },
-    });
+    await persistProjectManagerEventRecord(session, created, { payloadWins: true });
   }
 }
 
@@ -14132,7 +14165,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     if (emergency) {
       return { ok: false, error: '紧急停止只能由用户在专用项目管理对话中明确确认后执行' };
     }
-    const result = store.applyProjectManagerAction({ type: 'stop-project', reason: String(params?.reason || '由项目管理 AI 停止'), emergency }, session.id);
+    const result = store.applyProjectManagerAction({
+      type: 'stop-project',
+      reason: String(params?.reason || '由项目管理 AI 停止'),
+      emergency,
+      stopKind: 'planned-close',
+    }, session.id);
     try {
       return await persistProjectManagerMutation(result, session.id);
     } finally {
@@ -15412,7 +15450,12 @@ export function initPipeBridge(): void {
         ? store.applyProjectManagerAction({ type: 'pause-project', reason }, session.id)
         : action === 'resume'
           ? store.applyProjectManagerAction({ type: 'resume-project', reason }, session.id)
-          : store.applyProjectManagerAction({ type: 'stop-project', reason, emergency: params?.emergency === true }, session.id);
+          : store.applyProjectManagerAction({
+              type: 'stop-project',
+              reason,
+              emergency: params?.emergency === true,
+              stopKind: params?.emergency === true ? 'safety-stop' : 'user-request',
+            }, session.id);
       if (action === 'pause') {
         for (const laneId of projectSupervisorLaneIds(session)) store.pauseSupervisorLane(laneId, '由飞书暂停项目管理会话');
       }

@@ -1264,6 +1264,12 @@ export interface ProjectManagerEvent {
 
 export type ProjectManagerEventSummary = Pick<ProjectManagerEvent, 'kind' | 'ts' | 'payload'>;
 
+export type ProjectStopKind =
+  | 'user-request'
+  | 'planned-close'
+  | 'safety-stop'
+  | 'recovery-exhausted';
+
 /**
  * A project event needs user attention when it is an explicit terminal
  * blocker, or when the producer marks a non-failure event as non-recoverable.
@@ -1285,6 +1291,55 @@ export function projectManagerEventNeedsUserAttention(
   return event.payload?.attentionRequired === true || event.kind.endsWith('-failed');
 }
 
+export function projectManagerEventResolvesAllAttention(
+  event: Pick<ProjectManagerEvent, 'kind'> | { kind: string },
+): boolean {
+  return event.kind === 'project-completed' || event.kind === 'project-stopped';
+}
+
+/** Keep every user-attention outlet on the same recovery semantics. */
+export function projectManagerResolvedAttentionKinds(
+  event: Pick<ProjectManagerEvent, 'kind' | 'payload'> | {
+    kind: string;
+    payload?: Record<string, unknown>;
+  },
+): string[] {
+  const resolvedKinds = new Set<string>();
+  if (event.kind === 'project-resumed') {
+    resolvedKinds.add('project-paused');
+    resolvedKinds.add('guard-triggered');
+    resolvedKinds.add('project-execution-stalled');
+    resolvedKinds.add('project-goal-completed');
+  } else if (event.kind === 'project-goal-completion-invalidated') {
+    resolvedKinds.add('project-goal-completed');
+  } else if (event.kind === 'manager-runtime-restarted') {
+    resolvedKinds.add('manager-runtime-failed');
+    resolvedKinds.add('manager-delivery-failed');
+  } else if (event.kind === 'manager-delivery-restored') {
+    resolvedKinds.add('manager-delivery-failed');
+    resolvedKinds.add('manager-runtime-failed');
+  } else if (event.kind === 'project-agent-runtime-switched') {
+    resolvedKinds.add('project-agent-limit-detected');
+  } else if (event.kind === 'recovery-restored') {
+    resolvedKinds.add('manager-runtime-failed');
+    resolvedKinds.add('supervisor-runtime-failed');
+    resolvedKinds.add('task-runtime-failed');
+    resolvedKinds.add('project-safe-exit-failed');
+    resolvedKinds.add('project-execution-stalled');
+  } else if (event.kind === 'project-safe-exit-completed') {
+    resolvedKinds.add('project-safe-exit-failed');
+  } else if (event.kind === 'requirements-quiesced') {
+    resolvedKinds.add('requirements-quiesce-failed');
+  }
+  const explicitResolvedKinds = event.payload?.resolvedAttentionKinds;
+  if (Array.isArray(explicitResolvedKinds)) {
+    for (const kind of explicitResolvedKinds) {
+      if (typeof kind === 'string' && kind.trim()) resolvedKinds.add(kind.trim());
+    }
+  }
+  return [...resolvedKinds];
+}
+
 /** Returns the newest alert that has not been followed by a recovery event. */
 export function activeProjectManagerAttentionEvent<T extends ProjectManagerEventSummary>(
   events: readonly T[],
@@ -1292,41 +1347,8 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
   const resolvedKinds = new Set<string>();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.kind === 'project-completed' || event.kind === 'project-stopped') return undefined;
-    if (event.kind === 'project-resumed') {
-      resolvedKinds.add('project-paused');
-      resolvedKinds.add('guard-triggered');
-      resolvedKinds.add('project-execution-stalled');
-      resolvedKinds.add('project-goal-completed');
-    } else if (event.kind === 'project-goal-completion-invalidated') {
-      resolvedKinds.add('project-goal-completed');
-    } else if (event.kind === 'manager-runtime-restarted') {
-      resolvedKinds.add('manager-runtime-failed');
-      resolvedKinds.add('manager-delivery-failed');
-    } else if (event.kind === 'manager-delivery-restored') {
-      resolvedKinds.add('manager-delivery-failed');
-      // A lifecycle acknowledgement from the manager terminal also proves
-      // that an earlier startup/runtime failure is no longer current.
-      resolvedKinds.add('manager-runtime-failed');
-    } else if (event.kind === 'project-agent-runtime-switched') {
-      resolvedKinds.add('project-agent-limit-detected');
-    } else if (event.kind === 'recovery-restored') {
-      resolvedKinds.add('manager-runtime-failed');
-      resolvedKinds.add('supervisor-runtime-failed');
-      resolvedKinds.add('task-runtime-failed');
-      resolvedKinds.add('project-safe-exit-failed');
-      resolvedKinds.add('project-execution-stalled');
-    } else if (event.kind === 'project-safe-exit-completed') {
-      resolvedKinds.add('project-safe-exit-failed');
-    } else if (event.kind === 'requirements-quiesced') {
-      resolvedKinds.add('requirements-quiesce-failed');
-    }
-    const explicitResolvedKinds = event.payload?.resolvedAttentionKinds;
-    if (Array.isArray(explicitResolvedKinds)) {
-      for (const kind of explicitResolvedKinds) {
-        if (typeof kind === 'string' && kind.trim()) resolvedKinds.add(kind.trim());
-      }
-    }
+    if (projectManagerEventResolvesAllAttention(event)) return undefined;
+    projectManagerResolvedAttentionKinds(event).forEach((kind) => resolvedKinds.add(kind));
     if (projectManagerEventNeedsUserAttention(event) && !resolvedKinds.has(event.kind)) return event;
   }
   return undefined;
@@ -2261,7 +2283,7 @@ export type ProjectManagerAction =
       completion?: ProjectCompletionResult;
       userAcceptanceEventId?: string;
     }
-  | { type: 'stop-project'; reason: string; emergency?: boolean }
+  | { type: 'stop-project'; reason: string; emergency?: boolean; stopKind?: ProjectStopKind }
   | { type: 'reply'; correlationId?: string; message: string };
 
 export function projectWorkItemReady(

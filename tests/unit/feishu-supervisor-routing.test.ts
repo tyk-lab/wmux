@@ -2498,14 +2498,65 @@ describe('飞书人工决策单聊路由', () => {
 
     service.onProjectManagerRecord({
       sessionId: 'pm-stopped', projectDir: 'E:\\repo', type: 'project-stopped',
-      payload: { message: '项目已停止，运行记录已保留', attentionRequired: true },
+      payload: {
+        message: '项目已停止，运行记录已保留',
+        stopKind: 'planned-close',
+        attentionRequired: true,
+      },
     });
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     const stoppedCard = JSON.stringify((send.mock.calls[1][1] as { card?: unknown }).card);
     expect(stoppedCard).toContain('wmux · 项目已停止');
-    expect(stoppedCard).toContain('"template":"orange"');
+    expect(stoppedCard).toContain('"template":"green"');
     expect(stoppedCard).toContain('项目已停止，运行记录已保留');
+    expect(stoppedCard).toContain('这是正常终态，无需排障');
     expect(stoppedCard).not.toContain('项目自动推进需要处理');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-safety-stop', projectDir: 'E:\\repo', type: 'project-stopped',
+      payload: {
+        message: '恢复连续失败，项目已安全停止',
+        stopKind: 'safety-stop',
+        attentionRequired: true,
+      },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    const safetyStopCard = JSON.stringify((send.mock.calls[2][1] as { card?: unknown }).card);
+    expect(safetyStopCard).toContain('"template":"red"');
+    expect(safetyStopCard).toContain('项目因异常或安全原因停止');
+  });
+
+  it('项目异常恢复后将原飞书告警卡更新为不可操作的已恢复状态', async () => {
+    vi.stubEnv('WMUX_FEISHU_PROJECT_MANAGER_CHAT_ID', 'oc-project-recovery');
+    const service = new FeishuSupervisorService(vi.fn(async () => ({ ok: true })));
+    service.start();
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-recovery-card', projectDir: 'E:\\repo', type: 'manager-runtime-failed',
+      ts: 20,
+      payload: { message: '项目 AI 运行时失败', attentionRequired: true },
+    });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-recovery-card', projectDir: 'E:\\repo', type: 'manager-runtime-restarted',
+      ts: 30,
+      payload: { message: '项目 AI 运行时已重建', attentionRequired: false },
+    });
+    await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
+    expect(updateCard.mock.calls[0][0]).toBe('om-1');
+    const resolvedCard = JSON.stringify(updateCard.mock.calls[0][1]);
+    expect(resolvedCard).toContain('状态已恢复');
+    expect(resolvedCard).toContain('旧告警不再需要处理');
+    expect(resolvedCard).not.toContain('打开项目工作台');
+
+    service.onProjectManagerRecord({
+      sessionId: 'pm-recovery-card', projectDir: 'E:\\repo', type: 'manager-runtime-failed',
+      ts: 30,
+      payload: { message: '同一毫秒迟到的旧运行时故障', attentionRequired: true },
+    });
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('项目人工介入阻塞推送到专用飞书群，答复进入对应项目且不自动恢复', async () => {

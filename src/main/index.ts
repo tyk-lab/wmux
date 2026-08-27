@@ -779,9 +779,13 @@ app.whenReady().then(() => {
     return captureProjectPlanFiles(result.filePaths);
   });
   ipcMain.handle('project-manager:append-record', (_event, record) => {
-    const result = appendProjectManagerRecord(record);
-    feishuSupervisor?.onProjectManagerRecord?.(record);
-    return result;
+    try {
+      return appendProjectManagerRecord(record);
+    } finally {
+      // Remote alert state follows the authoritative renderer event even when
+      // the append-only local audit file cannot accept another record.
+      feishuSupervisor?.onProjectManagerRecord?.(record);
+    }
   });
   ipcMain.handle('supervisor:list-models', (_event, request) => {
     const launcher = String(request?.launcher || '');

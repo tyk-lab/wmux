@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   activeProjectManagerAttentionEvent,
   projectManagerEventNeedsUserAttention,
+  projectManagerEventResolvesAllAttention,
+  projectManagerResolvedAttentionKinds,
 } from '../../src/shared/project-manager';
 
 describe('project manager attention events', () => {
@@ -68,5 +70,21 @@ describe('project manager attention events', () => {
       completedGoalAlert,
       { kind: 'project-goal-completion-invalidated' as const, ts: 9 },
     ])).toBeUndefined();
+  });
+
+  it('exposes the same recovery mapping to every notification outlet', () => {
+    expect(projectManagerResolvedAttentionKinds({ kind: 'manager-delivery-restored' }))
+      .toEqual(['manager-delivery-failed', 'manager-runtime-failed']);
+    expect(projectManagerResolvedAttentionKinds({
+      kind: 'recovery-restored',
+      payload: { resolvedAttentionKinds: ['guard-triggered'] },
+    })).toEqual(expect.arrayContaining([
+      'manager-runtime-failed',
+      'supervisor-runtime-failed',
+      'task-runtime-failed',
+      'guard-triggered',
+    ]));
+    expect(projectManagerEventResolvesAllAttention({ kind: 'project-stopped' })).toBe(true);
+    expect(projectManagerEventResolvesAllAttention({ kind: 'project-resumed' })).toBe(false);
   });
 });
