@@ -2709,15 +2709,21 @@ export default function SupervisorPanel({
                 const directDecision = proposalEdits[a.id] || '';
                 const supervisorSurfaceId = lane ? dedicatedSupervisorSurfaceId(lane) : null;
                 return (
-                <div key={a.id} className="sup-panel__approval">
-                  <div className="sup-panel__approval-head">
-                    <strong>{isClarification ? '需求对齐' : a.proposalKind === 'route-change' ? '路线变更' : a.proposalKind === 'important' ? '重要建议' : a.laneLabel}</strong>
-                    {a.proposalKind && <span>{a.laneLabel}</span>}
-                  </div>
+                <div key={a.id} className={`sup-panel__approval${a.proposalKind ? ' sup-panel__confirmation-card project-manager-dialog__clarification' : ''}`}>
+                  {a.proposalKind ? <header className="project-manager-dialog__clarification-header">
+                    <div>
+                      <span>普通监督 AI 需要你确认</span>
+                      <strong>{isClarification ? '需求对齐后开始执行' : a.proposalKind === 'route-change' ? '确认是否调整当前路线' : a.proposalKind === 'important' ? '确认重要监督建议' : a.laneLabel}</strong>
+                    </div>
+                    <em>等待你的答复</em>
+                  </header> : <div className="sup-panel__approval-head"><strong>{a.laneLabel}</strong></div>}
                   {a.proposalKind ? (
                     <div className="sup-panel__proposal">
-                      <section className="sup-panel__decision-section">
-                        <h4>{isClarification ? '需要集中确认的问题' : '决策背景'}</h4>
+                      <div className="project-manager-dialog__clarification-question">
+                        {a.reason || (isClarification ? '请确认普通监督开始执行前需要对齐的事项' : 'AI 监督请求你确认下一步路线')}
+                      </div>
+                      <details className="project-manager-dialog__clarification-context">
+                        <summary>查看当前任务、进展与影响</summary>
                         <div className="sup-panel__decision-overview">
                           <div className="sup-panel__decision-fact sup-panel__decision-fact--task">
                             <span>当前任务</span>
@@ -2728,31 +2734,28 @@ export default function SupervisorPanel({
                             <div>{a.currentState || '尚无额外进展摘要，请结合当前任务和问题说明判断'}</div>
                           </div>
                           <div className="sup-panel__decision-fact">
-                            <span>{isClarification ? '对齐问题' : '问题 / 当前要决定什么'}</span>
-                            <div>{a.reason || 'AI 监督请求你确认下一步路线'}</div>
-                          </div>
-                          <div className="sup-panel__decision-fact">
                             <span>影响 / 风险</span>
                             <div>{a.impact || '未报告额外风险'}</div>
                           </div>
                         </div>
-                      </section>
+                      </details>
 
-                      <section className="sup-panel__decision-section sup-panel__recommendation">
-                        <h4>{isClarification ? 'AI 推荐答案（需你确认，不会自动采用）' : 'AI 推荐'}</h4>
+                      <section className="sup-panel__decision-section sup-panel__recommendation project-manager-dialog__clarification-impact">
+                        <h4>{isClarification ? 'AI 推荐答案（不会自动采用）' : 'AI 推荐方案'}</h4>
                         <div>{isClarification
                           ? a.alternatives || 'AI 未提供推荐答案'
                           : a.text || 'AI 未提供具体下一步'}</div>
                       </section>
 
-                      {!isClarification && <fieldset className="sup-panel__decision-section sup-panel__decision-options">
-                        <legend>选择 AI 方案</legend>
+                      {!isClarification && <fieldset className="sup-panel__decision-section sup-panel__decision-options project-manager-dialog__clarification-options">
+                        <legend>请选择一项</legend>
                         <p>选择后，AI 监督会读取任务终端最新状态，整理成完整指令再发送。</p>
                         <div className="sup-panel__decision-option-list">
                           {decisionOptions.map((option) => (
                             <label
                               key={option.value}
                               className={`sup-panel__decision-option${selectedOption === option.value ? ' is-selected' : ''}`}
+                              data-selected={selectedOption === option.value ? '1' : '0'}
                             >
                               <input
                                 type="radio"
@@ -2777,9 +2780,12 @@ export default function SupervisorPanel({
                         </div>
                       </fieldset>}
 
-                      <section className="sup-panel__decision-section sup-panel__supervisor-guidance">
+                      <details
+                        className="sup-panel__decision-section sup-panel__supervisor-guidance project-manager-dialog__clarification-supplement"
+                        open={isClarification || undefined}
+                      >
+                        <summary>{isClarification ? '集中回答对齐问题' : '补充给监督 AI 的信息（可选）'}</summary>
                         <label className="sup-panel__proposal-edit">
-                          <span>{isClarification ? '集中回答以上问题' : '补充给 AI 监督的信息（可选）'}</span>
                           <textarea
                             className="sup-panel__proposal-input"
                             value={userGuidance}
@@ -2798,7 +2804,10 @@ export default function SupervisorPanel({
                             ? '答复只交给监督 AI 完成对齐；监督 AI 形成正式计划前不会向任务 AI 发送执行指令。'
                             : '采用时会与所选方案一起交给 AI 监督分析，不会直接发送到任务终端。没有可选方案时，也可以只提交这段信息。'}</small>
                         </label>
-                        {lane && !isProjectManagedSupervisorLane(lane) && (
+                      </details>
+                      {lane && !isProjectManagedSupervisorLane(lane) && (
+                        <details className="project-manager-dialog__clarification-advanced">
+                          <summary>高级选项</summary>
                           <label className="sup-panel__standing-decision">
                             <input
                               type="checkbox"
@@ -2812,12 +2821,15 @@ export default function SupervisorPanel({
                             <span>
                               <strong>同类问题沿用本次决定，不再重复询问</strong>
                               <small>仅限当前终端和当前规划版本；出现新风险、范围或验收变化时仍需重新确认。</small>
-                            </span>
-                          </label>
-                        )}
-                      </section>
+                              </span>
+                            </label>
+                        </details>
+                      )}
 
-                      <div className="sup-panel__approval-actions sup-panel__decision-actions">
+                      <div className="sup-panel__approval-actions sup-panel__decision-actions project-manager-dialog__clarification-actions">
+                        <span>{isClarification
+                          ? '完成对齐前，监督 AI 不会向任务终端派发执行指令。'
+                          : '你的选择会先交给监督 AI 结合终端最新状态整理。'}</span>
                         {laneControlState === 'paused' ? (
                           <button
                             type="button"
@@ -2839,7 +2851,7 @@ export default function SupervisorPanel({
                         )}
                         <button
                           type="button"
-                          className="sup-panel__btn-primary"
+                          className="sup-panel__btn-primary project-manager-dialog__clarification-submit"
                           onClick={() => onApprove(a.id)}
                           disabled={
                             !supervisor.active
@@ -2858,10 +2870,9 @@ export default function SupervisorPanel({
                         </button>
                       </div>
 
-                      {!isClarification && <>
-                      <div className="sup-panel__decision-divider"><span>或者直接决定</span></div>
-
-                      <section className="sup-panel__direct-decision">
+                      {!isClarification && <details className="project-manager-dialog__clarification-advanced sup-panel__direct-decision-advanced">
+                        <summary>直接决定并发送给任务终端</summary>
+                        <section className="sup-panel__direct-decision">
                         <label className="sup-panel__proposal-edit">
                           <span>直接发送给任务终端的指令</span>
                           <textarea
@@ -2893,8 +2904,8 @@ export default function SupervisorPanel({
                             直接发送用户指令
                           </button>
                         </div>
-                      </section>
-                      </>}
+                        </section>
+                      </details>}
                     </div>
                   ) : (
                     <>

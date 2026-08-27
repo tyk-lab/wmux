@@ -381,7 +381,12 @@ describe('supervisor setup dialog feedback', () => {
 
   it('allows optional user guidance to be evaluated by the AI supervisor', () => {
     expect(panelSource).toContain('proposalGuidance');
-    expect(panelSource).toContain('补充给 AI 监督的信息（可选）');
+    expect(panelSource).toContain('普通监督 AI 需要你确认');
+    expect(panelSource).toContain('sup-panel__confirmation-card');
+    expect(panelSource).toContain('查看当前任务、进展与影响');
+    expect(panelSource).toContain('project-manager-dialog__clarification-supplement');
+    expect(panelSource).toContain('直接决定并发送给任务终端');
+    expect(panelSource).toContain('补充给监督 AI 的信息（可选）');
     expect(panelSource).toContain('没有可选方案时，也可以只提交这段信息');
     expect(panelSource).toContain("(!selectedOption && !recommendedOption && !userGuidance.trim())");
     expect(panelSource).toMatch(/isClarification\s*\? '提交对齐答复'/);

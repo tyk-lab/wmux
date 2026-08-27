@@ -4578,6 +4578,53 @@
   margin-bottom: 6px;
 }
 
+.sup-panel__confirmation-card {
+  padding: 0;
+  overflow: hidden;
+  border-color: rgba(96, 165, 250, 0.38);
+  background: rgba(15, 23, 42, 0.26);
+}
+
+.sup-panel__confirmation-card .sup-panel__proposal {
+  gap: 0;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-context > .sup-panel__decision-overview {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-impact h4 {
+  margin-bottom: 5px;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-supplement .sup-panel__proposal-edit {
+  padding: 0 10px 10px;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-supplement .sup-panel__proposal-input {
+  margin: 0;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-advanced .sup-panel__standing-decision {
+  margin: 2px 10px 0;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-actions {
+  margin-top: 0;
+}
+
+.sup-panel__confirmation-card .project-manager-dialog__clarification-submit {
+  border-color: rgba(96, 165, 250, 0.62) !important;
+  background: rgba(37, 99, 235, 0.3) !important;
+  color: #dbeafe;
+}
+
+.sup-panel__direct-decision-advanced .sup-panel__direct-decision {
+  margin: 0 10px 10px;
+}
+
 .sup-panel__approval-head {
   display: flex;
   justify-content: space-between;
@@ -4774,6 +4821,10 @@
 
 .supervisor-session-pane .sup-panel__approval {
   padding: 12px;
+}
+
+.supervisor-session-pane .sup-panel__confirmation-card {
+  padding: 0;
 }
 
 .supervisor-session-pane .sup-panel__decision-section h4,
