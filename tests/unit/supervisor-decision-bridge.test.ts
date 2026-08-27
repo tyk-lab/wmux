@@ -276,6 +276,10 @@ function bindProjectLaneToWorkItem(options: {
     preconditions: ['无额外物理前置条件'],
     planFiles: [],
     doneWhen: ['相关测试通过'],
+    verificationPolicies: [{
+      criterion: '相关测试通过', requirement: 'required', riskClass: 'standard',
+      reason: '测试基线明确为普通成果',
+    }],
     requirementsVersion: 1,
     acceptedRequirementsVersion: 1,
     executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
@@ -347,6 +351,22 @@ function bindProjectLaneToWorkItem(options: {
     ],
   });
   return project;
+}
+
+function classifyCurrentVerificationAsStandard(projectId: string): void {
+  const current = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId)!;
+  const criterion = current.doneWhen[0];
+  useStore.getState().restoreProjectManager({
+    ...current,
+    workItems: current.workItems.map((item) => ({
+      ...item,
+      contract: {
+        ...item.contract,
+        stopWhen: [criterion],
+        validation: [criterion],
+      },
+    })),
+  });
 }
 
 function prepareProjectSupervisorHandover(projectId: string): {
@@ -1432,7 +1452,7 @@ describe('supervisor decision bridge', () => {
     expect(managerNotifications).toContain('其他工作项没有被全局暂停');
   });
 
-  it('skips only the selected verification work item without completing its stage', async () => {
+  it('waives only the selected standard verification and releases its stage dependency without claiming success', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-direct-verification-intervention' });
     const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
     const goalId = current.activeGoalId || current.goals?.[0]?.id || '';
@@ -1463,6 +1483,19 @@ describe('supervisor decision bridge', () => {
     useStore.getState().restoreProjectManager({
       ...current,
       activeWorkItemId: 'task-a',
+      doneWhen: ['GUI CRUD 可复核'],
+      verificationPolicies: [{
+        criterion: 'GUI CRUD 可复核', requirement: 'required', riskClass: 'standard',
+        reason: '用户明确分类为普通成果',
+      }],
+      goals: current.goals?.map((goal) => goal.id === goalId ? {
+        ...goal,
+        doneWhen: ['GUI CRUD 可复核'],
+        verificationPolicies: [{
+          criterion: 'GUI CRUD 可复核', requirement: 'required', riskClass: 'standard',
+          reason: '用户明确分类为普通成果',
+        }],
+      } : goal),
       subgoals: [{
         id: 'gui_stage', goalId, title: 'GUI 用户管理', outcome: 'CRUD 可用',
         acceptance: ['GUI CRUD 可复核'], dependencies: [], status: 'active',
@@ -1472,6 +1505,13 @@ describe('supervisor decision bridge', () => {
         ...item,
         goalId,
         subgoalId: 'gui_stage',
+        contract: {
+          ...item.contract,
+          stageAcceptanceCoverage: [{
+            stageCriterion: 'GUI CRUD 可复核',
+            verificationCriterion: 'GUI CRUD 可复核',
+          }],
+        },
         verificationLimitation: {
           kind: 'gui-automation-unavailable' as const,
           detail: '当前环境无法执行可靠的 GUI 自动化',
@@ -1505,7 +1545,7 @@ describe('supervisor decision bridge', () => {
       reason: '当前 GUI 自动化能力不可用',
     })).resolves.toMatchObject({
       ok: true,
-      message: expect.stringContaining('所属阶段保持未完成'),
+      message: expect.stringContaining('普通验证'),
     });
 
     const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
@@ -1515,7 +1555,7 @@ describe('supervisor decision bridge', () => {
       workerSurfaceId: undefined,
       verificationDecision: { action: 'skip-verification' },
     });
-    expect(updated.subgoals?.[0]).toMatchObject({ id: 'gui_stage', status: 'active' });
+    expect(updated.subgoals?.[0]).toMatchObject({ id: 'gui_stage', status: 'obsolete' });
     expect((globalThis.window as any).wmux.pty.writeReliable).toHaveBeenCalledWith('worker-a', '\x03');
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
       .toMatchObject({ projectWorkItemId: undefined, controlState: 'active' });
@@ -1523,8 +1563,8 @@ describe('supervisor decision bridge', () => {
       ...writes.mock.calls,
       ...(updated.pendingManagerDeliveries || []).map((delivery) => delivery.text),
     ]);
-    expect(managerNotifications).toContain('不是跳过阶段');
-    expect(managerNotifications).toContain('不得把阶段标记 achieved');
+    expect(managerNotifications).toContain('不代表测试通过');
+    expect(managerNotifications).toContain('不得恢复原工作项');
   });
 
   it('does not redispatch a verification work item after the user defers it', async () => {
@@ -2074,9 +2114,13 @@ describe('supervisor decision bridge', () => {
     });
 
     expect(remoteControl({
-      action: 'waiting-decision', terminal: 'worker-a', decision: 'keep', actor: 'ou-user',
-    })).toMatchObject({ ok: true, message: expect.stringContaining('保持待续') });
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'keep',
+      message: '保留当前现场，稍后决定', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('自定义意见已记录') });
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'waiting' });
+    expect(useStore.getState().supervisor.log[0]).toMatchObject({
+      action: '用户保持待续并补充意见', detail: '保留当前现场，稍后决定',
+    });
     expect(writes).not.toHaveBeenCalled();
 
     expect(remoteControl({
@@ -2098,11 +2142,12 @@ describe('supervisor decision bridge', () => {
     useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
     writes.mockClear();
     expect(remoteControl({
-      action: 'waiting-decision', terminal: 'worker-a', decision: 'resume', actor: 'ou-user',
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'resume',
+      message: '恢复后先检查最新日志', actor: 'ou-user',
     })).toMatchObject({ ok: true, message: expect.stringContaining('按原目标恢复') });
     expect(writes).toHaveBeenCalledWith(
       'supervisor-a',
-      expect.stringContaining('按原任务目标和既有停止条件继续监督'),
+      expect.stringMatching(/按原任务目标和既有停止条件继续监督[\s\S]*恢复后先检查最新日志/u),
     );
 
     useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
@@ -2112,7 +2157,8 @@ describe('supervisor decision bridge', () => {
     })).toMatchObject({ ok: true, message: expect.stringContaining('按原目标恢复') });
     useStore.getState().updateLane('lane-a', { controlState: 'waiting', stopConfirmed: true, awaitingReview: false });
     expect(remoteControl({
-      action: 'waiting-decision', terminal: 'worker-a', decision: 'stop', actor: 'ou-user',
+      action: 'waiting-decision', terminal: 'worker-a', decision: 'stop',
+      message: '该方向不再继续', actor: 'ou-user',
     })).toMatchObject({ ok: true, message: expect.stringContaining('其他通道不受影响') });
     expect(useStore.getState().supervisor.lanes).toHaveLength(0);
   });
@@ -4168,6 +4214,7 @@ describe('supervisor decision bridge', () => {
 
   it('treats unavailable GUI automation as limited verification and asks for a concrete user decision', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-gui-verification-limited' });
+    classifyCurrentVerificationAsStandard(project.id);
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -4223,6 +4270,7 @@ describe('supervisor decision bridge', () => {
           options: [
             expect.objectContaining({ id: 'manual-verify-complete' }),
             expect.objectContaining({ id: 'manual-verify-defer' }),
+            expect.objectContaining({ id: 'skip-verification' }),
           ],
         },
       },
@@ -4239,20 +4287,61 @@ describe('supervisor decision bridge', () => {
       action: 'answer-question', projectId: project.id,
       questionId: manualFeedback?.id, optionId: 'manual-verify-complete', source: 'desktop',
     })).resolves.toMatchObject({
-      ok: false,
-      error: expect.stringContaining('逐项填写实际成功项'),
-    });
-    await expect(remote({
-      action: 'answer-question', projectId: project.id,
-      questionId: manualFeedback?.id, optionId: 'manual-verify-complete',
-      answer: '已手动打开主窗口并完成新增、保存和重新加载，均正常。', source: 'desktop',
-    })).resolves.toMatchObject({
       ok: true,
       session: { status: 'waiting', pendingUserQuestion: undefined },
       message: expect.stringContaining('已提交给项目管理 AI'),
     });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: 'user-clarification-answered',
+        payload: expect.objectContaining({
+          answer: expect.stringContaining('未补充失败或异常现象'),
+          optionId: 'manual-verify-complete',
+        }),
+      })]));
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events
       .some((event) => event.kind === 'project-resumed')).toBe(false);
+  });
+
+  it('does not offer or accept a verification waiver for protected acceptance criteria', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-protected-verification-limited' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const protectedCriterion = '权限与数据完整性验收通过';
+    useStore.getState().restoreProjectManager({
+      ...current,
+      doneWhen: [protectedCriterion],
+      goals: current.goals?.map((goal) => goal.id === current.activeGoalId ? {
+        ...goal,
+        doneWhen: [protectedCriterion],
+      } : goal),
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        contract: {
+          ...item.contract,
+          stopWhen: [protectedCriterion],
+          validation: [protectedCriterion],
+        },
+      })),
+    });
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const response = await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 GUI 自动化通道不可用，无法取得权限与数据完整性验收证据',
+    });
+    expect(response).toMatchObject({ ok: true, question: { reasonCode: 'verification-limited' } });
+    expect(response.question.options).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'skip-verification' }),
+    ]));
+    await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
+      action: 'answer-question', projectId: project.id, questionId: response.question.id,
+      optionId: 'skip-verification', source: 'desktop',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('选项不存在') });
+    await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
+      action: 'intervene-work-item', projectId: project.id, workItemId: 'task-a',
+      intervention: 'skip-verification', source: 'desktop',
+    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('不能跳过') });
   });
 
   it('keeps the project paused when manual verification is deferred', async () => {
@@ -4403,8 +4492,9 @@ describe('supervisor decision bridge', () => {
       .toMatchObject({ projectWorkItemId: undefined, currentTask: '' });
   });
 
-  it('skips the current verification work item and keeps the gap for a later plan', async () => {
+  it('waives the current standard verification without scheduling a later equivalent check', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-skip-gui-verification' });
+    classifyCurrentVerificationAsStandard(project.id);
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -4432,13 +4522,13 @@ describe('supervisor decision bridge', () => {
           }),
         })],
       },
-      message: expect.stringContaining('后续新计划中补验'),
+      message: expect.stringContaining('不会安排补验'),
     });
     const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
     expect(updated.events).toEqual(expect.arrayContaining([expect.objectContaining({
       kind: 'user-work-item-intervention',
       workItemId: 'task-a',
-      payload: expect.objectContaining({ intervention: 'skip' }),
+      payload: expect.objectContaining({ intervention: 'skip-verification', stageDisposition: 'waived' }),
     })]));
     expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')).toMatchObject({
       projectWorkItemId: undefined,
@@ -4560,7 +4650,9 @@ describe('supervisor decision bridge', () => {
     });
     expect(completionAttempt.question.options.map((option: { id: string }) => option.id))
       .toEqual(['accept-current-result', 'continue-validation']);
-    expect(completionAttempt.question.options[0]).toMatchObject({ label: '接受项目已完成' });
+    expect(completionAttempt.question.options[0]).toMatchObject({
+      label: '跳过剩余普通验证并接受完成',
+    });
     const pending = useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
     await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
@@ -4635,6 +4727,7 @@ describe('supervisor decision bridge', () => {
 
   it('offers only one alternative verification round for the same work item', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-one-alternative-verification' });
+    classifyCurrentVerificationAsStandard(project.id);
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
     const request = (globalThis.window as any).__wmux_projectManagerRequest;
@@ -12311,13 +12404,21 @@ describe('supervisor decision bridge', () => {
     const approval = useStore.getState().supervisor.pendingApprovals[0];
     const remoteControl = (globalThis.window as any).__wmux_supervisorRemoteControl;
 
-    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'pause', actor: 'ou-user' }))
-      .toMatchObject({ ok: true, message: expect.stringContaining('已暂停') });
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'pause',
+      task: '保留当前现场，等待明天复核', actor: 'ou-user',
+    })).toMatchObject({ ok: true, message: expect.stringContaining('记录自定义意见') });
     expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: true });
     expect(useStore.getState().supervisor.lanes[0]).toMatchObject({ controlState: 'paused' });
     expect(useStore.getState().supervisor.pendingApprovals).toHaveLength(1);
+    expect(useStore.getState().supervisor.log).toEqual(expect.arrayContaining([expect.objectContaining({
+      action: '用户暂停待决项并补充意见', detail: '保留当前现场，等待明天复核',
+    })]));
 
-    expect(remoteControl({ action: 'decide', approvalId: approval.id, decision: 'stop', actor: 'ou-user' }))
+    expect(remoteControl({
+      action: 'decide', approvalId: approval.id, decision: 'stop',
+      task: '确认停止，不再保留此方向', actor: 'ou-user',
+    }))
       .toMatchObject({ ok: true, message: expect.stringContaining('已停止 worker 的 AI 监督') });
     expect(useStore.getState().supervisor).toMatchObject({ active: false, paused: false, pendingApprovals: [] });
     expect(useStore.getState().supervisor.lanes).toEqual([]);

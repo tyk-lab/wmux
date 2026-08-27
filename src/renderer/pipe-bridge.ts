@@ -305,6 +305,7 @@ import { projectTransitionResolutionError as projectTransitionPolicyError } from
 import { projectWorkItemCreationError } from './project-manager/work-item-admission-policy';
 import {
   projectWorkItemRequiresVersionReconciliation,
+  projectWorkItemVerificationWaiverError,
   projectWorkItemVerificationIntervened,
 } from './project-manager/verification-intervention-policy';
 import {
@@ -2962,16 +2963,33 @@ function decideRemoteWaiting(params: RemoteWaitingDecision): { ok: boolean; mess
   if (!lane || supervisorLaneControlState(lane) !== 'waiting') {
     return { ok: false, error: '该 AI 监督通道已不处于待续状态，请刷新后查看当前状态。', message: '' };
   }
+  const userMessage = String(params.message || '').trim().slice(0, 4000);
   if (params.decision === 'keep') {
-    return { ok: true, message: `${lane.label} 保持待续；之后仍可从原卡片提交新方案或恢复监督。` };
+    remoteAudit(session, lane, 'supervisor.remote-command', {
+      action: 'waiting-keep',
+      actor: params.actor || 'unknown',
+      inputLength: userMessage.length || undefined,
+    });
+    if (userMessage) {
+      useStore.getState().appendSupervisorLog(lane.id, '用户保持待续并补充意见', userMessage);
+    }
+    return {
+      ok: true,
+      message: `${lane.label} 保持待续${userMessage ? '，自定义意见已记录' : ''}；之后仍可从原卡片提交新方案或恢复监督。`,
+    };
   }
   if (params.decision === 'stop') {
     remoteAudit(session, lane, 'supervisor.remote-command', {
       action: 'waiting-stop',
       actor: params.actor || 'unknown',
+      inputLength: userMessage.length || undefined,
     });
+    if (userMessage) useStore.getState().appendSupervisorLog(lane.id, '用户停止待续并补充意见', userMessage);
     closeStoppedSupervisorSurfaces([lane]);
-    useStore.getState().stopSupervisorLane(lane.id, `由飞书停止待续通道 ${lane.label} 并解除终端绑定`);
+    useStore.getState().stopSupervisorLane(
+      lane.id,
+      `由飞书停止待续通道 ${lane.label} 并解除终端绑定${userMessage ? `；用户补充：${userMessage}` : ''}`,
+    );
     return { ok: true, message: `已停止 ${lane.label} 的 AI 监督并解除终端绑定；其他通道不受影响。` };
   }
   if (!session.active) {
@@ -2984,8 +3002,11 @@ function decideRemoteWaiting(params: RemoteWaitingDecision): { ok: boolean; mess
     };
   }
   const message = params.decision === 'resume'
-    ? '按原任务目标和既有停止条件继续监督；先读取任务终端最新状态，再继续推进。'
-    : String(params.message || '').trim();
+    ? [
+        '按原任务目标和既有停止条件继续监督；先读取任务终端最新状态，再继续推进。',
+        userMessage ? `[用户补充意见] ${userMessage}` : '',
+      ].filter(Boolean).join('\n')
+    : userMessage;
   if (!message) return { ok: false, error: '新方案或下一步方向不能为空。', message: '' };
   const result = sendRemoteSupervisorMessage({
     action: 'send-supervisor-message',
@@ -3022,6 +3043,7 @@ function decideRemoteSupervisor(
     return { ok: false, error: '项目监督不使用普通待决项；请由项目 AI 处理结构化监督交接。', message: '' };
   }
   const decisionOwnerLabel = '用户';
+  const decisionInput = task?.trim().slice(0, 4000) || '';
   let ownerDecisionQueued = false;
   if (Date.now() - approval.createdAt > 24 * 60 * 60 * 1000) {
     store.cancelPending(approvalId, '待决项超过 24 小时，已解除旧等待状态');
@@ -3050,19 +3072,39 @@ function decideRemoteSupervisor(
     if (!session.active) return { ok: false, error: '当前监督会话已停止，不能暂停旧待决项。', message: '' };
     const lane = session.lanes.find((item) => item.id === approval.laneId);
     if (!lane) return { ok: false, error: '待决项对应的监督通道不存在。', message: '' };
-    if (supervisorLaneControlState(lane) === 'paused') return { ok: true, message: `${lane.label} 已经暂停，待决项仍保留。` };
-    store.pauseSupervisorLane(lane.id, `${decisionOwnerLabel}暂停待决项：${approval.laneLabel}；该通道决策内容已保留`);
-    remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
-    return { ok: true, message: `${decisionOwnerLabel}已暂停 ${lane.label} 的 AI 监督；其他监督通道继续运行。` };
+    if (decisionInput) store.appendSupervisorLog(lane.id, '用户暂停待决项并补充意见', decisionInput);
+    remoteAudit(session, lane, 'supervisor.remote-decision', {
+      approvalId,
+      decision,
+      actor: actor || 'unknown',
+      inputLength: decisionInput.length || undefined,
+    });
+    if (supervisorLaneControlState(lane) === 'paused') {
+      return { ok: true, message: `${lane.label} 已经暂停，待决项仍保留${decisionInput ? '，自定义意见已记录' : ''}。` };
+    }
+    store.pauseSupervisorLane(
+      lane.id,
+      `${decisionOwnerLabel}暂停待决项：${approval.laneLabel}；该通道决策内容已保留${decisionInput ? `；用户补充：${decisionInput}` : ''}`,
+    );
+    return { ok: true, message: `${decisionOwnerLabel}已暂停 ${lane.label} 的 AI 监督${decisionInput ? '并记录自定义意见' : ''}；其他监督通道继续运行。` };
   }
   const lane = session.lanes.find((item) => item.id === approval.laneId);
   if (decision === 'stop') {
     if (!session.active && !session.paused) return { ok: false, error: '当前监督会话已停止，不能处理旧待决项。', message: '' };
     store.rejectPending(approvalId);
-    remoteAudit(session, lane, 'supervisor.remote-decision', { approvalId, decision, actor: actor || 'unknown' });
+    remoteAudit(session, lane, 'supervisor.remote-decision', {
+      approvalId,
+      decision,
+      actor: actor || 'unknown',
+      inputLength: decisionInput.length || undefined,
+    });
     if (lane) {
+      if (decisionInput) store.appendSupervisorLog(lane.id, '用户停止待决项并补充意见', decisionInput);
       closeStoppedSupervisorSurfaces([lane]);
-      store.stopSupervisorLane(lane.id, `${decisionOwnerLabel}停止 ${lane.label} 并解除终端绑定`);
+      store.stopSupervisorLane(
+        lane.id,
+        `${decisionOwnerLabel}停止 ${lane.label} 并解除终端绑定${decisionInput ? `；用户补充：${decisionInput}` : ''}`,
+      );
     }
     return { ok: true, message: lane
       ? `已停止 ${lane.label} 的 AI 监督并解除终端绑定；可重新选择该终端启动监督，其他通道不受影响。`
@@ -3080,7 +3122,6 @@ function decideRemoteSupervisor(
       message: '',
     };
   }
-  const decisionInput = task?.trim().slice(0, 4000) || '';
   const clarification = approval.proposalKind === 'clarification';
   if (clarification && decision === 'approve' && !decisionInput) {
     return { ok: false, error: '请按问题编号集中填写需求对齐答复；如果明确接受全部推荐，可以填写“全部按推荐答案”，控制层不会因留空而自动采用默认值。', message: '' };
@@ -6669,11 +6710,22 @@ function projectPauseUserQuestion(
     && workItem?.verificationDecision?.action === 'alternative-validation'
     && workItem.verificationDecision.requirementsVersion === projectRequirementsVersion(session)
     && workItem.verificationDecision.authorizationVersion === projectAuthorizationVersion(session);
+  const waiverWorkItem = workItem && verificationLimitation
+    ? { ...workItem, verificationLimitation }
+    : workItem;
+  const waiverSession = waiverWorkItem && waiverWorkItem !== workItem
+    ? {
+        ...session,
+        workItems: session.workItems.map((item) => item.id === waiverWorkItem.id ? waiverWorkItem : item),
+      }
+    : session;
+  const verificationWaiverAllowed = !!waiverWorkItem
+    && !projectWorkItemVerificationWaiverError(waiverSession, waiverWorkItem);
   const verificationOptions = [
     {
       id: 'manual-verify',
       label: '人工验收并反馈',
-      description: '操作当前未验证的 GUI 核心流程，并在补充框填写成功项、失败项或异常现象。',
+      description: '操作当前未验证的 GUI 核心流程；可在补充框填写成功项、失败项或异常现象，留空表示确认按说明完成且未补充异常。',
     },
     ...(!alternativeAttempted ? [{
       id: 'alternative-validation',
@@ -6685,11 +6737,11 @@ function projectPauseUserQuestion(
       label: '暂缓验证并继续',
       description: '暂时搁置当前验证并继续后续工作；保留原工作项，条件具备后可以回来补验。',
     },
-    {
+    ...(verificationWaiverAllowed ? [{
       id: 'skip-verification',
-      label: '跳过当前验证，后续重排',
-      description: '停止当前验证工作项并继续其他成果；项目 AI 必须在后续新计划中重新承接该验收缺口。',
-    },
+      label: '跳过验证（不要求补验）',
+      description: '用户明确不要求当前普通验证；停止验证工作项并解除阶段依赖，但不把验证记录成通过，也不能覆盖真实失败。',
+    }] : []),
     {
       id: 'keep-paused',
       label: '保持暂停',
@@ -6715,11 +6767,11 @@ function projectPauseUserQuestion(
         : '',
       verificationLimited
         ? alternativeAttempted
-          ? '这属于验证能力受限，不代表实现失败。不同的替代验证已经尝试过一次，不能再派发同义验证；请选择人工验收、暂缓后补、跳过并后续重排或保持暂停。'
-          : '这属于验证能力受限，不代表实现失败。可先安排一轮不同路线的替代验证，也可以人工验收、暂缓后补，或跳过当前工作项并由后续新计划重新承接；未验证项不会被写成通过。'
+          ? '这属于验证能力受限，不代表实现失败。不同的替代验证已经尝试过一次，不能再派发同义验证；请选择人工验收、暂缓后补、明确豁免普通验证或保持暂停。'
+          : '这属于验证能力受限，不代表实现失败。可先安排一轮不同路线的替代验证，也可以人工验收、暂缓后补，或明确豁免当前普通验证；豁免不会被写成验证通过。'
         : '推荐保留现有成果与证据，按最新角色协议重建监督绑定；控制层不会回退或重复派发旧任务。',
       verificationLimited
-        ? '当前要做什么：决定是改用不同验证方式、人工验收、暂缓后补、跳过并后续重排，还是保持暂停。'
+        ? '当前要做什么：决定是改用不同验证方式、人工验收、暂缓后补、明确豁免普通验证，还是保持暂停。'
         : '当前要做什么：决定是按最新协议恢复、保持暂停，还是停止当前工作项并重新规划。',
     ].filter(Boolean).join('\n'),
     options: verificationLimited ? verificationOptions : [
@@ -6850,8 +6902,10 @@ function projectFinalAcceptanceQuestion(
     options: [
       {
         id: 'accept-current-result',
-        label: '接受项目已完成',
-        description: '确认项目实现效果可以接受并完成当前主目标；保留中途暂缓、跳过和缺失验证的记录。',
+        label: mode === 'required' ? '接受项目已完成' : '跳过剩余普通验证并接受完成',
+        description: mode === 'required'
+          ? '确认项目实现效果可以接受并完成当前主目标。'
+          : '用户明确不关心剩余普通验证并接受当前实现效果；保留缺失验证记录，不伪造通过，也不能覆盖真实失败或保护性验收。',
         confirmationScope: ['finalAcceptance'],
       },
       {
@@ -12285,6 +12339,8 @@ function manualVerificationFeedbackQuestion(
     ? limitation.missingEvidence.slice(0, 6)
     : [pending.blocker || workItem?.latestBlocker || '当前 GUI 核心交互仍缺少人工验收结果'];
   const affectedAcceptance = limitation?.affectedAcceptance.slice(0, 8) || [];
+  const verificationWaiverAllowed = !!workItem
+    && !projectWorkItemVerificationWaiverError(session, workItem);
   return normalizeProjectManagerUserQuestion({
     category: 'manual-intervention',
     workItemId: pending.workItemId,
@@ -12303,20 +12359,25 @@ function manualVerificationFeedbackQuestion(
       '1. 启动或保持当前 GUI，先确认窗口、已有数据和初始状态与预期一致。',
       '2. 按“需要核验”逐项执行真实操作；涉及编辑时记录修改前后值，涉及删除时确认界面与数据状态都已移除。',
       '3. 涉及保存、Reload 或重启时，完成操作后重新加载或重新启动，并核对最终持久化结果。',
-      '4. 在补充框逐项填写“成功 / 失败 / 未执行”，失败时附实际现象；不要只填写“已验证”或选项名称。',
+      '4. 补充框为可选；建议逐项填写“成功 / 失败 / 未执行”，失败时附实际现象。留空表示确认已按上述说明完成，且没有补充失败或异常现象。',
       '提交人工结果前项目、监督 AI 和任务 AI 都保持等待，不会重新执行自动 GUI 验证。',
     ].filter(Boolean).join('\n'),
     options: [
       {
         id: 'manual-verify-complete',
         label: '完成人工验收',
-        description: '完成上述操作后，在补充框逐项填写实际成功项、失败项或异常现象；项目 AI 只依据你提交的结果继续判断。',
+        description: '完成上述操作后可选填实际成功项、失败项或异常现象；留空表示确认已按说明完成且未补充异常。',
       },
       {
         id: 'manual-verify-defer',
         label: '暂缓人工验收',
         description: '保留所有未验证项，当前阶段不判定完成；项目保持暂停，后续再由用户安排人工验收。',
       },
+      ...(verificationWaiverAllowed ? [{
+        id: 'skip-verification',
+        label: '跳过验证（不要求补验）',
+        description: '用户明确不要求当前普通验证；不再等待人工验收或安排后续补验，但不会伪造验证通过。',
+      }] : []),
     ],
     recommendedOptionId: 'manual-verify-complete',
   }, 'waiting');
@@ -12442,7 +12503,6 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
   const option = optionId ? pending.options.find((candidate) => candidate.id === optionId) : undefined;
   if (optionId && !option) return { ok: false, error: '所选答复选项不存在' };
   const detail = String(params?.answer || '').trim().slice(0, 5000);
-  const optionLabelOnly = !!option && (!detail || detail === option.label);
   const answeredBy = params?.source === 'feishu' || params?.answeredBy === 'feishu' ? 'feishu' : 'desktop';
   if (pending.category === 'manual-intervention'
     && pending.reasonCode === 'verification-limited'
@@ -12468,15 +12528,15 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       message: '项目已进入人工验收等待；提交实际结果或选择暂缓前，不会恢复监督或任务 AI。',
     };
   }
-  if (pending.category === 'manual-intervention'
+  const effectiveDetail = pending.category === 'manual-intervention'
     && pending.reasonCode === 'verification-limited'
     && optionId === 'manual-verify-complete'
-    && optionLabelOnly) {
-    return { ok: false, error: '确认完成人工验收前，请在补充框逐项填写实际成功项、失败项或异常现象' };
-  }
-  const answer = option
-    ? detail && detail !== option.label ? `${option.label}：${detail}` : option.label
+    && !detail
+    ? '用户确认已按操作说明完成人工验收，未补充失败或异常现象'
     : detail;
+  const answer = option
+    ? effectiveDetail && effectiveDetail !== option.label ? `${option.label}：${effectiveDetail}` : option.label
+    : effectiveDetail;
   if (!answer) return { ok: false, error: '请选择一个选项或填写答复' };
   if (pending.category === 'manual-intervention' && pending.reasonCode === 'recovery-fallback') {
     const transitionId = pending.decisionKey?.startsWith('interrupted-user-choice:')
@@ -12665,7 +12725,9 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     ? releaseProjectWorkItemAssignmentForReuse(
         updated,
         pending.workItemId,
-        `用户${optionId === 'skip-verification' ? '跳过' : '暂缓'}当前验证；旧 assignment 已解除，所属阶段保持未完成`,
+        optionId === 'skip-verification'
+          ? '用户豁免当前普通验证；旧 assignment 已解除，满足豁免条件的阶段不再阻塞依赖'
+          : '用户暂缓当前验证；旧 assignment 已解除，所属阶段保持未完成',
       )
     : [];
   const manualVerificationDeferredBeforePersist = pending.category === 'manual-intervention'
@@ -12820,7 +12882,7 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
       '[用户选择替代验证｜只允许一次不同路线]',
       `项目：${session.id}${pending.workItemId ? `；工作项：${pending.workItemId}` : ''}`,
       `受限原因：${pending.blocker || pending.context || pending.question}`,
-      '保留当前实现与未验证结论，只安排一轮明显不同于失败路线的基础测试、逻辑测试、静态检查或最小可复核证据。不得再次调用原 GUI 自动化路径；若仍不能形成新证据，必须重新询问用户人工验收、暂缓验证、跳过当前验证并后续重排，或保持暂停。',
+      '保留当前实现与未验证结论，只安排一轮明显不同于失败路线的基础测试、逻辑测试、静态检查或最小可复核证据。不得再次调用原 GUI 自动化路径；若仍不能形成新证据，必须重新询问用户人工验收、暂缓验证、明确豁免普通验证，或保持暂停。',
     ].join('\n'), session.id, {
       priority: true,
       dedupeKey: `user-alternative-validation:${session.id}:${pending.id}`,
@@ -12843,12 +12905,15 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     await appendRecordedProjectEvent(updated, {
       kind: 'user-work-item-intervention',
       workItemId: pending.workItemId,
-      summary: `用户跳过工作项：${pending.workItemId}；理由：当前验证后续由新计划重新承接`,
+      summary: `用户豁免普通验证：${pending.workItemId}；不要求后续补验`,
       payload: {
-        intervention: 'skip',
-        reason: '用户选择跳过当前验证工作项，后续由新计划重新承接未验证项',
+        intervention: 'skip-verification',
+        verificationDecision: 'skip-verification',
+        reason: '用户明确不要求当前普通验证，也不要求后续安排同义补验',
         previousStatus: skippedWorkItem?.status,
         title: skippedWorkItem?.title,
+        affectedAcceptance: skippedWorkItem?.verificationLimitation?.affectedAcceptance || [],
+        stageDisposition: 'waived',
         retainedLaneIds: retainedVerificationLanes.map((lane) => lane.id),
         runtimeRetained: retainedVerificationLanes.length > 0,
         attentionRequired: false,
@@ -12856,15 +12921,15 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     });
     updated = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id);
     queueProjectManagerDelivery([
-      '[用户已跳过当前验证｜后续计划必须重新承接]',
+      '[用户已跳过当前普通验证｜不再要求补验]',
       `项目：${session.id}；工作项：${pending.workItemId}`,
       `保留的未验证项：${pending.blocker || pending.context || pending.question}`,
-      '当前验证工作项已停止，旧 assignment 已解除；项目任务 AI 与监督 AI 运行时仍保留。不得恢复原工作项或把缺口写成 satisfied。立即继续其他可执行成果；在最终完成前，为原阶段验收创建新的聚焦验证工作项并取得证据，或由用户正式修改验收要求。',
+      '当前验证工作项已停止，旧 assignment 已解除；该普通验证已记录为用户豁免，不得恢复原工作项、创建同义补验或把缺口写成 satisfied。真实失败与保护性验收仍必须处理。',
     ].join('\n'), session.id, {
       priority: true,
       dedupeKey: `user-skipped-verification:${session.id}:${pending.id}`,
     });
-    choiceMessage = '已跳过当前验证工作项并保留验收缺口；项目常驻任务与监督运行时已保留，项目 AI 将继续其他成果并在后续新计划中补验。';
+    choiceMessage = '已记录用户不要求当前普通验证；验证工作项已停止且不会安排补验，符合豁免条件的阶段依赖将解除。';
   } else if (finalAcceptanceChoice && optionId === 'accept-current-result' && updated) {
     const requiresFinalUserAcceptance = projectGoalUserAcceptancePolicy(activeProjectGoal(updated)) === 'always';
     queueProjectManagerDelivery([
@@ -15756,6 +15821,10 @@ export function initPipeBridge(): void {
       if (verificationIntervention && !verificationLimitation) {
         return { ok: false, error: '当前工作项没有本需求版本有效的验证能力限制，不能使用验证专用干预' };
       }
+      if (intervention === 'skip-verification') {
+        const waiverError = projectWorkItemVerificationWaiverError(session, workItem);
+        if (waiverError) return { ok: false, error: waiverError };
+      }
       if (verificationIntervention) {
         const quiesce = await quiesceProjectRuntimeLanes(
           session,
@@ -15784,7 +15853,9 @@ export function initPipeBridge(): void {
         updatedSession,
         workItemId,
         verificationIntervention
-          ? `用户${intervention === 'defer-verification' ? '暂缓' : '跳过'}工作项 ${workItem.title} 的当前验证；所属阶段保持未完成，旧 assignment 已解除`
+          ? intervention === 'skip-verification'
+            ? `用户豁免工作项 ${workItem.title} 的当前普通验证；符合条件的阶段不再阻塞依赖，旧 assignment 已解除`
+            : `用户暂缓工作项 ${workItem.title} 的当前验证；所属阶段保持未完成，旧 assignment 已解除`
           : `用户${intervention === 'skip' ? '跳过' : '关闭'}整个工作项 ${workItem.title}；旧 assignment 已解除，项目运行时保留`,
       );
 
@@ -15804,13 +15875,15 @@ export function initPipeBridge(): void {
         `工作项：${workItem.id} · ${workItem.title}`,
         `用户理由：${reason || '未填写；仅按用户选择的干预方式处理'}`,
         verificationIntervention
-          ? `控制层已把该验证工作项标记为${intervention === 'defer-verification' ? '暂停' : '停止'}并解除旧 assignment；所属阶段仍保持未完成，原验收条件和缺口完整保留，其他工作项没有被全局暂停。`
+          ? intervention === 'skip-verification'
+            ? '控制层已停止该验证工作项并解除旧 assignment；普通验证被记录为用户豁免，不代表测试通过，真实失败与保护性验收仍保留。'
+            : '控制层已暂停该验证工作项并解除旧 assignment；所属阶段仍保持未完成，原验收条件和缺口完整保留，其他工作项没有被全局暂停。'
           : '控制层已把整个工作项标记为停止并解除旧 assignment；项目常驻监督与任务 AI 保留供后续工作项复用，其他工作项没有被全局暂停。',
         '',
         intervention === 'defer-verification'
           ? '只暂缓当前验证路线。不得恢复或重派同一受限验证工作项，不得把阶段标记 achieved；可以先推进不依赖该验证的其他成果，条件具备后必须创建新的聚焦验证工作项补验，或由用户正式修改验收要求。'
           : intervention === 'skip-verification'
-            ? '只跳过当前受限验证工作项，不是跳过阶段。不得恢复原工作项、不得把缺口写成 satisfied、不得把阶段标记 achieved；继续其他可执行成果，并在后续计划中创建新的聚焦验证工作项重新承接该验收缺口。'
+            ? '用户已明确不要求当前普通验证。不得恢复原工作项、创建同义补验或把缺口写成 satisfied；控制层允许满足豁免条件的阶段解除依赖并继续后续成果。'
             : intervention === 'skip'
           ? '“跳过”表示本轮计划不再执行原工作项。请立即复核其依赖项和主目标完成条件，在现有授权内自主重排、调整阶段或创建必要的替代工作项；不得恢复原工作项 ID，也不要为普通重排再次询问用户。只有主目标因此无法达成且没有授权范围内的可行替代方案时，才携带事实、依据和推荐方案向用户提案。'
           : '“关闭”表示用户明确从当前计划中移除该工作项。未经用户新的明确指示，不得恢复原工作项或以等价工作项绕过此决定；请自主重排受影响的依赖项。若关闭后主目标无法达成，携带事实、影响和推荐方案向用户提案。',
@@ -15820,10 +15893,14 @@ export function initPipeBridge(): void {
         ...result,
         message: runtime.ok
           ? verificationIntervention
-            ? `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成，并通知项目 AI 重排后续计划。`
+            ? intervention === 'skip-verification'
+              ? `已豁免“${workItem.title}”的当前普通验证；不会安排同义补验，符合条件的阶段依赖已解除，并已通知项目 AI 继续后续计划。`
+              : `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成，并通知项目 AI 重排后续计划。`
             : `已${interventionLabel}“${workItem.title}”，并通知项目 AI 重排后续计划。`
           : verificationIntervention
-            ? `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`
+            ? intervention === 'skip-verification'
+              ? `已豁免“${workItem.title}”的当前普通验证且不会安排同义补验；项目 AI 当前不可用，通知已持久排队并会自动重试。`
+              : `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`
             : `已${interventionLabel}“${workItem.title}”；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`,
       };
     }
@@ -17604,7 +17681,7 @@ export function initPipeBridge(): void {
           outcome: 'needs-human',
           userInterventionRequired: true,
           question,
-          message: '已阻止重复 GUI 验证路线，并向用户展示替代验证、人工验收、暂缓验证、跳过并后续重排或保持暂停选项。',
+          message: '已阻止重复 GUI 验证路线，并向用户展示替代验证、人工验收、暂缓验证、明确豁免普通验证或保持暂停选项。',
         } : { ok: false, error: '无法为验证能力限制生成用户处理问题' };
       }
     }

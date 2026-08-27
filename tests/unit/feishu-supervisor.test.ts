@@ -424,19 +424,19 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('选择 AI 方案（也可选择“无”）');
     expect(card).toContain('"content":"无"');
     expect(card).toContain(`"value":"${SUPERVISOR_NO_DECISION_OPTION}","selected":true`);
-    expect(card).toContain('选择“无”时必须填写这里的信息');
+    expect(card).toContain('选择“无”时必须填写');
     expect(card).toContain('AI 建议');
     expect(card).toContain('采用兼容层完成迁移');
     expect(card).toContain('任务终端核心信息');
     expect(card).toContain('核心结论：兼容层测试仍有 2 项失败。');
     expect(card).not.toContain('任务终端最新界面（原文）');
     expect(card).toContain('decision_input');
-    expect(card).toContain('用户决策或补充信息（可选）');
+    expect(card).toContain('自定义意见（可选）');
     expect(card).toContain('确认并采用 AI 方案');
     expect(card).toContain('直接发送用户输入');
     expect(card).toContain('AI 监督会结合当前终端信息整理为完整指令');
-    expect(card).toContain('把所选方案和这里的信息交给 AI 监督整理');
-    expect(card).toContain('不经过 AI 监督整理');
+    expect(card).toContain('把所选方案和自定义意见交给 AI 监督整理');
+    expect(card).toContain('暂停或停止时，自定义意见会写入对应处理记录');
     expect(card).toContain('处理当前决策');
     expect(card).toContain('监督控制');
     expect(card).toContain('暂停此监督');
@@ -490,6 +490,7 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('AI 监督终端核心信息');
     expect(card).toContain('AI 监督结论：当前阶段已完成');
     expect(card).toContain('waiting_direction');
+    expect(card).toContain('自定义意见或下一步方向（可选）');
     expect(card).toContain('保持待续');
     expect(card).toContain('按原目标继续监督');
     expect(card).toContain('提交新方案并继续');
@@ -513,7 +514,7 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('确认并采用 AI 方案');
   });
 
-  it('上下文恢复指令在飞书仅提供原文确认发送', () => {
+  it('上下文恢复指令在飞书提供原文确认和可选自定义意见', () => {
     const card = JSON.stringify(buildApprovalCard({
       sessionId: 'sup-1', projectDir: 'E:\\test', type: 'supervisor.approval.requested',
       terminal: { surfaceId: 'surf-1', label: 'pwsh.exe' },
@@ -528,7 +529,8 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('确认并发送到任务终端');
     expect(card).toContain('确认前不会改动任务终端');
     expect(card).not.toContain('select_static');
-    expect(card).not.toContain('decision_input');
+    expect(card).toContain('decision_input');
+    expect(card).toContain('可补充恢复边界、优先级或其他意见');
     expect(card).not.toContain('直接发送用户输入');
   });
 
@@ -1083,6 +1085,9 @@ supervisor_model: k3`)).toEqual({
     expect(card).toContain('其他项目继续运行');
     expect(card).toContain('保留现有配置（推荐）');
     expect(card).toContain('project_clarification_option');
+    expect(card).toContain('select_static');
+    expect(card).toContain('自定义意见（可选）');
+    expect(card).toContain('可补充所选方案的边界、偏好或原因');
     expect(card).toContain('wmux_form_project_clarification');
   });
 
@@ -1115,6 +1120,7 @@ supervisor_model: k3`)).toEqual({
       options: [
         { id: 'manual-verify-complete', label: '完成人工验收', description: '填写实际结果后提交。' },
         { id: 'manual-verify-defer', label: '暂缓人工验收', description: '保持项目暂停。' },
+        { id: 'skip-verification', label: '跳过验证（不要求补验）', description: '不再安排同义补验。' },
       ],
       recommendedOptionId: 'manual-verify-complete',
     }) as any;
@@ -1130,9 +1136,10 @@ supervisor_model: k3`)).toEqual({
 
     expect(optionSelect.required).toBe(true);
     expect(optionSelect.options.map((option: any) => option.value)).toEqual([
-      'manual-verify-complete', 'manual-verify-defer',
+      'manual-verify-complete', 'manual-verify-defer', 'skip-verification',
     ]);
-    expect(resultInput.label.content).toBe('人工验收结果');
+    expect(resultInput.label.content).toBe('人工验收结果或自定义意见（可选）');
+    expect(resultInput.placeholder.content).toContain('留空也可提交');
     expect(JSON.stringify(form)).toContain('提交人工验收选择');
   });
 

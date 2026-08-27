@@ -259,9 +259,15 @@ describe('project manager records', () => {
       .toBeUndefined();
 
     saved.workItems[0].verificationDecision!.action = 'skip-verification';
+    saved.workItems[0].status = 'stopped';
+    saved.subgoals![0].status = 'obsolete';
     expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();
     expect(recoveredSession(appData, saved.id)?.workItems[0].verificationDecision).toMatchObject({
       action: 'skip-verification', questionId: 'question-gui', answeredBy: 'desktop',
+    });
+    expect(recoveredSession(appData, saved.id)).toMatchObject({
+      workItems: [expect.objectContaining({ status: 'stopped' })],
+      subgoals: [expect.objectContaining({ id: 'gui-stage', status: 'obsolete' })],
     });
   });
 

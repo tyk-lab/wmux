@@ -28,7 +28,7 @@ import {
 } from './supervisor-context';
 import { activeStandingUserDecisions } from './standing-user-decision';
 
-export const SUPERVISOR_PROTOCOL_REVISION = '22';
+export const SUPERVISOR_PROTOCOL_REVISION = '23';
 
 export function stopWhenKindLabel(kind: StopWhenKind): string {
   return kind === 'direction' ? '方向型' : '具体条件型';
@@ -368,8 +368,8 @@ export function humanDecisionBoundary(
       : '只有重大任务方向/范围变化、不可逆或高影响操作（安全、关键数据、生产、发布或对外提交）、需求/业务取舍，或缺少用户独有信息、凭据或授权时，才使用 needs-human。',
     '证据不足、测试失败或普通返工本身不是人工升级理由；能在原路线内通过低风险检查、补测或查看日志推进时，应使用 continue 或 rework。',
     projectManaged
-      ? '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human + external-blocker 上报一次，由项目 AI 先决策；项目 AI 仍无法决定时再请求用户选择人工验收、改用其他验证、暂缓、跳过并后续重排或保持暂停，不得重复原路径或同义返工。'
-      : '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human 向用户提交问题、当前进展、影响、互斥方案和推荐项，可供选择人工验收、改用其他验证、暂缓或保持暂停；不得重复原路径或同义返工。',
+      ? '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human + external-blocker 上报一次，由项目 AI 先决策；项目 AI 仍无法决定时再请求用户选择人工验收、改用其他验证、暂缓、明确豁免普通验证且不再补验或保持暂停。用户豁免后不得恢复原路径或创建同义补验。'
+      : '缺少 Win32/GUI/桌面自动化通道是验证能力受限，不是执行异常。最多执行一轮与失败路线明显不同的替代测试、基础测试或静态证据；仍无新证据时，如实使用 needs-human 向用户提交问题、当前进展、影响、互斥方案和推荐项，可供选择人工验收、改用其他验证、暂缓、明确豁免普通验证且不再补验或保持暂停。用户豁免后不得恢复原路径或创建同义补验。',
     projectManaged
       ? '你的首要执行义务是推进当前工作项对主目标的贡献：合同内技术路线、现状复核、证据整理、低风险重试和已有授权内的后续验证由你主动完成；不得把内部微步骤退回项目 AI。你不能改写主目标、扩大工作项合同、伪造阶段证据或新增硬件/风险授权。'
       : '',

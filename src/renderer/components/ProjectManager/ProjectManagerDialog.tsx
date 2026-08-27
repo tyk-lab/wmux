@@ -37,6 +37,7 @@ import {
   summarizeProjectCompletionCriteria,
 } from '../../project-manager/completion-display';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
+import { projectWorkItemVerificationWaiverError } from '../../project-manager/verification-intervention-policy';
 import {
   projectCenterStatusLabel,
   projectCenterVisualState,
@@ -595,6 +596,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const selectedInterventionWorkItem = useMemo(() => intervenableWorkItems.find((item) => (
     item.id === workItemInterventionId
   )) || null, [intervenableWorkItems, workItemInterventionId]);
+  const selectedVerificationWaiverError = session && selectedInterventionWorkItem
+    ? projectWorkItemVerificationWaiverError(session, selectedInterventionWorkItem)
+    : null;
   const allCurrentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
   const currentSubgoals = useMemo(() => (
     allCurrentSubgoals.filter((subgoal) => subgoal.status !== 'obsolete')
@@ -1485,7 +1489,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const clarificationActionLabel = busy
     ? '正在提交…'
     : manualVerificationCompletionSelected
-      ? '提交人工验收结果'
+      ? '确认完成人工验收'
       : manualVerificationDeferredSelected
         ? '确认暂缓并保持暂停'
         : clarificationOptionId === 'manual-verify'
@@ -1498,8 +1502,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 ? `确认选择：${selectedClarificationOption.label}`
                 : '提交自定义答复';
   const clarificationSubmitDisabled = busy
-    || (!clarificationOptionId && !clarificationAnswer.trim())
-    || (manualVerificationCompletionSelected && !clarificationAnswer.trim());
+    || (!clarificationOptionId && !clarificationAnswer.trim());
 
   return (
     <div className={embedded ? 'project-manager-session-pane__frame' : 'confirm-dialog__overlay supervisor-dialog__overlay'} onMouseDown={(event) => {
@@ -1717,7 +1720,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                   placeholder={manualVerificationFeedbackQuestion
                     ? manualVerificationDeferredSelected
                       ? '可选：说明暂缓原因或预计何时进行人工验收'
-                      : '请逐项填写实际结果，例如：Edit 成功；修改后 Save 成功；Delete 失败（现象：…）；重启后读取成功'
+                      : '可选：逐项填写实际结果；留空表示确认已按说明完成且未补充异常。例如：Edit 成功；Delete 失败（现象：…）'
                     : clarificationNeedsRevision
                       ? '请说明需要修改的目标、范围、前置条件、完成标准或验证要求'
                       : '可补充背景、限制或偏好；也可以不选上述选项直接填写自定义答复'}
@@ -2360,7 +2363,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         : item.status === 'paused' && intervention === 'defer-verification'
                           ? '验证已暂缓'
                           : item.status === 'stopped' && intervention === 'skip-verification'
-                            ? '当前验证已跳过'
+                            ? '普通验证已豁免'
                         : itemStatus.workItemLabel;
                     const canIntervene = !['completed', 'stopped'].includes(session.status)
                       && !['completed', 'stopped'].includes(item.status);
@@ -2464,7 +2467,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               <dd>{item.verificationDecision.action === 'defer-verification'
                                 ? '已明确授权暂缓当前验证；未验证项保留，不能据此完成阶段或项目'
                                 : item.verificationDecision.action === 'skip-verification'
-                                  ? '已跳过当前验证工作项；未验证项由后续新计划重新承接，不能据此完成阶段或项目'
+                                  ? '用户已明确不要求当前普通验证；不安排同义补验，不代表验证通过，真实失败和保护性验收仍保留'
                                   : '已授权一轮不同路线的替代验证；失败后不得重复原路线或同义验证'}
                               {' · '}{new Date(item.verificationDecision.decidedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
                             </>}
@@ -2505,10 +2508,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                           <input type="radio" name="work-item-intervention-action" value="defer-verification" checked={workItemIntervention === 'defer-verification'} disabled={busy} onChange={() => setWorkItemIntervention('defer-verification')} />
                           <span><strong>暂缓当前验证</strong><small>暂停本验证工作项并保留阶段验收缺口；后续补验须创建新的聚焦验证工作项。</small></span>
                         </label>
-                        <label data-selected={workItemIntervention === 'skip-verification' ? '1' : '0'}>
+                        {!selectedVerificationWaiverError ? <label data-selected={workItemIntervention === 'skip-verification' ? '1' : '0'}>
                           <input type="radio" name="work-item-intervention-action" value="skip-verification" checked={workItemIntervention === 'skip-verification'} disabled={busy} onChange={() => setWorkItemIntervention('skip-verification')} />
-                          <span><strong>跳过当前验证并后续补验</strong><small>停止当前验证工作项，但不跳过或完成所属阶段；后续计划必须重新承接该验收缺口。</small></span>
-                        </label>
+                          <span><strong>跳过验证（不要求补验）</strong><small>用户明确不关心当前普通验证；停止验证工作项并解除符合条件的阶段依赖，但不伪造验证通过。</small></span>
+                        </label> : <div className="supervisor-dialog__hint">当前验收涉及保护性条件或真实失败，不能提供跳过验证：{selectedVerificationWaiverError}</div>}
                       </>}
                       <label data-selected={workItemIntervention === 'skip' ? '1' : '0'}>
                         <input type="radio" name="work-item-intervention-action" value="skip" checked={workItemIntervention === 'skip'} disabled={busy} onChange={() => setWorkItemIntervention('skip')} />
@@ -2527,14 +2530,16 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       disabled={busy}
                       onChange={(event) => setWorkItemInterventionReason(event.target.value)}
                       placeholder={workItemIntervention.endsWith('-verification')
-                        ? '可选：说明暂缓或跳过当前验证的原因、已知限制和后续补验条件'
+                        ? workItemIntervention === 'skip-verification'
+                          ? '可选：说明不关心当前普通验证的原因或其他处理意见'
+                          : '可选：说明暂缓当前验证的原因、已知限制和后续补验条件'
                         : '可选：说明跳过或关闭整个工作项的理由、已知事实，供项目 AI 重排时采用'}
                     />
                     <div className="project-manager-dialog__work-item-intervention-submit">
                       <span>{workItemIntervention === 'defer-verification'
                         ? '只暂缓当前验证工作项；阶段验收保持未完成。'
                         : workItemIntervention === 'skip-verification'
-                          ? '只跳过当前验证路线；阶段验收保持未完成并等待后续补验。'
+                          ? '普通验证将记录为用户豁免；不安排同义补验，也不会伪造通过。'
                           : workItemIntervention === 'skip'
                             ? '整个工作项会停止，后续依赖交由项目 AI 评估。'
                             : '整个工作项及其专属监督/任务 AI 会停止。'}</span>
@@ -2542,7 +2547,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                         {busy ? '正在提交…' : workItemIntervention === 'defer-verification'
                           ? '确认暂缓验证'
                           : workItemIntervention === 'skip-verification'
-                            ? '确认跳过当前验证'
+                            ? '确认跳过验证且不补验'
                             : `确认${workItemIntervention === 'skip' ? '跳过整个工作项' : '关闭整个工作项'}`}
                       </button>
                     </div>

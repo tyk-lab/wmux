@@ -26,9 +26,9 @@ describe('project manager runtime startup protocol', () => {
     expect(agents).toContain('将该阶段状态更新为 `achieved`');
     expect(agents).toContain('同一证据与拓扑状态下最多回执一次 `replanned`');
     expect(agents).toContain('`reasonCode=verification-limited`');
-    expect(agents).toContain('跳过当前验证并由后续新计划重新承接');
+    expect(agents).toContain('明确豁免当前普通验证且不再补验');
     expect(agents).toContain('当前验证工作项进入 `stopped`');
-    expect(agents).toContain('接受项目已完成');
+    expect(agents).toContain('跳过剩余普通验证并接受完成');
     expect(agents).toContain('`update-definition mode=refine`');
     expect(agents).toContain('`mode=pivot`');
     expect(agents).toContain('不得将对应标准写为 `satisfied`');

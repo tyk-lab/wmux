@@ -36,8 +36,9 @@ describe('project verification policy presentation', () => {
     expect(commandSource).toContain('"required|best-effort|not-applicable"');
     expect(commandSource).toContain('"riskClass":"protected|standard"');
     expect(commandSource).toContain('A runtime policy change creates a new requirements version');
-    expect(roleSource).toContain('用户在项目运行中明确表示不再需要部分或全部验证时');
-    expect(roleSource).toContain('不得原地改写旧 completion');
+    expect(roleSource).toContain('用户是在目标定义层面调整今后适用的全部或一类验证策略时');
+    expect(roleSource).toContain('当前决策中选择跳过普通验证');
+    expect(roleSource).toContain('两种路径都不得改写旧 completion');
     expect(roleSource).toContain('不得降级为 `best-effort` 或 `not-applicable`');
   });
 });

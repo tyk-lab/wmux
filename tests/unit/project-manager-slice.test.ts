@@ -367,12 +367,16 @@ describe('project-manager slice', () => {
     });
   });
 
-  it('defers or skips only a verification-limited work item while keeping its stage incomplete', () => {
+  it('keeps a deferred verification stage incomplete and closes an explicitly waived standard stage', () => {
     const useStore = store();
     const project = useStore.getState().startProjectManager({
       projectDir: 'E:\\verification-intervention',
       goal: '交付用户管理功能',
       doneWhen: ['GUI CRUD 可复核'],
+      verificationPolicies: [{
+        criterion: 'GUI CRUD 可复核', requirement: 'required', riskClass: 'standard',
+        reason: '用户明确分类为普通成果',
+      }],
     });
     const goalId = project.activeGoalId || '';
     expect(useStore.getState().applyProjectManagerAction({
@@ -457,12 +461,15 @@ describe('project-manager slice', () => {
       type: 'intervene-work-item',
       workItemId: 'gui-verification',
       intervention: 'skip-verification',
-    }, project.id)).toMatchObject({ ok: true });
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { payload: { intervention: 'skip-verification', stageDisposition: 'waived' } },
+    });
     expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
       status: 'stopped',
       verificationDecision: { action: 'skip-verification' },
     });
-    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({ status: 'active' });
+    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({ status: 'obsolete' });
   });
 
   it('rejects verification-only intervention without a current verification limitation', () => {
@@ -475,6 +482,107 @@ describe('project-manager slice', () => {
       workItemId: 'implementation',
       intervention: 'skip-verification',
     })).toMatchObject({ ok: false, error: expect.stringContaining('验证能力限制') });
+  });
+
+  it('completes a goal from real implementation evidence after its only remaining standard verification is waived', () => {
+    const useStore = store();
+    const goalCriterion = 'GUI CRUD 可复核';
+    const implementationCriterion = 'GUI CRUD 实现已交付';
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\waived-goal-completion',
+      goal: '交付用户管理功能',
+      doneWhen: [goalCriterion],
+      verificationPolicies: [{
+        criterion: goalCriterion, requirement: 'required', riskClass: 'standard',
+        reason: '用户明确分类为普通成果',
+      }],
+    });
+    const goalId = project.activeGoalId || '';
+    const implementationStage = {
+      id: 'implementation-stage', goalId, title: '实现功能', outcome: 'GUI CRUD 实现完成',
+      acceptance: [implementationCriterion], dependencies: [], status: 'active' as const,
+      order: 1, createdAt: 1, updatedAt: 1,
+    };
+    const validationStage = {
+      id: 'validation-stage', goalId, title: '验证 GUI', outcome: 'GUI CRUD 形成验证结论',
+      acceptance: [goalCriterion], dependencies: ['implementation-stage'], status: 'planned' as const,
+      order: 2, createdAt: 1, updatedAt: 1,
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager',
+      subgoals: [implementationStage, validationStage],
+    }, project.id)).toMatchObject({ ok: true });
+    const implementation = {
+      ...item('implementation'),
+      goalId,
+      subgoalId: implementationStage.id,
+      contract: {
+        ...item('implementation').contract,
+        stopWhen: [implementationCriterion],
+        validation: [implementationCriterion],
+        stageAcceptanceCoverage: [{
+          stageCriterion: implementationCriterion,
+          verificationCriterion: implementationCriterion,
+        }],
+      },
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: implementation,
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item', workItemId: implementation.id,
+      patch: {
+        status: 'completed',
+        latestEvidence: '实现代码、构建和基础逻辑证据完整',
+        completion: verifiedCompletion([implementationCriterion], '实现证据完整'),
+      },
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager',
+      subgoals: [{ ...implementationStage, status: 'achieved' }, { ...validationStage, status: 'active' }],
+    }, project.id)).toMatchObject({ ok: true });
+
+    const validation = {
+      ...item('gui-validation'),
+      goalId,
+      subgoalId: validationStage.id,
+      status: 'waiting-decision' as const,
+      contract: {
+        ...item('gui-validation').contract,
+        stopWhen: [goalCriterion],
+        validation: [goalCriterion],
+        stageAcceptanceCoverage: [{
+          stageCriterion: goalCriterion,
+          verificationCriterion: goalCriterion,
+        }],
+      },
+      verificationLimitation: {
+        kind: 'gui-automation-unavailable' as const,
+        detail: '当前环境无法执行可靠 GUI 自动化',
+        missingEvidence: ['GUI CRUD 实际交互证据'],
+        affectedAcceptance: [goalCriterion],
+        requirementsVersion: 1,
+        authorizationVersion: 1,
+        detectedAt: 2,
+      },
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item', workItem: validation,
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item', workItemId: validation.id, intervention: 'skip-verification',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.subgoals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: implementationStage.id, status: 'achieved' }),
+      expect.objectContaining({ id: validationStage.id, status: 'obsolete' }),
+    ]));
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'resume-project', reason: '项目 AI 核对豁免后收口', acceptRequirementsVersion: true,
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'complete-current-goal', evidence: '实现成果证据完整；普通 GUI 验证由用户明确豁免',
+    }, project.id)).toMatchObject({ ok: true, event: { kind: 'project-goal-completed' } });
   });
 
   it('releases the active work item when a verification-limited question is deferred', () => {

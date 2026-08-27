@@ -213,10 +213,10 @@ describe('supervisor isolation', () => {
     expect(text).toContain(`[监督动态上下文｜protocol=${SUPERVISOR_PROTOCOL_REVISION}]`);
     expect(supervisorAgentsSource).toContain('只处理 `wmux context` 返回的当前 lane 和唯一任务终端');
     expect(supervisorAgentsSource).toContain('小任务不机械拆分');
-    expect(supervisorAgentsSource).toContain('跳过当前验证并后续重排');
+    expect(supervisorAgentsSource).toContain('明确豁免普通验证且不再补验');
     expect(supervisorAgentsSource).toContain('首次 `continue/rework` 使用 `--stage-plan-file`');
     expect(supervisorAgentsSource).toContain('缺少 Win32/GUI/桌面自动化通道属于“验证能力受限”');
-    expect(supervisorAgentsSource).toContain('不得重复原自动化路径、重复派发同义任务');
+    expect(supervisorAgentsSource).toContain('用户豁免后不得恢复原验证或创建同义补验');
     expect(supervisorAgentsSource).toContain('任务 AI不得知道项目 AI、监督 AI、项目/工作项 ID、lane、路由、预算、内部协议或角色关系');
     expect(supervisorAgentsSource).toContain('编译、启动、测试或证据不足必须使用 `continue/rework` 留在原工作项处理');
     expect(supervisorAgentsSource).toContain('`stageAcceptanceCoverage` 只供控制层建立阶段验收映射，不得发送给任务 AI');

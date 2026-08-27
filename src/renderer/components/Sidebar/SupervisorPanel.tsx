@@ -286,6 +286,7 @@ export default function SupervisorPanel({
   const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({});
   const [proposalGuidance, setProposalGuidance] = useState<Record<string, string>>({});
+  const [stopConditionGuidance, setStopConditionGuidance] = useState<Record<string, string>>({});
   const [proposalStandingDecisions, setProposalStandingDecisions] = useState<Record<string, boolean>>({});
   const [polledAgentStates, setPolledAgentStates] = useState<Record<string, SupervisorTaskAgentState | undefined>>({});
 
@@ -624,6 +625,7 @@ export default function SupervisorPanel({
   const onApprove = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
+    const userGuidance = proposalGuidance[id]?.trim() || '';
     try {
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const reuseForSimilarIssues = !!lane
@@ -639,7 +641,6 @@ export default function SupervisorPanel({
         const selected = choices.find((choice) => (
           choice.value === (proposalSelections[id] || recommendedOption)
         ));
-        const userGuidance = proposalGuidance[id]?.trim() || '';
         if (
           !lane
           || supervisorLaneControlState(lane) !== 'active'
@@ -670,7 +671,7 @@ export default function SupervisorPanel({
       } else if (item.text.trim()) {
         sendTaskToSurface(
           item.surfaceId,
-          item.text,
+          [item.text, userGuidance ? `[用户补充意见]\n${userGuidance}` : ''].filter(Boolean).join('\n\n'),
           supervisor.submitEnter,
           supervisorLaneInputIsolationScope(lane),
         );
@@ -703,7 +704,6 @@ export default function SupervisorPanel({
         const selected = choices.find((choice) => (
           choice.value === (proposalSelections[id] || recommendedOption)
         ));
-        const userGuidance = proposalGuidance[id]?.trim() || '';
         const standingDecisionSubject = [item.reason, item.impact, item.alternatives, item.text]
           .filter(Boolean).join('\n').slice(0, 4000);
         const standingDecision = reuseForSimilarIssues
@@ -854,7 +854,51 @@ export default function SupervisorPanel({
   const onPause = (id: string) => {
     const item = supervisor.pendingApprovals.find((entry) => entry.id === id);
     if (!item) return;
-    pauseSupervisorLane(item.laneId, `人工暂停待决项：${item.laneLabel}；该通道决策内容已保留`);
+    const lane = supervisor.lanes.find((entry) => entry.id === item.laneId);
+    const userGuidance = proposalGuidance[id]?.trim() || '';
+    pauseSupervisorLane(
+      item.laneId,
+      `人工暂停待决项：${item.laneLabel}；该通道决策内容已保留${userGuidance ? `；用户补充：${userGuidance}` : ''}`,
+    );
+    if (lane) {
+      appendSupervisorRecord(supervisor, lane, 'supervisor.proposal.resolved', {
+        approvalId: item.id,
+        resolution: 'paused',
+        proposalKind: item.proposalKind,
+        userGuidance: userGuidance || undefined,
+      });
+      if (userGuidance) appendSupervisorLog(lane.id, '用户暂停待决项并补充意见', userGuidance);
+    }
+  };
+
+  const resolveStopCondition = (lane: SupervisorLane, reached: boolean) => {
+    const userGuidance = stopConditionGuidance[lane.id]?.trim() || '';
+    if (reached) {
+      confirmStopCondition(lane.id);
+      announceSupervisorWaitingForDirection(
+        lane,
+        `用户已确认达到停止条件${userGuidance ? `；用户补充：${userGuidance}` : ''}`,
+      );
+    } else {
+      rejectStopCondition(lane.id);
+      if (userGuidance) {
+        queueOrdinarySupervisorControlDelivery(
+          lane.id,
+          `[用户停止条件判断] 用户确认尚未达到停止条件。\n[用户补充意见] ${userGuidance}\n请读取任务终端最新状态后继续监督。`,
+          { kind: 'owner-decision' },
+        );
+      }
+    }
+    appendSupervisorRecord(supervisor, lane, 'supervisor.stop-condition.user-decision', {
+      reached,
+      userGuidance: userGuidance || undefined,
+    });
+    if (userGuidance) appendSupervisorLog(lane.id, '用户补充停止条件判断', userGuidance);
+    setStopConditionGuidance((current) => {
+      const next = { ...current };
+      delete next[lane.id];
+      return next;
+    });
   };
 
   const openTaskTerminalForDecision = (id: string) => {
@@ -2655,21 +2699,34 @@ export default function SupervisorPanel({
                     </div>
                   )}
                   {!laneProjectManaged && lane.awaitingStopCheck && !lane.stopConfirmed && (
-                    <div className="sup-panel__approval-actions" style={{ marginTop: 6 }}>
-                      <button type="button" onClick={() => rejectStopCondition(lane.id)} disabled={!supervisor.active}>
-                        未达到
-                      </button>
-                      <button
-                        type="button"
-                        className="sup-panel__btn-primary"
-                        onClick={() => {
-                          confirmStopCondition(lane.id);
-                          announceSupervisorWaitingForDirection(lane, '用户已确认达到停止条件');
-                        }}
-                        disabled={!supervisor.active}
-                      >
-                        已达停止条件
-                      </button>
+                    <div style={{ marginTop: 6 }}>
+                      <label className="sup-panel__proposal-edit">
+                        <span>自定义意见（可选）</span>
+                        <textarea
+                          className="sup-panel__proposal-input"
+                          value={stopConditionGuidance[lane.id] || ''}
+                          maxLength={4000}
+                          onChange={(event) => setStopConditionGuidance((current) => ({
+                            ...current,
+                            [lane.id]: event.target.value,
+                          }))}
+                          placeholder="可补充为什么已达到或尚未达到，以及希望监督下一步怎么处理"
+                          disabled={!supervisor.active}
+                        />
+                      </label>
+                      <div className="sup-panel__approval-actions">
+                        <button type="button" onClick={() => resolveStopCondition(lane, false)} disabled={!supervisor.active}>
+                          未达到
+                        </button>
+                        <button
+                          type="button"
+                          className="sup-panel__btn-primary"
+                          onClick={() => resolveStopCondition(lane, true)}
+                          disabled={!supervisor.active}
+                        >
+                          已达停止条件
+                        </button>
+                      </div>
                     </div>
                   )}
                   {!laneProjectManaged && lane.autoDecisionLimitReached && (
@@ -2913,6 +2970,20 @@ export default function SupervisorPanel({
                         {a.text.slice(0, 400)}
                         {a.text.length > 400 ? '…' : ''}
                       </pre>
+                      <label className="sup-panel__proposal-edit">
+                        <span>自定义意见（可选）</span>
+                        <textarea
+                          className="sup-panel__proposal-input"
+                          value={userGuidance}
+                          maxLength={4000}
+                          onChange={(event) => setProposalGuidance((current) => ({
+                            ...current,
+                            [a.id]: event.target.value,
+                          }))}
+                          placeholder="可补充边界、偏好或暂停原因；留空则按当前选项处理"
+                          disabled={!supervisor.active || laneControlState === 'stopped'}
+                        />
+                      </label>
                       <div className="sup-panel__approval-actions">
                         {laneControlState === 'paused' ? (
                           <button

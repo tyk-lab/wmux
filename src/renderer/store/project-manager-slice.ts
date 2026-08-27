@@ -45,7 +45,10 @@ import {
 } from '../../shared/project-manager';
 import { projectDependencyError } from '../project-manager/engine';
 import {
+  projectSubgoalClosedByVerificationWaiver,
+  projectVerificationWaivedCriteria,
   projectWorkItemRequiresVersionReconciliation,
+  projectWorkItemVerificationWaiverError,
   projectWorkItemVerificationIntervened,
 } from '../project-manager/verification-intervention-policy';
 import { interruptedUserChoiceTransitions } from '../project-manager/user-choice-recovery';
@@ -692,6 +695,7 @@ export const createProjectManagerSlice: StateCreator<
         .filter((subgoal) => subgoal.goalId === activeGoal.id)
         .map((subgoal) => [subgoal.id, subgoal]));
       if (action.source === 'manager') {
+        const waivedCriteria = new Set(projectVerificationWaivedCriteria(session).map(projectCriterionIdentity));
         const incomingAcceptance = new Set(action.subgoals
           .filter((subgoal) => subgoal.status !== 'obsolete')
           .flatMap((subgoal) => subgoal.acceptance)
@@ -702,7 +706,8 @@ export const createProjectManagerSlice: StateCreator<
             .filter((subgoal) => subgoal.status !== 'obsolete')
             .flatMap((subgoal) => subgoal.acceptance)
             .filter((acceptance) => projectCriterionIdentity(acceptance) === projectCriterionIdentity(criterion)).length,
-        })).find((entry) => entry.count !== 1);
+        })).find((entry) => entry.count !== 1
+          && !(entry.count === 0 && waivedCriteria.has(projectCriterionIdentity(entry.criterion))));
         if (invalidGoalCoverage) {
           return {
             ok: false,
@@ -985,6 +990,13 @@ export const createProjectManagerSlice: StateCreator<
           ? 'defer-verification' as const
           : action.optionId as 'alternative-validation' | 'defer-verification' | 'skip-verification'
         : undefined;
+      const verificationWorkItem = pending.workItemId
+        ? session.workItems.find((item) => item.id === pending.workItemId)
+        : undefined;
+      if (verificationAction === 'skip-verification' && verificationWorkItem) {
+        const waiverError = projectWorkItemVerificationWaiverError(session, verificationWorkItem);
+        if (waiverError) return { ok: false, error: waiverError };
+      }
       const manualVerificationReported = pending.reasonCode === 'verification-limited'
         && ['manual-verify', 'manual-verify-complete'].includes(action.optionId || '');
       const manualVerificationDeferred = pending.reasonCode === 'verification-limited'
@@ -1015,7 +1027,7 @@ export const createProjectManagerSlice: StateCreator<
               status: 'stopped' as const,
               supervisorLaneId: undefined,
               workerSurfaceId: undefined,
-              latestBlocker: '用户已跳过当前验证工作项并要求后续新计划重新承接；该验收项仍未验证，不能据此完成阶段或项目。',
+              latestBlocker: '用户已明确不要求当前普通验证；该决定已作为验证豁免记录，不代表测试通过，也不能覆盖真实失败。',
             } : {}),
             updatedAt: now,
           } : item)
@@ -1023,7 +1035,7 @@ export const createProjectManagerSlice: StateCreator<
       // Keep the project waiting after a user answer. The answer belongs to the
       // project manager, which must explicitly choose resume/replan/stop before
       // any supervisor or task terminal is allowed to continue.
-      const answeredSession: ProjectManagerSession = {
+      let answeredSession: ProjectManagerSession = {
         ...session,
         status: session.status === 'paused' || manualVerificationDeferred ? 'paused' : 'waiting',
         workItems,
@@ -1040,6 +1052,19 @@ export const createProjectManagerSlice: StateCreator<
           ].slice(-50),
           } : {}),
       };
+      if (verificationAction === 'skip-verification' && verificationWorkItem?.subgoalId) {
+        const waiverSession = { ...answeredSession, workItems };
+        if (projectSubgoalClosedByVerificationWaiver(waiverSession, verificationWorkItem.subgoalId)) {
+          answeredSession = {
+            ...waiverSession,
+            subgoals: (waiverSession.subgoals || []).map((subgoal) => (
+              subgoal.id === verificationWorkItem.subgoalId
+                ? { ...subgoal, status: 'obsolete' as const, completion: undefined, updatedAt: now }
+                : subgoal
+            )),
+          };
+        }
+      }
       next = ['defer-verification', 'skip-verification'].includes(verificationAction || '')
         && pending.workItemId
         ? releaseProjectTaskTerminalBinding(
@@ -1197,6 +1222,10 @@ export const createProjectManagerSlice: StateCreator<
       if (verificationIntervention && !verificationLimitation) {
         return { ok: false, error: '只有当前版本已记录验证能力限制的工作项才能暂缓或跳过验证' };
       }
+      if (verificationAction === 'skip-verification') {
+        const waiverError = projectWorkItemVerificationWaiverError(session, existing);
+        if (waiverError) return { ok: false, error: waiverError };
+      }
       const reason = action.reason?.trim().slice(0, 1200)
         || (verificationIntervention ? verificationLimitation?.detail : '')
         || '';
@@ -1224,12 +1253,22 @@ export const createProjectManagerSlice: StateCreator<
           },
           latestBlocker: action.intervention === 'defer-verification'
             ? '用户已暂缓当前验证工作项；所属阶段仍未验收，条件具备后必须补验或由用户正式调整验收要求。'
-            : '用户已跳过当前验证工作项；所属阶段未被跳过或完成，后续计划必须重新承接该验收缺口。',
+            : '用户已明确不要求当前普通验证；该决定已作为验证豁免记录，不代表测试通过，也不能覆盖真实失败。',
         } : {}),
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
       next = releaseProjectTaskTerminalBinding(updated, action.workItemId, existing.workerSurfaceId);
+      if (verificationAction === 'skip-verification'
+        && existing.subgoalId
+        && projectSubgoalClosedByVerificationWaiver(next, existing.subgoalId)) {
+        next = {
+          ...next,
+          subgoals: (next.subgoals || []).map((subgoal) => subgoal.id === existing.subgoalId
+            ? { ...subgoal, status: 'obsolete' as const, completion: undefined, updatedAt: now }
+            : subgoal),
+        };
+      }
       eventInput = {
         kind: 'user-work-item-intervention',
         workItemId: existing.id,
@@ -1242,7 +1281,7 @@ export const createProjectManagerSlice: StateCreator<
           ...(verificationIntervention ? {
             verificationDecision: action.intervention,
             affectedAcceptance: verificationLimitation?.affectedAcceptance || [],
-            stageDisposition: 'keep-incomplete',
+            stageDisposition: action.intervention === 'skip-verification' ? 'waived' : 'keep-incomplete',
           } : {}),
         },
       };
@@ -1422,7 +1461,7 @@ export const createProjectManagerSlice: StateCreator<
       const userAcceptancePolicy = projectGoalUserAcceptancePolicy(activeGoal);
       const finalAcceptanceBypassesGaps = finalAccepted && userAcceptancePolicy === 'on-gap';
       if (action.userAcceptanceEventId && !finalAccepted) {
-        return { ok: false, error: '最终效果接受必须引用当前目标和需求版本下、由用户亲自选择“接受项目已完成”的结构化答复' };
+        return { ok: false, error: '最终效果接受必须引用当前目标和需求版本下、由用户亲自选择“接受项目已完成”或“跳过剩余普通验证并接受完成”的结构化答复' };
       }
       if (finalAccepted && userAcceptancePolicy === 'not-required') {
         return { ok: false, error: '当前目标已明确不需要用户最终验收，不能引用旧的最终接受答复改变完成语义' };
@@ -1450,9 +1489,26 @@ export const createProjectManagerSlice: StateCreator<
         return { ok: false, error: `任务仍有未解决阻塞，不能完成主目标：${blocked.title} · ${blocked.latestBlocker}` };
       }
       if (!action.evidence.trim()) return { ok: false, error: '完成主目标必须提供目标级验证证据' };
+      const waivedCriteria = new Set(projectVerificationWaivedCriteria(session).map(projectCriterionIdentity));
+      const effectiveDoneWhen = activeGoal.doneWhen.filter((criterion) => (
+        !waivedCriteria.has(projectCriterionIdentity(criterion))
+      ));
+      const effectiveGoal = {
+        ...activeGoal,
+        doneWhen: effectiveDoneWhen,
+        verificationPolicies: projectGoalVerificationPolicies(activeGoal).filter((policy) => (
+          !waivedCriteria.has(projectCriterionIdentity(policy.criterion))
+        )),
+      };
+      const effectiveGoalCompletion = goalCompletion ? {
+        ...goalCompletion,
+        criteria: goalCompletion.criteria?.filter((criterion) => (
+          !waivedCriteria.has(projectCriterionIdentity(criterion.criterion))
+        )),
+      } : undefined;
       const goalCriteriaError = projectGoalCompletionCriteriaError(
-        activeGoal,
-        goalCompletion,
+        effectiveGoal,
+        effectiveGoalCompletion,
         '主目标完成条件',
       );
       if (goalCriteriaError && !finalAcceptanceBypassesGaps) return { ok: false, error: goalCriteriaError };
@@ -1483,7 +1539,7 @@ export const createProjectManagerSlice: StateCreator<
       }
       const supervisorCriteria = [...supervisorCriteriaByIdentity.values()];
       const supervisorSupportError = projectGoalCompletionCriteriaError(
-        activeGoal,
+        effectiveGoal,
         normalizeProjectCompletionResult({
           summary: '当前版本监督工作项的目标条件证据汇总',
           validation: [],
@@ -1494,7 +1550,7 @@ export const createProjectManagerSlice: StateCreator<
         { allowExtra: true, requireArtifacts: true },
       );
       if (supervisorSupportError && !finalAcceptanceBypassesGaps) return { ok: false, error: supervisorSupportError };
-      if (!finalAcceptanceBypassesGaps) for (const criterion of activeGoal.doneWhen) {
+      if (!finalAcceptanceBypassesGaps) for (const criterion of effectiveDoneWhen) {
         const identity = projectCriterionIdentity(criterion);
         const declared = goalCompletion?.criteria?.find((item) => (
           projectCriterionIdentity(item.criterion) === identity

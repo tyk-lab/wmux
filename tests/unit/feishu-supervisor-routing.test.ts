@@ -308,6 +308,54 @@ describe('飞书人工决策单聊路由', () => {
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
   });
 
+  it('待续卡在保持或恢复时也传递可选自定义意见', async () => {
+    vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
+    const control = vi.fn(async (command: { action: string }) => command.action === 'supervisor-screen'
+      ? { ok: true, answer: '当前阶段已完成，等待下一步。' }
+      : { ok: true, message: '待续操作已处理。' });
+    const service = new FeishuSupervisorService(control);
+    service.start();
+    service.onRecord(waitingRecord());
+
+    await vi.waitFor(() => expect(send.mock.calls.some(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ))).toBe(true));
+    const waitingCallIndex = send.mock.calls.findIndex(([chatId, payload]) => (
+      chatId === 'oc-dm-configured' && JSON.stringify(payload).includes('通道待续')
+    ));
+    const messageId = `om-${waitingCallIndex + 1}`;
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured', messageId, operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_waiting_keep',
+        value: { wmux_action: 'waiting_decision', terminal: 'surf-1', decision: 'keep' },
+      },
+      raw: { action: { form_value: { waiting_direction: '保留当前现场，稍后再决定' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => (
+      command.action === 'waiting-decision' && command.decision === 'keep'
+    ))).toBe(true));
+    expect(control.mock.calls.find(([command]) => (
+      command.action === 'waiting-decision' && command.decision === 'keep'
+    ))?.[0]).toMatchObject({ message: '保留当前现场，稍后再决定' });
+
+    handlers.cardAction({
+      chatId: 'oc-dm-configured', messageId, operator: { openId: 'ou-allowed' },
+      action: {
+        name: 'wmux_waiting_resume',
+        value: { wmux_action: 'waiting_decision', terminal: 'surf-1', decision: 'resume' },
+      },
+      raw: { action: { form_value: { waiting_direction: '恢复后先检查最新日志' } } },
+    });
+    await vi.waitFor(() => expect(control.mock.calls.some(([command]) => (
+      command.action === 'waiting-decision' && command.decision === 'resume'
+    ))).toBe(true));
+    expect(control.mock.calls.find(([command]) => (
+      command.action === 'waiting-decision' && command.decision === 'resume'
+    ))?.[0]).toMatchObject({ message: '恢复后先检查最新日志' });
+  });
+
   it('通道从其他入口恢复后使旧待续卡失效，并明确提示重放点击', async () => {
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-dm-configured');
     const control = vi.fn(async (command: { action: string }) => command.action === 'supervisor-screen'
@@ -443,12 +491,13 @@ describe('飞书人工决策单聊路由', () => {
         name: 'wmux_decide_pause',
         value: { wmux_action: 'decide', approval_id: 'appr-pause', decision: 'pause' },
       },
-      raw: {},
+      raw: { action: { form_value: { decision_input: '先保留现场，明天继续处理' } } },
     });
 
     await vi.waitFor(() => expect(control.mock.calls.some(([command]) => command.action === 'decide')).toBe(true));
     expect(control.mock.calls.find(([command]) => command.action === 'decide')?.[0]).toMatchObject({
       action: 'decide', approvalId: 'appr-pause', decision: 'pause',
+      task: '先保留现场，明天继续处理',
     });
     expect(updateCard).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(4));
@@ -2587,16 +2636,21 @@ describe('飞书人工决策单聊路由', () => {
 
     handlers.cardAction({
       chatId: 'oc-project', messageId: 'om-1', operator: { openId: 'ou-allowed' },
-      action: { value: currentControlValue({
-        wmux_action: 'project_clarification_option', projectId: 'pm-a', questionId: 'question-1',
-        optionId: 'keep', answer: '保留现有配置',
-      }) },
-      raw: {},
+      action: {
+        name: 'wmux_form_project_clarification',
+        value: currentControlValue({
+          wmux_action: 'form_project_clarification', projectId: 'pm-a', questionId: 'question-1',
+        }),
+      },
+      raw: { action: { form_value: {
+        project_clarification_option: 'keep',
+        project_clarification_answer: '保留现有配置，并保持旧字段兼容',
+      } } },
     });
 
     await vi.waitFor(() => expect(control).toHaveBeenCalledWith({
       action: 'project-answer', projectId: 'pm-a', questionId: 'question-1',
-      optionId: 'keep', answer: '保留现有配置',
+      optionId: 'keep', answer: '保留现有配置，并保持旧字段兼容',
     }, { openId: 'ou-allowed', source: 'card' }));
     await vi.waitFor(() => expect(updateCard).toHaveBeenCalledTimes(1));
     expect(JSON.stringify(updateCard.mock.calls[0][1])).toContain('项目确认已提交');
@@ -2610,7 +2664,13 @@ describe('飞书人工决策单聊路由', () => {
     expect(updateCard).toHaveBeenCalledTimes(1);
   });
 
-  it('飞书人工验收表单同时提交完成选项和实际结果', async () => {
+  it.each([
+    {
+      label: '填写结果',
+      formAnswer: 'Edit 成功；Save 成功；Delete 失败：按钮无响应；Reload 未执行',
+    },
+    { label: '不填写结果', formAnswer: '' },
+  ])('飞书人工验收表单可$label并提交完成选项', async ({ formAnswer }) => {
     vi.stubEnv('WMUX_FEISHU_DECISION_CHAT_ID', 'oc-project');
     const control = vi.fn(async () => ({ ok: true, message: '已记录人工验收结果' }));
     const service = new FeishuSupervisorService(control);
@@ -2643,7 +2703,7 @@ describe('飞书人工决策单聊路由', () => {
       },
       raw: { action: { form_value: {
         project_clarification_option: 'manual-verify-complete',
-        project_clarification_answer: 'Edit 成功；Save 成功；Delete 失败：按钮无响应；Reload 未执行',
+        project_clarification_answer: formAnswer,
       } } },
     });
 
@@ -2652,7 +2712,7 @@ describe('飞书人工决策单聊路由', () => {
       projectId: 'pm-gui',
       questionId: 'question-gui-feedback',
       optionId: 'manual-verify-complete',
-      answer: 'Edit 成功；Save 成功；Delete 失败：按钮无响应；Reload 未执行',
+      answer: formAnswer,
     }, { openId: 'ou-allowed', source: 'card' }));
   });
 

@@ -1095,13 +1095,13 @@ export function buildProjectClarificationCard(
     && question.options.some((option) => option.id === 'manual-verify-complete')
     && question.options.some((option) => option.id === 'manual-verify-defer');
   const responseElements = manualVerificationFeedback ? [
-    { tag: 'markdown', content: '**选择人工验收结果并填写反馈**' },
+    { tag: 'markdown', content: '**选择人工验收处理方式，可选填写反馈**' },
     {
       tag: 'select_static',
       element_id: 'project_clarification_option',
       name: 'project_clarification_option',
       required: true,
-      placeholder: { tag: 'plain_text', content: '选择完成人工验收或暂缓人工验收' },
+      placeholder: { tag: 'plain_text', content: '选择完成、暂缓或跳过当前普通验证' },
       options: question.options.map((option) => ({
         text: {
           tag: 'plain_text',
@@ -1117,21 +1117,27 @@ export function buildProjectClarificationCard(
     {
       tag: 'input', element_id: 'project_clarification_answer', name: 'project_clarification_answer',
       input_type: 'multiline_text', rows: 5, max_length: 1000,
-      label: { tag: 'plain_text', content: '人工验收结果' },
-      placeholder: { tag: 'plain_text', content: '选择“完成人工验收”时，必须逐项填写成功、失败或未执行及实际现象。' },
+      label: { tag: 'plain_text', content: '人工验收结果或自定义意见（可选）' },
+      placeholder: { tag: 'plain_text', content: '完成时可填写成功、失败或实际现象；暂缓或跳过时可说明原因。留空也可提交。' },
     },
     formButton('wmux_form_project_clarification', '提交人工验收选择', 'primary', {
       wmux_action: 'form_project_clarification', projectId, questionId: question.id,
     }),
   ] : [
     { tag: 'markdown', content: '**选择一个答复**' },
-    ...responsiveButtonRows(question.options.map((option) => cardButton({
-      wmux_action: 'project_clarification_option',
-      projectId,
-      questionId: question.id,
-      optionId: option.id,
-      answer: option.label,
-    }, `${option.label}${option.id === question.recommendedOptionId ? '（推荐）' : ''}`, option.id === question.recommendedOptionId ? 'primary' : 'default'))),
+    {
+      tag: 'select_static',
+      element_id: 'project_clarification_option',
+      name: 'project_clarification_option',
+      placeholder: { tag: 'plain_text', content: '可选择一个方案，也可只填写自定义意见' },
+      options: question.options.map((option) => ({
+        text: {
+          tag: 'plain_text',
+          content: `${option.label}${option.id === question.recommendedOptionId ? '（推荐）' : ''}`,
+        },
+        value: option.id,
+      })),
+    },
     ...question.options.filter((option) => option.description).map((option) => ({
       tag: 'div',
       text: { tag: 'plain_text', content: `${option.label}：${option.description}` },
@@ -1140,10 +1146,10 @@ export function buildProjectClarificationCard(
     {
       tag: 'input', element_id: 'project_clarification_answer', name: 'project_clarification_answer',
       input_type: 'multiline_text', rows: 4, max_length: 1000,
-      label: { tag: 'plain_text', content: '自定义答复（可选）' },
-      placeholder: { tag: 'plain_text', content: '不选上述选项时，可直接填写你的决定和必要边界。' },
+      label: { tag: 'plain_text', content: '自定义意见（可选）' },
+      placeholder: { tag: 'plain_text', content: '可补充所选方案的边界、偏好或原因；不选方案时可直接填写其他决定。' },
     },
-    formButton('wmux_form_project_clarification', '提交自定义答复', 'primary', {
+    formButton('wmux_form_project_clarification', '提交选择和自定义意见', 'primary', {
       wmux_action: 'form_project_clarification', projectId, questionId: question.id,
     }),
   ];
@@ -2819,19 +2825,23 @@ export function buildApprovalCard(record: SupervisorRecord, feedback: ApprovalCa
       : hasMultipleChoices
         ? '选择具体方案时，AI 监督会结合当前终端信息整理为完整指令；选择“无”时，请在下方填写用户决策或补充信息。'
         : '采用后，AI 监督会结合当前终端信息整理为完整指令，再发送到任务终端。' } },
-    ...(!isContextRecovery ? [{
+    {
       tag: 'input', element_id: 'decision_input', name: 'decision_input', input_type: 'multiline_text',
       rows: 4, max_length: 1000,
-      label: { tag: 'plain_text', content: isClarification ? '集中回答以上问题' : '用户决策或补充信息（可选）' },
+      label: { tag: 'plain_text', content: isClarification ? '集中回答以上问题' : '自定义意见（可选）' },
       placeholder: { tag: 'plain_text', content: isClarification
         ? '按问题编号集中答复；其余可写“按推荐默认答案”'
-        : '填写后可交给 AI 监督整理，或直接发送到任务终端' },
+        : isContextRecovery
+          ? '可补充恢复边界、优先级或其他意见；留空则按上方恢复指令执行'
+          : '可补充边界、偏好或其他意见；采用、暂停或停止时都会记录' },
       ...(feedback.decisionInput ? { default_value: feedback.decisionInput.slice(0, 1000) } : {}),
     }, {
       tag: 'div', text: { tag: 'plain_text', content: isClarification
         ? '需求对齐必须填写答复；不会直接发送到任务终端。'
-        : '点击“采用 AI 方案”会把所选方案和这里的信息交给 AI 监督整理；选择“无”时必须填写这里的信息。点击“直接发送用户输入”则不经过 AI 监督整理，直接提交到任务终端。' },
-    }] : []),
+        : isContextRecovery
+          ? '自定义意见会随恢复指令一起发送到任务终端；暂停或停止时也会保留到审计记录。'
+          : '采用方案会把所选方案和自定义意见交给 AI 监督整理；选择“无”时必须填写。暂停或停止时，自定义意见会写入对应处理记录。' },
+    },
     { tag: 'markdown', content: '**处理当前决策**' },
     {
       tag: 'column_set', flex_mode: 'none', columns: [
@@ -2883,8 +2893,8 @@ export function buildWaitingDecisionCard(record: SupervisorRecord, supervisorAns
       {
         tag: 'input', element_id: 'waiting_direction', name: 'waiting_direction', input_type: 'multiline_text',
         rows: 4, max_length: 1000,
-        label: { tag: 'plain_text', content: '新方案或下一步方向（提交新方案时必填）' },
-        placeholder: { tag: 'plain_text', content: '填写后点击“提交新方案并继续”，内容将发送给 AI 监督终端' },
+        label: { tag: 'plain_text', content: '自定义意见或下一步方向（可选）' },
+        placeholder: { tag: 'plain_text', content: '可补充保持、恢复或停止原因；提交新方案时此项必填' },
       },
       { tag: 'markdown', content: '**处理当前待续状态**' },
       ...responsiveButtonRows([
@@ -2893,7 +2903,7 @@ export function buildWaitingDecisionCard(record: SupervisorRecord, supervisorAns
         formButton('wmux_waiting_submit', '提交新方案并继续', 'primary', { ...actionValue, decision: 'submit' }),
         formButton('wmux_waiting_stop', '停止此监督', 'danger', { ...actionValue, decision: 'stop' }),
       ]),
-      { tag: 'div', text: { tag: 'plain_text', content: '“保持待续”不会改变通道状态，之后仍可在此卡片选择其他操作。' } },
+      { tag: 'div', text: { tag: 'plain_text', content: '“保持待续”不会改变通道状态；填写的自定义意见会随所选操作记录或发送。' } },
     ],
   );
 }
@@ -3291,9 +3301,7 @@ export class FeishuSupervisorService {
     if (this.seen.has(dedupeKey)) return;
     this.remember(dedupeKey);
     const selection = value.decision === 'approve' ? this.cardDecisionSelection(event) : undefined;
-    const decisionInput = ['approve', 'direct'].includes(value.decision || '')
-      ? this.cardDecisionInput(event)
-      : undefined;
+    const decisionInput = this.cardDecisionInput(event);
     const result = await this.control({
       action: 'decide',
       approvalId: value.approval_id,
@@ -3952,7 +3960,7 @@ export class FeishuSupervisorService {
       action: 'waiting-decision',
       terminal: card.terminal,
       decision: decision as 'keep' | 'resume' | 'submit' | 'stop',
-      ...(decision === 'submit' ? { message } : {}),
+      ...(message ? { message } : {}),
     }, { openId: event.operator.openId, source: 'card' }).catch((err) => ({ error: String(err?.message || err) }));
     if (failedResult(result)) {
       if (consumesCard) this.waitingDecisionCards.set(event.messageId, card);

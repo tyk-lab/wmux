@@ -8,7 +8,9 @@ import {
 import { projectTransitionResolutionError } from '../../src/renderer/project-manager/transition-policy';
 import { projectWorkItemCreationError } from '../../src/renderer/project-manager/work-item-admission-policy';
 import {
+  projectSubgoalClosedByVerificationWaiver,
   projectWorkItemRequiresVersionReconciliation,
+  projectWorkItemVerificationWaiverError,
 } from '../../src/renderer/project-manager/verification-intervention-policy';
 import {
   normalizeProjectManagerSession,
@@ -328,5 +330,142 @@ describe('project manager control-plane policies', () => {
       ...successor,
       dependencies: [deferred.id],
     })).toContain('不能依赖已由用户暂缓或跳过验证的旧工作项');
+  });
+
+  it('allows an audited standard verification waiver but rejects protected criteria and real failures', () => {
+    const project = normalizeProjectManagerSession({
+      id: 'waiver-project', projectDir: 'C:/project', goal: '交付 GUI 成果',
+      preconditions: [], planFiles: [], doneWhen: ['GUI CRUD 可复核'], status: 'waiting',
+      verificationPolicies: [{
+        criterion: 'GUI CRUD 可复核', requirement: 'required', riskClass: 'standard',
+        reason: '用户明确分类为普通成果',
+      }],
+      requirementsVersion: 1, authorizationVersion: 1, acceptedRequirementsVersion: 1,
+      executionProtocolVersion: 10, workItems: [], events: [], createdAt: 1, updatedAt: 1,
+    });
+    const goalId = project.activeGoalId!;
+    const limitation = {
+      kind: 'gui-automation-unavailable' as const,
+      detail: '当前环境无法执行可靠的 GUI 自动化',
+      missingEvidence: ['GUI CRUD 实际交互证据'],
+      affectedAcceptance: ['复核 GUI CRUD 实际交互'],
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+      detectedAt: 2,
+    };
+    const standard = workItem({
+      goalId,
+      status: 'waiting-decision',
+      verificationLimitation: limitation,
+      contract: {
+        ...workItem().contract,
+        validation: ['复核 GUI CRUD 实际交互'],
+        stageAcceptanceCoverage: [{
+          stageCriterion: 'GUI CRUD 可复核',
+          verificationCriterion: '复核 GUI CRUD 实际交互',
+        }],
+      },
+    });
+    project.workItems = [standard];
+    project.subgoals = [{
+      id: 'stage-a', goalId, title: 'GUI 阶段', outcome: 'GUI CRUD 可用',
+      acceptance: ['GUI CRUD 可复核'], dependencies: [], status: 'active',
+      order: 1, createdAt: 1, updatedAt: 1,
+    }];
+
+    expect(projectWorkItemVerificationWaiverError(project, standard)).toBeNull();
+    const defaultProtectedProject = normalizeProjectManagerSession({
+      ...project,
+      goals: undefined,
+      activeGoalId: undefined,
+      verificationPolicies: undefined,
+      workItems: [standard],
+    });
+    expect(projectWorkItemVerificationWaiverError(defaultProtectedProject, {
+      ...standard,
+      goalId: defaultProtectedProject.activeGoalId,
+    })).toContain('不能跳过');
+    const stageOnlyProject = {
+      ...project,
+      subgoals: project.subgoals?.map((stage) => ({
+        ...stage,
+        acceptance: ['阶段专用 GUI 验收'],
+      })),
+      workItems: [{
+        ...standard,
+        contract: {
+          ...standard.contract,
+          stageAcceptanceCoverage: [{
+            stageCriterion: '阶段专用 GUI 验收',
+            verificationCriterion: '复核 GUI CRUD 实际交互',
+          }],
+        },
+      }],
+    };
+    expect(projectWorkItemVerificationWaiverError(stageOnlyProject, stageOnlyProject.workItems[0]))
+      .toContain('不能跳过');
+    const ambiguousStage = {
+      ...project,
+      subgoals: project.subgoals?.map((stage) => ({
+        ...stage,
+        acceptance: ['GUI 新增可复核', 'GUI 删除可复核'],
+      })),
+      workItems: [{
+        ...standard,
+        contract: { ...standard.contract, stageAcceptanceCoverage: undefined },
+      }],
+    };
+    expect(projectWorkItemVerificationWaiverError(ambiguousStage, ambiguousStage.workItems[0]))
+      .toContain('没有可由用户明确豁免的验证条件');
+    const waived = {
+      ...standard,
+      status: 'stopped' as const,
+      verificationDecision: {
+        action: 'skip-verification' as const,
+        questionId: 'waiver-choice',
+        reason: '用户不关心这项普通 GUI 验证',
+        answeredBy: 'desktop' as const,
+        requirementsVersion: 1,
+        authorizationVersion: 1,
+        decidedAt: 3,
+      },
+    };
+    expect(projectSubgoalClosedByVerificationWaiver({ ...project, workItems: [waived] }, 'stage-a')).toBe(true);
+
+    const protectedByContent = {
+      ...standard,
+      verificationLimitation: {
+        ...limitation,
+        affectedAcceptance: ['权限与数据完整性验收通过'],
+      },
+    };
+    expect(projectWorkItemVerificationWaiverError(project, protectedByContent)).toContain('不能跳过');
+
+    const explicitProtectedProject = {
+      ...project,
+      goals: project.goals?.map((goal) => ({
+        ...goal,
+        verificationPolicies: [{
+          criterion: 'GUI CRUD 可复核',
+          requirement: 'required' as const,
+          riskClass: 'protected' as const,
+          reason: '用户明确标记为保护性条件',
+        }],
+      })),
+    };
+    expect(projectWorkItemVerificationWaiverError(explicitProtectedProject, standard)).toContain('不能跳过');
+
+    const failed = {
+      ...standard,
+      status: 'failed' as const,
+      completion: {
+        summary: 'GUI 验证失败', validation: ['Delete 失败'], completedAt: 4,
+        criteria: [{
+          criterion: 'GUI CRUD 可复核', status: 'unsatisfied' as const, result: 'failed' as const,
+          method: 'runtime-test' as const, evidence: 'Delete 操作失败', evidenceRefs: ['failure.log'],
+        }],
+      },
+    };
+    expect(projectWorkItemVerificationWaiverError(project, failed)).toContain('真实失败');
   });
 });

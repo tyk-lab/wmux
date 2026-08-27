@@ -17,14 +17,15 @@ describe('project manager manual verification flow', () => {
     expect(dialogSource).toContain("option.id === 'manual-verify-defer'");
     expect(dialogSource).toContain('人工验收等待，需要你反馈');
     expect(dialogSource).toContain('进入人工验收步骤');
-    expect(dialogSource).toContain('提交人工验收结果');
+    expect(dialogSource).toContain('确认完成人工验收');
     expect(dialogSource).toContain('确认暂缓并保持暂停');
-    expect(dialogSource).toContain('请逐项填写实际结果');
+    expect(dialogSource).toContain('可选：逐项填写实际结果');
     expect(dialogSource).toContain('不会重新执行自动 GUI 验证');
   });
 
-  it('requires result text only when the user declares verification complete', () => {
-    expect(dialogSource).toContain('manualVerificationCompletionSelected && !clarificationAnswer.trim()');
+  it('keeps result text optional when the user declares verification complete', () => {
+    expect(dialogSource).not.toContain('manualVerificationCompletionSelected && !clarificationAnswer.trim()');
+    expect(dialogSource).toContain('留空表示确认已按说明完成且未补充异常');
     expect(dialogSource).toContain('manualVerificationDeferredSelected');
     expect(stylesSource).toContain('.project-manager-dialog__manual-verification-guide');
     expect(stylesSource).toContain('white-space: pre-wrap');

@@ -344,6 +344,10 @@ describe('project-manager engine', () => {
     };
     expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(true);
     expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toContain('gui-stage');
+    project.subgoals[0] = { ...project.subgoals[0], status: 'obsolete' };
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toBeNull();
+    expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['persistence']);
+    project.subgoals[0] = { ...project.subgoals[0], status: 'active' };
 
     const unfinishedSibling = {
       ...project.workItems[0], id: 'gui-unfinished-sibling', status: 'planned' as const,

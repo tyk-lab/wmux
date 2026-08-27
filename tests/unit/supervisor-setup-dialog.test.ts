@@ -247,11 +247,11 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('messageDrafts');
     expect(projectManagerDialogSource).toContain("action: 'intervene-work-item'");
     expect(projectManagerDialogSource).toContain('暂缓当前验证');
-    expect(projectManagerDialogSource).toContain('跳过当前验证并后续补验');
+    expect(projectManagerDialogSource).toContain('跳过验证（不要求补验）');
     expect(projectManagerDialogSource).toContain('处理验证');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-intervention-trigger');
     expect(projectManagerDialogSource).toContain("scrollIntoView({ block: 'nearest' })");
-    expect(projectManagerDialogSource).toContain('不跳过或完成所属阶段');
+    expect(projectManagerDialogSource).toContain('解除符合条件的阶段依赖');
     expect(projectManagerDialogSource).toContain('跳过整个工作项');
     expect(projectManagerDialogSource).toContain('关闭整个工作项');
     expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭整个工作项的理由');
@@ -392,6 +392,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(panelSource).toMatch(/isClarification\s*\? '提交对齐答复'/);
     expect(panelSource).toContain("? '采用 AI 推荐方案'");
     expect(panelSource).toContain(": '提交补充给 AI 判断'");
+    expect(panelSource).toContain('自定义意见（可选）');
+    expect(panelSource).toContain('用户暂停待决项并补充意见');
+    expect(panelSource).toContain('[用户补充意见]');
+    expect(panelSource).toContain('stopConditionGuidance');
+    expect(panelSource).toContain('resolveStopCondition(lane, false)');
+    expect(panelSource).toContain('resolveStopCondition(lane, true)');
   });
 
   it('separates supervision setup into focused steps and terminal details', () => {
