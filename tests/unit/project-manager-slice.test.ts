@@ -366,6 +366,158 @@ describe('project-manager slice', () => {
     });
   });
 
+  it('defers or skips only a verification-limited work item while keeping its stage incomplete', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\verification-intervention',
+      goal: '交付用户管理功能',
+      doneWhen: ['GUI CRUD 可复核'],
+    });
+    const goalId = project.activeGoalId || '';
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals',
+      source: 'manager',
+      subgoals: [{
+        id: 'gui_stage', goalId, title: 'GUI 用户管理', outcome: 'CRUD 可用',
+        acceptance: ['GUI CRUD 可复核'], dependencies: [], status: 'active',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('gui-verification'),
+        goalId,
+        subgoalId: 'gui_stage',
+        status: 'waiting-decision',
+        supervisorLaneId: 'lane-gui',
+        workerSurfaceId: 'worker-gui',
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable',
+          detail: '当前环境无法执行可靠的 GUI 自动化',
+          missingEvidence: ['GUI CRUD 实际交互证据'],
+          affectedAcceptance: ['GUI CRUD 可复核'],
+          requirementsVersion: 1,
+          authorizationVersion: 1,
+          detectedAt: 2,
+        },
+      },
+    }, project.id)).toMatchObject({ ok: true });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'gui-verification',
+      intervention: 'defer-verification',
+      reason: '等待可用的 GUI 环境',
+    }, project.id)).toMatchObject({
+      ok: true,
+      event: { payload: { intervention: 'defer-verification', stageDisposition: 'keep-incomplete' } },
+    });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      status: 'paused',
+      supervisorLaneId: undefined,
+      workerSurfaceId: undefined,
+      verificationDecision: {
+        action: 'defer-verification',
+        reason: '等待可用的 GUI 环境',
+      },
+    });
+    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({
+      id: 'gui_stage', status: 'active',
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'gui-verification',
+      patch: { status: 'waiting-decision' },
+    }, project.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能由 AI 改变状态'),
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'gui-verification',
+      intervention: 'skip-verification',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      status: 'stopped',
+      verificationDecision: { action: 'skip-verification' },
+    });
+    expect(useStore.getState().projectManager?.subgoals?.[0]).toMatchObject({ status: 'active' });
+  });
+
+  it('rejects verification-only intervention without a current verification limitation', () => {
+    const useStore = store();
+    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
+    useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('implementation') });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'implementation',
+      intervention: 'skip-verification',
+    })).toMatchObject({ ok: false, error: expect.stringContaining('验证能力限制') });
+  });
+
+  it('keeps a deferred verification work item immutable across verification policy versions', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\verification-policy-version',
+      goal: '交付 GUI 功能',
+      doneWhen: ['GUI 行为可复核'],
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('gui-verification-versioned'),
+        status: 'waiting-decision',
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable',
+          detail: '当前环境无法执行可靠的 GUI 自动化',
+          missingEvidence: ['GUI 实际交互证据'],
+          affectedAcceptance: ['GUI 行为可复核'],
+          requirementsVersion: 1,
+          authorizationVersion: 1,
+          detectedAt: 2,
+        },
+      },
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'intervene-work-item',
+      workItemId: 'gui-verification-versioned',
+      intervention: 'defer-verification',
+    }, project.id)).toMatchObject({ ok: true });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-project-definition',
+      goal: project.goal,
+      preconditions: project.preconditions,
+      planFiles: [],
+      doneWhen: project.doneWhen,
+      verificationPolicies: [{
+        criterion: 'GUI 行为可复核',
+        riskClass: 'standard',
+        requirement: 'best-effort',
+        reason: '只调整后续补验策略',
+      }],
+      source: 'user',
+      mode: 'refine',
+    }, project.id)).toMatchObject({ ok: true });
+
+    expect(useStore.getState().projectManager?.workItems[0]).toMatchObject({
+      status: 'paused',
+      requirementsVersion: 1,
+      verificationDecision: { action: 'defer-verification', requirementsVersion: 1 },
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'gui-verification-versioned',
+      patch: { status: 'waiting-decision', requirementsVersion: 2, authorizationVersion: 2 },
+    }, project.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能由 AI 改变状态'),
+    });
+  });
+
   it('clears a rejected completion report when the work item returns to execution', () => {
     const useStore = store();
     useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });

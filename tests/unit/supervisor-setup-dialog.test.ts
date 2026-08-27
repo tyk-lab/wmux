@@ -172,6 +172,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(definitionUpdateHandler).not.toContain('window.confirm');
     expect(definitionUpdateHandler).toContain('const submittedDoneWhen = goalChanged && unchangedGoalCriteria ? [] : projectDoneWhen');
     expect(definitionUpdateHandler).not.toContain('!definitionGoalDraft.trim() || projectPreconditions.length === 0');
+    expect(definitionUpdateHandler).toContain('session.preconditions.length > 0 && projectPreconditions.length === 0');
+    expect(definitionUpdateHandler).toContain('session.doneWhen.length > 0 && submittedDoneWhen.length === 0');
     expect(projectManagerDialogSource).toContain('用户提供或修改 G');
     expect(projectManagerDialogSource).toContain('未调整的旧完成条件不会自动套用到新目标');
     const discardDefinitionHandler = projectManagerDialogSource.match(
@@ -236,9 +238,12 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('当前项目 AI 正在处理并将回复到此项目会话');
     expect(projectManagerDialogSource).toContain('messageDrafts');
     expect(projectManagerDialogSource).toContain("action: 'intervene-work-item'");
-    expect(projectManagerDialogSource).toContain('跳过此项');
-    expect(projectManagerDialogSource).toContain('关闭此项');
-    expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭的理由');
+    expect(projectManagerDialogSource).toContain('暂缓当前验证');
+    expect(projectManagerDialogSource).toContain('跳过当前验证并后续补验');
+    expect(projectManagerDialogSource).toContain('不跳过或完成所属阶段');
+    expect(projectManagerDialogSource).toContain('跳过整个工作项');
+    expect(projectManagerDialogSource).toContain('关闭整个工作项');
+    expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭整个工作项的理由');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-decisions');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__action-grid');
     expect(projectManagerDialogSource).toContain('<span>监督正在做</span>');

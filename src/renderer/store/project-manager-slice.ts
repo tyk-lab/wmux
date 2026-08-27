@@ -31,6 +31,7 @@ import {
   projectAuthorizationVersion,
   projectRequirementsVersion,
   projectSubgoalCompletionResult,
+  projectWorkItemCurrentVerificationLimitation,
   projectWorkItemCompletionResult,
   requiredProjectOrientation,
   type ProjectManagerAction,
@@ -42,7 +43,10 @@ import {
   type ProjectWorkItem,
   type ProjectUserAcceptancePolicy,
 } from '../../shared/project-manager';
-import { projectDependencyError } from '../project-manager/engine';
+import {
+  projectDependencyError,
+  projectWorkItemVerificationIntervened,
+} from '../project-manager/engine';
 import { notificationDedupeKey } from '../notification-policy';
 import type { NotificationSlice } from './notification-slice';
 import type { ProjectManagementAgentConfig } from '../../shared/project-manager-terminal';
@@ -537,6 +541,7 @@ export const createProjectManagerSlice: StateCreator<
             updatedAt: now,
           };
         }
+        if (projectWorkItemVerificationIntervened(item)) return item;
         return {
           ...item,
           status: 'waiting-decision' as const,
@@ -1029,6 +1034,16 @@ export const createProjectManagerSlice: StateCreator<
         event.kind === 'user-work-item-intervention' && event.workItemId === existing.id
       ));
       if (
+        projectWorkItemVerificationIntervened(existing)
+        && action.patch.status !== undefined
+        && action.patch.status !== existing.status
+      ) {
+        return {
+          ok: false,
+          error: '该工作项已收到用户暂缓或跳过验证的裁决，不能由 AI 改变状态；后续补验必须创建新的工作项',
+        };
+      }
+      if (
         existing.status === 'stopped'
         && userIntervention
         && action.patch.status !== undefined
@@ -1098,13 +1113,44 @@ export const createProjectManagerSlice: StateCreator<
       if (['completed', 'stopped'].includes(existing.status)) {
         return { ok: false, error: '该工作项已经结束，无需重复干预' };
       }
-      const reason = action.reason?.trim().slice(0, 1200) || '';
-      const interventionLabel = action.intervention === 'skip' ? '跳过' : '关闭';
+      const verificationAction = action.intervention === 'defer-verification'
+        || action.intervention === 'skip-verification'
+        ? action.intervention
+        : undefined;
+      const verificationIntervention = !!verificationAction;
+      const verificationLimitation = projectWorkItemCurrentVerificationLimitation(session, existing);
+      if (verificationIntervention && !verificationLimitation) {
+        return { ok: false, error: '只有当前版本已记录验证能力限制的工作项才能暂缓或跳过验证' };
+      }
+      const reason = action.reason?.trim().slice(0, 1200)
+        || (verificationIntervention ? verificationLimitation?.detail : '')
+        || '';
+      const interventionLabel = action.intervention === 'skip'
+        ? '跳过'
+        : action.intervention === 'close'
+          ? '关闭'
+          : action.intervention === 'defer-verification'
+            ? '暂缓验证'
+            : '跳过当前验证';
       const updated = updateWorkItem(session, action.workItemId, (item) => ({
         ...item,
-        status: 'stopped',
+        status: action.intervention === 'defer-verification' ? 'paused' : 'stopped',
         supervisorLaneId: undefined,
         workerSurfaceId: undefined,
+        ...(verificationIntervention ? {
+          verificationDecision: {
+            action: verificationAction!,
+            questionId: `direct-verification-intervention-${uuid()}`,
+            reason,
+            answeredBy: action.answeredBy || 'desktop',
+            requirementsVersion: projectRequirementsVersion(session),
+            authorizationVersion: projectAuthorizationVersion(session),
+            decidedAt: now,
+          },
+          latestBlocker: action.intervention === 'defer-verification'
+            ? '用户已暂缓当前验证工作项；所属阶段仍未验收，条件具备后必须补验或由用户正式调整验收要求。'
+            : '用户已跳过当前验证工作项；所属阶段未被跳过或完成，后续计划必须重新承接该验收缺口。',
+        } : {}),
         updatedAt: now,
       }));
       if (!updated) return { ok: false, error: `任务不存在：${action.workItemId}` };
@@ -1118,6 +1164,11 @@ export const createProjectManagerSlice: StateCreator<
           reason: reason || undefined,
           title: existing.title,
           previousStatus: existing.status,
+          ...(verificationIntervention ? {
+            verificationDecision: action.intervention,
+            affectedAcceptance: verificationLimitation?.affectedAcceptance || [],
+            stageDisposition: 'keep-incomplete',
+          } : {}),
         },
       };
     } else if (action.type === 'record-execution') {

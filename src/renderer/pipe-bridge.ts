@@ -198,6 +198,7 @@ import {
   projectRequirementsAlignmentPhase,
   projectRequirementsVersion,
   projectSubgoalCompletionResult,
+  projectWorkItemCurrentVerificationLimitation,
   projectDirectoryIdentity,
   projectTaskContextResetFingerprint,
   requiredProjectOrientation,
@@ -230,6 +231,7 @@ import {
   type ProjectUserAcceptancePolicy,
   type ProjectRetryKind,
   type ProjectWorkItem,
+  type ProjectWorkItemIntervention,
 } from '../shared/project-manager';
 import { projectCommandNeedsExplicitId } from '../shared/project-command-scope';
 import {
@@ -275,6 +277,7 @@ import {
   TASK_VALIDATION_REPORTING_POLICY,
   type ProjectProgressObligation,
   projectWorkItemSubgoalDependencyError,
+  projectWorkItemVerificationIntervened,
 } from './project-manager/engine';
 import {
   projectSupervisorDefaults,
@@ -5162,6 +5165,7 @@ function resumeEligibleProjectSupervisorLanes(sessionId: string, reason: string)
     const eligible = !!item
       && item.goalId === activeGoalId
       && !['completed', 'stopped'].includes(item.status)
+      && !projectWorkItemVerificationIntervened(item)
       && item.requirementsVersion === projectRequirementsVersion(session)
       && item.authorizationVersion === projectAuthorizationVersion(session)
       && (!item.subgoalId || !projectWorkItemSubgoalDependencyError(session, item));
@@ -6496,12 +6500,7 @@ function currentProjectVerificationLimitation(
   session: ProjectManagerSession,
   workItem: ProjectWorkItem | undefined,
 ): ProjectVerificationLimitation | undefined {
-  const limitation = workItem?.verificationLimitation;
-  return limitation
-    && limitation.requirementsVersion === projectRequirementsVersion(session)
-    && limitation.authorizationVersion === projectAuthorizationVersion(session)
-    ? limitation
-    : undefined;
+  return projectWorkItemCurrentVerificationLimitation(session, workItem);
 }
 
 function projectVerificationLimitationFromDecision(
@@ -11838,38 +11837,41 @@ async function appendRecordedProjectEvent(
 async function quiesceProjectRuntimeLanes(
   session: ProjectManagerSession,
   reason: string,
+  workItemId?: string,
 ): Promise<{ confirmed: string[]; failed: string[] }> {
   const store = useStore.getState();
   const lanes = store.supervisor.lanes.filter((lane) => (
     lane.projectManagerProjectId === session.id
+    && (!workItemId || lane.projectWorkItemId === workItemId)
     && supervisorLaneControlState(lane) !== 'stopped'
   ));
   const confirmed: string[] = [];
   const failed: string[] = [];
+  const quiesceContext = workItemId ? '用户干预工作项时' : '需求变更时';
   for (const lane of lanes) {
     // A requirement or prerequisite change revokes any delayed automatic Enter
     // before the control plane interrupts the old task.
     cancelPendingAutomatedTerminalSubmit(lane.surfaceId, true);
     store.pauseSupervisorLane(lane.id, reason);
-    const terminal = locateRemoteTaskTerminal(lane.surfaceId).terminal;
-    if (!terminal) {
-      failed.push(lane.id);
-      await appendRecordedProjectEvent(session, {
-        kind: 'requirements-quiesce-failed',
-        workItemId: lane.projectWorkItemId,
-        summary: `需求变更时无法定位任务终端，未能确认旧任务已停止：${lane.label}`,
-        payload: { laneId: lane.id, surfaceId: lane.surfaceId, reason },
-      });
-      continue;
-    }
     const activityBeforeInterrupt = remoteTerminalActivity(lane.surfaceId).activityState;
     if (activityBeforeInterrupt === 'idle' || activityBeforeInterrupt === 'blocked') {
       confirmed.push(lane.id);
       await appendRecordedProjectEvent(session, {
         kind: 'requirements-quiesced',
         workItemId: lane.projectWorkItemId,
-        summary: `需求变更时任务终端已处于非运行状态，未发送 Ctrl+C：${lane.label}`,
+        summary: `${quiesceContext}任务终端已处于非运行状态，未发送 Ctrl+C：${lane.label}`,
         payload: { laneId: lane.id, surfaceId: lane.surfaceId, reason, activity: activityBeforeInterrupt },
+      });
+      continue;
+    }
+    const terminal = locateRemoteTaskTerminal(lane.surfaceId).terminal;
+    if (!terminal) {
+      failed.push(lane.id);
+      await appendRecordedProjectEvent(session, {
+        kind: 'requirements-quiesce-failed',
+        workItemId: lane.projectWorkItemId,
+        summary: `${quiesceContext}无法定位任务终端，未能确认旧任务已停止：${lane.label}`,
+        payload: { laneId: lane.id, surfaceId: lane.surfaceId, reason },
       });
       continue;
     }
@@ -13777,6 +13779,12 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     const item = session.workItems.find((candidate) => candidate.id === workItemId);
     if (!item) return { ok: false, error: `任务不存在：${workItemId}` };
     if (session.status !== 'active') return { ok: false, error: '项目未处于活动状态，不能派发任务' };
+    if (projectWorkItemVerificationIntervened(item)) {
+      return {
+        ok: false,
+        error: '该工作项的当前验证已由用户暂缓或跳过，禁止恢复或重派原工作项；如需补验，请创建新的聚焦验证工作项',
+      };
+    }
     if (session.activeWorkItemId && session.activeWorkItemId !== item.id) {
       return { ok: false, error: `当前已有活动工作项 ${session.activeWorkItemId}；一个项目同一时刻只能派发一个任务` };
     }
@@ -15186,19 +15194,39 @@ export function initPipeBridge(): void {
     if (!session) return { ok: false, error: '当前没有项目管理会话' };
     if (action === 'intervene-work-item') {
       const workItemId = String(params?.workItemId || '').trim();
-      const intervention = String(params?.intervention || '').trim();
+      const intervention = String(params?.intervention || '').trim() as ProjectWorkItemIntervention;
       const reason = String(params?.reason || '').trim().slice(0, 1200);
       if (!workItemId) return { ok: false, error: '必须选择要干预的工作项' };
-      if (intervention !== 'skip' && intervention !== 'close') {
-        return { ok: false, error: '工作项干预方式必须是跳过或关闭' };
+      if (!['skip', 'close', 'defer-verification', 'skip-verification'].includes(intervention)) {
+        return { ok: false, error: '工作项干预方式必须是暂缓验证、跳过当前验证、跳过整个工作项或关闭整个工作项' };
       }
       const workItem = session.workItems.find((item) => item.id === workItemId);
       if (!workItem) return { ok: false, error: `任务不存在：${workItemId}` };
+      const verificationIntervention = intervention === 'defer-verification'
+        || intervention === 'skip-verification';
+      const verificationLimitation = currentProjectVerificationLimitation(session, workItem);
+      if (verificationIntervention && !verificationLimitation) {
+        return { ok: false, error: '当前工作项没有本需求版本有效的验证能力限制，不能使用验证专用干预' };
+      }
+      if (verificationIntervention) {
+        const quiesce = await quiesceProjectRuntimeLanes(
+          session,
+          `用户${intervention === 'defer-verification' ? '暂缓' : '跳过'}当前验证，冻结旧验证执行链`,
+          workItemId,
+        );
+        if (quiesce.failed.length > 0) {
+          return {
+            ok: false,
+            error: `已暂停旧监督通道，但未能确认任务 AI 停止（${quiesce.failed.join('、')}）；为避免旧验证继续执行，本次干预尚未生效，请先处理异常终端后重试`,
+          };
+        }
+      }
       const result = store.applyProjectManagerAction({
         type: 'intervene-work-item',
         workItemId,
         intervention,
         reason,
+        answeredBy: params?.source === 'feishu' ? 'feishu' : 'desktop',
       }, session.id);
       if (!result.ok) return result;
 
@@ -15207,21 +15235,35 @@ export function initPipeBridge(): void {
       releaseProjectWorkItemAssignmentForReuse(
         updatedSession,
         workItemId,
-        `用户${intervention === 'skip' ? '跳过' : '关闭'}工作项 ${workItem.title}；旧 assignment 已解除，项目运行时保留`,
+        verificationIntervention
+          ? `用户${intervention === 'defer-verification' ? '暂缓' : '跳过'}工作项 ${workItem.title} 的当前验证；所属阶段保持未完成，旧 assignment 已解除`
+          : `用户${intervention === 'skip' ? '跳过' : '关闭'}整个工作项 ${workItem.title}；旧 assignment 已解除，项目运行时保留`,
       );
 
       await persistProjectManagerMutation(result, session.id);
       const runtime = await ensureProjectManagerRuntime(session.id);
-      const interventionLabel = intervention === 'skip' ? '跳过' : '关闭';
+      const interventionLabel = intervention === 'skip'
+        ? '跳过整个工作项'
+        : intervention === 'close'
+          ? '关闭整个工作项'
+          : intervention === 'defer-verification'
+            ? '暂缓当前验证'
+            : '跳过当前验证';
       deliverProjectManagerMessage([
         `[用户干预工作项｜${interventionLabel}]`,
         `项目：${session.id} · ${session.projectDir}`,
         `当前主目标：${session.goal}`,
         `工作项：${workItem.id} · ${workItem.title}`,
         `用户理由：${reason || '未填写；仅按用户选择的干预方式处理'}`,
-        '控制层已把该工作项标记为停止并解除旧 assignment；项目常驻监督与任务 AI 保留供后续工作项复用，其他工作项没有被全局暂停。',
+        verificationIntervention
+          ? `控制层已把该验证工作项标记为${intervention === 'defer-verification' ? '暂停' : '停止'}并解除旧 assignment；所属阶段仍保持未完成，原验收条件和缺口完整保留，其他工作项没有被全局暂停。`
+          : '控制层已把整个工作项标记为停止并解除旧 assignment；项目常驻监督与任务 AI 保留供后续工作项复用，其他工作项没有被全局暂停。',
         '',
-        intervention === 'skip'
+        intervention === 'defer-verification'
+          ? '只暂缓当前验证路线。不得恢复或重派同一受限验证工作项，不得把阶段标记 achieved；可以先推进不依赖该验证的其他成果，条件具备后必须创建新的聚焦验证工作项补验，或由用户正式修改验收要求。'
+          : intervention === 'skip-verification'
+            ? '只跳过当前受限验证工作项，不是跳过阶段。不得恢复原工作项、不得把缺口写成 satisfied、不得把阶段标记 achieved；继续其他可执行成果，并在后续计划中创建新的聚焦验证工作项重新承接该验收缺口。'
+            : intervention === 'skip'
           ? '“跳过”表示本轮计划不再执行原工作项。请立即复核其依赖项和主目标完成条件，在现有授权内自主重排、调整阶段或创建必要的替代工作项；不得恢复原工作项 ID，也不要为普通重排再次询问用户。只有主目标因此无法达成且没有授权范围内的可行替代方案时，才携带事实、依据和推荐方案向用户提案。'
           : '“关闭”表示用户明确从当前计划中移除该工作项。未经用户新的明确指示，不得恢复原工作项或以等价工作项绕过此决定；请自主重排受影响的依赖项。若关闭后主目标无法达成，携带事实、影响和推荐方案向用户提案。',
         `处理完后请使用 wmux project reply --project ${session.id} --message "<已如何调整计划的摘要>"，把结果写回当前项目会话。`,
@@ -15229,8 +15271,12 @@ export function initPipeBridge(): void {
       return {
         ...result,
         message: runtime.ok
-          ? `已${interventionLabel}“${workItem.title}”，并通知项目 AI 重排后续计划。`
-          : `已${interventionLabel}“${workItem.title}”；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`,
+          ? verificationIntervention
+            ? `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成，并通知项目 AI 重排后续计划。`
+            : `已${interventionLabel}“${workItem.title}”，并通知项目 AI 重排后续计划。`
+          : verificationIntervention
+            ? `已${interventionLabel}“${workItem.title}”，所属阶段保持未完成；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`
+            : `已${interventionLabel}“${workItem.title}”；项目 AI 当前不可用，干预通知已持久排队并会自动重试。`,
       };
     }
     if (action === 'update-definition') {

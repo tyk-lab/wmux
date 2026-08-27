@@ -743,6 +743,24 @@ export interface ProjectVerificationDecision {
   decidedAt: number;
 }
 
+export type ProjectWorkItemIntervention =
+  | 'skip'
+  | 'close'
+  | 'defer-verification'
+  | 'skip-verification';
+
+export function projectWorkItemCurrentVerificationLimitation(
+  session: ProjectManagerSession,
+  item: ProjectWorkItem | undefined,
+): ProjectVerificationLimitation | undefined {
+  const limitation = item?.verificationLimitation;
+  return limitation
+    && limitation.requirementsVersion === projectRequirementsVersion(session)
+    && limitation.authorizationVersion === projectAuthorizationVersion(session)
+    ? limitation
+    : undefined;
+}
+
 export function normalizeProjectVerificationDecision(
   value: ProjectVerificationDecision | undefined,
 ): ProjectVerificationDecision | undefined {
@@ -2253,8 +2271,9 @@ export type ProjectManagerAction =
   | {
     type: 'intervene-work-item';
     workItemId: string;
-    intervention: 'skip' | 'close';
+    intervention: ProjectWorkItemIntervention;
     reason?: string;
+    answeredBy?: 'desktop' | 'feishu';
   }
   | {
       type: 'record-execution';

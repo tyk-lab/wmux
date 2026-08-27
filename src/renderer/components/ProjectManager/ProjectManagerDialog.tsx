@@ -12,6 +12,7 @@ import {
   projectGoalUserAcceptancePolicy,
   projectGoalVerificationPolicies,
   projectSubgoalCompletionResult,
+  projectWorkItemCurrentVerificationLimitation,
   projectWorkItemCompletionResult,
   projectWorkItemDisplayTitle,
   type ProjectCompletionResult,
@@ -21,6 +22,7 @@ import {
   type ProjectVerificationRequirement,
   type ProjectVerificationRiskClass,
   type ProjectWorkItem,
+  type ProjectWorkItemIntervention,
 } from '../../../shared/project-manager';
 import {
   DEFAULT_PROJECT_MANAGEMENT_AGENT_CONFIG,
@@ -124,7 +126,6 @@ function hasProjectRuntimeTerminal(tree: SplitNode): boolean {
 }
 
 type ProjectManagerConsoleView = 'conversation' | 'execution' | 'requirements' | 'agents';
-type ProjectWorkItemIntervention = 'skip' | 'close';
 const PROJECT_AGENT_ROLE_LABELS = {
   manager: '项目 AI',
   supervisor: '专属监督 AI',
@@ -1143,7 +1144,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       setNotice('请填写新的当前主目标。前置条件和完成条件可以留空，由项目 AI 补全。');
       return;
     }
-    if (!goalChanged && (projectPreconditions.length === 0 || submittedDoneWhen.length === 0)) {
+    const clearedExistingPreconditions = session.preconditions.length > 0 && projectPreconditions.length === 0;
+    const clearedExistingCompletionCriteria = session.doneWhen.length > 0 && submittedDoneWhen.length === 0;
+    if (!goalChanged && (clearedExistingPreconditions || clearedExistingCompletionCriteria)) {
       setNotice('仅修改条件时不能清空项目定义；若正在修改主目标，请先修改目标内容或选择“切换新的主目标”。');
       return;
     }
@@ -2230,11 +2233,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     });
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
                     const itemCompletion = projectWorkItemCompletionResult(item);
-                    const currentVerificationLimitation = item.verificationLimitation
-                      && item.verificationLimitation.requirementsVersion === session.requirementsVersion
-                      && item.verificationLimitation.authorizationVersion === (session.authorizationVersion || session.requirementsVersion)
-                      ? item.verificationLimitation
-                      : undefined;
+                    const currentVerificationLimitation = projectWorkItemCurrentVerificationLimitation(session, item);
                     const latestIntervention = [...decisions].reverse().find((event) => (
                       event.kind === 'user-work-item-intervention'
                     ));
@@ -2243,6 +2242,10 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       ? '已跳过'
                       : item.status === 'stopped' && intervention === 'close'
                         ? '已关闭'
+                        : item.status === 'paused' && intervention === 'defer-verification'
+                          ? '验证已暂缓'
+                          : item.status === 'stopped' && intervention === 'skip-verification'
+                            ? '当前验证已跳过'
                         : itemStatus.workItemLabel;
                     const canIntervene = !['completed', 'stopped'].includes(session.status)
                       && !['completed', 'stopped'].includes(item.status);
@@ -2264,6 +2267,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             onClick={(event) => event.stopPropagation()}
                             onChange={() => {
                               setWorkItemInterventionId(item.id);
+                              setWorkItemIntervention(currentVerificationLimitation ? 'defer-verification' : 'skip');
                               setWorkItemInterventionNotice('');
                             }}
                           />
@@ -2365,13 +2369,23 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       }}>取消选择</button>
                     </div>
                     <div className="project-manager-dialog__work-item-actions">
+                      {projectWorkItemCurrentVerificationLimitation(session, selectedInterventionWorkItem) && <>
+                        <label data-selected={workItemIntervention === 'defer-verification' ? '1' : '0'}>
+                          <input type="radio" name="work-item-intervention-action" value="defer-verification" checked={workItemIntervention === 'defer-verification'} disabled={busy} onChange={() => setWorkItemIntervention('defer-verification')} />
+                          <span><strong>暂缓当前验证</strong><small>暂停本验证工作项并保留阶段验收缺口；后续补验须创建新的聚焦验证工作项。</small></span>
+                        </label>
+                        <label data-selected={workItemIntervention === 'skip-verification' ? '1' : '0'}>
+                          <input type="radio" name="work-item-intervention-action" value="skip-verification" checked={workItemIntervention === 'skip-verification'} disabled={busy} onChange={() => setWorkItemIntervention('skip-verification')} />
+                          <span><strong>跳过当前验证并后续补验</strong><small>停止当前验证工作项，但不跳过或完成所属阶段；后续计划必须重新承接该验收缺口。</small></span>
+                        </label>
+                      </>}
                       <label data-selected={workItemIntervention === 'skip' ? '1' : '0'}>
                         <input type="radio" name="work-item-intervention-action" value="skip" checked={workItemIntervention === 'skip'} disabled={busy} onChange={() => setWorkItemIntervention('skip')} />
-                        <span><strong>跳过此项</strong><small>本轮不执行，由项目 AI 自主重排或建立替代项。</small></span>
+                        <span><strong>跳过整个工作项</strong><small>停止该工作项的全部实现与验证内容，由项目 AI 自主重排或建立替代项。</small></span>
                       </label>
                       <label data-selected={workItemIntervention === 'close' ? '1' : '0'}>
                         <input type="radio" name="work-item-intervention-action" value="close" checked={workItemIntervention === 'close'} disabled={busy} onChange={() => setWorkItemIntervention('close')} />
-                        <span><strong>关闭此项</strong><small>明确从当前计划移除，项目 AI 不得自行恢复或等价重建。</small></span>
+                        <span><strong>关闭整个工作项</strong><small>明确从当前计划移除全部内容，项目 AI 不得自行恢复或等价重建。</small></span>
                       </label>
                     </div>
                     <textarea
@@ -2381,12 +2395,24 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                       value={workItemInterventionReason}
                       disabled={busy}
                       onChange={(event) => setWorkItemInterventionReason(event.target.value)}
-                      placeholder="可选：说明跳过或关闭的理由、已知事实，供项目 AI 重排时采用"
+                      placeholder={workItemIntervention.endsWith('-verification')
+                        ? '可选：说明暂缓或跳过当前验证的原因、已知限制和后续补验条件'
+                        : '可选：说明跳过或关闭整个工作项的理由、已知事实，供项目 AI 重排时采用'}
                     />
                     <div className="project-manager-dialog__work-item-intervention-submit">
-                      <span>{workItemIntervention === 'skip' ? '原工作项会停止，后续依赖交由项目 AI 评估。' : '原工作项及其专属监督/任务 AI 会停止。'}</span>
+                      <span>{workItemIntervention === 'defer-verification'
+                        ? '只暂缓当前验证工作项；阶段验收保持未完成。'
+                        : workItemIntervention === 'skip-verification'
+                          ? '只跳过当前验证路线；阶段验收保持未完成并等待后续补验。'
+                          : workItemIntervention === 'skip'
+                            ? '整个工作项会停止，后续依赖交由项目 AI 评估。'
+                            : '整个工作项及其专属监督/任务 AI 会停止。'}</span>
                       <button type="button" className="confirm-dialog__btn project-manager-dialog__apply-btn" disabled={busy} onClick={() => void interveneWorkItem()}>
-                        {busy ? '正在提交…' : `确认${workItemIntervention === 'skip' ? '跳过' : '关闭'}`}
+                        {busy ? '正在提交…' : workItemIntervention === 'defer-verification'
+                          ? '确认暂缓验证'
+                          : workItemIntervention === 'skip-verification'
+                            ? '确认跳过当前验证'
+                            : `确认${workItemIntervention === 'skip' ? '跳过整个工作项' : '关闭整个工作项'}`}
                       </button>
                     </div>
                   </div>

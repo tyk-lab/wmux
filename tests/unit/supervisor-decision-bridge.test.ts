@@ -1430,6 +1430,174 @@ describe('supervisor decision bridge', () => {
     expect(managerNotifications).toContain('其他工作项没有被全局暂停');
   });
 
+  it('skips only the selected verification work item without completing its stage', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-direct-verification-intervention' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId || current.goals?.[0]?.id || '';
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-direct-verification-intervention' as any,
+      title: '验证干预执行链',
+      cwd: project.projectDir,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-direct-verification-intervention' as any, activeSurfaceIndex: 0,
+        surfaces: [
+          {
+            id: 'worker-a' as any,
+            type: 'terminal',
+            shell: 'pwsh.exe',
+            projectManagerProjectId: project.id,
+            projectManagerWorkItemId: 'task-a',
+          },
+          {
+            id: 'supervisor-a' as any,
+            type: 'terminal',
+            shell: 'pwsh.exe',
+            transientSupervisor: true,
+            projectSupervisorProjectId: project.id,
+          },
+        ],
+      },
+    }]);
+    useStore.getState().restoreProjectManager({
+      ...current,
+      activeWorkItemId: 'task-a',
+      subgoals: [{
+        id: 'gui_stage', goalId, title: 'GUI 用户管理', outcome: 'CRUD 可用',
+        acceptance: ['GUI CRUD 可复核'], dependencies: [], status: 'active',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        goalId,
+        subgoalId: 'gui_stage',
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable' as const,
+          detail: '当前环境无法执行可靠的 GUI 自动化',
+          missingEvidence: ['GUI CRUD 实际交互证据'],
+          affectedAcceptance: ['GUI CRUD 可复核'],
+          requirementsVersion: current.requirementsVersion || 1,
+          authorizationVersion: current.authorizationVersion || current.requirementsVersion || 1,
+          detectedAt: 2,
+        },
+      })),
+    });
+    agentState = {
+      state: 'working', blockedReason: null, blockedVersion: 0, updatedAt: Date.now(),
+    };
+    (globalThis.window as any).wmux.pty.writeReliable = vi.fn(async (surfaceId: string, data: string) => {
+      writes(surfaceId, data);
+      if (surfaceId === 'worker-a' && data === '\x03') {
+        agentState = {
+          state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now(),
+        };
+      }
+      return true;
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'intervene-work-item',
+      projectId: project.id,
+      workItemId: 'task-a',
+      intervention: 'skip-verification',
+      reason: '当前 GUI 自动化能力不可用',
+    })).resolves.toMatchObject({
+      ok: true,
+      message: expect.stringContaining('所属阶段保持未完成'),
+    });
+
+    const updated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(updated.workItems[0]).toMatchObject({
+      status: 'stopped',
+      supervisorLaneId: undefined,
+      workerSurfaceId: undefined,
+      verificationDecision: { action: 'skip-verification' },
+    });
+    expect(updated.subgoals?.[0]).toMatchObject({ id: 'gui_stage', status: 'active' });
+    expect((globalThis.window as any).wmux.pty.writeReliable).toHaveBeenCalledWith('worker-a', '\x03');
+    expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
+      .toMatchObject({ projectWorkItemId: undefined, controlState: 'active' });
+    const managerNotifications = JSON.stringify([
+      ...writes.mock.calls,
+      ...(updated.pendingManagerDeliveries || []).map((delivery) => delivery.text),
+    ]);
+    expect(managerNotifications).toContain('不是跳过阶段');
+    expect(managerNotifications).toContain('不得把阶段标记 achieved');
+  });
+
+  it('does not redispatch a verification work item after the user defers it', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-deferred-verification-redispatch' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        status: 'waiting-decision' as const,
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable' as const,
+          detail: '当前环境无法执行可靠的 GUI 自动化',
+          missingEvidence: ['GUI CRUD 实际交互证据'],
+          affectedAcceptance: ['GUI CRUD 可复核'],
+          requirementsVersion: current.requirementsVersion || 1,
+          authorizationVersion: current.authorizationVersion || current.requirementsVersion || 1,
+          detectedAt: 2,
+        },
+      })),
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+
+    await expect(remote({
+      action: 'intervene-work-item',
+      projectId: project.id,
+      workItemId: 'task-a',
+      intervention: 'defer-verification',
+      reason: '等待用户提供可验证环境',
+    })).resolves.toMatchObject({ ok: true });
+
+    const deferred = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    await expect((globalThis.window as any).__wmux_projectManagerRequest({
+      action: 'supervisor-assign',
+      callerSurfaceId: deferred.managerSurfaceId,
+      projectId: project.id,
+      workItemId: 'task-a',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('禁止恢复或重派原工作项'),
+    });
+
+    useStore.getState().restoreProjectManager({
+      ...deferred,
+      requirementsVersion: 2,
+      authorizationVersion: 2,
+      acceptedRequirementsVersion: 2,
+      status: 'active',
+      goals: (deferred.goals || []).map((goal) => (
+        goal.id === deferred.activeGoalId ? { ...goal, requirementsVersion: 2 } : goal
+      )),
+      orientation: deferred.orientation ? {
+        ...deferred.orientation,
+        status: 'ready',
+        requirementsVersion: 2,
+        authorizationVersion: 2,
+      } : deferred.orientation,
+      workItems: deferred.workItems.map((item) => ({
+        ...item,
+        status: 'paused' as const,
+        requirementsVersion: 2,
+        authorizationVersion: 2,
+      })),
+    });
+    await expect((globalThis.window as any).__wmux_projectManagerRequest({
+      action: 'supervisor-assign',
+      callerSurfaceId: deferred.managerSurfaceId,
+      projectId: project.id,
+      workItemId: 'task-a',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('禁止恢复或重派原工作项'),
+    });
+  });
+
   it('keeps repeated project progress inspections read-only without writing into a working supervisor', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-inspect-backpressure' });
     const managerSurfaceId = 'project-manager-inspect';
@@ -3125,6 +3293,46 @@ describe('supervisor decision bridge', () => {
     const goalChangeDelivery = JSON.stringify(useStore.getState().projectManager?.pendingManagerDeliveries);
     expect(goalChangeDelivery).toContain('用户提供的新主目标是当前权威目标');
     expect(goalChangeDelivery).toContain('先基于用户主目标起草条件');
+  });
+
+  it('allows a user to change only verification policy when preconditions were already empty', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start',
+      projectDir: 'E:\\verification-policy-only',
+      goal: '交付本地用户管理工具',
+      preconditions: [],
+      doneWhen: ['普通桌面 CRUD 行为与设计一致'],
+    });
+
+    await expect(remote({
+      action: 'update-definition',
+      projectId: started.session.id,
+      goal: started.session.goal,
+      preconditions: [],
+      doneWhen: started.session.doneWhen,
+      userAcceptancePolicy: started.session.userAcceptancePolicy,
+      verificationPolicies: [{
+        criterion: '普通桌面 CRUD 行为与设计一致',
+        riskClass: 'standard',
+        requirement: 'not-applicable',
+        reason: '用户只调整该普通成果的验证要求',
+      }],
+      mode: 'refine',
+      reason: '仅调整当前完成条件的验证策略',
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === started.session.id))
+      .toMatchObject({
+        goal: started.session.goal,
+        preconditions: [],
+        doneWhen: started.session.doneWhen,
+        verificationPolicies: [{
+          criterion: '普通桌面 CRUD 行为与设计一致',
+          riskClass: 'standard',
+          requirement: 'not-applicable',
+        }],
+      });
   });
 
   it('lets project AI assess requirements first and asks only when it tries to execute underspecified work', async () => {

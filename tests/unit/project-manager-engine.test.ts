@@ -304,7 +304,7 @@ describe('project-manager engine', () => {
     expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['implementation']);
   });
 
-  it('continues downstream work only after an explicit current-version verification deferral', () => {
+  it('keeps dependent stages blocked after an explicit verification deferral', () => {
     const blocked = item('gui-validation', 'paused');
     const downstream = item('persistence', 'planned');
     const project = session([blocked, downstream]);
@@ -331,9 +331,8 @@ describe('project-manager engine', () => {
     ];
 
     expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(true);
-    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toBeNull();
-    expect(readyProjectWorkItems(project).map((entry) => entry.id)).toEqual(['persistence']);
-    expect(projectProgressObligation(project)).toMatchObject({ kind: 'dispatch-work', workItemId: 'persistence' });
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toContain('gui-stage');
+    expect(readyProjectWorkItems(project)).toEqual([]);
 
     project.workItems[0] = {
       ...project.workItems[0],
@@ -344,7 +343,7 @@ describe('project-manager engine', () => {
       },
     };
     expect(projectWorkItemVerificationDeferred(project, project.workItems[0])).toBe(true);
-    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toBeNull();
+    expect(projectWorkItemSubgoalDependencyError(project, project.workItems[1])).toContain('gui-stage');
 
     const unfinishedSibling = {
       ...project.workItems[0], id: 'gui-unfinished-sibling', status: 'planned' as const,

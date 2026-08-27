@@ -431,6 +431,7 @@ export function readyProjectWorkItems(session: ProjectManagerSession): ProjectWo
   const activeGoalId = activeProjectGoal(session).id;
   return session.workItems.filter((item) => (
     item.goalId === activeGoalId
+    && !projectWorkItemVerificationIntervened(item)
     && item.requirementsVersion === projectRequirementsVersion(session)
     && item.authorizationVersion === projectAuthorizationVersion(session)
     && !projectWorkItemSubgoalDependencyError(session, item)
@@ -456,14 +457,18 @@ export type ProjectProgressObligationKind =
   | 'handle-supervisor-transition'
   | 'complete-goal';
 
+export function projectWorkItemVerificationIntervened(item: ProjectWorkItem): boolean {
+  const decision = item.verificationDecision;
+  return !!decision && ['defer-verification', 'skip-verification'].includes(decision.action);
+}
+
 export function projectWorkItemVerificationDeferred(
   session: ProjectManagerSession,
   item: ProjectWorkItem,
 ): boolean {
   const decision = item.verificationDecision;
-  if (!decision) return false;
-  return ['defer-verification', 'skip-verification'].includes(decision.action)
-    && decision.requirementsVersion === projectRequirementsVersion(session)
+  if (!decision || !projectWorkItemVerificationIntervened(item)) return false;
+  return decision.requirementsVersion === projectRequirementsVersion(session)
     && decision.authorizationVersion === projectAuthorizationVersion(session);
 }
 
@@ -529,7 +534,9 @@ export function projectProgressObligation(
     return { kind: 'orient-project', summary: '项目认知基线尚未绑定当前需求、授权和目录快照，需要先复核现状再规划或派发' };
   }
   const activeGoalItems = session.workItems.filter((item) => (
-    item.goalId === activeGoal.id && item.status !== 'stopped'
+    item.goalId === activeGoal.id
+    && item.status !== 'stopped'
+    && !projectWorkItemVerificationIntervened(item)
   ));
   const currentItems = activeGoalItems.filter((item) => (
     item.requirementsVersion === projectRequirementsVersion(session)
@@ -659,7 +666,7 @@ export function projectProgressObligation(
   };
 }
 
-/** A task may run after coarse dependencies close or the user explicitly defers their verification. */
+/** A task may run only after every coarse stage dependency is explicitly closed. */
 export function projectWorkItemSubgoalDependencyError(
   session: ProjectManagerSession,
   item: ProjectWorkItem,
@@ -670,15 +677,7 @@ export function projectWorkItemSubgoalDependencyError(
   const byId = new Map(subgoals.map((candidate) => [candidate.id, candidate]));
   const incomplete = subgoal.dependencies.find((dependencyId) => {
     const dependency = byId.get(dependencyId);
-    const dependencyItems = session.workItems.filter((candidate) => (
-      candidate.goalId === item.goalId && candidate.subgoalId === dependencyId
-    ));
-    const verificationDeferred = dependencyItems.some((candidate) => (
-      projectWorkItemVerificationDeferred(session, candidate)
-    )) && dependencyItems.every((candidate) => (
-      candidate.status === 'completed' || projectWorkItemVerificationDeferred(session, candidate)
-    ));
-    return !dependency || (!['achieved', 'obsolete'].includes(dependency.status) && !verificationDeferred);
+    return !dependency || !['achieved', 'obsolete'].includes(dependency.status);
   });
   return incomplete
     ? `阶段目标 ${subgoal.id} 依赖尚未完成：${incomplete}`
