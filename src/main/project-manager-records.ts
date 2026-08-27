@@ -217,6 +217,8 @@ function isProjectManagerSession(value: unknown): value is ProjectManagerSession
     typeof session.id !== 'string' || !SESSION_ID.test(session.id)
     || session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION
     || typeof session.projectDir !== 'string' || !path.isAbsolute(session.projectDir)
+    || (session.repositoryBootstrapPending !== undefined
+      && typeof session.repositoryBootstrapPending !== 'boolean')
     || (session.projectName !== undefined && typeof session.projectName !== 'string')
     || (session.projectScope !== undefined && typeof session.projectScope !== 'string')
     || (session.activeGoalId !== undefined && typeof session.activeGoalId !== 'string')

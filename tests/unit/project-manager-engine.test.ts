@@ -85,6 +85,58 @@ function session(workItems: ProjectWorkItem[], status: ProjectManagerSession['st
 }
 
 describe('project-manager engine', () => {
+  it('keeps a pending supervisor transition as the next project-owned obligation', () => {
+    const project = session([item('implementation', 'running')]);
+    project.pendingSupervisorTransitions = [{
+      id: 'transition-1',
+      laneId: 'lane-1',
+      workItemId: 'implementation',
+      kind: 'project-action-required',
+      eventType: 'supervisor_transition',
+      summary: '监督结论等待项目 AI 处理',
+      createdAt: 10,
+      notifiedAt: 20,
+      notificationCount: 1,
+    }];
+
+    expect(projectProgressObligation(project)).toMatchObject({
+      kind: 'handle-supervisor-transition',
+      workItemId: 'implementation',
+      transitionId: 'transition-1',
+    });
+  });
+
+  it('normalizes only complete durable execution responsibility leases', () => {
+    const normalized = normalizeProjectManagerSession({
+      id: 'pm-responsibility', projectDir: 'E:\\repo', goal: '完成项目',
+      preconditions: [], planFiles: [], doneWhen: ['完成'], status: 'active',
+      workItems: [], events: [], createdAt: 1, updatedAt: 1,
+      executionResponsibility: {
+        id: ' lease-1 ', owner: 'project-ai', action: ' handle-supervisor-transition ',
+        state: 'awaiting-result', transitionId: ' transition-1 ', assignedAt: 2,
+        lastProgressAt: 3, deadlineAt: 4, attempt: 1, incidentKey: ' incident-1 ',
+      },
+    });
+
+    expect(normalized.executionResponsibility).toEqual({
+      id: 'lease-1', owner: 'project-ai', action: 'handle-supervisor-transition',
+      state: 'awaiting-result', transitionId: 'transition-1', assignedAt: 2,
+      lastProgressAt: 3, deadlineAt: 4, attempt: 1, incidentKey: 'incident-1',
+    });
+    expect(normalizeProjectManagerSession({
+      ...normalized,
+      executionResponsibility: { ...normalized.executionResponsibility!, action: '   ' },
+    }).executionResponsibility).toBeUndefined();
+    expect(() => normalizeProjectManagerSession({
+      ...normalized,
+      executionResponsibility: {
+        ...normalized.executionResponsibility!,
+        workItemId: 123 as unknown as string,
+        transitionId: false as unknown as string,
+      },
+    })).not.toThrow();
+  });
+
   it('rejects missing and cyclic dependencies', () => {
     expect(projectDependencyError([item('a', 'planned', ['missing'])])).toContain('不存在');
     expect(projectDependencyError([item('a', 'planned', ['b']), item('b', 'planned', ['a'])])).toContain('循环');

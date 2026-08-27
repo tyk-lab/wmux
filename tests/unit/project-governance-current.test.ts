@@ -5,6 +5,7 @@ import {
 } from '../../src/shared/project-manager';
 import {
   buildProjectSupervisorBriefing,
+  projectRepositoryBootstrapRequired,
   renderProjectTaskBatch,
 } from '../../src/renderer/project-manager/engine';
 import { evaluateProjectExecutionGuard } from '../../src/renderer/project-manager/anti-loop';
@@ -82,6 +83,42 @@ describe('current project governance', () => {
     expect(briefing).toContain('本批成果使用主线程和必要的内部子线程或子代理并行处理');
     expect(briefing).not.toContain('允许范围：');
     expect(briefing).not.toMatch(/项目 ID|工作项|监督 AI|普通监督链|裁决|lane|budget/iu);
+  });
+
+  it('prepares the repository only before a new or restored project task has started', () => {
+    expect(projectRepositoryBootstrapRequired(undefined)).toBe(false);
+    expect(projectRepositoryBootstrapRequired({ repositoryBootstrapPending: true })).toBe(true);
+    expect(projectRepositoryBootstrapRequired({ repositoryBootstrapPending: false })).toBe(false);
+
+    const batch = {
+      kind: 'task' as const,
+      coverage: 'bounded-batch' as const,
+      outcome: '形成当前可验收成果',
+      completionDefinition: ['成果完成'],
+      evidenceExpectations: [],
+      unmetCompletionItems: [],
+      knownFacts: [],
+      constraints: [],
+      nonGoals: [],
+    };
+    const initialOrRestoredBriefing = renderProjectTaskBatch(contract, batch, 'single-thread', {
+      initializeRepository: true,
+    });
+    const laterBriefing = renderProjectTaskBatch(contract, batch);
+
+    expect(initialOrRestoredBriefing).toContain('[仓库基础治理｜仅新建或恢复后的首个任务包]');
+    expect(initialOrRestoredBriefing).toContain('先检查项目根目录是否已有 AGENTS.md');
+    expect(initialOrRestoredBriefing).toContain('若已存在，保持原文件不变');
+    expect(initialOrRestoredBriefing).toContain('若不存在，基于仓库内可验证事实创建精简的基础 AGENTS.md');
+    expect(initialOrRestoredBriefing).toContain('不要写当前任务、进度、日期、临时状态');
+    expect(initialOrRestoredBriefing).toContain('若未处于任何 Git 工作树，在项目根执行 git init');
+    expect(initialOrRestoredBriefing).toContain('不得创建嵌套仓库');
+    expect(initialOrRestoredBriefing).toContain('只在仓库事实证明需要时创建或局部追加 .gitignore');
+    expect(initialOrRestoredBriefing).toContain('git rev-parse --git-path info/exclude');
+    expect(initialOrRestoredBriefing).toContain('不修改 Git 全局配置或全局忽略文件');
+    expect(initialOrRestoredBriefing).toContain('不忽略已跟踪源码、正式配置、示例配置、AGENTS.md 或项目证据');
+    expect(initialOrRestoredBriefing).toContain('项目后续出现新的稳定边界时再按需细化');
+    expect(laterBriefing).not.toContain('[仓库基础治理');
   });
 
   it('keeps the supervisor outcome-oriented and read-only', () => {

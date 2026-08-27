@@ -8,6 +8,7 @@ import {
   permissionCommandMatchesEvidence,
   projectContractAutonomyPermissions,
   projectMessageChangeSignal,
+  projectInternalRecoveryAttempts,
   projectSafeExitEffectiveActivity,
   projectSupervisorTransitionRedeliveryMs,
   redactProjectSafeExitExcerpt,
@@ -274,6 +275,7 @@ function bindProjectLaneToWorkItem(options: {
     requirementsVersion: 1,
     acceptedRequirementsVersion: 1,
     executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+    repositoryBootstrapPending: true,
     progressSnapshot: progressSnapshot(),
     progressSync: {
       status: 'ready', checkedAt: 1, snapshotFingerprint: 'test-progress',
@@ -366,6 +368,50 @@ function attachProjectManagerSurface(projectId: string, managerSurfaceId: string
       }],
     },
   }]);
+}
+
+function setProjectExecutionResponsibilityAge(
+  projectId: string,
+  action: string,
+  ageMs: number,
+  workItemId?: string,
+): void {
+  const store = useStore.getState();
+  const session = store.projectManagers.find((candidate) => candidate.id === projectId);
+  if (!session) throw new Error(`missing project ${projectId}`);
+  const now = Date.now();
+  const id = [
+    session.id,
+    session.requirementsVersion || 1,
+    session.authorizationVersion || 1,
+    'project-ai',
+    action,
+    workItemId || 'project',
+    'none',
+  ].join(':');
+  store.restoreProjectManager({
+    ...session,
+    executionResponsibility: {
+      id,
+      owner: 'project-ai',
+      action,
+      state: 'awaiting-result',
+      ...(workItemId ? { workItemId } : {}),
+      assignedAt: now - ageMs,
+      lastProgressAt: now - ageMs,
+      deadlineAt: now - ageMs + 120_000,
+      attempt: 0,
+      incidentKey: id,
+    },
+  });
+}
+
+function expireProjectExecutionResponsibility(
+  projectId: string,
+  action: string,
+  workItemId?: string,
+): void {
+  setProjectExecutionResponsibilityAge(projectId, action, 121_000, workItemId);
 }
 
 function bindAuthorizedPiOptimizationProject(projectId: string): ProjectManagerSession {
@@ -964,7 +1010,7 @@ describe('supervisor decision bridge', () => {
     expect(promptReadyTerminal).toMatchObject({ activityState: 'idle' });
   });
 
-  it('stops only the selected project work-item runtime and delivers the user reason to project AI', async () => {
+  it('stops only the selected project work item and retains the reusable project runtimes', async () => {
     useStore.getState().replaceAllWorkspaces([{
       id: 'ws-project-intervention' as any,
       title: '项目执行链',
@@ -980,6 +1026,25 @@ describe('supervisor decision bridge', () => {
       },
     }]);
     const project = bindProjectLaneToWorkItem();
+    useStore.getState().updateLane('lane-a', {
+      pendingSupervisorDeliveries: [{
+        id: 'bootstrap-role-ready',
+        kind: 'control-message',
+        text: '完成角色启动握手',
+        task: '监督启动',
+        createdAt: 1,
+        bootstrapOnRuntimeReady: true,
+        stage: 'pending',
+      }, {
+        id: 'stale-work-assignment',
+        kind: 'control-message',
+        text: '旧工作项 assignment',
+        task: 'task-a',
+        createdAt: 2,
+        projectAssignmentVersion: 1,
+        stage: 'pending',
+      }],
+    });
     writes.mockClear();
 
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
@@ -999,12 +1064,23 @@ describe('supervisor decision bridge', () => {
       workItemId: 'task-a',
       payload: { intervention: 'skip', reason: '已有验收记录，无需重复执行' },
     });
-    expect(useStore.getState().supervisor.lanes.some((item) => item.id === 'lane-a')).toBe(false);
+    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({
+      projectWorkItemId: undefined,
+      currentTask: '',
+      controlState: 'active',
+      awaitingReview: false,
+      pendingSupervisorDeliveries: [expect.objectContaining({ id: 'bootstrap-role-ready' })],
+    });
+    expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')
+      ?.pendingSupervisorDeliveries?.map((delivery) => delivery.id)).toEqual(['bootstrap-role-ready']);
     const remainingSurfaces = useStore.getState().workspaces.flatMap((workspace) => (
       workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces : []
     ));
-    expect(remainingSurfaces.some((surface) => surface.id === 'worker-a')).toBe(false);
-    expect(remainingSurfaces.some((surface) => surface.id === 'supervisor-a')).toBe(false);
+    expect(remainingSurfaces.find((surface) => surface.id === 'worker-a')).toMatchObject({
+      projectManagerProjectId: 'pm-project',
+      projectManagerWorkItemId: undefined,
+    });
+    expect(remainingSurfaces.some((surface) => surface.id === 'supervisor-a')).toBe(true);
     expect(remainingSurfaces.some((surface) => surface.id === 'unrelated-worker')).toBe(true);
     const managerNotifications = JSON.stringify([
       ...writes.mock.calls,
@@ -2863,32 +2939,33 @@ describe('supervisor decision bridge', () => {
       ok: true,
       projects: [{
         id: persisted.id,
-        status: 'waiting',
-        pendingUserQuestion: {
-          reasonCode: 'runtime-recovery',
-          recommendedOptionId: 'recover-latest-protocol',
-        },
+        status: 'paused',
       }],
       warnings: [expect.stringContaining('项目 AI AGENTS.md 无法准备')],
     });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
     expect(projectManagerApi.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: persisted.id,
       type: 'manager-runtime-failed',
       payload: expect.objectContaining({ message: '项目 AI AGENTS.md 无法准备' }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-      title: '项目需要你的处理',
-      text: expect.stringContaining('项目 AI 已无法自行恢复当前监督或运行异常'),
+      title: '项目执行异常，已安全暂停',
+      text: expect.stringContaining('项目 AI AGENTS.md 无法准备'),
     }));
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'manager-runtime-failed', summary: '项目 AI AGENTS.md 无法准备' }),
       expect.objectContaining({
-        kind: 'user-clarification-requested',
+        kind: 'project-execution-stalled',
         payload: expect.objectContaining({
-          question: expect.objectContaining({ reasonCode: 'runtime-recovery' }),
+          attentionRequired: true,
+          automaticPause: true,
         }),
       }),
     ]));
+    expect(useStore.getState().projectManager?.events.some((event) => (
+      event.kind === 'user-clarification-requested'
+    ))).toBe(false);
   });
 
   it('does not reopen requirements alignment when a started project is paused for a requirement-related reason', async () => {
@@ -3193,7 +3270,17 @@ describe('supervisor decision bridge', () => {
       workItemId: 'task-a',
       payload: expect.objectContaining({ intervention: 'skip' }),
     })]));
-    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')).toBeUndefined();
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')).toMatchObject({
+      projectWorkItemId: undefined,
+      projectAssignmentVersion: undefined,
+      currentTask: '',
+      controlState: 'paused',
+      awaitingReview: false,
+    });
+    expect(updated.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'user-work-item-intervention',
+      payload: expect.objectContaining({ runtimeRetained: true, retainedLaneIds: ['lane-a'] }),
+    })]));
   });
 
   it('allows explicit final user acceptance to close validation-only gaps', async () => {
@@ -3666,6 +3753,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'manager-delivery-failed' }),
     ]));
+    const progressStartedAt = Date.now();
     (globalThis.window as any).__wmux_noteManagedAgentHook({
       surfaceId: managerSurfaceId,
       event: 'PreToolUse',
@@ -3678,6 +3766,13 @@ describe('supervisor decision bridge', () => {
         payload: expect.objectContaining({ acknowledgement: 'PreToolUse' }),
       }),
     ]));
+    expect(useStore.getState().projectManager?.executionResponsibility).toMatchObject({
+      owner: 'project-ai',
+      state: 'working',
+      lastProgressAt: expect.any(Number),
+    });
+    expect(useStore.getState().projectManager?.executionResponsibility?.lastProgressAt)
+      .toBeGreaterThanOrEqual(progressStartedAt);
     surfaceTerminalRegistry.delete(managerSurfaceId);
     clearTerminalRuntimeStatus(managerSurfaceId);
   });
@@ -3870,6 +3965,8 @@ describe('supervisor decision bridge', () => {
         latestEvidence: '断点前已验证的证据',
       })],
     });
+    expect(restored?.workItems[0]?.startedAt).toBeUndefined();
+    expect(restored?.repositoryBootstrapPending).toBe(true);
     if (expectedOrientation === 'ready') {
       expect(restored?.events).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'project-orientation-required' }),
@@ -3993,6 +4090,92 @@ describe('supervisor decision bridge', () => {
       }),
     ]));
     expect((globalThis.window as any).wmux.projectManager.captureProgress).not.toHaveBeenCalled();
+  });
+
+  it('finishes the restoring state once an active supervisor assignment is re-established', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-restoring-assignment-ready' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'active',
+      recoveryState: 'checking',
+      activeWorkItemId: 'task-a',
+      taskTerminalSurfaceId: 'worker-a',
+      safeExit: {
+        status: 'restoring',
+        requestedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        reason: '恢复已有活动工作项',
+        progressFingerprint: 'test-progress',
+        terminalCheckpoints: [],
+      },
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        status: 'waiting-decision' as const,
+        supervisorLaneId: 'lane-a',
+        workerSurfaceId: 'worker-a',
+        assignmentVersion: 3,
+      })),
+    });
+    useStore.getState().updateLane('lane-a', { projectAssignmentVersion: 3 });
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      recoveryState: 'ready',
+      safeExit: undefined,
+    }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: 'recovery-restored',
+        payload: expect.objectContaining({
+          recoverySource: 'active-assignment',
+          phase: 'runtime-chain-ready',
+          laneId: 'lane-a',
+          surfaceId: 'worker-a',
+          assignmentVersion: 3,
+        }),
+      })]));
+  });
+
+  it('does not finish restoring from a paused work item and paused supervisor lane', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-restoring-paused-assignment' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      recoveryState: 'checking',
+      activeWorkItemId: 'task-a',
+      safeExit: {
+        status: 'restoring', requestedAt: 1, updatedAt: 2, completedAt: 2,
+        reason: '恢复暂停的历史工作项', progressFingerprint: 'test-progress', terminalCheckpoints: [],
+      },
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        status: 'paused' as const,
+        supervisorLaneId: 'lane-a',
+        workerSurfaceId: 'worker-a',
+        assignmentVersion: 4,
+      })),
+    });
+    useStore.getState().updateLane('lane-a', {
+      controlState: 'paused',
+      projectAssignmentVersion: 4,
+    });
+
+    initPipeBridge();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ recoveryState: 'checking', safeExit: { status: 'restoring' } });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'recovery-restored' })]));
   });
 
   it('rechecks a persisted saved marker when its project runtime still exists', async () => {
@@ -4562,6 +4745,10 @@ describe('supervisor decision bridge', () => {
         assignmentVersion: assignedItem.assignmentVersion,
       }),
     }));
+    const firstDispatchInstruction = queuedControlText(assignedLane.id);
+    expect(firstDispatchInstruction).toContain('--task-file <文件>');
+    expect(firstDispatchInstruction).toContain('.wmux/tmp/<唯一文件名>.json');
+    expect(firstDispatchInstruction).not.toContain('--next "完成当前合同成果');
 
     consumeQueuedControlMessage(assignedLane.id);
     const runtimeWorkspace = useStore.getState().workspaces.find((workspace) => (
@@ -4777,13 +4964,16 @@ describe('supervisor decision bridge', () => {
       error: expect.stringContaining('外层 Shell 提示符'),
     });
     expect(useStore.getState().projectManager).toMatchObject({
-      status: 'waiting',
-      pendingUserQuestion: {
-        reasonCode: 'runtime-recovery',
-        recommendedOptionId: 'recover-latest-protocol',
-      },
-      events: expect.arrayContaining([expect.objectContaining({ kind: 'manager-runtime-failed' })]),
+      status: 'paused',
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: 'manager-runtime-failed' }),
+        expect.objectContaining({
+          kind: 'project-execution-stalled',
+          payload: expect.objectContaining({ automaticPause: true }),
+        }),
+      ]),
     });
+    expect(useStore.getState().projectManager?.pendingUserQuestion).toBeUndefined();
 
     surfaceTerminalRegistry.delete(managerSurfaceId);
     clearTerminalRuntimeStatus(managerSurfaceId);
@@ -7152,7 +7342,7 @@ describe('supervisor decision bridge', () => {
   });
 
   it('allows one safe proactive follow-up from a project supervisor without a pending review round', async () => {
-    bindProjectLaneToWorkItem();
+    const project = bindProjectLaneToWorkItem();
     useAcknowledgedTaskDelivery();
     useStore.getState().updateLane('lane-a', {
       autonomousOverride: true,
@@ -7168,7 +7358,10 @@ describe('supervisor decision bridge', () => {
       'worker-a',
       expect.stringContaining('执行终审补证并输出可复核证据'),
     );
+    expect(String(writes.mock.calls[0]?.[1] || '')).toContain('[仓库基础治理｜仅新建或恢复后的首个任务包]');
     expect(String(writes.mock.calls[0]?.[1] || '')).not.toMatch(/项目 ID|工作项 ID|监督 AI|lane/iu);
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.repositoryBootstrapPending).toBe(false);
 
     expect(decide({ next: '执行终审补证并输出可复核证据' })).toMatchObject({
       ok: false,
@@ -7230,6 +7423,11 @@ describe('supervisor decision bridge', () => {
           supervisorLaneId: undefined,
         })],
       });
+    expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')).toMatchObject({
+      projectWorkItemId: undefined,
+      currentTask: '',
+      controlState: 'active',
+    });
   });
 
   it('gives the project AI an actionable notification when a supervisor has no recommendation', () => {
@@ -7340,6 +7538,14 @@ describe('supervisor decision bridge', () => {
       kind: 'stage-complete',
       notificationCount: 1,
     });
+    expect(useStore.getState().projectManager?.executionResponsibility).toMatchObject({
+      owner: 'project-ai',
+      action: 'handle-supervisor-transition',
+      state: 'queued',
+      workItemId: 'task-a',
+      transitionId: first.transitionId,
+      attempt: 0,
+    });
     expect(useStore.getState().projectManager?.pendingManagerDeliveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ transitionId: first.transitionId }),
     ]));
@@ -7405,6 +7611,8 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().projectManager?.pendingSupervisorTransitions).toEqual([]);
     expect(useStore.getState().projectManager?.pendingManagerDeliveries
       ?.some((delivery) => delivery.transitionId === first.transitionId)).toBe(false);
+    expect(useStore.getState().projectManager?.executionResponsibility?.transitionId)
+      .not.toBe(first.transitionId);
     expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'supervisor-transition' }),
       expect.objectContaining({ kind: 'supervisor-transition-acknowledged' }),
@@ -7565,12 +7773,92 @@ describe('supervisor decision bridge', () => {
     expect(shouldScheduleProjectSupervisorTransitionReminder(20)).toBe(false);
   });
 
+  it('quickly redelivers an unhandled supervisor transition when the project AI is idle', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-idle-manager-transition-redelivery' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const transitionId = 'idle-manager-pending-transition';
+    useStore.getState().restoreProjectManager({
+      ...current,
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        status: 'waiting-decision' as const,
+        latestBlocker: '监督交接已投递但项目 AI 尚未回执',
+      })),
+      pendingSupervisorTransitions: [{
+        id: transitionId,
+        laneId: 'lane-a',
+        workItemId: 'task-a',
+        kind: 'decision-required',
+        eventType: 'supervisor.decision-required',
+        summary: '监督等待项目 AI 决定下一条内部路线',
+        createdAt: Date.now() - 125_000,
+        notifiedAt: Date.now() - 125_000,
+        notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [],
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: {
+        state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000,
+      },
+      'worker-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+      'supervisor-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+    });
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingSupervisorTransitions?.[0])
+      .toMatchObject({ id: transitionId, notificationCount: 2 }));
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion)
+      .toBeUndefined();
+  });
+
+  it('does not treat only thirty seconds of project AI idle time as an unhandled transition', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-short-idle-transition-grace' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      workItems: current.workItems.map((item) => ({ ...item, status: 'waiting-decision' as const })),
+      pendingSupervisorTransitions: [{
+        id: 'short-idle-pending-transition',
+        laneId: 'lane-a',
+        workItemId: 'task-a',
+        kind: 'decision-required',
+        eventType: 'supervisor.decision-required',
+        summary: '项目 AI 仍处于正常处理宽限期',
+        createdAt: Date.now() - 35_000,
+        notifiedAt: Date.now() - 35_000,
+        notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [],
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: {
+        state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000,
+      },
+    });
+
+    initPipeBridge();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingSupervisorTransitions?.[0])
+      .toMatchObject({ id: 'short-idle-pending-transition', notificationCount: 1 });
+  });
+
   it('continues a restored active project whose only execution chain was already paused', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-restored-deadlock' });
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'task-a',
       patch: { status: 'paused', latestBlocker: '旧会话在协议纠错后没有留下恢复事件' },
     }, project.id);
+    expireProjectExecutionResponsibility(project.id, 'resume-paused', 'task-a');
 
     initPipeBridge();
 
@@ -7606,6 +7894,7 @@ describe('supervisor decision bridge', () => {
         state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000,
       },
     });
+    expireProjectExecutionResponsibility(project.id, 'recover-work', 'task-a');
 
     initPipeBridge();
 
@@ -7656,6 +7945,7 @@ describe('supervisor decision bridge', () => {
       workItemId: 'task-a',
       patch: { status: 'waiting-decision', latestBlocker: '模拟控制消息丢失后的待决状态' },
     }, project.id);
+    expireProjectExecutionResponsibility(project.id, 'resolve-decision', 'task-a');
     activityState = 'idle';
     await auditProjectLiveness();
 
@@ -7672,6 +7962,35 @@ describe('supervisor decision bridge', () => {
         obligation: 'resolve-decision',
       }),
     })]));
+  });
+
+  it('keeps an all-agent idle project inside the two-minute responsibility lease', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-idle-responsibility-grace' });
+    const managerSurfaceId = 'project-manager-idle-responsibility-grace';
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'task-a',
+      patch: { status: 'waiting-decision', latestBlocker: '等待项目 AI 处理内部待决状态' },
+    }, project.id);
+    setProjectExecutionResponsibilityAge(project.id, 'resolve-decision', 35_000, 'task-a');
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 35_000 },
+      'worker-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 35_000 },
+      'supervisor-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 35_000 },
+    });
+
+    initPipeBridge();
+    await auditProjectLiveness();
+
+    const waiting = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(waiting.pendingManagerDeliveries).toHaveLength(0);
+    expect(waiting.executionResponsibility).toMatchObject({
+      owner: 'project-ai',
+      action: 'resolve-decision',
+      workItemId: 'task-a',
+    });
+    expect(waiting.executionResponsibility!.deadlineAt).toBeGreaterThan(Date.now());
   });
 
   it('does not let a stale working lifecycle claim hide an idle project from the watchdog', async () => {
@@ -7705,6 +8024,7 @@ describe('supervisor decision bridge', () => {
     } as any);
     markTerminalRuntimeReady(managerSurfaceId);
     expect(interactiveAgentPromptReady(readTerminalScreen(managerSurfaceId, 80).text || '')).toBe(true);
+    expireProjectExecutionResponsibility(project.id, 'recover-work', 'task-a');
 
     initPipeBridge();
     await auditProjectLiveness();
@@ -7755,6 +8075,7 @@ describe('supervisor decision bridge', () => {
       'worker-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
       'supervisor-a': { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
     });
+    expireProjectExecutionResponsibility(project.id, 'resolve-decision', 'task-a');
 
     initPipeBridge();
 
@@ -7813,6 +8134,7 @@ describe('supervisor decision bridge', () => {
         state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000,
       },
     });
+    expireProjectExecutionResponsibility(project.id, 'resume-paused', 'task-a');
 
     initPipeBridge();
 
@@ -7837,7 +8159,7 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
-  it('asks the user for a recommended decision after bounded internal recovery is exhausted', async () => {
+  it('automatically pauses and notifies once after bounded internal recovery is exhausted', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-internal-recovery-exhausted' });
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
@@ -7872,6 +8194,7 @@ describe('supervisor decision bridge', () => {
     (globalThis.window as any).__wmux_getAgentStates = () => ({
       [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
     });
+    expireProjectExecutionResponsibility(project.id, 'resume-paused', 'task-a');
 
     initPipeBridge();
 
@@ -7888,13 +8211,18 @@ describe('supervisor decision bridge', () => {
     ])));
     const paused = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
     expect(paused).toMatchObject({
-      status: 'waiting',
-      pendingUserQuestion: {
-        category: 'manual-intervention',
-        reasonCode: 'runtime-recovery',
-        recommendedOptionId: 'recover-latest-protocol',
-      },
+      status: 'paused',
     });
+    expect(paused?.pendingUserQuestion).toBeUndefined();
+    expect(paused?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'project-execution-stalled',
+        payload: expect.objectContaining({
+          attentionRequired: true,
+          automaticPause: true,
+        }),
+      }),
+    ]));
     expect(useStore.getState().supervisor.lanes.find((lane) => lane.projectManagerProjectId === project.id))
       .toMatchObject({ controlState: 'paused' });
     expect((globalThis.window as any).wmux.projectManager.appendRecord).toHaveBeenCalledWith(expect.objectContaining({
@@ -7902,8 +8230,8 @@ describe('supervisor decision bridge', () => {
       payload: expect.objectContaining({ reason: 'project-internal-recovery-exhausted' }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-      title: '项目需要你的处理',
-      text: expect.stringContaining('项目 AI 已无法自行恢复当前监督或运行异常'),
+      title: '项目执行异常，已安全暂停',
+      text: expect.stringContaining('内部执行链连续未恢复'),
     }));
   });
 
@@ -7950,24 +8278,27 @@ describe('supervisor decision bridge', () => {
     });
     (globalThis.window as any).wmux.projectManager.ensureRuntime
       .mockResolvedValueOnce({ ok: false, error: '角色运行目录不可用' });
+    expireProjectExecutionResponsibility(project.id, 'resume-paused', 'task-a');
 
     initPipeBridge();
 
     await vi.waitFor(() => expect(useStore.getState().projectManagers
-      .find((candidate) => candidate.id === project.id)).toMatchObject({
-      status: 'waiting',
-      pendingUserQuestion: {
-        reasonCode: 'runtime-recovery',
-        recommendedOptionId: 'recover-latest-protocol',
-      },
-    }));
+      .find((candidate) => candidate.id === project.id)).toMatchObject({ status: 'paused' }));
     const paused = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+    expect(paused?.pendingUserQuestion).toBeUndefined();
     expect(paused?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'guard-triggered',
         payload: expect.objectContaining({
           reason: 'project-internal-runtime-recovery-failed',
           attentionRequired: false,
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'project-execution-stalled',
+        payload: expect.objectContaining({
+          attentionRequired: true,
+          automaticPause: true,
         }),
       }),
     ]));
@@ -7978,8 +8309,8 @@ describe('supervisor decision bridge', () => {
       payload: expect.objectContaining({ reason: 'project-internal-runtime-recovery-failed' }),
     }));
     expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-      title: '项目需要你的处理',
-      text: expect.stringContaining('项目 AI 已无法自行恢复当前监督或运行异常'),
+      title: '项目执行异常，已安全暂停',
+      text: expect.stringContaining('角色运行目录不可用'),
     }));
   });
 
@@ -8057,7 +8388,7 @@ describe('supervisor decision bridge', () => {
     });
   });
 
-  it('restores an unresolved runtime pause as a user decision instead of a passive alert', async () => {
+  it('keeps an unresolved runtime pause as an anomaly without creating a recovery decision', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-restored-runtime-pause-alert' });
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
@@ -8078,22 +8409,102 @@ describe('supervisor decision bridge', () => {
 
     await vi.waitFor(() => {
       expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
-        title: '项目需要你的处理',
-        text: expect.stringContaining('项目 AI 已无法自行恢复当前监督或运行异常'),
+        title: '项目运行异常，已安全暂停',
+        text: expect.stringContaining('内部恢复连续失败'),
       }));
     });
     await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
       action: 'status', projectId: project.id,
     })).resolves.toMatchObject({
       session: {
-        status: 'waiting',
-        pendingUserQuestion: {
-          category: 'manual-intervention',
-          reasonCode: 'runtime-recovery',
-          recommendedOptionId: 'recover-latest-protocol',
-        },
+        status: 'paused',
       },
     });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.pendingUserQuestion)
+      .toBeUndefined();
+  });
+
+  it('invalidates a persisted runtime recovery question and retries automatically after restart', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-auto-retry-restored-runtime-question' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'waiting',
+      pendingUserQuestion: {
+        id: 'persisted-runtime-recovery-question',
+        category: 'manual-intervention',
+        workItemId: 'task-a',
+        blocker: '上次运行时重建没有完成',
+        reasonCode: 'runtime-recovery',
+        question: '项目 AI 已无法自行恢复当前监督或运行异常，请选择下一步处理方式。',
+        context: '历史内部故障等待恢复。',
+        options: [
+          { id: 'recover-latest-protocol', label: '按最新协议恢复' },
+          { id: 'keep-paused', label: '保持暂停' },
+          { id: 'stop-work-item', label: '停止并重新规划' },
+        ],
+        recommendedOptionId: 'recover-latest-protocol',
+        previousStatus: 'active',
+        createdAt: 2,
+      },
+      events: [...current.events, {
+        id: 'persisted-runtime-question-event', sessionId: project.id, ts: 2,
+        kind: 'user-clarification-requested', summary: '历史内部恢复失败等待用户选择',
+        payload: { attentionRequired: false },
+      }],
+    });
+    (globalThis.window as any).wmux.notification.fire.mockClear();
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)).toMatchObject({
+      status: 'active',
+      pendingUserQuestion: undefined,
+    }));
+    const restored = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(restored.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'user-clarification-invalidated',
+        payload: expect.objectContaining({
+          questionId: 'persisted-runtime-recovery-question',
+          reason: 'runtime-recovery-auto-retry-on-restore',
+          recoverySource: 'application-restart',
+        }),
+      }),
+    ]));
+    expect(restored.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'user-clarification-restored' }),
+    ]));
+    expect((globalThis.window as any).wmux.notification.fire).not.toHaveBeenCalledWith(expect.objectContaining({
+      title: '项目需要你的处理',
+      text: expect.stringContaining('请选择下一步处理方式'),
+    }));
+  });
+
+  it('starts a fresh bounded recovery budget after invalidating the restored runtime question', () => {
+    const recoveryKey = 'project-internal-recovery:role-current:pm-recovery:task-a:deadlock:none';
+    const events = [{
+      id: 'old-recovery-1', sessionId: 'pm-recovery', ts: 1,
+      kind: 'project-recovery-requested' as const, summary: '上次恢复尝试 1',
+      payload: { recoveryKey },
+    }, {
+      id: 'old-recovery-2', sessionId: 'pm-recovery', ts: 2,
+      kind: 'project-recovery-requested' as const, summary: '上次恢复尝试 2',
+      payload: { recoveryKey },
+    }, {
+      id: 'restore-reset', sessionId: 'pm-recovery', ts: 3,
+      kind: 'user-clarification-invalidated' as const, summary: '恢复时撤销历史内部故障卡',
+      payload: { reason: 'runtime-recovery-auto-retry-on-restore' },
+    }, {
+      id: 'current-recovery-1', sessionId: 'pm-recovery', ts: 4,
+      kind: 'project-recovery-requested' as const, summary: '本次恢复尝试 1',
+      payload: { recoveryKey },
+    }] as ProjectManagerSession['events'];
+
+    expect(projectInternalRecoveryAttempts(events, recoveryKey)).toBe(1);
   });
 
   it('removes inherited goal acceptance and reclassifies a cross-stage GUI limitation on restart', async () => {
@@ -8511,6 +8922,7 @@ describe('supervisor decision bridge', () => {
     (globalThis.window as any).__wmux_getAgentStates = () => ({
       [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
     });
+    expireProjectExecutionResponsibility(project.id, 'orient-project');
 
     initPipeBridge();
 
@@ -9454,7 +9866,7 @@ describe('supervisor decision bridge', () => {
   });
 
   it('allows a project supervisor to confirm a contract-authorized local permission prompt', async () => {
-    bindProjectLaneToWorkItem({ permissionConfirm: true, allowedCommandPrefixes: ['npm test'] });
+    const project = bindProjectLaneToWorkItem({ permissionConfirm: true, allowedCommandPrefixes: ['npm test'] });
     screenText = 'Command: npm test\nContinue? [y/N]';
     agentState = {
       state: 'blocked', blockedReason: 'permission: npm test', blockedVersion: 1,
@@ -9469,6 +9881,8 @@ describe('supervisor decision bridge', () => {
     await expect(decide({ permissionCommand: 'npm test', permissionResponse: 'y' })).resolves.toMatchObject({
       ok: true, autoAuthorized: true,
     });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.repositoryBootstrapPending).toBe(true);
   });
 
   it('rejects project context recovery summaries that disclose orchestration identities', () => {

@@ -236,6 +236,7 @@ export function renderProjectTaskBatch(
   contract: ProjectSupervisorContract,
   batch: ProjectTaskBatch,
   taskWorkMode: 'single-thread' | 'multi-thread' = 'single-thread',
+  options: { initializeRepository?: boolean } = {},
 ): string {
   return [
     '[成果任务]',
@@ -249,6 +250,14 @@ export function renderProjectTaskBatch(
     batch.knownFacts.length > 0 ? '以上现状如与项目代码或实际状态不符，以项目事实为准并在结果中说明。' : '',
     batch.constraints.length > 0 ? `硬边界：\n${batch.constraints.map((item) => `- ${item}`).join('\n')}` : '',
     batch.nonGoals.length > 0 ? `本批不要求交付：\n${batch.nonGoals.map((item) => `- ${item}`).join('\n')}` : '',
+    options.initializeRepository
+      ? [
+          '[仓库基础治理｜仅新建或恢复后的首个任务包]',
+          '先检查项目根目录是否已有 AGENTS.md。若已存在，保持原文件不变；若不存在，基于仓库内可验证事实创建精简的基础 AGENTS.md，只记录长期稳定且执行必需的目录或模块边界、可复制的构建测试命令、代码风格、测试与安全约束。不要写当前任务、进度、日期、临时状态、未经验证的命令或外部编排信息；项目后续出现新的稳定边界时再按需细化。',
+          '检查项目根目录的 Git 状态。若当前目录已经处于某个 Git 工作树中，沿用现有仓库且不得创建嵌套仓库；若未处于任何 Git 工作树，在项目根执行 git init。Git 不可用或初始化失败时如实报告，不得伪造完成。',
+          '检查现有忽略策略并做最小、幂等补充：依赖目录、构建产物、缓存、日志、本地环境或密钥文件等项目级共享规则，只在仓库事实证明需要时创建或局部追加 .gitignore；本机运行器或 AI 工具状态优先追加到仓库本地 exclude，并用 git rev-parse --git-path info/exclude 定位（普通仓库通常为 .git/info/exclude）。保留现有内容，不修改 Git 全局配置或全局忽略文件，不添加宽泛模式，不忽略已跟踪源码、正式配置、示例配置、AGENTS.md 或项目证据。',
+        ].join('\n\n')
+      : '',
     '开始前读取并严格遵循当前目录层级适用的 AGENTS、项目技能和仓库规范；若本任务与项目规范冲突，以项目规范为准。',
     '自行决定实现路线、必要的相邻修改、文件、命令、测试、技能和任务内部组织方式；本批不要求交付的内容不限制完成当前成果所必需的支持性工作。',
     `自行选择与风险相称的验证方式。${TASK_VALIDATION_REPORTING_POLICY}`,
@@ -256,6 +265,12 @@ export function renderProjectTaskBatch(
     renderProjectTaskWorkMode(taskWorkMode),
     '达到完成定义，或遇到真实阻塞、约束冲突、授权边界时结束本轮；如实报告成果、实际修改、已有证据、未验证项、剩余工作和阻塞。',
   ].filter(Boolean).join('\n\n');
+}
+
+export function projectRepositoryBootstrapRequired(
+  session: Pick<ProjectManagerSession, 'repositoryBootstrapPending'> | undefined,
+): boolean {
+  return session?.repositoryBootstrapPending === true;
 }
 
 const PROJECT_ORCHESTRATION_DISCLOSURES = [
@@ -341,6 +356,7 @@ export type ProjectProgressObligationKind =
   | 'resolve-decision'
   | 'resume-paused'
   | 'resolve-dependencies'
+  | 'handle-supervisor-transition'
   | 'complete-goal';
 
 export function projectWorkItemVerificationDeferred(
@@ -358,6 +374,7 @@ export interface ProjectProgressObligation {
   kind: ProjectProgressObligationKind;
   summary: string;
   workItemId?: string;
+  transitionId?: string;
 }
 
 export function projectHasRunnableGoalPlan(session: ProjectManagerSession): boolean {
@@ -384,10 +401,18 @@ function projectAlignmentConfirmedAfterLatestRequirement(session: ProjectManager
 export function projectProgressObligation(
   session: ProjectManagerSession,
 ): ProjectProgressObligation | null {
-  if (!['active', 'waiting'].includes(session.status)
-    || session.pendingUserQuestion
-    || (session.pendingSupervisorTransitions || []).length > 0) {
+  if (!['active', 'waiting'].includes(session.status) || session.pendingUserQuestion) {
     return null;
+  }
+  const transition = [...(session.pendingSupervisorTransitions || [])]
+    .sort((left, right) => left.createdAt - right.createdAt)[0];
+  if (transition) {
+    return {
+      kind: 'handle-supervisor-transition',
+      summary: `监督交接 ${transition.id} 等待项目 AI 处理并提交结构化回执`,
+      workItemId: transition.workItemId,
+      transitionId: transition.id,
+    };
   }
   const activeGoal = activeProjectGoal(session);
   // A completed goal intentionally waits for the user to define the next goal.

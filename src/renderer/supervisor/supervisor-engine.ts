@@ -133,7 +133,7 @@ export function tickLane(opts: {
             `Hook 原因: ${reason}`,
             permissionInstruction,
             autonomyPermissions.includes('technical-choice')
-              ? '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 携带 --next 回答一次；业务偏好、用户专属决定或原因不明的输入使用 needs-human。'
+              ? '若原因是 question / input，且只是原目标内低风险技术选择，可用 continue / rework 通过 --task-file 提交一个回答该选择的结构化成果任务；业务偏好、用户专属决定或原因不明的输入使用 needs-human。'
               : '本会话未勾选“技术方案选择”；question / input 必须使用 needs-human，不得自行回答。',
             ...(lane.remoteSshControl
               ? ['SSH 远程控制下，删除/覆盖、向 SSH 任务终端发送中断信号、软件包安装/卸载/升级、服务/进程、账户/权限/网络/系统配置及破坏性数据库操作一律使用 needs-human，不得通过终端转发、脚本或其他间接方式绕过。']

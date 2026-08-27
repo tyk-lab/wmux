@@ -92,6 +92,7 @@ export type ProjectManagerEventKind =
   | 'project-preconditions-updated'
   | 'supervisor-decision'
   | 'guard-triggered'
+  | 'project-execution-stalled'
   | 'project-paused'
   | 'project-resumed'
   | 'project-safe-exit-requested'
@@ -1100,6 +1101,7 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
     if (event.kind === 'project-resumed') {
       resolvedKinds.add('project-paused');
       resolvedKinds.add('guard-triggered');
+      resolvedKinds.add('project-execution-stalled');
       resolvedKinds.add('project-goal-completed');
     } else if (event.kind === 'project-goal-completion-invalidated') {
       resolvedKinds.add('project-goal-completed');
@@ -1118,6 +1120,7 @@ export function activeProjectManagerAttentionEvent<T extends ProjectManagerEvent
       resolvedKinds.add('supervisor-runtime-failed');
       resolvedKinds.add('task-runtime-failed');
       resolvedKinds.add('project-safe-exit-failed');
+      resolvedKinds.add('project-execution-stalled');
     } else if (event.kind === 'project-safe-exit-completed') {
       resolvedKinds.add('project-safe-exit-failed');
     } else if (event.kind === 'requirements-quiesced') {
@@ -1221,6 +1224,35 @@ export interface ProjectSupervisorTransition {
   notificationCount: number;
 }
 
+export type ProjectExecutionResponsibilityOwner =
+  | 'project-ai'
+  | 'supervisor-ai'
+  | 'task-ai'
+  | 'control-plane'
+  | 'user';
+
+export type ProjectExecutionResponsibilityState =
+  | 'queued'
+  | 'delivered'
+  | 'working'
+  | 'awaiting-result'
+  | 'blocked';
+
+/** Durable single-owner lease for the next meaningful transition of an active project. */
+export interface ProjectExecutionResponsibility {
+  id: string;
+  owner: ProjectExecutionResponsibilityOwner;
+  action: string;
+  state: ProjectExecutionResponsibilityState;
+  workItemId?: string;
+  transitionId?: string;
+  assignedAt: number;
+  lastProgressAt: number;
+  deadlineAt?: number;
+  attempt: number;
+  incidentKey: string;
+}
+
 export interface ProjectManagerSession {
   id: string;
   projectDir: string;
@@ -1248,6 +1280,8 @@ export interface ProjectManagerSession {
   /** Persisted execution semantics version, independent from user requirement revisions. */
   executionProtocolVersion: number;
   status: ProjectManagerSessionStatus;
+  /** Cleared only after the first task packet following project creation or resume is delivered. */
+  repositoryBootstrapPending?: boolean;
   /** True only when the project was paused by the portfolio-level control. */
   pausedByPortfolio?: boolean;
   /** The one task terminal reserved for this project, including before supervision starts. */
@@ -1293,6 +1327,8 @@ export interface ProjectManagerSession {
   pendingManagerDeliveries?: ProjectManagerPendingDelivery[];
   /** Actionable supervisor handoffs remain here until the project AI records a resolution. */
   pendingSupervisorTransitions?: ProjectSupervisorTransition[];
+  /** Exactly one durable owner for the next meaningful project transition. */
+  executionResponsibility?: ProjectExecutionResponsibility;
   workItems: ProjectWorkItem[];
   events: ProjectManagerEvent[];
   createdAt: number;
@@ -1815,10 +1851,44 @@ export function normalizeProjectManagerSession(session: ProjectManagerSession): 
     authorizationVersion,
     acceptedRequirementsVersion: projectAcceptedRequirementsVersion(session),
     executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
+    repositoryBootstrapPending: session.repositoryBootstrapPending === true,
     progressSnapshot: normalizeProjectProgressSnapshot(session.progressSnapshot),
     progressSync: normalizeProjectProgressSyncState(session.progressSync),
     orientation: normalizeProjectOrientationState(session.orientation),
     safeExit: normalizeProjectSafeExitState(session.safeExit),
+    executionResponsibility: session.executionResponsibility
+      && typeof session.executionResponsibility.id === 'string'
+      && !!session.executionResponsibility.id.trim()
+      && typeof session.executionResponsibility.action === 'string'
+      && !!session.executionResponsibility.action.trim()
+      && typeof session.executionResponsibility.incidentKey === 'string'
+      && !!session.executionResponsibility.incidentKey.trim()
+      && ['project-ai', 'supervisor-ai', 'task-ai', 'control-plane', 'user']
+        .includes(String(session.executionResponsibility.owner))
+      && ['queued', 'delivered', 'working', 'awaiting-result', 'blocked']
+        .includes(String(session.executionResponsibility.state))
+      && Number.isFinite(session.executionResponsibility.assignedAt)
+      && Number.isFinite(session.executionResponsibility.lastProgressAt)
+      && Number.isFinite(session.executionResponsibility.attempt)
+      ? {
+          ...session.executionResponsibility,
+          id: session.executionResponsibility.id.trim().slice(0, 500),
+          action: String(session.executionResponsibility.action || '').trim().slice(0, 200),
+          incidentKey: String(session.executionResponsibility.incidentKey || '').trim().slice(0, 500),
+          ...(typeof session.executionResponsibility.workItemId === 'string'
+            && session.executionResponsibility.workItemId.trim()
+            ? { workItemId: session.executionResponsibility.workItemId.trim().slice(0, 200) }
+            : {}),
+          ...(typeof session.executionResponsibility.transitionId === 'string'
+            && session.executionResponsibility.transitionId.trim()
+            ? { transitionId: session.executionResponsibility.transitionId.trim().slice(0, 200) }
+            : {}),
+          ...(Number.isFinite(session.executionResponsibility.deadlineAt)
+            ? { deadlineAt: session.executionResponsibility.deadlineAt }
+            : {}),
+          attempt: Math.max(0, Math.trunc(session.executionResponsibility.attempt)),
+        }
+      : undefined,
     reusableUserDecisions: (Array.isArray(session.reusableUserDecisions) ? session.reusableUserDecisions : [])
       .map(normalizeProjectReusableUserDecision)
       .filter((decision): decision is ProjectReusableUserDecision => !!decision)

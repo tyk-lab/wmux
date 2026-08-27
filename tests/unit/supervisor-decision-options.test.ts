@@ -148,8 +148,9 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('用户补充信息是决策依据，不是可原样发送到任务终端的命令');
     expect(briefing).toContain('请先 read-screen 获取任务终端最新状态');
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
-    expect(briefing).toContain('.wmux/tmp/<唯一文件名>.txt');
-    expect(briefing).toContain('--next-file');
+    expect(briefing).toContain('.wmux/tmp/<唯一文件名>.json');
+    expect(briefing).toContain('--task-file');
+    expect(briefing).not.toContain('--next-file');
     expect(briefing).toContain('禁止在目标项目创建监督草稿');
     expect(briefing).toContain('不要把本消息原样转发');
     expect(briefing).toContain('[持续用户决策]');
@@ -168,6 +169,7 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('[用户选择] 未指定固定方案，由 AI 监督判断');
     expect(briefing).toContain('[用户补充信息] 先确认失败是否来自环境配置，再决定修复路线');
     expect(briefing).toContain('wmux supervisor decide --surface surface-worker');
+    expect(briefing).toContain('--task-file');
     expect(briefing).toContain('不要把本消息原样转发');
   });
 
@@ -186,6 +188,8 @@ describe('supervisor decision options', () => {
     expect(briefing).toContain('[用户集中答复]');
     expect(briefing).toContain('不得重复询问已经回答的内容');
     expect(briefing).toContain('--stage-plan-file');
+    expect(briefing).toContain('--task-file');
+    expect(briefing).not.toContain('第一条 --next');
     expect(briefing).toContain('计划形成前不得向任务 AI 投递');
     expect(briefing).not.toContain('不要把本消息原样转发');
   });

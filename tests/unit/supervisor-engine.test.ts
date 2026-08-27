@@ -152,4 +152,21 @@ describe('supervisor-engine', () => {
     expect(text).toContain('未勾选“技术方案选择”');
     expect(text).toContain('必须使用 needs-human');
   });
+
+  it('uses a structured task file for an authorized low-risk technical choice', () => {
+    const { actions } = tickLane({
+      session: session({ autonomyPermissions: ['technical-choice'] }),
+      lane: lane({ supervisorSurfaceId: 'supervisor-a' as any }),
+      surfaceState: { state: 'blocked', blockedReason: 'question: choose A or B' },
+      runtime: blankRuntime(),
+      now: 10_000,
+    });
+    const supervisorNotice = actions.find((action) => action.type === 'notify_supervisor');
+    const text = supervisorNotice && supervisorNotice.type === 'notify_supervisor'
+      ? supervisorNotice.text
+      : '';
+
+    expect(text).toContain('通过 --task-file 提交');
+    expect(text).not.toContain('continue / rework 携带 --next');
+  });
 });

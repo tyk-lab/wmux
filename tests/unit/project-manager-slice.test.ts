@@ -893,10 +893,17 @@ describe('project-manager slice', () => {
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining('循环') });
   });
 
-  it('soft pause and resume preserve work items', () => {
+  it('soft pause and resume preserve work items and rearm repository governance', () => {
     const useStore = store();
-    useStore.getState().startProjectManager({ projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'] });
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\repo', goal: '完成项目', doneWhen: ['验收通过'],
+    });
+    expect(project.repositoryBootstrapPending).toBe(true);
     useStore.getState().applyProjectManagerAction({ type: 'create-work-item', workItem: item('auth') });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      repositoryBootstrapPending: false,
+    });
     const paused = useStore.getState().applyProjectManagerAction({
       type: 'pause-project', reason: '运行链无进展', source: 'manager', attentionRequired: true,
     });
@@ -909,7 +916,9 @@ describe('project-manager slice', () => {
     });
     expect(useStore.getState().projectManager?.status).toBe('paused');
     useStore.getState().applyProjectManagerAction({ type: 'resume-project', reason: '继续' });
-    expect(useStore.getState().projectManager?.status).toBe('active');
+    expect(useStore.getState().projectManager).toMatchObject({
+      status: 'active', repositoryBootstrapPending: true,
+    });
     expect(useStore.getState().projectManager?.workItems[0].id).toBe('auth');
   });
 

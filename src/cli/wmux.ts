@@ -1263,11 +1263,13 @@ Hook:       hook --event <type> --tool <name> [--agent <id>]
 Supervisor:  supervisor evidence, supervisor decide
              supervisor evidence --review-id <id> [--file] [--page N] [--page-lines N]
              supervisor decide --surface <id> [--review-id <id>] --outcome <continue|rework|complete|needs-human>
-                          [--reason <text>] [--next <text> | --next-file <.wmux/tmp/file>]
+                          [--reason <text>] [--task-file <.wmux/tmp/file>]
                           [--stage-plan-file <.wmux/tmp/file>] [--completion-file <.wmux/tmp/file>]
                           [--proposal-kind <route-adjustment|route-change|important|context-recovery|direction-needed|clarification>]
                           [--escalation-boundary <contract-change|cross-item-coordination|external-blocker|user-only-information|high-risk-action|budget-exhausted>]
                           [--impact <text>] [--alternatives <text>]
+             Current continue/rework protocols require --task-file; --next is retained for legacy sessions and needs-human recommendations.
+             Legacy/recommendation-only: [--next <text> | --next-file <.wmux/tmp/file>]
                           [--permission-command <text> --permission-response <y|yes|allow|approve>] [--verbose]
                           [--execution-action <text> --command <text> --error <text> --workspace-version <hash>]
                           [--test-command <text> --test-result <text> --changed-files <a,b> --diff-summary <text>]

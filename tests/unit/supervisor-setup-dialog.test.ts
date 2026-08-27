@@ -352,6 +352,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(tabs.indexOf('执行链')).toBeLessThan(tabs.indexOf('目标与需求'));
     expect(tabs.indexOf('目标与需求')).toBeLessThan(tabs.indexOf('对话与进度'));
     expect(tabs.indexOf('对话与进度')).toBeLessThan(tabs.indexOf('Agent 配置'));
+    expect(projectManagerDialogSource).toContain("useState<ProjectManagerConsoleView>('execution')");
+    expect(projectManagerDialogSource).toContain("if (open) setActiveView('execution')");
   });
 
   it('allows optional user guidance to be evaluated by the AI supervisor', () => {

@@ -41,6 +41,8 @@ describe('supervisor decide command', () => {
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--review-id <id>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--outcome <continue|rework|complete|needs-human>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--next-file <.wmux/tmp/file>');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('Current continue/rework protocols require --task-file');
+    expect(SUPERVISOR_DECIDE_USAGE).toContain('Legacy/recommendation-only input');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--stage-plan-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--completion-file <.wmux/tmp/file>');
     expect(SUPERVISOR_DECIDE_USAGE).toContain('--evidence-progress-file <.wmux/tmp/file>');

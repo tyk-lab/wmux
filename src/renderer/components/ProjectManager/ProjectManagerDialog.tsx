@@ -121,6 +121,7 @@ const PROJECT_AGENT_ROLE_LABELS = {
 
 const PROJECT_ALERT_LABELS: Record<string, string> = {
   'manager-runtime-failed': '项目管理 AI 运行时故障',
+  'project-execution-stalled': '项目执行链异常',
   'supervisor-runtime-failed': '项目专属监督故障',
   'task-runtime-failed': '任务终端 AI 故障',
   'project-agent-limit-detected': '项目 Agent 额度或速率受限',
@@ -426,7 +427,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
   const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
   const [workItemInterventionNotice, setWorkItemInterventionNotice] = useState('');
-  const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('conversation');
+  const [activeView, setActiveView] = useState<ProjectManagerConsoleView>('execution');
   const goalRef = useRef<HTMLTextAreaElement | null>(null);
   const creationFormRef = useRef<HTMLElement | null>(null);
   const recoveryDeleteCancelRef = useRef<HTMLButtonElement | null>(null);
@@ -524,7 +525,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   }, [embedded, open, session?.id, session?.agentConfig, workspacePrefs.projectManagementAgents]);
 
   useEffect(() => {
-    if (open) setActiveView('conversation');
+    if (open) setActiveView('execution');
   }, [open, session?.id]);
 
   useEffect(() => {

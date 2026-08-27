@@ -208,6 +208,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       acceptedRequirementsVersion: 0,
       executionProtocolVersion: CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION,
       status: 'active',
+      repositoryBootstrapPending: true,
       recoveryState: 'ready',
       orientation: {
         status: 'required',
@@ -1029,6 +1030,7 @@ export const createProjectManagerSlice: StateCreator<ProjectManagerSlice> = (set
       next = {
         ...session,
         status: 'active',
+        repositoryBootstrapPending: true,
         goals: (session.goals || []).map((goal) => goal.id === activeGoal.id && goal.status === 'transitioning'
           ? { ...goal, status: 'active' as const, activatedAt: now }
           : goal),

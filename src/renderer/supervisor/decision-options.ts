@@ -33,7 +33,7 @@ export function buildAdoptedPlanBriefing(options: {
       ...standingDecisionBlock,
       '',
       '先根据整组答复完成需求对齐；不得重复询问已经回答的内容。仍有会实质改变方向、范围或验收的歧义时，才可再提出一批必要问题。',
-      `对齐充分后，创建 .wmux/tmp/ 下的阶段计划 JSON，并使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework --stage-plan-file <文件> 携带第一条 --next；计划形成前不得向任务 AI 投递。`,
+      `对齐充分后，分别创建 .wmux/tmp/ 下的阶段计划 JSON 和第一项结构化成果任务 JSON，并使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework --stage-plan-file <计划文件> --task-file <任务文件>；计划形成前不得向任务 AI 投递。`,
     ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
   }
   return [
@@ -51,6 +51,6 @@ export function buildAdoptedPlanBriefing(options: {
     ...standingDecisionBlock,
     '',
     '用户补充信息是决策依据，不是可原样发送到任务终端的命令。请先 read-screen 获取任务终端最新状态，再基于用户选择、用户补充信息、当前任务、计划约束和终端证据，判断并整理成完整、明确、可执行的下一步。',
-    `整理完成后，使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework 提交最终指令到任务终端；短文本使用 --next，长文本或多行文本写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.txt 后使用 --next-file，禁止在目标项目创建监督草稿。不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
+    `整理完成后，把当前成果、约束、验收缺口和必要现状写入当前监督隔离目录的 .wmux/tmp/<唯一文件名>.json，并使用 wmux supervisor decide --surface ${options.surfaceId} --outcome continue 或 rework --task-file <文件> 提交结构化成果任务。禁止在目标项目创建监督草稿；不要把本消息原样转发，也不要使用通用 wmux send/send-key。`,
   ].filter((line, index, lines) => line || (index > 0 && lines[index - 1])).join('\n');
 }
