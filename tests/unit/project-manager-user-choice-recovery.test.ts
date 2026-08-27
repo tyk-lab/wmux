@@ -79,6 +79,38 @@ describe('project manager interrupted user choice recovery', () => {
     });
   });
 
+  it('treats a control-plane runtime reset as an atomic boundary for earlier choices only', () => {
+    const reset = event('reset', 'project-runtime-reset', {
+      controlPlaneFallback: true,
+    }, 2);
+    expect(interruptedUserChoiceTransition({
+      events: [
+        event('transition-before-reset', 'user-choice-transition-started', {
+          question,
+          answer: '重建任务 AI',
+        }, 1),
+        reset,
+      ],
+    })).toBeUndefined();
+
+    expect(interruptedUserChoiceTransition({
+      events: [
+        event('transition-before-reset', 'user-choice-transition-started', {
+          question,
+          answer: '重建任务 AI',
+        }, 1),
+        reset,
+        event('transition-after-reset', 'user-choice-transition-started', {
+          question: { ...question, id: 'question-after-reset' },
+          answer: '保持暂停',
+        }, 3),
+      ],
+    })).toMatchObject({
+      transitionId: 'transition-after-reset',
+      question: { id: 'question-after-reset' },
+    });
+  });
+
   it('ignores malformed transition evidence instead of fabricating a recovery action', () => {
     expect(interruptedUserChoiceTransition({
       events: [event('malformed', 'user-choice-transition-started', {

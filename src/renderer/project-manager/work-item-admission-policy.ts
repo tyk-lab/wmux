@@ -6,6 +6,7 @@ import {
   type ProjectManagerSession,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
+import { projectWorkItemVerificationIntervened } from './verification-intervention-policy';
 
 const CLOSED_WORK_ITEM_STATUSES = new Set(['completed', 'stopped']);
 
@@ -14,6 +15,14 @@ export function projectWorkItemCreationError(
   session: Pick<ProjectManagerSession, 'subgoals' | 'workItems'>,
   candidate: ProjectWorkItem,
 ): string | null {
+  const settledDependency = candidate.dependencies.find((dependencyId) => (
+    session.workItems.some((item) => (
+      item.id === dependencyId && projectWorkItemVerificationIntervened(item)
+    ))
+  ));
+  if (settledDependency) {
+    return `新工作项不能依赖已由用户暂缓或跳过验证的旧工作项 ${settledDependency}；请继承其原始前置依赖，并用新工作项承接剩余验收`;
+  }
   const subgoal = (session.subgoals || []).find((item) => (
     item.id === candidate.subgoalId && item.goalId === candidate.goalId
   ));
@@ -24,6 +33,7 @@ export function projectWorkItemCreationError(
     && item.goalId === candidate.goalId
     && item.subgoalId === candidate.subgoalId
     && !CLOSED_WORK_ITEM_STATUSES.has(item.status)
+    && !projectWorkItemVerificationIntervened(item)
   ));
   if (openItem) {
     return `阶段“${subgoal.title}”已有开放成果工作项 ${openItem.id}（${openItem.status}）；必须先完成、停止或更新该工作项，不能创建同阶段并行或同义后继任务`;

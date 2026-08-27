@@ -16,6 +16,16 @@ import {
   type ProjectTaskBatchCoverage,
   type ProjectWorkItem,
 } from '../../shared/project-manager';
+import {
+  projectWorkItemRequiresVersionReconciliation,
+  projectWorkItemVerificationDeferred,
+  projectWorkItemVerificationIntervened,
+} from './verification-intervention-policy';
+
+export {
+  projectWorkItemVerificationDeferred,
+  projectWorkItemVerificationIntervened,
+} from './verification-intervention-policy';
 
 export interface ProjectSupervisorAssignment {
   projectGoal: string;
@@ -457,21 +467,6 @@ export type ProjectProgressObligationKind =
   | 'handle-supervisor-transition'
   | 'complete-goal';
 
-export function projectWorkItemVerificationIntervened(item: ProjectWorkItem): boolean {
-  const decision = item.verificationDecision;
-  return !!decision && ['defer-verification', 'skip-verification'].includes(decision.action);
-}
-
-export function projectWorkItemVerificationDeferred(
-  session: ProjectManagerSession,
-  item: ProjectWorkItem,
-): boolean {
-  const decision = item.verificationDecision;
-  if (!decision || !projectWorkItemVerificationIntervened(item)) return false;
-  return decision.requirementsVersion === projectRequirementsVersion(session)
-    && decision.authorizationVersion === projectAuthorizationVersion(session);
-}
-
 export interface ProjectProgressObligation {
   kind: ProjectProgressObligationKind;
   summary: string;
@@ -543,9 +538,7 @@ export function projectProgressObligation(
     && item.authorizationVersion === projectAuthorizationVersion(session)
   ));
   const staleOpenItems = activeGoalItems.filter((item) => (
-    item.status !== 'completed'
-    && (item.requirementsVersion !== projectRequirementsVersion(session)
-      || item.authorizationVersion !== projectAuthorizationVersion(session))
+    projectWorkItemRequiresVersionReconciliation(session, item)
   ));
   if (staleOpenItems.length > 0) {
     return {

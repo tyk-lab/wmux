@@ -434,6 +434,24 @@ describe('project-manager slice', () => {
       ok: false,
       error: expect.stringContaining('不能由 AI 改变状态'),
     });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      requirementsVersion: 2,
+      authorizationVersion: 2,
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'update-work-item',
+      workItemId: 'gui-verification',
+      patch: { requirementsVersion: 2, authorizationVersion: 2 },
+    }, project.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能由 AI 改变状态或重绑版本'),
+    });
+    useStore.getState().restoreProjectManager({
+      ...useStore.getState().projectManager!,
+      requirementsVersion: 1,
+      authorizationVersion: 1,
+    });
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'intervene-work-item',
@@ -723,6 +741,26 @@ describe('project-manager slice', () => {
         id: 'stale-question', question: '旧问题', context: '旧上下文', options: [],
         previousStatus: 'active', createdAt: 1,
       },
+      pendingSupervisorTransitions: [{
+        id: 'stale-supervisor-transition', laneId: 'lane-reset', workItemId: 'running-before-reset',
+        kind: 'decision-required', eventType: 'supervisor.decision-required', summary: '旧监督交接',
+        createdAt: 1, notifiedAt: 1, notificationCount: 1,
+      }],
+      pendingManagerDeliveries: [{
+        id: 'stale-transition-delivery', text: '旧交接投递', createdAt: 1,
+        transitionId: 'stale-supervisor-transition',
+      }],
+      events: [...current.events, {
+        id: 'interrupted-choice-before-reset', sessionId: project.id, ts: 2,
+        kind: 'user-choice-transition-started', summary: '旧用户选择尚未完成',
+        payload: {
+          question: {
+            id: 'stale-question', question: '旧问题', context: '旧上下文', options: [],
+            previousStatus: 'active', createdAt: 1,
+          },
+          answer: '保持暂停',
+        },
+      }],
       executionResponsibility: {
         id: 'responsibility-reset', owner: 'project-ai', action: 'recover', state: 'queued',
         assignedAt: 1, lastProgressAt: 1, attempt: 1, incidentKey: 'reset',
@@ -742,6 +780,8 @@ describe('project-manager slice', () => {
       managerSurfaceId: undefined,
       taskTerminalSurfaceId: undefined,
       pendingUserQuestion: undefined,
+      pendingSupervisorTransitions: [],
+      pendingManagerDeliveries: [],
       executionResponsibility: undefined,
       workItems: [expect.objectContaining({
         id: 'running-before-reset',
@@ -753,6 +793,15 @@ describe('project-manager slice', () => {
     });
     expect(activeProjectManagerAttentionEvent(useStore.getState().projectManager!.events)?.kind)
       .toBe('project-runtime-reset');
+    expect(useStore.getState().projectManager?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'project-runtime-reset',
+        payload: expect.objectContaining({
+          resolvedUserChoiceTransitionIds: ['interrupted-choice-before-reset'],
+          clearedSupervisorTransitionIds: ['stale-supervisor-transition'],
+        }),
+      }),
+    ]));
     expect(useStore.getState().applyProjectManagerAction({
       type: 'resume-project', reason: '用户确认重建新运行链', source: 'project',
     }, project.id)).toMatchObject({ ok: true });
@@ -1716,6 +1765,22 @@ describe('project-manager slice', () => {
     useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'historical-evidence', patch: { status: 'completed', latestEvidence: '旧版本证据' },
     });
+    useStore.getState().applyProjectManagerAction({
+      type: 'create-work-item',
+      workItem: {
+        ...item('historical-deferred-verification'),
+        status: 'paused',
+        verificationDecision: {
+          action: 'defer-verification',
+          questionId: 'old-verification-choice',
+          reason: '用户暂缓旧版本验证',
+          answeredBy: 'desktop',
+          requirementsVersion: 1,
+          authorizationVersion: 1,
+          decidedAt: 2,
+        },
+      },
+    });
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-project-definition', goal: '形成调整后的可验收实现',
       preconditions: ['环境可用'], planFiles: [], doneWhen: ['调整后的当前版本验收通过'],
@@ -1738,6 +1803,10 @@ describe('project-manager slice', () => {
     })).toMatchObject({ ok: true });
     expect(useStore.getState().projectManager?.workItems).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'historical-evidence', status: 'completed', requirementsVersion: 1 }),
+      expect.objectContaining({
+        id: 'historical-deferred-verification', status: 'paused', requirementsVersion: 1,
+        verificationDecision: expect.objectContaining({ action: 'defer-verification' }),
+      }),
       expect.objectContaining({ id: 'current-result', status: 'completed', requirementsVersion: 2 }),
     ]));
   });

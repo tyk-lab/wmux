@@ -43,10 +43,12 @@ import {
   type ProjectWorkItem,
   type ProjectUserAcceptancePolicy,
 } from '../../shared/project-manager';
+import { projectDependencyError } from '../project-manager/engine';
 import {
-  projectDependencyError,
+  projectWorkItemRequiresVersionReconciliation,
   projectWorkItemVerificationIntervened,
-} from '../project-manager/engine';
+} from '../project-manager/verification-intervention-policy';
+import { interruptedUserChoiceTransitions } from '../project-manager/user-choice-recovery';
 import { notificationDedupeKey } from '../notification-policy';
 import type { NotificationSlice } from './notification-slice';
 import type { ProjectManagementAgentConfig } from '../../shared/project-manager-terminal';
@@ -1103,12 +1105,17 @@ export const createProjectManagerSlice: StateCreator<
       ));
       if (
         projectWorkItemVerificationIntervened(existing)
-        && action.patch.status !== undefined
-        && action.patch.status !== existing.status
+        && (
+          (action.patch.status !== undefined && action.patch.status !== existing.status)
+          || (action.patch.requirementsVersion !== undefined
+            && action.patch.requirementsVersion !== existing.requirementsVersion)
+          || (action.patch.authorizationVersion !== undefined
+            && action.patch.authorizationVersion !== existing.authorizationVersion)
+        )
       ) {
         return {
           ok: false,
-          error: '该工作项已收到用户暂缓或跳过验证的裁决，不能由 AI 改变状态；后续补验必须创建新的工作项',
+          error: '该工作项已收到用户暂缓或跳过验证的裁决，不能由 AI 改变状态或重绑版本；后续补验必须创建新的工作项',
         };
       }
       if (
@@ -1267,6 +1274,10 @@ export const createProjectManagerSlice: StateCreator<
       if (!['paused', 'waiting'].includes(session.status)) {
         return { ok: false, error: '控制层安全重置只能用于已经暂停或等待处理的项目' };
       }
+      const resolvedUserChoiceTransitionIds = interruptedUserChoiceTransitions(session)
+        .map((transition) => transition.transitionId);
+      const clearedSupervisorTransitionIds = (session.pendingSupervisorTransitions || [])
+        .map((transition) => transition.id);
       next = {
         ...session,
         status: 'paused',
@@ -1277,6 +1288,7 @@ export const createProjectManagerSlice: StateCreator<
         auxiliaryTaskTerminalSurfaceId: undefined,
         auxiliaryTask: undefined,
         pendingUserQuestion: undefined,
+        pendingSupervisorTransitions: [],
         pendingManagerDeliveries: [],
         executionResponsibility: undefined,
         agentIssue: undefined,
@@ -1302,6 +1314,8 @@ export const createProjectManagerSlice: StateCreator<
         payload: {
           controlPlaneFallback: true,
           preservedWorkItems: session.workItems.length,
+          resolvedUserChoiceTransitionIds,
+          clearedSupervisorTransitionIds,
           resolvedAttentionKinds: [
             'guard-triggered',
             'project-execution-stalled',
@@ -1419,9 +1433,7 @@ export const createProjectManagerSlice: StateCreator<
       }
       const activeItems = session.workItems.filter((item) => item.goalId === activeGoal.id && item.status !== 'stopped');
       const staleOpenItem = activeItems.find((item) => (
-        item.status !== 'completed'
-        && (item.requirementsVersion !== projectRequirementsVersion(session)
-          || item.authorizationVersion !== projectAuthorizationVersion(session))
+        projectWorkItemRequiresVersionReconciliation(session, item)
       ));
       if (staleOpenItem) {
         return { ok: false, error: `任务 ${staleOpenItem.id} 仍属于旧需求或授权版本，必须先重绑或停止` };

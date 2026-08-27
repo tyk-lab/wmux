@@ -281,7 +281,6 @@ import {
   TASK_VALIDATION_REPORTING_POLICY,
   type ProjectProgressObligation,
   projectWorkItemSubgoalDependencyError,
-  projectWorkItemVerificationIntervened,
 } from './project-manager/engine';
 import {
   projectSupervisorDefaults,
@@ -304,6 +303,10 @@ import {
 } from './project-manager/semantic-recovery-policy';
 import { projectTransitionResolutionError as projectTransitionPolicyError } from './project-manager/transition-policy';
 import { projectWorkItemCreationError } from './project-manager/work-item-admission-policy';
+import {
+  projectWorkItemRequiresVersionReconciliation,
+  projectWorkItemVerificationIntervened,
+} from './project-manager/verification-intervention-policy';
 import {
   beginManagedAgentTurn,
   evaluateManagedAgentDeadline,
@@ -5677,6 +5680,12 @@ async function acknowledgeProjectOrientation(
   const activeGoal = activeProjectGoal(latest);
   for (const review of reviews) {
     const item = requiredItems.find((candidate) => candidate.id === review.workItemId)!;
+    if (projectWorkItemVerificationIntervened(item) && review.disposition !== 'pause') {
+      return {
+        ok: false,
+        error: `工作项 ${item.id} 已有用户暂缓验证裁决，只能保留 pause；后续补验必须创建新的工作项`,
+      };
+    }
     if (item.status === 'completed' && review.disposition !== 'retain-completed') {
       return { ok: false, error: `已完成工作项 ${item.id} 只能选择 retain-completed，保留为证据` };
     }
@@ -8520,6 +8529,75 @@ async function closeProjectRuntimeAfterSafeExit(projectId: string, checkpointSur
     if (remaining.length === 0 || Date.now() >= deadline) return remaining;
     await waitForControlPlaneDelay(100);
   }
+}
+
+async function forceCloseProjectRuntimeForControlPlaneReset(
+  session: ProjectManagerSession,
+  reason: string,
+): Promise<string[]> {
+  const store = useStore.getState();
+  const surfaceIds = projectOwnedRuntimeSurfaceIds(session.id, projectKnownRuntimeSurfaceIds(session));
+  const lanes = store.supervisor.lanes.filter((candidate) => (
+    candidate.projectManagerProjectId === session.id
+  ));
+  for (const lane of lanes) store.pauseSupervisorLane(lane.id, reason);
+  await Promise.all(surfaceIds.map(async (surfaceId) => {
+    cancelPendingAutomatedTerminalSubmit(surfaceId as SurfaceId, true);
+    const watchdog = managedAgentWatchdogs.get(surfaceId);
+    if (watchdog) managedAgentWatchdogs.set(surfaceId, pauseManagedAgentWatchdog(watchdog, Date.now()));
+    if (!hasLiveSurface(surfaceId as SurfaceId)
+      || remoteTerminalActivity(surfaceId as SurfaceId, true).activityState !== 'working') return;
+    try {
+      await writeProjectSupervisorControl(surfaceId as SurfaceId, '\x03');
+    } catch {
+      // A forced reset still closes the PTY below; confirmation decides success.
+    }
+  }));
+  for (const surfaceId of new Set(surfaceIds)) {
+    try {
+      closeLiveSurfaceById(surfaceId as SurfaceId);
+    } catch {
+      // The main-process kill and confirmation probe remain authoritative.
+    }
+    window.wmux?.pty?.kill?.(surfaceId as SurfaceId);
+  }
+
+  const ptyHas = (window as any).wmux?.pty?.has as ((surfaceId: string) => Promise<boolean>) | undefined;
+  if (!ptyHas && surfaceIds.length > 0) return surfaceIds;
+  const deadline = Date.now() + 2_000;
+  let remaining: string[];
+  while (true) {
+    remaining = [];
+    let probeFailed = false;
+    for (const surfaceId of surfaceIds) {
+      if (!ptyHas) {
+        if (hasLiveSurface(surfaceId as SurfaceId)) remaining.push(surfaceId);
+        continue;
+      }
+      try {
+        if (await ptyHas(surfaceId)) remaining.push(surfaceId);
+      } catch {
+        remaining.push(surfaceId);
+        probeFailed = true;
+      }
+    }
+    if (remaining.length === 0 || probeFailed || Date.now() >= deadline) break;
+    await waitForControlPlaneDelay(100);
+  }
+  if (remaining.length > 0) return remaining;
+
+  for (const lane of lanes) store.stopSupervisorLane(lane.id, reason);
+  for (const surfaceId of surfaceIds) clearManagedAgentWatchdog(surfaceId);
+  const progressTimer = projectProgressTimers.get(session.id);
+  if (progressTimer) globalThis.clearTimeout(progressTimer);
+  projectProgressTimers.delete(session.id);
+  const alignmentTimer = projectAlignmentTimers.get(session.id);
+  if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
+  projectAlignmentTimers.delete(session.id);
+  const orphanCleanupTimer = projectRuntimeOrphanCleanupTimers.get(session.id);
+  if (orphanCleanupTimer) globalThis.clearTimeout(orphanCleanupTimer);
+  projectRuntimeOrphanCleanupTimers.delete(session.id);
+  return [];
 }
 
 async function saveProjectProgressAndExitRuntime(
@@ -12331,17 +12409,23 @@ async function resetProjectRuntimeFromControlPlane(
   if (!session || !['paused', 'waiting'].includes(session.status)) {
     return { ok: false, error: '只有已经暂停或等待处理的项目可以执行控制层安全重置' };
   }
+  const remainingRuntimeSurfaceIds = await forceCloseProjectRuntimeForControlPlaneReset(
+    session,
+    '用户执行控制层安全重置',
+  );
+  if (remainingRuntimeSurfaceIds.length > 0) {
+    return {
+      ok: false,
+      error: `控制层已暂停旧运行链，但以下终端未能确认关闭：${remainingRuntimeSurfaceIds.join('、')}。项目状态与运行时引用均已保留，请重试安全重置或关闭对应终端。`,
+      session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session,
+    };
+  }
   const result = store.applyProjectManagerAction({
     type: 'reset-project-runtime',
     reason,
   }, session.id);
   if (!result.ok) return result;
   await persistProjectManagerMutation(result, session.id);
-  try {
-    await stopManagedProjectRuntime(session, '用户执行控制层安全重置');
-  } catch (error) {
-    console.warn('[project-manager] control-plane reset runtime teardown failed', error);
-  }
   return {
     ok: true,
     session: useStore.getState().projectManagers.find((candidate) => candidate.id === session.id),
@@ -14531,9 +14615,7 @@ async function handleProjectManagerRequest(params: any): Promise<any> {
     }
     const staleTask = current.workItems.find((item) => (
       item.goalId === activeGoal.id
-      && !['completed', 'stopped'].includes(item.status)
-      && (item.requirementsVersion !== projectRequirementsVersion(current)
-        || item.authorizationVersion !== projectAuthorizationVersion(current))
+      && projectWorkItemRequiresVersionReconciliation(current, item)
     ));
     if (staleTask) {
       return {
@@ -15962,9 +16044,7 @@ export function initPipeBridge(): void {
         }
         const staleTask = current.workItems.find((item) => (
           item.goalId === activeGoal.id
-          && !['completed', 'stopped'].includes(item.status)
-          && (item.requirementsVersion !== projectRequirementsVersion(current)
-            || item.authorizationVersion !== projectAuthorizationVersion(current))
+          && projectWorkItemRequiresVersionReconciliation(current, item)
         ));
         if (staleTask) {
           return { ok: false, error: `任务 ${staleTask.id} 尚未由项目 AI 重绑当前需求和授权版本，不能直接恢复` };

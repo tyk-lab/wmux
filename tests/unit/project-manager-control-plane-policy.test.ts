@@ -8,6 +8,9 @@ import {
 import { projectTransitionResolutionError } from '../../src/renderer/project-manager/transition-policy';
 import { projectWorkItemCreationError } from '../../src/renderer/project-manager/work-item-admission-policy';
 import {
+  projectWorkItemRequiresVersionReconciliation,
+} from '../../src/renderer/project-manager/verification-intervention-policy';
+import {
   normalizeProjectManagerSession,
   type ProjectManagerEvent,
   type ProjectManagerSession,
@@ -288,5 +291,42 @@ describe('project manager control-plane policies', () => {
     });
     expect(projectWorkItemCreationError({ subgoals, workItems: [incompleteEvidence] }, coverageOnlyB))
       .toContain('当前缺少：验收 A');
+  });
+
+  it('keeps user-settled verification gaps out of version reconciliation and successor admission gates', () => {
+    const project = pausedCompletedProject();
+    project.requirementsVersion = 2;
+    project.authorizationVersion = 2;
+    const deferred = workItem({
+      id: 'deferred-verification',
+      goalId: 'goal-a',
+      status: 'paused',
+      verificationDecision: {
+        action: 'defer-verification',
+        questionId: 'verification-choice',
+        reason: '用户选择稍后验证',
+        answeredBy: 'desktop',
+        requirementsVersion: 1,
+        authorizationVersion: 1,
+        decidedAt: 2,
+      },
+    });
+    expect(projectWorkItemRequiresVersionReconciliation(project, deferred)).toBe(false);
+    expect(projectWorkItemRequiresVersionReconciliation(project, {
+      ...deferred,
+      verificationDecision: undefined,
+    })).toBe(true);
+
+    const subgoals = [{
+      id: 'stage-a', goalId: 'goal-a', title: '阶段 A', outcome: '阶段成果',
+      acceptance: ['验收 A', '验收 B'], dependencies: [], status: 'planned' as const,
+      order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    const successor = workItem({ id: 'focused-verification' });
+    expect(projectWorkItemCreationError({ subgoals, workItems: [deferred] }, successor)).toBeNull();
+    expect(projectWorkItemCreationError({ subgoals, workItems: [deferred] }, {
+      ...successor,
+      dependencies: [deferred.id],
+    })).toContain('不能依赖已由用户暂缓或跳过验证的旧工作项');
   });
 });
