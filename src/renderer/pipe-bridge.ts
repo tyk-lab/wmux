@@ -28,6 +28,7 @@ import {
 } from './supervisor/supervisor-engine';
 import { hasPendingTerminalInput } from './supervisor/pending-input-guard';
 import {
+  disposeTerminalRuntimeStatus,
   markTerminalRuntimeFailed,
   markTerminalRuntimeExited,
   markTerminalRuntimeReady,
@@ -291,7 +292,9 @@ import {
 } from './project-manager/agent-defaults';
 import { projectAuxiliaryWritablePathAllowed } from './project-manager/auxiliary-policy';
 import { projectSupervisorLaneIds as scopedProjectSupervisorLaneIds } from './project-manager/lane-scope';
+import { projectSupervisorRuntimeRequired } from './project-manager/runtime-admission-policy';
 import { shouldRestartProjectManagerRuntime } from './project-manager/runtime-recovery-policy';
+import { projectSupervisorBriefingStartupError } from './project-manager/supervisor-startup-policy';
 import {
   classifyProjectWatchdogScenario,
   projectWatchdogMayInterveneForRole,
@@ -2026,6 +2029,10 @@ function createRemoteDirectTerminalTask(
   if (requestsProjectManagedCreate && !allowProjectManagedCreate) {
     return { ok: false, error: '项目管理终端只能由项目管理模式创建。', message: '' };
   }
+  const managedProjectId = String(params.projectManagerProjectId || '').trim();
+  if (managedProjectId && deletingProjectManagerSessions.has(managedProjectId)) {
+    return { ok: false, error: '项目正在删除，禁止创建新的项目 AI 运行时。', message: '' };
+  }
   if (!name || !task) return { ok: false, error: '任务名称和首条任务都不能为空。', message: '' };
   if (!['codex', 'kimi', 'grok'].includes(requestedAgent)) return { ok: false, error: 'AI 终端类型仅允许 Codex、Kimi 或 Grok。', message: '' };
   if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(cwd)) return { ok: false, error: '任务目录必须是 Windows 绝对路径。', message: '' };
@@ -2377,12 +2384,16 @@ async function deliverSupervisorStartupBriefing(laneId: string): Promise<void> {
   const screenResult = readTerminalScreen(lane.supervisorSurfaceId, 80);
   const screen = screenResult.text || '';
   // Unit/non-Electron harnesses intentionally omit both xterm and pty.has.
-  // Production must always fail closed when the mounted terminal cannot prove
-  // that a supported Agent input UI is present.
+  // Production reuses the mounted terminal's combined stream/screen readiness
+  // verdict; the active full-screen buffer alone may be transiently blank.
   const nonElectronHarness = !!screenResult.error && !(window as any).wmux?.pty?.has;
-  if (!nonElectronHarness && !interactiveAgentInputReady(screen)) {
-    const detail = interactiveAgentShellPromptFailureDetail(screen)
-      || 'AI 监督运行时启动失败：未检测到 Codex、Kimi、Grok 或 Pi 的可输入界面；已禁止向未知终端发送监督协议';
+  const startupError = projectSupervisorBriefingStartupError({
+    runtimeState: terminalRuntimeStatus(lane.supervisorSurfaceId)?.state,
+    screen,
+    nonElectronHarness,
+  });
+  if (startupError) {
+    const detail = startupError;
     markTerminalRuntimeFailed(lane.supervisorSurfaceId, detail);
     useStore.getState().updateLane(lane.id, {
       ...(lane.projectRuntimeHandover?.state === 'candidate'
@@ -2442,6 +2453,9 @@ function startRemoteSupervisor(
   }
   if (allowProjectManagedStart && !params.projectManagerProjectId) {
     return { ok: false, error: '项目监督缺少项目归属。', message: '' };
+  }
+  if (projectManagedStart && deletingProjectManagerSessions.has(params.projectManagerProjectId!)) {
+    return { ok: false, error: '项目正在删除，禁止创建新的项目监督运行时。', message: '' };
   }
   const previousLanes = store.supervisor.lanes;
   const selectedIds = new Set(params.terminals);
@@ -6748,6 +6762,17 @@ function projectPauseUserQuestion(
       description: '保留当前成果、证据和未验证项，暂不继续执行。',
     },
   ];
+  const terminalRecoveryOption = workItem
+    ? {
+        id: 'stop-work-item',
+        label: '停止并重新规划',
+        description: '停止当前异常工作项，由项目 AI 根据剩余目标建立新的聚焦工作项。',
+      }
+    : {
+        id: 'control-plane-reset',
+        label: '重置运行链并重新规划',
+        description: '关闭当前异常 AI 运行链，保留项目定义和历史记录；重建空闲基础运行时并立即重新确认需求，不执行旧任务。',
+      };
   const normalized = normalizeProjectManagerUserQuestion({
     category: 'manual-intervention',
     ...(workItem ? { workItemId: workItem.id } : {}),
@@ -6772,7 +6797,9 @@ function projectPauseUserQuestion(
         : '推荐保留现有成果与证据，按最新角色协议重建监督绑定；控制层不会回退或重复派发旧任务。',
       verificationLimited
         ? '当前要做什么：决定是改用不同验证方式、人工验收、暂缓后补、明确豁免普通验证，还是保持暂停。'
-        : '当前要做什么：决定是按最新协议恢复、保持暂停，还是停止当前工作项并重新规划。',
+        : workItem
+          ? '当前要做什么：决定是按最新协议恢复、保持暂停，还是停止当前工作项并重新规划。'
+          : '当前要做什么：决定是按最新协议恢复、保持暂停，还是重置异常运行链后重新对齐和规划。',
     ].filter(Boolean).join('\n'),
     options: verificationLimited ? verificationOptions : [
       runtimeRecoveryOption,
@@ -6781,11 +6808,7 @@ function projectPauseUserQuestion(
         label: '保持暂停',
         description: '保留当前上下文，等待后续再处理。',
       },
-      {
-        id: 'stop-work-item',
-        label: '停止并重新规划',
-        description: '停止当前异常工作项，由项目 AI 根据剩余目标建立新的聚焦工作项。',
-      },
+      terminalRecoveryOption,
     ],
     recommendedOptionId: verificationLimited
       ? alternativeAttempted ? 'manual-verify' : 'alternative-validation'
@@ -7394,6 +7417,11 @@ function runProjectRuntimeEnsure<T>(
   });
   runs.set(sessionId, { intentMask, promise });
   return promise;
+}
+
+function projectRuntimeEnsureStillOwned(sessionId: string): boolean {
+  return !deletingProjectManagerSessions.has(sessionId)
+    && useStore.getState().projectManagers.some((session) => session.id === sessionId);
 }
 
 function projectManagerTerminals(projectId?: string): RemoteTaskTerminalLocation[] {
@@ -8369,31 +8397,64 @@ function projectKnownRuntimeSurfaceIds(session: ProjectManagerSession): string[]
   ].filter((surfaceId): surfaceId is string => !!surfaceId))];
 }
 
-function teardownManagedProject(session: ProjectManagerSession, reason = '项目已删除并解除监督绑定'): void {
+function teardownManagedProjectIdentity(
+  projectId: string,
+  reason: string,
+  knownSurfaceIds: readonly string[] = [],
+): void {
   const store = useStore.getState();
-  const ownedSurfaceIds = projectOwnedSurfaceIds(session.id);
+  const ownedSurfaceIds = new Set(projectOwnedSurfaceIds(projectId));
   for (let index = pendingProjectManagerDeliveries.length - 1; index >= 0; index -= 1) {
-    if (pendingProjectManagerDeliveries[index].sessionId === session.id) {
+    if (pendingProjectManagerDeliveries[index].sessionId === projectId) {
       pendingProjectManagerDeliveries.splice(index, 1);
     }
   }
-  const lanes = store.supervisor.lanes.filter((lane) => lane.projectManagerProjectId === session.id);
+  const lanes = store.supervisor.lanes.filter((lane) => lane.projectManagerProjectId === projectId);
+  const runtimeSurfaceIds = new Set([
+    ...ownedSurfaceIds,
+    ...knownSurfaceIds,
+    ...lanes.flatMap((lane) => [lane.supervisorSurfaceId, lane.surfaceId]),
+  ].filter(Boolean) as string[]);
 
   for (const lane of lanes) store.stopSupervisorLane(lane.id, reason);
+  store.setProjectSupervisorLanes(useStore.getState().supervisor.lanes.filter((lane) => (
+    isProjectManagedSupervisorLane(lane) && lane.projectManagerProjectId !== projectId
+  )));
   for (const surfaceId of ownedSurfaceIds) closeLiveSurfaceById(surfaceId as SurfaceId);
 
-  const timer = projectProgressTimers.get(session.id);
+  const timer = projectProgressTimers.get(projectId);
   if (timer) globalThis.clearTimeout(timer);
-  projectProgressTimers.delete(session.id);
-  for (const surfaceId of [
-    session.managerSurfaceId,
-    ...lanes.flatMap((lane) => [lane.supervisorSurfaceId, lane.surfaceId]),
-  ].filter(Boolean) as string[]) {
+  projectProgressTimers.delete(projectId);
+  for (const surfaceId of runtimeSurfaceIds) {
+    cancelPendingAutomatedTerminalSubmit(surfaceId as SurfaceId, true);
+    managedRoleProtocolReady.delete(surfaceId);
+    projectManagerDeliverySurfacesInFlight.delete(surfaceId);
     clearManagedAgentWatchdog(surfaceId);
+    disposeTerminalRuntimeStatus(surfaceId, reason);
   }
-  const alignmentTimer = projectAlignmentTimers.get(session.id);
+  for (const [surfaceId, retired] of retiredProjectSupervisorRuntimes) {
+    if (retired.projectId === projectId) retiredProjectSupervisorRuntimes.delete(surfaceId);
+  }
+  for (const recoveryKey of [...managedAgentRecoveries, ...managedAgentRecoveryFailures]) {
+    if (!recoveryKey.startsWith(`${projectId}:`)) continue;
+    managedAgentRecoveries.delete(recoveryKey);
+    managedAgentRecoveryFailures.delete(recoveryKey);
+  }
+  projectManagerRuntimeRecoveries.delete(projectId);
+  projectDeadlockEscalations.delete(projectId);
+  const alignmentTimer = projectAlignmentTimers.get(projectId);
   if (alignmentTimer) globalThis.clearTimeout(alignmentTimer);
-  projectAlignmentTimers.delete(session.id);
+  projectAlignmentTimers.delete(projectId);
+  const deadlockTimer = projectDeadlockRetryTimers.get(projectId);
+  if (deadlockTimer) globalThis.clearTimeout(deadlockTimer);
+  projectDeadlockRetryTimers.delete(projectId);
+  const orphanTimer = projectRuntimeOrphanCleanupTimers.get(projectId);
+  if (orphanTimer) globalThis.clearTimeout(orphanTimer);
+  projectRuntimeOrphanCleanupTimers.delete(projectId);
+}
+
+function teardownManagedProject(session: ProjectManagerSession, reason = '项目已删除并解除监督绑定'): void {
+  teardownManagedProjectIdentity(session.id, reason, projectKnownRuntimeSurfaceIds(session));
 }
 
 async function stopManagedProjectRuntime(session: ProjectManagerSession, reason: string): Promise<void> {
@@ -10805,6 +10866,10 @@ async function ensureProjectTaskRuntimeNow(sessionId: string, options: {
     return { ok: false, error: '任务 AI 已创建但未注册为项目任务终端' };
   }
   const ready = await waitForTerminalRuntimeReady(terminal.surfaceId);
+  if (!projectRuntimeEnsureStillOwned(session.id)) {
+    closeLiveSurfaceById(terminal.surfaceId);
+    return { ok: false, error: '项目已删除，已取消迟到的任务 AI 运行时绑定' };
+  }
   const failure = ready.ok
     ? nestedAgentShellFailureDetail(terminal.surfaceId)
     : ready.error || '未知错误';
@@ -10929,6 +10994,10 @@ async function ensureProjectAuxiliaryRuntimeNow(sessionId: string, options: {
     return { ok: false, error: '辅助任务 AI 已创建但未注册为隔离辅助终端' };
   }
   const ready = await waitForTerminalRuntimeReady(terminal.surfaceId);
+  if (!projectRuntimeEnsureStillOwned(session.id)) {
+    closeLiveSurfaceById(terminal.surfaceId);
+    return { ok: false, error: '项目已删除，已取消迟到的辅助任务 AI 运行时绑定' };
+  }
   const failure = ready.ok ? nestedAgentShellFailureDetail(terminal.surfaceId) : ready.error || '未知错误';
   if (failure) {
     markTerminalRuntimeFailed(terminal.surfaceId, failure);
@@ -11289,6 +11358,11 @@ async function ensureProjectSupervisorRuntimeNow(sessionId: string, options: {
   ));
   if (!lane?.supervisorSurfaceId) return { ok: false, error: '项目监督 AI 已创建但未完成通道绑定' };
   const ready = await waitForTerminalRuntimeReady(lane.supervisorSurfaceId);
+  if (!projectRuntimeEnsureStillOwned(session.id)) {
+    useStore.getState().stopSupervisorLane(lane.id, '项目已删除，取消迟到的监督 AI 运行时绑定');
+    closeLiveSurfaceById(lane.supervisorSurfaceId);
+    return { ok: false, error: '项目已删除，已取消迟到的监督 AI 运行时绑定' };
+  }
   const failure = ready.ok
     ? nestedAgentShellFailureDetail(lane.supervisorSurfaceId)
     : ready.error || '未知错误';
@@ -11358,7 +11432,8 @@ async function ensureProjectManagerRuntimeNow(sessionId: string, options: {
   automaticRecovery?: boolean;
 } = {}): Promise<ProjectManagerRuntimeEnsureResult> {
   const automaticRecoveryAllowed = (): boolean => (
-    options.automaticRecovery !== true || projectManagerAutomaticRecoveryAllowed(sessionId)
+    projectRuntimeEnsureStillOwned(sessionId)
+    && (options.automaticRecovery !== true || projectManagerAutomaticRecoveryAllowed(sessionId))
   );
   const cancelled = (): ProjectManagerRuntimeEnsureResult => ({
     ok: false,
@@ -12772,7 +12847,49 @@ async function answerProjectManagerUserQuestion(params: any): Promise<any> {
     ].includes(optionId || '');
   const finalAcceptanceChoice = pending.category === 'manual-intervention'
     && pending.reasonCode === 'final-acceptance';
-  if ((taskInputConflictChoice || runtimeRecoveryChoice || verificationLimitedChoice)
+  const projectLevelRuntimeResetChoice = runtimeRecoveryChoice
+    && (optionId === 'control-plane-reset' || (optionId === 'stop-work-item' && !pending.workItemId));
+  if (projectLevelRuntimeResetChoice && updated) {
+    const reset = await resetProjectRuntimeFromControlPlane(
+      session.id,
+      '用户在无可停止工作项的运行异常中选择重置运行链并重新规划；项目定义和历史记录均保留',
+    );
+    if (reset.ok) {
+      const taskRuntime = await ensureProjectTaskRuntime(session.id);
+      const auxiliaryRuntime = taskRuntime.ok
+        ? await ensureProjectAuxiliaryRuntime(session.id)
+        : { ok: false, error: taskRuntime.error };
+      const managerRuntime = auxiliaryRuntime.ok
+        ? await ensureProjectManagerRuntime(session.id)
+        : { ok: false, error: auxiliaryRuntime.error };
+      if (managerRuntime.ok) {
+        await requireProjectRequirementsAlignment(
+          session.id,
+          '异常运行链已重置，重新规划前必须重新确认当前目标、范围和验收标准',
+          managerRuntime.created === true,
+        );
+        const alignment = await ensureProjectRequirementAlignment(
+          session.id,
+          '异常运行链重置后重新进入需求对齐',
+          managerRuntime.created === true,
+          true,
+        );
+        updated = alignment.session
+          || useStore.getState().projectManagers.find((candidate) => candidate.id === session.id)
+          || reset.session;
+        if (alignment.error || !updated?.pendingUserQuestion) {
+          choiceTransitionFailure = alignment.error || '控制层重置后未能生成新的需求对齐问题';
+        } else {
+          choiceMessage = '异常 AI 运行链已安全重置；已重建空闲任务 AI 和项目 AI，正在重新进行需求对齐。用户确认前不会规划、派发或启动监督 AI。';
+        }
+      } else {
+        updated = reset.session;
+        choiceTransitionFailure = managerRuntime.error || '控制层重置后未能重建项目 AI 基础运行链';
+      }
+    } else {
+      choiceTransitionFailure = reset.error || '控制层未能安全重置异常运行链';
+    }
+  } else if ((taskInputConflictChoice || runtimeRecoveryChoice || verificationLimitedChoice)
     && ['keep-paused', 'manual-verify-defer'].includes(optionId || '') && updated) {
     const manualVerificationDeferred = optionId === 'manual-verify-defer';
     if (manualVerificationDeferred && updated.status === 'paused') {
@@ -15273,9 +15390,9 @@ export function initPipeBridge(): void {
             const runtime = auxiliaryRuntime.ok
               ? await ensureProjectManagerRuntime(session.id, { recoveredAfterRestart: true })
               : { ok: false, error: auxiliaryRuntime.error };
-            const supervisorRuntime = runtime.ok
+            const supervisorRuntime = runtime.ok && projectSupervisorRuntimeRequired(current)
               ? await ensureProjectSupervisorRuntime(session.id)
-              : { ok: false, error: runtime.error };
+              : { ok: runtime.ok, error: runtime.error };
             if (supervisorRuntime.ok) continue;
             failures.push(`${session.goal}：${supervisorRuntime.error || '项目运行链启动失败'}`);
             await reportProjectRuntimeFailureForUserDecision(
@@ -15363,10 +15480,14 @@ export function initPipeBridge(): void {
           return { ok: false, error: '历史项目恢复状态已经变化，已取消删除' };
         }
         await deleteSession(projectId);
+        teardownManagedProjectIdentity(
+          projectId,
+          '历史项目记录已删除，清理当前窗口中残留的项目运行时身份',
+        );
         return {
           ok: true,
           deletedProjectId: projectId,
-          message: '历史项目管理记录已删除；项目目录、代码和业务文件未删除。',
+          message: '历史项目管理记录及当前窗口残留运行时绑定已删除；项目目录、代码和业务文件未删除。',
         };
       } finally {
         deletingProjectManagerSessions.delete(projectId);
@@ -15549,8 +15670,10 @@ export function initPipeBridge(): void {
           if (!auxiliaryRuntime.ok) return { ok: false, error: auxiliaryRuntime.error };
           const runtime = await ensureProjectManagerRuntime(current.id);
           if (!runtime.ok) return { ok: false, error: runtime.error };
-          const supervisorRuntime = await ensureProjectSupervisorRuntime(current.id);
-          if (!supervisorRuntime.ok) return { ok: false, error: supervisorRuntime.error };
+          if (projectSupervisorRuntimeRequired(current)) {
+            const supervisorRuntime = await ensureProjectSupervisorRuntime(current.id);
+            if (!supervisorRuntime.ok) return { ok: false, error: supervisorRuntime.error };
+          }
           store = useStore.getState();
           store.selectProjectManager(current.id);
           const refreshed = store.projectManagers.find((candidate) => candidate.id === current.id) || current;
@@ -15625,15 +15748,6 @@ export function initPipeBridge(): void {
           runtime.error || '项目 AI 启动失败',
         );
         return { ok: false, error: runtime.error || '项目 AI 尚未就绪' };
-      }
-      const supervisorRuntime = await ensureProjectSupervisorRuntime(session.id);
-      if (!supervisorRuntime.ok || !supervisorRuntime.lane) {
-        await reportProjectRuntimeFailureForUserDecision(
-          session.id,
-          'supervisor-runtime-failed',
-          supervisorRuntime.error || '监督 AI 启动失败',
-        );
-        return { ok: false, error: supervisorRuntime.error || '监督 AI 尚未就绪' };
       }
       await requireProjectRequirementsAlignment(session.id, '项目首次启动，必须先完成需求充分性检测', runtime.created === true);
       const activeSession = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || session;
@@ -16104,9 +16218,9 @@ export function initPipeBridge(): void {
         const runtime = auxiliaryRuntime.ok
           ? await ensureProjectManagerRuntime(session.id, { recoveredAfterRestart: true })
           : { ok: false, error: auxiliaryRuntime.error };
-        const supervisorRuntime = runtime.ok
+        const supervisorRuntime = runtime.ok && projectSupervisorRuntimeRequired(restoring)
           ? await ensureProjectSupervisorRuntime(session.id)
-          : { ok: false, error: runtime.error };
+          : { ok: runtime.ok, error: runtime.error };
         if (!supervisorRuntime.ok) {
           const latest = useStore.getState().projectManagers.find((candidate) => candidate.id === session.id) || restoring;
           const failed = {

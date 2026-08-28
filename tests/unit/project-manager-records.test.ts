@@ -566,5 +566,11 @@ describe('project manager records', () => {
     expect(fs.existsSync(snapshot)).toBe(false);
     expect(fs.existsSync(audit)).toBe(false);
     expect(fs.readFileSync(path.join(projectDir, 'keep.txt'), 'utf8')).toBe('keep');
+    expect(() => saveProjectManagerSession({ ...project, updatedAt: 11 }, appData))
+      .toThrow('project manager session has been deleted');
+    expect(() => appendProjectManagerRecord({
+      sessionId: project.id, projectDir, type: 'late-runtime-write', payload: {},
+    }, appData)).toThrow('project manager session has been deleted');
+    expect(readActiveProjectManagerSessions(appData)).toEqual([]);
   });
 });

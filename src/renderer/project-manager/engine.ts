@@ -365,9 +365,13 @@ export function renderProjectRepositoryBootstrapTask(): string {
 }
 
 export function projectRepositoryBootstrapRequired(
-  session: Pick<ProjectManagerSession, 'repositoryBootstrapPending'> | undefined,
+  session: Pick<
+    ProjectManagerSession,
+    'repositoryBootstrapPending' | 'requirementsVersion' | 'acceptedRequirementsVersion'
+  > | undefined,
 ): boolean {
-  return session?.repositoryBootstrapPending === true;
+  return session?.repositoryBootstrapPending === true
+    && Number(session.acceptedRequirementsVersion || 0) >= Number(session.requirementsVersion || 1);
 }
 
 export function projectWorkItemHistoricallyDelivered(

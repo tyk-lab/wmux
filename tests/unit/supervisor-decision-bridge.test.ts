@@ -5760,16 +5760,48 @@ describe('supervisor decision bridge', () => {
       return { deleted: true };
     });
     const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    useStore.getState().replaceAllWorkspaces([{
+      id: 'ws-stale-history-runtime' as any,
+      title: '旧项目运行时',
+      cwd: persisted.projectDir,
+      splitTree: {
+        type: 'leaf', paneId: 'pane-stale-history-runtime' as any, activeSurfaceIndex: 0,
+        surfaces: [{ id: 'surface-unrelated' as any, type: 'terminal', shell: 'pwsh.exe' }],
+      },
+    }]);
+    const runtimeStore = useStore.getState();
+    const workspace = runtimeStore.workspaces[0];
+    const paneId = workspace.splitTree.type === 'leaf' ? workspace.splitTree.paneId : '';
+    const staleSurfaceId = runtimeStore.addSurface(workspace.id, paneId as any, 'terminal', {
+      customTitle: '旧项目 AI',
+      projectManagerTerminal: true,
+      projectManagerProjectId: persisted.id,
+    });
+    expect(staleSurfaceId).toBeTruthy();
+    runtimeStore.setProjectSupervisorLanes([{
+      ...lane(),
+      id: 'lane-stale-history-runtime',
+      surfaceId: staleSurfaceId as any,
+      supervisorSurfaceId: undefined,
+      projectManagerProjectId: persisted.id,
+    }]);
 
     await expect(remote({
       action: 'delete-recovery-project', projectId: persisted.id,
     })).resolves.toMatchObject({
       ok: true,
       deletedProjectId: persisted.id,
-      message: expect.stringContaining('项目目录、代码和业务文件未删除'),
+      message: expect.stringContaining('残留运行时绑定已删除'),
     });
     expect(projectManagerApi.deleteSession).toHaveBeenCalledWith(persisted.id);
     expect(useStore.getState().projectManagers).toEqual([]);
+    expect(useStore.getState().workspaces.some((candidate) => (
+      candidate.splitTree.type === 'leaf'
+      && candidate.splitTree.surfaces.some((surface) => surface.id === staleSurfaceId)
+    ))).toBe(false);
+    expect(useStore.getState().supervisor.lanes.some((candidate) => (
+      candidate.projectManagerProjectId === persisted.id
+    ))).toBe(false);
     await expect(remote({ action: 'recovery-candidates' })).resolves.toMatchObject({
       ok: true,
       candidates: [],
@@ -5781,6 +5813,22 @@ describe('supervisor decision bridge', () => {
       ok: false,
       error: expect.stringContaining('已经不存在'),
     });
+    await expect(remote({
+      action: 'start',
+      projectDir: persisted.projectDir,
+      goal: '在已删除记录的目录中建立新项目',
+      preconditions: ['目录可用'],
+      doneWhen: ['新项目可验收'],
+    })).resolves.toMatchObject({
+      ok: true,
+      session: { projectDir: persisted.projectDir, workItems: [] },
+    });
+    const replacement = useStore.getState().projectManagers[0];
+    expect(replacement.id).not.toBe(persisted.id);
+    expect(useStore.getState().supervisor.lanes.some((candidate) => (
+      candidate.projectManagerProjectId === persisted.id
+      || candidate.projectManagerProjectId === replacement.id
+    ))).toBe(false);
   });
 
   it('restores only the historical projects explicitly selected by the user', async () => {
@@ -6004,9 +6052,9 @@ describe('supervisor decision bridge', () => {
         ? projectWorkspaces[0].splitTree.surfaces.find((surface) => surface.id === session.taskTerminalSurfaceId)
         : undefined;
       const taskStartup = (taskSurface?.startupCommands || []).join('\n');
-      expect(taskStartup).toContain('[仓库基础治理｜仅新建或恢复后执行一次]');
-      expect(taskStartup).toContain('若未处于任何 Git 工作树，在项目根执行 git init');
-      expect(session.repositoryBootstrapPending).toBe(false);
+      expect(taskStartup).not.toContain('[仓库基础治理｜仅新建或恢复后执行一次]');
+      expect(taskStartup).toContain('当前没有已派发的成果任务');
+      expect(session.repositoryBootstrapPending).toBe(true);
       expect(projectWorkspaces[0].splitTree.type === 'leaf'
         ? projectWorkspaces[0].splitTree.surfaces.some((surface) => surface.id === session.managerSurfaceId)
         : false).toBe(true);
@@ -6018,6 +6066,103 @@ describe('supervisor decision bridge', () => {
         ))
         : false).toBe(true);
     }
+    expect(useStore.getState().supervisor.lanes.filter((lane) => (
+      useStore.getState().projectManagers.some((session) => session.id === lane.projectManagerProjectId)
+    ))).toHaveLength(0);
+  });
+
+  it('resets a pre-planning runtime failure directly when no work item exists', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start', projectDir: 'E:\\preplanning-runtime-failure', goal: '建立物料管理项目',
+      preconditions: ['本地环境可用'], doneWhen: ['物料管理成果可验收'],
+    });
+    const projectId = started.session.id;
+    const session = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId)!;
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await expect(request({
+      action: 'pause', callerSurfaceId: session.managerSurfaceId, projectId,
+      reason: '项目监督 AI 运行时启动失败',
+    })).resolves.toMatchObject({
+      ok: true,
+      question: {
+        reasonCode: 'runtime-recovery',
+        options: expect.arrayContaining([expect.objectContaining({
+          id: 'control-plane-reset', label: '重置运行链并重新规划',
+        })]),
+      },
+    });
+    const pending = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === projectId)?.pendingUserQuestion;
+    expect(pending?.options).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'stop-work-item' }),
+    ]));
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => {
+      delete (globalThis.window as any).wmux.pty.has;
+      return false;
+    });
+    await expect(remote({
+      action: 'answer-question', projectId, questionId: pending?.id,
+      optionId: 'control-plane-reset', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: { status: 'waiting', pendingUserQuestion: expect.any(Object), workItems: [] },
+      message: expect.stringContaining('正在重新进行需求对齐'),
+    });
+    const reset = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId)!;
+    expect(reset.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'project-runtime-reset' }),
+      expect.objectContaining({
+        kind: 'user-choice-transition-completed',
+        payload: expect.objectContaining({ optionId: 'control-plane-reset' }),
+      }),
+    ]));
+  });
+
+  it('maps a persisted zero-work-item stop choice to the control-plane reset', async () => {
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const started = await remote({
+      action: 'start', projectDir: 'E:\\legacy-zero-item-recovery', goal: '恢复旧版空项目',
+      preconditions: [], doneWhen: ['形成可验收项目'],
+    });
+    const projectId = started.session.id;
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === projectId)!;
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'waiting',
+      workItems: [],
+      activeWorkItemId: undefined,
+      pendingUserQuestion: {
+        id: 'legacy-zero-item-runtime-question',
+        category: 'manual-intervention',
+        reasonCode: 'runtime-recovery',
+        question: '项目运行时异常，如何处理？',
+        context: '旧版本在没有工作项时仍提供停止工作项选项。',
+        options: [
+          { id: 'rebuild-supervisor-runtime', label: '重建专属监督 AI', description: '重建监督。' },
+          { id: 'keep-paused', label: '保持暂停', description: '继续暂停。' },
+          { id: 'stop-work-item', label: '停止并重新规划', description: '停止并重新规划。' },
+        ],
+        recommendedOptionId: 'rebuild-supervisor-runtime',
+        previousStatus: 'active',
+        createdAt: 2,
+      },
+    });
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => {
+      delete (globalThis.window as any).wmux.pty.has;
+      return false;
+    });
+    await expect(remote({
+      action: 'answer-question', projectId,
+      questionId: 'legacy-zero-item-runtime-question',
+      optionId: 'stop-work-item', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: { status: 'waiting', pendingUserQuestion: expect.any(Object), workItems: [] },
+      message: expect.stringContaining('正在重新进行需求对齐'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === projectId)?.events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'project-runtime-reset' })]));
   });
 
   it('keeps a healthy supervisor across pane layout changes while only it can dispatch task work', async () => {
@@ -6446,7 +6591,7 @@ describe('supervisor decision bridge', () => {
     delete (globalThis.window as any).wmux.pty.has;
   });
 
-  it('closes all three visible project runtimes when an undispatched project is deleted', async () => {
+  it('closes every visible project surface when an undispatched project is deleted', async () => {
     useStore.getState().setProjectSupervisorLanes([]);
     useStore.getState().resetOrdinarySupervisorSession();
     useStore.getState().replaceAllWorkspaces([]);
@@ -6467,12 +6612,66 @@ describe('supervisor decision bridge', () => {
       ))
     ));
     expect(consoleWorkspace).toBeDefined();
-    expect(useStore.getState().supervisor.lanes.some((lane) => lane.projectManagerProjectId === projectId)).toBe(true);
+    expect(useStore.getState().supervisor.lanes.some((lane) => lane.projectManagerProjectId === projectId)).toBe(false);
 
     await expect(remote({ action: 'delete-project', projectId })).resolves.toMatchObject({
       ok: true, deletedProjectId: projectId,
     });
     expect(useStore.getState().workspaces.some((workspace) => workspace.id === consoleWorkspace?.id)).toBe(false);
+    expect(useStore.getState().workspaces.some((workspace) => (
+      workspace.splitTree.type === 'leaf'
+      && workspace.splitTree.surfaces.some((surface) => (
+        surface.projectManagerProjectId === projectId || surface.projectSupervisorProjectId === projectId
+      ))
+    ))).toBe(false);
+  });
+
+  it('does not let an in-flight runtime ensure persist a project after deletion', async () => {
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().resetOrdinarySupervisorSession();
+    useStore.getState().replaceAllWorkspaces([]);
+    const projectManagerApi = (globalThis.window as any).wmux.projectManager;
+    let deletionStarted = false;
+    const lateSaves: unknown[] = [];
+    projectManagerApi.saveSession.mockImplementation(async (value: unknown) => {
+      if (deletionStarted) lateSaves.push(value);
+      return { ok: true };
+    });
+    projectManagerApi.deleteSession.mockImplementation(async () => {
+      deletionStarted = true;
+      return { deleted: true };
+    });
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => true);
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const starting = remote({
+      action: 'start',
+      projectDir: 'E:\\delete-during-runtime-start',
+      goal: '验证删除与运行时启动竞态',
+      preconditions: ['目录可用'],
+      doneWhen: ['项目不会在删除后复活'],
+    });
+    await vi.waitFor(() => {
+      const pending = useStore.getState().projectManagers[0];
+      expect(pending).toBeDefined();
+      const taskSurface = useStore.getState().workspaces.flatMap((workspace) => (
+        getAllPaneIds(workspace.splitTree).flatMap((paneId) => (
+          findLeaf(workspace.splitTree, paneId)?.surfaces || []
+        ))
+      )).find((surface) => (
+        surface.projectManagerProjectId === pending.id && surface.projectManagerTerminal !== true
+      ));
+      expect(taskSurface).toBeDefined();
+      expect(terminalRuntimeStatus(String(taskSurface?.id || ''))?.state).toBe('starting');
+    });
+    const projectId = useStore.getState().projectManagers[0].id;
+
+    await expect(remote({ action: 'delete-project', projectId })).resolves.toMatchObject({
+      ok: true,
+      deletedProjectId: projectId,
+    });
+    await expect(starting).resolves.toMatchObject({ ok: false });
+    expect(useStore.getState().projectManagers.some((candidate) => candidate.id === projectId)).toBe(false);
+    expect(lateSaves).toEqual([]);
   });
 
   it('closes an ordinary task terminal and cleans up its last-tab workspace', () => {

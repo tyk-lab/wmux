@@ -36,12 +36,17 @@ const WORK_ITEM_STATUSES = new Set([
 ]);
 const GOAL_STATUSES = new Set(['transitioning', 'active', 'achieved', 'superseded', 'abandoned']);
 const SUBGOAL_STATUSES = new Set(['planned', 'active', 'blocked', 'achieved', 'obsolete']);
+const deletedProjectManagerRecordIdentities = new Set<string>();
 const CONTINUATION_BOUNDARIES = new Set([
   'project-owned-decision', 'external-prerequisite', 'high-risk-boundary',
 ]);
 
 function recordsDirectory(appDataDir = getAppDataDir()): string {
   return path.join(appDataDir, 'project-manager');
+}
+
+function projectManagerRecordIdentity(sessionId: string, appDataDir: string): string {
+  return `${path.resolve(appDataDir)}\0${sessionId}`;
 }
 
 function validateIdentity(sessionId: string, projectDir: string): void {
@@ -449,6 +454,9 @@ export function saveProjectManagerSession(
   session: ProjectManagerSession,
   appDataDir = getAppDataDir(),
 ): { path: string } {
+  if (deletedProjectManagerRecordIdentities.has(projectManagerRecordIdentity(session.id, appDataDir))) {
+    throw new Error('project manager session has been deleted');
+  }
   if (session.executionProtocolVersion !== CURRENT_PROJECT_EXECUTION_PROTOCOL_VERSION) {
     throw new Error('invalid project manager execution protocol version');
   }
@@ -499,6 +507,7 @@ export function deleteProjectManagerSession(
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
+  deletedProjectManagerRecordIdentities.add(projectManagerRecordIdentity(sessionId, appDataDir));
   return { deleted };
 }
 
@@ -506,6 +515,9 @@ export function appendProjectManagerRecord(
   record: ProjectManagerRecord,
   appDataDir = getAppDataDir(),
 ): { path: string } {
+  if (deletedProjectManagerRecordIdentities.has(projectManagerRecordIdentity(record.sessionId, appDataDir))) {
+    throw new Error('project manager session has been deleted');
+  }
   validateIdentity(record.sessionId, record.projectDir);
   const directory = recordsDirectory(appDataDir);
   fs.mkdirSync(directory, { recursive: true });

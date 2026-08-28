@@ -129,8 +129,21 @@ describe('current project governance', () => {
 
   it('prepares the repository only before a new or restored project task has started', () => {
     expect(projectRepositoryBootstrapRequired(undefined)).toBe(false);
-    expect(projectRepositoryBootstrapRequired({ repositoryBootstrapPending: true })).toBe(true);
-    expect(projectRepositoryBootstrapRequired({ repositoryBootstrapPending: false })).toBe(false);
+    expect(projectRepositoryBootstrapRequired({
+      repositoryBootstrapPending: true,
+      requirementsVersion: 1,
+      acceptedRequirementsVersion: 1,
+    })).toBe(true);
+    expect(projectRepositoryBootstrapRequired({
+      repositoryBootstrapPending: true,
+      requirementsVersion: 1,
+      acceptedRequirementsVersion: 0,
+    })).toBe(false);
+    expect(projectRepositoryBootstrapRequired({
+      repositoryBootstrapPending: false,
+      requirementsVersion: 1,
+      acceptedRequirementsVersion: 1,
+    })).toBe(false);
 
     const batch = {
       kind: 'task' as const,

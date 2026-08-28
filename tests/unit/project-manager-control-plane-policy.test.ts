@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { shouldRestartProjectManagerRuntime } from '../../src/renderer/project-manager/runtime-recovery-policy';
+import { projectSupervisorRuntimeRequired } from '../../src/renderer/project-manager/runtime-admission-policy';
+import { projectSupervisorBriefingStartupError } from '../../src/renderer/project-manager/supervisor-startup-policy';
 import {
   buildProjectInternalRecoveryScopeKey,
   projectGoalClosurePauseWasMisclassified,
@@ -125,6 +127,32 @@ function pausedCompletedProject(): ProjectManagerSession {
 }
 
 describe('project manager control-plane policies', () => {
+  it('starts a project supervisor only after a current work item owns execution', () => {
+    const project = pausedCompletedProject();
+    project.workItems = [];
+    project.activeWorkItemId = undefined;
+    expect(projectSupervisorRuntimeRequired(project)).toBe(false);
+
+    const planned = workItem({ goalId: project.activeGoalId, status: 'planned' });
+    project.workItems = [planned];
+    expect(projectSupervisorRuntimeRequired(project)).toBe(false);
+
+    project.workItems = [{ ...planned, status: 'waiting-decision', supervisorLaneId: 'lane-a' }];
+    expect(projectSupervisorRuntimeRequired(project)).toBe(true);
+  });
+
+  it('trusts the mounted runtime ready verdict when a full-screen supervisor is transiently blank', () => {
+    expect(projectSupervisorBriefingStartupError({
+      runtimeState: 'ready', screen: '\n\n', nonElectronHarness: false,
+    })).toBeNull();
+    expect(projectSupervisorBriefingStartupError({
+      runtimeState: 'starting', screen: 'PS C:\\repo>', nonElectronHarness: false,
+    })).toContain('外层 Shell');
+    expect(projectSupervisorBriefingStartupError({
+      runtimeState: 'starting', screen: '', nonElectronHarness: false,
+    })).toContain('未检测到 Codex');
+  });
+
   it('restarts only an unavailable manager runtime', () => {
     expect(shouldRestartProjectManagerRuntime({
       managerPresent: true, runtimeState: 'ready', shellFailure: false, ptyPresent: true,
