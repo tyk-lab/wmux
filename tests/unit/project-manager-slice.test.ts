@@ -14,6 +14,7 @@ import {
   type ProjectCompletionResult,
   type ProjectWorkItem,
 } from '../../src/shared/project-manager';
+import { projectProgressObligation } from '../../src/renderer/project-manager/engine';
 
 function store() {
   return create<ProjectManagerSlice>()(createProjectManagerSlice);
@@ -355,7 +356,7 @@ describe('project-manager slice', () => {
       }),
       expect.objectContaining({ id: 'last', status: 'planned' }),
     ]);
-    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBe('worker-middle');
+    expect(useStore.getState().projectManager?.taskTerminalSurfaceId).toBeUndefined();
     expect(useStore.getState().applyProjectManagerAction({
       type: 'update-work-item', workItemId: 'middle', patch: { status: 'planned' },
     })).toMatchObject({ ok: false, error: expect.stringContaining('不能由 AI 恢复') });
@@ -576,6 +577,24 @@ describe('project-manager slice', () => {
       expect.objectContaining({ id: implementationStage.id, status: 'achieved' }),
       expect.objectContaining({ id: validationStage.id, status: 'obsolete' }),
     ]));
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'set-project-subgoals', source: 'manager',
+      subgoals: [
+        { ...implementationStage, status: 'achieved' },
+        { ...validationStage, status: 'planned' },
+      ],
+    }, project.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('必须保持 obsolete'),
+    });
+
+    const settled = useStore.getState().projectManager!;
+    useStore.getState().restoreProjectManager({
+      ...settled,
+      subgoals: settled.subgoals?.map((subgoal) => subgoal.id === validationStage.id
+        ? { ...subgoal, status: 'planned' as const }
+        : subgoal),
+    });
 
     expect(useStore.getState().applyProjectManagerAction({
       type: 'resume-project', reason: '项目 AI 核对豁免后收口', acceptRequirementsVersion: true,
@@ -583,6 +602,8 @@ describe('project-manager slice', () => {
     expect(useStore.getState().applyProjectManagerAction({
       type: 'complete-current-goal', evidence: '实现成果证据完整；普通 GUI 验证由用户明确豁免',
     }, project.id)).toMatchObject({ ok: true, event: { kind: 'project-goal-completed' } });
+    expect(useStore.getState().projectManager?.subgoals?.find((subgoal) => subgoal.id === validationStage.id))
+      .toMatchObject({ status: 'obsolete', completion: undefined });
   });
 
   it('releases the active work item when a verification-limited question is deferred', () => {
@@ -1689,6 +1710,101 @@ describe('project-manager slice', () => {
       status: 'waiting',
       pendingUserQuestion: { id: 'manual-feedback', recommendedOptionId: 'manual-verify-complete' },
       workItems: [expect.objectContaining({ id: 'gui-check', status: 'waiting-decision' })],
+    });
+    const waiting = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...waiting,
+      workItems: waiting.workItems.map((workItem) => workItem.id === 'gui-check' ? {
+        ...workItem,
+        verificationDecision: {
+          action: 'defer-verification', questionId: original.id, reason: '旧暂缓决定',
+          answeredBy: 'desktop', requirementsVersion: waiting.requirementsVersion!,
+          authorizationVersion: waiting.authorizationVersion!, decidedAt: 1,
+        },
+      } : workItem),
+    });
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: refined.id,
+      answer: '人工验收完成', optionId: 'manual-verify-complete', answeredBy: 'desktop',
+    }, project.id)).toMatchObject({ ok: true });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)
+      ?.workItems.find((workItem) => workItem.id === 'gui-check')?.verificationDecision).toBeUndefined();
+  });
+
+  it('rebinds a reported manual failure to the current version so stage closure cannot ignore it', () => {
+    const useStore = store();
+    const project = useStore.getState().startProjectManager({
+      projectDir: 'E:\\manual-failure-rebind', goal: '验证 GUI', doneWhen: ['GUI 已验收'],
+    });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const question = {
+      id: 'manual-failure-feedback', category: 'manual-intervention' as const,
+      workItemId: 'old-gui-check', blocker: '等待人工 GUI 验收', reasonCode: 'verification-limited' as const,
+      question: '请反馈人工验收结果。', context: '失败必须保留为当前验证义务。',
+      options: [{ id: 'manual-verify-failed', label: '验收发现问题' }],
+      recommendedOptionId: 'manual-verify-failed', previousStatus: 'paused' as const, createdAt: 2,
+    };
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'active', requirementsVersion: 6, acceptedRequirementsVersion: 6, authorizationVersion: 1,
+      goals: current.goals?.map((goal) => goal.id === goalId ? { ...goal, requirementsVersion: 6 } : goal),
+      progressSnapshot: {
+        version: 1, capturedAt: 1, mode: 'git', fingerprint: 'manual-failure',
+        head: 'head', branch: 'main', entries: [], truncated: false,
+      },
+      progressSync: {
+        status: 'ready', checkedAt: 1, snapshotFingerprint: 'manual-failure',
+        summary: '当前进度已同步', changeCount: 0,
+      },
+      orientation: {
+        status: 'ready', requirementsVersion: 6, authorizationVersion: 1,
+        snapshotFingerprint: 'manual-failure', reason: '当前事实已确认', requestedAt: 1,
+        summary: '当前事实已确认', knownFacts: [], unknowns: [], workItems: [], acknowledgedAt: 1,
+      },
+      subgoals: [{
+        id: 'gui-stage', goalId, title: 'GUI 验收', outcome: 'GUI 可验收',
+        acceptance: ['GUI 已验收'], dependencies: [], status: 'active', order: 1,
+        createdAt: 1, updatedAt: 1,
+      }],
+      workItems: [{
+        ...item('old-gui-check'), goalId, subgoalId: 'gui-stage', status: 'paused',
+        requirementsVersion: 4, authorizationVersion: 1,
+        verificationDecision: {
+          action: 'defer-verification', questionId: 'old-defer', reason: '旧版本暂缓',
+          answeredBy: 'desktop', requirementsVersion: 2, authorizationVersion: 1, decidedAt: 1,
+        },
+        verificationLimitation: {
+          kind: 'gui-automation-unavailable', detail: '等待人工验证',
+          missingEvidence: ['人工 GUI 结果'], affectedAcceptance: ['GUI 已验收'],
+          requirementsVersion: 6, authorizationVersion: 1, detectedAt: 2,
+        },
+      }],
+      pendingUserQuestion: question,
+    });
+
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'answer-user-clarification', questionId: question.id,
+      answer: 'Delete 失败', optionId: 'manual-verify-failed', answeredBy: 'desktop',
+    }, project.id)).toMatchObject({ ok: true });
+    const failed = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(failed.workItems[0]).toMatchObject({
+      status: 'failed', requirementsVersion: 6, authorizationVersion: 1,
+      verificationDecision: undefined,
+    });
+    const obligationSession = {
+      ...failed,
+      status: 'active' as const,
+      requirementsVersion: 6,
+      authorizationVersion: 1,
+      goals: failed.goals?.map((goal) => goal.id === goalId ? { ...goal, requirementsVersion: 6 } : goal),
+      orientation: {
+        ...failed.orientation!, status: 'ready' as const, requirementsVersion: 6, authorizationVersion: 1,
+        snapshotFingerprint: failed.progressSnapshot!.fingerprint,
+      },
+    };
+    expect(projectProgressObligation(obligationSession)).toMatchObject({
+      kind: 'resolve-decision', workItemId: 'old-gui-check',
     });
   });
 

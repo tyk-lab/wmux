@@ -36,6 +36,14 @@ describe('project manager runtime startup protocol', () => {
     expect(agents).toContain('缺少自动化通道改写成同义任务反复派发');
     expect(agents).toContain('恢复耗尽并准备暂停时才可用 `runtime-recovery`');
     expect(agents).toContain('不得只弹警告');
+    expect(agents).toContain('`orientation.recovery` 存在时');
+    expect(agents).toContain('已完成且有证据的工作使用 `retain-completed`');
+    expect(agents).toContain('L2 路线重评估');
+    expect(agents).toContain('受影响工作项不得选择 `continue` 或 `verify`');
+    expect(agents).toContain('`dispatch-work` 连续失败同样属于监督运行链故障');
+    expect(agents).toContain('最多自动 L2 一次');
+    expect(agents).toContain('依次执行 `project resume` 与该工作项的 `project dispatch`');
+    expect(agents).toContain('旧对话、旧命令和旧路线只作为历史');
 
     expect(agents).toContain('首次需求摘要必须通过结构化 `wmux project ask`');
     expect(agents).toContain('任务 AI 是唯一项目执行者和最终技术决策者');

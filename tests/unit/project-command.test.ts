@@ -114,6 +114,8 @@ describe('project command help', () => {
     const help = resolveProjectCommandHelp(['project', 'orientation-confirm', '--help']);
     expect(help).toContain('orientation-confirm --project <id> --json-file .wmux/tmp/orientation-<requestedAt>.json');
     expect(help).toContain('project inspect` is read-only');
+    expect(help).toContain('continue, replan, verify, pause, stop, or retain-completed');
+    expect(help).toContain('L2 route recovery');
   });
 
   it('documents the project AI recovery and user-confirmation contracts', () => {

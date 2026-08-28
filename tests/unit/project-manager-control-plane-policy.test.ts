@@ -6,16 +6,21 @@ import {
   buildProjectInternalRecoveryScopeKey,
   projectGoalClosurePauseWasMisclassified,
   projectInternalRecoveryAttempts,
+  projectRecoveryExhaustionRequiresRuntimeEscalation,
+  projectRouteRecoveryAlreadyAttempted,
 } from '../../src/renderer/project-manager/semantic-recovery-policy';
 import { projectTransitionResolutionError } from '../../src/renderer/project-manager/transition-policy';
 import { projectWorkItemCreationError } from '../../src/renderer/project-manager/work-item-admission-policy';
 import {
+  projectStaleDeferredVerificationBlocker,
   projectSubgoalClosedByVerificationWaiver,
   projectWorkItemRequiresVersionReconciliation,
   projectWorkItemVerificationWaiverError,
+  projectWorkItemVerificationWaiverRisk,
 } from '../../src/renderer/project-manager/verification-intervention-policy';
 import {
   normalizeProjectManagerSession,
+  normalizeProjectOrientationState,
   type ProjectManagerEvent,
   type ProjectManagerSession,
   type ProjectSupervisorTransition,
@@ -127,6 +132,96 @@ function pausedCompletedProject(): ProjectManagerSession {
 }
 
 describe('project manager control-plane policies', () => {
+  it('treats a never-started dispatch deadlock as a runtime failure instead of a failed work route', () => {
+    const planned = workItem({
+      status: 'planned', attempts: 0, executionHistory: [],
+      startedAt: undefined, latestEvidence: undefined, completion: undefined,
+    });
+    expect(projectRecoveryExhaustionRequiresRuntimeEscalation('dispatch-work', planned)).toBe(true);
+    expect(projectRecoveryExhaustionRequiresRuntimeEscalation('recover-work', planned)).toBe(false);
+    expect(projectRecoveryExhaustionRequiresRuntimeEscalation('dispatch-work', {
+      ...planned, attempts: 1, executionHistory: [{
+        ts: 2, action: '尝试执行成果', workspaceVersion: 'v1', consumedDecision: true,
+      }],
+    })).toBe(false);
+  });
+
+  it('allows only one automatic L2 replan for the same work item and project snapshot', () => {
+    const project = normalizeProjectManagerSession({
+      id: 'pm-route-once', projectDir: 'C:/project', goal: '交付成果', preconditions: [],
+      planFiles: [], doneWhen: ['成果可验收'], status: 'active', requirementsVersion: 3,
+      authorizationVersion: 2, acceptedRequirementsVersion: 3,
+      executionProtocolVersion: 10, workItems: [], events: [], createdAt: 1, updatedAt: 1,
+    });
+    project.progressSnapshot = {
+      version: 1, capturedAt: 1, mode: 'git', fingerprint: 'snapshot-current', entries: [], truncated: false,
+    };
+    project.events = [{
+      id: 'route-assessment', sessionId: project.id, ts: 2,
+      kind: 'project-orientation-confirmed', summary: '已完成一次路线重评估',
+      payload: {
+        recoveryLevel: 'route', recoveryWorkItemId: 'task-a',
+        snapshotFingerprint: 'snapshot-current', requirementsVersion: 3, authorizationVersion: 2,
+      },
+    }];
+
+    expect(projectRouteRecoveryAlreadyAttempted(project, 'task-a')).toBe(true);
+    expect(projectRouteRecoveryAlreadyAttempted(project, 'task-b')).toBe(false);
+    expect(projectRouteRecoveryAlreadyAttempted({
+      ...project,
+      events: [],
+      orientation: {
+        status: 'ready', requirementsVersion: 3, authorizationVersion: 2,
+        snapshotFingerprint: 'snapshot-current', reason: '已完成 L2', requestedAt: 3,
+        summary: '旧路线已退役', knownFacts: ['当前事实'], unknowns: [],
+        workItems: [{
+          workItemId: 'task-a', disposition: 'replan', basis: '同一阻碍', nextAction: '建立新链',
+        }],
+        recovery: {
+          level: 'route', role: 'manager', triggerFingerprint: 'stable-route', blocker: '同一阻碍',
+          occurrence: 2, requestedAt: 3, workItemId: 'task-a',
+        },
+        acknowledgedAt: 4,
+      },
+    }, 'task-a')).toBe(true);
+    expect(projectRouteRecoveryAlreadyAttempted({
+      ...project,
+      progressSnapshot: { ...project.progressSnapshot, fingerprint: 'snapshot-with-new-evidence' },
+    }, 'task-a')).toBe(false);
+  });
+
+  it('preserves structured recovery orientation and accepts an explicit replan disposition', () => {
+    expect(normalizeProjectOrientationState({
+      status: 'required', requirementsVersion: 3, authorizationVersion: 2,
+      snapshotFingerprint: 'snapshot-a', reason: '异常恢复前重新核对', requestedAt: 10,
+      recovery: {
+        level: 'route', role: 'manager', triggerFingerprint: 'same-blocker',
+        blocker: '同一阻碍连续出现', occurrence: 2, requestedAt: 10,
+        workItemId: 'task-a', evidenceSummary: '两轮均无新证据',
+      },
+    })).toMatchObject({
+      status: 'required',
+      recovery: {
+        level: 'route', role: 'manager', triggerFingerprint: 'same-blocker',
+        occurrence: 2, workItemId: 'task-a',
+      },
+    });
+    expect(normalizeProjectOrientationState({
+      status: 'ready', requirementsVersion: 3, authorizationVersion: 2,
+      snapshotFingerprint: 'snapshot-a', reason: '异常恢复前重新核对', requestedAt: 10,
+      summary: '保留成果并重新安排剩余工作', knownFacts: ['已有成果继续有效'], unknowns: [],
+      workItems: [{
+        workItemId: 'task-a', disposition: 'replan',
+        basis: '旧路线无新证据', nextAction: '按剩余验收重新派发',
+      }],
+      acknowledgedAt: 11,
+      recovery: {
+        level: 'route', role: 'manager', triggerFingerprint: 'same-blocker',
+        blocker: '同一阻碍连续出现', occurrence: 2, requestedAt: 10, workItemId: 'task-a',
+      },
+    })?.workItems).toEqual([expect.objectContaining({ disposition: 'replan' })]);
+  });
+
   it('starts a project supervisor only after a current work item owns execution', () => {
     const project = pausedCompletedProject();
     project.workItems = [];
@@ -372,6 +467,65 @@ describe('project manager control-plane policies', () => {
       .toContain('必须留在原成果的监督链内');
   });
 
+  it('detects an old deferred item that blocks a stage already covered by current evidence', () => {
+    const project = normalizeProjectManagerSession({
+      id: 'stale-defer-project', projectDir: 'C:/project', goal: '交付阶段成果',
+      preconditions: [], planFiles: [], doneWhen: ['验收 A', '验收 B'], status: 'active',
+      requirementsVersion: 6, authorizationVersion: 1, acceptedRequirementsVersion: 6,
+      executionProtocolVersion: 10, workItems: [], events: [], createdAt: 1, updatedAt: 1,
+    });
+    const goalId = project.activeGoalId!;
+    project.subgoals = [{
+      id: 'stage-a', goalId, title: '阶段 A', outcome: '阶段成果',
+      acceptance: ['验收 A', '验收 B'], dependencies: [], status: 'active',
+      order: 1, createdAt: 1, updatedAt: 1,
+    }];
+    const deferred = workItem({
+      id: 'old-deferred', goalId, subgoalId: 'stage-a', status: 'paused',
+      requirementsVersion: 4,
+      verificationDecision: {
+        action: 'defer-verification', questionId: 'old-question', reason: '稍后人工验证',
+        answeredBy: 'desktop', requirementsVersion: 2, authorizationVersion: 1, decidedAt: 2,
+      },
+    });
+    const completed = workItem({
+      id: 'current-evidence', goalId, subgoalId: 'stage-a', status: 'completed',
+      requirementsVersion: 6,
+      completion: {
+        summary: '当前版本证据已覆盖阶段验收', validation: ['验收 A', '验收 B'], completedAt: 6,
+        criteria: ['验收 A', '验收 B'].map((criterion) => ({
+          criterion, status: 'satisfied' as const, result: 'passed' as const,
+          method: 'evidence-review' as const, evidence: `${criterion} 已通过`,
+          evidenceRefs: [`evidence/${criterion}.json`],
+          evidenceArtifacts: [{
+            ref: `evidence/${criterion}.json`, sizeBytes: 12, mtimeMs: 1, sha256: 'c'.repeat(64),
+          }],
+        })),
+      },
+    });
+    project.workItems = [deferred, completed];
+
+    expect(projectStaleDeferredVerificationBlocker(project)).toMatchObject({
+      deferredItem: { id: deferred.id },
+      completedSuccessor: { id: completed.id },
+      subgoalId: 'stage-a',
+    });
+    expect(projectStaleDeferredVerificationBlocker({
+      ...project,
+      workItems: [{
+        ...deferred,
+        verificationDecision: {
+          ...deferred.verificationDecision!, requirementsVersion: 6,
+        },
+      }, completed],
+    })).toBeNull();
+    const failedAfterRestart = normalizeProjectManagerSession(JSON.parse(JSON.stringify({
+      ...project,
+      workItems: [{ ...deferred, status: 'failed' }, completed],
+    })));
+    expect(projectStaleDeferredVerificationBlocker(failedAfterRestart)).toBeNull();
+  });
+
   it('allows an audited standard verification waiver but rejects protected criteria and real failures', () => {
     const project = normalizeProjectManagerSession({
       id: 'waiver-project', projectDir: 'C:/project', goal: '交付 GUI 成果',
@@ -424,7 +578,11 @@ describe('project manager control-plane policies', () => {
     expect(projectWorkItemVerificationWaiverError(defaultProtectedProject, {
       ...standard,
       goalId: defaultProtectedProject.activeGoalId,
-    })).toContain('不能跳过');
+    })).toContain('先确认保护性验收风险');
+    expect(projectWorkItemVerificationWaiverError(defaultProtectedProject, {
+      ...standard,
+      goalId: defaultProtectedProject.activeGoalId,
+    }, { riskAcknowledged: true })).toBeNull();
     const stageOnlyProject = {
       ...project,
       subgoals: project.subgoals?.map((stage) => ({
@@ -443,7 +601,7 @@ describe('project manager control-plane policies', () => {
       }],
     };
     expect(projectWorkItemVerificationWaiverError(stageOnlyProject, stageOnlyProject.workItems[0]))
-      .toContain('不能跳过');
+      .toContain('先确认保护性验收风险');
     const ambiguousStage = {
       ...project,
       subgoals: project.subgoals?.map((stage) => ({
@@ -474,12 +632,28 @@ describe('project manager control-plane policies', () => {
 
     const protectedByContent = {
       ...standard,
+      contract: {
+        ...standard.contract,
+        validation: ['权限与数据完整性验收通过'],
+        stageAcceptanceCoverage: [{
+          stageCriterion: 'GUI CRUD 可复核',
+          verificationCriterion: '权限与数据完整性验收通过',
+        }],
+      },
       verificationLimitation: {
         ...limitation,
         affectedAcceptance: ['权限与数据完整性验收通过'],
       },
     };
-    expect(projectWorkItemVerificationWaiverError(project, protectedByContent)).toContain('不能跳过');
+    expect(projectWorkItemVerificationWaiverRisk(project, protectedByContent))
+      .toContain('权限与数据完整性验收通过');
+    expect(projectWorkItemVerificationWaiverError(project, protectedByContent))
+      .toContain('先确认保护性验收风险');
+    expect(projectWorkItemVerificationWaiverError(
+      project,
+      protectedByContent,
+      { riskAcknowledged: true },
+    )).toBeNull();
 
     const explicitProtectedProject = {
       ...project,
@@ -493,7 +667,21 @@ describe('project manager control-plane policies', () => {
         }],
       })),
     };
-    expect(projectWorkItemVerificationWaiverError(explicitProtectedProject, standard)).toContain('不能跳过');
+    expect(projectWorkItemVerificationWaiverError(explicitProtectedProject, standard))
+      .toContain('先确认保护性验收风险');
+    const protectedWaived = {
+      ...standard,
+      status: 'stopped' as const,
+      verificationDecision: {
+        ...waived.verificationDecision,
+        riskAcknowledged: true,
+      },
+    };
+    expect(projectWorkItemVerificationWaiverError(explicitProtectedProject, protectedWaived)).toBeNull();
+    expect(projectSubgoalClosedByVerificationWaiver(
+      { ...explicitProtectedProject, workItems: [protectedWaived] },
+      'stage-a',
+    )).toBe(true);
 
     const failed = {
       ...standard,

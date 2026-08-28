@@ -38,6 +38,14 @@ describe('project manager action-first layout', () => {
     expect(dialogSource).not.toContain('<dt>完成时间</dt>');
   });
 
+  it('explains recovery assessment without implying that old work restarts', () => {
+    expect(dialogSource).toContain('项目 AI 正在核对恢复现场');
+    expect(dialogSource).toContain('项目 AI 正在重新评估异常路线');
+    expect(dialogSource).toContain('评估完成前不会自动续跑旧任务');
+    expect(dialogSource).toContain('L2 路线重评估');
+    expect(dialogSource).toContain('阻碍：{session.orientation.recovery.blocker}');
+  });
+
   it('uses responsive action grids and bounded scrolling', () => {
     expect(stylesSource).toContain('.project-manager-dialog__action-grid');
     expect(stylesSource).toContain('max-height: min(52vh, 520px)');

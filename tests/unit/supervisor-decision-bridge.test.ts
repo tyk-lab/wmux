@@ -75,6 +75,7 @@ import { prepareTerminalPasteInput } from '../../src/renderer/supervisor/supervi
 import { confirmSupervisorUserSubmitFromHook } from '../../src/renderer/supervisor/user-input-precedence';
 import { openProjectManagerConsole } from '../../src/renderer/project-manager/console-surface';
 import { TASK_VALIDATION_REPORTING_POLICY } from '../../src/renderer/project-manager/engine';
+import { projectStaleDeferredVerificationBlocker } from '../../src/renderer/project-manager/verification-intervention-policy';
 import { interruptedUserChoiceTransition } from '../../src/renderer/project-manager/user-choice-recovery';
 
 async function confirmProjectOrientation(projectId: string): Promise<void> {
@@ -1429,7 +1430,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes.find((item) => item.id === 'lane-a')).toMatchObject({
       projectWorkItemId: undefined,
       currentTask: '',
-      controlState: 'active',
+      controlState: 'paused',
       awaitingReview: false,
       pendingSupervisorDeliveries: [expect.objectContaining({ id: 'bootstrap-role-ready' })],
     });
@@ -1558,7 +1559,17 @@ describe('supervisor decision bridge', () => {
     expect(updated.subgoals?.[0]).toMatchObject({ id: 'gui_stage', status: 'obsolete' });
     expect((globalThis.window as any).wmux.pty.writeReliable).toHaveBeenCalledWith('worker-a', '\x03');
     expect(useStore.getState().supervisor.lanes.find((candidate) => candidate.id === 'lane-a'))
-      .toMatchObject({ projectWorkItemId: undefined, controlState: 'active' });
+      .toMatchObject({ projectWorkItemId: undefined, controlState: 'paused' });
+    await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
+      action: 'event', projectId: project.id,
+      eventType: 'supervisor.delivery.failed',
+      summary: '终态工作项解绑后才到达的迟到投递失败',
+      payload: { laneId: 'lane-a' },
+    })).resolves.toMatchObject({
+      ok: true, ignored: true, reason: 'detached-project-supervisor-lane',
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ pendingSupervisorTransitions: [] });
     const managerNotifications = JSON.stringify([
       ...writes.mock.calls,
       ...(updated.pendingManagerDeliveries || []).map((delivery) => delivery.text),
@@ -1770,6 +1781,48 @@ describe('supervisor decision bridge', () => {
           status: 'paused',
           requirementsVersion: 1,
           verificationDecision: expect.objectContaining({ action: 'defer-verification' }),
+        })],
+      });
+
+  });
+
+  it('keeps a structured alternative-validation choice authoritative over skip wording in its supplement', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-structured-option-precedence' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 GUI 自动化通道不可用，无法取得最终交互验收证据',
+    });
+    const waiting = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const question = waiting.pendingUserQuestion!;
+    useStore.getState().restoreProjectManager({
+      ...waiting,
+      events: [...waiting.events, {
+        id: 'recorded-structured-alternative', sessionId: project.id, ts: Date.now(),
+        kind: 'user-choice-transition-started', workItemId: 'task-a',
+        summary: '开始执行用户选择：换一种方式验证',
+        payload: {
+          question,
+          optionId: 'alternative-validation',
+          answer: '换一种方式验证：不要重复旧路线，必要时跳过验证',
+          answerInput: '不要重复旧路线，必要时跳过验证',
+          answeredBy: 'desktop',
+          requirementsVersion: waiting.requirementsVersion,
+          authorizationVersion: waiting.authorizationVersion,
+          goalId: waiting.activeGoalId,
+        },
+      }],
+    });
+
+    await auditProjectLiveness();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({
+        pendingUserQuestion: { id: question.id },
+        workItems: [expect.objectContaining({
+          id: 'task-a', status: 'waiting-decision', verificationDecision: undefined,
         })],
       });
   });
@@ -3896,10 +3949,161 @@ describe('supervisor decision bridge', () => {
       optionId: 'recover-latest-protocol', source: 'desktop',
     })).resolves.toMatchObject({
       ok: true,
-      session: { status: 'waiting', pendingUserQuestion: undefined },
-      message: expect.stringContaining('项目 AI 运行时已重建'),
+      session: {
+        status: 'waiting',
+        pendingUserQuestion: undefined,
+        orientation: { status: 'required', recovery: { level: 'runtime', role: 'manager' } },
+      },
+      message: expect.stringContaining('完成恢复评估'),
     });
     expect(projectManagerApi.ensureRuntime).toHaveBeenCalled();
+  });
+
+  it('invalidates a manager runtime question after the live manager is healthy again', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-live-manager-recovered' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    markTerminalRuntimeReady(managerSurfaceId);
+    (globalThis.window as any).wmux.pty.has = vi.fn(async () => true);
+    const question = {
+      id: 'question-live-manager-recovered',
+      category: 'manual-intervention' as const,
+      blocker: '项目 AI 上一次重建失败',
+      reasonCode: 'runtime-recovery' as const,
+      question: '请选择项目 AI 恢复方式。',
+      context: '当前项目 AI 曾退出。',
+      options: [
+        { id: 'rebuild-manager-runtime', label: '重建项目 AI' },
+        { id: 'keep-paused', label: '保持暂停' },
+      ],
+      recommendedOptionId: 'rebuild-manager-runtime',
+      previousStatus: 'paused' as const,
+      createdAt: 2,
+    };
+    expect(useStore.getState().applyProjectManagerAction({
+      type: 'request-user-clarification', question,
+    }, project.id)).toMatchObject({ ok: true });
+
+    await auditProjectLiveness();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({ status: 'waiting', pendingUserQuestion: { id: question.id } });
+    expect((globalThis.window as any).__wmux_roleReady({
+      callerSurfaceId: managerSurfaceId,
+      protocolRevision: PROJECT_MANAGER_PROTOCOL_REVISION,
+      protocolFingerprint: roleProtocolFingerprint(projectAiAgentsSource),
+    })).toMatchObject({ ok: true, role: 'project-ai' });
+    await auditProjectLiveness();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({
+        status: 'waiting',
+        pendingUserQuestion: undefined,
+        orientation: { status: 'required', recovery: { level: 'runtime', role: 'manager' } },
+      });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: 'user-clarification-invalidated',
+        payload: expect.objectContaining({
+          questionId: question.id,
+          reason: 'manager-runtime-live-recovered',
+        }),
+      })]));
+  });
+
+  it('asks the user how to settle a stale deferred item before closing a covered stage', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-stale-deferred-stage' });
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = current.activeGoalId!;
+    const criterion = '用户管理核心流程已验证';
+    const contract = {
+      ...current.workItems[0].contract,
+      stopWhen: [criterion],
+      validation: [criterion],
+      stageAcceptanceCoverage: [{ stageCriterion: criterion, verificationCriterion: criterion }],
+    };
+    useStore.getState().setProjectSupervisorLanes([]);
+    useStore.getState().restoreProjectManager({
+      ...current,
+      status: 'active',
+      requirementsVersion: 6,
+      acceptedRequirementsVersion: 6,
+      authorizationVersion: 1,
+      goals: current.goals?.map((goal) => goal.id === goalId
+        ? { ...goal, requirementsVersion: 6 }
+        : goal),
+      activeWorkItemId: undefined,
+      orientation: {
+        ...current.orientation!, requirementsVersion: 6, authorizationVersion: 1,
+      },
+      subgoals: [{
+        id: 'stage-core', goalId, title: '核心功能', outcome: '核心功能可验收',
+        acceptance: [criterion], dependencies: [], status: 'active',
+        order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: [{
+        ...current.workItems[0],
+        id: 'old-deferred-core', goalId, subgoalId: 'stage-core', contract,
+        status: 'paused', requirementsVersion: 4,
+        supervisorLaneId: undefined, workerSurfaceId: undefined,
+        verificationDecision: {
+          action: 'defer-verification', questionId: 'old-defer', reason: '稍后人工验证',
+          answeredBy: 'desktop', requirementsVersion: 2, authorizationVersion: 1, decidedAt: 2,
+        },
+      }, {
+        ...current.workItems[0],
+        id: 'current-core-evidence', goalId, subgoalId: 'stage-core', contract,
+        status: 'completed', requirementsVersion: 6,
+        supervisorLaneId: undefined, workerSurfaceId: undefined,
+        completion: {
+          summary: '当前版本证据已覆盖核心流程', validation: [criterion], completedAt: 6,
+          criteria: [{
+            criterion, status: 'satisfied', result: 'passed', method: 'evidence-review',
+            evidence: '当前版本证据已通过', evidenceRefs: ['evidence/core.json'],
+            evidenceArtifacts: [{
+              ref: 'evidence/core.json', sizeBytes: 12, mtimeMs: 1, sha256: 'd'.repeat(64),
+            }],
+          }],
+        },
+      }],
+    });
+
+    expect(projectStaleDeferredVerificationBlocker(
+      useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!,
+    )).toMatchObject({ deferredItem: { id: 'old-deferred-core' } });
+    await auditProjectLiveness();
+
+    const waiting = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(waiting).toMatchObject({
+      status: 'waiting',
+      pendingUserQuestion: {
+        reasonCode: 'verification-limited',
+        workItemId: 'old-deferred-core',
+        recommendedOptionId: 'accept-current-stage-evidence',
+        options: expect.arrayContaining([
+          expect.objectContaining({ id: 'accept-current-stage-evidence' }),
+          expect.objectContaining({ id: 'manual-verify' }),
+          expect.objectContaining({ id: 'skip-stale-deferred' }),
+          expect.objectContaining({ id: 'defer-verification' }),
+          expect.objectContaining({ id: 'keep-paused' }),
+        ]),
+      },
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    await expect(remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: waiting.pendingUserQuestion?.id,
+      optionId: 'accept-current-stage-evidence', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        status: 'active', pendingUserQuestion: undefined,
+        workItems: expect.arrayContaining([expect.objectContaining({
+          id: 'old-deferred-core', status: 'stopped',
+        })]),
+      },
+      message: expect.stringContaining('关闭旧暂缓项'),
+    });
   });
 
   it('coalesces concurrent project AI rebuilds and keeps recovery delivery off the retiring runtime', async () => {
@@ -4275,6 +4479,7 @@ describe('supervisor decision bridge', () => {
           recommendedOptionId: 'manual-verify-complete',
           options: [
             expect.objectContaining({ id: 'manual-verify-complete' }),
+            expect.objectContaining({ id: 'manual-verify-failed' }),
             expect.objectContaining({ id: 'manual-verify-defer' }),
             expect.objectContaining({ id: 'skip-verification' }),
           ],
@@ -4309,7 +4514,49 @@ describe('supervisor decision bridge', () => {
       .some((event) => event.kind === 'project-resumed')).toBe(false);
   });
 
-  it('does not offer or accept a verification waiver for protected acceptance criteria', async () => {
+  it('keeps the project paused when manual verification reports a failure', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-manual-verification-failed' });
+    classifyCurrentVerificationAsStandard(project.id);
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 Win32 GUI 自动化通道不可用，无法取得核心交互验收证据',
+    });
+    const remote = (globalThis.window as any).__wmux_projectManagerRemoteControl;
+    const initial = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+    await remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: initial?.id, optionId: 'manual-verify', source: 'desktop',
+    });
+    const feedback = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+
+    await expect(remote({
+      action: 'answer-question', projectId: project.id,
+      questionId: feedback?.id, optionId: 'manual-verify-failed',
+      answer: 'Delete 后列表仍显示原记录', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        status: 'paused', pendingUserQuestion: undefined,
+        workItems: [expect.objectContaining({
+          status: 'failed',
+          latestBlocker: expect.stringContaining('Delete 后列表仍显示原记录'),
+        })],
+      },
+      message: expect.stringContaining('不会据此关闭阶段'),
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)?.events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: 'user-clarification-answered',
+        payload: expect.objectContaining({ optionId: 'manual-verify-failed' }),
+      })]));
+  });
+
+  it('warns once and records an explicit risk acknowledgement when protected verification is skipped', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-protected-verification-limited' });
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
@@ -4337,17 +4584,163 @@ describe('supervisor decision bridge', () => {
       reason: '当前 GUI 自动化通道不可用，无法取得权限与数据完整性验收证据',
     });
     expect(response).toMatchObject({ ok: true, question: { reasonCode: 'verification-limited' } });
-    expect(response.question.options).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'skip-verification' }),
+    expect(response.question.context).toContain('风险说明');
+    expect(response.question.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'skip-verification',
+        label: '确认风险并跳过验证',
+        description: expect.stringContaining('同一目标、范围和风险没有变化时不再重复询问'),
+      }),
     ]));
     await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
       action: 'answer-question', projectId: project.id, questionId: response.question.id,
       optionId: 'skip-verification', source: 'desktop',
-    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('选项不存在') });
+    })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        pendingUserQuestion: undefined,
+        workItems: [expect.objectContaining({
+          id: 'task-a', status: 'stopped',
+          verificationDecision: expect.objectContaining({
+            action: 'skip-verification', riskAcknowledged: true,
+          }),
+        })],
+      },
+    });
+  });
+
+  it('reconciles a previously recorded free-text skip instead of asking the same verification question again', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-recorded-free-text-skip' });
+    const initial = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const goalId = initial.activeGoalId!;
+    useStore.getState().restoreProjectManager({
+      ...initial,
+      subgoals: [{
+        id: 'stage-a', goalId, title: '最终 GUI 验收', outcome: '形成最终 GUI 验收结果',
+        acceptance: ['相关测试通过'], dependencies: [], status: 'active', order: 1,
+        createdAt: 1, updatedAt: 1,
+      }],
+      workItems: initial.workItems.map((item) => ({
+        ...item,
+        goalId,
+        subgoalId: 'stage-a',
+        contract: {
+          ...item.contract,
+          stopWhen: ['相关测试通过'],
+          validation: ['相关测试通过'],
+          stageAcceptanceCoverage: [{
+            stageCriterion: '相关测试通过', verificationCriterion: '相关测试通过',
+          }],
+        },
+      })),
+    });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 GUI 自动化通道不可用，无法取得最终交互验收证据',
+    });
+    const waiting = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const question = waiting.pendingUserQuestion!;
+    useStore.getState().restoreProjectManager({
+      ...waiting,
+      events: [...waiting.events, {
+        id: 'recorded-free-text-skip', sessionId: project.id, ts: Date.now(),
+        kind: 'user-choice-transition-started', workItemId: 'task-a',
+        summary: '开始执行用户选择：跳过验证，最后用户自行验证',
+        payload: {
+          question,
+          answer: '跳过验证，最后用户自行验证',
+          answerInput: '跳过验证，最后用户自行验证',
+          answeredBy: 'desktop',
+          requirementsVersion: waiting.requirementsVersion,
+          authorizationVersion: waiting.authorizationVersion,
+          goalId: waiting.activeGoalId,
+        },
+      }],
+    });
+
+    await auditProjectLiveness();
+
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({
+        pendingUserQuestion: undefined,
+        workItems: [expect.objectContaining({
+          id: 'task-a', status: 'stopped',
+          verificationDecision: expect.objectContaining({
+            action: 'skip-verification',
+          }),
+        })],
+      });
+
+    const settled = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    useStore.getState().restoreProjectManager({
+      ...settled,
+      status: 'paused',
+      workItems: settled.workItems.map((item) => item.id === 'task-a'
+        ? {
+            ...item,
+            verificationDecision: { ...item.verificationDecision!, riskAcknowledged: true },
+          }
+        : item),
+      subgoals: settled.subgoals?.map((subgoal) => subgoal.id === 'stage-a'
+        ? { ...subgoal, status: 'planned' as const }
+        : subgoal),
+      pendingSupervisorTransitions: [{
+        id: 'late-terminal-transition', laneId: 'lane-a', workItemId: 'task-a',
+        kind: 'supervisor-unavailable', eventType: 'supervisor.delivery.failed',
+        summary: '迟到监督失败', createdAt: 3, notifiedAt: 3, notificationCount: 1,
+      }],
+      executionResponsibility: {
+        id: 'late-terminal-responsibility', owner: 'project-ai', action: 'handle-supervisor-transition',
+        state: 'working', workItemId: 'task-a', transitionId: 'late-terminal-transition',
+        assignedAt: 3, lastProgressAt: 3, deadlineAt: Date.now() + 30_000, attempt: 0,
+        incidentKey: 'late-terminal-responsibility',
+      },
+    });
+
+    await auditProjectLiveness();
+
+    const reconciled = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(reconciled).toMatchObject({
+      subgoals: [expect.objectContaining({ id: 'stage-a', status: 'obsolete' })],
+      pendingSupervisorTransitions: [],
+    });
+    expect(reconciled.executionResponsibility?.transitionId).not.toBe('late-terminal-transition');
+  });
+
+  it('does not misread a free-text rejection of skipping as a verification waiver', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-free-text-do-not-skip' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    await request({
+      action: 'pause', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      reason: '当前 GUI 自动化通道不可用，无法取得最终交互验收证据',
+    });
+    const pending = useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion;
+
     await expect((globalThis.window as any).__wmux_projectManagerRemoteControl({
-      action: 'intervene-work-item', projectId: project.id, workItemId: 'task-a',
-      intervention: 'skip-verification', source: 'desktop',
-    })).resolves.toMatchObject({ ok: false, error: expect.stringContaining('不能跳过') });
+      action: 'answer-question', projectId: project.id, questionId: pending?.id,
+      answer: '不要跳过验证，改用人工验收', source: 'desktop',
+    })).resolves.toMatchObject({
+      ok: true,
+      question: {
+        reasonCode: 'verification-limited',
+        options: expect.arrayContaining([
+          expect.objectContaining({ id: 'manual-verify-complete' }),
+          expect.objectContaining({ id: 'manual-verify-failed' }),
+        ]),
+      },
+    });
+    expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
+      .toMatchObject({
+        workItems: [expect.objectContaining({
+          id: 'task-a', verificationDecision: undefined,
+        })],
+      });
   });
 
   it('keeps the project paused when manual verification is deferred', async () => {
@@ -4636,7 +5029,16 @@ describe('supervisor decision bridge', () => {
         ? { ...goal, doneWhen: ['权限与数据完整性验收通过'] }
         : goal),
     };
-    expect(projectFinalAcceptanceEligibilityError(safetyCriticalSession)).toContain('不能用最终效果接受代替');
+    expect(projectFinalAcceptanceEligibilityError(safetyCriticalSession)).toContain('明确确认未验证风险');
+    expect(projectFinalAcceptanceEligibilityError({
+      ...safetyCriticalSession,
+      workItems: safetyCriticalSession.workItems.map((item) => item.id === 'skipped-final-validation'
+        ? {
+            ...item,
+            verificationDecision: { ...item.verificationDecision!, riskAcknowledged: true },
+          }
+        : item),
+    })).toBeNull();
 
     const completionAttempt = await request({
       action: 'complete', callerSurfaceId: managerSurfaceId, projectId: project.id,
@@ -9394,7 +9796,7 @@ describe('supervisor decision bridge', () => {
 
     expect(useStore.getState().projectManagers.find((candidate) => candidate.id === project.id))
       .toMatchObject({
-        taskTerminalSurfaceId: 'worker-a',
+        taskTerminalSurfaceId: undefined,
         workItems: [expect.objectContaining({
           id: 'task-a',
           status: 'stopped',
@@ -9405,7 +9807,7 @@ describe('supervisor decision bridge', () => {
     expect(useStore.getState().supervisor.lanes.find((lane) => lane.id === 'lane-a')).toMatchObject({
       projectWorkItemId: undefined,
       currentTask: '',
-      controlState: 'active',
+      controlState: 'paused',
     });
   });
 
@@ -9823,6 +10225,7 @@ describe('supervisor decision bridge', () => {
     });
 
     initPipeBridge();
+    await auditProjectLiveness();
 
     await vi.waitFor(() => expect(useStore.getState().projectManagers
       .find((candidate) => candidate.id === project.id)?.pendingSupervisorTransitions?.[0])
@@ -10324,7 +10727,7 @@ describe('supervisor decision bridge', () => {
     ]));
   });
 
-  it('automatically pauses and notifies once after bounded internal recovery is exhausted', async () => {
+  it('enters route assessment without asking the user after bounded internal recovery is exhausted', async () => {
     const project = bindProjectLaneToWorkItem({ projectId: 'pm-internal-recovery-exhausted' });
     const managerSurfaceId = `manager-${project.id}`;
     attachProjectManagerSurface(project.id, managerSurfaceId);
@@ -10385,16 +10788,26 @@ describe('supervisor decision bridge', () => {
         }),
       }),
     ])));
-    const paused = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id);
+    const paused = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
     expect(paused).toMatchObject({
-      status: 'paused',
+      status: 'waiting',
+      recoveryState: 'checking',
+      orientation: {
+        status: 'required',
+        recovery: {
+          level: 'route',
+          role: 'manager',
+          workItemId: 'task-a',
+          occurrence: 2,
+        },
+      },
     });
     expect(paused?.pendingUserQuestion).toBeUndefined();
     expect(paused?.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'project-execution-stalled',
         payload: expect.objectContaining({
-          attentionRequired: true,
+          attentionRequired: false,
           automaticPause: true,
         }),
       }),
@@ -10405,10 +10818,238 @@ describe('supervisor decision bridge', () => {
       type: 'guard-triggered',
       payload: expect.objectContaining({ reason: 'project-internal-recovery-exhausted' }),
     }));
-    expect((globalThis.window as any).wmux.notification.fire).toHaveBeenCalledWith(expect.objectContaining({
+    expect((globalThis.window as any).wmux.notification.fire).not.toHaveBeenCalledWith(expect.objectContaining({
       title: '项目执行异常，已安全暂停',
       text: expect.stringContaining('内部执行链连续未恢复'),
     }));
+    const request = (globalThis.window as any).__wmux_projectManagerRequest;
+    const baseOrientation = {
+      action: 'orientation-confirm', callerSurfaceId: managerSurfaceId, projectId: project.id,
+      requirementsVersion: paused.orientation?.requirementsVersion,
+      authorizationVersion: paused.orientation?.authorizationVersion,
+      snapshotFingerprint: paused.orientation?.snapshotFingerprint,
+      requestedAt: paused.orientation?.requestedAt,
+      summary: '已核对保留成果、当前阻碍和剩余验收，旧路线没有产生新证据',
+      knownFacts: ['现有成果与阻碍记录已经读取'],
+      unknowns: [],
+    };
+    await expect(request({
+      ...baseOrientation,
+      workItems: [{
+        workItemId: 'task-a', disposition: 'continue',
+        basis: '继续原路线', nextAction: '重复原恢复动作',
+      }],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不能继续原路线'),
+    });
+    const replanAssessment = {
+      ...baseOrientation,
+      workItems: [{
+        workItemId: 'task-a', disposition: 'replan',
+        basis: '连续两轮没有新证据，旧路线失效', nextAction: '保留现有成果并按剩余验收重新安排',
+      }],
+    };
+    (globalThis.window as any).wmux.projectManager.saveSession
+      .mockRejectedValueOnce(new Error('模拟恢复评估持久化失败'));
+    await expect(request(replanAssessment)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('旧执行链保持不变'),
+    });
+    expect(useStore.getState().supervisor.lanes.some((lane) => (
+      lane.projectManagerProjectId === project.id && lane.controlState !== 'stopped'
+    ))).toBe(true);
+    await expect(request(replanAssessment)).resolves.toMatchObject({
+      ok: true,
+      message: expect.stringContaining('project dispatch'),
+    });
+    const replanned = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(replanned).toMatchObject({
+      status: 'waiting',
+      recoveryState: 'ready',
+      workItems: [expect.objectContaining({
+        id: 'task-a', status: 'planned', workerSurfaceId: undefined, supervisorLaneId: undefined,
+      })],
+    });
+    expect(replanned.activeWorkItemId).toBeUndefined();
+    expect(useStore.getState().supervisor.lanes.some((lane) => (
+      lane.projectManagerProjectId === project.id && lane.controlState !== 'stopped'
+    ))).toBe(false);
+    const remainingSurfaceIds = useStore.getState().workspaces.flatMap((workspace) => (
+      workspace.splitTree.type === 'leaf' ? workspace.splitTree.surfaces.map((surface) => surface.id) : []
+    ));
+    expect(remainingSurfaceIds).not.toContain('worker-a');
+    expect(remainingSurfaceIds).not.toContain('supervisor-a');
+    expect(replanned.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'recovery-restored',
+      payload: expect.objectContaining({
+        recoverySource: 'project-orientation-assessment',
+        recoveryLevel: 'route',
+      }),
+    })]));
+  });
+
+  it('escalates a never-started dispatch deadlock as a supervisor runtime failure instead of replanning', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-pre-execution-runtime-deadlock' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    useStore.getState().setProjectSupervisorLanes([]);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const plannedProject = {
+      ...current,
+      activeWorkItemId: undefined,
+      subgoals: [{
+        id: 'stage-a', goalId: current.activeGoalId!, title: '建立首个可执行成果',
+        outcome: '形成首个可执行成果', acceptance: [...current.doneWhen],
+        dependencies: [], status: 'planned' as const, order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        goalId: current.activeGoalId,
+        subgoalId: 'stage-a',
+        status: 'planned' as const,
+        attempts: 0,
+        executionHistory: [],
+        startedAt: undefined,
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        latestEvidence: undefined,
+        completion: undefined,
+        contract: {
+          ...item.contract,
+          stopWhen: [...current.doneWhen],
+          validation: [...current.doneWhen],
+          stageAcceptanceCoverage: current.doneWhen.map((criterion) => ({
+            stageCriterion: criterion, verificationCriterion: criterion,
+          })),
+        },
+      })),
+    };
+    const recoveryScopeKey = projectInternalRecoveryScopeKey(plannedProject, 'task-a');
+    useStore.getState().restoreProjectManager({
+      ...plannedProject,
+      events: [...current.events, ...[1, 2].map((attempt) => ({
+        id: `pre-execution-recovery-${attempt}`, sessionId: project.id, ts: 2 + attempt,
+        kind: 'project-recovery-requested' as const, summary: '监督运行链仍未接管计划工作项',
+        workItemId: 'task-a',
+        payload: {
+          recoveryKey: `pre-execution-dispatch:${attempt}`,
+          recoveryScopeKey,
+          attempt,
+          reason: 'project-execution-deadlock',
+          obligation: 'dispatch-work',
+        },
+      }))],
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+    });
+    expireProjectExecutionResponsibility(project.id, 'dispatch-work', 'task-a');
+
+    initPipeBridge();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion).toMatchObject({
+      reasonCode: 'runtime-recovery',
+      workItemId: 'task-a',
+      recommendedOptionId: 'rebuild-supervisor-runtime',
+      options: expect.arrayContaining([expect.objectContaining({ id: 'rebuild-supervisor-runtime' })]),
+    }));
+    const escalated = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(escalated.orientation?.recovery?.level).not.toBe('route');
+    expect(escalated.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'guard-triggered',
+      payload: expect.objectContaining({
+        reason: 'project-pre-execution-dispatch-recovery-exhausted',
+        obligation: 'dispatch-work',
+      }),
+    })]));
+  });
+
+  it('stops automatic recovery when the same snapshot already completed one L2 replan', async () => {
+    const project = bindProjectLaneToWorkItem({ projectId: 'pm-repeated-route-recovery' });
+    const managerSurfaceId = `manager-${project.id}`;
+    attachProjectManagerSurface(project.id, managerSurfaceId);
+    useStore.getState().setProjectSupervisorLanes([]);
+    const current = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    const plannedProject = {
+      ...current,
+      activeWorkItemId: undefined,
+      subgoals: [{
+        id: 'stage-a', goalId: current.activeGoalId!, title: '建立首个可执行成果',
+        outcome: '形成首个可执行成果', acceptance: [...current.doneWhen],
+        dependencies: [], status: 'planned' as const, order: 1, createdAt: 1, updatedAt: 1,
+      }],
+      workItems: current.workItems.map((item) => ({
+        ...item,
+        goalId: current.activeGoalId,
+        subgoalId: 'stage-a',
+        status: 'planned' as const,
+        attempts: 0,
+        startedAt: undefined,
+        supervisorLaneId: undefined,
+        workerSurfaceId: undefined,
+        latestEvidence: undefined,
+        completion: undefined,
+        executionHistory: [{
+          ts: 2, actionSignature: 'route-a', commandSignature: 'command-a',
+          errorSignature: '', progressSignature: 'no-progress', workspaceVersion: 'same',
+          fullSuite: false, consumedDecision: true,
+        }],
+        contract: {
+          ...item.contract,
+          stopWhen: [...current.doneWhen],
+          validation: [...current.doneWhen],
+          stageAcceptanceCoverage: current.doneWhen.map((criterion) => ({
+            stageCriterion: criterion, verificationCriterion: criterion,
+          })),
+        },
+      })),
+    };
+    const recoveryScopeKey = projectInternalRecoveryScopeKey(plannedProject, 'task-a');
+    useStore.getState().restoreProjectManager({
+      ...plannedProject,
+      events: [...current.events, {
+        id: 'previous-l2', sessionId: project.id, ts: 3,
+        kind: 'project-orientation-confirmed', summary: '当前快照已经完成一次 L2 重规划',
+        payload: {
+          recoveryLevel: 'route', recoveryWorkItemId: 'task-a',
+          snapshotFingerprint: plannedProject.progressSnapshot?.fingerprint,
+          requirementsVersion: plannedProject.requirementsVersion,
+          authorizationVersion: plannedProject.authorizationVersion,
+        },
+      }, ...[1, 2].map((attempt) => ({
+        id: `repeated-route-recovery-${attempt}`, sessionId: project.id, ts: 3 + attempt,
+        kind: 'project-recovery-requested' as const, summary: '重规划后的执行链仍未接管',
+        workItemId: 'task-a',
+        payload: {
+          recoveryKey: `repeated-route:${attempt}`, recoveryScopeKey, attempt,
+          reason: 'project-execution-deadlock', obligation: 'dispatch-work',
+        },
+      }))],
+    });
+    (globalThis.window as any).__wmux_getAgentStates = () => ({
+      [managerSurfaceId]: { state: 'idle', blockedReason: null, blockedVersion: 0, updatedAt: Date.now() - 2_000 },
+    });
+    expireProjectExecutionResponsibility(project.id, 'dispatch-work', 'task-a');
+
+    initPipeBridge();
+    await auditProjectLiveness();
+
+    await vi.waitFor(() => expect(useStore.getState().projectManagers
+      .find((candidate) => candidate.id === project.id)?.pendingUserQuestion).toMatchObject({
+      reasonCode: 'runtime-recovery', workItemId: 'task-a',
+      recommendedOptionId: 'rebuild-supervisor-runtime',
+    }));
+    const stoppedLoop = useStore.getState().projectManagers.find((candidate) => candidate.id === project.id)!;
+    expect(stoppedLoop.status).toBe('waiting');
+    expect(stoppedLoop.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'guard-triggered',
+      payload: expect.objectContaining({ reason: 'project-route-recovery-repeated-without-progress' }),
+    })]));
+    expect(stoppedLoop.events.filter((event) => (
+      event.kind === 'project-orientation-required' && event.payload?.recoveryLevel === 'route'
+    ))).toHaveLength(0);
   });
 
   it('reports an exhausted stage-acceptance mapping continuation without pausing the project', async () => {

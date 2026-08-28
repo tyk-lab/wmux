@@ -37,7 +37,11 @@ import {
   summarizeProjectCompletionCriteria,
 } from '../../project-manager/completion-display';
 import { openProjectManagerConsole } from '../../project-manager/console-surface';
-import { projectWorkItemVerificationWaiverError } from '../../project-manager/verification-intervention-policy';
+import {
+  projectWorkItemVerificationDeferred,
+  projectWorkItemVerificationWaiverError,
+  projectWorkItemVerificationWaiverRisk,
+} from '../../project-manager/verification-intervention-policy';
 import {
   projectCenterStatusLabel,
   projectCenterVisualState,
@@ -531,7 +535,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const [recoveryDeleteCandidate, setRecoveryDeleteCandidate] = useState<ProjectRecoveryCandidate | null>(null);
   const [clarificationOptionId, setClarificationOptionId] = useState('');
   const [clarificationAnswer, setClarificationAnswer] = useState('');
-  const [reuseSimilarDecision, setReuseSimilarDecision] = useState(false);
+  const [reuseSimilarDecision, setReuseSimilarDecision] = useState(true);
   const [workItemInterventionId, setWorkItemInterventionId] = useState('');
   const [workItemIntervention, setWorkItemIntervention] = useState<ProjectWorkItemIntervention>('skip');
   const [workItemInterventionReason, setWorkItemInterventionReason] = useState('');
@@ -597,7 +601,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
     item.id === workItemInterventionId
   )) || null, [intervenableWorkItems, workItemInterventionId]);
   const selectedVerificationWaiverError = session && selectedInterventionWorkItem
-    ? projectWorkItemVerificationWaiverError(session, selectedInterventionWorkItem)
+    ? projectWorkItemVerificationWaiverError(
+      session,
+      selectedInterventionWorkItem,
+      { riskAcknowledged: true },
+    )
+    : null;
+  const selectedVerificationWaiverRisk = session && selectedInterventionWorkItem
+    ? projectWorkItemVerificationWaiverRisk(session, selectedInterventionWorkItem)
     : null;
   const allCurrentSubgoals = useMemo(() => session ? activeProjectSubgoals(session) : [], [session]);
   const currentSubgoals = useMemo(() => (
@@ -751,7 +762,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   useEffect(() => {
     setClarificationOptionId('');
     setClarificationAnswer('');
-    setReuseSimilarDecision(false);
+    setReuseSimilarDecision(true);
     if (clarificationSupplementRef.current) clarificationSupplementRef.current.open = false;
     if (!open || !session?.pendingUserQuestion) return undefined;
     const frame = window.requestAnimationFrame(() => {
@@ -1165,11 +1176,12 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         optionId: selected?.id,
         answer: clarificationAnswer.trim() || selected?.label || '',
         source: 'desktop',
-        reuseForSimilar: reuseSimilarDecision,
+        reuseForSimilar: projectManagerQuestionAllowsReusableDecision(pending)
+          && reuseSimilarDecision,
       });
       setClarificationOptionId('');
       setClarificationAnswer('');
-      setReuseSimilarDecision(false);
+      setReuseSimilarDecision(true);
       setConfigNotice(result.message || '答复已提交给项目管理 AI。');
     } catch (error) {
       setNotice(String((error as Error)?.message || error));
@@ -1422,6 +1434,11 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
       if (!selectedInterventionWorkItem) setWorkItemInterventionNotice('请先选择一个尚未结束的工作项。');
       return;
     }
+    const riskAcknowledged = workItemIntervention === 'skip-verification'
+      && !!selectedVerificationWaiverRisk;
+    if (riskAcknowledged && !window.confirm(
+      `${selectedVerificationWaiverRisk}\n\n确认仍要跳过该验证，并在当前目标、范围和风险不变时不再重复询问？`,
+    )) return;
     setBusy(true);
     setNotice('');
     setWorkItemInterventionNotice('');
@@ -1432,6 +1449,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
         workItemId: selectedInterventionWorkItem.id,
         intervention: workItemIntervention,
         reason: workItemInterventionReason.trim(),
+        riskAcknowledged,
       });
       setWorkItemInterventionId('');
       setWorkItemIntervention('skip');
@@ -1474,11 +1492,14 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const manualVerificationFeedbackQuestion = !!session?.pendingUserQuestion
     && session.pendingUserQuestion.reasonCode === 'verification-limited'
     && session.pendingUserQuestion.options.some((option) => option.id === 'manual-verify-complete')
+    && session.pendingUserQuestion.options.some((option) => option.id === 'manual-verify-failed')
     && session.pendingUserQuestion.options.some((option) => option.id === 'manual-verify-defer');
   const manualVerificationCompletionSelected = manualVerificationFeedbackQuestion
     && clarificationOptionId === 'manual-verify-complete';
   const manualVerificationDeferredSelected = manualVerificationFeedbackQuestion
     && clarificationOptionId === 'manual-verify-defer';
+  const manualVerificationFailedSelected = manualVerificationFeedbackQuestion
+    && clarificationOptionId === 'manual-verify-failed';
   const selectedClarificationOption = session?.pendingUserQuestion?.options.find((option) => (
     option.id === clarificationOptionId
   ));
@@ -1489,7 +1510,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
   const clarificationActionLabel = busy
     ? '正在提交…'
     : manualVerificationCompletionSelected
-      ? '确认完成人工验收'
+      ? '确认人工验收通过'
+      : manualVerificationFailedSelected
+        ? '提交验收问题并保持暂停'
       : manualVerificationDeferredSelected
         ? '确认暂缓并保持暂停'
         : clarificationOptionId === 'manual-verify'
@@ -1629,11 +1652,22 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
 
           {embedded && session?.orientation?.status === 'required' && !creating && (
             <section className="supervisor-dialog__group project-manager-dialog__clarification" role="status" aria-label="项目 AI 正在复核项目现状">
-              <div className="supervisor-dialog__group-title">项目 AI 正在建立当前认知基线</div>
-              <div className="supervisor-dialog__warning">在确认当前目标、权限边界、目录进度和每个未停止工作项之前，控制层不会允许项目 AI 规划、恢复或派发任务。</div>
+              <div className="supervisor-dialog__group-title">{session.orientation.recovery
+                ? session.orientation.recovery.level === 'route'
+                  ? '项目 AI 正在重新评估异常路线'
+                  : '项目 AI 正在核对恢复现场'
+                : '项目 AI 正在建立当前认知基线'}</div>
+              <div className="supervisor-dialog__warning">{session.orientation.recovery
+                ? '当前成果和现场证据已经保留；项目 AI 会先区分已完成、未验证和仍受阻的工作，再决定续作、改线、暂停或停止。评估完成前不会自动续跑旧任务。'
+                : '在确认当前目标、权限边界、目录进度和每个未停止工作项之前，控制层不会允许项目 AI 规划、恢复或派发任务。'}</div>
               <details>
                 <summary>查看触发原因和绑定版本</summary>
                 <div className="supervisor-dialog__hint">{session.orientation.reason}</div>
+                {session.orientation.recovery && <>
+                  <div className="supervisor-dialog__hint">恢复级别：{session.orientation.recovery.level === 'route' ? 'L2 路线重评估' : 'L1 运行时恢复'} · 角色：{session.orientation.recovery.role} · 同类次数：{session.orientation.recovery.occurrence}</div>
+                  <div className="supervisor-dialog__hint">阻碍：{session.orientation.recovery.blocker}</div>
+                  {session.orientation.recovery.evidenceSummary && <div className="supervisor-dialog__hint">现场证据：{session.orientation.recovery.evidenceSummary}</div>}
+                </>}
                 <div className="supervisor-dialog__hint">需求 R{session.orientation.requirementsVersion} · 授权 A{session.orientation.authorizationVersion} · 快照 {session.orientation.snapshotFingerprint}</div>
               </details>
               <div className="supervisor-dialog__hint">这是项目 AI 的内部复核，不需要用户逐步确认；只有发现真实业务冲突、越权或人工前置条件时才会单独询问。</div>
@@ -1742,7 +1776,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                 <label className="project-manager-dialog__reuse-decision">
                   <input
                     type="checkbox"
-                    checked={reuseSimilarDecision}
+                    checked={projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion)
+                      && reuseSimilarDecision}
                     disabled={!projectManagerQuestionAllowsReusableDecision(session.pendingUserQuestion)}
                     onChange={(event) => setReuseSimilarDecision(event.target.checked)}
                   />
@@ -2352,6 +2387,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     const decisions = session.events.filter((event) => event.workItemId === item.id);
                     const itemCompletion = projectWorkItemCompletionResult(item);
                     const currentVerificationLimitation = projectWorkItemCurrentVerificationLimitation(session, item);
+                    const currentVerificationDeferred = projectWorkItemVerificationDeferred(session, item);
                     const latestIntervention = [...decisions].reverse().find((event) => (
                       event.kind === 'user-work-item-intervention'
                     ));
@@ -2387,7 +2423,7 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             onClick={(event) => {
                               event.stopPropagation();
                               setWorkItemInterventionId(item.id);
-                              setWorkItemIntervention(item.verificationDecision?.action === 'defer-verification'
+                              setWorkItemIntervention(currentVerificationDeferred
                                 ? 'resume-verification'
                                 : currentVerificationLimitation ? 'defer-verification' : 'skip');
                               setWorkItemInterventionNotice('');
@@ -2471,7 +2507,9 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                               <dd>{item.verificationDecision.action === 'defer-verification'
                                 ? '已明确授权暂缓当前验证；未验证项保留，不能据此完成阶段或项目'
                                 : item.verificationDecision.action === 'skip-verification'
-                                  ? '用户已明确不要求当前普通验证；不安排同义补验，不代表验证通过，真实失败和保护性验收仍保留'
+                                  ? item.verificationDecision.riskAcknowledged
+                                    ? '用户已确认保护性/高风险验收的未验证风险并选择跳过；不安排同义补验，不代表验证通过，也不能掩盖已知失败'
+                                    : '用户已明确不要求当前普通验证；不安排同义补验，不代表验证通过，也不能掩盖已知失败'
                                   : '已授权一轮不同路线的替代验证；失败后不得重复原路线或同义验证'}
                               {' · '}{new Date(item.verificationDecision.decidedAt).toLocaleString('zh-CN', { hour12: false })}</dd>
                             </>}
@@ -2508,8 +2546,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                     </div>
                     <div className="project-manager-dialog__work-item-actions">
                       {(projectWorkItemCurrentVerificationLimitation(session, selectedInterventionWorkItem)
-                        || selectedInterventionWorkItem.verificationDecision?.action === 'defer-verification') && <>
-                        {selectedInterventionWorkItem.verificationDecision?.action === 'defer-verification'
+                        || projectWorkItemVerificationDeferred(session, selectedInterventionWorkItem)) && <>
+                        {projectWorkItemVerificationDeferred(session, selectedInterventionWorkItem)
                           ? <label data-selected={workItemIntervention === 'resume-verification' ? '1' : '0'}>
                               <input type="radio" name="work-item-intervention-action" value="resume-verification" checked={workItemIntervention === 'resume-verification'} disabled={busy} onChange={() => setWorkItemIntervention('resume-verification')} />
                               <span><strong>恢复原工作项验证</strong><small>继续使用原成果工作项，由同一监督链安排补验、返工和收口；不会创建新的验证任务。</small></span>
@@ -2520,8 +2558,8 @@ export default function ProjectManagerDialog({ embeddedProjectId }: ProjectManag
                             </label>}
                         {!selectedVerificationWaiverError ? <label data-selected={workItemIntervention === 'skip-verification' ? '1' : '0'}>
                           <input type="radio" name="work-item-intervention-action" value="skip-verification" checked={workItemIntervention === 'skip-verification'} disabled={busy} onChange={() => setWorkItemIntervention('skip-verification')} />
-                          <span><strong>跳过验证（不要求补验）</strong><small>用户明确不关心当前普通验证；停止验证工作项并解除符合条件的阶段依赖，但不伪造验证通过。</small></span>
-                        </label> : <div className="supervisor-dialog__hint">当前验收涉及保护性条件或真实失败，不能提供跳过验证：{selectedVerificationWaiverError}</div>}
+                          <span><strong>{selectedVerificationWaiverRisk ? '确认风险并跳过验证' : '跳过验证（不要求补验）'}</strong><small>{selectedVerificationWaiverRisk || '用户明确不关心当前普通验证；停止验证工作项并解除符合条件的阶段依赖，但不伪造验证通过。'}</small></span>
+                        </label> : <div className="supervisor-dialog__hint">当前工作项不能按验证缺口处理：{selectedVerificationWaiverError}</div>}
                       </>}
                       <label data-selected={workItemIntervention === 'skip' ? '1' : '0'}>
                         <input type="radio" name="work-item-intervention-action" value="skip" checked={workItemIntervention === 'skip'} disabled={busy} onChange={() => setWorkItemIntervention('skip')} />

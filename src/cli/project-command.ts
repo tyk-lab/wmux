@@ -60,6 +60,8 @@ const PROJECT_COMMAND_HELP: Partial<Record<(typeof PROJECT_COMMANDS)[number], st
     'Copy all binding fields from `wmux project status`; do not guess them:',
     '{"requirementsVersion":1,"authorizationVersion":1,"snapshotFingerprint":"...","requestedAt":123,"summary":"...","knownFacts":["..."],"unknowns":[],"workItems":[]}',
     '',
+    'Each non-stopped work item needs one disposition: continue, replan, verify, pause, stop, or retain-completed.',
+    'Completed items must use retain-completed. During L2 route recovery, the affected item must use replan, pause, or stop; continue/verify cannot restore the failed route.',
     'Recovery-safe form: write that object to .wmux/tmp/orientation-<requestedAt>.json, then run:',
     'wmux project orientation-confirm --project <id> --json-file .wmux/tmp/orientation-<requestedAt>.json',
     'Do not pass JSON as a positional argument. `project inspect` is read-only and cannot satisfy the orientation gate.',

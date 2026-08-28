@@ -103,6 +103,7 @@ import {
 } from '../../supervisor/ordinary-runtime-recovery';
 import {
   activeStandingUserDecisions,
+  ordinaryUserDecisionReuseEnabled,
   standingUserDecisionFingerprint,
   upsertStandingUserDecision,
 } from '../../supervisor/standing-user-decision';
@@ -630,7 +631,7 @@ export default function SupervisorPanel({
       const lane = supervisor.lanes.find((l) => l.id === item.laneId);
       const reuseForSimilarIssues = !!lane
         && !isProjectManagedSupervisorLane(lane)
-        && proposalStandingDecisions[id] === true;
+        && ordinaryUserDecisionReuseEnabled(proposalStandingDecisions[id]);
       const isHumanProposal = item.source === 'supervisor-route' || item.source === 'supervisor-important';
       let adoptedPlan = '';
       if (isHumanProposal) {
@@ -763,7 +764,7 @@ export default function SupervisorPanel({
     const text = proposalEdits[id]?.trim() || '';
     if (!item || !lane || supervisorLaneControlState(lane) !== 'active' || !text) return;
     const reuseForSimilarIssues = !isProjectManagedSupervisorLane(lane)
-      && proposalStandingDecisions[id] === true;
+      && ordinaryUserDecisionReuseEnabled(proposalStandingDecisions[id]);
     try {
       sendTaskToSurface(
         item.surfaceId,
@@ -2868,7 +2869,7 @@ export default function SupervisorPanel({
                           <label className="sup-panel__standing-decision">
                             <input
                               type="checkbox"
-                              checked={proposalStandingDecisions[a.id] === true}
+                              checked={ordinaryUserDecisionReuseEnabled(proposalStandingDecisions[a.id])}
                               onChange={(event) => setProposalStandingDecisions((current) => ({
                                 ...current,
                                 [a.id]: event.target.checked,

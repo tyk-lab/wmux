@@ -14,10 +14,12 @@ const stylesSource = fs.readFileSync(
 describe('project manager manual verification flow', () => {
   it('renders a dedicated feedback step after the user chooses manual verification', () => {
     expect(dialogSource).toContain("option.id === 'manual-verify-complete'");
+    expect(dialogSource).toContain("option.id === 'manual-verify-failed'");
     expect(dialogSource).toContain("option.id === 'manual-verify-defer'");
     expect(dialogSource).toContain('人工验收等待，需要你反馈');
     expect(dialogSource).toContain('进入人工验收步骤');
-    expect(dialogSource).toContain('确认完成人工验收');
+    expect(dialogSource).toContain('确认人工验收通过');
+    expect(dialogSource).toContain('提交验收问题并保持暂停');
     expect(dialogSource).toContain('确认暂缓并保持暂停');
     expect(dialogSource).toContain('可选：逐项填写实际结果');
     expect(dialogSource).toContain('不会重新执行自动 GUI 验证');

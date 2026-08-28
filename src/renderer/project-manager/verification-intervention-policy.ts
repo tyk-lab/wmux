@@ -52,6 +52,7 @@ function projectWorkItemVerificationWaiverCriteria(
 export function projectWorkItemVerificationWaiverError(
   session: ProjectManagerSession,
   item: ProjectWorkItem,
+  options: { riskAcknowledged?: boolean } = {},
 ): string | null {
   if ((item.goalId && item.goalId !== activeProjectGoal(session).id)
     || item.requirementsVersion !== projectRequirementsVersion(session)
@@ -64,25 +65,47 @@ export function projectWorkItemVerificationWaiverError(
   ));
   if (knownFailure) return '工作项存在真实失败，不能通过跳过验证掩盖';
   const limitation = projectWorkItemCurrentVerificationLimitation(session, item);
-  const protectedRawCriterion = limitation?.affectedAcceptance.find(
-    projectCriterionVerificationCannotBeRelaxed,
-  );
-  if (protectedRawCriterion) {
-    return `安全、权限、生产、数据完整性或其他保护性验收不能跳过：${protectedRawCriterion}`;
-  }
   const criteria = projectWorkItemVerificationWaiverCriteria(session, item);
   if (criteria.length === 0) return '当前工作项没有可由用户明确豁免的验证条件';
-  const safetyCriteria = criteria;
   const policies = new Map(projectGoalVerificationPolicies(activeProjectGoal(session)).map((policy) => (
     [projectCriterionIdentity(policy.criterion), policy]
   )));
-  const protectedCriterion = safetyCriteria.find((criterion) => {
+  const protectedCriterion = criteria.find((criterion) => {
     if (projectCriterionVerificationCannotBeRelaxed(criterion)) return true;
     const policy = policies.get(projectCriterionIdentity(criterion));
     return !policy || policy.riskClass !== 'standard';
   });
-  return protectedCriterion
-    ? `安全、权限、生产、数据完整性或其他保护性验收不能跳过：${protectedCriterion}`
+  const protectedRawCriterion = limitation?.affectedAcceptance.find(
+    projectCriterionVerificationCannotBeRelaxed,
+  );
+  const riskCriterion = protectedRawCriterion || protectedCriterion;
+  const riskAcknowledged = options.riskAcknowledged === true
+    || item.verificationDecision?.riskAcknowledged === true;
+  return riskCriterion && !riskAcknowledged
+    ? `跳过该验证需要用户先确认保护性验收风险：${riskCriterion}`
+    : null;
+}
+
+export function projectWorkItemVerificationWaiverRisk(
+  session: ProjectManagerSession,
+  item: ProjectWorkItem,
+): string | null {
+  const limitation = projectWorkItemCurrentVerificationLimitation(session, item);
+  const criteria = projectWorkItemVerificationWaiverCriteria(session, item);
+  const policies = new Map(projectGoalVerificationPolicies(activeProjectGoal(session)).map((policy) => (
+    [projectCriterionIdentity(policy.criterion), policy]
+  )));
+  const protectedRawCriterion = limitation?.affectedAcceptance.find(
+    projectCriterionVerificationCannotBeRelaxed,
+  );
+  const protectedCriterion = criteria.find((criterion) => {
+    if (projectCriterionVerificationCannotBeRelaxed(criterion)) return true;
+    const policy = policies.get(projectCriterionIdentity(criterion));
+    return !policy || policy.riskClass !== 'standard';
+  });
+  const riskCriterion = protectedRawCriterion || protectedCriterion;
+  return riskCriterion
+    ? `该验收属于保护性或高风险条件：${riskCriterion}。跳过后只记录“用户接受未验证风险”，不会记录为通过，也不能掩盖已知失败。`
     : null;
 }
 
@@ -160,10 +183,63 @@ export function projectWorkItemVerificationDeferred(
     && decision.authorizationVersion === projectAuthorizationVersion(session);
 }
 
+export interface ProjectStaleDeferredVerificationBlocker {
+  deferredItem: ProjectWorkItem;
+  completedSuccessor: ProjectWorkItem;
+  subgoalId: string;
+}
+
+/** A historical defer may not silently block a stage already covered by current-version evidence. */
+export function projectStaleDeferredVerificationBlocker(
+  session: ProjectManagerSession,
+): ProjectStaleDeferredVerificationBlocker | null {
+  const goal = activeProjectGoal(session);
+  const requirementsVersion = projectRequirementsVersion(session);
+  const authorizationVersion = projectAuthorizationVersion(session);
+  for (const deferredItem of session.workItems) {
+    if (deferredItem.goalId !== goal.id
+      || deferredItem.status !== 'paused'
+      || !deferredItem.subgoalId
+      || deferredItem.verificationDecision?.action !== 'defer-verification'
+      || projectWorkItemVerificationDeferred(session, deferredItem)) continue;
+    const subgoal = (session.subgoals || []).find((candidate) => (
+      candidate.id === deferredItem.subgoalId
+      && candidate.goalId === goal.id
+      && !['achieved', 'obsolete'].includes(candidate.status)
+    ));
+    if (!subgoal) continue;
+    const currentCompletedItems = session.workItems.filter((item) => (
+      item.id !== deferredItem.id
+      && item.goalId === goal.id
+      && item.subgoalId === subgoal.id
+      && item.requirementsVersion === requirementsVersion
+      && item.authorizationVersion === authorizationVersion
+      && item.status === 'completed'
+      && !!normalizeProjectCompletionResult(item.completion)
+    ));
+    if (currentCompletedItems.length === 0) continue;
+    const completion = projectSubgoalCompletionResult({
+      ...subgoal,
+      status: 'achieved',
+      completion: undefined,
+    }, currentCompletedItems, { requirementsVersion, authorizationVersion });
+    if (subgoal.acceptance.some((criterion) => projectCompletionCriteriaError(
+      [criterion],
+      completion,
+      '阶段验收',
+      { allowExtra: true, requireArtifacts: true },
+    ))) continue;
+    const completedSuccessor = [...currentCompletedItems]
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    return { deferredItem, completedSuccessor, subgoalId: subgoal.id };
+  }
+  return null;
+}
+
 /**
  * User-settled verification decisions remain immutable until the user explicitly
- * resumes the same deferred work item. A current standard-risk skip is an audited
- * waiver and is not rebound or silently converted into passing evidence.
+ * resumes the same deferred work item. A current skip is an audited waiver; protected
+ * criteria additionally require riskAcknowledged and are never converted into passing evidence.
  */
 export function projectWorkItemRequiresVersionReconciliation(
   session: ProjectManagerSession,

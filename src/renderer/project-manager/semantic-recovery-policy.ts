@@ -4,6 +4,7 @@ import {
   projectAuthorizationVersion,
   projectRequirementsVersion,
   type ProjectManagerSession,
+  type ProjectWorkItem,
 } from '../../shared/project-manager';
 
 export interface ProjectInternalRecoveryScopeInput {
@@ -48,6 +49,47 @@ export function projectInternalRecoveryAttempts(
     && (event.payload?.recoveryKey === recoveryKey
       || event.payload?.recoveryScopeKey === recoveryKey)
   )).length;
+}
+
+/** A never-started dispatch failure is a runtime/control-plane incident, not evidence that the work route failed. */
+export function projectRecoveryExhaustionRequiresRuntimeEscalation(
+  obligation: string | undefined,
+  workItem: ProjectWorkItem | undefined,
+): boolean {
+  if (obligation !== 'dispatch-work' || !workItem) return false;
+  return ['planned', 'waiting-dependencies'].includes(workItem.status)
+    && (workItem.attempts || 0) === 0
+    && (workItem.executionHistory || []).length === 0
+    && !workItem.startedAt
+    && !workItem.latestEvidence
+    && !workItem.completion;
+}
+
+/** The same project facts may receive at most one automatic L2 replan before ownership returns to the user. */
+export function projectRouteRecoveryAlreadyAttempted(
+  session: ProjectManagerSession,
+  workItemId: string,
+): boolean {
+  const snapshotFingerprint = session.progressSnapshot?.fingerprint;
+  if (!snapshotFingerprint) return false;
+  const requirementsVersion = projectRequirementsVersion(session);
+  const authorizationVersion = projectAuthorizationVersion(session);
+  if (session.orientation?.status === 'ready'
+    && session.orientation.recovery?.level === 'route'
+    && session.orientation.recovery.workItemId === workItemId
+    && session.orientation.snapshotFingerprint === snapshotFingerprint
+    && session.orientation.requirementsVersion === requirementsVersion
+    && session.orientation.authorizationVersion === authorizationVersion) {
+    return true;
+  }
+  return session.events.some((event) => (
+    event.kind === 'project-orientation-confirmed'
+    && event.payload?.recoveryLevel === 'route'
+    && (event.workItemId === workItemId || event.payload?.recoveryWorkItemId === workItemId)
+    && event.payload?.snapshotFingerprint === snapshotFingerprint
+    && event.payload?.requirementsVersion === requirementsVersion
+    && event.payload?.authorizationVersion === authorizationVersion
+  ));
 }
 
 /**

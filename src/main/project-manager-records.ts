@@ -13,6 +13,7 @@ import {
   normalizeProjectReusableUserDecision,
   normalizeProjectVerificationDecision,
   normalizeProjectVerificationLimitation,
+  projectManagerQuestionOptionLimit,
   type ProjectManagerSession,
 } from '../shared/project-manager';
 
@@ -107,7 +108,9 @@ function isPendingUserQuestion(value: unknown): boolean {
     && typeof question.context === 'string'
     && typeof question.previousStatus === 'string' && SESSION_STATUSES.has(question.previousStatus)
     && Number.isFinite(question.createdAt)
-    && Array.isArray(options) && options.length >= 2 && options.length <= 4
+    && Array.isArray(options)
+    && options.length >= 2
+    && options.length <= projectManagerQuestionOptionLimit(question.reasonCode)
     && options.every((option) => {
       if (!option || typeof option !== 'object') return false;
       const candidate = option as Record<string, unknown>;

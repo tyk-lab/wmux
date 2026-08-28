@@ -56,6 +56,7 @@ export type ProjectContinuationBoundary =
 
 export const PROJECT_ORIENTATION_DISPOSITIONS = [
   'continue',
+  'replan',
   'verify',
   'pause',
   'stop',
@@ -153,6 +154,10 @@ export const PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES = [
   'final-acceptance',
   'runtime-recovery',
 ] as const;
+
+export function projectManagerQuestionOptionLimit(reasonCode: unknown): number {
+  return reasonCode === 'verification-limited' ? 5 : 4;
+}
 
 export type ProjectManagerManualInterventionReasonCode =
   typeof PROJECT_MANAGER_MANUAL_INTERVENTION_REASON_CODES[number] | 'recovery-fallback';
@@ -579,6 +584,17 @@ export interface ProjectOrientationWorkItemReview {
   nextAction: string;
 }
 
+export interface ProjectRecoveryOrientationContext {
+  level: 'runtime' | 'route';
+  role: ProjectAgentRole;
+  triggerFingerprint: string;
+  blocker: string;
+  occurrence: number;
+  requestedAt: number;
+  workItemId?: string;
+  evidenceSummary?: string;
+}
+
 /** Project-AI-owned semantic understanding, bound to one immutable workspace snapshot and requirement revision. */
 export interface ProjectOrientationState {
   status: 'required' | 'ready';
@@ -591,6 +607,8 @@ export interface ProjectOrientationState {
   knownFacts?: string[];
   unknowns?: string[];
   workItems?: ProjectOrientationWorkItemReview[];
+  /** Present when a fresh runtime must reassess facts before resuming or replanning. */
+  recovery?: ProjectRecoveryOrientationContext;
   acknowledgedAt?: number;
 }
 
@@ -744,6 +762,8 @@ export interface ProjectVerificationDecision {
   answeredBy: 'desktop' | 'feishu';
   requirementsVersion: number;
   authorizationVersion: number;
+  /** The user saw the protected/high-risk acceptance impact and explicitly chose to proceed unverified. */
+  riskAcknowledged?: boolean;
   decidedAt: number;
 }
 
@@ -783,6 +803,7 @@ export function normalizeProjectVerificationDecision(
     answeredBy: value.answeredBy,
     requirementsVersion: Math.trunc(value.requirementsVersion),
     authorizationVersion: Math.trunc(value.authorizationVersion),
+    ...(value.riskAcknowledged === true ? { riskAcknowledged: true } : {}),
     decidedAt: value.decidedAt,
   };
 }
@@ -841,9 +862,50 @@ export function projectFinalAcceptanceEligibilityError(session: ProjectManagerSe
   if (knownFailure) {
     return `存在已知失败结论，必须先处理或由用户修改目标，不能直接接受为完成：${knownFailure.criterion}`;
   }
-  const safetyCriticalCriterion = goal.doneWhen.find(projectCriterionVerificationCannotBeRelaxed);
-  if (safetyCriticalCriterion) {
-    return `安全、权限、生产或数据完整性验收不能用最终效果接受代替：${safetyCriticalCriterion}`;
+  const goalPolicies = new Map(projectGoalVerificationPolicies(goal)
+    .map((policy) => [projectCriterionIdentity(policy.criterion), policy]));
+  const protectedPolicies = new Map([...goalPolicies.values()]
+    .filter((policy) => (
+      policy.riskClass === 'protected'
+        || projectCriterionVerificationCannotBeRelaxed(policy.criterion)
+    ))
+    .map((policy) => [projectCriterionIdentity(policy.criterion), policy.criterion]));
+  const subgoalsById = new Map(activeProjectSubgoals(session).map((subgoal) => [subgoal.id, subgoal]));
+  const unacknowledgedProtectedGap = gaps.find((item) => {
+    const affected = new Set((item.verificationLimitation?.affectedAcceptance || [])
+      .map(projectCriterionIdentity));
+    const coverage = normalizeProjectStageAcceptanceCoverage(item.contract.stageAcceptanceCoverage);
+    const mappedProtected = coverage.some((entry) => (
+      protectedPolicies.has(projectCriterionIdentity(entry.stageCriterion))
+        && (affected.size === 0
+          || affected.has(projectCriterionIdentity(entry.verificationCriterion))
+          || affected.has(projectCriterionIdentity(entry.stageCriterion)))
+    ));
+    const directlyProtected = [...affected].some((criterion) => protectedPolicies.has(criterion))
+      || (item.verificationLimitation?.affectedAcceptance || [])
+        .some(projectCriterionVerificationCannotBeRelaxed);
+    const subgoalProtected = !!item.subgoalId
+      && (subgoalsById.get(item.subgoalId)?.acceptance || [])
+        .some((criterion) => protectedPolicies.has(projectCriterionIdentity(criterion)));
+    const mappedPolicyIds = coverage
+      .filter((entry) => affected.size === 0
+        || affected.has(projectCriterionIdentity(entry.verificationCriterion))
+        || affected.has(projectCriterionIdentity(entry.stageCriterion)))
+      .map((entry) => projectCriterionIdentity(entry.stageCriterion));
+    const provablyStandard = mappedPolicyIds.length > 0 && mappedPolicyIds.every((criterion) => (
+      goalPolicies.get(criterion)?.riskClass === 'standard'
+        && !projectCriterionVerificationCannotBeRelaxed(goalPolicies.get(criterion)?.criterion || '')
+    ));
+    const requiresAcknowledgement = directlyProtected || mappedProtected
+      || (coverage.length === 0 && subgoalProtected)
+      || (protectedPolicies.size > 0 && !provablyStandard);
+    return requiresAcknowledgement && !(
+      item.verificationDecision?.action === 'skip-verification'
+        && item.verificationDecision.riskAcknowledged === true
+    );
+  });
+  if (unacknowledgedProtectedGap) {
+    return `保护性或高风险验收只能在用户明确确认未验证风险后接受：${unacknowledgedProtectedGap.title}`;
   }
   const uncoveredSubgoal = activeProjectSubgoals(session).find((subgoal) => (
     !['achieved', 'obsolete'].includes(subgoal.status)
@@ -1767,6 +1829,31 @@ export function normalizeProjectOrientationState(value: unknown): ProjectOrienta
     });
     if (workItems.length !== raw.workItems.length) return undefined;
   }
+  let recovery: ProjectRecoveryOrientationContext | undefined;
+  if (raw.recovery !== undefined) {
+    const candidate = raw.recovery as Partial<ProjectRecoveryOrientationContext>;
+    if (!candidate || typeof candidate !== 'object'
+      || !['runtime', 'route'].includes(String(candidate.level))
+      || !['manager', 'supervisor', 'task', 'auxiliary'].includes(String(candidate.role))
+      || typeof candidate.triggerFingerprint !== 'string' || !candidate.triggerFingerprint.trim()
+      || typeof candidate.blocker !== 'string' || !candidate.blocker.trim()
+      || !Number.isFinite(candidate.occurrence) || Number(candidate.occurrence) < 1
+      || !Number.isFinite(candidate.requestedAt)) return undefined;
+    recovery = {
+      level: candidate.level as ProjectRecoveryOrientationContext['level'],
+      role: candidate.role as ProjectAgentRole,
+      triggerFingerprint: candidate.triggerFingerprint.trim().slice(0, 200),
+      blocker: candidate.blocker.trim().slice(0, 4000),
+      occurrence: Math.max(1, Math.trunc(Number(candidate.occurrence))),
+      requestedAt: Number(candidate.requestedAt),
+      ...(typeof candidate.workItemId === 'string' && candidate.workItemId.trim()
+        ? { workItemId: candidate.workItemId.trim().slice(0, 200) }
+        : {}),
+      ...(typeof candidate.evidenceSummary === 'string' && candidate.evidenceSummary.trim()
+        ? { evidenceSummary: candidate.evidenceSummary.trim().slice(0, 4000) }
+        : {}),
+    };
+  }
   const normalized: ProjectOrientationState = {
     status: raw.status as ProjectOrientationState['status'],
     requirementsVersion: Math.max(1, Math.trunc(Number(raw.requirementsVersion))),
@@ -1780,6 +1867,7 @@ export function normalizeProjectOrientationState(value: unknown): ProjectOrienta
     ...(knownFacts ? { knownFacts } : {}),
     ...(unknowns ? { unknowns } : {}),
     ...(workItems ? { workItems } : {}),
+    ...(recovery ? { recovery } : {}),
     ...(Number.isFinite(raw.acknowledgedAt) ? { acknowledgedAt: Number(raw.acknowledgedAt) } : {}),
   };
   if (normalized.status === 'ready' && (
@@ -1795,6 +1883,7 @@ export function requiredProjectOrientation(
   session: Pick<ProjectManagerSession, 'requirementsVersion' | 'authorizationVersion' | 'progressSnapshot' | 'orientation'>,
   reason: string,
   requestedAt = Date.now(),
+  recovery?: ProjectRecoveryOrientationContext,
 ): ProjectOrientationState {
   return {
     status: 'required',
@@ -1803,6 +1892,7 @@ export function requiredProjectOrientation(
     snapshotFingerprint: session.progressSnapshot?.fingerprint || 'capture-pending',
     reason: reason.trim().slice(0, 2000) || '项目现状需要重新建立认知基线',
     requestedAt: Math.max(requestedAt, (session.orientation?.requestedAt || 0) + 1),
+    ...(recovery ? { recovery } : {}),
   };
 }
 
@@ -2286,6 +2376,7 @@ export type ProjectManagerAction =
     intervention: ProjectWorkItemIntervention;
     reason?: string;
     answeredBy?: 'desktop' | 'feishu';
+    riskAcknowledged?: boolean;
   }
   | {
       type: 'record-execution';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeStandingUserDecisions,
+  ordinaryUserDecisionReuseEnabled,
   repeatedStandingUserDecisionError,
   standingUserDecisionFingerprint,
   upsertStandingUserDecision,
@@ -17,6 +18,12 @@ describe('standing user decisions', () => {
     subjectFingerprint: standingUserDecisionFingerprint('是否继续当前实测'),
     sourceApprovalId: 'approval-test', updatedAt: 2, planRevision: 2,
   };
+
+  it('persists an explicit ordinary-mode decision by default and allows a one-shot opt-out', () => {
+    expect(ordinaryUserDecisionReuseEnabled(undefined)).toBe(true);
+    expect(ordinaryUserDecisionReuseEnabled(true)).toBe(true);
+    expect(ordinaryUserDecisionReuseEnabled(false)).toBe(false);
+  });
 
   it('keeps multiple subjects and replaces only the same subject', () => {
     const decisions = upsertStandingUserDecision(

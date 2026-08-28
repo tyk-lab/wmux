@@ -5,6 +5,11 @@ import type {
 
 const MAX_STANDING_USER_DECISIONS = 12;
 
+/** Explicit owner decisions persist by default; false is an intentional one-shot opt-out. */
+export function ordinaryUserDecisionReuseEnabled(value: boolean | undefined): boolean {
+  return value !== false;
+}
+
 export function standingUserDecisionFingerprint(subject: string): string {
   return subject
     .trim()

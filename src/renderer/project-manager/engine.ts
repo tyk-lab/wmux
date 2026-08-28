@@ -17,6 +17,7 @@ import {
   type ProjectWorkItem,
 } from '../../shared/project-manager';
 import {
+  projectSubgoalClosedByVerificationWaiver,
   projectWorkItemRequiresVersionReconciliation,
   projectWorkItemVerificationDeferred,
   projectWorkItemVerificationIntervened,
@@ -66,6 +67,13 @@ export function buildProjectSupervisorAssignment(
 ): ProjectSupervisorAssignment {
   const goal = activeProjectGoal(session);
   const stage = activeProjectSubgoals(session).find((candidate) => candidate.id === item.subgoalId);
+  const recoveryReview = session.orientation?.status === 'ready'
+    && session.orientation.recovery?.level === 'route'
+    && session.orientation.recovery.workItemId === item.id
+    ? session.orientation.workItems?.find((review) => (
+        review.workItemId === item.id && review.disposition === 'replan'
+      ))
+    : undefined;
   return {
     projectGoal: goal.statement,
     ...(stage ? {
@@ -81,7 +89,16 @@ export function buildProjectSupervisorAssignment(
     objective: item.contract.objective,
     description: item.contract.description,
     effectivePreconditions: projectEffectiveWorkItemPreconditions(session, item),
-    supervisorNotes: [...(item.contract.supervisorNotes || [])],
+    supervisorNotes: [
+      ...(item.contract.supervisorNotes || []),
+      ...(recoveryReview ? [[
+        '异常恢复路线约束：旧执行路线已被控制层判定失效，不得原样恢复或仅改写措辞重复派发。',
+        `原阻碍：${session.orientation?.recovery?.blocker || item.latestBlocker || '见持久记录'}`,
+        `项目 AI 评估依据：${recoveryReview.basis}`,
+        `恢复方向：${recoveryReview.nextAction}`,
+        '先核对当前工作树和已有证据，只处理剩余验收；必须改变假设、实验条件或推进路径，并把路线差异写入首个成果批次。',
+      ].join('\n')] : []),
+    ],
     stopWhen: [...item.contract.stopWhen],
     validation: [...item.contract.validation],
     stageAcceptanceCoverage: (item.contract.stageAcceptanceCoverage || []).map((mapping) => ({ ...mapping })),
@@ -480,9 +497,23 @@ export interface ProjectProgressObligation {
 }
 
 export function projectHasRunnableGoalPlan(session: ProjectManagerSession): boolean {
-  return activeProjectSubgoals(session).some((subgoal) => (
-    subgoal.status === 'planned' || subgoal.status === 'active'
+  const subgoals = activeProjectSubgoals(session);
+  const hasCurrentVerificationWaiver = session.workItems.some((item) => (
+    item.goalId === activeProjectGoal(session).id
+    && item.verificationDecision?.action === 'skip-verification'
+    && item.verificationDecision.requirementsVersion === projectRequirementsVersion(session)
+    && item.verificationDecision.authorizationVersion === projectAuthorizationVersion(session)
   ));
+  return subgoals.length > 0 && (
+    subgoals.some((subgoal) => (
+      ['planned', 'active'].includes(subgoal.status)
+      && !projectSubgoalClosedByVerificationWaiver(session, subgoal.id)
+    ))
+    || (hasCurrentVerificationWaiver && subgoals.every((subgoal) => (
+      ['achieved', 'obsolete'].includes(subgoal.status)
+      || projectSubgoalClosedByVerificationWaiver(session, subgoal.id)
+    )))
+  );
 }
 
 function projectAlignmentConfirmedAfterLatestRequirement(session: ProjectManagerSession): boolean {
@@ -652,6 +683,7 @@ export function projectProgressObligation(
   if (currentItems.every((item) => item.status === 'completed')) {
     const uncoveredSubgoal = activeProjectSubgoals(session).find((subgoal) => (
       !['achieved', 'obsolete'].includes(subgoal.status)
+      && !projectSubgoalClosedByVerificationWaiver(session, subgoal.id)
     ));
     if (uncoveredSubgoal) {
       return {

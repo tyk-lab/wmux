@@ -198,6 +198,39 @@ describe('project manager records', () => {
     },
   );
 
+  it('persists the five-option verification decision used to reconcile stale deferrals', () => {
+    const appData = root();
+    const options = [
+      ['accept-current-stage-evidence', '采用已有验证结果'],
+      ['manual-verify', '人工验收并反馈'],
+      ['skip-stale-deferred', '跳过旧暂缓项'],
+      ['defer-verification', '更新暂缓并继续其他工作'],
+      ['keep-paused', '保持暂停'],
+    ].map(([id, label]) => ({ id, label, description: `${label}的范围与影响说明。` }));
+    const saved: ProjectManagerSession = {
+      ...session('pm-five-option-verification', 30),
+      status: 'waiting',
+      pendingUserQuestion: {
+        id: 'question-stale-deferred', category: 'manual-intervention',
+        reasonCode: 'verification-limited', blocker: '旧暂缓项阻止阶段收口',
+        question: '历史暂缓验证项正在阻止当前阶段继续，请选择如何处理。',
+        context: '当前版本已有新的验证证据。', options,
+        recommendedOptionId: 'accept-current-stage-evidence', previousStatus: 'paused', createdAt: 20,
+      },
+    };
+
+    expect(() => saveProjectManagerSession(saved, appData)).not.toThrow();
+    expect(recoveredSession(appData, saved.id)?.pendingUserQuestion?.options).toHaveLength(5);
+
+    const invalidAppData = root();
+    expect(() => saveProjectManagerSession({
+      ...saved,
+      id: 'pm-five-option-runtime',
+      projectDir: 'E:\\runtime-five-options',
+      pendingUserQuestion: { ...saved.pendingUserQuestion!, reasonCode: 'runtime-recovery' },
+    }, invalidAppData)).toThrow('invalid project manager session payload');
+  });
+
   it('persists an explicit verification deferral on its work item', () => {
     const appData = root();
     const goalId = 'pm-verification-deferral-goal-1';

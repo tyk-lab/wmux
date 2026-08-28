@@ -162,8 +162,6 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('<dt>核验概览</dt>');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__audit-details');
     expect(projectManagerDialogSource).toContain('<dt>完成验证</dt>');
-    expect(projectManagerDialogSource).toContain('<dt>开始时间</dt>');
-    expect(projectManagerDialogSource).toContain('<dt>结束时间</dt>');
     expect(projectManagerDialogSource).toContain('历史已取消阶段');
     expect(projectManagerDialogSource).toContain('主目标历史');
     const definitionUpdateHandler = projectManagerDialogSource.match(
@@ -257,11 +255,6 @@ describe('supervisor setup dialog feedback', () => {
     expect(projectManagerDialogSource).toContain('关闭整个工作项');
     expect(projectManagerDialogSource).toContain('可选：说明跳过或关闭整个工作项的理由');
     expect(projectManagerDialogSource).toContain('project-manager-dialog__work-item-decisions');
-    expect(projectManagerDialogSource).toContain('project-manager-dialog__action-grid');
-    expect(projectManagerDialogSource).toContain('<span>监督正在做</span>');
-    expect(projectManagerDialogSource).toContain('<span>下一步</span>');
-    expect(projectManagerDialogSource).toContain('<span>当前进度</span>');
-    expect(projectManagerDialogSource).toContain('查看合同、证据与历史');
     expect(projectManagerDialogSource).toContain('buildSupervisorPlanView');
     expect(supervisorCssSource).toMatch(
       /\.project-manager-dialog__work-item-decisions\s*\{[\s\S]*?max-height:[\s\S]*?overflow-y:\s*auto;/,
@@ -633,6 +626,8 @@ describe('supervisor setup dialog feedback', () => {
     expect(surfaceTabBarSource).toContain("? '监督暂停'");
     expect(surfaceTabBarSource).toContain("'监督待续'");
     expect(panelSource).toContain('同类问题沿用本次决定，不再重复询问');
+    expect(panelSource).toContain('ordinaryUserDecisionReuseEnabled(proposalStandingDecisions[id])');
+    expect(panelSource).toContain('ordinaryUserDecisionReuseEnabled(proposalStandingDecisions[a.id])');
     expect(panelSource).toContain('{lane && !isProjectManagedSupervisorLane(lane) && (');
     expect(panelSource).toContain('const reuseForSimilarIssues = !isProjectManagedSupervisorLane(lane)');
     expect(panelSource).toContain('standingUserDecision');

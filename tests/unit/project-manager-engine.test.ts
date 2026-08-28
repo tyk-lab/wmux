@@ -132,6 +132,50 @@ describe('project-manager engine', () => {
     expect(projectProgressObligation(project)).toMatchObject({ kind: 'resolve-dependencies' });
   });
 
+  it('treats a user-waived stage as settled even when an old plan reopens it', () => {
+    const completed = item('implementation', 'completed');
+    const waived = item('final-verification', 'stopped');
+    const project = session([completed, waived]);
+    const goalId = project.activeGoalId!;
+    completed.goalId = goalId;
+    completed.subgoalId = 'implementation-stage';
+    waived.goalId = goalId;
+    waived.subgoalId = 'verification-stage';
+    waived.contract = {
+      ...waived.contract,
+      stopWhen: ['全部测试通过'],
+      validation: ['全部测试通过'],
+      stageAcceptanceCoverage: [{
+        stageCriterion: '全部测试通过',
+        verificationCriterion: '全部测试通过',
+      }],
+    };
+    waived.verificationLimitation = {
+      kind: 'gui-automation-unavailable', detail: 'GUI 自动化不可用',
+      missingEvidence: ['真实 GUI 操作结果'], affectedAcceptance: ['全部测试通过'],
+      requirementsVersion: 1, authorizationVersion: 1, detectedAt: 2,
+    };
+    waived.verificationDecision = {
+      action: 'skip-verification', questionId: 'skip-final', reason: '用户明确跳过最终验证',
+      answeredBy: 'desktop', requirementsVersion: 1, authorizationVersion: 1,
+      riskAcknowledged: true, decidedAt: 3,
+    };
+    project.workItems = [completed, waived];
+    project.subgoals = [{
+      id: 'implementation-stage', goalId, title: '实现阶段', outcome: '实现完成',
+      acceptance: ['实现已形成'], dependencies: [], status: 'achieved', order: 1,
+      createdAt: 1, updatedAt: 1,
+    }, {
+      id: 'verification-stage', goalId, title: '最终验证', outcome: '形成最终验证',
+      acceptance: ['全部测试通过'], dependencies: ['implementation-stage'], status: 'planned', order: 2,
+      createdAt: 1, updatedAt: 1,
+    }];
+
+    expect(projectProgressObligation(project)).toMatchObject({ kind: 'complete-goal' });
+    project.status = 'waiting';
+    expect(projectProgressObligation(project)).toMatchObject({ kind: 'resume-project' });
+  });
+
   it('separates missing stage mappings from a stage that is ready to close', () => {
     const verificationCriterion = '复核 C GUI 原型可编译并启动的既有证据';
     const stageCriterion = 'C GUI 原型可编译并启动';
@@ -479,6 +523,36 @@ describe('project-manager engine', () => {
     expect(taskBriefing).toContain('成果说明：覆盖正常与异常认证行为');
     expect(taskBriefing).toContain('- 环境已准备');
     expect(taskBriefing).toContain('- 认证测试环境可用');
+  });
+
+  it('passes an L2 replan constraint only to the replacement supervisor assignment', () => {
+    const project = session([item('auth', 'planned')]);
+    const workItem = project.workItems[0];
+    project.orientation = {
+      status: 'ready', requirementsVersion: 1, authorizationVersion: 1,
+      snapshotFingerprint: 'test', reason: '恢复路线重评估', requestedAt: 2,
+      summary: '保留已有成果并更换路线', knownFacts: ['旧路线两轮没有新证据'], unknowns: [],
+      workItems: [{
+        workItemId: workItem.id, disposition: 'replan',
+        basis: '相同失败已经重复两轮', nextAction: '使用新的判别路径处理剩余验收',
+      }],
+      recovery: {
+        level: 'route', role: 'manager', triggerFingerprint: 'same-route',
+        blocker: '旧验证路线无法产生新证据', occurrence: 2, requestedAt: 2,
+        workItemId: workItem.id,
+      },
+      acknowledgedAt: 3,
+    };
+
+    const assignment = buildProjectSupervisorAssignment(project, workItem);
+    expect(assignment.supervisorNotes.join('\n')).toContain('旧执行路线已被控制层判定失效');
+    expect(assignment.supervisorNotes.join('\n')).toContain('旧验证路线无法产生新证据');
+    expect(assignment.supervisorNotes.join('\n')).toContain('必须改变假设、实验条件或推进路径');
+    expect(renderProjectTaskBatch(workItem.contract, {
+      kind: 'task', coverage: 'bounded-batch', outcome: '处理剩余认证验收',
+      completionDefinition: ['认证测试通过'], evidenceExpectations: [],
+      unmetCompletionItems: [], knownFacts: [], constraints: [], nonGoals: [],
+    })).not.toContain('项目 AI');
   });
 
   it('allows a low atomic work item to remain one whole neutral batch', () => {
