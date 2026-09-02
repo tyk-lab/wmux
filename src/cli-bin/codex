@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Wmux-scoped Codex shim. This directory is prepended only inside wmux panes.
 # Ordinary terminals keep the user-level default (Hooks disabled).
+# Trust bypass is process-scoped, so it never changes the user's global hook trust.
 
 wmux_codex_shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)
 wmux_codex_real=''
@@ -23,14 +24,27 @@ if [ -z "$wmux_codex_real" ]; then
 fi
 
 wmux_codex_hooks_configured=''
+wmux_codex_hooks_disabled=''
+wmux_codex_trust_configured=''
 wmux_codex_previous_arg=''
 for wmux_codex_arg in "$@"; do
   case "$wmux_codex_arg" in
-    --enable=hooks|--disable=hooks|features.hooks=*|--config=features.hooks=*|-c=features.hooks=*)
+    --)
+      break
+      ;;
+    --dangerously-bypass-hook-trust)
+      wmux_codex_trust_configured=1
+      ;;
+    --disable=hooks|features.hooks=false|--config=features.hooks=false|-c=features.hooks=false)
+      wmux_codex_hooks_disabled=1
+      ;;
+    --enable=hooks|features.hooks=true|--config=features.hooks=true|-c=features.hooks=true)
       wmux_codex_hooks_configured=1
       ;;
     hooks)
-      if [ "$wmux_codex_previous_arg" = '--enable' ] || [ "$wmux_codex_previous_arg" = '--disable' ]; then
+      if [ "$wmux_codex_previous_arg" = '--disable' ]; then
+        wmux_codex_hooks_disabled=1
+      elif [ "$wmux_codex_previous_arg" = '--enable' ]; then
         wmux_codex_hooks_configured=1
       fi
       ;;
@@ -39,7 +53,16 @@ for wmux_codex_arg in "$@"; do
 done
 unset wmux_codex_arg wmux_codex_previous_arg
 
-if [ -n "$wmux_codex_hooks_configured" ]; then
+if [ -n "$wmux_codex_hooks_disabled" ]; then
   exec "$wmux_codex_real" "$@"
 fi
-exec "$wmux_codex_real" --enable hooks "$@"
+if [ -n "$wmux_codex_hooks_configured" ]; then
+  if [ -n "$wmux_codex_trust_configured" ]; then
+    exec "$wmux_codex_real" "$@"
+  fi
+  exec "$wmux_codex_real" --dangerously-bypass-hook-trust "$@"
+fi
+if [ -n "$wmux_codex_trust_configured" ]; then
+  exec "$wmux_codex_real" --enable hooks "$@"
+fi
+exec "$wmux_codex_real" --dangerously-bypass-hook-trust --enable hooks "$@"

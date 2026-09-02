@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 /**
@@ -25,11 +27,78 @@ describe('electron-builder packaging', () => {
 
   it('ships wmux-scoped Codex launchers for Windows and POSIX shells', () => {
     const cliBin = path.join(__dirname, '../../src/cli-bin');
-    for (const launcher of ['codex', 'codex.cmd']) {
-      const content = fs.readFileSync(path.join(cliBin, launcher), 'utf8');
-      expect(content).toContain('--enable hooks');
-      expect(content).not.toContain('--dangerously-bypass-hook-trust');
-      expect(content).not.toContain('call "%WMUX_CODEX_REAL%"');
+    const posixLauncher = fs.readFileSync(path.join(cliBin, 'codex'), 'utf8');
+    expect(posixLauncher).toContain('--enable hooks');
+    expect(posixLauncher).toContain('--dangerously-bypass-hook-trust');
+    const powershellLauncher = fs.readFileSync(path.join(cliBin, 'codex.ps1'), 'utf8');
+    expect(powershellLauncher).toContain("@('--enable', 'hooks')");
+    expect(powershellLauncher).toContain('--dangerously-bypass-hook-trust');
+    const windowsLauncher = fs.readFileSync(path.join(cliBin, 'codex.cmd'), 'utf8');
+    expect(windowsLauncher).toContain('codex.ps1');
+    expect(windowsLauncher).not.toContain('WMUX_CODEX_ARGS');
+  });
+
+  it.runIf(process.platform === 'win32')('applies wmux-scoped Codex hook trust on Windows', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-shim-'));
+    const fakeBin = path.join(directory, 'bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(
+      path.join(fakeBin, 'codex.ps1'),
+      'Write-Output (ConvertTo-Json -Compress -InputObject @($args))\r\n',
+      'utf8',
+    );
+
+    try {
+      const cliBin = path.join(__dirname, '../../src/cli-bin');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const executablePath = [cliBin, fakeBin, path.join(systemRoot, 'System32')].join(path.delimiter);
+      const env = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (name.toLowerCase() === 'path') delete env[name];
+      }
+      env.PATH = executablePath;
+
+      const runLauncher = (args = '') => spawnSync(
+        process.env.ComSpec || path.join(systemRoot, 'System32', 'cmd.exe'),
+        ['/d', '/s', '/c', `codex.cmd ${args} <nul`],
+        { encoding: 'utf8', env },
+      );
+      const runPowerShellLauncher = (args: string[]) => spawnSync(
+        path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        [
+          '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+          '-File', path.join(cliBin, 'codex.ps1'),
+          ...args,
+        ],
+        { encoding: 'utf8', env },
+      );
+
+      const defaults = runLauncher();
+      expect(defaults.status, defaults.stderr).toBe(0);
+      expect(JSON.parse(defaults.stdout)).toEqual(['--dangerously-bypass-hook-trust', '--enable', 'hooks']);
+
+      const enabled = runLauncher('--enable hooks');
+      expect(enabled.status, enabled.stderr).toBe(0);
+      expect(JSON.parse(enabled.stdout)).toEqual(['--dangerously-bypass-hook-trust', '--enable', 'hooks']);
+
+      const disabled = runLauncher('--disable hooks');
+      expect(disabled.status, disabled.stderr).toBe(0);
+      expect(JSON.parse(disabled.stdout)).toEqual(['--disable', 'hooks']);
+
+      const sshPrompt = runLauncher('--config history.persistence=none "send <missing-file>"');
+      expect(sshPrompt.status, sshPrompt.stderr).toBe(0);
+      expect(sshPrompt.stderr).not.toContain('The system cannot find the file specified.');
+
+      const powershellSshPrompt = runPowerShellLauncher([
+        '--config', 'history.persistence=none', 'send <missing-file>',
+      ]);
+      expect(powershellSshPrompt.status, powershellSshPrompt.stderr).toBe(0);
+      expect(JSON.parse(powershellSshPrompt.stdout)).toEqual([
+        '--dangerously-bypass-hook-trust', '--enable', 'hooks',
+        '--config', 'history.persistence=none', 'send <missing-file>',
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
