@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+# Wmux-scoped Codex shim. This directory is prepended only inside wmux panes.
+# Ordinary terminals keep the user-level default (Hooks disabled).
+
+wmux_codex_shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)
+wmux_codex_real=''
+wmux_codex_old_ifs=$IFS
+IFS=:
+for wmux_codex_dir in $PATH; do
+  [ -n "$wmux_codex_dir" ] || wmux_codex_dir='.'
+  wmux_codex_resolved_dir=$(CDPATH= cd -- "$wmux_codex_dir" 2>/dev/null && pwd)
+  if [ "$wmux_codex_resolved_dir" != "$wmux_codex_shim_dir" ] && [ -x "$wmux_codex_dir/codex" ]; then
+    wmux_codex_real="$wmux_codex_dir/codex"
+    break
+  fi
+done
+IFS=$wmux_codex_old_ifs
+unset wmux_codex_old_ifs wmux_codex_dir wmux_codex_resolved_dir wmux_codex_shim_dir
+
+if [ -z "$wmux_codex_real" ]; then
+  echo 'codex: real Codex launcher not found outside the wmux shim directory.' >&2
+  exit 1
+fi
+
+wmux_codex_hooks_configured=''
+wmux_codex_previous_arg=''
+for wmux_codex_arg in "$@"; do
+  case "$wmux_codex_arg" in
+    --enable=hooks|--disable=hooks|features.hooks=*|--config=features.hooks=*|-c=features.hooks=*)
+      wmux_codex_hooks_configured=1
+      ;;
+    hooks)
+      if [ "$wmux_codex_previous_arg" = '--enable' ] || [ "$wmux_codex_previous_arg" = '--disable' ]; then
+        wmux_codex_hooks_configured=1
+      fi
+      ;;
+  esac
+  wmux_codex_previous_arg=$wmux_codex_arg
+done
+unset wmux_codex_arg wmux_codex_previous_arg
+
+if [ -n "$wmux_codex_hooks_configured" ]; then
+  exec "$wmux_codex_real" "$@"
+fi
+exec "$wmux_codex_real" --enable hooks "$@"

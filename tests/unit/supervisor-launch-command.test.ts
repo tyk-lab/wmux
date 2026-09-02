@@ -9,19 +9,19 @@ import {
 describe('supervisor launch command', () => {
   it('adds the selected model to a Codex launcher', () => {
     expect(buildSupervisorLaunchCommand('codex', 'gpt-5.6-sol'))
-      .toBe("codex --model 'gpt-5.6-sol'");
+      .toBe("codex --model 'gpt-5.6-sol' --enable hooks");
   });
 
   it('adds the selected reasoning effort as a one-session Codex override', () => {
     expect(buildSupervisorLaunchCommand('codex', 'gpt-5.6-sol', 'high'))
-      .toBe("codex --model 'gpt-5.6-sol' --config model_reasoning_effort='high'");
+      .toBe("codex --model 'gpt-5.6-sol' --config model_reasoning_effort='high' --enable hooks");
   });
 
   it('suppresses persistent history only when explicitly requested', () => {
     expect(buildSupervisorLaunchCommand('codex', '', '', { suppressCodexHistory: true }))
-      .toBe("codex --config history.persistence='none'");
+      .toBe("codex --config history.persistence='none' --enable hooks");
     expect(buildSupervisorLaunchCommand('codex', ''))
-      .toBe('codex');
+      .toBe('codex --enable hooks');
   });
 
   it('replaces a caller history override for a wmux-owned Codex runtime', () => {
@@ -30,27 +30,39 @@ describe('supervisor launch command', () => {
       '',
       '',
       { suppressCodexHistory: true },
-    )).toBe("codex --config model_reasoning_effort=high --config history.persistence='none'");
+    )).toBe("codex --config model_reasoning_effort=high --config history.persistence='none' --enable hooks");
   });
 
   it('keeps an explicitly configured reasoning effort unchanged', () => {
     expect(buildSupervisorLaunchCommand('codex -c model_reasoning_effort=medium', '', 'high'))
-      .toBe('codex -c model_reasoning_effort=medium');
+      .toBe('codex -c model_reasoning_effort=medium --enable hooks');
   });
 
   it('supports a quoted PowerShell Codex executable path', () => {
     expect(buildSupervisorLaunchCommand('& "C:\\Tools\\codex.exe"', 'gpt-5.6-terra'))
-      .toBe("& \"C:\\Tools\\codex.exe\" --model 'gpt-5.6-terra'");
+      .toBe("& \"C:\\Tools\\codex.exe\" --model 'gpt-5.6-terra' --enable hooks");
   });
 
   it('keeps an explicitly configured Codex model unchanged', () => {
     expect(buildSupervisorLaunchCommand('codex --model gpt-5.6-terra', 'gpt-5.6-sol'))
-      .toBe('codex --model gpt-5.6-terra');
+      .toBe('codex --model gpt-5.6-terra --enable hooks');
   });
 
   it('migrates the obsolete Codex Spark model ID', () => {
     expect(buildSupervisorLaunchCommand('codex', 'gpt-5.4-codex-spark'))
-      .toBe("codex --model 'gpt-5.3-codex-spark'");
+      .toBe("codex --model 'gpt-5.3-codex-spark' --enable hooks");
+  });
+
+  it('keeps an explicit per-launch Hooks disable override', () => {
+    expect(buildSupervisorLaunchCommand('codex --disable hooks', ''))
+      .toBe('codex --disable hooks');
+  });
+
+  it('inserts the Hooks option before an existing prompt separator', () => {
+    expect(buildSupervisorLaunchCommand('codex -- 检查登录流程', ''))
+      .toBe('codex --enable hooks -- 检查登录流程');
+    expect(buildSupervisorLaunchCommand('codex -- 提示中包含 --disable hooks', ''))
+      .toBe('codex --enable hooks -- 提示中包含 --disable hooks');
   });
 
   it('adds a selected Kimi model without the unsupported Thinking flag', () => {
@@ -197,7 +209,7 @@ describe('supervisor launch command', () => {
     expect(buildSupervisorLaunchCommand(
       'codex --dangerously-bypass-approvals-and-sandbox --sandbox danger-full-access',
       '', '', { isolateSupervisor: true },
-    )).not.toContain('dangerously-bypass');
+    )).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(buildSupervisorLaunchCommand(
       'kimi --auto --yolo', '', '', { isolateSupervisor: true },
     )).toContain('kimi --plan');

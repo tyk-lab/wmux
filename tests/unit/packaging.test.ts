@@ -23,6 +23,16 @@ describe('electron-builder packaging', () => {
     expect(extraResources).toContainEqual({ from: 'dist/shared', to: 'shared', filter: ['*.js'] });
   });
 
+  it('ships wmux-scoped Codex launchers for Windows and POSIX shells', () => {
+    const cliBin = path.join(__dirname, '../../src/cli-bin');
+    for (const launcher of ['codex', 'codex.cmd']) {
+      const content = fs.readFileSync(path.join(cliBin, launcher), 'utf8');
+      expect(content).toContain('--enable hooks');
+      expect(content).not.toContain('--dangerously-bypass-hook-trust');
+      expect(content).not.toContain('call "%WMUX_CODEX_REAL%"');
+    }
+  });
+
   it('ships generic agent instructions without Claude-only resources', () => {
     expect(extraResources).toContainEqual({
       from: 'resources/agent-instructions.md',

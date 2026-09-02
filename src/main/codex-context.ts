@@ -2,8 +2,9 @@
  * Codex CLI lifecycle hooks → wmux declared agent state.
  *
  * Codex discovers `~/.codex/hooks.json` using the nested lifecycle-hooks shape.
- * We merge wmux handlers without removing the user's other hooks. First launch
- * may require `/hooks` trust for non-managed commands — documented in README.
+ * We merge wmux handlers without removing the user's other hooks. Hooks stay
+ * disabled for ordinary Codex launches; wmux-scoped launchers enable them while
+ * retaining Codex's native per-handler trust checks.
  *
  * Spec: https://developers.openai.com/codex/hooks (ChatGPT Learn docs).
  */
@@ -44,6 +45,84 @@ export function resolveCodexHooksPath(homeDir = os.homedir()): string {
 
 export function resolveCodexConfigPath(homeDir = os.homedir()): string {
   return path.join(resolveCodexHome(homeDir), 'config.toml');
+}
+
+/**
+ * Keep lifecycle Hooks off for ordinary Codex launches. Wmux's PATH-scoped
+ * launcher shim enables them only for Codex processes started inside a pane.
+ */
+export function applyCodexHooksDisabledOutsideWmux(current: string): string {
+  const newline = current.includes('\r\n') ? '\r\n' : '\n';
+  const lines = current.replace(/\r\n/gu, '\n').split('\n');
+  const key = (name: string) => `(?:${name}|"${name}"|'${name}')`;
+  const featuresKey = key('features');
+  const hooksKey = key('hooks');
+  const tableHeader = /^\s*\[/u;
+  const firstTableIndex = lines.findIndex((line) => tableHeader.test(line));
+  const rootEnd = firstTableIndex < 0 ? lines.length : firstTableIndex;
+  const dottedHooks = new RegExp(
+    `^(\\s*${featuresKey}\\s*\\.\\s*${hooksKey}\\s*=\\s*)(true|false)(\\s*(?:#.*)?)$`,
+    'iu',
+  );
+  const dottedIndex = lines.findIndex((line, index) => index < rootEnd && dottedHooks.test(line));
+  if (dottedIndex >= 0) {
+    lines[dottedIndex] = lines[dottedIndex].replace(dottedHooks, '$1false$3');
+    return lines.join(newline);
+  }
+
+  const featuresHeader = new RegExp(`^\\s*\\[\\s*${featuresKey}\\s*\\]\\s*(?:#.*)?$`, 'iu');
+  const featuresIndex = lines.findIndex((line) => featuresHeader.test(line));
+
+  if (featuresIndex >= 0) {
+    let tableEnd = lines.findIndex((line, index) => index > featuresIndex && tableHeader.test(line));
+    if (tableEnd < 0) tableEnd = lines.length;
+    const hooksAssignment = new RegExp(
+      `^(\\s*${hooksKey}\\s*=\\s*)(true|false)(\\s*(?:#.*)?)$`,
+      'iu',
+    );
+    const hooksIndex = lines.findIndex((line, index) => (
+      index > featuresIndex && index < tableEnd && hooksAssignment.test(line)
+    ));
+    if (hooksIndex >= 0) {
+      lines[hooksIndex] = lines[hooksIndex].replace(hooksAssignment, '$1false$3');
+    } else {
+      lines.splice(featuresIndex + 1, 0, 'hooks = false');
+    }
+    return lines.join(newline);
+  }
+
+  const dottedFeature = new RegExp(`^\\s*${featuresKey}\\s*\\.`, 'iu');
+  let lastDottedFeatureIndex = -1;
+  for (let index = 0; index < rootEnd; index += 1) {
+    if (dottedFeature.test(lines[index])) lastDottedFeatureIndex = index;
+  }
+  if (lastDottedFeatureIndex >= 0) {
+    lines.splice(lastDottedFeatureIndex + 1, 0, 'features.hooks = false');
+    return lines.join(newline);
+  }
+
+  const separator = current.length === 0
+    ? ''
+    : current.endsWith('\n') || current.endsWith('\r') ? newline : `${newline}${newline}`;
+  return `${current}${separator}[features]${newline}hooks = false${newline}`;
+}
+
+export function ensureCodexHooksDisabledOutsideWmux(
+  configPath = resolveCodexConfigPath(),
+): void {
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+  const next = applyCodexHooksDisabledOutsideWmux(current);
+  if (next === current) return;
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const temporaryPath = `${configPath}.wmux-${process.pid}-${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, next, { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(temporaryPath, configPath);
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 function codexHookStateEventName(event: string): string {
@@ -268,11 +347,12 @@ export function applyWmuxCodexHooks(existing: any, hookScriptPosix: string): any
 }
 
 /**
- * Ensure `~/.codex/hooks.json` includes wmux turn-level hooks.
- * Creates the file when missing. Does not rewrite config.toml (hooks are on by default).
+ * Ensure `~/.codex/hooks.json` includes wmux turn-level hooks and keep the
+ * user-level Hooks feature disabled for Codex processes launched outside wmux.
  */
 export function ensureCodexHooks(): void {
   try {
+    ensureCodexHooksDisabledOutsideWmux();
     const hooksPath = resolveCodexHooksPath();
     const home = path.dirname(hooksPath);
     if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true });

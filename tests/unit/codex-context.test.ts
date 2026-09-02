@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  applyCodexHooksDisabledOutsideWmux,
   applyCodexProjectTrust,
   applyTrustedWmuxCodexHookState,
   applyWmuxCodexHooks,
@@ -46,6 +47,55 @@ describe('applyWmuxCodexHooks', () => {
     expect(next.hooks.Stop[0].hooks[0].command).toBe('python stop.py');
   });
 
+});
+
+describe('applyCodexHooksDisabledOutsideWmux', () => {
+  it('adds the disabled default to an existing features table and remains idempotent', () => {
+    const current = [
+      'model = "gpt-5.6-sol"',
+      '',
+      '[features]',
+      'multi_agent = true',
+      '',
+      '[agents]',
+      'enabled = true',
+      '',
+    ].join('\n');
+
+    const next = applyCodexHooksDisabledOutsideWmux(current);
+
+    expect(next).toContain('[features]\nhooks = false\nmulti_agent = true');
+    expect(applyCodexHooksDisabledOutsideWmux(next)).toBe(next);
+  });
+
+  it('turns an enabled Hooks feature off without changing its comment', () => {
+    const current = '[features]\r\nhooks = true # user default\r\napps = false\r\n';
+    expect(applyCodexHooksDisabledOutsideWmux(current))
+      .toBe('[features]\r\nhooks = false # user default\r\napps = false\r\n');
+  });
+
+  it('updates quoted feature tables and keys without creating duplicate TOML definitions', () => {
+    const current = '["features"]\n"hooks" = true # user default\napps = false\n';
+    expect(applyCodexHooksDisabledOutsideWmux(current))
+      .toBe('["features"]\n"hooks" = false # user default\napps = false\n');
+  });
+
+  it('updates a root dotted key without appending a duplicate features table', () => {
+    const current = 'features.hooks = true # user default\nmodel = "gpt-5"\n';
+    expect(applyCodexHooksDisabledOutsideWmux(current))
+      .toBe('features.hooks = false # user default\nmodel = "gpt-5"\n');
+  });
+
+  it('keeps an existing dotted features table in dotted-key form', () => {
+    const current = 'features.multi_agent = true\nmodel = "gpt-5"\n';
+    expect(applyCodexHooksDisabledOutsideWmux(current))
+      .toBe('features.multi_agent = true\nfeatures.hooks = false\nmodel = "gpt-5"\n');
+  });
+
+  it('creates a features table when the config has none', () => {
+    expect(applyCodexHooksDisabledOutsideWmux('model = "gpt-5"\n'))
+      .toBe('model = "gpt-5"\n\n[features]\nhooks = false\n');
+  });
 });
 
 describe('applyTrustedWmuxCodexHookState', () => {

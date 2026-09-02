@@ -3034,7 +3034,9 @@ describe('supervisor decision bridge', () => {
     expect(directSurface).toMatchObject({
       customTitle: 'Codex直连 · 修复登录页',
       cwd: 'E:\\Desktop\\wmux任务\\修复登录页-20260806-090807',
-      startupCommands: [expect.stringMatching(/^codex -- \(ConvertFrom-Json /)],
+      startupCommands: [expect.stringMatching(
+        /^codex --enable hooks -- \(ConvertFrom-Json /,
+      )],
     });
     expect(directSurface?.startupInput).toBeUndefined();
     expect(writes).not.toHaveBeenCalled();

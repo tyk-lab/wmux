@@ -24,7 +24,10 @@ describe('interactive Agent launch', () => {
     const launch = buildInteractiveAgentLaunch(agent, prompt);
 
     expect(launch.startupCommands).toHaveLength(1);
-    expect(launch.startupCommands[0]).toMatch(new RegExp(`^${agent} -- \\(ConvertFrom-Json '`));
+    const expectedPrefix = agent === 'codex'
+      ? '^codex --enable hooks -- \\(ConvertFrom-Json '
+      : '^grok -- \\(ConvertFrom-Json ';
+    expect(launch.startupCommands[0]).toMatch(new RegExp(expectedPrefix));
     expect(launch.startupCommands[0]).not.toContain('\n');
     expect(launch.startupCommands[0]).toContain("''登录''");
     expect(launch.startupInput).toBeUndefined();
@@ -39,7 +42,7 @@ describe('interactive Agent launch', () => {
 
   it('passes the configured model to task Agent launch commands', () => {
     expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-terra').startupCommands[0])
-      .toMatch(/^codex --model 'gpt-5\.6-terra' -- /);
+      .toMatch(/^codex --model 'gpt-5\.6-terra' --enable hooks -- /);
     expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3')).toEqual({
       startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
@@ -48,7 +51,7 @@ describe('interactive Agent launch', () => {
 
   it('passes launcher-specific reasoning settings to interactive task Agents', () => {
     expect(buildInteractiveAgentLaunch('codex', '执行首条任务', 'gpt-5.6-sol', 'high').startupCommands[0])
-      .toMatch(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' -- /);
+      .toMatch(/^codex --model 'gpt-5\.6-sol' --config model_reasoning_effort='high' --enable hooks -- /);
     expect(buildInteractiveAgentLaunch('kimi', '执行首条任务', 'k3', 'on')).toEqual({
       startupCommands: ["kimi --model 'kimi-code/k3' # wmux-automated-agent-task"],
       startupInput: '执行首条任务',
@@ -68,18 +71,20 @@ describe('interactive Agent launch', () => {
     const ordinary = buildInteractiveAgentLaunch('codex', '启动普通任务');
 
     expect(managed.startupCommands[0]).toMatch(
-      /^codex --config history\.persistence='none' -- \(ConvertFrom-Json /,
+      /^codex --config history\.persistence='none' --enable hooks -- \(ConvertFrom-Json /,
     );
     expect(ordinary.startupCommands[0]).not.toContain('history.persistence');
   });
 
-  it('never bypasses Codex Hook trust for automated runtimes', () => {
+  it('enables Hooks while retaining native trust checks for Codex runtimes launched by wmux', () => {
     const managedCodex = buildInteractiveAgentLaunch('codex', '启动项目 AI');
     const ordinaryCodex = buildInteractiveAgentLaunch('codex', '启动普通任务');
     const grok = buildInteractiveAgentLaunch('grok', '启动项目 AI');
 
-    expect(managedCodex.startupCommands[0]).toMatch(/^codex -- \(ConvertFrom-Json /);
-    expect(managedCodex.startupCommands[0]).not.toContain('bypass-hook-trust');
+    expect(managedCodex.startupCommands[0]).toMatch(
+      /^codex --enable hooks -- \(ConvertFrom-Json /,
+    );
+    expect(ordinaryCodex.startupCommands[0]).toContain('--enable hooks');
     expect(ordinaryCodex.startupCommands[0]).not.toContain('bypass-hook-trust');
     expect(grok.startupCommands[0]).not.toContain('bypass-hook-trust');
   });

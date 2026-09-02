@@ -107,6 +107,21 @@ function suppressCodexHistory(command: string): string {
   return `${withoutCallerOverride} --config history.persistence=${quotePowerShellArgument('none')}`;
 }
 
+function applyWmuxCodexHookDefaults(command: string): string {
+  const promptBoundary = /(^|\s)--(?=\s|$)/u.exec(command);
+  const optionEnd = promptBoundary ? promptBoundary.index + promptBoundary[1].length : command.length;
+  const optionScope = command.slice(0, optionEnd);
+  const explicitlyDisabled = /(?:^|\s)--disable(?:=|\s+)hooks(?:\s|$)/iu.test(optionScope)
+    || /(?:^|\s)(?:--config|-c)(?:=|\s+)(?:"features\.hooks=false"|'features\.hooks=false'|features\.hooks=false)(?:\s|$)/iu.test(optionScope);
+  const explicitlyConfigured = explicitlyDisabled
+    || /(?:^|\s)--enable(?:=|\s+)hooks(?:\s|$)/iu.test(optionScope)
+    || /(?:^|\s)(?:--config|-c)(?:=|\s+)(?:"features\.hooks=true"|'features\.hooks=true'|features\.hooks=true)(?:\s|$)/iu.test(optionScope);
+  if (explicitlyConfigured) return command;
+  return promptBoundary
+    ? `${command.slice(0, optionEnd)}--enable hooks ${command.slice(optionEnd)}`
+    : `${command} --enable hooks`;
+}
+
 function enforceSupervisorReadOnlyMode(command: string, launcher: SupervisorLauncherKind): string {
   if (launcher === 'codex') {
     let safe = removeBooleanFlag(command, '--dangerously-bypass-approvals-and-sandbox');
@@ -232,6 +247,7 @@ export function buildSupervisorLaunchCommand(
     if (options.suppressCodexHistory || options.isolateSupervisor) {
       configuredCommand = suppressCodexHistory(configuredCommand);
     }
+    configuredCommand = applyWmuxCodexHookDefaults(configuredCommand);
   }
   // Current Kimi Code releases do not expose a --thinking CLI option. Legacy
   // preferences are normalized away; the selected model/profile decides its
