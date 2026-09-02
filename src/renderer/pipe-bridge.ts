@@ -8,6 +8,7 @@ import supervisorAiAgentsSource from '../../resources/agents/supervisor-ai/ROLE_
 import { splitNode, getAllPaneIds, findLeaf, buildGridLayout, createLeaf } from './store/split-utils';
 import { surfaceTerminalRegistry } from './hooks/useTerminal';
 import { PaneId, SurfaceId, WorkspaceId, SurfaceType, SplitNode, SurfaceRef } from '../shared/types';
+import { isSshCompanionReconnectTargetAllowed } from '../shared/ssh-agent-policy';
 import {
   DEFAULT_SUPERVISOR_AUTONOMY_PERMISSIONS,
   DEFAULT_SUPERVISOR_FORBIDDEN_ACTIONS,
@@ -17702,6 +17703,19 @@ export function initPipeBridge(): void {
     const callerSurfaceId = String(request?.callerSurfaceId || '').trim();
     const surface = surfaceInCurrentWindow(callerSurfaceId);
     if (!surface) return { knownSurface: false };
+    if (request?.method === 'ssh.reconnect' && surface.sshControllerTargetSurfaceId) {
+      const targetSurfaceId = String(request?.params?.surfaceId || '').trim();
+      const targetAllowed = isSshCompanionReconnectTargetAllowed(
+        surface.sshControllerTargetSurfaceId,
+        targetSurfaceId,
+      );
+      return {
+        knownSurface: true,
+        managed: true,
+        allowed: targetAllowed,
+        ...(!targetAllowed ? { reason: 'SSH companion 只能重连其绑定的远端终端' } : {}),
+      };
+    }
     if (String(request?.method || '').startsWith('ssh-file.')) {
       const targetSurfaceId = String(request?.params?.targetSurfaceId || request?.params?.surfaceId || '').trim();
       const checkoutTargetAllowed = request.method !== 'ssh-file.checkout'

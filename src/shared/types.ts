@@ -222,7 +222,7 @@ export interface WorkspaceInfo {
   transientSupervisorWorkspace?: boolean;
   /** Saved preset reference; credentials themselves are kept out of session files. */
   sshProfileId?: string;
-  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'error';
+  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'exited' | 'terminal-error' | 'error';
   /** Runtime-only SFTP failure detail; never persisted in session snapshots. */
   sshConnectionError?: string;
 }

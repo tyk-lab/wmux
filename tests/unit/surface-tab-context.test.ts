@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SurfaceRef } from '../../src/shared/types';
 import {
   canOpenTerminalPathInExplorer,
+  canReconnectSshSurface,
   terminalContextPath,
 } from '../../src/renderer/components/SplitPane/SurfaceTabBar';
 
@@ -25,5 +26,16 @@ describe('terminal tab context actions', () => {
     expect(canOpenTerminalPathInExplorer(terminal({ sshRemote: true }), '/home/user')).toBe(false);
     expect(canOpenTerminalPathInExplorer(terminal(), '/home/user', true)).toBe(false);
     expect(canOpenTerminalPathInExplorer(terminal({ sshProfileId: 'ssh-prod' }), 'D:\\repo')).toBe(false);
+  });
+
+  it('offers reconnect only for a stopped SSH terminal', () => {
+    const ssh = terminal({ sshRemote: true, sshProfileId: 'ssh-prod' });
+    expect(canReconnectSshSurface(ssh, 'exited')).toBe(true);
+    expect(canReconnectSshSurface(ssh, 'disconnected')).toBe(true);
+    expect(canReconnectSshSurface(ssh, 'error')).toBe(true);
+    expect(canReconnectSshSurface(ssh, 'terminal-error')).toBe(true);
+    expect(canReconnectSshSurface(ssh, 'connecting')).toBe(false);
+    expect(canReconnectSshSurface(ssh, 'connected')).toBe(false);
+    expect(canReconnectSshSurface(terminal(), 'exited')).toBe(false);
   });
 });

@@ -5,11 +5,19 @@ import {
   findSshFileSurface,
   isMissingSftpPathError,
   parentSshPath,
+  resolveSshReconnectTarget,
+  runSshSingleFlight,
+  sshReconnectRuntimeFailure,
+  sshTerminalErrorMetadata,
+  sshTerminalPresentationState,
   sshDeleteErrorText,
+  sshExitedWorkspaceMetadata,
+  suppressSshCompanionCodexHistory,
   updateSshFileSelection,
   upgradeSshSplitTree,
 } from '../../src/renderer/ssh-workspace';
 import { SshConnectionProfile, SshFileEntry } from '../../src/shared/types';
+import { isSshCompanionReconnectTargetAllowed } from '../../src/shared/ssh-agent-policy';
 
 function profile(authMethod: SshConnectionProfile['authMethod']): SshConnectionProfile {
   return {
@@ -56,10 +64,11 @@ describe('buildSshSplitTree', () => {
     expect(companion.customTitle).toBe('Codex · 控制 SSH');
     expect(companion.shell).toBe('pwsh.exe');
     expect(companion.sshControllerTargetSurfaceId).toBe(remote.id);
-    expect(launchCommand).toMatch(/^codex '/);
+    expect(launchCommand).toMatch(/^codex --config history\.persistence='none' '/);
     expect(launchCommand).not.toMatch(/[\r\n]/);
     expect(launchCommand).toContain(remote.id);
     expect(launchCommand).toContain('wmux read-screen --surface');
+    expect(launchCommand).toContain(`wmux reconnect --surface ${remote.id}`);
     expect(launchCommand).toContain('wmux send --surface');
     expect(launchCommand).toContain('wmux send-key enter --surface');
     expect(launchCommand).toContain(`wmux send-key c --ctrl --surface ${remote.id}`);
@@ -83,15 +92,36 @@ describe('buildSshSplitTree', () => {
     expect(kimi.customTitle).toBe('Kimi · 控制 SSH');
     expect(kimi.startupCommands).toEqual(['kimi']);
     expect(kimi.startupInput).toContain('wmux send-key c --ctrl --surface');
+    expect(kimi.startupCommands[0]).not.toContain('history.persistence');
     expect(kimi.startupInput).toContain('禁止使用本地 apply_patch');
     expect(kimi.sshControllerTargetSurfaceId).toBe(kimiTree.children[0].type === 'leaf'
       ? kimiTree.children[0].surfaces[0].id
       : undefined);
     expect(grok.customTitle).toBe('Grok · 控制 SSH');
     expect(grok.startupCommands?.[0]).toContain('目标项目只存在于 SSH 远端');
+    expect(grok.startupCommands?.[0]).not.toContain('history.persistence');
     expect(grok.startupCommands?.[0]).toMatch(/^grok '/);
     expect(sshOnlyTree.type).toBe('leaf');
     if (sshOnlyTree.type === 'leaf') expect(sshOnlyTree.surfaces).toHaveLength(1);
+  });
+
+  it('upgrades a restored legacy Codex companion without changing other Agents', () => {
+    const tree = buildSshSplitTree(profile('agent'));
+    if (tree.type !== 'branch' || tree.children[1].type !== 'leaf') return;
+    const companion = tree.children[1].surfaces[0];
+    companion.startupCommands = [
+      "codex -c history.persistence=save-all '临时控制 SSH'",
+    ];
+
+    const upgraded = suppressSshCompanionCodexHistory(tree);
+    if (upgraded.type !== 'branch' || upgraded.children[1].type !== 'leaf') return;
+    const upgradedCommand = upgraded.children[1].surfaces[0].startupCommands?.[0];
+
+    expect(upgradedCommand).toBe("codex --config history.persistence='none' '临时控制 SSH'");
+    expect(suppressSshCompanionCodexHistory(upgraded)).toEqual(upgraded);
+
+    const kimiTree = buildSshSplitTree(profile('agent'), 'kimi');
+    expect(suppressSshCompanionCodexHistory(kimiTree)).toEqual(kimiTree);
   });
 
   it('keeps a secret-free profile id on agent terminals for password fallback', () => {
@@ -117,6 +147,107 @@ describe('buildSshSplitTree', () => {
     expect(upgraded.children[0].surfaces[0].id).toBe(surfaceId);
     expect(upgraded.children[0].surfaces[0].sshProfileId).toBe('profile-a');
     expect(upgraded.children[0].surfaces[0].shell).toContain('PreferredAuthentications=password');
+  });
+});
+
+describe('SSH reconnect targeting', () => {
+  it('allows a companion to reconnect only its bound target', () => {
+    expect(isSshCompanionReconnectTargetAllowed('surf-ssh', undefined)).toBe(true);
+    expect(isSshCompanionReconnectTargetAllowed('surf-ssh', '')).toBe(true);
+    expect(isSshCompanionReconnectTargetAllowed('surf-ssh', 'surf-ssh')).toBe(true);
+    expect(isSshCompanionReconnectTargetAllowed('surf-ssh', 'surf-other')).toBe(false);
+    expect(isSshCompanionReconnectTargetAllowed(undefined, 'surf-ssh')).toBe(false);
+  });
+
+  it('coalesces concurrent reconnects and permits a later retry', async () => {
+    const inFlight = new Map<string, Promise<boolean>>();
+    let finish!: (value: boolean) => void;
+    let starts = 0;
+    const operation = () => {
+      starts++;
+      return new Promise<boolean>((resolve) => { finish = resolve; });
+    };
+
+    const first = runSshSingleFlight(inFlight, 'ws-remote', operation);
+    const second = runSshSingleFlight(inFlight, 'ws-remote', operation);
+    expect(second).toBe(first);
+    await Promise.resolve();
+    expect(starts).toBe(1);
+    finish(true);
+    await expect(first).resolves.toBe(true);
+
+    await expect(runSshSingleFlight(inFlight, 'ws-remote', async () => false)).resolves.toBe(false);
+  });
+
+  it('resolves an explicit SSH surface without changing its identity', () => {
+    const tree = buildSshSplitTree(profile('agent'));
+    const workspace = {
+      id: 'ws-remote',
+      title: 'Production',
+      pinned: false,
+      shell: 'pwsh.exe',
+      splitTree: tree,
+      unreadCount: 0,
+      sshProfileId: 'profile-a',
+      sshConnectionState: 'exited' as const,
+    } as any;
+    if (tree.type !== 'branch' || tree.children[0].type !== 'leaf') return;
+    const remote = tree.children[0].surfaces[0];
+
+    const resolved = resolveSshReconnectTarget([workspace], remote.id);
+
+    expect(resolved).toMatchObject({
+      ok: true,
+      target: { workspace: { id: 'ws-remote' }, surface: { id: remote.id } },
+    });
+  });
+
+  it('defaults a companion Agent to only its bound SSH surface', () => {
+    const tree = buildSshSplitTree(profile('agent'));
+    const workspace = {
+      id: 'ws-remote', title: 'Production', pinned: false, shell: 'pwsh.exe',
+      splitTree: tree, unreadCount: 0,
+    } as any;
+    if (tree.type !== 'branch' || tree.children[0].type !== 'leaf' || tree.children[1].type !== 'leaf') return;
+    const remote = tree.children[0].surfaces[0];
+    const companion = tree.children[1].surfaces[0];
+
+    expect(resolveSshReconnectTarget([workspace], undefined, companion.id)).toMatchObject({
+      ok: true,
+      target: { surface: { id: remote.id } },
+    });
+    expect(resolveSshReconnectTarget([workspace])).toMatchObject({ ok: false });
+    expect(resolveSshReconnectTarget([workspace], companion.id)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('不是可重连的 SSH 终端'),
+    });
+  });
+
+  it('records an exited runtime without clearing the persisted profile id', () => {
+    expect(sshExitedWorkspaceMetadata(255)).toEqual({
+      sshConnectionState: 'exited',
+      sshConnectionError: 'SSH 终端已退出（代码 255）',
+    });
+    expect(sshExitedWorkspaceMetadata(255)).not.toHaveProperty('sshProfileId');
+    expect(sshTerminalErrorMetadata('无法创建终端')).toEqual({
+      sshConnectionState: 'terminal-error',
+      sshConnectionError: '无法创建终端',
+    });
+    expect(sshReconnectRuntimeFailure({
+      sshConnectionState: 'exited',
+      sshConnectionError: 'SSH 终端已退出（代码 255）',
+    })).toEqual({ ok: false, error: 'SSH 终端已退出（代码 255）' });
+    expect(sshReconnectRuntimeFailure({ sshConnectionState: 'connected' })).toBeUndefined();
+  });
+
+  it('remounts a key-based SSH terminal only for terminal runtime failures', () => {
+    const tree = buildSshSplitTree(profile('agent'), 'none');
+    if (tree.type !== 'leaf') return;
+    const remote = tree.surfaces[0];
+
+    expect(sshTerminalPresentationState(remote, 'error')).toBeUndefined();
+    expect(sshTerminalPresentationState(remote, 'terminal-error')).toBe('terminal-error');
+    expect(sshTerminalPresentationState(remote, 'connected')).toBeUndefined();
   });
 });
 

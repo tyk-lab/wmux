@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { PaneId, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef } from '../shared/types';
+import { PaneId, SplitNode, SshCompanionAgent, SshConnectionProfile, SshFileEntry, SurfaceId, SurfaceRef, WorkspaceInfo } from '../shared/types';
 import { SSH_REMOTE_EDITING_RULES } from '../shared/ssh-agent-policy';
 
 function quoteSshArgument(value: string): string {
@@ -10,6 +10,40 @@ function quotePowerShellArgument(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function suppressCodexHistory(command: string): string {
+  const withoutExistingOverride = command.replace(
+    /(^|\s)(?:--config|-c)(?:=|\s+)(?:"history\.persistence=[^"]*"|'history\.persistence=[^']*'|history\.persistence=(?:"[^"]*"|'[^']*'|\S+))/giu,
+    '$1',
+  ).replace(/\s{2,}/gu, ' ').trim();
+  return withoutExistingOverride.replace(
+    /^(codex(?:\.exe|\.cmd|\.bat)?)(?=\s|$)/iu,
+    `$1 --config history.persistence=${quotePowerShellArgument('none')}`,
+  );
+}
+
+/** Upgrade restored SSH companion surfaces before their temporary Codex process starts. */
+export function suppressSshCompanionCodexHistory(tree: SplitNode): SplitNode {
+  if (tree.type === 'branch') {
+    return {
+      ...tree,
+      children: [
+        suppressSshCompanionCodexHistory(tree.children[0]),
+        suppressSshCompanionCodexHistory(tree.children[1]),
+      ],
+    };
+  }
+  return {
+    ...tree,
+    surfaces: tree.surfaces.map((surface) => {
+      if (!surface.sshControllerTargetSurfaceId || !surface.startupCommands?.length) return surface;
+      const startupCommands = surface.startupCommands.map(suppressCodexHistory);
+      return startupCommands.every((command, index) => command === surface.startupCommands?.[index])
+        ? surface
+        : { ...surface, startupCommands };
+    }),
+  };
+}
+
 /** Gives the companion Agent terminal an explicit, scoped control contract. */
 export function buildSshAgentInstruction(remoteSurfaceId: SurfaceId): string {
   return [
@@ -18,6 +52,7 @@ export function buildSshAgentInstruction(remoteSurfaceId: SurfaceId): string {
     ...SSH_REMOTE_EDITING_RULES,
     '终端控制方式：',
     `读取最近输出：wmux read-screen --surface ${remoteSurfaceId} --lines 100。`,
+    `SSH 断开后重连：wmux reconnect --surface ${remoteSurfaceId}。`,
     `发送文本：wmux send --surface ${remoteSurfaceId} "<命令或输入>"。`,
     `提交输入：wmux send-key enter --surface ${remoteSurfaceId}。`,
     `中断当前远程命令：wmux send-key c --ctrl --surface ${remoteSurfaceId}；键名是 c，Ctrl 用 --ctrl 修饰，不要把 ctrl+c 当作键名。`,
@@ -25,6 +60,133 @@ export function buildSshAgentInstruction(remoteSurfaceId: SurfaceId): string {
   // Keep Codex/Grok launch commands on one physical PowerShell line; Kimi receives
   // the same text as startup input, where the sentence boundaries remain explicit.
   ].join(' ');
+}
+
+export type SshReconnectTarget = {
+  workspace: WorkspaceInfo;
+  surface: SurfaceRef;
+};
+
+export type SshReconnectTargetResult =
+  | { ok: true; target: SshReconnectTarget }
+  | { ok: false; error: string };
+
+/** Coalesce simultaneous connection attempts for one workspace or surface. */
+export function runSshSingleFlight<T>(
+  inFlight: Map<string, Promise<T>>,
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const started = Promise.resolve().then(operation);
+  const tracked = started.finally(() => {
+    if (inFlight.get(key) === tracked) inFlight.delete(key);
+  });
+  inFlight.set(key, tracked);
+  return tracked;
+}
+
+/** Resolve an explicit SSH surface, or the remote surface bound to a companion Agent. */
+export function resolveSshReconnectTarget(
+  workspaces: WorkspaceInfo[],
+  requestedSurfaceId?: string,
+  callerSurfaceId?: string,
+): SshReconnectTargetResult {
+  let targetSurfaceId = requestedSurfaceId?.trim() || '';
+  if (!targetSurfaceId && callerSurfaceId) {
+    for (const workspace of workspaces) {
+      if (workspace.splitTree.type === 'branch') {
+        const pending = [workspace.splitTree.children[0], workspace.splitTree.children[1]];
+        while (pending.length > 0) {
+          const node = pending.pop()!;
+          if (node.type === 'branch') {
+            pending.push(node.children[0], node.children[1]);
+            continue;
+          }
+          const caller = node.surfaces.find((surface) => surface.id === callerSurfaceId);
+          if (caller?.sshControllerTargetSurfaceId) {
+            targetSurfaceId = caller.sshControllerTargetSurfaceId;
+            break;
+          }
+        }
+      } else {
+        const caller = workspace.splitTree.surfaces.find((surface) => surface.id === callerSurfaceId);
+        if (caller?.sshControllerTargetSurfaceId) targetSurfaceId = caller.sshControllerTargetSurfaceId;
+      }
+      if (targetSurfaceId) break;
+    }
+  }
+  if (!targetSurfaceId) {
+    return { ok: false, error: '请指定 SSH Surface ID，或在对应的 SSH companion Agent 中运行此命令' };
+  }
+
+  for (const workspace of workspaces) {
+    const pending: SplitNode[] = [workspace.splitTree];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (node.type === 'branch') {
+        pending.push(node.children[0], node.children[1]);
+        continue;
+      }
+      const surface = node.surfaces.find((candidate) => candidate.id === targetSurfaceId);
+      if (!surface) continue;
+      if (surface.type !== 'terminal' || !surface.sshRemote || !surface.sshProfileId) {
+        return { ok: false, error: `surface ${targetSurfaceId} 不是可重连的 SSH 终端` };
+      }
+      return { ok: true, target: { workspace, surface } };
+    }
+  }
+  return { ok: false, error: `找不到 SSH surface ${targetSurfaceId}` };
+}
+
+/** Runtime-only state recorded when the OpenSSH PTY exits unexpectedly. */
+export function sshExitedWorkspaceMetadata(exitCode: number): Pick<WorkspaceInfo, 'sshConnectionState' | 'sshConnectionError'> {
+  return {
+    sshConnectionState: 'exited',
+    sshConnectionError: `SSH 终端已退出（代码 ${exitCode}）`,
+  };
+}
+
+export function sshTerminalErrorMetadata(error: string): Pick<WorkspaceInfo, 'sshConnectionState' | 'sshConnectionError'> {
+  return {
+    sshConnectionState: 'terminal-error',
+    sshConnectionError: error,
+  };
+}
+
+export function sshReconnectRuntimeFailure(
+  workspace: Pick<WorkspaceInfo, 'sshConnectionState' | 'sshConnectionError'> | undefined,
+): { ok: false; error: string } | undefined {
+  if (
+    workspace?.sshConnectionState !== 'exited'
+    && workspace?.sshConnectionState !== 'terminal-error'
+    && workspace?.sshConnectionState !== 'error'
+  ) {
+    return undefined;
+  }
+  return {
+    ok: false,
+    error: workspace.sshConnectionError || 'SSH 终端重连失败',
+  };
+}
+
+/** Keep SFTP-only failures degradable while forcing PTY failures through a remount. */
+export function sshTerminalPresentationState(
+  surface: SurfaceRef,
+  workspaceState: WorkspaceInfo['sshConnectionState'],
+): WorkspaceInfo['sshConnectionState'] {
+  const passwordManaged = surface.shell?.includes('PreferredAuthentications=password,keyboard-interactive');
+  if (passwordManaged) return workspaceState;
+  if (surface.sshRemote && (
+    workspaceState === 'connecting'
+    || workspaceState === 'disconnected'
+    || workspaceState === 'exited'
+    || workspaceState === 'terminal-error'
+  )) {
+    return workspaceState;
+  }
+  return undefined;
 }
 
 function buildCompanionSurface(
@@ -44,12 +206,13 @@ function buildCompanionSurface(
       sshControllerTargetSurfaceId: remoteSurfaceId,
     };
   }
+  const launchCommand = agent === 'codex' ? suppressCodexHistory(agent) : agent;
   return {
     id: `surf-${uuid()}` as SurfaceId,
     type: 'terminal',
     customTitle: `${displayName} · 控制 SSH`,
     shell: 'pwsh.exe',
-    startupCommands: [`${agent} ${quotePowerShellArgument(instruction)}`],
+    startupCommands: [`${launchCommand} ${quotePowerShellArgument(instruction)}`],
     sshControllerTargetSurfaceId: remoteSurfaceId,
   };
 }

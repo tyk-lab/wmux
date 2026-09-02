@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { PaneId, SplitNode, SurfaceId, WorkspaceId, QuickLaunchProfile, ShellInfo, SurfaceRef, WorkspaceInfo } from '../../../shared/types';
+import { PaneId, SplitNode, SurfaceId, WorkspaceId, QuickLaunchProfile, ShellInfo, SurfaceRef } from '../../../shared/types';
 import { findLeaf, splitNode } from '../../store/split-utils';
 import TerminalPane from '../Terminal/TerminalPane';
 import BrowserPane from '../Browser/BrowserPane';
@@ -17,6 +17,7 @@ import {
   type SurfaceDragData,
 } from './surface-drag-preview';
 import { surfaceAllowsManagedCodexHookTrust } from '../../utils/interactive-agent-launch';
+import { sshTerminalPresentationState } from '../../ssh-workspace';
 import '../../styles/splitpane.css';
 import '../../styles/terminal.css';
 
@@ -31,18 +32,6 @@ interface PaneWrapperProps {
   onSurfaceDragPreviewTarget: (targetPaneId: PaneId, target: SurfaceDragPreviewTarget) => void;
   onClearSurfaceDragPreview: () => void;
   onSurfaceDragCommit: (options?: SurfaceDragCommitOptions) => void;
-}
-
-function sshTerminalState(
-  surface: SurfaceRef,
-  workspaceState: WorkspaceInfo['sshConnectionState'],
-): WorkspaceInfo['sshConnectionState'] {
-  const passwordManaged = surface.shell?.includes('PreferredAuthentications=password,keyboard-interactive');
-  if (passwordManaged) return workspaceState;
-  if (surface.sshRemote && (workspaceState === 'connecting' || workspaceState === 'disconnected')) {
-    return workspaceState;
-  }
-  return undefined;
 }
 
 export default function PaneWrapper({
@@ -254,7 +243,7 @@ export default function PaneWrapper({
               supervisorRuntimeIsolationKey={surface.supervisorRuntimeIsolationKey}
               allowManagedCodexHookTrust={surfaceAllowsManagedCodexHookTrust(surface)}
               sshProfileId={surface.sshProfileId}
-              sshConnectionState={sshTerminalState(surface, workspace?.sshConnectionState)}
+              sshConnectionState={sshTerminalPresentationState(surface, workspace?.sshConnectionState)}
               focused={isFocused && isActive}
               visible={isVisible}
               showFindBar={findBarVisible && isFocused && isActive}
@@ -624,6 +613,7 @@ export default function PaneWrapper({
         workspaceShell={workspace?.shell}
         workspaceCwd={workspace?.cwd}
         workspaceIsSsh={!!workspace?.sshProfileId}
+        workspaceSshConnectionState={workspace?.sshConnectionState}
         surfaces={surfaces}
         activeSurfaceIndex={activeSurfaceIndex}
         onSelect={handleSelectSurface}

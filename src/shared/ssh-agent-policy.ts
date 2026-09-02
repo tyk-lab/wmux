@@ -6,3 +6,13 @@ export const SSH_REMOTE_EDITING_RULES = [
   '远端缺少某个工具时，先只读探测可用替代工具；不得把“远端没有 apply_patch”解释为可以改本地文件，也不得未经批准安装新工具。',
   'commit 成功会执行远端冲突检测和写后哈希校验并清理暂存目录；冲突或失败时不得声称已写入。之后仍须读取远端目标片段或远端 diff，行为变更还要在远端运行最相关验证。只有远端输出可作为完成证据。',
 ] as const;
+
+/** A companion may omit the target, but an explicit target must match its binding. */
+export function isSshCompanionReconnectTargetAllowed(
+  boundTargetSurfaceId: string | undefined,
+  requestedSurfaceId: string | undefined,
+): boolean {
+  if (!boundTargetSurfaceId) return false;
+  const requested = requestedSurfaceId?.trim();
+  return !requested || requested === boundTargetSurfaceId;
+}

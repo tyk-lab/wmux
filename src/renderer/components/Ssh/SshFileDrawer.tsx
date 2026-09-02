@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SshFileEntry } from '../../../shared/types';
+import { SshFileEntry, WorkspaceInfo } from '../../../shared/types';
 import { isMissingSftpPathError, parentSshPath, sshDeleteErrorText, updateSshFileSelection } from '../../ssh-workspace';
 import '../../styles/ssh.css';
 
 interface Props {
   workspaceId: string;
-  state: 'connecting' | 'connected' | 'disconnected' | 'error';
+  state: NonNullable<WorkspaceInfo['sshConnectionState']>;
   errorMessage?: string;
   onReconnect: () => void;
   onOpenFile: (entry: SshFileEntry) => Promise<void>;
@@ -574,8 +574,18 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     <div className="ssh-file-drawer__resize-handle" onPointerDown={beginResize} title="拖动调整远程文件面板宽度" />
     <div className="ssh-file-drawer__header"><strong>远程文件</strong><button onClick={() => void refresh(true)} disabled={loading || state !== 'connected'}>刷新</button></div>
     {state !== 'connected' ? <div className="ssh-file-drawer__status">
-      <p>{state === 'connecting' ? '正在连接 SFTP…' : state === 'error' ? errorMessage || 'SFTP 连接失败。' : 'SSH 文件连接已断开。'}</p>
-      <button className="ssh-primary-button" onClick={onReconnect}>重新连接</button>
+      <p>{state === 'connecting'
+        ? '正在连接 SFTP…'
+        : state === 'error'
+          ? errorMessage || 'SFTP 连接失败。'
+          : state === 'exited'
+            ? errorMessage || 'SSH 终端已退出。'
+            : state === 'terminal-error'
+              ? errorMessage || 'SSH 终端启动失败。'
+            : 'SSH 文件连接已断开。'}</p>
+      <button className="ssh-primary-button" onClick={onReconnect} disabled={state === 'connecting'}>
+        {state === 'connecting' ? '正在连接…' : '重新连接'}
+      </button>
     </div> : <>
       <form className="ssh-file-drawer__path" onSubmit={(event) => { event.preventDefault(); navigate(pathDraft); }}>
         <button type="button" onClick={() => navigate(parentSshPath(currentPath))}>↑</button>

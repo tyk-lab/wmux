@@ -1,6 +1,7 @@
 const CALLER_AWARE_SURFACE_METHODS = new Set([
   'surface.send_text',
   'surface.send_key',
+  'ssh.reconnect',
   'supervisor.evidence',
   'role.context',
   'role.ready',

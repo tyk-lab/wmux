@@ -112,7 +112,7 @@ function sendV2(method: string, params: Record<string, any> = {}): Promise<any> 
     params = { ...params, caller: process.env.WMUX_SURFACE_ID };
   }
   params = withSurfaceCaller(method, params, process.env.WMUX_SURFACE_ID);
-  const timeoutMs = method.startsWith('ssh-file.')
+  const timeoutMs = method.startsWith('ssh-file.') || method.startsWith('ssh.')
     ? 30_000
     : method === 'supervisor.decide'
       ? 10_000
@@ -1124,6 +1124,12 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
       lines: lines ? parseInt(lines) : 50,
     }));
   },
+  reconnect: async (args) => {
+    const surfaceId = getFlag(args, '--surface') || args[1];
+    const result = await sendV2('ssh.reconnect', surfaceId ? { surfaceId } : {});
+    print(result);
+    if (result?.ok === false) process.exitCode = 1;
+  },
   'trigger-flash': async (args) => print(await sendV2('surface.trigger_flash', { id: args[1] })),
 
   // Browser
@@ -1248,6 +1254,7 @@ Pane:       split [--down] [--type T] [--color-scheme NAME], close-pane, focus-p
             pane new|close|focus|list   (verb form, mirrors issue #4 example)
 Layout:     layout grid --count <N> [--type terminal] [--anchor-surface <id>]
 Terminal:   send <text>, send-key <key>, read-screen [--lines N] [--surface <id>], trigger-flash
+SSH:        reconnect [surfaceId] | reconnect --surface <id>   (companion Agent may omit the id)
 SSH file:   ssh-file checkout --surface <SSH终端ID> --path <远端绝对路径> [--create]
             ssh-file commit|abort --token <ssh-edit-token>
 Browser:    browser open|snapshot|click|type|fill|screenshot|get-text|eval|wait|back|forward|reload

@@ -18,6 +18,8 @@ interface BridgeSpec {
   emptyOnNoWindow?: any;
   // Error message when the renderer returns a falsy result (creation methods).
   requireResult?: string;
+  /** Route instance-token calls to the window owning params.surfaceId. */
+  routeBySurfaceParam?: boolean;
 }
 
 function firstWindow(): BrowserWindow | null {
@@ -110,6 +112,11 @@ const SPECS: Record<string, BridgeSpec> = {
     js: (p) => `window.__wmux_listSurfaces?.(${S(p?.workspaceId)})`,
     shape: (r) => ({ surfaces: r || [] }),
     emptyOnNoWindow: { surfaces: [] },
+  },
+  'ssh.reconnect': {
+    js: (p) => `window.__wmux_reconnectSshSurface?.(${S(p || {})})`,
+    requireResult: 'SSH reconnect bridge is unavailable',
+    routeBySurfaceParam: true,
   },
   'markdown.set_content': {
     // `title` is optional and only sets the tab label; without it every
@@ -253,10 +260,12 @@ function runBridge(spec: BridgeSpec, params: any, respond: Respond, respondError
     try {
       let win: BrowserWindow | null = null;
       const callerSurfaceId = String(params?.callerSurfaceId || '').trim();
-      if (callerSurfaceId) {
-        win = await windowForCallerSurface(callerSurfaceId);
+      const routeSurfaceId = callerSurfaceId
+        || (spec.routeBySurfaceParam ? String(params?.surfaceId || '').trim() : '');
+      if (routeSurfaceId) {
+        win = await windowForCallerSurface(routeSurfaceId);
         if (!win) {
-          respondError(-32000, 'Caller surface is not mounted in an active window');
+          respondError(-32000, 'Surface is not mounted in an active window');
           return;
         }
       } else {

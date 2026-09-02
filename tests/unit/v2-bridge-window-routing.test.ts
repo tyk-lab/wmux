@@ -36,4 +36,28 @@ describe('V2 renderer bridge caller routing', () => {
     expect(firstExecute).toHaveBeenCalledWith(expect.stringContaining('__wmux_hasSurface'));
     expect(secondExecute).toHaveBeenLastCalledWith(expect.stringContaining('__wmux_roleContext'));
   });
+
+  it('routes an instance-token reconnect to the window owning the target SSH surface', async () => {
+    const firstExecute = vi.fn().mockResolvedValue(false);
+    const secondExecute = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ ok: true, surfaceId: 'surf-ssh' });
+    electronState.windows = [
+      { isDestroyed: () => false, webContents: { executeJavaScript: firstExecute } },
+      { isDestroyed: () => false, webContents: { executeJavaScript: secondExecute } },
+    ];
+
+    const result = await new Promise<any>((resolve, reject) => {
+      expect(handleBridgeV2(
+        'ssh.reconnect',
+        { surfaceId: 'surf-ssh' },
+        resolve,
+        (_code, message) => reject(new Error(message)),
+      )).toBe(true);
+    });
+
+    expect(result).toEqual({ ok: true, surfaceId: 'surf-ssh' });
+    expect(firstExecute).toHaveBeenCalledWith(expect.stringContaining('__wmux_hasSurface'));
+    expect(secondExecute).toHaveBeenLastCalledWith(expect.stringContaining('__wmux_reconnectSshSurface'));
+  });
 });

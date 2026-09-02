@@ -26,13 +26,15 @@ interface TerminalPaneProps {
   onFindBarClose?: () => void;
   copyModeActive?: boolean;
   /** Password/SFTP validation must finish before the remote PTY is spawned. */
-  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'error';
+  sshConnectionState?: 'connecting' | 'connected' | 'disconnected' | 'exited' | 'terminal-error' | 'error';
 }
 
 function PendingSshTerminalPane({ state }: { state: Exclude<TerminalPaneProps['sshConnectionState'], 'connected' | undefined> }) {
   let message = 'SSH 终端已断开，请在右侧文件抽屉中重新连接。';
   if (state === 'connecting') message = '正在验证 SSH 凭据…';
   if (state === 'error') message = 'SSH 认证失败，请在密码窗口或右侧文件抽屉中重新连接。';
+  if (state === 'exited') message = 'SSH 终端已退出，请右键标签选择 Reconnect 或在右侧文件抽屉中重新连接。';
+  if (state === 'terminal-error') message = 'SSH 终端启动失败，请右键标签选择 Reconnect 或在右侧文件抽屉中重新连接。';
   return <div className="terminal-pane terminal-pane--disconnected">{message}</div>;
 }
 

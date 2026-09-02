@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { SurfaceRef, SurfaceId, PaneId, QuickLaunchProfile, ShellInfo } from '../../../shared/types';
+import { SurfaceRef, SurfaceId, PaneId, QuickLaunchProfile, ShellInfo, WorkspaceInfo } from '../../../shared/types';
 import { useStore } from '../../store';
 import { ShortcutAction, ShortcutBinding } from '../../store/settings-slice';
 import { IconAdd, IconSplit, IconSplitDown, IconClose, IconCaret } from './icons';
@@ -15,6 +15,7 @@ interface SurfaceTabBarProps {
   workspaceShell?: string;
   workspaceCwd?: string;
   workspaceIsSsh?: boolean;
+  workspaceSshConnectionState?: WorkspaceInfo['sshConnectionState'];
   surfaces: SurfaceRef[];
   activeSurfaceIndex: number;
   onSelect: (index: number) => void;
@@ -74,11 +75,21 @@ export function canOpenTerminalPathInExplorer(
   return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(currentPath.trim());
 }
 
+export function canReconnectSshSurface(
+  surface: SurfaceRef | undefined,
+  state: WorkspaceInfo['sshConnectionState'],
+): boolean {
+  return !!surface?.sshRemote
+    && !!surface.sshProfileId
+    && (state === 'disconnected' || state === 'exited' || state === 'terminal-error' || state === 'error');
+}
+
 export default function SurfaceTabBar({
   paneId,
   workspaceShell,
   workspaceCwd,
   workspaceIsSsh,
+  workspaceSshConnectionState,
   surfaces,
   activeSurfaceIndex,
   onSelect,
@@ -301,6 +312,19 @@ export default function SurfaceTabBar({
     }
   }, []);
 
+  const reconnectContextSsh = useCallback(async (surfaceId: SurfaceId) => {
+    setCtxMenu(null);
+    const reconnect = (window as any).__wmux_reconnectSshSurface;
+    if (!reconnect) {
+      fireDesktopNotification({ surfaceId, title: 'wmux', text: 'SSH 重连接口不可用，请重启应用后重试。' });
+      return;
+    }
+    const result = await reconnect({ surfaceId });
+    if (result?.ok === false && !result.pendingUserAction) {
+      fireDesktopNotification({ surfaceId, title: 'SSH 重连失败', text: result.error || '无法重新连接 SSH。' });
+    }
+  }, []);
+
   const requestCenterPreview = useCallback(() => {
     if (surfaceDrag?.sourcePaneId !== paneId) {
       onSurfaceDragPreviewTarget?.(paneId, 'center');
@@ -310,6 +334,7 @@ export default function SurfaceTabBar({
   const contextSurface = ctxMenu ? surfaces.find((surface) => surface.id === ctxMenu.surfaceId) : undefined;
   const contextPath = terminalContextPath(contextSurface, workspaceCwd);
   const canOpenContextPath = canOpenTerminalPathInExplorer(contextSurface, contextPath, workspaceIsSsh);
+  const canReconnectContextSsh = canReconnectSshSurface(contextSurface, workspaceSshConnectionState);
 
   // Always show tab bar (even for 1 surface — like browser tabs)
   return (
@@ -643,6 +668,15 @@ export default function SurfaceTabBar({
           >
             Rename
           </div>
+          {canReconnectContextSsh && (
+            <div
+              className="ctx-menu__item"
+              role="menuitem"
+              onClick={() => void reconnectContextSsh(ctxMenu.surfaceId)}
+            >
+              Reconnect
+            </div>
+          )}
           {contextSurface?.type === 'terminal' && (
             <>
               <div className="ctx-menu__separator" />

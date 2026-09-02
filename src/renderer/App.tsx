@@ -11,7 +11,15 @@ import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
 import SshHostKeyDialog from './components/Ssh/SshHostKeyDialog';
-import { attachSshProfileId, buildSshSplitTree, findSshFileSurface, upgradeSshSplitTree } from './ssh-workspace';
+import {
+  attachSshProfileId,
+  buildSshSplitTree,
+  findSshFileSurface,
+  sshReconnectRuntimeFailure,
+  resolveSshReconnectTarget,
+  runSshSingleFlight,
+  upgradeSshSplitTree,
+} from './ssh-workspace';
 import Titlebar from './components/Titlebar/Titlebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import SettingsWindow from './components/Settings/SettingsWindow';
@@ -1514,6 +1522,8 @@ export default function App() {
   } | null>(null);
   const sshWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const autoReconnectedSshWorkspaceIdsRef = useRef<Set<string>>(new Set());
+  const sshConnectionsInFlightRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const sshReconnectsInFlightRef = useRef<Map<string, Promise<any>>>(new Map());
   useEffect(() => {
     const activeIds = new Set<string>(workspaces.filter((workspace) => workspace.sshProfileId).map((workspace) => workspace.id));
     sshWorkspaceIdsRef.current.forEach((workspaceId) => {
@@ -2692,63 +2702,130 @@ export default function App() {
     handleSelectWorkspace(newId);
   }, [createWorkspace, handleSelectWorkspace]);
 
-  const connectSshWorkspace = useCallback(async (
+  const connectSshWorkspace = useCallback((
     workspaceId: WorkspaceId,
     profile: SshConnectionProfile,
     password?: string,
     options?: SshConnectOptions,
   ): Promise<boolean> => {
-    updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: undefined });
-    const existingWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
-    if (existingWorkspace) {
-      updateSplitTree(workspaceId, attachSshProfileId(existingWorkspace.splitTree, profile.id));
-    }
-    try {
-      const result = await window.wmux?.ssh?.connect?.(workspaceId, profile, password, options);
-      if (!result?.ok) {
-        const errorMessage = result?.error || 'SSH 连接失败';
-        if (result?.hostKeyConfirmation) {
-          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
-          setSshHostKeyRequest({
-            workspaceId,
-            profile,
-            password,
-            prompt: result.hostKeyConfirmation,
-          });
-        } else if (result?.passwordRequired) {
-          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
-          setSshPasswordRequest({ workspaceId, profile, errorMessage });
-        } else {
-          updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'error', sshConnectionError: errorMessage });
+    return runSshSingleFlight(sshConnectionsInFlightRef.current, workspaceId, async () => {
+      updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: undefined });
+      const existingWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+      if (existingWorkspace) {
+        updateSplitTree(workspaceId, attachSshProfileId(existingWorkspace.splitTree, profile.id));
+      }
+      try {
+        const result = await window.wmux?.ssh?.connect?.(workspaceId, profile, password, options);
+        if (!result?.ok) {
+          const errorMessage = result?.error || 'SSH 连接失败';
+          if (result?.hostKeyConfirmation) {
+            updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
+            setSshHostKeyRequest({
+              workspaceId,
+              profile,
+              password,
+              prompt: result.hostKeyConfirmation,
+            });
+          } else if (result?.passwordRequired) {
+            updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: errorMessage });
+            setSshPasswordRequest({ workspaceId, profile, errorMessage });
+          } else {
+            updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'error', sshConnectionError: errorMessage });
+          }
+          return false;
         }
+        if (result.authMethod === 'password') {
+          const passwordProfile: SshConnectionProfile = {
+            ...profile,
+            authMethod: 'password',
+            privateKeyPath: undefined,
+          };
+          const profiles = useStore.getState().sshConnections;
+          setSshConnections(profiles.map((item) => item.id === profile.id ? passwordProfile : item));
+          const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
+          if (workspace) {
+            updateSplitTree(workspaceId, upgradeSshSplitTree(workspace.splitTree, passwordProfile));
+          }
+        }
+        updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connected' });
+        setSshPasswordRequest((request) => request?.workspaceId === workspaceId ? null : request);
+        setSshHostKeyRequest((request) => request?.workspaceId === workspaceId ? null : request);
+        return true;
+      } catch (reason) {
+        const errorMessage = reason instanceof Error ? reason.message : String(reason);
+        updateWorkspaceMetadata(workspaceId, {
+          sshConnectionState: 'error',
+          sshConnectionError: errorMessage,
+        });
         return false;
       }
-      if (result.authMethod === 'password') {
-        const passwordProfile: SshConnectionProfile = {
-          ...profile,
-          authMethod: 'password',
-          privateKeyPath: undefined,
-        };
-        const profiles = useStore.getState().sshConnections;
-        setSshConnections(profiles.map((item) => item.id === profile.id ? passwordProfile : item));
-        const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
-        if (workspace) {
-          updateSplitTree(workspaceId, upgradeSshSplitTree(workspace.splitTree, passwordProfile));
-        }
-      }
-      updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connected' });
-      setSshPasswordRequest((request) => request?.workspaceId === workspaceId ? null : request);
-      setSshHostKeyRequest((request) => request?.workspaceId === workspaceId ? null : request);
-      return true;
-    } catch (reason) {
-      const errorMessage = reason instanceof Error ? reason.message : String(reason);
-      updateWorkspaceMetadata(workspaceId, {
-        sshConnectionState: 'error',
-        sshConnectionError: errorMessage,
-      });
-      return false;
-    }
+    });
   }, [setSshConnections, updateSplitTree, updateWorkspaceMetadata]);
+
+  const reconnectSshSurface = useCallback(async (params?: {
+    surfaceId?: string;
+    callerSurfaceId?: string;
+  }) => {
+    const state = useStore.getState();
+    const resolved = resolveSshReconnectTarget(
+      state.workspaces,
+      params?.surfaceId,
+      params?.callerSurfaceId,
+    );
+    if (!resolved.ok) return resolved;
+
+    const { workspace, surface } = resolved.target;
+    return runSshSingleFlight(sshReconnectsInFlightRef.current, surface.id, async () => {
+      const profile = state.sshConnections.find((item) => item.id === surface.sshProfileId);
+      if (!profile) return { ok: false, error: `找不到 SSH 配置 ${surface.sshProfileId}` };
+
+      const ptyAlive = await window.wmux?.pty?.has?.(surface.id);
+      if (workspace.sshConnectionState === 'connected' && ptyAlive) {
+        return { ok: true, surfaceId: surface.id, alreadyConnected: true };
+      }
+
+      const connected = await connectSshWorkspace(workspace.id, profile);
+      if (!connected) {
+        const latest = useStore.getState().workspaces.find((item) => item.id === workspace.id);
+        return {
+          ok: false,
+          pendingUserAction: latest?.sshConnectionState === 'connecting',
+          error: latest?.sshConnectionError || 'SSH 认证失败或需要用户确认',
+        };
+      }
+
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (await window.wmux?.pty?.has?.(surface.id)) {
+          return { ok: true, surfaceId: surface.id };
+        }
+        const runtimeFailure = sshReconnectRuntimeFailure(
+          useStore.getState().workspaces.find((item) => item.id === workspace.id),
+        );
+        if (runtimeFailure) return runtimeFailure;
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+      const runtimeFailure = sshReconnectRuntimeFailure(
+        useStore.getState().workspaces.find((item) => item.id === workspace.id),
+      );
+      if (runtimeFailure) return runtimeFailure;
+      return {
+        ok: true,
+        surfaceId: surface.id,
+        terminalReady: false,
+        warning: 'SFTP 已连接，SSH 终端仍在启动；请稍后用 read-screen 确认',
+      };
+    });
+  }, [connectSshWorkspace]);
+
+  useEffect(() => {
+    (window as any).__wmux_reconnectSshSurface = reconnectSshSurface;
+    return () => {
+      if ((window as any).__wmux_reconnectSshSurface === reconnectSshSurface) {
+        delete (window as any).__wmux_reconnectSshSurface;
+      }
+    };
+  }, [reconnectSshSurface]);
 
   useEffect(() => {
     for (const workspace of workspaces) {

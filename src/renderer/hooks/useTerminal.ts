@@ -17,6 +17,7 @@ import { isProjectManagedSupervisorLane } from '../store/supervisor-slice';
 import { notifyOrdinaryTaskRuntimeFailure } from '../supervisor/user-input-precedence';
 import { collectActiveTerminalSurfaceIds } from '../store/split-utils';
 import { disconnectWorkspaceSsh } from '../store/pty-teardown';
+import { sshExitedWorkspaceMetadata, sshTerminalErrorMetadata } from '../ssh-workspace';
 import { SplitNode, SurfaceRef, ThemeConfig } from '../../shared/types';
 import { UserColorScheme } from '../store/settings-slice';
 import { openInWmuxBrowser } from '../utils/open-in-browser';
@@ -347,16 +348,20 @@ function notifyProjectManagerRuntimeFailure(
 
 const startupInputScheduledSurfaceIds = new Set<string>();
 
-function detachExitedSshWorkspace(surfaceId: string): void {
+function markExitedSshWorkspace(surfaceId: string, exitCode: number): void {
   const state = useStore.getState();
   const workspace = state.workspaces.find((item) => treeHasSurface(item.splitTree, surfaceId));
   if (!workspace?.sshProfileId) return;
   disconnectWorkspaceSsh(workspace.id);
-  state.updateWorkspaceMetadata(workspace.id, {
-    sshProfileId: undefined,
-    sshConnectionState: undefined,
-    sshConnectionError: undefined,
-  });
+  state.updateWorkspaceMetadata(workspace.id, sshExitedWorkspaceMetadata(exitCode));
+}
+
+function markFailedSshWorkspace(surfaceId: string, detail: string): void {
+  const state = useStore.getState();
+  const workspace = state.workspaces.find((item) => treeHasSurface(item.splitTree, surfaceId));
+  if (!workspace?.sshProfileId) return;
+  disconnectWorkspaceSsh(workspace.id);
+  state.updateWorkspaceMetadata(workspace.id, sshTerminalErrorMetadata(detail));
 }
 
 function setResolvedShellForSurface(surfaceId: string | undefined, resolvedShell: string): void {
@@ -1294,7 +1299,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         runtimeReadyTimer = undefined;
         terminal.writeln('\r\n\x1b[2m[process exited]\x1b[0m');
         clearStuckRunningState(id);
-        if (sshProfileId) detachExitedSshWorkspace(id);
+        if (sshProfileId) markExitedSshWorkspace(id, code);
         const detail = `进程已退出（代码 ${code}）`;
         const failedDuringStartup = terminalRuntimeStatus(id)?.state === 'starting';
         if (!innerAgentExitHandled) {
@@ -1482,6 +1487,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
               terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
               if (surfaceId) {
                 const detail = `无法创建终端：${String(err)}`;
+                if (sshProfileId) markFailedSshWorkspace(surfaceId, detail);
                 markTerminalRuntimeFailed(surfaceId, detail);
                 notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
               }
@@ -1489,6 +1495,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
         }
       }).catch((err: unknown) => {
         const detail = `无法检查终端运行状态：${String(err)}`;
+        if (sshProfileId) markFailedSshWorkspace(surfaceId, detail);
         markTerminalRuntimeFailed(surfaceId, detail);
         notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
       });
@@ -1518,6 +1525,7 @@ export function useTerminal({ surfaceId, shell, cwd, visible = true, focused = t
           terminal.writeln(`\r\n\x1b[31m[failed to create PTY: ${err}]\x1b[0m`);
           if (surfaceId) {
             const detail = `无法创建终端：${String(err)}`;
+            if (sshProfileId) markFailedSshWorkspace(surfaceId, detail);
             markTerminalRuntimeFailed(surfaceId, detail);
             notifyProjectManagerRuntimeFailure(surfaceId, detail, false, { startupFailure: true });
           }

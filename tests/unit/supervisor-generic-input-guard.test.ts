@@ -36,6 +36,8 @@ describe('supervisor generic input guard', () => {
       .toMatchObject({ reviewId: 'review-1', callerSurfaceId: 'supervisor-a' });
     expect(withSurfaceCaller('role.ready', { protocolRevision: '13' }, 'supervisor-a'))
       .toMatchObject({ protocolRevision: '13', callerSurfaceId: 'supervisor-a' });
+    expect(withSurfaceCaller('ssh.reconnect', { surfaceId: 'ssh-a' }, 'companion-a'))
+      .toMatchObject({ surfaceId: 'ssh-a', callerSurfaceId: 'companion-a' });
     expect(withSurfaceCaller('surface.read_text', { surfaceId: 'worker-a' }, 'supervisor-a'))
       .toEqual({ surfaceId: 'worker-a' });
     expect(withSurfaceCaller(

@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { WorkspaceId, WorkspaceInfo, SplitNode } from '../../shared/types';
 import { createLeaf, stampCwdOnTree } from './split-utils';
 import { disconnectWorkspaceSsh, teardownWorkspaceRuntime } from './pty-teardown';
+import { suppressSshCompanionCodexHistory } from '../ssh-workspace';
 import {
   snapshotSurvivingTerminalBuffers,
   terminalTreeRemountsSurvivors,
@@ -244,7 +245,9 @@ export const createWorkspaceSlice: StateCreator<WorkspaceSlice> = (set, get) => 
       title: config.title ?? `Workspace ${i + 1}`,
       pinned: config.pinned ?? false,
       shell: config.shell || '',
-      splitTree: config.splitTree ?? createLeaf(),
+      splitTree: config.sshProfileId
+        ? suppressSshCompanionCodexHistory(config.splitTree ?? createLeaf())
+        : config.splitTree ?? createLeaf(),
       unreadCount: 0,
       customColor: config.customColor,
       cwd: config.cwd,
