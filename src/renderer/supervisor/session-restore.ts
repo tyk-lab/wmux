@@ -63,9 +63,10 @@ function treeHasSshSurface(tree: SplitNode): boolean {
 }
 
 /**
- * SSH workspaces own live connections, supervision and project task Agents own
- * native conversations that cannot survive a process restart, and Diff is an
- * on-demand view. Omit them so startup never replays an old Agent prompt.
+ * Supervision and project task Agents own native conversations that cannot
+ * survive a process restart, and Diff is an on-demand view. Managed SSH
+ * workspaces restore as fresh connections with a fresh companion conversation;
+ * legacy SSH layouts without a profile remain non-restorable.
  */
 export function omitNonRestorableWorkspaces<T extends {
   splitTree: SplitNode;
@@ -83,7 +84,10 @@ export function omitNonRestorableWorkspaces<T extends {
 
   workspaces.forEach((workspace, index) => {
     if (workspace.transientSupervisorWorkspace || workspace.title?.trim() === 'AI 监督') return;
-    if (workspace.sshProfileId || /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '') || treeHasSshSurface(workspace.splitTree)) return;
+    if (!workspace.sshProfileId && (
+      /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '')
+      || treeHasSshSurface(workspace.splitTree)
+    )) return;
     const splitTree = stripTransientSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;
     if (index === activeIndex) nextActiveIndex = retained.length;

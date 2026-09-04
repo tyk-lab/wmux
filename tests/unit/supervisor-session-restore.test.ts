@@ -166,7 +166,26 @@ describe('supervisor session restore', () => {
     expect(result.workspaces).toEqual([]);
   });
 
-  it('omits SSH workspaces and remaps the active local workspace', () => {
+  it('restores a managed SSH terminal with its bound companion Agent', () => {
+    const sshTree: SplitNode = {
+      type: 'branch',
+      direction: 'horizontal',
+      ratio: 0.5,
+      children: [
+        leaf([{
+          id: 'ssh-terminal' as any,
+          type: 'terminal',
+          sshRemote: true,
+          sshProfileId: 'profile-a',
+        }]),
+        leaf([{
+          id: 'ssh-companion' as any,
+          type: 'terminal',
+          startupCommands: ["codex '控制 SSH'"],
+          sshControllerTargetSurfaceId: 'ssh-terminal' as any,
+        }]),
+      ],
+    };
     const result = omitNonRestorableWorkspaces([
       {
         id: 'ws-local' as any,
@@ -175,12 +194,13 @@ describe('supervisor session restore', () => {
       {
         id: 'ws-ssh' as any,
         sshProfileId: 'profile-a',
-        splitTree: leaf([{ id: 'ssh-terminal' as any, type: 'terminal', sshRemote: true }]),
+        splitTree: sshTree,
       },
     ], 1);
 
-    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['ws-local']);
-    expect(result.activeIndex).toBe(0);
+    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['ws-local', 'ws-ssh']);
+    expect(result.workspaces[1].splitTree).toEqual(sshTree);
+    expect(result.activeIndex).toBe(1);
   });
 
   it('recognizes a legacy SSH surface even when the workspace profile id is missing', () => {

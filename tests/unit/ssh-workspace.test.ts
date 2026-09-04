@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attachSshProfileId,
   buildSshSplitTree,
+  dismissSshHostKeyRequestForWorkspace,
   findSshFileSurface,
   isMissingSftpPathError,
   parentSshPath,
@@ -36,6 +37,16 @@ describe('SSH delete UI errors', () => {
       { name: 'config.yaml', type: 'file' },
       new Error('没有删除远程文件的权限；请检查所在目录的写权限和文件所有者'),
     )).toBe('删除文件“config.yaml”失败：没有删除远程文件的权限；请检查所在目录的写权限和文件所有者');
+  });
+});
+
+describe('SSH host-key prompt transitions', () => {
+  it('dismisses only the prompt for the accepted workspace', () => {
+    const request = { workspaceId: 'ws-a', prompt: 'fingerprint' };
+
+    expect(dismissSshHostKeyRequestForWorkspace(request, 'ws-a')).toBeNull();
+    expect(dismissSshHostKeyRequestForWorkspace(request, 'ws-b')).toBe(request);
+    expect(dismissSshHostKeyRequestForWorkspace(null, 'ws-a')).toBeNull();
   });
 });
 

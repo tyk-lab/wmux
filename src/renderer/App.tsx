@@ -14,6 +14,7 @@ import SshHostKeyDialog from './components/Ssh/SshHostKeyDialog';
 import {
   attachSshProfileId,
   buildSshSplitTree,
+  dismissSshHostKeyRequestForWorkspace,
   findSshFileSurface,
   sshReconnectRuntimeFailure,
   resolveSshReconnectTarget,
@@ -2710,6 +2711,9 @@ export default function App() {
   ): Promise<boolean> => {
     return runSshSingleFlight(sshConnectionsInFlightRef.current, workspaceId, async () => {
       updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connecting', sshConnectionError: undefined });
+      if (options?.acceptHostKey) {
+        setSshHostKeyRequest((request) => dismissSshHostKeyRequestForWorkspace(request, workspaceId));
+      }
       const existingWorkspace = useStore.getState().workspaces.find((workspace) => workspace.id === workspaceId);
       if (existingWorkspace) {
         updateSplitTree(workspaceId, attachSshProfileId(existingWorkspace.splitTree, profile.id));

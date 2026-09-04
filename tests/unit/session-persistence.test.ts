@@ -79,7 +79,7 @@ describe('session-persistence', () => {
     expect(loaded.windows[0].workspaces[1].splitTree.children).toHaveLength(2);
   });
 
-  it('omits SSH workspaces and whole windows that contain nothing else', () => {
+  it('retains managed SSH workspaces while omitting legacy SSH-only windows', () => {
     const local = { id: 'ws-local', title: 'Local', pinned: false, shell: 'pwsh.exe', splitTree: { type: 'leaf', surfaces: [] } };
     const ssh = { id: 'ws-ssh', title: 'SSH', pinned: false, shell: '', sshProfileId: 'profile-a', splitTree: { type: 'leaf', surfaces: [] } };
     const legacySsh = {
@@ -98,8 +98,8 @@ describe('session-persistence', () => {
     } as SessionData);
 
     expect(result.windows).toHaveLength(1);
-    expect(result.windows[0].workspaces.map((workspace) => workspace.id)).toEqual(['ws-local']);
-    expect(result.windows[0].activeWorkspaceId).toBe('ws-local');
+    expect(result.windows[0].workspaces.map((workspace) => workspace.id)).toEqual(['ws-local', 'ws-ssh']);
+    expect(result.windows[0].activeWorkspaceId).toBe('ws-ssh');
   });
 
   it('removes transient AI runtimes and legacy direct SSH workspaces', () => {
@@ -226,6 +226,49 @@ describe('handleVersionChange (issue #35)', () => {
 
     mod.handleVersionChange('1.0.1');
     expect(mod.loadSession()).toBeNull();
+  });
+
+  it('round-trips a managed SSH terminal and its companion through the auto session', () => {
+    mod.saveSession({
+      version: 1,
+      windows: [{
+        bounds: { x: 0, y: 0, width: 1200, height: 800 },
+        sidebarWidth: 240,
+        activeWorkspaceId: 'ws-ssh',
+        workspaces: [{
+          id: 'ws-ssh', title: 'Remote', pinned: false, shell: '', sshProfileId: 'profile-a',
+          splitTree: {
+            type: 'branch', direction: 'horizontal', ratio: 0.5,
+            children: [
+              {
+                type: 'leaf', paneId: 'pane-remote', activeSurfaceIndex: 0,
+                surfaces: [{
+                  id: 'surf-remote', type: 'terminal', sshRemote: true, sshProfileId: 'profile-a',
+                }],
+              },
+              {
+                type: 'leaf', paneId: 'pane-agent', activeSurfaceIndex: 0,
+                surfaces: [{
+                  id: 'surf-agent', type: 'terminal', startupCommands: ["codex '控制 SSH'"],
+                  sshControllerTargetSurfaceId: 'surf-remote',
+                }],
+              },
+            ],
+          },
+        }],
+      }],
+    } as any);
+
+    const restored = mod.loadSession();
+    expect(restored?.windows[0].workspaces[0].sshProfileId).toBe('profile-a');
+    expect(restored?.windows[0].workspaces[0].splitTree.children[0].surfaces[0].id)
+      .toBe('surf-remote');
+    expect(restored?.windows[0].workspaces[0].splitTree.children[1].surfaces[0])
+      .toMatchObject({
+        id: 'surf-agent',
+        startupCommands: ["codex '控制 SSH'"],
+        sshControllerTargetSurfaceId: 'surf-remote',
+      });
   });
 
   // Issue #113: an update must never lose the user's arranged tabs. The auto

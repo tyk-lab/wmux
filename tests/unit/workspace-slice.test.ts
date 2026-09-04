@@ -10,21 +10,35 @@ describe('workspace-slice SSH restore', () => {
       title: 'SSH',
       sshProfileId: 'profile-a',
       splitTree: {
-        type: 'leaf',
-        paneId: 'pane-ssh' as any,
-        activeSurfaceIndex: 0,
-        surfaces: [{
-          id: 'surf-companion' as any,
-          type: 'terminal',
-          startupCommands: ["codex '临时控制 SSH'"],
-          sshControllerTargetSurfaceId: 'surf-remote' as any,
-        }],
+        type: 'branch', direction: 'horizontal', ratio: 0.5,
+        children: [
+          {
+            type: 'leaf', paneId: 'pane-ssh' as any, activeSurfaceIndex: 0,
+            surfaces: [{
+              id: 'surf-remote' as any, type: 'terminal', sshRemote: true, sshProfileId: 'profile-a',
+            }],
+          },
+          {
+            type: 'leaf', paneId: 'pane-companion' as any, activeSurfaceIndex: 0,
+            surfaces: [{
+              id: 'surf-companion' as any,
+              type: 'terminal',
+              startupCommands: ["codex '临时控制 SSH'"],
+              sshControllerTargetSurfaceId: 'surf-remote' as any,
+            }],
+          },
+        ],
       },
     }]);
 
-    const restored = store.getState().workspaces[0].splitTree;
-    if (restored.type !== 'leaf') throw new Error('expected leaf');
-    expect(restored.surfaces[0].startupCommands).toEqual([
+    const workspace = store.getState().workspaces[0];
+    expect(workspace.sshConnectionState).toBe('disconnected');
+    const restored = workspace.splitTree;
+    if (restored.type !== 'branch' || restored.children[1].type !== 'leaf') {
+      throw new Error('expected restored SSH split');
+    }
+    expect(restored.children[1].surfaces[0].sshControllerTargetSurfaceId).toBe('surf-remote');
+    expect(restored.children[1].surfaces[0].startupCommands).toEqual([
       "codex --config history.persistence='none' '临时控制 SSH'",
     ]);
   });

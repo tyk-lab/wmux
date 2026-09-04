@@ -87,6 +87,14 @@ export function runSshSingleFlight<T>(
   return tracked;
 }
 
+/** Dismiss only the host-key prompt whose accepted connection is being retried. */
+export function dismissSshHostKeyRequestForWorkspace<T extends { workspaceId: string }>(
+  request: T | null,
+  workspaceId: string,
+): T | null {
+  return request?.workspaceId === workspaceId ? null : request;
+}
+
 /** Resolve an explicit SSH surface, or the remote surface bound to a companion Agent. */
 export function resolveSshReconnectTarget(
   workspaces: WorkspaceInfo[],
