@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { WorkspaceInfo, WorkspaceId, PaneId } from '../../../shared/types';
+import { WorkspaceInfo, WorkspaceId, PaneId, type SshCompanionAgent } from '../../../shared/types';
 import WorkspaceRow from './WorkspaceRow';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import WorkspaceContextMenu from './WorkspaceContextMenu';
@@ -28,6 +28,8 @@ interface SidebarProps {
   onClose: (id: WorkspaceId) => void;
   onCreate: () => void;
   onCreateSsh: () => void;
+  onAttachSshCompanion?: (id: WorkspaceId, agent: Exclude<SshCompanionAgent, 'none'>) => void;
+  onManageSshCredentials?: () => void;
   onRename: (id: WorkspaceId, title: string) => void;
   onReorder: (ids: WorkspaceId[]) => void;
   onUpdateMetadata: (id: WorkspaceId, partial: Partial<WorkspaceInfo>) => void;
@@ -50,6 +52,8 @@ export default function Sidebar({
   onClose,
   onCreate,
   onCreateSsh,
+  onAttachSshCompanion,
+  onManageSshCredentials,
   onRename,
   onReorder,
   onUpdateMetadata,
@@ -407,6 +411,8 @@ export default function Sidebar({
           onCloseOthers={(id) => { handleCloseOthers(id); closeContextMenu(); }}
           onMarkRead={handleMarkRead}
           onMarkUnread={handleMarkUnread}
+          onAttachSshCompanion={onAttachSshCompanion}
+          onManageSshCredentials={onManageSshCredentials}
         />
       )}
     </div>

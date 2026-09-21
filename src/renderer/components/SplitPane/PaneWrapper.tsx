@@ -627,6 +627,9 @@ export default function PaneWrapper({
         onNewShell={handleNewSurfaceShell}
         profiles={quickLaunchProfiles}
         onNewProfile={handleNewSurfaceProfile}
+        onAttachSshCompanion={(agent) => {
+          (window as any).__wmux_attachSshCompanion?.(workspaceId, agent);
+        }}
         onClosePane={handleClosePane}
         onSplitRight={handleSplitRight}
         onSplitDown={handleSplitDown}

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import ReactDOM from 'react-dom';
-import { WorkspaceInfo, WorkspaceId } from '../../../shared/types';
+import { WorkspaceInfo, WorkspaceId, type SshCompanionAgent } from '../../../shared/types';
 import { useT } from '../../i18n';
 
 interface WorkspaceContextMenuProps {
@@ -20,6 +20,8 @@ interface WorkspaceContextMenuProps {
   onCloseOthers: (id: WorkspaceId) => void;
   onMarkRead: (id: WorkspaceId) => void;
   onMarkUnread: (id: WorkspaceId) => void;
+  onAttachSshCompanion?: (id: WorkspaceId, agent: Exclude<SshCompanionAgent, 'none'>) => void;
+  onManageSshCredentials?: () => void;
 }
 
 const COLOR_PRESETS: Array<{ label: string; value: string }> = [
@@ -58,6 +60,8 @@ export default function WorkspaceContextMenu({
   onCloseOthers,
   onMarkRead,
   onMarkUnread,
+  onAttachSshCompanion,
+  onManageSshCredentials,
 }: WorkspaceContextMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -65,6 +69,7 @@ export default function WorkspaceContextMenu({
   const [renameValue, setRenameValue] = useState(workspace.title);
   const [showColorSubmenu, setShowColorSubmenu] = useState(false);
   const [showStatusSubmenu, setShowStatusSubmenu] = useState(false);
+  const [showSshAgentSubmenu, setShowSshAgentSubmenu] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Close on outside click or Escape
@@ -229,6 +234,29 @@ export default function WorkspaceContextMenu({
           </div>
         )}
       </div>
+
+      {workspace.sshProfileId && (
+        <>
+          <div className="ctx-menu__separator" />
+          <div
+            className="ctx-menu__item ctx-menu__item--has-sub"
+            onMouseEnter={() => setShowSshAgentSubmenu(true)}
+            onMouseLeave={() => setShowSshAgentSubmenu(false)}
+            role="menuitem"
+            aria-haspopup="true"
+          >
+            打开控制 Agent ▶
+            {showSshAgentSubmenu && (
+              <div className="ctx-menu__submenu">
+                {item('Codex', () => onAttachSshCompanion?.(workspaceId, 'codex'))}
+                {item('Kimi Code', () => onAttachSshCompanion?.(workspaceId, 'kimi'))}
+                {item('Grok Build', () => onAttachSshCompanion?.(workspaceId, 'grok'))}
+              </div>
+            )}
+          </div>
+          {item('SSH 凭据与配置', () => onManageSshCredentials?.())}
+        </>
+      )}
 
       <div className="ctx-menu__separator" />
 

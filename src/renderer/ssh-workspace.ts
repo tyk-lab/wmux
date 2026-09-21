@@ -325,7 +325,79 @@ export function upgradeSshSplitTree(tree: SplitNode, profile: SshConnectionProfi
   }));
 }
 
-/** Builds a direct SSH terminal plus a local Codex terminal scoped to control it. */
+export function findSshRemoteSurface(tree: SplitNode): SurfaceRef | undefined {
+  if (tree.type === 'leaf') return tree.surfaces.find((surface) => surface.sshRemote);
+  return findSshRemoteSurface(tree.children[0]) || findSshRemoteSurface(tree.children[1]);
+}
+
+export function sshCompanionAgentOf(surface: SurfaceRef): Exclude<SshCompanionAgent, 'none'> | undefined {
+  if (!surface.sshControllerTargetSurfaceId) return undefined;
+  const command = surface.startupCommands?.[0] || '';
+  if (surface.customTitle?.startsWith('Kimi') || /^kimi(?:\s|$)/iu.test(command)) return 'kimi';
+  if (surface.customTitle?.startsWith('Grok') || /^grok(?:\s|$)/iu.test(command)) return 'grok';
+  if (surface.customTitle?.startsWith('Codex') || /^codex(?:\s|$)/iu.test(command)) return 'codex';
+  return 'codex';
+}
+
+function findSshCompanion(
+  tree: SplitNode,
+  remoteSurfaceId: SurfaceId,
+  agent?: Exclude<SshCompanionAgent, 'none'>,
+): SurfaceRef | undefined {
+  if (tree.type === 'leaf') {
+    return tree.surfaces.find((surface) => (
+      surface.sshControllerTargetSurfaceId === remoteSurfaceId
+      && (!agent || sshCompanionAgentOf(surface) === agent)
+    ));
+  }
+  return findSshCompanion(tree.children[0], remoteSurfaceId, agent)
+    || findSshCompanion(tree.children[1], remoteSurfaceId, agent);
+}
+
+function splitLeafContainingSurface(
+  tree: SplitNode,
+  surfaceId: SurfaceId,
+  companion: SurfaceRef,
+): SplitNode {
+  if (tree.type === 'leaf') {
+    if (!tree.surfaces.some((surface) => surface.id === surfaceId)) return tree;
+    return {
+      type: 'branch',
+      direction: 'horizontal',
+      ratio: 0.5,
+      children: [
+        tree,
+        {
+          type: 'leaf',
+          paneId: `pane-${uuid()}` as PaneId,
+          surfaces: [companion],
+          activeSurfaceIndex: 0,
+        },
+      ],
+    };
+  }
+  const left = splitLeafContainingSurface(tree.children[0], surfaceId, companion);
+  if (left !== tree.children[0]) return { ...tree, children: [left, tree.children[1]] };
+  const right = splitLeafContainingSurface(tree.children[1], surfaceId, companion);
+  if (right !== tree.children[1]) return { ...tree, children: [tree.children[0], right] };
+  return tree;
+}
+
+/** Adds a local companion Agent beside an existing SSH terminal, skipping duplicates. */
+export function attachSshCompanion(
+  tree: SplitNode,
+  agent: Exclude<SshCompanionAgent, 'none'>,
+): SplitNode {
+  const remote = findSshRemoteSurface(tree);
+  if (!remote || findSshCompanion(tree, remote.id, agent)) return tree;
+  return splitLeafContainingSurface(
+    tree,
+    remote.id,
+    buildCompanionSurface(agent, buildSshAgentInstruction(remote.id), remote.id),
+  );
+}
+
+/** Builds a direct SSH terminal, optionally with a local companion Agent. */
 export function buildSshSplitTree(profile: SshConnectionProfile, companionAgent: SshCompanionAgent = 'codex'): SplitNode {
   const remoteSurface = {
     id: `surf-${uuid()}` as SurfaceId,
@@ -335,33 +407,12 @@ export function buildSshSplitTree(profile: SshConnectionProfile, companionAgent:
     sshRemote: true,
     sshProfileId: profile.id,
   };
-  if (companionAgent === 'none') {
-    return {
-      type: 'leaf',
-      paneId: `pane-${uuid()}` as PaneId,
-      surfaces: [remoteSurface],
-      activeSurfaceIndex: 0,
-    };
-  }
-  const agentInstruction = buildSshAgentInstruction(remoteSurface.id);
-
-  return {
-    type: 'branch',
-    direction: 'horizontal',
-    ratio: 0.5,
-    children: [
-      {
-        type: 'leaf',
-        paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [remoteSurface],
-        activeSurfaceIndex: 0,
-      },
-      {
-        type: 'leaf',
-        paneId: `pane-${uuid()}` as PaneId,
-        surfaces: [buildCompanionSurface(companionAgent, agentInstruction, remoteSurface.id)],
-        activeSurfaceIndex: 0,
-      },
-    ],
+  const sshOnly: SplitNode = {
+    type: 'leaf',
+    paneId: `pane-${uuid()}` as PaneId,
+    surfaces: [remoteSurface],
+    activeSurfaceIndex: 0,
   };
+  if (companionAgent === 'none') return sshOnly;
+  return attachSshCompanion(sshOnly, companionAgent);
 }

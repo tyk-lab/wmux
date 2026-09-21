@@ -162,7 +162,7 @@ export default function SshConnectionDialog({
           </span>
         </div>
         <p className="ssh-dialog__hint">密码经 Windows DPAPI 加密保存，仅在认证失败时要求重新输入；私钥内容不会保存。</p>
-        {companionAgent !== 'none' && <p className="ssh-dialog__control-guide"><strong>Agent 控制 SSH：</strong>使用 <code>read-screen</code> 读取输出、<code>send</code> 发送文本、<code>send-key enter</code> 提交。中断命令必须使用 <code>send-key c --ctrl</code>，不能把 <code>ctrl+c</code> 当键名。创建后会自动把 SSH 终端 ID 和完整说明交给 Agent。</p>}
+        {companionAgent !== 'none' && <p className="ssh-dialog__control-guide"><strong>Agent 控制 SSH：</strong>SSH 认证成功后才会打开 Agent 窗口。使用 <code>read-screen</code> 读取输出、<code>send</code> 发送文本、<code>send-key enter</code> 提交。中断命令必须使用 <code>send-key c --ctrl</code>，不能把 <code>ctrl+c</code> 当键名。</p>}
         <div className="ssh-dialog__actions"><button type="button" onClick={onClose}>取消</button><button className="ssh-primary-button" type="submit">连接并创建工作区</button></div>
       </form>
     </div>

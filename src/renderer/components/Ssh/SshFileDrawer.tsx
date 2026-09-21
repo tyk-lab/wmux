@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SshFileEntry, WorkspaceInfo } from '../../../shared/types';
+import { SshFileEntry, WorkspaceInfo, type SshCompanionAgent } from '../../../shared/types';
 import { isMissingSftpPathError, parentSshPath, sshDeleteErrorText, updateSshFileSelection } from '../../ssh-workspace';
 import '../../styles/ssh.css';
 
@@ -9,6 +9,7 @@ interface Props {
   errorMessage?: string;
   onReconnect: () => void;
   onOpenFile: (entry: SshFileEntry) => Promise<void>;
+  onAttachAgent?: (agent: Exclude<SshCompanionAgent, 'none'>) => void;
 }
 
 interface PreparedSelection {
@@ -72,7 +73,7 @@ function formatModifiedAt(modifiedAt?: number): string {
   }).format(modifiedAt);
 }
 
-export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect, onOpenFile }: Props) {
+export default function SshFileDrawer({ workspaceId, state, errorMessage, onReconnect, onOpenFile, onAttachAgent }: Props) {
   const [currentPath, setCurrentPath] = useState('.');
   const [pathDraft, setPathDraft] = useState('.');
   const [entries, setEntries] = useState<SshFileEntry[]>([]);
@@ -89,6 +90,8 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
   const [drawerWidth, setDrawerWidth] = useState(initialDrawerWidth);
   const [resizing, setResizing] = useState(false);
   const [openingPath, setOpeningPath] = useState<string>();
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
   const lastValidPathRef = useRef('.');
   const directoryCacheRef = useRef(new Map<string, { result: DirectoryResult; cachedAt: number }>());
   const pendingDirectoriesRef = useRef(new Map<string, Promise<DirectoryResult>>());
@@ -215,6 +218,19 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
       window.removeEventListener('keydown', closeOnEscape);
     };
   }, [contextMenu]);
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!agentMenuRef.current?.contains(event.target as Node)) setAgentMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setAgentMenuOpen(false); };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [agentMenuOpen]);
   useEffect(() => () => {
     if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
     resizeCleanupRef.current?.();
@@ -572,7 +588,33 @@ export default function SshFileDrawer({ workspaceId, state, errorMessage, onReco
     onDrop={(event) => void uploadDroppedFiles(event)}
   >
     <div className="ssh-file-drawer__resize-handle" onPointerDown={beginResize} title="拖动调整远程文件面板宽度" />
-    <div className="ssh-file-drawer__header"><strong>远程文件</strong><button onClick={() => void refresh(true)} disabled={loading || state !== 'connected'}>刷新</button></div>
+    <div className="ssh-file-drawer__header">
+      <strong>远程文件</strong>
+      <div className="ssh-file-drawer__header-actions">
+        {onAttachAgent && (
+          <div className="ssh-file-drawer__agent" ref={agentMenuRef}>
+            <button
+              type="button"
+              className="ssh-primary-button"
+              onClick={() => setAgentMenuOpen((open) => !open)}
+              aria-haspopup="menu"
+              aria-expanded={agentMenuOpen}
+              title="为当前 SSH 终端打开本地控制 Agent"
+            >
+              打开 Agent
+            </button>
+            {agentMenuOpen && (
+              <div className="ssh-file-drawer__agent-menu" role="menu">
+                <button type="button" role="menuitem" onClick={() => { onAttachAgent('codex'); setAgentMenuOpen(false); }}>Codex</button>
+                <button type="button" role="menuitem" onClick={() => { onAttachAgent('kimi'); setAgentMenuOpen(false); }}>Kimi Code</button>
+                <button type="button" role="menuitem" onClick={() => { onAttachAgent('grok'); setAgentMenuOpen(false); }}>Grok Build</button>
+              </div>
+            )}
+          </div>
+        )}
+        <button onClick={() => void refresh(true)} disabled={loading || state !== 'connected'}>刷新</button>
+      </div>
+    </div>
     {state !== 'connected' ? <div className="ssh-file-drawer__status">
       <p>{state === 'connecting'
         ? '正在连接 SFTP…'

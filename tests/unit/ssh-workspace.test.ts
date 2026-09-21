@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  attachSshCompanion,
   attachSshProfileId,
   buildSshSplitTree,
   dismissSshHostKeyRequestForWorkspace,
@@ -89,6 +90,31 @@ describe('buildSshSplitTree', () => {
     expect(launchCommand).toContain('wmux ssh-file checkout');
     expect(launchCommand).toContain('wmux ssh-file commit');
     expect(launchCommand).toContain('只有远端输出可作为完成证据');
+  });
+
+  it('attaches a companion to an existing SSH-only tree without duplicating the same agent', () => {
+    const sshOnly = buildSshSplitTree(profile('agent'), 'none');
+    expect(sshOnly.type).toBe('leaf');
+    const withCodex = attachSshCompanion(sshOnly, 'codex');
+    expect(withCodex.type).toBe('branch');
+    if (withCodex.type !== 'branch' || withCodex.children[1].type !== 'leaf') return;
+    expect(withCodex.children[1].surfaces[0].customTitle).toBe('Codex · 控制 SSH');
+    expect(attachSshCompanion(withCodex, 'codex')).toBe(withCodex);
+
+    const withKimi = attachSshCompanion(withCodex, 'kimi');
+    expect(withKimi).not.toBe(withCodex);
+    if (withKimi.type !== 'branch') return;
+    const titles: string[] = [];
+    const walk = (node: typeof withKimi) => {
+      if (node.type === 'leaf') titles.push(...node.surfaces.map((surface) => surface.customTitle || ''));
+      else {
+        walk(node.children[0] as typeof withKimi);
+        walk(node.children[1] as typeof withKimi);
+      }
+    };
+    walk(withKimi);
+    expect(titles).toContain('Codex · 控制 SSH');
+    expect(titles).toContain('Kimi · 控制 SSH');
   });
 
   it('supports Kimi, Grok, or no companion agent', () => {

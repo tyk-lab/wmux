@@ -8,10 +8,12 @@ import { DEFAULT_DEV_PORTS, mergeDevPorts, matchDevPorts, firstNewDevPort } from
 import { aggregateProgress } from './store/progress-slice';
 import Sidebar from './components/Sidebar/Sidebar';
 import SshConnectionDialog from './components/Ssh/SshConnectionDialog';
+import SshCredentialManager from './components/Ssh/SshCredentialManager';
 import SshFileDrawer from './components/Ssh/SshFileDrawer';
 import SshPasswordDialog from './components/Ssh/SshPasswordDialog';
 import SshHostKeyDialog from './components/Ssh/SshHostKeyDialog';
 import {
+  attachSshCompanion,
   attachSshProfileId,
   buildSshSplitTree,
   dismissSshHostKeyRequestForWorkspace,
@@ -1510,6 +1512,7 @@ export default function App() {
   const [focusedPaneId, setFocusedPaneId] = useState<PaneId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
+  const [sshCredentialsOpen, setSshCredentialsOpen] = useState(false);
   const [sshPasswordRequest, setSshPasswordRequest] = useState<{
     workspaceId: WorkspaceId;
     profile: SshConnectionProfile;
@@ -1525,10 +1528,14 @@ export default function App() {
   const autoReconnectedSshWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const sshConnectionsInFlightRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const sshReconnectsInFlightRef = useRef<Map<string, Promise<any>>>(new Map());
+  const pendingSshCompanionRef = useRef<Map<WorkspaceId, SshCompanionAgent>>(new Map());
   useEffect(() => {
     const activeIds = new Set<string>(workspaces.filter((workspace) => workspace.sshProfileId).map((workspace) => workspace.id));
     sshWorkspaceIdsRef.current.forEach((workspaceId) => {
-      if (!activeIds.has(workspaceId)) void window.wmux?.ssh?.disconnect?.(workspaceId as WorkspaceId);
+      if (!activeIds.has(workspaceId)) {
+        pendingSshCompanionRef.current.delete(workspaceId as WorkspaceId);
+        void window.wmux?.ssh?.disconnect?.(workspaceId as WorkspaceId);
+      }
     });
     sshWorkspaceIdsRef.current = activeIds;
   }, [workspaces]);
@@ -2738,6 +2745,8 @@ export default function App() {
           }
           return false;
         }
+        const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
+        let nextTree = workspace?.splitTree;
         if (result.authMethod === 'password') {
           const passwordProfile: SshConnectionProfile = {
             ...profile,
@@ -2746,10 +2755,15 @@ export default function App() {
           };
           const profiles = useStore.getState().sshConnections;
           setSshConnections(profiles.map((item) => item.id === profile.id ? passwordProfile : item));
-          const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
-          if (workspace) {
-            updateSplitTree(workspaceId, upgradeSshSplitTree(workspace.splitTree, passwordProfile));
-          }
+          if (nextTree) nextTree = upgradeSshSplitTree(nextTree, passwordProfile);
+        }
+        const pendingAgent = pendingSshCompanionRef.current.get(workspaceId);
+        if (pendingAgent && pendingAgent !== 'none' && nextTree) {
+          pendingSshCompanionRef.current.delete(workspaceId);
+          nextTree = attachSshCompanion(nextTree, pendingAgent);
+        }
+        if (workspace && nextTree && nextTree !== workspace.splitTree) {
+          updateSplitTree(workspaceId, nextTree);
         }
         updateWorkspaceMetadata(workspaceId, { sshConnectionState: 'connected' });
         setSshPasswordRequest((request) => request?.workspaceId === workspaceId ? null : request);
@@ -2851,13 +2865,34 @@ export default function App() {
     setSshDialogOpen(false);
     const workspaceId = createWorkspace({
       title: profile.name,
-      splitTree: buildSshSplitTree(profile, companionAgent),
+      splitTree: buildSshSplitTree(profile, 'none'),
       sshProfileId: profile.id,
       sshConnectionState: 'connecting',
     });
+    if (companionAgent !== 'none') pendingSshCompanionRef.current.set(workspaceId, companionAgent);
     handleSelectWorkspace(workspaceId);
     void connectSshWorkspace(workspaceId, profile, password);
   }, [createWorkspace, connectSshWorkspace, handleSelectWorkspace, setSshConnections, sshConnections]);
+
+  const handleAttachSshCompanion = useCallback((workspaceId: WorkspaceId, agent: Exclude<SshCompanionAgent, 'none'>) => {
+    const workspace = useStore.getState().workspaces.find((item) => item.id === workspaceId);
+    if (!workspace?.sshProfileId) return;
+    if (workspace.sshConnectionState === 'connected') {
+      pendingSshCompanionRef.current.delete(workspaceId);
+      updateSplitTree(workspaceId, attachSshCompanion(workspace.splitTree, agent));
+      return;
+    }
+    pendingSshCompanionRef.current.set(workspaceId, agent);
+  }, [updateSplitTree]);
+
+  useEffect(() => {
+    (window as any).__wmux_attachSshCompanion = handleAttachSshCompanion;
+    return () => {
+      if ((window as any).__wmux_attachSshCompanion === handleAttachSshCompanion) {
+        delete (window as any).__wmux_attachSshCompanion;
+      }
+    };
+  }, [handleAttachSshCompanion]);
 
   const handleSshProfilesChange = useCallback((profiles: SshConnectionProfile[]) => {
     setSshConnections(profiles);
@@ -3111,6 +3146,11 @@ export default function App() {
         onProfilesChange={handleSshProfilesChange}
         onSetDefaultCompanionAgent={(agent) => setWorkspacePrefs({ defaultSshAgent: agent })}
       />}
+      {sshCredentialsOpen && <SshCredentialManager
+        profiles={sshConnections}
+        onClose={() => setSshCredentialsOpen(false)}
+        onProfilesChange={handleSshProfilesChange}
+      />}
       {sshPasswordRequest && <SshPasswordDialog
         profileName={sshPasswordRequest.profile.name}
         errorMessage={sshPasswordRequest.errorMessage}
@@ -3170,6 +3210,8 @@ export default function App() {
             onClose={requestCloseWorkspace}
             onCreate={handleCreateWorkspace}
             onCreateSsh={() => setSshDialogOpen(true)}
+            onAttachSshCompanion={handleAttachSshCompanion}
+            onManageSshCredentials={() => setSshCredentialsOpen(true)}
             onRename={renameWorkspace}
             onReorder={reorderWorkspaces}
             onUpdateMetadata={handleUpdateMetadata}
@@ -3274,6 +3316,7 @@ export default function App() {
             errorMessage={activeWorkspace.sshConnectionError}
             onReconnect={() => void connectSshWorkspace(activeWorkspace.id, activeSshProfile)}
             onOpenFile={handleOpenSshFile}
+            onAttachAgent={(agent) => handleAttachSshCompanion(activeWorkspace.id, agent)}
           />
         )}
 

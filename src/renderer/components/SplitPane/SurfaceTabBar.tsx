@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { SurfaceRef, SurfaceId, PaneId, QuickLaunchProfile, ShellInfo, WorkspaceInfo } from '../../../shared/types';
+import { SurfaceRef, SurfaceId, PaneId, QuickLaunchProfile, ShellInfo, WorkspaceInfo, type SshCompanionAgent } from '../../../shared/types';
 import { useStore } from '../../store';
 import { ShortcutAction, ShortcutBinding } from '../../store/settings-slice';
 import { IconAdd, IconSplit, IconSplitDown, IconClose, IconCaret } from './icons';
@@ -37,6 +37,7 @@ interface SurfaceTabBarProps {
   onClosePane?: () => void;
   onSplitRight?: () => void;
   onSplitDown?: () => void;
+  onAttachSshCompanion?: (agent: Exclude<SshCompanionAgent, 'none'>) => void;
   onDropSurface?: (sourcePaneId: PaneId, surfaceId: SurfaceId, targetPaneId: PaneId) => void;
   onReorderSurface?: (surfaceId: SurfaceId, newIndex: number) => void;
   surfaceDrag?: SurfaceDragPayload | null;
@@ -106,6 +107,7 @@ export default function SurfaceTabBar({
   onClosePane,
   onSplitRight,
   onSplitDown,
+  onAttachSshCompanion,
   onDropSurface,
   onReorderSurface,
   surfaceDrag,
@@ -676,6 +678,14 @@ export default function SurfaceTabBar({
             >
               Reconnect
             </div>
+          )}
+          {contextSurface?.sshRemote && onAttachSshCompanion && (
+            <>
+              <div className="ctx-menu__separator" />
+              <div className="ctx-menu__item" role="menuitem" onClick={() => { onAttachSshCompanion('codex'); setCtxMenu(null); }}>打开 Codex 控制 Agent</div>
+              <div className="ctx-menu__item" role="menuitem" onClick={() => { onAttachSshCompanion('kimi'); setCtxMenu(null); }}>打开 Kimi 控制 Agent</div>
+              <div className="ctx-menu__item" role="menuitem" onClick={() => { onAttachSshCompanion('grok'); setCtxMenu(null); }}>打开 Grok 控制 Agent</div>
+            </>
           )}
           {contextSurface?.type === 'terminal' && (
             <>
