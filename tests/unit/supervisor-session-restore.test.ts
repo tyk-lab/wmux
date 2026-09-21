@@ -166,7 +166,7 @@ describe('supervisor session restore', () => {
     expect(result.workspaces).toEqual([]);
   });
 
-  it('restores a managed SSH terminal with its bound companion Agent', () => {
+  it('does not auto-restore a managed SSH terminal or its companion Agent', () => {
     const sshTree: SplitNode = {
       type: 'branch',
       direction: 'horizontal',
@@ -198,9 +198,8 @@ describe('supervisor session restore', () => {
       },
     ], 1);
 
-    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['ws-local', 'ws-ssh']);
-    expect(result.workspaces[1].splitTree).toEqual(sshTree);
-    expect(result.activeIndex).toBe(1);
+    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['ws-local']);
+    expect(result.activeIndex).toBe(0);
   });
 
   it('recognizes a legacy SSH surface even when the workspace profile id is missing', () => {

@@ -54,7 +54,12 @@ function stripTransientSurfacesFromTree(tree: SplitNode, transientSurfaceIds: Re
 function treeHasSshSurface(tree: SplitNode): boolean {
   if (tree.type === 'leaf') {
     return tree.surfaces.some((surface) => {
-      if (surface.sshRemote || surface.sshProfileId || surface.sshFileWorkspaceId) return true;
+      if (
+        surface.sshRemote
+        || surface.sshProfileId
+        || surface.sshFileWorkspaceId
+        || surface.sshControllerTargetSurfaceId
+      ) return true;
       return typeof surface.shell === 'string'
         && /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell);
     });
@@ -62,11 +67,20 @@ function treeHasSshSurface(tree: SplitNode): boolean {
   return treeHasSshSurface(tree.children[0]) || treeHasSshSurface(tree.children[1]);
 }
 
+function isSshWorkspace<T extends {
+  splitTree: SplitNode;
+  sshProfileId?: string;
+  shell?: string;
+}>(workspace: T): boolean {
+  if (workspace.sshProfileId) return true;
+  return /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(workspace.shell || '')
+    || treeHasSshSurface(workspace.splitTree);
+}
+
 /**
  * Supervision and project task Agents own native conversations that cannot
- * survive a process restart, and Diff is an on-demand view. Managed SSH
- * workspaces restore as fresh connections with a fresh companion conversation;
- * legacy SSH layouts without a profile remain non-restorable.
+ * survive a process restart, and Diff is an on-demand view. SSH workspaces
+ * (managed profiles, companions, and legacy layouts) stay closed across restart.
  */
 export function omitNonRestorableWorkspaces<T extends {
   splitTree: SplitNode;
@@ -84,10 +98,7 @@ export function omitNonRestorableWorkspaces<T extends {
 
   workspaces.forEach((workspace, index) => {
     if (workspace.transientSupervisorWorkspace || workspace.title?.trim() === 'AI 监督') return;
-    if (!workspace.sshProfileId && (
-      /^\s*ssh(?:\.exe)?(?:\s|$)/i.test((workspace as { shell?: string }).shell || '')
-      || treeHasSshSurface(workspace.splitTree)
-    )) return;
+    if (isSshWorkspace(workspace)) return;
     const splitTree = stripTransientSurfacesFromTree(workspace.splitTree, transientIds);
     if (!splitTree) return;
     if (index === activeIndex) nextActiveIndex = retained.length;

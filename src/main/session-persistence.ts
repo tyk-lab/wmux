@@ -35,7 +35,12 @@ function treeHasSshSurface(tree: any): boolean {
   if (!tree || typeof tree !== 'object') return false;
   if (tree.type === 'leaf') {
     return Array.isArray(tree.surfaces) && tree.surfaces.some((surface: any) => {
-      if (surface?.sshRemote || surface?.sshProfileId || surface?.sshFileWorkspaceId) return true;
+      if (
+        surface?.sshRemote
+        || surface?.sshProfileId
+        || surface?.sshFileWorkspaceId
+        || surface?.sshControllerTargetSurfaceId
+      ) return true;
       return typeof surface?.shell === 'string'
         && /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(surface.shell);
     });
@@ -81,8 +86,8 @@ function stripTransientSupervisorSurfaces(tree: any, unsafeSurfaceIds: ReadonlyS
   return { ...tree, children: [left, right] };
 }
 
-function isUnmanagedSshWorkspace(workspace: SessionData['windows'][number]['workspaces'][number]): boolean {
-  if (workspace.sshProfileId) return false;
+function isSshWorkspace(workspace: SessionData['windows'][number]['workspaces'][number]): boolean {
+  if (workspace.sshProfileId) return true;
   return /^\s*ssh(?:\.exe)?(?:\s|$)/i.test(workspace.shell || '')
     || treeHasSshSurface(workspace.splitTree);
 }
@@ -93,8 +98,7 @@ function isSupervisorWorkspace(workspace: SessionData['windows'][number]['worksp
 
 /**
  * AI-supervisor/project-task terminals own native conversations that cannot be
- * replayed. Managed SSH workspaces are safe to restore as fresh connections;
- * only legacy SSH layouts without a profile remain restart-unsafe.
+ * replayed. SSH workspaces (managed or legacy) stay closed across restart.
  */
 export function omitRestartUnsafeWorkspaces(
   data: SessionData,
@@ -106,7 +110,7 @@ export function omitRestartUnsafeWorkspaces(
     windows: data.windows.flatMap((window) => {
       const workspaces = window.workspaces.flatMap((workspace) => {
         if (isSupervisorWorkspace(workspace)) return [];
-        if (isUnmanagedSshWorkspace(workspace)) return [];
+        if (isSshWorkspace(workspace)) return [];
         const splitTree = stripTransientSupervisorSurfaces(workspace.splitTree, unsafeIds);
         return splitTree ? [{ ...workspace, splitTree }] : [];
       });
