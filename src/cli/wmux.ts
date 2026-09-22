@@ -155,14 +155,23 @@ function printContextResult(result: any): void {
 // Simple flag helpers shared across commands.
 function getFlag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
-  if (i < 0 || i === args.length - 1) return undefined;
-  return args[i + 1];
+  if (i >= 0 && i < args.length - 1) return args[i + 1];
+  const prefix = `${name}=`;
+  const inline = args.find((arg) => arg.startsWith(prefix));
+  return inline ? inline.slice(prefix.length) : undefined;
 }
 function stripFlag(args: string[], name: string): string[] {
   const i = args.indexOf(name);
-  if (i < 0) return args;
+  if (i >= 0) {
+    const copy = args.slice();
+    copy.splice(i, i === args.length - 1 ? 1 : 2);
+    return copy;
+  }
+  const prefix = `${name}=`;
+  const inline = args.findIndex((arg) => arg.startsWith(prefix));
+  if (inline < 0) return args;
   const copy = args.slice();
-  copy.splice(i, i === args.length - 1 ? 1 : 2);
+  copy.splice(inline, 1);
   return copy;
 }
 
@@ -1203,9 +1212,16 @@ async function main() {
   let args = process.argv.slice(2);
 
   // Global flags (issue #78 remote management) — may appear anywhere in argv.
+  // ssh-file commit/abort owns `--token` as the edit transaction id, so that
+  // command must not have it consumed as the pipe auth token.
+  const commandName = args.find((arg) => !arg.startsWith('-'));
+  const sshFileOwnsToken = commandName === 'ssh-file';
   const remoteSpec = getFlag(args, '--remote') ?? process.env.WMUX_REMOTE;
-  const tokenOverride = getFlag(args, '--token') ?? process.env.WMUX_REMOTE_TOKEN;
-  args = stripFlag(stripFlag(args, '--remote'), '--token');
+  const tokenOverride = sshFileOwnsToken
+    ? process.env.WMUX_REMOTE_TOKEN
+    : (getFlag(args, '--token') ?? process.env.WMUX_REMOTE_TOKEN);
+  args = stripFlag(args, '--remote');
+  if (!sshFileOwnsToken) args = stripFlag(args, '--token');
   if (remoteSpec) remoteTarget = parseRemoteTarget(remoteSpec);
   if (tokenOverride) PIPE_TOKEN = tokenOverride;
 
