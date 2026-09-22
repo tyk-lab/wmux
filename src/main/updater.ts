@@ -1,5 +1,5 @@
 import { autoUpdater } from 'electron-updater';
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { IPC_CHANNELS } from '../shared/types';
 import { fetchLatestRelease } from './update-checker';
 
@@ -9,12 +9,17 @@ import { fetchLatestRelease } from './update-checker';
 // instant silent RCE on every install. We mitigate the two highest-leverage
 // properties here, in code, without new signing infrastructure:
 //
-//   1. Quarantine window — never install a release until it has been public for
+//   1. Quarantine window — don't install a release until it has been public for
 //      N days, so a malicious release can be detected and yanked before clients
 //      adopt it. Age is read from GitHub's server-side `published_at`, not the
-//      attacker-writable latest.yml `releaseDate`.
-//   2. No silent install — autoDownload/autoInstallOnAppQuit are off; the user
-//      must explicitly confirm the install via a dialog.
+//      attacker-writable latest.yml `releaseDate`. NOTE: since issue #125 made
+//      the badge click the only update path, no reachable code runs this check
+//      (the click sets userDriven, which short-circuits the handler below). It
+//      is kept as a dormant mitigation for when an unattended check path
+//      returns — installing a fresh release today is one deliberate click.
+//   2. No silent install — autoDownload/autoInstallOnAppQuit are off. Nothing
+//      checks or downloads until the user clicks the update badge, and that
+//      click never opens an install dialog on its own.
 //
 // Authenticode signing is wired in CI (issue #71): release.yml signs wmux.exe
 // via SignPath when the SIGNPATH_* secrets are configured. The publisherName
@@ -23,12 +28,11 @@ import { fetchLatestRelease } from './update-checker';
 // every client reject every update (which is why latest.yml was withheld for
 // 0.26–0.31, stranding all installs). Without the pin, NsisUpdater skips
 // Authenticode verification; download integrity comes from the latest.yml
-// sha512, and the quarantine window + explicit install dialog below are the
-// primary client-side controls. Re-add the pin only together with reliable
-// chain-trusted signing.
+// sha512, and the explicit user click is the primary client-side control (the
+// quarantine window is dormant until an unattended check path returns).
+// Re-add the pin only together with reliable chain-trusted signing.
 
 const DEFAULT_MIN_RELEASE_AGE_DAYS = 3;
-const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function minReleaseAgeMs(): number {
@@ -51,7 +55,6 @@ async function releaseAgeMs(version: string): Promise<number | null> {
   return Date.now() - published;
 }
 
-let installPrompted = false;
 let missingChannelFileWarned = false;
 
 // ── In-app install, driven by the badge (issue #125) ─────────────────────────
@@ -65,8 +68,9 @@ let missingChannelFileWarned = false;
 // The click BYPASSES the quarantine window on purpose. Quarantine exists to
 // stop a malicious release from installing itself before anyone can yank it
 // (issue #29); a user who reads the version and clicks is making that call
-// themselves, and the install still needs the confirmation dialog below.
-// Nothing about the unattended path changes.
+// themselves, and the install is completed by a second explicit click (no
+// dialog). Since the unattended check loop was removed, this click-driven flow
+// is the only install path there is.
 
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
 
@@ -168,8 +172,9 @@ export function initAutoUpdater(): void {
     return;
   }
 
-  // Gate both download and install — nothing happens without passing the
-  // quarantine window and an explicit user click.
+  // Gate both download and install — nothing happens without an explicit user
+  // click. The quarantine handler below only ever gated the unattended path,
+  // which no longer exists; it is kept for when that path returns.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
 
@@ -199,28 +204,11 @@ export function initAutoUpdater(): void {
     }
   });
 
-  autoUpdater.on('update-downloaded', async (info) => {
-    // Surface to the renderer (badge), then require an explicit user click to
-    // install — never restart-and-replace silently.
+  autoUpdater.on('update-downloaded', (info) => {
+    // Record readiness for an explicit badge click. Do not open a dialog:
+    // startup must not ask the user to install or restart.
     userDriven = false;
     setState({ phase: 'ready', version: info.version, percent: 100 });
-
-    if (installPrompted) return;
-    installPrompted = true;
-    const { response } = await dialog.showMessageBox({
-      type: 'info',
-      buttons: ['Install and restart', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'wmux update ready',
-      message: `wmux ${info.version} has been downloaded.`,
-      detail: 'Review the release notes on GitHub before installing. Install now?',
-    });
-    if (response === 0) {
-      autoUpdater.quitAndInstall();
-    } else {
-      installPrompted = false; // allow re-prompting on a later cycle
-    }
   });
 
   autoUpdater.on('error', (err) => {
@@ -240,8 +228,6 @@ export function initAutoUpdater(): void {
     if (wasBusy) setState({ phase: 'error', message: String((err as Error)?.message ?? err) });
   });
 
-  // Initial check + periodic re-check so a quarantined release installs once it
-  // ages past the window, without needing an app restart.
-  autoUpdater.checkForUpdates().catch(() => {});
-  setInterval(() => { autoUpdater.checkForUpdates().catch(() => {}); }, RECHECK_INTERVAL_MS);
+  // No startup or interval check. Checking, downloading, and installing happen
+  // only after an explicit badge click (requestUpdateNow).
 }

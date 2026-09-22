@@ -140,6 +140,28 @@ describe('in-app update (issue #125)', () => {
     expect(u.autoUpdater.downloadUpdate).not.toHaveBeenCalled();
   });
 
+  it('does not check for updates when the packaged app starts', async () => {
+    const u = await freshUpdater();
+    const { dialog } = await import('electron');
+    u.initAutoUpdater();
+    expect(u.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('does not open an install dialog after a download finishes', async () => {
+    const u = await freshUpdater();
+    const { dialog } = await import('electron');
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    u.autoUpdater.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(event, handler);
+    });
+    u.initAutoUpdater();
+    handlers.get('update-downloaded')?.({ version: '2.13.1' });
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(u.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(u.getUpdateState()).toMatchObject({ phase: 'ready', version: '2.13.1' });
+  });
+
   it('does not start a second download while one is in flight', async () => {
     const u = await freshUpdater();
     u.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '9.9.9' } });
