@@ -39,8 +39,29 @@ function sha256(value: Buffer | string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+/**
+ * Agent shells on Windows rewrite a remote Linux path before wmux sees it:
+ * WSL turns `/home/a` into `\\wsl$\Distro\home\a`, and Git Bash turns it into
+ * `C:\Program Files\Git\home\a`. Put the POSIX path back. A real Windows path
+ * that is not one of those rewrites stays unchanged and fails validation.
+ */
+function restoreRemoteEditPath(remotePath: string): string {
+  let value = String(remotePath || '').trim().replace(/^['"]|['"]$/g, '');
+  if (value.includes('\0')) return value;
+  value = value.replace(/\\/g, '/');
+  const wsl = value.match(/^\/\/wsl(?:\$|\.localhost)\/[^/]+\/(.*)$/i);
+  if (wsl) value = `/${wsl[1]}`;
+  const gitPrefix = value.match(/^[A-Za-z]:\/Program Files(?: \(x86\))?\/Git\/(.*)$/i);
+  if (gitPrefix) value = `/${gitPrefix[1]}`;
+  const exePath = process.env.EXEPATH?.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (exePath && value.toLowerCase().startsWith(`${exePath.toLowerCase()}/`)) {
+    value = `/${value.slice(exePath.length + 1)}`;
+  }
+  return value;
+}
+
 function validateRemoteEditPath(remotePath: string): string {
-  const cleanPath = path.posix.normalize(String(remotePath || '').trim());
+  const cleanPath = path.posix.normalize(restoreRemoteEditPath(remotePath));
   if (!cleanPath.startsWith('/') || cleanPath === '/' || cleanPath.includes('\0')) {
     throw new Error('远程编辑路径必须是绝对文件路径');
   }

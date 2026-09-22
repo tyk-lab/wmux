@@ -182,6 +182,50 @@ describe('SSH edit transactions', () => {
     })).rejects.toThrow('绝对文件路径');
   });
 
+  it('restores Linux paths rewritten by WSL or Git Bash before checkout', async () => {
+    const remote = backend({ '/srv/app/readme.md': { content: 'old\n', mtimeMs: 1000 } });
+    const manager = new SshEditTransactionManager(remote);
+    managers.push(manager);
+    const rewritten = [
+      '\\\\wsl$\\Ubuntu\\srv\\app\\readme.md',
+      '//wsl.localhost/Ubuntu/srv/app/readme.md',
+      'C:/Program Files/Git/srv/app/readme.md',
+      '\\srv\\app\\readme.md',
+    ];
+    for (const remotePath of rewritten) {
+      const checkout = await manager.checkout({
+        callerSurfaceId: 'companion-a',
+        targetSurfaceId: 'ssh-a',
+        workspaceId: 'workspace-a',
+        remotePath,
+      });
+      expect(checkout.remotePath).toBe('/srv/app/readme.md');
+      manager.abort('companion-a', String(checkout.token));
+    }
+    const previousExePath = process.env.EXEPATH;
+    process.env.EXEPATH = 'D:\\Tools\\Git';
+    try {
+      const checkout = await manager.checkout({
+        callerSurfaceId: 'companion-a',
+        targetSurfaceId: 'ssh-a',
+        workspaceId: 'workspace-a',
+        remotePath: 'D:\\Tools\\Git\\srv\\app\\readme.md',
+      });
+      expect(checkout.remotePath).toBe('/srv/app/readme.md');
+      manager.abort('companion-a', String(checkout.token));
+    } finally {
+      if (previousExePath === undefined) delete process.env.EXEPATH;
+      else process.env.EXEPATH = previousExePath;
+    }
+    await expect(manager.checkout({
+      callerSurfaceId: 'companion-a',
+      targetSurfaceId: 'ssh-a',
+      workspaceId: 'workspace-a',
+      remotePath: 'C:/Users/local/readme.md',
+      create: true,
+    })).rejects.toThrow('绝对文件路径');
+  });
+
   it('removes only stale wmux-owned edit directories during startup cleanup', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-ssh-edit-test-root-'));
     const stale = path.join(root, 'wmux-ssh-edit-stale');
